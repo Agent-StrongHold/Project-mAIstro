@@ -476,6 +476,13 @@ class TestLiveSourceCommitPinning:
             "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
             ("https://", "ssh://", "file://"),
         )
+        # The `file://` origin is also a verified local source root: the
+        # merged policy gates local sources through both the widened scheme
+        # tuple and an explicit root (empty in production).
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+            (str(tmp_path),),
+        )
         # A clone does not inherit the origin's git identity config; the
         # patch commit below runs in the cloned workspace, so pin the author/
         # committer via git's env contract instead of relying on a global
@@ -534,6 +541,13 @@ class TestLiveSourceCommitPinning:
             "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
             ("https://", "ssh://", "file://"),
         )
+        # Same verified-local-root gate as the pinned test above: both the
+        # ls-remote resolution and the clone of the `file://` origin run
+        # under it.
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+            (str(tmp_path),),
+        )
         monkeypatch.setenv("GIT_AUTHOR_NAME", "rsi-test")
         monkeypatch.setenv("GIT_AUTHOR_EMAIL", "rsi-test@example.com")
         monkeypatch.setenv("GIT_COMMITTER_NAME", "rsi-test")
@@ -585,17 +599,20 @@ class TestCapturedDiffIsNonEmpty:
             "maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS",
             (workspace_root,),
         )
-        # The scrub hardened `git_clone` with a scheme allowlist so an agent
-        # cannot hand git a local path or a `-`-prefixed flag, and #404
-        # dropped `git://` outright: the git protocol is unauthenticated and
-        # unencrypted, so no caller -- and no test knob -- may reintroduce it.
+        # The scrub hardened `git_clone` with a source policy so an agent
+        # cannot hand git a local path, `git://`, or a `-`-prefixed flag.
         # Production clones over https; a hermetic test of *real* git needs a
-        # local origin, so it opts into `file://` here rather than the
-        # allowlist being widened for everyone -- the same shape as the
-        # ALLOWED_HOST_ROOTS relaxation just above.
+        # local origin, so it opts into `file://` explicitly AND registers the
+        # origin as a verified local source root (empty by default in
+        # production) -- the same shape as the ALLOWED_HOST_ROOTS relaxation
+        # just above.
         monkeypatch.setattr(
             "maistro.tools.git.server._ALLOWED_CLONE_SCHEMES",
             ("https://", "ssh://", "file://"),
+        )
+        monkeypatch.setattr(
+            "maistro.tools.git.server._ALLOWED_LOCAL_SOURCE_ROOTS",
+            (str(tmp_path),),
         )
         workspace = str(workspace_root / "run1")
 
@@ -608,3 +625,82 @@ class TestCapturedDiffIsNonEmpty:
         assert "new_feature.py" in result.diff
         assert "print('patched')" in result.diff
         assert paths_touched_by_diff(result.diff) == ["new_feature.py"]
+
+
+class TestDefaultPrBodyIsEvidenceDerived:
+    """#820: the self-branch PR body states only what this path actually ran —
+    the test command, its recorded exit status, and the output digest — and
+    claims nothing about gates it never executed."""
+
+    @staticmethod
+    async def _body(
+        exit_code: int, test_output: str = "3 passed in 0.01s\n", source_pin: str | None = None
+    ) -> str:
+        from maistro_rsi.selfbranch import _default_pr_body
+
+        attempt = new_attempt("https://github.com/org/repo", "python -m pytest -q")
+        return _default_pr_body(attempt, test_output, exit_code, source_pin)
+
+    async def test_names_the_resolved_source_pin_not_attempt_commit(self):
+        # Default `new_attempt()` carries commit=None; the body must name the
+        # digest the run resolved and verified, never the literal 'unresolved'.
+        body = await self._body(0, source_pin="a" * 40)
+        assert f"source pin {'a' * 40}" in body
+        assert "unresolved" not in body
+
+    async def test_names_the_recorded_command_and_exit_status(self):
+        body = await self._body(0)
+        assert "`python -m pytest -q` exited 0" in body
+
+    async def test_names_the_output_digest(self):
+        import hashlib
+
+        output = "3 passed in 0.01s\n"
+        body = await self._body(0, output)
+        digest = "sha256:" + hashlib.sha256(output.encode()).hexdigest()
+        assert digest in body
+
+    async def test_disclaims_every_gate_this_path_did_not_run(self):
+        body = await self._body(0)
+        assert "No other gates were executed on this path" in body
+        # The literal success claims #820 removes, and the scorecard's gate
+        # names, appear nowhere: this path ran one test command, that is all
+        # the body may imply.
+        assert "Tests passed before" not in body
+        assert "full fitness scorecard" not in body
+        for gate in ("bandit", "ruff", "mypy", "coverage"):
+            assert gate not in body
+
+    async def test_a_failed_run_is_stated_as_failed_not_passed(self):
+        body = await self._body(3, "2 failed\n")
+        assert "exited 3" in body
+        assert "passed" not in body
+
+    async def test_the_opened_pr_body_is_the_default_evidence_body(
+        self, patch_git_ops, monkeypatch
+    ):
+        """run_self_branch_attempt hands the recorded exit code to the default
+        body: what ships is derived from the run, not a static template."""
+        captured: dict[str, str] = {}
+
+        async def capture(repo, branch, title, body, base="main"):
+            captured["body"] = body
+            return await patch_git_ops.github_create_pr(repo, branch, title, body, base=base)
+
+        monkeypatch.setattr(selfbranch, "github_create_pr", capture)
+
+        async def cleared_check(diff, touched_paths):
+            return QuarantineVerdict(cleared=True, requires_adversarial_review=False, flags=())
+
+        attempt = new_attempt("https://github.com/org/repo", "python -m pytest -q")
+        result = await run_self_branch_attempt(
+            FakeSandbox(exec_result=(0, "5 passed\n")),
+            "/tmp/w",
+            attempt,
+            _noop_patch,
+            open_pr=True,
+            quarantine_check=cleared_check,
+        )
+        assert result.pr_url is not None
+        assert "`python -m pytest -q` exited 0" in captured["body"]
+        assert "No other gates were executed" in captured["body"]

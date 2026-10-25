@@ -64,6 +64,7 @@ def adapter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         require_metric_version=provenance.require_metric_version,
         load_authorizations=grants,
         head_sha=lambda _root: "b" * 40,
+        bundled_implementation_fingerprint=lambda _root, _paths: "test-tool-version",
     )
     monkeypatch.setattr(
         module, "_load", lambda path, _name: checker if path == module.CHECKER else prov

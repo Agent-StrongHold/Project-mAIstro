@@ -1,11 +1,14 @@
-"""Tests for the shipped-image inventory gate (#346).
+"""Tests for the shipped-image inventory gate (#346, #611).
 
 The gap this closes is not "some image had a CVE" -- it is that nothing
 enumerated the images, so coverage was whatever `security.yml` happened to
 name and nobody could tell. These pin the two directions that make the set
 closed (a Dockerfile with no entry fails, an entry with no Dockerfile fails)
-and the check that makes the inventory more than a document: a shipped entry
-must name jobs that actually exist.
+and the checks that make the inventory more than a document: a shipped entry
+must name jobs that actually exist, and a PUBLISHED entry claiming
+`published_digest_verified: true` must show the wiring that makes the claim
+true -- build once, scan the built digest, apply the release tags to it after
+the scans, and sign it (#611).
 """
 
 from __future__ import annotations
@@ -227,6 +230,380 @@ def test_a_published_entry_must_state_whether_the_released_digest_was_scanned(
     tree = _tree(tmp_path, [entry], ["Dockerfile"])
     assert _run(gate, tree, monkeypatch) == 1
     assert "must state `published_digest_verified`" in capsys.readouterr().out
+
+
+# ── #611: the `published_digest_verified: true` claim is machine-checked ────
+#
+# A release that rebuilds what it scanned publishes an artifact the scan never
+# admitted. The gate now reads the publishing job's wiring, so these pin the
+# shape it demands and every way of faking it.
+
+RELEASE_WIRING = """\
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build candidate
+        id: engine
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}
+      - name: Scan candidate
+        uses: aquasecurity/trivy-action@ed142fd
+        with:
+          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+          exit-code: "1"
+      - name: Promote the scanned digest
+        run: docker buildx imagetools create -t ghcr.io/example/maistro-engine:v1 ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+      - name: Sign the pushed digest
+        run: cosign sign ghcr.io/example/maistro-engine@${{ steps.engine.outputs.digest }}
+"""
+
+
+def _release_tree(tmp_path: Path, workflow: str, verified: object) -> Path:
+    entry = {
+        **SHIPPED,
+        "built_by": [".github/workflows/release.yml:images"],
+        "scanned_by": [".github/workflows/release.yml:images"],
+        "published_by": ".github/workflows/release.yml:images",
+        "published_digest_verified": verified,
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    (tree / ".github" / "workflows" / "release.yml").write_text(workflow, encoding="utf-8")
+    return tree
+
+
+def test_true_with_the_full_wiring_passes(gate, tmp_path, monkeypatch):
+    """Build once into a quarantine, scan the built digest, promote it, sign
+    it: the claim is true and the gate can see it."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING, True)
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_true_without_a_scan_of_the_built_digest_fails(gate, tmp_path, monkeypatch, capsys):
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace("steps.engine.outputs.digest", "steps.engine.outputs.version"),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_reporting_step_that_merely_names_the_scanner_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Naming trivy is not scanning.
+
+    A step that echoes the digest under a `Report Trivy target` name checks
+    the vocabulary box while gating nothing; it must not stand in for the
+    scan that admits the digest.
+    """
+    scan_block = (
+        "      - name: Scan candidate\n"
+        "        uses: aquasecurity/trivy-action@ed142fd\n"
+        "        with:\n"
+        "          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+        '          exit-code: "1"\n'
+    )
+    report_block = (
+        "      - name: Report Trivy target\n"
+        '        run: echo "Trivy target: ${{ steps.engine.outputs.digest }}"\n'
+    )
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace(scan_block, report_block), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_trivy_scan_configured_not_to_fail_fails(gate, tmp_path, monkeypatch, capsys):
+    """`exit-code: "0"` reports findings; it does not gate them."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace('exit-code: "1"', 'exit-code: "0"'), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_scan_allowed_to_fail_fails(gate, tmp_path, monkeypatch, capsys):
+    """`continue-on-error: true` turns the gate into a note."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "      - name: Scan candidate\n",
+            "      - name: Scan candidate\n        continue-on-error: true\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_a_cli_scan_without_the_failing_flag_fails(gate, tmp_path, monkeypatch, capsys):
+    """A grype invocation without `--fail-on` scans and admits anything."""
+    scan_block = (
+        "      - name: Scan candidate\n"
+        "        uses: aquasecurity/trivy-action@ed142fd\n"
+        "        with:\n"
+        "          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+        '          exit-code: "1"\n'
+    )
+    grype_block = (
+        "      - name: Grype scan (report only)\n"
+        "        run: grype ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}"
+        " --output table\n"
+    )
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace(scan_block, grype_block), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never scans `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_without_tag_application_fails(gate, tmp_path, monkeypatch, capsys):
+    """Publishing tags that were never pointed at the scanned digest is the
+    original gap: an image id in a job name proved nothing."""
+    workflow = "\n".join(
+        line for line in RELEASE_WIRING.splitlines() if "imagetools create" not in line
+    )
+    tree = _release_tree(tmp_path, workflow, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "never applies the release tags" in capsys.readouterr().out
+
+
+def test_true_without_a_signature_of_the_scanned_digest_fails(gate, tmp_path, monkeypatch, capsys):
+    workflow = "\n".join(line for line in RELEASE_WIRING.splitlines() if "cosign sign" not in line)
+    tree = _release_tree(tmp_path, workflow, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "no `cosign sign` of `steps.engine.outputs.digest`" in capsys.readouterr().out
+
+
+def test_true_with_tags_applied_before_the_scan_fails(gate, tmp_path, monkeypatch, capsys):
+    """Ordering is the property: a finding at the gating severity must stop
+    the publish, not arrive after the tags already moved."""
+    promote_block = (
+        "      - name: Promote the scanned digest\n"
+        "        run: docker buildx imagetools create -t ghcr.io/example/maistro-engine:v1 "
+        "ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+    )
+    scan_block = (
+        "      - name: Scan candidate\n"
+        "        uses: aquasecurity/trivy-action@ed142fd\n"
+        "        with:\n"
+        "          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}\n"
+        '          exit-code: "1"\n'
+    )
+    workflow = RELEASE_WIRING.replace(promote_block, "").replace(
+        scan_block, promote_block + scan_block
+    )
+    tree = _release_tree(tmp_path, workflow, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "applies release tags before its scans" in capsys.readouterr().out
+
+
+def test_true_with_the_build_pushing_latest_at_build_time_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "maistro-engine-rc:rc-${{ github.run_id }}", "maistro-engine:latest"
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "pushes `:latest` at build time" in capsys.readouterr().out
+
+
+def test_true_with_the_build_consuming_computed_release_tags_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """The pre-#611 shape: the build itself tagged the release. Whatever else
+    the job does, the digest was published before any scan could reject it."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "tags: ${{ steps.tags.outputs.engine }}",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "consumes computed release tags" in capsys.readouterr().out
+
+
+def test_true_with_the_build_pushing_a_release_tag_directly_fails(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Any non-quarantine build destination publishes before the scan.
+
+    `:latest` is only one shape. A build that pushes the immutable version tag
+    itself — `tags: ghcr.io/example/maistro-engine:${{ github.ref_name }}` —
+    makes the release public before any scan could reject it, and a later
+    `imagetools create` cannot un-publish it. The check confines every build
+    destination to a `-rc` quarantine repository instead of enumerating the
+    tag shapes it happens to forbid today.
+    """
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "ghcr.io/example/maistro-engine:${{ github.ref_name }}",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert (
+        "pushes 'ghcr.io/example/maistro-engine:${{ github.ref_name }}' outside a "
+        "`-rc` quarantine repository" in capsys.readouterr().out
+    )
+
+
+def test_true_with_a_mixed_block_scalar_tags_fails(gate, tmp_path, monkeypatch, capsys):
+    """The quarantine rule reads block-scalar `tags:` lists destination by
+    destination — one production repo smuggled in beside a quarantine repo is
+    still a publish at build time."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "tags: |\n"
+            "            ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}\n"
+            "            ghcr.io/example/maistro-engine:v1\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "outside a `-rc` quarantine repository" in capsys.readouterr().out
+
+
+def test_true_with_an_all_quarantine_block_scalar_tags_passes(gate, tmp_path, monkeypatch):
+    """The block-scalar spelling of the real wiring must not read as a
+    violation: every destination ends in `-rc`, so nothing is published
+    before the scans."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace(
+            "tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}",
+            "tags: |\n"
+            "            ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}\n"
+            "            ghcr.io/example/maistro-engine-rc:candidate\n",
+        ),
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+SIBLING_WORKFLOW = """
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build candidate
+        id: engine
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/example/maistro-engine-rc:rc-${{ github.run_id }}
+  after:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan candidate
+        uses: aquasecurity/trivy-action@ed142fd
+        with:
+          image-ref: ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+          exit-code: "1"
+      - name: Promote the scanned digest
+        run: docker buildx imagetools create -t ghcr.io/example/maistro-engine:v1 ghcr.io/example/maistro-engine-rc@${{ steps.engine.outputs.digest }}
+      - name: Sign the pushed digest
+        run: cosign sign ghcr.io/example/maistro-engine@${{ steps.engine.outputs.digest }}
+"""
+
+
+def test_the_scan_of_a_later_job_does_not_satisfy_this_jobs_claim(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """Steps belong to their own job, not to the job that happens to precede
+    them.
+
+    A job block that ran to end-of-file would read the next job's steps as
+    this job's, so a publishing job that never scanned, promoted or signed
+    could pass by borrowing a later job's wiring — two independent jobs
+    jointly satisfying what the publishing job must do alone.
+    """
+    tree = _release_tree(tmp_path, SIBLING_WORKFLOW, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "never scans `steps.engine.outputs.digest`" in out
+    assert "never applies the release tags" in out
+    assert "no `cosign sign` of `steps.engine.outputs.digest`" in out
+
+
+def test_a_job_followed_by_a_sibling_still_reads_its_own_steps(gate, tmp_path, monkeypatch):
+    """The sibling bound must not cut the other way either: the full wiring in
+    the FIRST of two jobs must still be visible when a second job follows it."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING + "  later:\n    runs-on: ubuntu-latest\n", True)
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_true_with_no_build_step_fails(gate, tmp_path, monkeypatch, capsys):
+    workflow = "\n".join(
+        line for line in RELEASE_WIRING.splitlines() if "build-push-action" not in line
+    )
+    tree = _release_tree(tmp_path, workflow, True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "pushes no docker/build-push-action step" in capsys.readouterr().out
+
+
+def test_true_with_an_unidentified_build_step_fails(gate, tmp_path, monkeypatch, capsys):
+    """A push with no `id:` exports no digest anyone can bind to, so no scan
+    could ever be tied to it."""
+    tree = _release_tree(tmp_path, RELEASE_WIRING.replace("        id: engine\n", ""), True)
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "declares no `id:`" in capsys.readouterr().out
+
+
+def test_true_in_a_job_with_no_steps_fails(gate, tmp_path, monkeypatch, capsys):
+    tree = _release_tree(
+        tmp_path,
+        "name: release\non: [push]\njobs:\n  images:\n    runs-on: ubuntu-latest\n",
+        True,
+    )
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "declares no steps for job 'images'" in capsys.readouterr().out
+
+
+def test_false_records_the_gap_without_demanding_the_wiring(gate, tmp_path, monkeypatch):
+    """`false` is the honest state of a release path that has not been wired
+    yet -- recording it must stay possible, or nobody flips it honestly."""
+    tree = _release_tree(
+        tmp_path,
+        RELEASE_WIRING.replace("docker/build-push-action@v7", "build/other@v1"),
+        False,
+    )
+    assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_a_non_boolean_flag_fails(gate, tmp_path, monkeypatch, capsys):
+    tree = _release_tree(tmp_path, RELEASE_WIRING, "yes")
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "must be JSON true or false" in capsys.readouterr().out
+
+
+def test_the_real_release_wiring_carries_both_claims(gate, capsys):
+    """Not a unit test of the gate — both published entries now claim
+    `published_digest_verified: true`, so the gate's wiring read of the real
+    release.yml must hold. This is the test that fails if someone rewires the
+    release back to publish-before-scan without re-recording the claim."""
+    assert gate.main() == 0
+    assert "PUBLISHED   : 2" in capsys.readouterr().out
 
 
 def test_an_unknown_disposition_fails(gate, tmp_path, monkeypatch, capsys):

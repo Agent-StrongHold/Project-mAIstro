@@ -42,8 +42,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
-  sast:
-    name: SAST (bandit + semgrep + gitleaks)
+  # Independent jobs let a retry rerun just the failed scanner.
+  sast-bandit:
+    name: SAST / Bandit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -74,6 +75,21 @@ jobs:
               sys.exit(1)
           print('bandit Medium+ count: 0 (strict gate)')
           "
+
+  sast-semgrep:
+    name: SAST / Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install uv + Python
+        uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync
+        run: uv sync --locked --all-extras
       - name: semgrep (custom + p/security-audit + p/owasp-top-ten + p/secrets)
         run: |
           set -o pipefail
@@ -85,6 +101,15 @@ jobs:
             --exclude 'packages/hive-conductor/eval' \
             --exclude 'packages/hive-conductor/cage' \
             --error packages/ tests/ 2>&1 | tee semgrep-report.txt
+
+  sast-gitleaks:
+    name: SAST / Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: install gitleaks CLI
         run: |
           set -euo pipefail
@@ -113,6 +138,23 @@ jobs:
           else
             gitleaks git --redact --log-opts="--all" .
           fi
+
+  # Preserve the required check name, and reject any leaf that did not pass.
+  sast:
+    name: SAST (bandit + semgrep + gitleaks)
+    if: ${{ always() }}
+    needs: [sast-bandit, sast-semgrep, sast-gitleaks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Require every SAST scanner to succeed
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/check_ci_job_results.py sast-bandit sast-semgrep sast-gitleaks
 
   supply-chain:
     name: Supply chain (pip-audit)
@@ -158,9 +200,13 @@ jobs:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # License and container evidence is required before code reaches either
+    # protected development or release branch. Release tags are checked again
+    # against their pushed digest in release.yml.
     if: >-
-      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-      (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'develop')) ||
+      (github.event_name == 'merge_group' && (github.event.merge_group.base_ref == 'refs/heads/main' || github.event.merge_group.base_ref == 'refs/heads/develop')) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
       github.event_name == 'schedule'
     env:
       CANDIDATE_TAG: ${{ github.event.pull_request.number || github.event.merge_group.head_sha || 'nightly' }}
@@ -184,12 +230,24 @@ jobs:
       # Buildx's own driver has its own image store, isolated from the host
       # daemon -- no prepull step protects these fetches, so each build
       # retries itself via buildx-build-retry.sh (Codex, #683).
+      #
+      # Every build below names its image's apt security-patch stage in
+      # `--no-cache-filter` (#795): an `apt-get upgrade` layer's cache key
+      # never changes, so the GHA cache replayed a months-old mirror state
+      # and the 2026-10-22 gate shipped maistro-engine with libexpat1
+      # 2.5.0-1+deb12u4 (CVE-2025-59375/CVE-2026-77214, fixed in deb12u5)
+      # from a layer built before the advisory. --no-cache-filter re-runs
+      # only that stage, so the venv/Go/npm layers stay cached while the OS
+      # patch state is re-consulted from the security mirror on every
+      # candidate. release.yml builds cold (no cache-from) and needs no
+      # flag.
       - name: Build hive-conductor image
         run: >-
           scripts/buildx-build-retry.sh --
           -f packages/hive-conductor/Dockerfile
           -t "hive-conductor:pr-${CANDIDATE_TAG}"
           --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=hive-conductor
           --cache-to type=gha,scope=hive-conductor,mode=max .
       # The ordinary image and the documented tracing profile are separate
@@ -202,6 +260,7 @@ jobs:
           -t "hive-conductor-observability:pr-${CANDIDATE_TAG}"
           --build-arg INSTALL_OBSERVABILITY=1
           --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=hive-conductor-observability
           --cache-to type=gha,scope=hive-conductor-observability,mode=max .
 
@@ -209,6 +268,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile -t "maistro-engine:pr-${CANDIDATE_TAG}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=engine
           --cache-to type=gha,scope=engine,mode=max .
 
@@ -222,6 +282,7 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}"
+          --no-cache-filter production-apt
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
@@ -229,20 +290,27 @@ jobs:
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=rsi-runner
           --cache-to type=gha,scope=rsi-runner,mode=max .
 
       - name: Verify live Python packages and Conductor identity contract
         run: |
+          # The floor comparisons use stdlib version tuples, not
+          # `packaging.Version`: #348's lock-enforced image stopped carrying
+          # the test toolchain (pytest/hypothesis) that transitively supplied
+          # `packaging`, and the reconciliation gate requires the shipped set
+          # to equal the locked export exactly — so the smoke asserts the
+          # same floors without asking the image for an extra dist.
           docker run --rm --entrypoint python \
             "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; from packaging.version import Version; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.1', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
+            -c "import importlib.metadata as m, sys; _v = lambda s: tuple(int(p) for p in s.split('.') if p.isdigit()); assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert _v(m.version('msgpack')) >= (1, 2, 1), m.version('msgpack'); assert _v(m.version('setuptools')) >= (78, 1, 1), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
 
       - name: Verify live observability extra in Conductor image
         run: |
           docker run --rm --entrypoint python \
             "hive-conductor-observability:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 15), sys.version; assert m.version('bip-utils') == '2.12.1', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
+            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
 
       - name: Trivy scan (HIGH/CRITICAL only)
         # The step above verifies the versions of the packages installed into
@@ -307,35 +375,129 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: SBOM (syft CycloneDX-JSON)
+      - name: Setup Node for frontend license surfaces
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/hive-conductor/frontend/package-lock.json
+            packages/maistro-canvas/frontend/package-lock.json
+
+      # Build both bundles and materialise both npm trees. Scanning only the
+      # workspace would miss the dependencies that Vite emits into a shipped
+      # bundle; scanning only the bundle would lose package identities.
+      - name: Build frontend license surfaces
         run: |
+          set -euo pipefail
+          (
+            cd packages/hive-conductor/frontend
+            npm ci
+            npm run build
+          )
+          (
+            cd packages/maistro-canvas/frontend
+            npm ci
+            npm run build
+          )
+
+      - name: Generate final-filesystem SBOMs and license inventory
+        run: |
+          set -euo pipefail
           curl -sSfL -o syft.tgz https://github.com/anchore/syft/releases/download/v1.49.0/syft_1.49.0_linux_amd64.tar.gz
           echo "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe  syft.tgz" | sha256sum --check
           tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
-          syft "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-hive-conductor.json
-          syft "maistro-engine:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-engine.json
-          syft "maistro-engine-research:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-engine-research.json
-          syft "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-rsi-runner.json
+          mkdir -p license-sboms
+          for image in hive-conductor maistro-engine maistro-engine-research maistro-rsi-runner; do
+            syft "${image}:pr-${CANDIDATE_TAG}" -o cyclonedx-json > "license-sboms/${image}.json"
+          done
 
-      - name: Upload SBOMs as artifacts
+          # The final image, not the frontend build stage, is the legal surface.
+          container="license-hive-conductor"
+          docker create --name "$container" "hive-conductor:pr-${CANDIDATE_TAG}" >/dev/null
+          rm -rf /tmp/hive-conductor-dist
+          docker cp "$container:/app/frontend/dist" /tmp/hive-conductor-dist
+          docker rm "$container" >/dev/null
+          syft dir:/tmp/hive-conductor-dist -o cyclonedx-json > license-sboms/hive-conductor-frontend-bundle.json
+          syft dir:packages/hive-conductor/frontend -o cyclonedx-json > license-sboms/hive-conductor-npm-tree.json
+          syft dir:packages/maistro-canvas/frontend/dist -o cyclonedx-json > license-sboms/canvas-frontend-bundle.json
+          syft dir:packages/maistro-canvas/frontend -o cyclonedx-json > license-sboms/canvas-npm-tree.json
+
+          python scripts/check-license-inventory.py \
+            --policy quality/license-policy.json \
+            --sbom maistro-engine=license-sboms/maistro-engine.json \
+            --sbom hive-conductor=license-sboms/hive-conductor.json \
+            --sbom maistro-engine-research=license-sboms/maistro-engine-research.json \
+            --sbom maistro-rsi-runner=license-sboms/maistro-rsi-runner.json \
+            --sbom hive-conductor-frontend-bundle=license-sboms/hive-conductor-frontend-bundle.json \
+            --sbom canvas-frontend-bundle=license-sboms/canvas-frontend-bundle.json \
+            --sbom hive-conductor-npm-tree=license-sboms/hive-conductor-npm-tree.json \
+            --sbom canvas-npm-tree=license-sboms/canvas-npm-tree.json \
+            --artifact "maistro-engine=maistro-engine:pr-${CANDIDATE_TAG}" \
+            --artifact "hive-conductor=hive-conductor:pr-${CANDIDATE_TAG}" \
+            --artifact "maistro-engine-research=maistro-engine-research:pr-${CANDIDATE_TAG}" \
+            --artifact "maistro-rsi-runner=maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            --output license-inventory.json
+
+      - name: Upload license inventory and SBOMs
         uses: actions/upload-artifact@v7
         with:
-          name: sboms-${{ env.CANDIDATE_TAG }}
-          path: sbom-*.json
+          name: license-inventory-${{ env.CANDIDATE_TAG }}
+          path: |
+            license-inventory.json
+            license-sboms/
+          if-no-files-found: error
 
-      - name: Install uv + Python
+      # #348: the scans above audit a dependency set. Every Python image now
+      # installs from `uv export --locked` + `--require-hashes`, so the shipped
+      # set IS the locked set by construction — this step proves it from the
+      # outside, on the built images: dump each image's installed distributions
+      # from its own interpreter and compare them name==version against the
+      # export of the same uv.lock the image was built from. A package in the
+      # image the lock does not name, a locked pin the image does not carry,
+      # or a version skew is a red build — the SBOM above and the lock below
+      # can no longer silently describe different sets.
+      - name: Install uv + Python (reconcile tooling)
         uses: ./.github/actions/setup-uv
-      - name: Setup Python 3.12
-        run: uv python install 3.12
-      - name: License compliance (no GPL/AGPL on new deps)
+      - name: Reconcile installed packages to uv.lock
         run: |
-          uv run pip install pip-licenses
-          uv run pip-licenses --fail-on='GPL;LGPL;AGPL' --format=markdown \
-            --output-file=licenses.md
+          set -euo pipefail
+          uv export --locked --package maistro-server \
+            --extra image --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-engine.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-engine:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-engine.txt \
+            --member maistro-core==0.9.0 --member maistro-server==0.9.0 \
+            --member maistro-canvas==0.9.0
+
+          uv export --locked --package hive-conductor \
+            --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-hive.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "hive-conductor:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-hive.txt \
+            --member maistro-core==0.9.0 --member maistro-bootstrap==0.9.0 \
+            --member maistro-canvas==0.9.0 --member maistro-design==0.9.0 \
+            --member maistro-evolve==0.9.0 --member setuptools==84.2.1
+
+          uv export --locked --package maistro-server \
+            --extra observability --extra browser \
+            --no-dev --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-research.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-engine-research:pr-${CANDIDATE_TAG}" \
+            --expected-file /tmp/expected-research.txt \
+            --member maistro-core==0.9.0 --member maistro-server==0.9.0
+
+          uv export --locked --extra rsi-fitness --no-emit-workspace \
+            --format requirements-txt --output-file /tmp/expected-rsi.txt
+          python scripts/check-image-lock-reconciliation.py \
+            --image "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            --python /workspace/.venv/bin/python \
+            --expected-file /tmp/expected-rsi.txt \
+            --member maistro-workspace==0.9.0 --member maistro-core==0.9.0 \
+            --member maistro-canvas==0.9.0 --member maistro-registry==0.9.0
 
       # Image signing was removed, not fixed: the old step ran `cosign sign`
       # against local Docker tags that were never pushed to a registry, so no

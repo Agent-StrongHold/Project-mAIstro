@@ -83,6 +83,13 @@ class TraceNote:
     reward: RewardVector = field(default_factory=RewardVector)
     # Per-gate pass/fail, so the note carries the whole verdict, not just a score.
     gates: dict[str, bool] = field(default_factory=dict)
+    # Per-gate evidence (#304): state (passed/failed/not_run/unavailable),
+    # reason, and execution provenance (command, tool version, candidate SHA,
+    # exit status, output digest) for every gate the scorecard named. A gate
+    # absent here did not produce a recorded result — downstream PR/promotion
+    # reporting must say so, never claim it. None on older notes simply means
+    # no evidence bundle was recorded (the boolean map above still holds).
+    gate_evidence: dict[str, dict[str, object]] | None = None
     # Protected-test-inventory evidence (#306): base/candidate servable counts,
     # the (capped) deleted/added node-ID lists, and the override flag when a
     # governance-authorized shrink passed. Present on fitness promotions;

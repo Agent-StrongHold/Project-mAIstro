@@ -14,6 +14,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUSES,
     RunConcurrencyExceeded,
@@ -55,7 +56,9 @@ from maistro.runs.retention_scope import (
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    CHAT_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
+    TASK_QUEUE_SOURCE,
     occurrence_key,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -64,6 +67,21 @@ from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
 #: reason the retention sweep is: a recovery pass must not become a long
 #: transaction that blocks the workers it is trying to unblock.
 DEFAULT_RECLAIM_BATCH = 100
+
+
+def matches_chat_admission_snapshot(current: Run, expected: Run) -> bool:
+    """Recheck an admission snapshot while the store holds its write authority.
+
+    NodeRun absence must be checked under the same authority by the caller.
+    This is a compare-and-cancel guard, not evidence that an owner died: the
+    request or existing recovery policy still decides which snapshot to offer.
+    """
+    return (
+        current.provenance.get(ADMISSION_SOURCE) == CHAT_SOURCE
+        and current.status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING)
+        and current.status is expected.status
+        and current.updated_at == expected.updated_at
+    )
 
 
 class RunNotFound(KeyError):
@@ -280,6 +298,31 @@ def validate_child_scope(
         )
 
 
+def validate_effect_claim_parent(
+    parent: Run | None,
+    parent_node_run: NodeRun | None,
+    *,
+    parent_run_id: str | None,
+    parent_node_run_id: str | None,
+    workspace_id: str,
+    project_id: str,
+    allow_cross_project: bool,
+) -> None:
+    """Validate optional parent evidence before admitting an effect-keyed child Run."""
+    if parent_node_run_id is not None and parent_run_id is None:
+        raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+    if parent is None:
+        return
+    validate_child_scope(
+        parent,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        allow_cross_project=allow_cross_project,
+    )
+    if parent_node_run is not None and parent_node_run.run_id != parent_run_id:
+        raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -464,10 +507,29 @@ class RunStore(Protocol):
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
-    ) -> Run: ...
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
+    ) -> Run:
+        """Admit one Run over ``graph``.
+
+        ``goal_id``/``goal_revision`` bind the Run to the canonical Goal and
+        the exact desired-state revision it was admitted against (#1572). The
+        binding is provenance: written once here, carried in the Run's payload
+        from then on, and accepted from no other call — every later mutation
+        of the Run leaves it untouched, so a historical Run always reads with
+        the revision it used. Set both or neither; the model refuses half a
+        binding.
+
+        ``authorization`` is the delegated-identity seam (#1152): when given,
+        it — not the caller-supplied actor string — fixes the Run's immutable
+        initiating/acting identity facts, and the acting principal must be the
+        authenticated principal or an agent it owns.
+        """
+        ...
 
     async def purge_expired_runs(
         self,
@@ -492,6 +554,17 @@ class RunStore(Protocol):
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        """Retained hot Runs in one Workspace, newest first (created_at, run_id).
+
+        Filters scope before pagination. Cold archive payloads are outside
+        discovery, as with list_by_status; by-id inspection remains available.
+        Product readers use ScopedRunReader for authorization.
+        """
+        ...
 
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None: ...
 
@@ -565,11 +638,36 @@ class RunStore(Protocol):
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        """The Run admitted for one task receipt id (#1690), or None.
+
+        The read half of cross-replica task visibility: the Run is committed
+        before a `POST /tasks` 202 is answerable, so any process sharing this
+        store can resolve a receipt id it never admitted, even when the
+        accepting replica's best-effort TaskRecord write (ADR-018) never
+        landed. Scoped to `admission_source` by default because the
+        ``task_id`` provenance key is the task queue's own; callers reaching
+        for another source must say so explicitly. None means no Run claims
+        this receipt id — the same "not found" a `get_run` miss means, not an
+        error.
+        """
+        ...
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run: ...
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        """Cancel only an unchanged chat admission with no NodeRuns, atomically."""
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -581,13 +679,31 @@ class RunStore(Protocol):
         principal_id: str | None = None,
     ) -> Run: ...
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun: ...
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun: ...
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None
     ) -> NodeRun | None: ...
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]: ...
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Durably merge ``patch`` into a NodeRun's provenance (top-level keys).
+
+        Explore-wave thesis provenance (M7-A8) is written here once at NodeRun
+        creation and extended afterwards only by contract-checked writers. The
+        merge is a shallow top-level update: callers composing nested records
+        (``explore_wave``) pass the full nested value they want stored.
+        """
+        ...
 
     async def transition_node_run(
         self,
@@ -846,10 +962,18 @@ class InMemoryRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
+        goal_id: str | None = None,
+        goal_revision: int | None = None,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -872,9 +996,13 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=require_admitted_actor(actor_principal_id),
+            actor_principal_id=identities["actor_principal_id"],
+            initiating_principal_id=identities["initiating_principal_id"],
+            acting_principal_id=identities["acting_principal_id"],
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
+            goal_id=goal_id,
+            goal_revision=goal_revision,
         )
         run = admit_in_state(run, initial_status)
         self._claim_occurrence(run)
@@ -903,6 +1031,7 @@ class InMemoryRunStore:
                     if principal is not None
                     else None
                 ),
+                system_active=len(active),
             )
         except RunConcurrencyExceeded:
             self._release_occurrence_claim(run, run.run_id)
@@ -1200,6 +1329,22 @@ class InMemoryRunStore:
             matching = [run for run in matching if run_cursor_key(run) > after]
         return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
 
+    async def list_recent_runs(
+        self, workspace_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[Run]:
+        if limit <= 0 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        matching = sorted(
+            (
+                run
+                for run in self._runs.values()
+                if run.workspace_id == workspace_id and run.run_id not in self._archived
+            ),
+            key=run_cursor_key,
+            reverse=True,
+        )
+        return [run.model_copy(deep=True) for run in matching[offset : offset + limit]]
+
     async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
         run = self._runs.get(run_id)
         if run is None:
@@ -1223,32 +1368,6 @@ class InMemoryRunStore:
             if run.provenance.get("effect_key") == effect_key:
                 return run.model_copy(deep=True)
         return None
-
-    def _require_parent_scope(
-        self,
-        graph: Graph,
-        *,
-        parent_run_id: str | None,
-        parent_node_run_id: str | None,
-        allow_cross_project: bool,
-    ) -> Run | None:
-        """Validate the optional parent chain for an effect claim; return the parent."""
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        if parent is None:
-            return None
-        validate_child_scope(
-            parent,
-            workspace_id=graph.workspace_id,
-            project_id=graph.project_id,
-            allow_cross_project=allow_cross_project,
-        )
-        if parent_node_run_id is not None:
-            parent_node_run = self._require_node_run(parent_node_run_id)
-            if parent_node_run.run_id != parent_run_id:
-                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
-        return parent
 
     async def claim_run_by_effect(
         self,
@@ -1277,10 +1396,19 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        self._require_parent_scope(
-            graph,
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        parent_node_run = (
+            self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
         )
         run = admit_in_state(
@@ -1326,6 +1454,26 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The in-memory store is small by construction (bounded, pruned), so
+        # the reference implementation scans; the durable stores answer from
+        # their provenance expressions instead.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") != task_id:
+                continue
+            if (
+                admission_source is not None
+                and run.provenance.get(ADMISSION_SOURCE) != admission_source
+            ):
+                continue
+            return run.model_copy(deep=True)
+        return None
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1349,6 +1497,17 @@ class InMemoryRunStore:
         provenance = dict(run.provenance)
         provenance["transport_attempted"] = True
         self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
+
+    async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
+        # No await: parent comparison, child absence and cancellation are one
+        # event-loop operation, serialized with create_node_run.
+        current = self._require_run(expected.run_id)
+        if not matches_chat_admission_snapshot(current, expected):
+            return False
+        if self._node_runs_of(expected.run_id):
+            return False
+        self._runs[expected.run_id] = transition_run(current, RunStatus.CANCELLED, error=error)
         return True
 
     async def transition_run(
@@ -1457,7 +1616,13 @@ class InMemoryRunStore:
         score = self._eval_scores.get(eval_id)
         return score.model_copy(deep=True) if score is not None else None
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError("cannot create NodeRun under a terminal Run")
@@ -1465,9 +1630,24 @@ class InMemoryRunStore:
         if not any(node.node_id == node_id for node in graph.nodes):
             raise RunIntegrityError(f"node_id {node_id!r} is not present in the Run Graph snapshot")
         ordinal = 1 + sum(node_run.run_id == run_id for node_run in self._node_runs.values())
-        node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+        node_run = NodeRun(
+            run_id=run_id,
+            node_id=node_id,
+            ordinal=ordinal,
+            provenance=dict(provenance or {}),
+        )
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        node_run = self._require_node_run(node_run_id)
+        self._refuse_under_terminal_run(node_run)
+        merged = {**node_run.provenance, **patch}
+        updated = node_run.model_copy(update={"provenance": merged})
+        self._node_runs[node_run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None

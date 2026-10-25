@@ -77,7 +77,15 @@ class HarnessAdapter(Protocol):
     async def dispatch(self, request: HarnessRequest) -> HarnessHandle: ...
 
     async def poll(self, handle: HarnessHandle) -> HarnessResult | None:
-        """Return the result if complete, None if still running."""
+        """Observe this exact dispatch: a terminal result, or None if pending.
+
+        Timer-recovery profiles must distinguish a known pending handle from
+        missing, foreign or unqueryable evidence. Those cases must raise an
+        explicit refusal/error rather than manufacture a terminal result or
+        report pending indefinitely. A configured adapter must survive
+        reconstruction or use durable evidence; an in-process cache alone is
+        insufficient.
+        """
         ...
 
     async def cancel(self, handle: HarnessHandle) -> None: ...
@@ -99,6 +107,10 @@ class HarnessRunnerDispatchAdapter:
     ActionGate outbound) resolved through ``resolve_harness_runner`` — or a
     test double with the same session protocol. This class adds no policy of
     its own; it only shapes one turn and records dispatch provenance.
+
+    This legacy bridge's cache is instance-local. It is not a restart-safe
+    timer-poll profile; its unknown-handle ``None`` behavior below remains an
+    explicit #1613/#1192 integration limit, not proof that remote work is pending.
     """
 
     def __init__(self, runner: HarnessRunner, *, workdir: str = ".") -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from maistro_evolve.scorecard import (
     GateResult,
+    GateState,
     MeasureKind,
     Scorecard,
     SignalScore,
@@ -94,3 +95,54 @@ def test_explain_shows_verdict_and_kinds() -> None:
     assert "ACCEPTED" in out
     assert "[derived]" in out and "[judge]" in out
     assert "rationale:" in out
+
+
+def test_resolved_state_prefers_the_explicit_state() -> None:
+    """A gate constructed with an explicit #304 state reports that state —
+    the executed ``passed`` boolean never overrides a not_run/unavailable
+    verdict, and a legacy boolean-only gate still derives PASSED/FAILED."""
+    assert (
+        GateResult("g", False, "tool missing", state=GateState.NOT_RUN).resolved_state()
+        is GateState.NOT_RUN
+    )
+    assert (
+        GateResult("g", False, "probe down", state=GateState.UNAVAILABLE).resolved_state()
+        is GateState.UNAVAILABLE
+    )
+    assert GateResult("g", True, "ok", state=GateState.PASSED).resolved_state() is GateState.PASSED
+    assert (
+        GateResult("g", False, "bad", state=GateState.FAILED).resolved_state() is GateState.FAILED
+    )
+
+
+def test_explain_renders_each_gate_state_distinctly() -> None:
+    """NOT RUN (blocking), UNAVAILABLE, PASS and FAIL must render as distinct
+    marks: reporting that collapses a not_run into a pass/fail word would
+    present an unmeasured required gate as a verdict (#304/#820)."""
+    sc = Scorecard(
+        gates=[
+            GateResult("tests", True, "56 passed"),
+            GateResult("lint", False, "2 violations"),
+            GateResult("bandit", False, "bandit missing", state=GateState.NOT_RUN),
+            GateResult("probe", False, "measured nothing", state=GateState.UNAVAILABLE),
+        ]
+    )
+    out = sc.explain()
+    assert "[PASS] tests" in out
+    assert "[FAIL] lint" in out
+    assert "[NOT RUN (blocking)] bandit" in out
+    assert "[UNAVAILABLE] probe" in out
+    # not_run vetoes acceptance; the executed failure does too.
+    assert sc.gates_passed is False
+    assert sc.accepted is False
+
+
+def test_unavailable_gate_is_reportable_but_never_a_veto() -> None:
+    """An optional signal that never executed stays visible in the report
+    while acceptance reads the resolved state, not the legacy boolean."""
+    sc = Scorecard(
+        gates=[GateResult("probe", False, "measured nothing", state=GateState.UNAVAILABLE)]
+    )
+    assert "[UNAVAILABLE] probe" in sc.explain()
+    assert sc.gates_passed is True
+    assert sc.accepted is True

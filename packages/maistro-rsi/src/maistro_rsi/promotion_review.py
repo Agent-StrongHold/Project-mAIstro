@@ -34,6 +34,9 @@ non-ML.
 from __future__ import annotations
 
 import json
+import os
+import re
+import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -43,6 +46,31 @@ from typing import Any, Literal
 from maistro.security.sentinel.rlphd import COLD_START_THETA, RlphdModel
 from maistro_evolve.improvement import ImprovementKind
 from maistro_rsi.sensitive_paths import matches_sensitive_pattern
+
+#: Patch stems are sha prefixes (and test fixtures); only filename-safe chars.
+_SAFE_PATCH_STEM = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _authorized_export_roots() -> tuple[str, ...]:
+    """Trusted prefixes for promotion patch export (CodeQL ``py/path-injection``).
+
+    Defaults to the platform temp directory (pytest ``tmp_path`` and the
+    hive-conductor RSI work root when unset). Operators with a custom work
+    root set ``RSI_WORK_ROOT`` and/or ``RSI_EXPORT_ROOTS`` (``os.pathsep``-
+    separated) to the realpath'd directories exports may land under.
+    """
+    roots: list[str] = [os.path.realpath(tempfile.gettempdir())]
+    for env_name in ("RSI_WORK_ROOT", "RSI_EXPORT_ROOTS"):
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        for part in raw.split(os.pathsep):
+            piece = part.strip()
+            if piece:
+                roots.append(os.path.realpath(os.path.expanduser(piece)))
+    # Preserve order, drop duplicates.
+    return tuple(dict.fromkeys(roots))
+
 
 # One fixed principal: RSI has no multiple-human-reviewer concept today, but
 # RLPHD's per-(principal, action_class) scoping is kept intact so this slots
@@ -428,20 +456,74 @@ def _policy_snapshot(review: PendingReview) -> dict[str, Any]:
     }
 
 
+def _under_authorized_export_root(export_str: str) -> bool:
+    """Whether ``export_str`` equals or sits under an authorized export root."""
+    return any(
+        export_str == root or export_str.startswith(root + os.sep)
+        for root in _authorized_export_roots()
+    )
+
+
+def _require_inside_export(dest_str: str, export_str: str) -> str:
+    """Refuse a leaf that escaped ``export_str`` (symlink race / traversal)."""
+    if dest_str != export_str and not dest_str.startswith(export_str + os.sep):
+        raise ValueError("patch must remain inside the export directory")
+    return dest_str
+
+
+def _write_export_patch(export_str: str, stem: str, patch_text: str) -> Path:
+    """Create or reuse the stem's patch file under an authorized export root.
+
+    Every sink (``makedirs`` / ``glob`` / ``open``) sits in a
+    ``startswith``-dominated branch so CodeQL ``py/path-injection`` clears.
+    """
+    for root in _authorized_export_roots():
+        if export_str != root and not export_str.startswith(root + os.sep):
+            continue
+        os.makedirs(export_str, exist_ok=True)
+        safe_stem = stem[:8]
+        existing = [
+            p
+            for p in sorted(Path(export_str).glob("*.patch"))
+            if p.name.endswith(f"{safe_stem}.patch")
+        ]
+        if existing:
+            dest_str = _require_inside_export(os.path.realpath(str(existing[0])), export_str)
+            return Path(dest_str)
+        next_n = len(sorted(Path(export_str).glob("*.patch"))) + 1
+        dest_str = _require_inside_export(
+            os.path.realpath(os.path.join(export_str, f"{next_n:04d}-approved-{safe_stem}.patch")),
+            export_str,
+        )
+        # Exclusive creation refuses a link/file planted after the check.
+        with open(dest_str, "x", encoding="utf-8") as patch_file:
+            patch_file.write(patch_text)
+        return Path(dest_str)
+    raise ValueError(
+        "export directory must be under an authorized export root "
+        "(platform temp, RSI_WORK_ROOT, or RSI_EXPORT_ROOTS)"
+    )
+
+
 def _export_patch(export_dir: Path, stem: str, patch_text: str) -> Path:
     """Copy the patch into ``export_dir`` (the harvest/resume forward path).
     Idempotent: a resumed-then-approved patch is exported once, named for its
-    first exit."""
-    export_dir.mkdir(parents=True, exist_ok=True)
-    existing = [
-        p for p in sorted(export_dir.glob("*.patch")) if p.name.endswith(f"{stem[:8]}.patch")
-    ]
-    if existing:
-        return existing[0]
-    next_n = len(sorted(export_dir.glob("*.patch"))) + 1
-    dest = export_dir / f"{next_n:04d}-approved-{stem[:8]}.patch"
-    dest.write_text(patch_text, encoding="utf-8")
-    return dest
+    first exit.
+
+    Stem is allowlisted (CodeQL clears taint on ``fullmatch``). The export
+    directory itself must sit under an authorized root before any write —
+    ``Path.resolve`` / ``is_relative_to`` alone are not modeled as a
+    path-injection sanitizer.
+    """
+    if not _SAFE_PATCH_STEM.fullmatch(stem or ""):
+        raise ValueError("patch stem must be a non-empty filename component")
+    export_str = os.path.realpath(str(export_dir))
+    if not _under_authorized_export_root(export_str):
+        raise ValueError(
+            "export directory must be under an authorized export root "
+            "(platform temp, RSI_WORK_ROOT, or RSI_EXPORT_ROOTS)"
+        )
+    return _write_export_patch(export_str, stem, patch_text)
 
 
 def _read_patch(flagged_dir: Path, stem: str) -> str:

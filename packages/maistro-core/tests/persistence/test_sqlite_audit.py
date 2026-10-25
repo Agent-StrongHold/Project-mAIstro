@@ -3,12 +3,17 @@ in-memory sqlite3 DB (via aiosqlite)."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 import aiosqlite
 import pytest
 
 from maistro.persistence.sqlite_audit import SqliteAuditLog
+from maistro.security._types import AuditEntry as SentinelAuditEntry
+from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 
@@ -47,6 +52,119 @@ async def test_log_and_get_entries_roundtrip(log: SqliteAuditLog) -> None:
     assert e.detail == "ok"
     assert e.trace_id == "t1"
     assert e.request_id == "r1"
+    assert e.proof_type == "Ed25519Signature2020"
+    assert log.verify(e)
+
+
+@pytest.mark.asyncio
+async def test_sentinel_entry_is_signed_and_durable(log: SqliteAuditLog) -> None:
+    await log.log(SentinelAuditEntry(boundary="pre_call", user_id="u1", tool_name="bash"))
+
+    [entry] = await log.get_entries(user_id="u1")
+    assert entry.signature
+    assert log.verify(entry)
+
+
+@pytest.mark.asyncio
+async def test_deny_with_violations_verifies_after_durable_roundtrip(
+    log: SqliteAuditLog,
+) -> None:
+    """Deny decisions are the records tamper evidence exists for.
+
+    The durable stores never serialize the violations tuple, so the proof must
+    verify against the persisted columns alone — a signature computed over
+    in-memory-only fields would leave every deny unverifiable after restart.
+    """
+    await log.log(
+        SentinelAuditEntry(
+            boundary="tool_call",
+            user_id="u1",
+            tool_name="bash",
+            verdict="denied",
+            violations=(
+                SentinelViolation(
+                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
+                ),
+            ),
+        )
+    )
+
+    [entry] = await log.get_entries(user_id="u1")
+    assert entry.verdict == "denied"
+    assert entry.signature
+    assert log.verify(entry)
+
+    forged = replace(entry, detail="forged after retention")
+    assert not log.verify(forged)
+
+
+@pytest.mark.asyncio
+async def test_entry_with_unpersisted_metadata_verifies_after_roundtrip(
+    log: SqliteAuditLog,
+) -> None:
+    """Correlation metadata must not break the durable proof.
+
+    The user-model promotion auditor (#1047) logs action/project_id/run_id/
+    workspace_id onto the same wired store that Sentinel decisions use, but
+    the shipped durable stores serialize none of those columns. Signing them
+    attached proofs no stored row could reproduce: legitimate records failed
+    verify() after a restart. The proof must cover exactly the persisted
+    decision bytes, so the signed row verifies even though the metadata is
+    gone, while tampering a persisted column still fails.
+    """
+    await log.log(
+        AuditEntry(
+            boundary="user_model",
+            user_id="u1",
+            org_id="o1",
+            action="promote",
+            project_id="p1",
+            run_id="r-123",
+            workspace_id="w1",
+            detail="d",
+        )
+    )
+
+    [entry] = await log.get_entries(user_id="u1", org_id="o1")
+    assert entry.signature
+    assert entry.action == ""  # not serialized; proof must not depend on it
+    assert log.verify(entry)
+
+    forged = replace(entry, verdict="denied")
+    assert not log.verify(forged)
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_signing_key_warns_on_a_durable_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The ADR-073 restart contract needs a configured key: without one this
+    durable store writes proofs no later process can verify, so it must say
+    so at wire time instead of failing silently on the first post-restart
+    ``verify()``."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+            SqliteAuditLog(conn)
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert SIGNING_KEY_ENV in messages
+        assert "verify" in messages
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_supplied_signing_key_does_not_warn_on_a_durable_store(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A deployment that configured its key chose durability; no warning."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+            SqliteAuditLog(conn, signer=AuditSigner(bytes(32)))
+        assert not [r for r in caplog.records if r.name == "maistro.persistence.audit"]
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

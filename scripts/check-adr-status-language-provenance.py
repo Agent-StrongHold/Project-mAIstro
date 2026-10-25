@@ -37,6 +37,19 @@ CHECKER = ROOT / "scripts" / "check-adr-status-language.py"
 PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "adr-status-language"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated checker and the registry modules that checker imports
+#: (validator -> parser, schema). Only first-party measurement source is
+#: listed; the registry package's other modules (cli, dag, generator, ...) are
+#: not executed by this scan.
+ANALYZER_MANIFEST = (
+    "scripts/check-adr-status-language-provenance.py",
+    "scripts/check-adr-status-language.py",
+    "packages/maistro-registry/src/maistro_registry/validator.py",
+    "packages/maistro-registry/src/maistro_registry/parser.py",
+    "packages/maistro-registry/src/maistro_registry/schema.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -53,6 +66,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _corpus(checker: ModuleType) -> list[Path]:
@@ -110,6 +131,7 @@ def main() -> int:
     current = {problem.identity for problem in problems}
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
         trusted_payload = trusted_ref.loads(default={"known": [], "details": {}})
         candidate_payload = json.loads(checker.LEDGER.read_text())
@@ -138,6 +160,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="ADR body-status language scan",
+            tool_version=tool_version,
             metric_definition_version=checker.METRIC_DEFINITION_VERSION,
             old_value=old_value,
             new_value=f"{len(current)} current body-status finding(s)",

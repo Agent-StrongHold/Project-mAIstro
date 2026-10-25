@@ -45,19 +45,18 @@ from services.workspace_authority import (
     list_workspace_ids_for_user,
 )
 
-from maistro.graph.durable_runs import HitlAuthorization, cursor_time, expire_hitl_pauses
+from maistro.graph.durable_runs import (
+    HitlAuthorization,
+    expire_hitl_pauses,
+    pending_hitl_node_ids,
+    pending_hitl_records,
+)
 from maistro.identity import Principal
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
 
 router = APIRouter(tags=["hitl"])
-
-#: The pause kind the durable executor stamps for a human pause, as opposed to
-#: a machine wait. `graph_state.metadata["pauses"]` carries it per node, which
-#: is why this listing needs no node-registry lookup: the pause entry declares
-#: what it is.
-_HUMAN_PAUSE_KIND = "hitl"
 
 #: A responder must not be able to name the execution state of the node it is
 #: answering, so the store stamps the real pause under this key *after* the
@@ -236,11 +235,11 @@ def _session_principal(request: Request) -> str:
 def _pending_items(record: Any) -> list[PendingHumanWork]:
     """The human pauses on one record, or none when it waits on a machine.
 
-    A Run can be PAUSED with several nodes waiting independently, which the
-    frontier tests already exercise, so this yields per node rather than per
-    Run — a queue keyed by Run would hide every pause after the first. The
-    NodeRun check keeps a malformed continuation from exposing a pause that is
-    not present in canonical execution state.
+    Selection is the canonical predicate (`pending_hitl_node_ids`): a durable
+    human pause on a PAUSED NodeRun, per node — a Run can wait on a person at
+    several nodes, and a queue keyed by Run would hide every pause after the
+    first. This maps the surviving nodes onto the disclosed shape; the
+    projected row that nominated the record never discloses by itself.
     """
     pauses = record.graph_state.metadata.get("pauses")
     # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so the
@@ -248,38 +247,20 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
     # went in as. `_answer_record` in the store reads them the same way.
     if not isinstance(pauses, Mapping):
         return []
-    paused_nodes = {
-        node_run.node_id for node_run in record.node_runs if node_run.status is RunStatus.PAUSED
-    }
     items: list[PendingHumanWork] = []
-    for node_id, pause in pauses.items():
-        if str(node_id) not in paused_nodes:
-            continue
-        if not isinstance(pause, Mapping) or pause.get("kind") != _HUMAN_PAUSE_KIND:
-            continue
-        metadata = pause.get("metadata")
+    for node_id in pending_hitl_node_ids(record):
+        pause = pauses[node_id]
+        metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
         items.append(
             PendingHumanWork(
                 run_id=record.run.run_id,
-                node_id=str(node_id),
+                node_id=node_id,
                 project_id=record.run.project_id,
                 payload=dict(metadata) if isinstance(metadata, Mapping) else {},
                 paused_at=str(pause["paused_at"]) if pause.get("paused_at") else None,
             )
         )
     return items
-
-
-#: Ceiling on PAUSED records inspected by one `/pending` request, independent
-#: of how many turn out to carry human work. Bounds one request's cost against
-#: an arbitrarily large run of machine-only pauses (#1109); it is not the
-#: `limit` a caller sees, which bounds *pending items* returned.
-_MAX_PENDING_SCAN_RECORDS = 2000
-
-#: Minimum rows requested per page, regardless of how small the caller's
-#: `limit` is, so a small item target does not force one PAUSED row per
-#: round trip while paging past a long machine-only prefix.
-_PENDING_SCAN_PAGE_SIZE = 100
 
 
 async def _collect_pending_items_for_scope(
@@ -291,46 +272,25 @@ async def _collect_pending_items_for_scope(
     items: list[PendingHumanWork],
     bounded_limit: int,
 ) -> None:
-    """Keyset-walk one authorized Workspace/Project scope into ``items``.
+    """Walk one authorized Workspace/Project scope into ``items``.
 
-    The walk stops at ``bounded_limit`` items or ``_MAX_PENDING_SCAN_RECORDS``
-    inspected rows (#1109), and each item-carrying record is revalidated
-    against live canonical membership immediately before its payload is
-    disclosed (#364).
+    The walk is the canonical `pending_hitl_records` contract (#1109): the
+    store's pause-kind projection decides human eligibility before the limit,
+    so a prefix of machine-only PAUSED Runs, however long, never occupies a
+    page that a human pause behind it needs, and no repeated request rereads
+    the same ineligible prefix. This side only maps the surviving records onto
+    the disclosed shape — the authorization recheck ran per item-carrying
+    record inside the walk, immediately before inclusion (#364).
     """
-    cursor: tuple[str, str] | None = None
-    inspected = 0
-    while len(items) < bounded_limit and inspected < _MAX_PENDING_SCAN_RECORDS:
-        # At least `_PENDING_SCAN_PAGE_SIZE` rows per page even when
-        # `bounded_limit` is small: a small item target must not force one
-        # row per round trip while paging past a long machine-only prefix.
-        page_size = min(
-            max(bounded_limit, _PENDING_SCAN_PAGE_SIZE),
-            _MAX_PENDING_SCAN_RECORDS - inspected,
-        )
-        records = await store.list_by_status(
-            RunStatus.PAUSED,
-            limit=page_size,
-            project_id=project_id,
-            workspace_id=workspace_id,
-            after=cursor,
-        )
-        if not records:
-            return
-        inspected += len(records)
-        for record in records:
-            record_items = _pending_items(record)
-            # Recheck only records about to disclose a payload: a
-            # machine-only pause carries nothing a revocation could
-            # withhold, and the recheck costs one live membership read.
-            if record_items and not await authorization.permits(record.run.workspace_id):
-                continue
-            items.extend(record_items)
-        # Must be the store's own cursor spelling, not a bare isoformat:
-        # `list_by_status` compares the cursor against a UTC-normalized key,
-        # so a `created_at` printed at any other offset would order one way
-        # and filter the other, and this walk would silently stop advancing.
-        cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
+    scan = await pending_hitl_records(
+        store,
+        authorization=authorization,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        limit=bounded_limit - len(items),
+    )
+    for record in scan.records:
+        items.extend(_pending_items(record))
 
 
 @router.get("/pending")
@@ -343,15 +303,15 @@ async def list_pending_human_work(
     answers "what is this Run doing", and answers nothing for a person who
     does not yet know which Run is blocked on them.
 
-    `limit` bounds *pending items* returned, not a fixed prefix of the
-    PAUSED Runs in the store (#1109). Machine-only pauses and pauses outside
-    `project_id` carry no items, so filtering a single fixed-size page after
-    the fact could return an empty answer forever even while real human work
-    sits durably PAUSED further back in the ordering. Instead this pages the
-    store's PAUSED listing with an advancing keyset cursor and keeps reading
-    until it has enough items, the store runs out of PAUSED Runs, or it has
-    inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
-    contract `expire_hitl_pauses` uses (#1056).
+    `limit` bounds *pending items* returned (#1109), and human eligibility is
+    decided by the store's pause-kind projection *before* that limit: the
+    query only ever reads PAUSED Runs whose durable frontier declares a human
+    pause, so machine-only pauses and pauses outside `project_id` cannot
+    occupy a page that real human work behind them needs — there is no
+    prefix, eligible or otherwise, that a repeated request rereads forever.
+    What remains is bounded by the same contract as `expire_hitl_pauses`
+    (#1056): each scope walk stops at `bounded_limit` items,
+    `MAX_PENDING_SCAN_RECORDS` projected rows, or the end of the projection.
     """
     user_id = _request_user_id(request)
 
@@ -382,8 +342,9 @@ async def list_pending_human_work(
     # Three bounds compose here, and none subsumes another. Workspace
     # membership is the security boundary for Run data and is applied by the
     # store, before its page limit, so another tenant's backlog cannot hide
-    # this caller's pending work (#1240); the keyset walk inside each scope is
-    # what stops a long machine-only prefix from hiding real human work within
+    # this caller's pending work (#1240); the pause-kind projection behind
+    # `list_hitl_paused` is what makes human eligibility queryable before the
+    # limit, so a long machine-only prefix cannot hide real human work within
     # it (#1109); and Project authority is resolved from canonical Workspace +
     # Project state before any store query, so a client-supplied `project_id`
     # only ever narrows within the authorized set — a selector, never a grant

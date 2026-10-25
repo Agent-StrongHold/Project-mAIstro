@@ -50,6 +50,8 @@ An invariant is **counted** only if all of these hold:
 | 21 | I17 `test_quota_tracker.py` | `recorded_usage_matches_model` | Accumulator adds output tokens into the input bucket, drops a side of the sum, or miscounts requests — store diverges from the machine's independent accumulators | M14: `input_tokens += output_tokens` → **3 failed** |
 | 22 | I5 `test_external_content.py` | `wrapped_output_positions_markers_correctly` (was empty `pass` invariant) | End marker emitted before/instead of the start marker; marker dropped — boundary contract broken | M17: `_START_MARKER`/`_END_MARKER` swapped in the parts list → **2 failed** |
 | 23 | I8 `test_secret_equal.py` | `comparison_true_iff_identical` | Prefix of the secret compares True; case-folded match; always-True (auth bypass) or always-False (lockout) comparison | M18: `b.startswith(a) or compare_digest(...)` → **5 failed** |
+| 24 | I31 `test_invocation_effect_idempotency.py` | `store_matches_model` (independent per-identity outcome model vs the store, after every step) | Service terminalizes a different row than it reported, mints a second COMPLETED row for one admission identity, persists a terminal record without `finished_at`, or widens/narrows an admission identity | M1: foreign non-terminal admission guard dropped → **1 failed**; M2: UNKNOWN retryable in both guard layers → **2 failed**; M3: terminal timestamp dropped → **3 failed**; M4: #1194 logical widening narrowed → **1 failed**; M5: ordinary effects widened to Run scope → **1 failed** |
+| 25 | I31 | `race_duplicate_logical_effect`: two workers racing one fresh logical effect under different NodeRuns cause exactly one provider execution; the loser is blocked or replays the winner's canonical row | Double dispatch of one logical effect (#1194): concurrent retries under new Attempt/NodeRun IDs both reach the provider | caught by M1 (two dispatches, non-canonical rows) and by M4 (two COMPLETED rows for one identity) |
 
 ## Rejected invariants (removed or rewritten; excluded from evidence)
 
@@ -114,3 +116,11 @@ provider/registry/client/cookie/composite/static-key models, I29
   both restores were verified with `git diff --quiet`.
 - Suite inventory: collection is unchanged by this issue (664 nodes before
   and after) — invariant bodies are not collected nodes.
+- I31 (#882) mutates `maistro.capabilities.invocation` in-tree under the
+  same backup → `cp` restore pattern as M5/M6 (the model runs against the
+  installed package, so a PYTHONPATH shadow would not be imported); the
+  restore was verified by SHA-256 against the pre-run bytes. Its M2 is a
+  deliberate compound mutation: the unsafe-retry guard is defense-in-depth
+  (history guard and admission guard), and removing either layer's UNKNOWN
+  handling alone keeps the contract, so the demonstrated mutant is the
+  realistic "UNKNOWN is retryable" simplification that removes both.

@@ -111,7 +111,7 @@ class TestFailClosed:
         with pytest.raises(ManifestRejected, match="missing manifest keys"):
             inspect_manifest(json.dumps(raw).encode())
 
-    @pytest.mark.parametrize("version", [0, 2, "1", None, "1.0"])
+    @pytest.mark.parametrize("version", [0, 2, "1", None, "1.0", True, False])
     def test_unknown_manifest_versions_fail_closed(self, version: object) -> None:
         raw = json.loads(valid_manifest())
         raw["manifest_version"] = version

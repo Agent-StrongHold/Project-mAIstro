@@ -20,15 +20,22 @@ store (#1176). The product path across a forced (SIGKILL) restart — recover,
 execute exactly once on the same Run, idempotent replay — is pinned by
 `packages/maistro-server/tests/test_task_restart_recovery.py`.
 
-What remains limited: the task *receipt* a fresh process serves is still the
-living queue's answer (ADR-018 best-effort rows), so terminal state after a
-restart is read through the canonical Run (`GET /v1/runs/{run_id}`) and
-idempotent resubmission rather than rehydrating every historical receipt
-into memory; and without a database the spine is in-process only, so
-admitted tasks are still lost on restart (`run_store_in_process_only`).
-Wave-level crash recovery (crash-loop quarantine, checkpoint version
-gating) remains [ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s
-orchestrator path.
+What remains limited: task **dispatch** is per-process — a replica's queue runs
+what it admitted or recovered at its own startup, so a queued task waits for
+its accepting replica (or a successor's recovery) rather than being dequeued by
+a peer mid-flight — and the in-memory receipt store holds only this process's
+own tasks. Cross-replica **visibility** is closed (#1690): `GET /v1/tasks/{id}`
+and `GET /v1/tasks/{id}/result` read the shared durable tier (TaskRecord row,
+then canonical Run, projected over both) when the local queue cannot answer,
+and `DELETE /v1/tasks/{id}` cancels through the canonical Run from any replica,
+so behind round-robin a client that creates a task and polls it converges on
+the Run's truth from every replica; a foreign principal gains nothing through
+the durable lookup. Historical receipts for tasks a process never admitted are
+served by projection rather than rehydrated into memory; without a database the
+spine is in-process only, so admitted tasks are still lost on restart
+(`run_store_in_process_only`). Wave-level crash recovery (crash-loop
+quarantine, checkpoint version gating) remains
+[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s orchestrator path.
 
 ### Canvas background job runner
 
@@ -133,23 +140,28 @@ resource mount with negotiated behavior — and the canvas
 `application/vnd.canvas+json;version=2` media-type check stays a canvas-local
 mechanism, distinct from the general scheme.
 
-### Recurring schedules created through the API do not survive a restart
+### Recurring schedules created through the API survive a restart (was: did not)
 
-Recurrence itself is now correct and durable-capable:
+Recurrence is correct and durable:
 [ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)
 replaced the two disagreeing cron matchers with one verified POSIX dialect,
 gave schedules a timezone with explicit DST rules, added catchup and overlap
-policies, and shipped a schedule store with in-memory and SQLite
+policies, and shipped a schedule store with in-memory, SQLite, and PostgreSQL
 implementations held to the same tests. A fired schedule produces a canonical
 Run.
 
-What is **not** closed: Hive's `/v1/schedules` routes still write
-`stores.schedules`, which is in memory. A schedule created through the live
-API is therefore still lost on restart, with no error and no indication to
-the user who created it. The durable store it needs already exists; the
-remaining work is migrating the CRUD path behind the unchanged HTTP contract.
+Closed by #1199: Hive's `/v1/schedules` routes write the canonical
+`ScheduleStore` behind the unchanged HTTP contract (`routes/schedules.py`
+`_write_canonical`), keeping the in-memory `stores.schedules` row only as a
+response projection and a one-time migration source, and the live scheduler
+tick enumerates candidates from `ScheduleStore.due()` rather than the legacy
+dictionary. A schedule created through the live API is durable on every
+deployment whose spine has a database (PostgreSQL or SQLite — the same backend
+order `wire_execution_spine` gives every canonical store); only the
+no-database in-memory POC composition still loses rows, exactly as it loses
+every other store.
 
-Two smaller follow-ups from the same ADR: the Hive schedule row has no
+Two smaller follow-ups from the same ADR remain: the Hive schedule row has no
 timezone column, so recurrence there is evaluated in UTC until one is added,
 and `maistro_schedule_fires_total` / the `schedule.fire` span are not emitted
 yet (Run identity is in the audit trail today).

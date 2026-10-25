@@ -479,3 +479,43 @@ async def test_mcp_server_unknown_server_type() -> None:
     out = await test_mcp_server("mcp-mystery", url="https://elsewhere.com")
     assert out["ok"] is False
     assert "Unknown server type" in out["detail"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost.attacker.example/mcp",
+        "http://127.0.0.1.attacker.example/mcp",
+        "http://localhost@attacker.example/mcp",
+        "http://127.0.0.1@attacker.example/mcp",
+        "http://localhost:80@attacker.example/mcp",
+        "http://localhost:invalid/mcp",
+        "http://localhost:65536/mcp",
+        "http://localhost:0/mcp",
+        "http://localhost\\@attacker.example/mcp",
+        "http://localhost\n.attacker.example/mcp",
+        "http://user@localhost/mcp",
+    ],
+)
+async def test_mcp_server_rejects_deceptive_local_authorities_without_network(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    from services import mcp_client
+
+    def no_network(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("An invalid loopback authority must never open an HTTP client")
+
+    monkeypatch.setattr(mcp_client, "shared_client", no_network)
+    result = await mcp_client.test_mcp_server("mcp-something", url=url)
+    assert result["ok"] is False
+    assert result["detail"] == "Unknown server type"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost/mcp", "http://localhost:9999/mcp", "http://127.0.0.1:9999/mcp"],
+)
+def test_local_mcp_authority_preserves_supported_loopback_urls(url: str) -> None:
+    from services.mcp_client import _is_local_mcp_url
+
+    assert _is_local_mcp_url(url)

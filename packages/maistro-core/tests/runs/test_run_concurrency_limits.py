@@ -119,6 +119,53 @@ def test_owner_decided_ceilings_and_active_statuses() -> None:
     assert {RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING} == ACTIVE_ROOT_STATUSES
 
 
+def test_the_system_ceiling_is_opt_in_and_validated() -> None:
+    """The #1182 `where needed` system ceiling: no global bound until one is
+    configured.
+
+    The owner-decided baselines are 8/32 alone, so the default carries no
+    system ceiling — and a configured one is a real bound, not a zero that
+    would refuse everything.
+    """
+    assert RunConcurrencyLimits().system is None
+    assert RunConcurrencyLimits(system=64).system == 64
+    with pytest.raises(ValueError, match="system ceiling must be positive"):
+        RunConcurrencyLimits(system=0)
+
+
+def test_configured_reads_the_system_ceiling_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator's knob is the one `configured()` enforces."""
+    from maistro.config.settings import get_settings
+
+    monkeypatch.setenv("MAX_ACTIVE_ROOT_RUNS_SYSTEM", "64")
+    get_settings.cache_clear()
+    try:
+        assert RunConcurrencyLimits.configured().system == 64
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["0", "-3"],
+    ids=["zero", "negative"],
+)
+def test_a_non_positive_system_ceiling_is_refused_at_settings(
+    invalid: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A system ceiling of zero admits nothing and cannot be a typo that
+    silently disables every submit surface."""
+    from pydantic import ValidationError
+
+    from maistro.config.settings import Settings
+
+    monkeypatch.setenv("MAX_ACTIVE_ROOT_RUNS_SYSTEM", invalid)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 async def test_ninth_active_root_run_for_one_principal_is_refused(spine: _Spine) -> None:
     w1, _ = _workspaces(spine)
     for _ in range(8):
@@ -305,6 +352,140 @@ async def test_the_spine_wiring_enforces_the_configured_settings(
         get_settings.cache_clear()
         if conn is not None:
             await conn.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_the_spine_wiring_enforces_the_configured_system_ceiling(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The system ceiling rides the same shipped wiring and the same
+    authority: one knob, no second admission path."""
+    from maistro.config.settings import get_settings
+    from maistro.runs.wiring import wire_execution_spine
+
+    monkeypatch.setenv("MAX_ACTIVE_ROOT_RUNS_SYSTEM", "2")
+    get_settings.cache_clear()
+    conn = await aiosqlite.connect(":memory:") if backend == "sqlite" else None
+    try:
+        projects, runs, *_rest = await wire_execution_spine(conn, workspace_id="w1")
+        root = await projects.root_for_workspace("w1")
+        wired = _Spine(runs, {"w1": root.project_id})
+        await wired.root("w1", "alice")
+        await wired.root("w1", "bob")
+        with pytest.raises(RunConcurrencyExceeded) as refused:
+            await wired.root("w1", "carol")
+        assert (refused.value.scope, refused.value.limit) == ("system", 2)
+    finally:
+        get_settings.cache_clear()
+        if conn is not None:
+            await conn.close()
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def system_spine(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIterator[Any]:
+    """A spine factory with caller-chosen limits, on each backend.
+
+    The default `spine` fixture pins the owner-decided 8/32; these tests need
+    a configured system ceiling instead, so this fixture yields an async
+    `limits -> _Spine` builder. Build once per test: the PostgreSQL builds
+    share one pool and therefore one `canonical_runs` table, so a second
+    build sees the first's rows.
+    """
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.consumer_claim import (
+        ClaimingInMemoryRunStore,
+        ClaimingPgRunStore,
+        ClaimingSqliteRunStore,
+    )
+
+    suffix = uuid4().hex[:8]
+    workspaces = (f"w1-{suffix}", f"w2-{suffix}")
+    connections: list[aiosqlite.Connection] = []
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+
+        scope_store = PgProjectScopeStore(pg_pool)
+    else:
+        scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, workspaces)
+
+    async def build(limits: RunConcurrencyLimits) -> _Spine:
+        if request.param == "postgres":
+            return _Spine(
+                ClaimingPgRunStore(pg_pool, project_store=scope_store, concurrency_limits=limits),
+                projects,
+            )
+        if request.param == "memory":
+            return _Spine(
+                ClaimingInMemoryRunStore(project_store=scope_store, concurrency_limits=limits),
+                projects,
+            )
+        conn = await aiosqlite.connect(":memory:")
+        connections.append(conn)
+        store = ClaimingSqliteRunStore(conn, project_store=scope_store, concurrency_limits=limits)
+        await store.ensure_schema()
+        return _Spine(store, projects)
+
+    yield build
+    for conn in connections:
+        await conn.close()
+
+
+async def test_the_system_ceiling_spans_workspaces_and_principals(
+    system_spine: Any,
+) -> None:
+    """A system ceiling is the one bound a fresh Workspace and a fresh
+    principal cannot sidestep: it counts active root Runs everywhere."""
+    spine = await system_spine(RunConcurrencyLimits(system=3))
+    w1, w2 = _workspaces(spine)
+    await spine.root(w1, "alice")
+    await spine.root(w1, "bob")
+    await spine.root(w2, "carol")
+
+    with pytest.raises(RunConcurrencyExceeded) as refused:
+        await spine.root(w2, "dan")
+
+    assert (refused.value.scope, refused.value.limit, refused.value.active) == ("system", 3, 3)
+
+
+async def test_terminalizing_a_run_frees_its_system_slot(system_spine: Any) -> None:
+    """The system slot is held by the same active-root statuses, so a
+    cancellation releases it deterministically."""
+    spine = await system_spine(RunConcurrencyLimits(system=2))
+    w1, w2 = _workspaces(spine)
+    first = await spine.root(w1, "alice")
+    await spine.root(w2, "bob")
+    with pytest.raises(RunConcurrencyExceeded, match="system"):
+        await spine.root(w1, "carol")
+
+    await spine.move(first.run_id, RunStatus.CANCELLED)
+
+    admitted = await spine.root(w1, "carol")
+    assert admitted.status is RunStatus.QUEUED
+    with pytest.raises(RunConcurrencyExceeded, match="system"):
+        await spine.root(w2, "erin")
+
+
+async def test_concurrent_admission_holds_the_system_ceiling(system_spine: Any) -> None:
+    """Concurrent submits across two Workspaces admit exactly the ceiling.
+
+    On PostgreSQL this is the serialized path: every admission takes the
+    system advisory lock before its count, so even admissions into unrelated
+    Workspaces cannot both see room for the last slot."""
+    spine = await system_spine(RunConcurrencyLimits(system=4))
+    w1, w2 = _workspaces(spine)
+    outcomes = await asyncio.gather(
+        *(spine.root(w1 if index % 2 else w2, f"user-{index}") for index in range(12)),
+        return_exceptions=True,
+    )
+
+    admitted = [item for item in outcomes if not isinstance(item, BaseException)]
+    refusals = [item for item in outcomes if isinstance(item, RunConcurrencyExceeded)]
+    assert len(admitted) == 4
+    assert len(refusals) == 8
+    assert all(item.scope == "system" for item in refusals)
 
 
 def _occurrence(scheduled_for: str) -> dict[str, str]:

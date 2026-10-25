@@ -30,3 +30,7 @@ class CodeRefUnresolved(Exception):
 
 class InvalidSignature(Exception):
     pass
+
+
+class CodeEntryConflict(Exception):
+    """A ref already has a different, host-approved code body."""
