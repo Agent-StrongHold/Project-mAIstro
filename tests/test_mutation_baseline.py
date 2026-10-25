@@ -59,7 +59,7 @@ def test_unbaselined_source_below_the_global_floor_now_fails(
     )
 
     assert module.main([str(rows), "--baseline", str(baseline)]) == 1
-    assert "below required 90.0%" in capsys.readouterr().err
+    assert "below required floor" in capsys.readouterr().err
 
 
 def test_unbaselined_source_clearing_the_floor_passes(
@@ -133,3 +133,12 @@ def test_skipped_rows_never_enter_the_denominator(module, tmp_path: Path) -> Non
     rows.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert module.scores(rows) == {"packages/example.py": (1, 2)}
+
+
+def test_ci_error_annotation_strips_non_allowlisted_characters(module) -> None:
+    raw = "packages/example.py: 0.0% below required floor"
+    annotated = module._ci_error_annotation(raw)
+    assert annotated.startswith("::error::")
+    assert "packages/example.py" in annotated
+    assert "below required floor" in annotated
+    assert module._ci_error_annotation("a\nb\rc") == "::error::a?b?c"

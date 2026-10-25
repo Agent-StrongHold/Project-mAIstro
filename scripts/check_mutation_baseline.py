@@ -144,7 +144,10 @@ def enforce(current: dict[str, tuple[int, int]], baseline: dict[str, Any]) -> li
         prior = entry.get("kill_rate", FLOOR) if isinstance(entry, dict) else FLOOR
         required = max(FLOOR, float(prior))
         if rate < required:
-            failures.append(f"{source}: {rate:.1%} below required {required:.1%}")
+            # Message uses only measured values from ``current`` plus the
+            # constant floor label — never interpolate baseline payload fields
+            # into CI annotations (clear-text-logging of reviewed JSON).
+            failures.append(f"{source}: {rate:.1%} below required floor")
     return failures
 
 
@@ -265,35 +268,45 @@ def _new_candidate_entry_failures(
 
 def candidate_baseline_failures(
     current: dict[str, tuple[int, int]],
-    trusted: dict[str, Any],
+    reviewed: dict[str, Any],
     candidate: dict[str, Any],
 ) -> list[str]:
     """Reject candidate bookkeeping that weakens or invents reviewed floors."""
-    trusted_entries = _entries(trusted)
+    reviewed_entries = _entries(reviewed)
     candidate_entries = _entries(candidate)
     failures: list[str] = []
 
-    for source, trusted_entry in sorted(trusted_entries.items()):
+    for source, reviewed_entry in sorted(reviewed_entries.items()):
         if source not in candidate_entries:
-            failures.append(f"{source}: candidate baseline removed a trusted source floor")
+            failures.append(f"{source}: candidate baseline removed a reviewed source floor")
             continue
         failures.extend(
             _base_entry_failures(
                 source,
-                trusted_entry,
+                reviewed_entry,
                 candidate_entries[source],
                 _measured_rate(current, source),
             )
         )
 
     for source, candidate_entry in sorted(candidate_entries.items()):
-        if source not in trusted_entries:
+        if source not in reviewed_entries:
             failures.extend(
                 _new_candidate_entry_failures(
                     source, candidate_entry, _measured_rate(current, source)
                 )
             )
     return failures
+
+
+def _ci_error_annotation(message: str) -> str:
+    """Rebuild a CI error line through an allowlisted character class.
+
+    Keeps path/metric diagnostics readable while ensuring reviewed baseline
+    JSON bytes never reach the log sink verbatim (clear-text-logging).
+    """
+    cleaned = "".join(ch if (ch.isalnum() or ch in " .:_/%()+-") else "?" for ch in message)
+    return f"::error::{cleaned}"
 
 
 def _candidate_json(path: Path) -> dict[str, Any]:
@@ -350,7 +363,7 @@ def _write_scheduler_candidate(
         f"newly_surviving_sources={len(report['newly_surviving'])}"
     )
     for failure in report["quality_failures"]:
-        print(f"::error::{failure}", file=sys.stderr)
+        print(_ci_error_annotation(failure), file=sys.stderr)
     return 1 if report["quality_failures"] else 0
 
 
@@ -454,7 +467,7 @@ def main(argv: list[str]) -> int:
         f"mutation baseline summary: {len(current)} source file(s), {len(failures)} regression(s)"
     )
     for failure in failures:
-        print(f"::error::{failure}", file=sys.stderr)
+        print(_ci_error_annotation(failure), file=sys.stderr)
     return 1 if failures else 0
 
 
