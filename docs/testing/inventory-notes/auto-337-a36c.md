@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +8
-  tests/: +1
 ---
 # auto-337-a36c
 
@@ -80,6 +79,21 @@ tests removed rather than doubled:
 35 gate tests pass at the merged head; this note's `tests/` delta drops
 from +3 to +1 (the surviving parse test). The hive-backend `+8` is
 untouched by the sync.
+
+`tests/: +1` delta was carried by
+`test_parse_expected_keeps_every_entry_of_a_forked_conditional_name`, whose
+whole point was the required pin (`fastapi==0.142.2`) beside the forked
+name. The `db1885b44` develop sync replaced it in place with
+test_parse_expected_keeps_every_marker_forked_variant_of_a_name — the
+same fixture (required pin beside the fork, now with hash-continuation
+lines) and the same two assertions (`required == {fastapi==0.142.2}`;
+`conditional ==` both beartype variants) — so the unique coverage this
+note counted is now develop's own test, counted by develop's
+`93-image-lock-gate-marker-forks` delta, and keeping this note's `+1`
+would double-count a node that no longer exists. The note's `tests/`
+delta is therefore dropped to nothing (the block keeps only the hive
+backend `+8`, untouched by the sync); 45 gate tests collect at the
+merged head, matching the recorded expectation.
 
 ## Develop sync (base `f956a8142`): twin split-resolution fixes reconciled
 
