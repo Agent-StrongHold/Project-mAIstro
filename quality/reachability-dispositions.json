@@ -164,16 +164,6 @@
       ]
     },
     {
-      "id": "classifier-logging",
-      "subsystem": "Router and classifier",
-      "disposition": "CONNECT",
-      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
-      "root": "maistro.classifier.engine",
-      "modules": [
-        "maistro.classifier.logging"
-      ]
-    },
-    {
       "id": "sessions-search",
       "subsystem": "Sessions",
       "disposition": "CONNECT",
