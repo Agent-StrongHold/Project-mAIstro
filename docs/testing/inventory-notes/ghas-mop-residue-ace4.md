@@ -12,3 +12,5 @@ the queued self-hosted runner matrix.
   SARIF uploads (noise roots out of DevSkim allowlist; CodeQL tip already
   holds path/stack-trace/re.escape/`isSafeObjectKey` fixes +
   `**/third_party/**` paths-ignore for BFCL ReDoS).
+
+- Add `workflow_dispatch` to DevSkim so a cancelled tip analysis can be re-uploaded without another product commit.
