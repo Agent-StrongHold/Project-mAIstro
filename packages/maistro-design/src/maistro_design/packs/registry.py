@@ -11,7 +11,9 @@ pack so no pack can grow product identity through its listing.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from importlib import resources
+from pathlib import Path as _Path
 from typing import Any
 
 import yaml
@@ -121,3 +123,142 @@ def parse_manifest(pack_id: PackId, text: str) -> DomainPack:
         raise PackManifestError(
             f"manifest for pack {pack_id.value!r} does not satisfy the pack contract: {exc}"
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Legacy/open-cohort pack registry (issue #1619 / #1614). Distinct from the
+# M7-A4 YAML PackRegistry above: loads the in-repo JSON catalogs under
+# ``packs/catalog/`` (8 packs: book, game, interactive, novel, product,
+# small_business, training_program, website) and binds them onto a Goal
+# without owning Goal identity. Retained for the open pack cohort scenario
+# and ``test_domain_packs.py``.
+# ---------------------------------------------------------------------------
+
+
+LEGACY_REQUIRED_FIELDS = (
+    "pack_id",
+    "graph_template",
+    "rubric_dimensions",
+    "backends",
+    "artifact_kinds",
+    "fence_points",
+)
+
+LEGACY_FORBIDDEN_BACKENDS_AS_PACK = frozenset({"canvas", "atelier", "design_run"})
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyRubricDimension:
+    id: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyDomainPack:
+    pack_id: str
+    graph_template: str
+    rubric_dimensions: tuple[_LegacyRubricDimension, ...]
+    backends: tuple[str, ...]
+    artifact_kinds: tuple[str, ...]
+    fence_points: tuple[str, ...]
+    run_identity: str = field(default="canonical")
+
+    def binds_goal(self, goal_id: str) -> dict[str, object]:
+        return {
+            "goal_id": goal_id,
+            "pack_id": self.pack_id,
+            "run_identity": self.run_identity,
+            "rubric_dimension_ids": [d.id for d in self.rubric_dimensions],
+            "graph_template": self.graph_template,
+        }
+
+
+class PackContractError(ValueError):
+    """Pack is missing a required contract field or tries to be a product."""
+
+
+def bundled_pack_dir() -> _Path:
+    return _Path(__file__).resolve().parent / "catalog"
+
+
+def _require_contract_fields(raw: dict[str, object]) -> str:
+    """Check the extension rule and return the pack id it declares.
+
+    A pack must declare every required field (notably a graph template and a
+    rubric catalog) and must never claim a backend name: `canvas`, `atelier`,
+    and `design_run` are backends, not pack ids. All packs share the one
+    canonical Run identity.
+    """
+    missing = [name for name in LEGACY_REQUIRED_FIELDS if not raw.get(name)]
+    if missing:
+        raise PackContractError(f"pack missing required fields: {missing}")
+    pack_id = str(raw["pack_id"])
+    if pack_id in LEGACY_FORBIDDEN_BACKENDS_AS_PACK:
+        raise PackContractError(f"{pack_id} is a backend, not a pack_id")
+    if raw.get("run_identity", "canonical") != "canonical":
+        raise PackContractError("packs must share canonical Run identity")
+    return pack_id
+
+
+def _rubric_dimensions(raw: dict[str, object]) -> tuple[_LegacyRubricDimension, ...]:
+    """Parse the manifest's rubric catalog; an empty catalog is a contract error."""
+    dims_raw = raw["rubric_dimensions"]
+    entries = dims_raw if isinstance(dims_raw, list) else []
+    dims = tuple(
+        _LegacyRubricDimension(id=str(d["id"]), label=str(d["label"]))
+        for d in entries
+        if isinstance(d, dict)
+    )
+    if not dims:
+        raise PackContractError("pack must declare a rubric catalog")
+    return dims
+
+
+def _as_pack(raw: dict[str, object]) -> _LegacyDomainPack:
+    pack_id = _require_contract_fields(raw)
+    return _LegacyDomainPack(
+        pack_id=pack_id,
+        graph_template=str(raw["graph_template"]),
+        rubric_dimensions=_rubric_dimensions(raw),
+        backends=tuple(str(x) for x in raw["backends"]),  # type: ignore
+        artifact_kinds=tuple(str(x) for x in raw["artifact_kinds"]),  # type: ignore
+        fence_points=tuple(str(x) for x in raw["fence_points"]),  # type: ignore
+        run_identity=str(raw.get("run_identity", "canonical")),
+    )
+
+
+class DomainPackRegistry:
+    def __init__(self) -> None:
+        self._packs: dict[str, _LegacyDomainPack] = {}
+
+    def register(self, pack: _LegacyDomainPack) -> None:
+        self._packs[pack.pack_id] = pack
+
+    def load_file(self, path: _Path) -> _LegacyDomainPack:
+        import json as _json
+
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise PackContractError(f"{path} is not a pack object")
+        pack = _as_pack(raw)
+        self.register(pack)
+        return pack
+
+    def get(self, pack_id: str) -> _LegacyDomainPack:
+        try:
+            return self._packs[pack_id]
+        except KeyError as exc:
+            raise PackContractError(f"unknown pack: {pack_id}") from exc
+
+    def ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._packs))
+
+    def bind(self, pack_id: str, goal_id: str) -> dict[str, object]:
+        return self.get(pack_id).binds_goal(goal_id)
+
+
+def load_bundled_packs() -> DomainPackRegistry:
+    registry = DomainPackRegistry()
+    for path in sorted(bundled_pack_dir().glob("*.json")):
+        registry.load_file(path)
+    return registry
