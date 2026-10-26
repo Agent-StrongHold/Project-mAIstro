@@ -179,3 +179,73 @@ changes (tree was already clean, head unchanged). Executed evidence:
   run's `RuntimeError('Event loop is closed')` aiosqlite thread lines are
   warnings-summary noise and cannot fail a pytest step; the only real failure at
   `bc9bd8b` was the suite-inventory drift step, resolved by the sync.
+
+## 6. Develop sync to `f52b8522` (round at head `12f227d74`, job `8f4c9a1737c74446b0e8971ecce0761b`)
+
+The branch was re-synced onto `origin/develop f52b8522be60` as merge commit
+`12f227d74` (parents `e53006506` / `f52b8522`), with no conflicts: the auto-49
+side is the same seven files as before (`REPAIR-NOTES-...`,
+`docs/architecture/CONVERGENCE-MATRIX.md`,
+`docs/testing/inventory-notes/49-builders-canonical-cutover.md`,
+`packages/maistro-core/src/maistro/builders/{dag,pipeline}.py`,
+`tests/cross_product_parity/{harness,test_cross_product_parity}.py`).
+`git diff --stat f52b8522..HEAD` for `CHANGELOG.md VERSION docs/ci/
+.github/workflows/ quality/workflow-inventory.json .github/branch-protection.json`
+is empty.
+
+In-scope gates re-executed at `12f227d74` (all green):
+
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact args) — base `f52b8522be60`,
+  **1256 reviewed identities == 1256 findings, rc=0**; no ledger amendment
+  needed.
+- `scripts/check-suite-inventory.py` (CI env `REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1`) — **ok: 21 suite(s) match**; `tests/` collects 6038 ==
+  baseline. The `bc9bd8b` `DRIFT tests/: expected 5888, collected 5889` is gone
+  and stays gone at the newer develop tip.
+- `scripts/check-convergence-matrix.py` — OK, 52 subsystems / 1477 modules.
+- `scripts/check-reachability.py` — rc=0, 104 unreachable, **zero builders
+  modules** in `quality/reachability-baseline.json`.
+- `scripts/check-test-duplicates.py` — ok.
+- `uv run pytest packages/maistro-core/tests/builders -q` — **203 passed,
+  1 xfailed** (incl. `test_canonical_adapter_is_public_and_executor_names_are_not_exported`,
+  `test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback`,
+  `test_revision_dominates_a_concurrent_wave_after_it_settles`).
+- `uv run pytest tests/cross_product_parity -q` — **26 passed**.
+- `MAISTRO_PARITY_STRICT=1 uv run pytest tests/cross_product_parity -q` —
+  **20 passed, 6 failed**; the two Builders strict tests
+  (`test_builders_created_work_has_public_conductor_inspection_seams`,
+  `test_builders_required_scenario_emits_strict_closeout_evidence`) PASS; the
+  6 are `ScenarioAbstained`/`DependencyUnavailable` guards naming open
+  #231 (schedule x2), #51 (evolve x2), #463 (golden x2) — outside this lane.
+- `uv run ruff check .` / `ruff format --check .` — clean (matches the driver's
+  check-1/check-2 logs).
+
+### The `test` job's remaining red is develop-side, not this branch
+
+The `test` job's cross-suite step
+(`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60`) is red for **7 develop-side
+tests** at this head: 10649 passed, 169 skipped, 7 failed.
+
+- `tests/test_check_workflow_inventory.py` (3) — devskim declared triggers omit
+  `workflow_dispatch` (`quality/workflow-inventory.json` vs `.github/workflows/devskim.yml`).
+- `tests/test_check_branch_protection.py` (2) — `docs/ci/BRANCH-PROTECTION.md`
+  disagrees with `.github/branch-protection.json`.
+- `tests/test_check_release_consistency.py` (1) — CHANGELOG Unreleased entry
+  link format.
+- `tests/test_check_required_checks.py` (1) — `docs/ci/REQUIRED-CHECKS.md`
+  disagrees with the workflows.
+
+Proof these are inherited, not introduced by auto-49: `git diff f52b8522..HEAD`
+for `CHANGELOG.md VERSION docs/ci/ .github/workflows/ quality/workflow-inventory.json
+.github/branch-protection.json` is **empty**, and the identical 7 tests fail in a
+detached worktree checked out at `f52b8522`
+(`git worktree add --detach /tmp/devcheck-f52b f52b8522be60`): **7 failed, 207
+passed**. The devskim workflow-inventory finding was already triaged as
+pre-existing develop drift by another lane's verifier note in the events log
+(auto-80 #1450 round 35), and the campaign runs a dedicated
+`fix(ci): repair merge-queue root failures inherited from develop` lane (commit
+`c0de52e5f`). Editing `quality/workflow-inventory.json` is a ledger edit
+prohibited for this lane, so no fix is made here. The `test` job's red is
+blocked on develop, not on this branch's #49 acceptance.
