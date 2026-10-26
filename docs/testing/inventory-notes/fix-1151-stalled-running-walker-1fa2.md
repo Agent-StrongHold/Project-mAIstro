@@ -96,3 +96,37 @@ a real PostgreSQL 18 (pgvector, migrated to head):
   1253 reviewed identities -> 1253 findings (no unbanked debt);
   `check-release-consistency`, `check-retired-guidance` and
   `check-workflow-inventory` all clean.
+
+## Verification record (2026-10-26 develop-sync round)
+
+Re-executed after merging origin/develop (`10f872fa7`, admission replay
+generations) into the branch; the only conflict was the CodeQL CHANGELOG line,
+resolved to develop's wording (`#2359; follow-up to #2357`), which supersedes
+the branch's own `#2359` edit. `canonical_store.py` remains byte-identical to
+develop's (verified by diff against the develop tip). All PostgreSQL legs ran
+against a fresh `pgvector/pgvector:pg18` container migrated to head
+(`alembic upgrade head`):
+
+- `test_cross_store_crash_reconciliation.py`: **72 passed, 0 skipped** (all
+  three legs; the six cases above hold against the `PgGraphContinuationStore`
+  SQL on PostgreSQL 18).
+- `tests/graph/durable_runs/` whole directory: **811 passed, 4 xfailed**.
+- `tests/runs/test_pg_spine_crash_windows.py`: **16 passed** — the durable
+  canonical-spine proof still green on the merged tree.
+- `test_canonical_durable_store.py`: 16 passed, 4 xfailed, none xpassed.
+- Guard sabotage re-proven from a `/tmp` pytest plugin (no repo edit), each on
+  all three store legs: forcing `_spine_is_quiet` true fails
+  `test_a_walk_whose_spine_just_moved_is_left_to_its_walker`; making
+  `_reconcile_stalled_active_frontier` a no-op fails
+  `test_the_repair_gives_an_elapsed_claim_and_is_idempotent`; forcing
+  `has_live_execution_lease` true fails
+  `test_a_walker_that_died_inside_a_later_node_is_recovered_once_its_lease
+  _lapses`.
+- Gates: `ruff check` / `ruff format --check` clean; `mypy --strict` over all
+  seven `packages/*/src` trees clean (953 files); `check-suite-inventory` 21
+  suite(s) match; `check-vulture-baseline` (CI's exact arguments) now reports
+  **1248 reviewed identities -> 1248 findings, exit 0** — develop's
+  `#2169`/`#2287` commits removed banked dead identities, lowering the count
+  from the 1253 recorded above; the ledger still matches the scan with no
+  unbanked debt. `check-release-consistency`, `check-retired-guidance` and
+  `check-workflow-inventory` all clean.
