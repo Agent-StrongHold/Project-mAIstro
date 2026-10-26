@@ -54,3 +54,36 @@ mutation-critical file changed (mirror `PATH_SCOPED_CHECKS` with a `mutation`
 leg in `scripts/ci_merge_group_scope.py`), or (b) give mutation.yml a
 `merge_group` trigger and drop the `paths:` filter, exactly as its own
 branch-protection note prescribes before requiring it.
+
+## Coverage gate re-proven at head 99eda89ee (2026-10-26, verified round)
+
+The cancelled CI run (job 121397566077, run 40240833368) never reported a gate
+failure — it died to runner/agent budget exhaustion. The gate was re-proven
+locally at the current head, after the two develop syncs (cbfa25c94, 99eda89ee
+bringing develop to 78133c093), with CI's exact commands and base:
+
+- Root producer, exact `quality.yml` argv: `coverage run --append --branch
+  --source=scripts -m pytest tests/ tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30
+  -q` → 6098 passed / 139 skipped / 0 failed in 11m10s (RATCHET_BASE_REV set,
+  as a PR run would).
+- `coverage xml` then `scripts/check-diff-coverage.py coverage.xml --base
+  78133c093e0a5cd0d2a7e8538afa703521c70d07` → exit 0: 9 changed
+  `scripts/pi_recovery` modules measured, all ≥90% lines / ≥80% branch arcs;
+  the 6 `tests/pi_recovery` files are exempt as evidence, by declaration.
+- Publish-set floor (87%): structurally unaffected — `git diff --stat
+  78133c093..HEAD -- packages/` is empty, and the floor is evaluated in the
+  combine step before any scripts-producer data joins, from the three upstream
+  producers whose measured trees are byte-identical to the base.
+- `scripts/check-suite-inventory.py` → ok, 21 suites, `tests/: 6215` and root
+  collection reproduces exactly 6215 (+177 = +85 `pi-foremen-recovery` + +92
+  `pi-foremen-recovery-coverage`).
+- Vulture ledger with CI's exact argv → 1253 reviewed identities = 1253
+  findings, base resolved to 78133c093. Ruff check/format, check-test-duplicates
+  and `tests/test_check_diff_coverage.py` (18) all green; `systemd-analyze
+  --user verify` clean on all four shipped unit templates; `pytest
+  tests/pi_recovery` 177 passed + 32 subtests in 2.1s.
+
+No tree change was required this round: the repair of record remains 40ada5e6e
+(92 offline cases), which survives both develop syncs. The only red surface is
+still the default-branch `gates-ran` evaluator trap documented above.
