@@ -476,9 +476,7 @@ class DurableRunExecutionStore:
                 if attempt.attempt_id != attempt_id:
                     continue
                 self._validate_fence(attempt, fencing_token)
-                settled = compensate_unlaunched_attempt(
-                    attempt, at=at, result=result, error=error
-                )
+                settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
                 attempts[index] = settled
                 return record.model_copy(update={"attempts": tuple(attempts)})
             raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
