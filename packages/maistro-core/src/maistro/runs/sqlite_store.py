@@ -20,6 +20,7 @@ from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     refuse_completion_under_terminal_run,
@@ -1566,6 +1567,29 @@ class SqliteRunStore:
             if not lease_is_expired(attempt, moment):
                 return None
             settled = reclaim_attempt(attempt, at=moment)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
             await self._update_payload(
                 "canonical_attempts",
                 "attempt_id",

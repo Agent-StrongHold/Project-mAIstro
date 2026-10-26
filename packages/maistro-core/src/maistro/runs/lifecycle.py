@@ -479,6 +479,53 @@ def reclaim_attempt(attempt: Attempt, *, at: datetime | None = None) -> Attempt:
     return Attempt.model_validate(values)
 
 
+def compensate_unlaunched_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    result: object | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle the executor's own CREATED prelaunch failure as CANCELLED+RECOVERED (#2369).
+
+    Third authorized RECOVERED writer (#232 P2d): only CREATED with
+    ``started_at is None`` and no prior ``cancellation_cause``. This is
+    compensation for work that never launched — not a death inference and not
+    a requested stop. RUNNING, already-terminal, launched (``started_at`` set),
+    or already-caused rows are refused so a race winner's cause is never
+    rewritten. Generic ``transition_attempt`` still must not accept
+    ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status is not AttemptStatus.CREATED:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); prelaunch compensation requires CREATED"
+        )
+    if attempt.started_at is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} after it started; "
+            "started_at marks a launched Attempt outside the prelaunch leaf"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result if result is None else result,
+        error=error,
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
 #:
 #: Not the Run's own terminal status. The node did not succeed, fail or time
@@ -587,6 +634,7 @@ __all__ = [
     "UnearnedRunCompletion",
     "cascaded_node_run_error",
     "check_completion_is_earned",
+    "compensate_unlaunched_attempt",
     "is_reclaimed_attempt",
     "latest_node_runs",
     "lease_is_expired",
