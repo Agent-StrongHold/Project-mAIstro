@@ -1,0 +1,123 @@
+{
+  "schema": "m3a860.production-sustained-round/v1",
+  "round": "B (corrected client; production-limit-aware profile)",
+  "captured_at": "2026-10-06T11:26:03.401151+00:00",
+  "finished_at": "2026-10-06T11:33:33.662981+00:00",
+  "hashes": {
+    "git_head": "88edcc7ea03baf4257a9edfb47e56a5493d6d329",
+    "server_1_image_id": "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+    "server_2_image_id": "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102",
+    "compose_config_sha256_no_interpolate": "7c1bcdbbf0118980ccd967f9618fa673f7b78dadd6c208b226af5af7f3658694"
+  },
+  "profile": {
+    "window_s": 360.0,
+    "offered_rps": {
+      "health_ready": 0.3,
+      "health_live": 14.0,
+      "task_submit": 0.8,
+      "run_get": 0.4,
+      "metrics_unauth": 1.5
+    },
+    "authd_share": "1.5 rps = 90/min principal 'soak' vs 2x60/min production budget",
+    "model_calls": "fail fast (no provider keys in environment) -> circuit opens -> tasks terminalize failed; recorded degraded-path class"
+  },
+  "kill_window": {
+    "mode": "SIGTERM drain (docker restart -t 20)",
+    "events": [
+      {
+        "t": 144.0,
+        "event": "replica_2 SIGTERM-drain restart begin (docker restart -t 20)"
+      },
+      {
+        "t": 147.5,
+        "event": "replica_2 restart done: m3a860-maistro-server-2-1"
+      }
+    ]
+  },
+  "totals": {
+    "counts": {
+      "health_live": 2160,
+      "metrics_unauth": 240,
+      "health_ready": 61,
+      "run_get": 117,
+      "task_submit": 177
+    },
+    "status_by_kind": {
+      "health_live|200": 2160,
+      "health_ready|503": 61,
+      "metrics_unauth|401": 240,
+      "run_get|404": 117,
+      "task_submit|202": 177
+    },
+    "client_transport_errors": 0
+  },
+  "latency_ms": {
+    "p50": {
+      "health_live": 3.68,
+      "metrics_unauth": 4.04,
+      "health_ready": 45.15,
+      "run_get": 8.31,
+      "task_submit": 16.66
+    },
+    "p95": {
+      "health_live": 5.16,
+      "metrics_unauth": 31.0,
+      "health_ready": 66.31,
+      "run_get": 36.57,
+      "task_submit": 38.22
+    }
+  },
+  "spine_audit_after_settle": {
+    "admitted_distinct_run_ids": 177,
+    "admitted_runs_by_status": "failed|177",
+    "duplicate_run_rows": "0",
+    "whole_spine_by_status": "failed|661"
+  },
+  "resource_trend": {
+    "srv1": {
+      "rss_first": "124.7MiB",
+      "rss_last": "125MiB",
+      "fds_first": 22,
+      "fds_last": 21,
+      "procs": "4->4"
+    },
+    "srv2": {
+      "rss_first": "117.1MiB",
+      "rss_last": "117.1MiB",
+      "fds_first": 20,
+      "fds_last": 21,
+      "procs": "4->5"
+    },
+    "pg": {
+      "sessions": "12->13",
+      "waiting_locks": 0,
+      "replication_rows": 1,
+      "replica_in_recovery": true
+    },
+    "restart_window_samples": [
+      {
+        "t": 144.1,
+        "srv2": "down (17.27MiB, 7 fds) \u2014 restarting"
+      },
+      {
+        "t": 150.1,
+        "srv2": "serving again (113.8MiB, 20 fds)"
+      },
+      {
+        "t": 156.1,
+        "srv2": "114.3MiB, 20 fds"
+      }
+    ]
+  },
+  "outcome_summary": {
+    "requests": 2755,
+    "client_transport_errors": 0,
+    "task_admission": "177/177 submitted runs admitted (202), every receipt carried a run_id",
+    "exactly_once_across_restart": "all 177 admitted run_ids present exactly once in canonical_runs after the 90 s settle (duplicate_run_rows=0); all terminal (failed \u2014 model gateway unavailable in this environment); whole spine 661 rows, 0 non-terminal",
+    "kill_failover": "replica 2 SIGTERM-drain restart at t=144 (3.5 s); load continued through the LB with zero errors; replica rejoined and served by t<=150",
+    "rate_limiting": "zero 429s at production-limit-aware auth'd share (1.5 rps); unauth health/metrics exempt/gated as designed (metrics 401)",
+    "readiness": "503 degraded throughout \u2014 LLM circuit open from failing model calls (no provider keys in this environment); deliberate #365/#1567 semantics",
+    "resource_stability": "RSS/FD/process counts flat on both replicas; PG sessions 12-13, no waiting locks; streaming replication intact"
+  },
+  "promotion_disclaimer": "observation window 360 s << 14400 s minimum; NOT promotion evidence; sustain_duration and exact_rc_artifact remain failing gates for the harness"
+}

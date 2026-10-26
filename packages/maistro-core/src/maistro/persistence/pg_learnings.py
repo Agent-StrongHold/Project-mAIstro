@@ -163,6 +163,20 @@ def similarity_query(
     )
 
 
+#: Fence for the belt-and-braces schema DDL below, in the style of
+#: `events.pg_envelope._SCHEMA_LOCK_KEY` ("mae1") and
+#: `events.pg_stores._SCHEMA_LOCK_KEY` ("mais"). `CREATE INDEX IF NOT EXISTS`'s
+#: existence check and the insert into `pg_class` are not atomic across
+#: processes: two replicas booting against the same database can both pass the
+#: check and one dies with a duplicate key on `pg_class_relname_nsp_index`
+#: (observed live on pgvector/pg18 during the #860 two-replica concurrent
+#: boot). Taking a transaction-scoped advisory lock first makes the
+#: check-then-create sequence a critical section, so the loser waits and then
+#: sees the index already there. Key is distinct from every other advisory
+#: user in the repo: "mael" = 0x6D61656C.
+_SCHEMA_LOCK_KEY = 0x6D61_656C  # "mael"
+
+
 class PgLearningStore:
     """PostgreSQL-backed learning store.
 
@@ -192,8 +206,14 @@ class PgLearningStore:
         Failing loudly on a missing scope column is the right direction for a
         filter whose absence is a cross-scope read — but the migration is what
         should be relied on, not this.
+
+        The whole upgrade runs inside one transaction guarded by a
+        transaction-scoped advisory lock: concurrently booting replicas
+        serialize here instead of racing `CREATE INDEX IF NOT EXISTS`'s
+        non-atomic check-then-create into a duplicate-key crash (#860 F7).
         """
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
             await conn.execute(
                 "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''"
             )

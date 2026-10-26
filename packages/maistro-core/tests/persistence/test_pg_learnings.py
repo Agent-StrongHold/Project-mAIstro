@@ -19,6 +19,7 @@ from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 from maistro.observability.correlation import bind_execution_context
 from maistro.persistence.pg_learnings import (
     _PG_INSERT_FIELDS,
+    _SCHEMA_LOCK_KEY,
     PgLearningStore,
     similarity_query,
 )
@@ -45,6 +46,7 @@ class FakeConnection:
 
     def __init__(self) -> None:
         self.calls: list[Call] = []
+        self.transactions: list[_TransactionCtx] = []
         self._fetch_results: list[list[FakeRecord]] = []
         self._fetchrow_results: list[FakeRecord | None] = []
         self._execute_results: list[str] = []
@@ -69,6 +71,26 @@ class FakeConnection:
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
         return self._execute_results.pop(0) if self._execute_results else "OK"
+
+    def transaction(self) -> _TransactionCtx:
+        """Record the transaction the way asyncpg.Connection.transaction() would."""
+        self.transactions.append(_TransactionCtx(self))
+        return self.transactions[-1]
+
+
+class _TransactionCtx:
+    """Async context manager mirroring asyncpg's transaction() API."""
+
+    def __init__(self, conn: FakeConnection) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> None:
+        self._conn.calls.append(Call("transaction_enter", "BEGIN", ()))
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self._conn.calls.append(
+            Call("transaction_exit", "COMMIT" if exc[0] is None else "ROLLBACK", ())
+        )
 
 
 class FakePool:
@@ -100,6 +122,76 @@ def conn() -> FakeConnection:
 @pytest.fixture
 def store(conn: FakeConnection) -> PgLearningStore:
     return PgLearningStore(FakePool(conn), exposure_mode=MemoryExposureMode.AGENT_MANAGED)
+
+
+# --------------------------------------------------------------------------
+# schema upgrade fencing (#860 F7)
+# --------------------------------------------------------------------------
+
+
+async def test_ensure_schema_fences_ddl_behind_advisory_lock(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    """Two replicas booting concurrently must not race CREATE INDEX.
+
+    `CREATE INDEX IF NOT EXISTS` is not atomic across processes: both can pass
+    the pg_class existence check and one dies with a duplicate key on
+    `pg_class_relname_nsp_index` — reproduced live on pgvector/pg18 during the
+    #860 two-replica concurrent boot. The whole upgrade must run inside one
+    transaction, with a transaction-scoped advisory lock taken before any DDL,
+    mirroring events.pg_envelope.ensure_canonical_event_schema.
+    """
+    await store.ensure_schema()
+
+    # Exactly one transaction: open before anything else, commit after.
+    assert len(conn.transactions) == 1
+    assert conn.calls[0].method == "transaction_enter"
+    assert conn.calls[0].query == "BEGIN"
+    assert conn.calls[-1].method == "transaction_exit"
+    assert conn.calls[-1].query == "COMMIT"
+
+    # The advisory lock is the first statement inside the transaction, keyed
+    # to the learnings-schema fence (distinct from "mae1"/"mais"/"prmt").
+    assert conn.calls[1].query == "SELECT pg_advisory_xact_lock($1)"
+    assert conn.calls[1].args == (_SCHEMA_LOCK_KEY,)
+    assert _SCHEMA_LOCK_KEY == 0x6D61_656C
+
+    # Scope, epistemic and learning-stage upgrades must all remain inside
+    # the fence. List the complete ordered body independently of production
+    # constants so dropping a column upgrade cannot silently weaken coverage.
+    expected_ddl = [
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS org_id ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS epistemic_type ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS works_when ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS avoid_in ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS confidence ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS evidence_run_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS evaluation_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS applicability ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS reinforcement_count ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS contradiction_count ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS last_confirmed_at ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_at ",
+        # The Gauntlet's audit trail (M4-B2, merged from develop) upgrades three
+        # more columns here; the fence must cover them like every other upgrade.
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_evaluator_version ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validation_run_ids ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validation_content_hash ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS supersedes ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS superseded_by ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS stage ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS validated_by ",
+        "ALTER TABLE learnings ADD COLUMN IF NOT EXISTS promoted_by ",
+        "CREATE TABLE IF NOT EXISTS learning_stage_transitions (",
+        "CREATE INDEX IF NOT EXISTS idx_learning_stage_transitions_learning ",
+        "CREATE INDEX IF NOT EXISTS idx_learnings_scope ",
+        "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes ",
+    ]
+    body = conn.calls[2:-1]
+    assert len(body) == len(expected_ddl)
+    for call, prefix in zip(body, expected_ddl, strict=True):
+        assert call.method == "execute"
+        assert call.query.strip().startswith(prefix)
 
 
 def make_learning(**overrides: Any) -> Learning:
