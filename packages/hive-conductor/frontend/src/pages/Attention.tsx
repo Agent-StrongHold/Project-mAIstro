@@ -29,16 +29,10 @@ function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accen
   return "muted";
 }
 
-type TopologyProposalEvidence = {
-  from_value?: unknown;
-  to_value?: unknown;
-  expected_improvement?: unknown;
-};
-
-function topologyProposalOf(item: AttentionItem): TopologyProposalEvidence | null {
+function topologyProposalOf(item: AttentionItem): Record<string, unknown> | null {
   const raw = item.evidence?.topology_proposal;
   if (!raw || typeof raw !== "object") return null;
-  return raw as TopologyProposalEvidence;
+  return raw as Record<string, unknown>;
 }
 
 
