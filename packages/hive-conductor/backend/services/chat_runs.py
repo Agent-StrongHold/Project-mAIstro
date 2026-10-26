@@ -193,22 +193,18 @@ def _owned_session(
     session_id: Any,
     workspace_id: Any = None,
 ) -> str | None:
-    """The session id to record as provenance, when it is the caller's own.
+    """The caller's session id for provenance, or None when the turn has none.
 
-    Provenance is what a conversation's Runs are later found by, so a caller
-    must not be able to file a turn under someone else's session. Unknown or
-    foreign session ids still admit the turn — provenance is simply omitted
-    (AC-5 stream non-disclosure). When `workspace_id` is provided, the
-    session's Workspace must match or provenance is dropped the same way.
+    Provenance is what a conversation's Runs are later found by. A missing /
+    empty ``session_id`` still admits the turn without session provenance.
+    When the client *does* name a session, unknown, foreign, or wrong-Workspace
+    ids refuse before the model runs — same 404 body as list/get (#1822 AC-5).
     """
     if not isinstance(session_id, str) or not session_id:
         return None
     user_id = user_id_from_request(request)
     ws = workspace_id if isinstance(workspace_id, str) and workspace_id else None
-    try:
-        conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
-    except HTTPException:
-        return None
+    conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
     return session_id
 
 
@@ -232,6 +228,9 @@ async def admit_turn(
 ) -> AdmittedTurn:
     """Admit one turn as a RUNNING chat Run, or refuse it before the model."""
     user_id = user_id_from_request(request)
+    # Authz before availability (#1822 AC-5): foreign/unknown session ids must
+    # not become 503 merely because the Run spine is down.
+    owned_session = _owned_session(request, session_id, workspace_id)
     container = _container()
     if container is None:
         raise _unavailable(
@@ -241,13 +240,11 @@ async def admit_turn(
     run: Run | None = None
     admitter: ChatRunAdmitter | None = None
     marked = False
-    owned_session: str | None = None
     client_turn = _client_turn_id(turn_id)
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
         admitter = await _admitter_for(container, ws)
-        owned_session = _owned_session(request, session_id, workspace_id)
         run = await admitter.admit(
             messages,
             session_id=owned_session,
@@ -273,6 +270,12 @@ async def admit_turn(
         _release_dispatch_shield(admitter, run, marked)
         await container._cancel_incomplete_admission(run)
         raise _capacity(exc) from exc
+    except HTTPException:
+        # Authz / membership / foreign-session refusals (#1822 AC-5) must keep
+        # their status — do not rewrite them as admission 503.
+        _release_dispatch_shield(admitter, run, marked)
+        await container._cancel_incomplete_admission(run)
+        raise
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
         _release_dispatch_shield(admitter, run, marked)

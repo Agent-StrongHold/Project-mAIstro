@@ -135,3 +135,76 @@ test("late stream frames after session switch do not land on the new session", a
 
   await page.unroute("**/v1/chat/stream");
 });
+
+test("Workspace A→B mid-stream never paints A or posts A's history (#1822 AC-3)", async () => {
+  const wsA = workspaceId;
+  const createdB = await page.request.post("/v1/workspaces", {
+    data: { persona_template_id: "pm_fleet", name: `Isolation B ${Date.now()}` },
+  });
+  expect(createdB.status()).toBe(201);
+  const wsB = ((await createdB.json()) as { id: string }).id;
+  const sessionA = await createSession(page, wsA, "Isolation A");
+  await createSession(page, wsB, "Isolation B");
+
+  let releaseLate: (() => void) | null = null;
+  const lateGate = new Promise<void>((resolve) => {
+    releaseLate = resolve;
+  });
+  const streamBodies: { workspace_id?: string; session_id?: string; messages?: unknown[] }[] =
+    [];
+
+  await page.route("**/v1/chat/stream", async (route: Route) => {
+    const posted = route.request().postDataJSON() as {
+      workspace_id?: string;
+      session_id?: string;
+      messages?: unknown[];
+    };
+    streamBodies.push(posted);
+    if (posted.workspace_id === wsB) {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `data: ${JSON.stringify({ type: "done", content: "B-only reply" })}\n\n`,
+      });
+      return;
+    }
+    await lateGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({ type: "delta", content: "A-ONLY-LEAK" })}\n\n` +
+        `data: ${JSON.stringify({ type: "done", content: "A-ONLY-DONE" })}\n\n`,
+    });
+  });
+
+  await page.goto(`/chat?session=${sessionA}`);
+  await expect(page.getByLabel("Chat messages")).toBeVisible({ timeout: 15000 });
+  const composer = page.locator(".chat-textarea");
+  await composer.fill("A mid-stream marker");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => streamBodies.length).toBe(1);
+  await expect(page.getByText("A mid-stream marker")).toBeVisible();
+
+  // Switch active Workspace via the tab strip (not a same-WS session hop).
+  await page.getByRole("tab", { name: new RegExp(`Isolation B`) }).click();
+  await expect(page.getByText("A mid-stream marker")).toHaveCount(0);
+  await expect(page.getByText("Loading sessions")).toBeVisible({ timeout: 5000 }).catch(() => {
+    /* hydrate may already have finished */
+  });
+  await expect(page.getByText("A-ONLY-LEAK")).toHaveCount(0);
+
+  releaseLate?.();
+  await page.waitForTimeout(400);
+  await expect(page.getByText("A-ONLY-LEAK")).toHaveCount(0);
+  await expect(page.getByText("A-ONLY-DONE")).toHaveCount(0);
+
+  // Any later B stream must not carry A's user text.
+  const bPosts = streamBodies.filter((b) => b.workspace_id === wsB);
+  for (const body of bPosts) {
+    const blob = JSON.stringify(body.messages ?? []);
+    expect(blob).not.toContain("A mid-stream marker");
+    expect(body.session_id).not.toBe(sessionA);
+  }
+
+  await page.unroute("**/v1/chat/stream");
+});

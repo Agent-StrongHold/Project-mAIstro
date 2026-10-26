@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Security
 
+- **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
+  the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
+  session now returns the same 404 as a missing id; provenance-omit-and-admit
+  is gone. Workspace switch clears the prior transcript immediately and Chat
+  Retry re-hydrates after load failures (AC-3/AC-7).
+
 - **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
   code-scanning alerts on develop).** Route mutation-baseline CI error
   annotations through the allowlisted `_ci_error_annotation` scrubber
