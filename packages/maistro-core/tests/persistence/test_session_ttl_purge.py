@@ -232,6 +232,8 @@ class _HealthFakePool:
                 return _Acquire()
 
             async def fetchrow(self, query: str, *args: object) -> Any:
+                if "MAX(seq)" in query:
+                    return {"next_seq": 0}
                 if "to_regclass" in query:
                     return {"ok": True}
                 if "pg_total_relation_size" in query:
@@ -277,3 +279,29 @@ async def test_the_postgres_probe_decodes_timestamptz_as_datetime() -> None:
         if s.get("labels", {}) == {"table": "session_turns", "backend": "postgres"}
     ]
     assert turns == [pytest.approx(oldest.timestamp())]
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+async def test_a_postgres_append_publishes_the_stored_volume_after_commit() -> None:
+    """Normal traffic drives retention through `append_messages`' inline
+    `_purge_through` and never reaches `purge_expired`, so an append path that
+    skips the probe deletes expired history while publishing nothing — and
+    leaves the gauges stale until someone calls `purge_expired` by hand. The
+    twin SQLite append publishes after its purge; the postgres append must
+    publish after its transaction commits, too."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_oldest_record_timestamp
+
+    oldest = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    store = PgSessionStore(_HealthFakePool(oldest))  # type: ignore[arg-type]
+    retention_health._LAST_PROBE.clear()
+
+    await store.append_messages("s1", [{"role": "user", "content": "hi"}])
+
+    samples = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "sessions", "backend": "postgres"}
+    ]
+    assert samples == [pytest.approx(oldest.timestamp())]

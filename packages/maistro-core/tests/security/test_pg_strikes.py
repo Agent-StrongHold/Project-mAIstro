@@ -554,6 +554,55 @@ async def test_the_two_security_stores_probe_independently(
     assert _rows("security_rate_limits") == [2.0]
 
 
+async def test_the_limiter_purge_leaves_the_trackers_probe_slot_free(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """Same contract, limiter-first ordering: the limiter's purge publishes
+    under its own key, so the tracker's probe gate is untouched and a sweep
+    loop that purges rate limits before strike violations still publishes
+    `security_violations` every interval (#325).
+
+    Ran against the miskeyed publication: the limiter's `min_interval_s=0`
+    publish re-stamped `security:postgres`, the tracker's gate below saw a
+    fresh probe and skipped sampling, so `security_violations` never
+    published for as long as each sweep kept that ordering.
+    """
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_table_rows
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # Rate limiter purge first: RETURNING fetch, then its probe's to_regclass,
+    # sample and size rows.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 2, "oldest": old})
+    conn.queue_fetchrow({"b": 4096})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    # Tracker purge, back-to-back in the same interval: its own gate must
+    # still be due — a shared key would throttle it into publishing nothing.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    def _rows(table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "postgres"}
+        ]
+
+    assert _rows("security_rate_limits") == [2.0]
+    assert _rows("security_violations") == [1.0]
+
+
 async def test_tracker_purge_rejects_a_nonpositive_limit(
     patch_asyncpg: FakePool,
 ) -> None:

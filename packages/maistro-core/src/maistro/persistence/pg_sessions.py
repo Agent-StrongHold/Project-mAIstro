@@ -165,6 +165,13 @@ class PgSessionStore:
             # server timestamp is newer than this cutoff; an explicit zero or
             # negative TTL intentionally means "purge through now".
             await _purge_through(conn, time.time() - self._ttl_seconds)
+        # Published after the `async with` exits, so the probe reads a snapshot
+        # that includes this append and can never race a purge that is still
+        # uncommitted. Appends are where normal traffic drives retention, so
+        # this -- not only an explicit `purge_expired` -- must refresh the
+        # stored volume; the publisher throttles it (a retry that returned
+        # early above purged nothing and skips this, as it should).
+        await self._publish_table_health()
 
     async def purge_expired(self, ttl_seconds: int | None = None) -> int:
         """Delete messages older than the TTL. Returns the number removed."""

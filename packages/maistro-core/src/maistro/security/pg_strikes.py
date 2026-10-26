@@ -519,6 +519,11 @@ class PgRateLimiter:
                 fetchrow, "security_rate_limits", "window_start", oldest_unit="datetime"
             )
         if sample is not None:
+            # Publish under this store's own key: the gate above already
+            # stamped `security_rate_limits:postgres`, and re-stamping
+            # `security:postgres` here would throttle PgStrikeTracker's
+            # violations publication whenever a sweep drives both purges
+            # back-to-back.
             publish_retention_table_health(
-                "security:postgres", "postgres", [sample], min_interval_s=0.0
+                "security_rate_limits:postgres", "postgres", [sample], min_interval_s=0.0
             )
