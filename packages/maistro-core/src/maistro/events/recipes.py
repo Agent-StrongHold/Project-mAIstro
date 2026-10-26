@@ -163,7 +163,7 @@ def install_builtin_recipes(
 
     Defaults to the full :data:`BUILTIN_RECIPE_BUILDERS` catalog with
     ``enabled=False`` so the process owns the subscription without arming
-    cross-service side effects against recipe localhost defaults. Callers that
+    cross-service side effects against recipe default endpoints. Callers that
     have configured real endpoints pass ``enabled=True`` and/or a narrower
     ``builders`` set (built with their own kwargs before enable).
     """
