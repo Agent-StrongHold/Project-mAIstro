@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +8
+  packages/maistro-turing/backend/tests: -2
 ---
 # auto-325-cb9e: sweep-health metrics for retention (#325)
 

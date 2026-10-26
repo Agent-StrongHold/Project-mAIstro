@@ -567,3 +567,60 @@ async def test_purge_then_snapshot_does_not_double_count_idle_scope(
         assert (await cursor.fetchone())[0] == 7  # not 14
         cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
         assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_retirement_by_identity_keeps_a_replicas_late_distinct_event(
+    persist: SqliteUsageLog,
+) -> None:
+    """Regression (review): retirement is per identity, not per timestamp.
+
+    Two replicas share this database and each hold a distinct event for one
+    scope at the same timestamp. The first replica flushes, a sweep folds
+    its event into the aggregates and retires it; the second replica then
+    flushes late. Under the old per-scope timestamp watermark the late
+    event's identical timestamp read as "already retired" and it was
+    silently dropped — accounting kept 7 tokens instead of 14. A scope
+    timestamp does not establish that every event at or below it has been
+    accounted for, so only the tombstoned `event_id` is suppressed.
+    """
+    t0 = 1_000.0
+    horizon = t0 + 5 * 86_400.0
+    first = InMemoryUsageLog()
+    first.record("provider:model", input_tokens=7, now=t0, event_id="event-a")
+    second = InMemoryUsageLog()
+    second.record("provider:model", input_tokens=7, now=t0, event_id="event-b")
+
+    await persist.snapshot(first)
+    assert await persist.purge_expired(before=horizon) == 1
+
+    # The second replica's distinct event arrives only after the sweep, at
+    # the retired event's timestamp — it must still be persisted.
+    await persist.snapshot(second)
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT event_id FROM usage_events WHERE scope_key = 'provider:model'"
+        )
+        assert [row[0] for row in await cursor.fetchall()] == ["event-b"]
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7  # only the retired event so far
+
+    # ...and it must aggregate exactly once, like any other event.
+    assert await persist.purge_expired(before=horizon) == 1
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 14
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0
+
+    # The retired identity itself stays suppressed: replaying the first
+    # replica's stale copy must not resurrect `event-a` even though its
+    # timestamp now sits at the watermark the late event passed.
+    await persist.snapshot(first)
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0
