@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("plan_delivery", ROOT / "scripts/plan_delivery.py")
+SPEC = importlib.util.spec_from_file_location("plan_delivery", ROOT / "tools/plan_delivery.py")
 assert SPEC is not None and SPEC.loader is not None
 planner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(planner)

@@ -34,7 +34,7 @@ scheduler, runtime, backlog database or autonomous closer.
    Set `observed_at` only after refresh completes. A failed/partial fetch remains
    incomplete. Never merely retimestamp the seed or replace its SHA to make it
    appear current. Remove/reconcile reservations only on explicit evidence.
-6. Run `python scripts/plan_delivery.py SNAPSHOT.json --current-sha FRESH_SHA`.
+6. Run `python tools/plan_delivery.py SNAPSHOT.json --current-sha FRESH_SHA`.
    Exit 1 means malformed/contradictory input. Exit 2 means refresh or coverage
    is incomplete: inspect the advisory report but dispatch nothing from it.
    Exit 0 permits considering the selected frontier; it is not merge authority.

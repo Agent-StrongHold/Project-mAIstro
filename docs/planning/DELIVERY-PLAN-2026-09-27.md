@@ -30,7 +30,7 @@ Sources: existing issue/PR discussions, especially #1047, #1419, #1524, #1581,
 
 ## Planner and operating policy
 
-Run `python scripts/plan_delivery.py SNAPSHOT.json --current-sha FRESH_DEVELOP_SHA`.
+Run `python tools/plan_delivery.py SNAPSHOT.json --current-sha FRESH_DEVELOP_SHA`.
 The command consumes a **reviewed snapshot**, produces JSON, and performs no
 network request, repository mutation, evidence-command execution or dispatch.
 

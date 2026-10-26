@@ -27,7 +27,6 @@
     "@tool/mutation_filter_annotations",
     "@tool/mutation_viability",
     "@tool/openrouter_rpm_pacer",
-    "@tool/plan_delivery",
     "@tool/rlphd_band_sim",
     "@tool/rlphd_cold_start_sim",
     "@tool/rlphd_two_tier_sim",

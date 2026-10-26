@@ -62,7 +62,7 @@ or placeholder-only section.
 ### Added
 
 - **Acceptance-based repository delivery planner (#1629).** New read-only
-  `python scripts/plan_delivery.py` command (standard library only) turns a
+  `python tools/plan_delivery.py` command (standard library only) turns a
   reviewed JSON snapshot into a dispatch-ready execution plan: it credits only
   complete, reviewed, exact-base acceptance evidence, rejects missing
   dependencies, cycles, and duplicate proof/JSON keys, keeps closed-with-
