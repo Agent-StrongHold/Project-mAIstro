@@ -8681,3 +8681,33 @@ tests), plus the reachability meta set + develop's new
 (`test_admission_generation_assessment` + `test_root_admission_identity` +
 `test_idempotency` + `test_pack_contracts` +
 `test_runs_admission_identity_publication` → 415 passed).
+
+### PostgreSQL legs sampled locally (path-classified required legs, not leaf behavior)
+
+The integration-scope classifier requires `strike-ladder`, `postgres (pg17)`,
+`postgres (pg18)`, `hive-conductor-e2e`, `docker-build` and `wheel-imports` for
+this diff because it touches `packages/maistro-core`; none of the three touched
+test modules imports a database (`grep` for `MAISTRO_TEST_PG_DSN|postgres|
+asyncpg|skipif` over `test_admission_generation_assessment.py`,
+`test_pack_contracts.py`, `test_runs_admission_identity_publication.py` → no
+match), so those legs test develop's code, not this leaf. Two were still run
+first-hand against real servers:
+
+* `strike-ladder`'s exact command —
+  `MAISTRO_TEST_DATABASE_URL=…:15433/strike_test MAISTRO_REQUIRE_PG_LEGS=1
+  uv run pytest packages/maistro-core/tests/security/test_strike_tracker_conformance.py`
+  (postgres:17) → **40 passed**.
+* `postgres (pg18)`: `packages/maistro-core/tests/runs` (the directory that
+  makes `postgres` required, via the `/runs/` scope token) against
+  `pgvector/pgvector:pg18` after `uv run alembic upgrade head` on a fresh
+  database → **1860 passed, 3 skipped**.
+  A first attempt against the *reused* two-hour-old `maistro_test` database
+  gave 40 failed / 4 errors (`RunIntegrityError: Graph Project … does not exist
+  in canonical Project scope`, `pg_store.py:1714`); that is stale local schema/
+  data, not the branch — the same suite is green on a freshly migrated database
+  and the CI job migrates before it runs. Recorded so the failure is not
+  mistaken for a regression later.
+
+`hive-conductor-e2e`, `docker-build` and `wheel-imports` were **not** executed
+locally (compose/image builds outside this repair's budget); they exercise no
+file this branch changes.
