@@ -385,7 +385,10 @@ def write_baseline() -> int:
     for module in sorted(closure):
         rel = modules[module].relative_to(REPO).as_posix()
         if not matches(rel):
-            tolerated[rel] = existing.get(rel, "TODO: state why this need not escalate")
+            tolerated[rel] = existing.get(
+                rel,
+                "TODO: state why this need not escalate",  # DevSkim: ignore DS176209 until 2027-12-31 — baseline stub prompting a real reason
+            )
     BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     BASELINE_PATH.write_text(
         json.dumps(
