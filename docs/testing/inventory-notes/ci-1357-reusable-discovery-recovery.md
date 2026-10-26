@@ -52,3 +52,43 @@ Local environment does not have the complete locked repository or Ruff. Full
 repository CI, format/lint, suite inventory and independent review are still
 required on the published candidate. No compute or wall-time saving is claimed
 for this prerequisite; runtime deduplication remains the broader audit's goal.
+
+## Re-validation at the develop-sync head (2026-10-26)
+
+Branch state: `ci/1357-reusable-discovery` at merge commit `6a73d1029`
+(parents: PR head `abfd7e82b`, develop tip `10f872fa7`). `origin/develop` has
+not moved past `10f872fa7`. The rendered `docs/ci/REQUIRED-CHECKS.md` and every
+`.github/workflows/` file are byte-identical to `origin/develop`; the diff
+surface is still the nine files listed in the PR surfaces, and
+`git diff --numstat origin/develop -- quality/` is empty (no ledger rows).
+
+Independently re-executed evidence at that head:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: pass (3559 files).
+- Focused suites: 169 passed — 72 in `test_reusable_check_discovery.py`, 34 in
+  `test_reusable_discovery_review.py`, 63 in `test_check_required_checks.py`.
+  The 106 new tests equal the `inventory-delta` sum above (43+24+16+23).
+- `python3 scripts/check-required-checks.py` (ci.yml:1458): ok, 77 PR checks
+  match `docs/ci/REQUIRED-CHECKS.md`.
+- `scripts/check-suite-inventory.py` (ci.yml:723, project venv): ok, 21 suites,
+  `tests/: 6146`.
+- `python3 scripts/check-workflow-write-safety.py` (ci.yml:1471): ok, 32
+  workflows.
+- `python3 scripts/check-branch-protection.py` (ci.yml:1481): ok, 19 develop /
+  33 main contexts, every PR check required or explicitly advisory.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: 1248 reviewed identities = 1248 findings, rc 0.
+- `scripts/check-merge-markers.py`: ok, no conflict markers in tracked files.
+- Diff coverage: the three focused suites under
+  `coverage run --branch --source=scripts`, then
+  `scripts/check-diff-coverage.py coverage.xml --base origin/develop`: ok —
+  1 changed file measured at or above 90% lines / 80% branch arcs; the three
+  new test files are exempt as test code.
+- Regression reality: in a `/tmp` sandbox pairing `origin/develop`'s
+  `scripts/check-required-checks.py` with these 106 new tests, 103 fail and 3
+  pass. The recoveries are genuine regressions against the preceding
+  implementation, not vacuous fixtures.
+
+Residual: exact-head remote CI has not run (push is outside this worker's
+authority). The d1e92738 "Container scan + SBOM + cosign" cancellation was
+runner teardown, not code evidence against this slice.
