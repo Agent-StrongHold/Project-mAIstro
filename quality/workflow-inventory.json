@@ -54,7 +54,7 @@
         "schedule",
         "workflow_dispatch"
       ],
-      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop, a weekly schedule, and workflow_dispatch so a cancelled tip SARIF upload can be re-run without another product commit."
+      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop, weekly schedule, and manual re-run for cancelled tip SARIF uploads."
     },
     {
       "id": "enqueue-merge-queue",
