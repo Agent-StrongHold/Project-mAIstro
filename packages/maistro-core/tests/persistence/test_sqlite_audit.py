@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
@@ -311,6 +311,34 @@ async def test_purge_expired_respects_boundary_and_legal_hold(log: SqliteAuditLo
     assert removed == 1
     cursor = await log._conn.execute("SELECT user_id FROM audit_log")
     assert [row[0] for row in await cursor.fetchall()] == ["held"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_utc_entry_timestamp_is_stored_as_a_utc_instant(
+    log: SqliteAuditLog,
+) -> None:
+    """purge_expired orders the TEXT timestamp column lexically against a
+    UTC cutoff, so an entry logged with a non-UTC offset must be normalized
+    at write time: ``09:00-05:00`` is 14:00 UTC and must survive a 13:00 UTC
+    cutoff instead of sorting before it as literal text and getting purged
+    five hours early. The stored string keeps the same instant, so the
+    round-tripped record and its signature verification are untouched — the
+    timestamp is canonical metadata the proof never covers."""
+    logged_at = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    await log.log(AuditEntry(boundary="tool_call", user_id="u", timestamp=logged_at))
+
+    cursor = await log._conn.execute("SELECT timestamp FROM audit_log")
+    (stored,) = await cursor.fetchone()  # type: ignore[misc]
+    assert stored == "2026-01-01T14:00:00+00:00"
+
+    [entry] = await log.get_entries(user_id="u")
+    assert entry.timestamp == logged_at
+    assert log.verify(entry)
+
+    # The retention scan sees the true instant: 13:00 UTC is before the
+    # record, 15:00 UTC is after it.
+    assert await log.purge_expired(before=datetime(2026, 1, 1, 13, tzinfo=UTC)) == 0
+    assert await log.purge_expired(before=datetime(2026, 1, 1, 15, tzinfo=UTC)) == 1
 
 
 @pytest.mark.asyncio

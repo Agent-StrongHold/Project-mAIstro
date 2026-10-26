@@ -162,7 +162,11 @@ class SqliteAuditLog:
                 signature, signing_key_id, proof_type)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                getattr(signed, "timestamp", datetime.now(UTC)).isoformat(),
+                # Stored as a UTC instant: purge_expired and retention health
+                # order this column as text, so a non-UTC offset (e.g.
+                # ``09:00-05:00`` == 14:00 UTC) must not sort as 09:00 UTC and
+                # get purged by an earlier-looking cutoff.
+                getattr(signed, "timestamp", datetime.now(UTC)).astimezone(UTC).isoformat(),
                 signed.boundary,
                 signed.user_id,
                 getattr(signed, "org_id", "") or "",

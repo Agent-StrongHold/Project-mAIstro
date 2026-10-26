@@ -677,7 +677,9 @@ class PgRunStore:
                     run_ids,
                 )
                 continuations = 0
-                if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+                if await conn.fetchval(
+                    "SELECT to_regclass('public.graph_continuations') IS NOT NULL"
+                ):
                     deleted_continuations = await conn.fetch(
                         "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
                         run_ids,
