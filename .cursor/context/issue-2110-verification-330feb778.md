@@ -78,3 +78,37 @@ third re-landing of two already-fingerprinted fixture shapes.
 
 No source, ledger, gate, or baseline file was modified by this round; the only write is this
 record. Worktree otherwise untouched at the assigned head.
+
+## Repair-round re-validation at 08841cd3b (job a7a1b97e15374d18811b72231476ed32)
+
+Prior round aborted on a driver provider timeout after green ruff checks; the tree was found
+clean at the expected head 08841cd3b264 (330feb778 + this record's docs commit). All evidence
+above was re-executed at this head by the repair lane:
+
+1. gitleaks 8.30.1 (CI-pinned version, present locally): CI-exact PR/merge_group form
+   `gitleaks git --redact --log-opts=10f872fa7be..08841cd3b26 .` -> 27 commits, "no leaks
+   found", exit 0. `--all` sweep: 40 findings on 14 unique commits, **zero** on any commit of
+   this PR (fb322ab fingerprints hold); residuals are pre-existing refs outside the PR range
+   (the PR gate is the range scan).
+2. `uv run pytest tests/test_get_ps1_wsl_detection.py -v` -> 28 passed (harness executed under
+   pwsh 7.4.6, PASSED not SKIPPED).
+3. `pwsh -NoProfile -File tests/installer/run-wsl-detection-e2e.ps1 -PowerShell pwsh` ->
+   "all 23 cases passed" + "RESULT relaunch-policy ok", exit 0.
+4. Regression bite re-proven at this head: base get.ps1 in /tmp with this PR's tests beside it
+   -> all 3 new tests FAIL with the right reasons (missing approved-policy help text;
+   `-executionpolicy` present in old relaunch bodies; harness throws 'Unexpected elevation
+   arguments').
+5. `uv run ruff check .` / `uv run ruff format --check .` exit 0; driver check logs agree.
+6. CI-exact gates: `uv run python scripts/check-suite-inventory.py` exit 0 (21 suites match);
+   `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+   --exclude '*/third_party/*'` exit 0 (1248 reviewed identities = 1248 findings, base
+   10f872fa7be3 -> candidate 08841cd3b264; ledger untouched).
+7. Read-only `gh pr view 2110` at GitHub head 330feb778: 119 SUCCESS / 0 FAILED / 7 SKIPPED
+   (service-gated) / 1 PENDING (gates-ran aggregator). Every gate RED in the earlier attempt
+   history (Compliance registry, Container scan + SBOM + cosign, Coverage gate, Gate C,
+   Quality / Acceptance state, Quality / Agent store writes, Quality / Architecture fitness,
+   Quality / BFCL provenance, SAST / Gitleaks) has a SUCCESS run at that head.
+
+Declared limits unchanged: real Windows PowerShell 5.1/7 runtime policy enforcement, UAC and
+reboot resume remain unverified (no Windows host; release-installer workflow is tag/manual
+dispatch). No source, ledger, gate, or baseline file was modified by this round either.
