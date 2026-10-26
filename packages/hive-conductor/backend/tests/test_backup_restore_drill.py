@@ -155,7 +155,8 @@ def backup_and_escrow(tmp_path: Path) -> tuple[Path, Path]:
 
     escrow = tmp_path / "escrow"
     escrow.mkdir()
-    shutil.copy2(data / "admin.key", escrow / "admin.key")
+    # The artifact carries ciphertext only; its identity belongs in escrow.
+    (data / "admin.key").replace(escrow / "admin.key")
     os.chmod(escrow / "admin.key", 0o600)
     _build_credential_store(data, escrow)
     _write_manifest(escrow, ["admin.key", "credential_master.key"])

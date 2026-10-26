@@ -6,11 +6,11 @@
 #      runs continuously on the primary (archive_command in docker-compose.prod.yml).
 #   2. Redis RDB snapshot (SAVE, then copy dump.rdb).
 #   3. File-store rsync.
-#   3.5. Conductor durable state (state.db, secrets.age, user_credentials.enc)
-#        and credential escrow (admin.key, credential_master.key) — the escrow
-#        is deliberately written OUTSIDE the backup artifact, because a backup
-#        that ships off-host must carry ciphertext only. See
-#        docs/install/deployment-topology.md §2.1.
+#   3.5. Conductor durable state (state.db, secrets.age, user_credentials.enc,
+#        persona_templates/*.yaml) and credential escrow (admin.key,
+#        credential_master.key) — the escrow is deliberately written OUTSIDE
+#        the backup artifact, because a backup that ships off-host must carry
+#        ciphertext only. See docs/install/deployment-topology.md §2.1.
 #   4. Config snapshot note (config is version-controlled in git — ADR-081)
 #      plus a sha256 integrity manifest over every component above, which
 #      verify-restore.sh re-checks before restoring anything.
@@ -56,13 +56,40 @@ RETENTION_DAYS="${RETENTION_DAYS:-14}"
 REMOTE_TARGET="${REMOTE_TARGET:-}"
 
 STAMP="$(date -u +%Y-%m-%d)"
+
+# Resolve configured roots before creating either dated destination. Lexical
+# comparisons miss aliases through symlinks or '..'; an escrow anywhere in the
+# backup tree could travel with an off-host copy (and vice versa at retention).
+BACKUP_ROOT="$(realpath -m -- "${BACKUP_ROOT}")"
+if [[ "${SKIP_CONDUCTOR_BACKUP}" != "1" ]]; then
+  ESCROW_ROOT="$(realpath -m -- "${ESCROW_ROOT}")"
+  case "${BACKUP_ROOT%/}/" in "${ESCROW_ROOT%/}/"*) fail "backup and escrow roots must be disjoint" ;; esac
+  case "${ESCROW_ROOT%/}/" in "${BACKUP_ROOT%/}/"*) fail "backup and escrow roots must be disjoint" ;; esac
+fi
+
+# Never merge into yesterday's partial attempt or overwrite a link planted in
+# an existing directory. An existing *empty* private directory is supported;
+# failed or completed runs must be moved aside by the operator before retrying.
+prepare_destination() {
+  local directory="$1" label="$2" mode contents
+  [[ ! -L "${directory}" ]] || fail "${label} destination must not be a symlink"
+  mkdir -p -m 700 -- "${directory}"
+  [[ -d "${directory}" && -O "${directory}" ]] || fail "${label} destination must be owned by this user"
+  mode="$(stat -c '%a' -- "${directory}")"
+  (( (8#${mode} & 077) == 0 )) || fail "${label} destination must have owner-only permissions"
+  [[ -r "${directory}" && -x "${directory}" ]] || fail "${label} destination must be readable and searchable"
+  contents="$(find "${directory}" -mindepth 1 -maxdepth 1 -printf x -quit)" \
+    || fail "cannot inspect ${label} destination"
+  [[ -z "${contents}" ]] \
+    || fail "${label} destination must be empty; preserve the existing run and choose a fresh destination"
+}
+
 DEST="${BACKUP_ROOT}/${STAMP}"
-[[ ! -L "${DEST}" ]] || fail "backup destination must not be a symlink"
-mkdir -p -m 700 -- "${DEST}"
-[[ -d "${DEST}" && -O "${DEST}" ]] || fail "backup destination must be owned by this user"
-DEST_MODE="$(stat -c '%a' -- "${DEST}")"
-(( (8#${DEST_MODE} & 077) == 0 )) \
-  || fail "backup destination must have owner-only permissions"
+prepare_destination "${DEST}" backup
+if [[ "${SKIP_CONDUCTOR_BACKUP}" != "1" ]]; then
+  ESCROW_DIR="${ESCROW_ROOT}/${STAMP}"
+  prepare_destination "${ESCROW_DIR}" escrow
+fi
 
 compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
 
@@ -142,6 +169,7 @@ docker run --rm -v "${FILE_STORE_VOLUME}:/files:ro" -v "${DEST}:/dest" alpine \
 #                           sessions, schedules, audit log.
 #     secrets.age           age-encrypted secrets vault (SPEC-011).
 #     user_credentials.enc  Fernet-encrypted per-user provider tokens.
+#     persona_templates/    Wizard-authored PersonaTemplate YAML files.
 #   state.db is snapshotted with the SQLite online-backup API through the
 #   running container (a raw copy of a live SQLite file can be torn); the
 #   remaining files are static ciphertext, safe to copy.
@@ -160,7 +188,34 @@ finally:
     src.close()
 PY
   docker run --rm -v "${CONDUCTOR_DATA_VOLUME}:/data:ro" -v "${DEST}:/dest" alpine \
-    sh -c 'mkdir -p /dest/conductor-data && cp -a /data/. /dest/conductor-data/ && rm -f /dest/conductor-data/state.db'
+    sh -ec 'mkdir /dest/conductor-data
+      # Allowlist ciphertext before copying: keys, live SQLite files and their
+      # WAL/SHM/journal companions must never enter the backup, even briefly.
+      for f in secrets.age user_credentials.enc; do
+        if [ -e "/data/$f" ] || [ -L "/data/$f" ]; then
+          [ -f "/data/$f" ] && [ ! -L "/data/$f" ] || { echo "[backup] FAIL: ciphertext must be a regular file: $f" >&2; exit 1; }
+          cp -p "/data/$f" "/dest/conductor-data/$f"
+        fi
+      done
+      # Wizard-authored persona templates live under persona_templates/*.yaml
+      # (persona_authoring.user_templates_dir). Capture that known application-
+      # data directory with the same regular-file / name checks; never follow
+      # symlinks or copy unknown volume contents beside the templates.
+      if [ -e /data/persona_templates ] || [ -L /data/persona_templates ]; then
+        [ -d /data/persona_templates ] && [ ! -L /data/persona_templates ] \
+          || { echo "[backup] FAIL: persona_templates must be a real directory" >&2; exit 1; }
+        mkdir /dest/conductor-data/persona_templates
+        for f in /data/persona_templates/* /data/persona_templates/.[!.]* /data/persona_templates/..?*; do
+          [ -e "$f" ] || [ -L "$f" ] || continue
+          base=${f##*/}
+          # Same id shape as persona_authoring.PERSONA_ID_PATTERN + .yaml
+          printf '%s' "$base" | grep -Eq '^[a-z][a-z0-9_]*\.yaml$' \
+            || { echo "[backup] FAIL: unexpected persona template name: $base" >&2; exit 1; }
+          [ -f "$f" ] && [ ! -L "$f" ] \
+            || { echo "[backup] FAIL: persona template must be a regular file: $base" >&2; exit 1; }
+          cp -p "$f" "/dest/conductor-data/persona_templates/$base"
+        done
+      fi'
   compose exec -T "${CONDUCTOR_SERVICE}" cat /tmp/state.db.backup-snapshot \
     > "${DEST}/conductor-data/state.db"
   compose exec -T "${CONDUCTOR_SERVICE}" rm -f /tmp/state.db.backup-snapshot
@@ -175,12 +230,14 @@ fi
 #   outside the backup tree. If the escrow is lost, the runbook at
 #   docs/install/deployment-topology.md §2.1 lists what becomes unrecoverable.
 if [[ "${SKIP_CONDUCTOR_BACKUP}" != "1" ]]; then
-  ESCROW_DIR="${ESCROW_ROOT}/${STAMP}"
-  mkdir -p "${ESCROW_DIR}"
-  chmod 700 "${ESCROW_ROOT}" "${ESCROW_DIR}" 2>/dev/null || true
   ESCROWED="$(docker run --rm -v "${CONDUCTOR_DATA_VOLUME}:/data:ro" -v "${ESCROW_DIR}:/escrow" alpine \
-    sh -c 'for f in admin.key credential_master.key; do
-             if [ -f "/data/$f" ]; then cp -a "/data/$f" "/escrow/$f"; chmod 600 "/escrow/$f"; echo "$f"; fi
+    sh -ec 'for f in admin.key credential_master.key; do
+             if [ -e "/data/$f" ] || [ -L "/data/$f" ]; then
+               [ -f "/data/$f" ] && [ ! -L "/data/$f" ] || { echo "[backup] FAIL: escrow key must be a regular file: $f" >&2; exit 1; }
+               cp -p "/data/$f" "/escrow/$f"
+               chmod 600 "/escrow/$f"
+               echo "$f"
+             fi
            done')"
   : > "${ESCROW_DIR}/manifest.sha256"
   for f in ${ESCROWED}; do
