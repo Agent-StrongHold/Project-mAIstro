@@ -39,3 +39,26 @@ version-agnostic and pins no version: the root-Dockerfile case passes with
 base 3.13 == spec 3.13, and it stays as the guard that any future digest
 bump across a minor must move the interpreter spec in the same change — or
 be rejected like this one.
+
+### Independent reproduction (2026-10-26 repair round, this environment)
+
+The stranded prior round's claims were re-derived first-hand at the repaired
+tree (2539eea82), not trusted: inside the actual Dependabot base
+(`python:3.15.0-slim-bookworm@sha256:0e019bb...`) with the builder's own
+pinned uv 0.12.21, the locked `psycopg-binary==3.3.4` pin fails closed exactly
+as recorded — `no wheels with a matching Python ABI tag (e.g., cp315)` — and
+PyPI's live index confirms no cp315 artifact exists upstream for that release
+at all (not merely in our lock), while coincurve's latest upstream release is
+still 21.0.0 with cp313 as its newest ABI (ruling the 3.14 line out too).
+The repaired tree's functional Dockerfile lines are byte-identical to
+develop's (comment-only diff), so the docker-dependent gates return to
+develop's green behavior. Gate evidence re-run at CI's exact arguments:
+check-image-pins OK (9 pins / 10 Dockerfiles), check-suite-inventory OK,
+check-doc-links OK, check-image-inventory OK, vulture ledger rc=0
+(1248 reviewed, unclassified 0 — no amendment needed),
+mypy over CI's ten package targets Success (1121 files), and
+`test_image_pins_supported_python_and_installs_identity` +
+`test_smoke_control_image_is_the_dockerfiles_own_base` green by name. The
+interpreter contract was replayed against the original Dependabot commit
+(22d8ad503: bases `[3.15, 3.15]` vs spec `[3.13]`) and fails there, passing
+only on the repaired tree.
