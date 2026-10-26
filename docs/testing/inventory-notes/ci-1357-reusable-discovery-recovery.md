@@ -92,3 +92,43 @@ Independently re-executed evidence at that head:
 Residual: exact-head remote CI has not run (push is outside this worker's
 authority). The d1e92738 "Container scan + SBOM + cosign" cancellation was
 runner teardown, not code evidence against this slice.
+
+## Re-validation at the recorded head 106886705 (2026-10-26, job 0bd38819)
+
+Head `106886705` differs from `6a73d1029` only by the docs commit recording the
+section above; no code, workflow or ledger bytes changed. `origin/develop` is
+still `10f872fa7` (merge-base equals it, 0 commits behind). The 9-file surface
+is unchanged and matches the PR surfaces. Independently re-executed:
+
+- Driver checks at this exact head: `uv sync --locked --extra dev` ok,
+  `uv run ruff check .` ok, `uv run ruff format --check .` ok (3559 files).
+- Focused suites: 169 passed (72 + 34 + 63), matching the `inventory-delta`
+  sum 43+24+16+23 = 106 new tests (72 + 34 across the two new files).
+- Consumer suites: 304 passed across reusable discovery, required checks,
+  branch protection, workflow-write safety and both gates-ran suites.
+- CI-exact gates: `check-required-checks.py` ok (77 PR checks);
+  `check-workflow-write-safety.py` ok (32 workflows); `check-branch-protection.py`
+  ok (19 develop / 33 main); `check-suite-inventory.py` ok (21 suites);
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` ok (1248 reviewed = 1248 findings, base 10f872fa7 /
+  candidate 106886705); `check-merge-markers.py` ok; `check-release-consistency.py`
+  ok (0.9.0 working toward 1.0.0).
+- Diff coverage re-measured with the three focused suites under
+  `coverage run --branch --source=scripts` and
+  `check-diff-coverage.py coverage.xml --base 10f872fa7`: ok, 1 changed file at
+  or above 90% lines / 80% branch arcs, 3 test files exempt.
+- `.github/` and `docs/ci/REQUIRED-CHECKS.md` byte-identical to `origin/develop`;
+  `git diff --numstat origin/develop -- quality/` empty.
+- Regression reality re-proven in a `/tmp/reg1609` sandbox pairing
+  `origin/develop`'s `scripts/check-required-checks.py` with the two new test
+  files: 103 failed, 3 passed. The three passes name behavior develop already
+  had (direct-job names, caller merge-group obligation, PyYAML loader
+  isolation); every discovered-name, default-resolution, malformed-mapping and
+  fail-closed case fails against the preceding script.
+
+Residual unchanged: exact-head remote CI still requires the push; the recorded
+d1e92738 cancellations (Container scan/SBOM/cosign, and the downstream
+integration-scope failure) were runner-teardown cascades at a superseded head,
+not evidence against this slice. Human review/admission remains required:
+`scripts/check-required-checks.py` is a trusted CI surface under the
+protected-base autonomous-merge policy.
