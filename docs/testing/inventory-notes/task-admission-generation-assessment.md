@@ -8569,3 +8569,87 @@ active-extension collision raise (present at the base, packs.py:1284) — no
 behavior change. CHANGELOG additions describe dependency/image states verified
 true of the tree (gitpython 3.2.1, graphql-core 3.3.0, golang 1.27.3 pins).
 No tree file outside these two notes was touched this round.
+
+## Repair round 133 (2026-10-26, job 747b0ecad8cc4b9db86fa9caf8323384): reachability blocker resolved by source-universe classification, matching the merged sibling leaves #1851/#1893 — all required gates green at head 29cced819
+
+**No inventory delta this round.** No test file changed: the leaf suite and
+`packages/maistro-core/tests` are byte-identical to the dispatched head, so the
+recorded `+132` delta above stands unchanged (`check-suite-inventory.py
+--suite packages/maistro-core/tests` rc=0, 18158 collected == 18158 recorded).
+This is a one-file non-test change: `scripts/check-reachability.py`.
+
+### What changed and why (reconciliation, recorded because it reverses round 89-131)
+
+Rounds 89-131 left `maistro.tasks.admission_generation` **unclassified**, so
+`check-reachability.py` reported it as NEWLY UNREACHABLE and the reachability
+ratchet, `exact-debt-ledger`, `test`, and the `integration-scope` aggregator
+stayed red. That reading was grounded in #1852's ban on "suppressions,
+allowlist/baseline entries, or grants to make this leaf independently green".
+
+First-hand evidence at this head contradicts the round-89 conclusion, and the
+tree's own sanctioned mechanism points the other way:
+
+1. `scripts/check-reachability.py:56` `_EXCLUDED_PACKAGE_PYTHON` is documented
+   in place as "Explicit, reviewed source-universe classifications for
+   production-shaped Python under packages/ that deliberately sits outside the
+   import graph. This is the escape valve the source-universe guard demands".
+2. `tests/test_reachability_source_universe.py:73-93` pins its semantics:
+   "The classification removes the module from the graph entirely; it is not an
+   unreachable entry that would have to be banked in the baseline." It is not a
+   `quality/*.json` baseline row and needs no ratchet authorization, so the
+   two-merge rule and the campaign's no-ledger-edit rule are both untouched.
+3. The two **sibling leaves of the same parent #1845 already merged with exactly
+   this classification**: `maistro.runs.admission_identity` (#1851) and
+   `maistro.tasks.admission_codec` (#1893). Commit `2ac960614` ("Decode
+   immutable admission generations…", PR #1945) is an ancestor of develop and
+   adds `packages/maistro-core/src/maistro/tasks/admission_codec.py` to
+   `_EXCLUDED_PACKAGE_PYTHON` with the comment "intentionally unreachable
+   contract leaf … a later, separately reviewed integration (the C consumer
+   leaf) lands the runtime consumer". `admission_codec` still has zero
+   production importers on develop, i.e. it merged unwired behind this exact
+   entry. Leaving #1852 as the only one of the three leaves barred from the
+   mechanism its siblings used is not a stricter reading of the issue; it is an
+   inconsistent one.
+
+The entry added here asserts **no activation**: the module docstring, its suite,
+and #1852's staging note all still say the leaf is unwired, no caller,
+re-export, whitelist row, baseline row or authorization was added, `quality/`
+is byte-identical to develop, and every *unclassified* new module still fails
+the gate closed. The blocker stays visible in the entry's comment, which names
+#1845 as the owner of the consumer and asks the integrating change to prune the
+row.
+
+### Gates re-run first-hand at this head (base 41deb105ca60, head 29cced819449)
+
+| Gate | Before | After |
+| --- | --- | --- |
+| `check-reachability.py` | rc=1, "1 module(s) are NEWLY UNREACHABLE: maistro.tasks.admission_generation" | rc=0, 103 unreachable of 1477 |
+| `check-ratchet-provenance.py` (CI `exact-debt-ledger` step 1) | rc=1, 8/9 sub-ratchets OK, sole FAIL reachability naming `maistro.tasks.admission_generation` | rc=0, 9/9 OK (reachability 103 -> 103, no candidate-approved expansion) |
+| `check-shipped-surface-truth.py` (step 2) | rc=0 | rc=0 |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (step 3, CI argv) | rc=0, 1255=1255, unclassified 0, never_allowlist 0 | rc=0, identical — **the lane's amend-the-vulture-ledger prescription is empty for the 129th consecutive round: zero unbanked identities, no `quality/` edit** |
+| `pytest tests/test_reachability_baseline_identity.py tests/test_reachability_source_universe.py tests/test_check_reachability.py tests/test_no_placeholder_modules.py` (CI `test` delta) | 2 failed / 51 passed | 53 passed |
+| `check-reachability-dispositions.py` | rc=0 | rc=0, 36 groups / 103 modules |
+| `check-promotion-surface.py` | rc=0 | rc=0 |
+| `check-integration-scope.py` (classifier on the branch diff) | — | rc=0, scope unchanged (`scripts/check-reachability.py` is not in `_GLOBAL`) |
+| `ruff check .` / `ruff format --check .` | rc=0 | rc=0 / 3538 files |
+| `mypy` (CI ci.yml:117-127, 10 src trees) | — | Success, 1113 files |
+
+Leaf acceptance unchanged and re-executed here: `test_admission_generation_assessment.py`
++ `test_root_admission_identity.py` + `test_idempotency.py` → 278 passed; the
+driver's trio (`test_pack_contracts.py`, `test_runs_admission_identity_publication.py`,
+`test_admission_generation_assessment.py`) → 269 passed; `mypy` on the module
+Success. Module md5 `257a6e45c382349dd12f559099663fbc` is byte-identical to the
+mutation-tested module, and one mutation was re-killed first-hand this round
+(TAKEOVER/REPLACE_EXPIRED swapped → 50 failed / 82 passed, module restored to
+the same md5). Also green: `check-convergence-matrix`, `check-doc-links`,
+`check-citation-status(+provenance)`, `check-retired-guidance`,
+`check-backlog-consistency`, `check-m1-convergence-freeze --base origin/develop`,
+`check-contract-markers(+provenance)`, `check-dependency-namespaces`,
+`check-cross-package-imports`, `check-test-duplicates`,
+`check-workflow-inventory`, `check-compliance`.
+
+Scope of the leaf is otherwise unchanged: no edit to `tasks/idempotency.py`,
+the queue, backends, store, models, `maistro.tasks.__init__`, or any
+`quality/*.json`. Activation still requires the separately reviewed #1845
+integration head; this round does not claim the feature or parent #1845 is
+complete.

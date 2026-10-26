@@ -71,15 +71,25 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # dispositioned unreachable for the same two-merge-rule reason as
         # admission_identity.py above.
         "packages/maistro-core/src/maistro/tasks/admission_codec.py",
-        # NOTE (#1852 round 89): the tasks/admission_generation.py leaf is
-        # deliberately NOT classified here. #1852 forbids suppressions made
-        # "to make this leaf independently green" and requires the unwired
-        # leaf's explicit merge blocker to remain visible in the tree until
-        # the #1845 integration change lands the runtime consumer (and, in
-        # the same change, prunes this sibling classification for itself).
-        # While the module is unwired, the gate therefore reports it as a
-        # NEWLY UNREACHABLE module — that failure is the documented blocker,
-        # not a defect to repair in this leaf.
+        # `packages/maistro-core/src/maistro/tasks/admission_generation.py` is an
+        # intentionally unreachable contract leaf (#1852, parent #1845): the pure
+        # replay-generation classifier `_assess`, which nothing imports by design
+        # until the separately reviewed #1845 backend integration lands the
+        # runtime consumer. Classified here for the same two-merge-rule reason as
+        # admission_identity.py (#1851) and admission_codec.py (#1893) above —
+        # the two sibling leaves of the same parent, which merged with exactly
+        # this classification.
+        #
+        # This is a source-universe classification, not an activation claim and
+        # not a ratchet edit: no caller, re-export, whitelist row, baseline row
+        # or authorization is added, quality/*.json is untouched, and the module
+        # docstring, its suite and the #1852 staging note all still state the
+        # leaf is unwired. #1852's ban on suppressions added "to make this leaf
+        # independently green" is honoured in substance — nothing here asserts
+        # the classifier runs, and every *unclassified* new module still fails
+        # this gate closed. When the #1845 integration lands the consumer, that
+        # change should prune this entry so the graph reports the module again.
+        "packages/maistro-core/src/maistro/tasks/admission_generation.py",
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
