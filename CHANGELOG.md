@@ -25,6 +25,7 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
   PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
   `record_outcome` cannot irreversibly finish a Run the spine still holds
@@ -33,7 +34,6 @@ or placeholder-only section.
   terminal state — #1169/`RunExecutionService` remains the only control
   authority and inspection overlays the result.
 
-- **Conductor Run projection purity: nonterminal never invents `finished_at`
 - **CodeQL workflow scope test expects `develop` triggers (#2359).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
