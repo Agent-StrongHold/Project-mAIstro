@@ -171,3 +171,69 @@ head: the line-172 smoke is not weakened, the ledger is not made to approve a ba
 cannot build, and dependabot's commit is not reverted. The resolution decision remains
 the maintainer's (close per the #2118 precedent, or fund the 3.15 identity-contract
 migration once coincurve ships cp315 wheels).
+
+## Re-verification round 3 (2026-10-26, head `aa4862892`) — no repair path remains; escalate to BLOCKED
+
+Third independent pass, nothing taken on trust, all commands run at the exact merge-queue head
+`aa4862892403d1e64dfac3a218df00ce3be7a660` with the exact pinned artifact digests:
+
+### Round-2 findings re-proven unchanged
+
+- `uv run python scripts/check-image-pins.py` (CI's exact invocation, `quality.yml:2240`): exit 1,
+  the same 2 violations CI logged (`3.13.16` used_by drift; unregistered `3.15.0` pin).
+- `tests/test_check_image_pins.py::test_dunder_main_entrypoint_runs_the_real_gate`: `assert [1] == [0]`,
+  identical to the CI `test` job annotation.
+- Root cause 1 reproduced **byte-for-byte** with the pinned images: built
+  `python:3.15.0-slim-bookworm@sha256:0e019bbd…` + `ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed321…`,
+  ran the Dockerfile's own `uv venv --python 3.13` step → the venv interpreter is
+  `3.13.15 (main, Sep 29 2026, 15:01:28) [Clang 22.1.3 ]` — the exact string in the CI
+  docker-build / e2e / container-scan / Gate C `AssertionError`s. The line-172 smoke
+  (`sys.version_info[:3] == (3, 13, 16)`) cannot pass on this base.
+
+### New round-3 evidence
+
+1. **The last conceivable one-line repair is impossible.** Hypothesis: pin the managed download
+   (`uv venv --python 3.13.16`) to satisfy the smoke on the 3.15 base. Tested in the pinned image:
+   `uv python list` shows uv 0.12.21's embedded metadata has only managed `3.13.15`, and
+   `uv venv --python 3.13.16` hard-errors: "No interpreter found for Python 3.13.16 in managed
+   installations or search path". The 3.15.0 base ships no system 3.13. So *no* interpreter
+   satisfying the contract is reachable on this base with the pinned toolchain — not even a
+   version-mismatched one. The round-2 "NEEDS-REPAIR" framing is thereby closed: there is no
+   repair inside this PR's scope; only contract-weakening (prohibited) or reverting the bump
+   (discards the PR) remain.
+2. **Round 2's develop-inherited reds are gone at this head.** After the `78133c093` merge:
+   `uv run python scripts/check-workflow-inventory.py` → "clean (32 workflow(s) dispositioned)",
+   exit 0; `uv run python scripts/check-release-consistency.py` → "ok: released none, shipping
+   0.9.0, working toward 1.0.0", exit 0. The Quality gate's *only* red dependency is now
+   `quality-image-pins`; every remaining red gate on this branch is bump-caused.
+3. **No hidden failures in the `test` job.** Full CI-equivalent run
+   (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ --ignore=tests/tools/registry`):
+   **1 failed / 5805 passed / 139 skipped in 6m37s**, the sole failure being the image-pins
+   self-check. The "Event loop is closed" `##[error]` lines in the CI log are stderr noise from
+   passing async tests, not failures — the suite summary proves it.
+4. **coincurve re-checked today (PyPI JSON, 2026-10-26):** `21.0.0` is still the latest release,
+   ships cp313 manylinux/musllinux wheels and **zero cp314/cp315 artifacts** (51 files total, one
+   sdist). The 3.15 migration remains upstream-blocked, and the image installs
+   `--require-hashes` from a lock carrying cp313 hashes only.
+5. **Coverage gate attribution confirmed:** `coverage-gate` (`quality.yml:504`) re-runs the root
+   `tests/` suite as the `--source=scripts` producer (`quality.yml:730`) — it fails on the same
+   single image-pins self-check; the PR touches no covered Python, so the diff-coverage leg is
+   unaffected.
+6. **Develop-sync status (recorded, not acted on):** `origin/develop` tip `05070ff07` is NOT an
+   ancestor of this head — the branch is behind develop. The lane's merge condition ("if it was a
+   develop sync conflict") was not triggered (the prior block was a provider error, not a merge
+   conflict), and merging now would invalidate the head both this evidence and CI's last
+   evaluation are pinned to. Branch delta vs develop remains exactly the 4-line dependabot
+   Dockerfile change plus these notes commits (`git log --no-merges origin/develop..HEAD`).
+
+### Disposition
+
+**BLOCKED.** No in-lane action can make this PR mergeable: the identity-contract smoke cannot pass
+on the 3.15.0 base with the pinned toolchain (proven by execution), and the alternative — migrating
+the contract to 3.15 — is blocked upstream (coincurve) and by policy
+(`docs/security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md` pins the image runtime at CPython 3.13.16;
+precedent: #2099 patch-refresh-only, #2118 3.14-bump closed). The three refusals stand for a third
+round: the line-172 smoke is not weakened, the ledger is not made to approve a base that cannot
+build, dependabot's commit is not reverted. The decision — close per precedent, or fund the 3.15
+migration (coincurve cp315 wheels + support-matrix/ADR change + lock regeneration) — belongs to a
+maintainer via GitHub; closing issues/PRs is outside this lane's authority.
