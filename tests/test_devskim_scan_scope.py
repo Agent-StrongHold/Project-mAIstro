@@ -190,6 +190,8 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         ".github/workflows/ci.yml",
         "deploy/scripts/backup.sh",
         "alembic/env.py",
+        "packages/hive-conductor/eval/departments/engineering.py",
+        "quality/vulture-baseline.json",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:
