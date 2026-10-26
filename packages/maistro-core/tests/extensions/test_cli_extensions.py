@@ -102,3 +102,50 @@ def test_history_on_a_missing_database_fails_closed(tmp_path: Any) -> None:
     result = runner.invoke(app, ["history", str(tmp_path / "absent.db"), "ext-tool"])
 
     assert result.exit_code == 1
+
+
+def test_show_prints_the_canonical_attribution_payload(tmp_path: Any) -> None:
+    """M9-I1 (#976): `show` renders the evidence fragment telemetry carries.
+
+    The version-tagged attribution payload shown here is the same payload that
+    rides in Binding snapshots, activation log fields, and Event provenance —
+    so an operator can join a stored effect to the exact installed identity.
+    """
+
+    db_path = tmp_path / "installs.db"
+    bundle = install_bundle()
+    _seed(db_path, bundle)
+
+    result = runner.invoke(
+        app,
+        [
+            "show",
+            str(
+                db_path,
+            ),
+            "ext-tool",
+            "1.0.0",
+        ],
+    )
+    assert result.exit_code == 0
+    output = result.output
+    assert "attribution:" in output
+    assert "attribution payload:" in output
+    # the payload line is the decodable, format-tagged evidence — not prose
+    import json
+
+    lines = output.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("  attribution payload: "))
+    payload_chunks = [lines[start].split("attribution payload: ", 1)[1]]
+    for line in lines[start + 1 :]:
+        if line.startswith("  "):  # the next printed field begins
+            break
+        payload_chunks.append(line)  # rich's wrap of the long JSON token
+    payload = json.loads("".join(payload_chunks))
+    assert payload["format"] == "extension-attribution:v1"
+    assert payload["extension_id"] == "ext-tool"
+    assert payload["version"] == "1.0.0"
+    assert payload["package_sha256"] == bundle["identity"].package_sha256
+    from maistro.extensions import attribution_from_payload
+
+    assert attribution_from_payload(payload).version == "1.0.0"

@@ -71,6 +71,13 @@ jobs:
       # `deploy/**` / `alembic/**` — ops scripts and migration env, not
       # installed library/app code. Same location contract.
       #
+      # `packages/hive-conductor/eval/**` — immutable department eval fixtures
+      # (SPEC/cage-guard). Not a shipped runtime surface; DS176209 flags
+      # scenario prose. Do not edit those trees to silence scanners.
+      #
+      # `quality/**` — ratchet ledgers / baselines (JSON). Placeholder
+      # comments and identity strings are not executable product code.
+      #
       # Setting this input REPLACES the action's default, so `**/.git/**` and
       # `**/bin/**` are repeated rather than inherited.
       #
@@ -82,7 +89,7 @@ jobs:
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,packages/hive-conductor/eval/**,quality/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
