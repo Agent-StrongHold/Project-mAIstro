@@ -298,6 +298,15 @@
       "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change \u2014 a measurement, not a gate."
     },
     {
+      "id": "fleet-images",
+      "file": ".github/workflows/fleet-images.yml",
+      "disposition": "ACTIVE",
+      "triggers": [
+        "push"
+      ],
+      "rationale": "On every push to develop, builds maistro-engine and hive-conductor and publishes them to GHCR tagged sha-<tip> plus rolling develop, labeled with org.opencontainers.image.revision so the box-side fleet deployer can pull trunk-matched images instead of aging local builds (Oct 7\u201310 2026 drift incidents)."
+    },
+    {
       "id": "fleet-routing-bench",
       "file": ".github/workflows/fleet-routing-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
