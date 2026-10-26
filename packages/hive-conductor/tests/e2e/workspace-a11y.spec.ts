@@ -42,13 +42,14 @@ test.afterAll(async () => {
 });
 
 test("a toast is announced as a status message", async () => {
-  // Refuse the roster request so the Agents page raises its error toast;
+  // Refuse the missions request so the Missions page raises its error toast;
   // the toast's text is the page's, the region's role is what is under test.
-  await page.route("**/v1/agents*", (route) => route.abort());
-  await page.goto("/agents", { waitUntil: "domcontentloaded" });
-  const toast = page.getByRole("status").filter({ hasText: "Failed to load agents" });
+  // (Agents page was deleted in #2273; Missions still toast-on-load-failure.)
+  await page.route("**/v1/tasks*", (route) => route.abort());
+  await page.goto("/missions", { waitUntil: "domcontentloaded" });
+  const toast = page.getByRole("status").filter({ hasText: "Failed to load missions" });
   await expect(toast).toBeVisible({ timeout: 15000 });
-  await page.unroute("**/v1/agents*");
+  await page.unroute("**/v1/tasks*");
 });
 
 test("a refused workspace invite is announced as an alert", async () => {

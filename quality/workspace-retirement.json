@@ -93,45 +93,41 @@
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Agents.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /agents redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Topology.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /topology redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Skills.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /skills redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/MCP.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /mcp redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
