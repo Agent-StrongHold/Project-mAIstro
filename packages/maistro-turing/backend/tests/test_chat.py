@@ -346,6 +346,114 @@ def test_turing_chat_admission_uses_chat_retention_and_bounded_window():
     _await(scenario())
 
 
+def test_turing_chat_retention_uses_the_canonical_admitter_window():
+    """Three turns stay inside max_retained without a later admit (#131).
+
+    The window is ChatRunAdmitter's: a non-terminal Run is not a shield by
+    itself, a RUNNING dispatch-pending turn is, and the bound is re-applied
+    when a turn terminalizes rather than only when the next one is admitted.
+    """
+    from maistro.graph import Graph, Node
+
+    class ReplySession:
+        async def handle_message(self, message: str) -> str:
+            return f"reply:{message}"
+
+    async def _queued_then_running(plane: Any, name: str) -> Any:
+        workspace_id, project_id = await plane._scope_for("user")
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name=name,
+            nodes=[Node(node_id=name, node_type="test", name=name)],
+        )
+        run = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
+        )
+        return await plane.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=2)
+        started = [asyncio.Event() for _ in range(3)]
+        release = asyncio.Event()
+
+        class GatedSession:
+            def __init__(self, index: int) -> None:
+                self._index = index
+
+            async def handle_message(self, message: str) -> str:
+                started[self._index].set()
+                await release.wait()
+                return f"reply:{message}"
+
+        tasks = [
+            asyncio.create_task(
+                plane.run_chat(
+                    session=GatedSession(index),  # type: ignore[arg-type]
+                    user_id=f"user-{index}",
+                    session_id=f"session-{index}",
+                    message=str(index),
+                )
+            )
+            for index in range(3)
+        ]
+        for event in started:
+            await asyncio.wait_for(event.wait(), timeout=2)
+
+        # All three are RUNNING and dispatch-pending, over the bound, and
+        # none has been deleted — the in-flight turn is a shield.
+        assert plane.retained == 3
+        running = await plane.run_store.list_by_status(RunStatus.RUNNING, limit=10)
+        assert len(running) == 3
+
+        release.set()
+        records = await asyncio.gather(*tasks)
+        # No fourth admission. The sweep that runs as each turn terminalizes
+        # is what brings the window back under max_retained.
+        assert plane.retained <= 2
+        surviving = [
+            record.run_id
+            for record in records
+            if await plane.run_store.get_run(record.run_id) is not None
+        ]
+        assert len(surviving) <= 2
+        assert surviving
+
+        shield = _new_execution_plane(max_retained=1)
+        live = await _queued_then_running(shield, "pending")
+        admitter = shield._admitter_for(live.workspace_id)
+        admitter.mark_dispatch_pending(live.run_id)
+        await admitter.track(live.run_id)
+        await shield.run_chat(
+            session=ReplySession(),  # type: ignore[arg-type]
+            user_id="user",
+            session_id="session",
+            message="overflow",
+        )
+        kept = await shield.run_store.get_run(live.run_id)
+        assert kept is not None
+        assert kept.status is RunStatus.RUNNING
+        assert shield.retained <= 1
+
+        stall = _new_execution_plane(max_retained=1)
+        stalled = await _queued_then_running(stall, "stalled")
+        await stall._admitter_for(stalled.workspace_id).track(stalled.run_id)
+        completed = await stall.run_chat(
+            session=ReplySession(),  # type: ignore[arg-type]
+            user_id="user",
+            session_id="session",
+            message="next",
+        )
+        assert await stall.run_store.get_run(stalled.run_id) is None
+        assert await stall.run_store.get_run(completed.run_id) is not None
+        assert stall.retained <= 1
+
+    _await(scenario())
+
+
 def test_turing_execution_plane_rejects_an_empty_retention_window():
 
     with pytest.raises(ValueError, match="max_retained must be >= 1"):
@@ -368,12 +476,24 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
             graph,
             actor_principal_id="user",
             initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
         )
-        plane._retained_runs[active.run_id] = None
+        admitter = plane._admitter_for(workspace_id)
+        await admitter.track(active.run_id)
 
-        await plane._track_admission("missing-run", workspace_id=workspace_id)
+        vanished = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
+        )
+        await admitter.track(vanished.run_id)
+        await plane.run_store.transition_run(vanished.run_id, RunStatus.CANCELLED)
+        await plane.run_store.delete_run(vanished.run_id)
+        assert await admitter.sweep() == 1
 
-        assert list(plane._retained_runs) == [active.run_id]
+        assert admitter.retained == 1
+        assert list(admitter._window) == [active.run_id]
         assert await plane.run_store.get_run(active.run_id) is not None
 
     _await(scenario())
@@ -386,6 +506,17 @@ def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypat
 
     async def scenario() -> None:
         plane = _new_execution_plane()
+
+        await plane._settle_window("missing-workspace", "missing-run")
+        workspace_id, _ = await plane._scope_for("user")
+        admitter = plane._admitter_for(workspace_id)
+
+        def release_failed(_run_id: str) -> None:
+            raise RuntimeError("shield unavailable")
+
+        monkeypatch.setattr(admitter, "release_dispatch_pending", release_failed)
+        monkeypatch.setattr(admitter, "sweep", fail)
+        await plane._settle_window(workspace_id, "missing-run")
 
         await plane._cancel_incomplete_admission(None)
         await plane._cancel_incomplete_admission("missing-run")
@@ -404,6 +535,9 @@ def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypat
     assert "Turing continuation cleanup failed" in caplog.text
     assert "could not be compensated" in caplog.text
     assert "Turing cancellation cleanup failed" in caplog.text
+
+    assert "Turing chat dispatch shield release failed" in caplog.text
+    assert "Turing chat retention sweep failed" in caplog.text
 
 
 def test_outer_cancellation_terminalizes_active_evidence_with_and_without_a_lease():
