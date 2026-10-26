@@ -167,8 +167,6 @@ recovery-adjacent seams):
   diff. UNVERIFIED locally: the hive api-tests leg and the docker image
   build itself at HEAD.
 
-No test was added or removed this round, so the recorded inventory counts
-are unchanged; this note documents validation only.
 `check-ac-state.py --run-tests --ratchet` initially failed on an unbanked
 design_coverage improvement (measured 39.6633 vs folded floor 39.641, slack a
 regression could spend); banked to this branch's own
@@ -178,3 +176,47 @@ bounds. No shared quality ledger or grant was edited. Diff coverage was not
 re-measured locally this round (needs CI's full coverage producer); the branch
 diff beyond develop is unchanged for source files validated in the prior
 round.
+
+## Round: post-merge repair validation (`1619765fa`, develop `1fc3d230` + `407b181` folded in)
+
+No source or test change this round. The pushed head `33c3cce` failed three
+CI legs — `Quality / Execution lifecycles`, the `Quality gate` aggregate
+(via lifecycles) and `SAST (bandit + semgrep + gitleaks)` (its semgrep leaf
+was *cancelled* after 91 s, so the aggregate failed closed) — and the
+merge-queue `integration-scope` aggregator stayed non-success because it
+requires exactly those legs. The develop merge now at HEAD resolves the code
+side: `check-execution-lifecycles.py` (CI-exact, `RATCHET_BASE_REV=origin/develop`)
+was re-run at `1619765fa` and exits 0 (19 classified lifecycles, 3 CANONICAL).
+Validation at the new merged HEAD:
+
+- SAST reproduced locally with each workflow's exact arguments: semgrep
+  (custom rules + p/security-audit + p/owasp-top-ten + p/secrets, same
+  excludes) 364 rules on 2268 files, 0 findings; bandit 0 Medium+ on
+  maistro-core/src + hive-conductor/backend + maistro-server/src; gitleaks
+  `--log-opts=407b181..1619765fa` 18 commits, no leaks.
+- CI-exact ratchet gates at HEAD: vulture (1248/1248 banked), radon
+  (126/126), reachability + dispositions, convergence-matrix,
+  workflow-inventory, durable-table-inventory (122 tables),
+  execution-lifecycles — all exit 0. `mypy --strict packages/maistro-core/src`
+  clean (840 files) after `uv sync --locked --all-extras` (CI's env; a
+  `--extra dev`-only venv fails on the `maistro_bootstrap` import, an
+  environment artifact, not a code error).
+- Tests at HEAD: full `packages/maistro-core/tests/graph/durable_runs`
+  795 passed / 76 skipped / 4 xfailed (six new #1626 walker-death tests
+  included and passing), `tests/a2a` 295 passed, conductor DAG/registered-DAG
+  recovery 28 passed; both suite inventories ok (Core 18,387; Hive 4,181).
+- integration-scope reproduced with the workflow's exact steps:
+  `ci_merge_group_scope.py --json` over the 28 changed paths vs `407b181`
+  is well-formed and resolves the required set docker-build, durable-events,
+  hive-conductor-e2e(-ui), postgres (pg17/pg18), strike-ladder,
+  wheel-imports — the same legs that all concluded success on CI at
+  `33c3cce`; the merge adds only develop content already green through
+  develop's own merge queue.
+- acceptance-state `--run-tests --ratchet --mandate 407b181` over a freshly
+  migrated pg18 scratch database (`cr1373-round3-pg18`, port 54329): exit 0,
+  10 debt counters exactly on their ceilings, 1 progress counter exactly on
+  its floor, 0 unproven criteria, 0 chain violations. No ledger or grant
+  was edited; `quality/ac-state.json` output is gitignored.
+
+No test was added or removed this round, so the recorded inventory counts
+are unchanged; this note documents validation only.
