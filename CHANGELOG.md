@@ -2057,6 +2057,18 @@ or placeholder-only section.
   and `certifi` 2026.10.19. No code path changes; both distributions keep
   the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
 
+- **gitpython and graphql-core move past their open advisories (#1852
+  repair).** The locked dev set carried `gitpython` 3.1.62
+  (CVE-2026-114145, fixed in 3.2.1) and `graphql-core` 3.2.11
+  (CVE-2026-75507/75508, fixed in the 3.3.x line), so the pip-audit gate
+  (`scripts/pip_audit_gate.py`) failed on advisories outside its triaged
+  allowlist. Both are unconstrained transitive dependencies — `cosmic-ray`
+  -> `gitpython`, `moto[server]` -> `graphql-core` — so `uv.lock` alone
+  resolves them to `gitpython` 3.2.1 and `graphql-core` 3.3.0 (stable, not
+  the rc the advisory text named) with no manifest or floor change. No
+  shipped runtime image installs either distribution; the affected surfaces
+  are the dev toolset and the RSI runner's locked dev set.
+
 - **The license inventory gate stops accepting missing license metadata as a
   license, and stops hiding licensed shipped assets (#363).** Four defects in
   `scripts/check-license-inventory.py` are fixed against the acceptance
@@ -2109,6 +2121,18 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
+  The `age` binaries in the conductor image and the static Docker CLI in the
+  engine and research images are compiled in-tree from pinned release tags
+  precisely so a patched toolchain can ship them (#363 policy). The pinned
+  `golang:1.27.2-alpine` builder now emits stdlib 1.27.2, which trivy flags
+  with CVE-2026-111943 (HIGH, crypto/x509 MITM via untrusted intermediate
+  certificates, fixed in go1.26.10/1.27.3) — the container gate fails on the
+  conductor image's first scan step. All three Dockerfiles move to
+  `golang:1.27.3-alpine` (digest re-recorded in `quality/image-pins.json`);
+  the rebuilt binaries rescan clean at HIGH/CRITICAL with fixes, and the
+  conductor/observability runtime verify steps are unchanged.
 
 - **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
   regex injection, and scan-scope noise)** (no linked issue: GitHub
