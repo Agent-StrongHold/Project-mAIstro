@@ -14,6 +14,7 @@ from adapters.maistro_core import _construct_runtime
 from config import Settings
 
 from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.expected_effect import canonical_digest
 from maistro.capabilities.invocation import InvocationStatus, UnsafeEffectRetry
 from maistro.container import Container, create_container
 from maistro.graph.definitions import Graph, Node
@@ -23,6 +24,7 @@ from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import RunIntegrityError
 from maistro.security._types import AuthContext
+from maistro.testing.faux_provider import FauxProvider, FauxResponse
 from maistro.types.config import AgentConfig, SecurityConfig
 
 _WORKSPACE = "agent-tools-workspace"
@@ -250,6 +252,53 @@ async def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
         await owner.aclose()
 
 
+async def test_boot_agent_handle_uses_host_schemas_and_persists_tool_invocation(runtime):
+    from services.governed_tools import hive_tool_contracts
+
+    arguments = {"questions": ["Which audience?"], "context": {"input": "Build a project"}}
+    provider = FauxProvider()
+    provider.seed_tool_call("clarify", arguments)
+    provider.seed(FauxResponse(content="done"))
+    # Hermetic model only; Agent, Sentinel, tool adapter, Container and stores
+    # remain the production composition. The tool's model sub-effect still
+    # uses the persisted canonical authority and HTTP fixture above.
+    runtime.agent._llm = provider
+    with runtime.context():
+        response = await runtime.agent.handle(
+            [{"role": "user", "content": "Clarify the project."}],
+            AuthContext(user_id=_ACTOR, roles=frozenset({"operator"})),
+        )
+
+    assert response.content == "done"
+    schemas = {
+        item["function"]["name"]: item["function"]["parameters"]
+        for item in provider.call_log[0]["tools"]
+    }
+    contracts = hive_tool_contracts()
+    assert schemas == {name: contracts.require(name).schema for name in _TOOLS}
+    tool_results = [
+        message["content"]
+        for message in provider.call_log[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert len(tool_results) == 1 and "Developers" in tool_results[0]
+    (tool_row,) = await runtime.owner.capability_effects.invocation_store.list_effect(
+        run_id=runtime.identity[0],
+        node_run_id=runtime.identity[1],
+        binding_id=f"hive-tool:{_WORKSPACE}:{runtime.project_id}",
+        effect_key=(
+            "tool:clarify:"
+            + json.dumps(
+                [runtime.agent.identity.name, 0, 0, "call_0", "clarify"], separators=(",", ":")
+            )
+            + f":{canonical_digest(arguments)}"
+        ),
+    )
+    assert tool_row.status is InvocationStatus.COMPLETED
+    assert tool_row.attempt_id == runtime.identity[2]
+    assert tool_row.binding.provider_name == "hive.clarify"
+
+
 @pytest.mark.parametrize(
     "tool,args,expected",
     [
@@ -296,7 +345,14 @@ async def test_revocation_is_checked_before_completed_replay(runtime):
     first = await runtime.invoke()
     assert await runtime.invoke() == first
     assert len(runtime.sent) == 1
-    await runtime.owner.capability_effects.bindings.revoke(_BINDING)
+    # Since #57 the boot tool effect is itself a canonical Invocation, so the
+    # replay authority -- and the revocation that must outrank it -- is the
+    # governed tool Binding the effect actually uses. Revoking it refuses the
+    # next logical call instead of replaying the recorded outcome; revoking
+    # only the model Binding cannot resurrect a new model effect either,
+    # because the replay serves the recorded result without re-egress.
+    tool_binding = f"hive-tool:{_WORKSPACE}:{runtime.project_id}"
+    await runtime.owner.capability_effects.bindings.revoke(tool_binding)
     with pytest.raises(BindingResolutionError):
         await runtime.invoke()
     assert len(runtime.sent) == 1
@@ -569,7 +625,11 @@ async def test_boot_agent_denies_unlisted_model_tool_before_provider(
         for message in provider.call_log[-1]["messages"]
         if message.get("role") == "tool"
     ]
-    assert results == ["Error: Permission denied for undeclared tool 'clarify'"]
+    # #57 moved the allowlist refusal to the strategy gate, which fires before
+    # Sentinel pre-call from the same identity.tools declaration, so the
+    # message reports the allowlist rather than the inner undeclared-tool
+    # defense the direct-executor path below still exercises.
+    assert results == ["Error: tool 'clarify' is not in the Agent allowlist"]
 
 
 @pytest.mark.parametrize("runtime", ["unlisted-tool"], indirect=True)

@@ -30,6 +30,7 @@ from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
 from maistro.types.agent import AgentIdentity
+from maistro.types.tool import ToolDefinition
 
 _PII_RESULT = "Customer record: contact jane.doe@example.com, SSN 123-45-6789"
 _PII_GOVERNED = "Customer record: contact [REDACTED:email], SSN [REDACTED:ssn]"
@@ -118,6 +119,20 @@ async def test_tool_result_reenters_context_governed_identically(
         sentinel=sentinel,
         session_store=session_store,
         tool_executor=raw_tool,
+        tool_registry=SimpleNamespace(
+            get=lambda name: (
+                ToolDefinition(
+                    name="lookup",
+                    parameters={
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"],
+                    },
+                )
+                if name == "lookup"
+                else None
+            )
+        ),
     )
 
     response = await agent.handle(
