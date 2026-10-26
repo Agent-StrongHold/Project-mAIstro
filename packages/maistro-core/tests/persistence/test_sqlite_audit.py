@@ -3,6 +3,7 @@ in-memory sqlite3 DB (via aiosqlite)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -469,3 +470,32 @@ async def test_a_second_purge_inside_the_probe_interval_costs_no_probe(
     await log.log(AuditEntry(boundary="tool_call", user_id="u", detail="ok"))
     assert await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
     assert samples == ["audit_log"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writers_queue_behind_the_write_lock(
+    log: SqliteAuditLog,
+) -> None:
+    """Overlapping log() and purge_expired() calls serialize, not fail.
+
+    log() and purge_expired() share one aiosqlite connection, so a purge's
+    `BEGIN IMMEDIATE` landing inside another writer's open transaction raises
+    "cannot start a transaction within a transaction" instead of waiting. The
+    write lock makes the second caller queue behind the first (#325 review).
+    """
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "u", "a") for _ in range(3)],
+    )
+    await log._conn.commit()
+
+    entry = AuditEntry(boundary="tool_call", user_id="u", detail="ok")
+    await asyncio.gather(
+        log.log(entry),
+        log.purge_expired(before=datetime.now(UTC) - timedelta(days=1)),
+        log.purge_expired(before=datetime.now(UTC) - timedelta(days=1), limit=1),
+    )
+
+    cursor = await log._conn.execute("SELECT COUNT(*) FROM audit_log")
+    assert (await cursor.fetchone())[0] == 1  # the new entry alone survives
