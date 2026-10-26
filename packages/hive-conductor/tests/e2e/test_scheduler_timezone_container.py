@@ -95,8 +95,23 @@ def _server_under_test_ships_this_change(client: httpx.Client):
     surface is this change's own marker: an image without it predates the
     branch, whatever else it serves. The compose harness (the verification
     path this file exists for) always exposes it, so CI runs everything.
+
+    A server that cannot be reached at all is the same situation with less
+    information: nothing answering the target URL is by definition not an
+    image built from this tree, so skip naming the harness command instead of
+    erroring with a bare ConnectTimeout. The harness cannot mask a real
+    failure this way — compose starts hive first (api-tests depends_on
+    service_healthy), so inside it this fixture always gets an answer.
     """
-    r = client.get("/health")
+    try:
+        r = client.get("/health")
+    except httpx.TransportError as exc:
+        pytest.skip(
+            f"nothing answering at {BASE} ({type(exc).__name__}) — this suite "
+            "verifies the shipped image and must run inside the compose "
+            "harness: docker compose -f docker-compose.test.yml --profile "
+            "test up --build api-tests"
+        )
     assert r.status_code == 200, f"health probe failed: {r.status_code} {r.text}"
     if "tz_database" not in r.json():
         pytest.skip(

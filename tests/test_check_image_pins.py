@@ -301,6 +301,64 @@ def test_first_stage_index_zero_is_not_a_stage_reference(gate, tmp_path, monkeyp
     assert _run(gate, tree, monkeypatch) == 1
 
 
+HEREDOC_CRON_SMOKE = (
+    "FROM python:3.13.1-slim@sha256:{d}\n"
+    "RUN python - <<'PY'\n"
+    "from datetime import UTC, datetime\n"
+    "from maistro.scheduling.cron import parse_cron\n"
+    "print('tz cron smoke ok')\n"
+    "PY\n"
+    "COPY --from=docker:29-cli@sha256:{d2} /usr/local/bin/docker /usr/local/bin/docker\n"
+)
+
+
+def test_heredoc_body_is_command_data_not_dockerfile_grammar(gate, tmp_path, monkeypatch, capsys):
+    """A `RUN <<'PY'` body is script content for the container, not Dockerfile
+    grammar: Docker never interprets instructions inside it, so its Python
+    `from datetime import ...` / `from maistro.scheduling.cron import ...`
+    lines must not be read as `FROM datetime` / `FROM maistro.scheduling.cron`
+    (both implicit `:latest`). This is the exact shape of the hive-conductor
+    image's cron-dialect smoke test (#290), which the gate flagged as two
+    mutable image references before heredocs were understood."""
+    tree = _tree(
+        tmp_path,
+        {"Dockerfile": HEREDOC_CRON_SMOKE.format(d=hex_of(DIGEST), d2=hex_of(OTHER_DIGEST))},
+        [_pin(), _pin(image="docker", tag="29-cli", digest=OTHER_DIGEST)],
+    )
+    assert _run(gate, tree, monkeypatch) == 0
+    assert "violation" not in capsys.readouterr().out
+
+
+def test_unpinned_from_after_a_heredoc_is_still_caught(gate, tmp_path, monkeypatch, capsys):
+    """Skipping heredoc bodies must not leave the gate open behind them: the
+    body ends at its delimiter line and the next real instruction is judged."""
+    df = (
+        "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"
+        "RUN python - <<'PY'\n"
+        "from datetime import UTC\n"
+        "PY\n"
+        "FROM python:3.13.1-slim\n"
+    )
+    tree = _tree(tmp_path, {"Dockerfile": df}, [_pin()])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "must pin python by" in capsys.readouterr().err
+
+
+def test_dashed_heredoc_terminates_on_tab_indented_delimiter(gate, tmp_path, monkeypatch):
+    """`<<-SH` strips leading tabs from the terminating line, so a Make-style
+    tab-indented delimiter must close the body instead of swallowing the rest
+    of the Dockerfile into a skipped "heredoc"."""
+    df = (
+        "FROM python:3.13.1-slim@sha256:" + hex_of(DIGEST) + "\n"
+        "RUN <<-SH\n"
+        "\techo hello\n"
+        "\tSH\n"
+        "RUN true\n"
+    )
+    tree = _tree(tmp_path, {"Dockerfile": df}, [_pin()])
+    assert _run(gate, tree, monkeypatch) == 0
+
+
 def test_conditional_copier_template_is_discovered(gate, tmp_path, monkeypatch, capsys):
     """Copier conditional filenames (`{% if %}Dockerfile{% endif %}.jinja`) must
     be discovered by their name containing `Dockerfile`, not by the

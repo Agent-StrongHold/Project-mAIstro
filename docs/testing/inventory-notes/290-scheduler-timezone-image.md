@@ -589,3 +589,50 @@ no-gateway surface):
   for `packages/hive-conductor/backend/tests` (4105) and
   `packages/hive-conductor/tests/e2e` (28); CI-exact vulture ledger
   (1256 = 1256). Stack torn down with `down -v`.
+
+## Repair round: the develop-sync merge-queue gate failures (2026-10-26, head `f12babe1d`)
+
+The branch fast-forwarded to `origin/auto-290` `f12babe1d` (its own prior work
+`3df6a8043` plus `origin/develop` `f52b8522b`), and the hosted merge-queue
+evaluation at that head failed five checks, all develop-side inheritance the
+queue judges the merge result for, so the candidate carries the fix:
+
+1. **Quality / Image pins**: the #290 cron-dialect heredoc smoke test
+   (`RUN python - <<'PY'`) was parsed as Dockerfile grammar — the Python
+   `from datetime import …` / `from maistro.scheduling.cron import …` lines
+   matched the case-insensitive `FROM` regex as two phantom `:latest`
+   references. Fix: heredoc-aware parsing in `scripts/check-image-pins.py`
+   (bodies are command data; real instructions before/after are still
+   judged), with three tests + note
+   `290-image-pins-heredoc.md`. Gate now exit 0.
+2. **Quality / Release consistency**: develop's #2359 Unreleased entry wrote
+   `(follow-up to #2357)`, matching neither the `(#NNNN)` nor the
+   `(no linked issue: …)` shape. Fix: link the shipping PR —
+   `(#2359, follow-up to #2357)`. Gate now exit 0.
+3. **Quality / Workflow inventory**: develop's #2357 added
+   `workflow_dispatch` to `devskim.yml`; the reviewed inventory row still
+   declared three triggers. Fix: declare the trigger and record why in the
+   row's rationale. Gate now exit 0 (32 workflows dispositioned).
+4. **workflow-lint** (`check-required-checks.py` + `check-branch-protection.py`):
+   the #2359 CodeQL widening to `develop` left both contract docs stale.
+   Fix: regenerated with the scripts' own `--update` / `--update-doc`; the
+   diff is exactly the widening (the three `Analyze (…)` legs gain `develop`;
+   nothing moves off every-PR). Both gates exit 0.
+5. **integration-scope**: the aggregator; red only through the legs above.
+
+Same round, the validation driver's bare host command
+(`uv run pytest packages/hive-conductor/tests/e2e/
+test_scheduler_timezone_container.py -q -x`) errored with a bare
+`httpx.ConnectTimeout` where nothing listens on the host port, instead of the
+foreign-image skip the file already had. Fix: the module guard now skips on
+any `httpx.TransportError` with the compose-harness command in the reason —
+unreachable and foreign are the same situation (not an image built from this
+tree). The harness cannot be masked by this: compose starts hive first
+(`api-tests` depends_on `service_healthy`), so inside the harness the probe
+always gets an answer. Bare host run at this tree: **5 skipped, exit 0**.
+Test count unchanged (delta: none for this suite).
+
+Regression checks re-run at this head: `ruff check .` /
+`ruff format --check .` clean; suite inventory ok for `tests/` (6041 = 6038
++ the 3 image-pins tests), `packages/hive-conductor/backend/tests` and
+`packages/hive-conductor/tests/e2e` (28, no delta).
