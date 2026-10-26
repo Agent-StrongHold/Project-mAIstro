@@ -12,6 +12,12 @@ node kind. The target Run is authorized through the canonical Workspace
 inspection door, and its Project is authoritative; a body project_id may
 confirm that scope but cannot replace it.
 
+Every accepted Outcome carries its canonical Run/NodeRun/Attempt
+provenance (#709): the run must be visible in the caller's Workspace
+universe and carry a canonical execution identity, so feedback is always
+correlatable (#337). A run id with no visible projection row is refused
+like a foreign one.
+
 Auth: requires the logged-in user (AuthMiddleware sets request.state.principal).
 The user_id from the session is the actor; cross-user writes are
 impossible because the route never accepts user_id from the body.
@@ -92,6 +98,64 @@ def _resolve_org_id(request: Request) -> str:
     return str(org_id)
 
 
+async def _execution_identity(
+    request: Request,
+    *,
+    run_id: str,
+    node_id: str,
+) -> tuple[str, str, str]:
+    """Resolve feedback to the visible canonical Run/NodeRun/Attempt.
+
+    Every accepted thumb names a run the caller may inspect (the Workspace
+    inspection door, #1174) that carries a canonical execution identity; a
+    run that is missing, foreign, or projection-only is refused, because an
+    Outcome that cannot name its Run/NodeRun/Attempt is feedback nothing can
+    correlate (#337). A node thumb names the latest Attempt under that
+    NodeRun; it never invents a second execution identity.
+    """
+    from services.dag_run_inspection import visible_run_detail
+
+    user_id = require_actor_id(request)
+    detail = await visible_run_detail(user_id, run_id)
+    if detail is None:
+        # "No such run" and "not in your Workspace universe" are deliberately
+        # indistinguishable — the same 404-shaped refusal every other scoped
+        # run surface gives (#1174). This used to accept a projection-free
+        # run_id as a compatibility write; that row could carry no canonical
+        # identity, so it is retired rather than kept as silently
+        # uncorrelated feedback.
+        raise HTTPException(status_code=404, detail="run not found")
+
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id:
+        raise HTTPException(
+            status_code=409,
+            detail="feedback is unavailable for a run without canonical execution identity",
+        )
+    if not node_id:
+        return canonical_run_id, "", ""
+
+    try:
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            raise LookupError
+        node_runs = await run_store.list_node_runs(canonical_run_id)
+        node_run = next((item for item in node_runs if item.node_id == node_id), None)
+        if node_run is None:
+            raise HTTPException(status_code=404, detail="run node not found")
+        attempts = await run_store.list_attempts(node_run.node_run_id)
+        attempt_id = attempts[-1].attempt_id if attempts else ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    return canonical_run_id, node_run.node_run_id, attempt_id
+
+
 async def _record_feedback(
     request: Request,
     *,
@@ -112,6 +176,11 @@ async def _record_feedback(
         raise HTTPException(status_code=404, detail="run not found")
     project_id = _resolve_project_id(request, body, str(run.get("project_id") or ""))
     org_id = _resolve_org_id(request)
+    canonical_run_id, node_run_id, attempt_id = await _execution_identity(
+        request,
+        run_id=run_id,
+        node_id=node_id,
+    )
 
     try:
         result = await record_thumb(
@@ -119,6 +188,9 @@ async def _record_feedback(
             org_id=org_id,
             project_id=project_id,
             run_id=run_id,
+            canonical_run_id=canonical_run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
             thumb=body.thumb,
             comment=body.comment,
             node_id=node_id,
