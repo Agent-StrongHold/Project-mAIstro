@@ -53,3 +53,40 @@ The diff vs merge base `78133c093` touches no Python and no workflow
 files, so the Python-only quality pillars measure trees identical to
 protected `develop`. Settings/Skills/Profile smoke from the original
 test plan remains UNVERIFIED here — it needs the live stack.
+
+## Verification (develop-sync round, head `ff367f356`)
+
+The preserved `origin/develop` sync conflict (CHANGELOG.md, three-way
+diff3 on the CodeQL scope-test Unreleased line) was resolved by taking
+develop's wording (`#2359; follow-up to #2357`, a superset of the
+branch-side `#2359` edit), and `origin/develop` (`10f872fa7be3`) was
+merged; merge head `ff367f356`. Every gate was re-run locally at the
+new head, all green:
+
+- `uv run python scripts/check-frontend-typed-client.py` → exit 0:
+  base `10f872fa7be3` → candidate `ff367f356f69`, **42 → 40 raw fetch,
+  120 → 119 hand-typed, none new**.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0: 1248
+  identities, exact ledger match, `unclassified: 0`,
+  `never_allowlist: 0` (count moved 1253 → 1248 with develop's own
+  churn; the ledger needed no candidate-side amendment).
+- `uv run python scripts/check-shipped-surface-truth.py` → exit 0
+  ("matrix is complete"; the 4 stale `mutating-api-call` rows stay
+  dropped).
+- `uv run python scripts/check-ratchet-provenance.py` → exit 0.
+- `uv run python scripts/check-doc-links.py` → exit 0 (covers the
+  resolved CHANGELOG conflict).
+- `uv run python scripts/check-release-consistency.py` → exit 0.
+- `uv run python scripts/check-suite-inventory.py` → exit 0 (21
+  suites match; the branch adds no tests, and a no-count note records
+  no `inventory-delta` block by design).
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `npm run build` in `packages/hive-conductor/frontend` → exit 0
+  (tsc + vite, built in ~2s).
+
+The wave-1 SSE waiver holds at this head: the Profile stream fetch
+lives under `lib/profile.ts` (detector-exempt, per its own comment
+about the 30s shared-client body budget). Live-stack smoke
+(Settings load/save, Skills list, Profile stream, `hctl status`)
+remains UNVERIFIED.
