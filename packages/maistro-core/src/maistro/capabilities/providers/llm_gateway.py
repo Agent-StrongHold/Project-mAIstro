@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -303,8 +304,9 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     }
     if request.temperature is not None:
         payload["temperature"] = request.temperature
-    if request.max_tokens is not None:
-        payload["max_tokens"] = request.max_tokens
+    max_tokens = _resolved_max_tokens(provider, request)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
     if request.tool_choice:
@@ -312,6 +314,60 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
     if request.response_format is not None:
         payload["response_format"] = dict(request.response_format)
     return payload
+
+
+def _resolved_max_tokens(provider: LlmGatewayProvider, request: ModelChatRequest) -> int | None:
+    """Cap explicit output limits at known context, without inventing one."""
+    if request.max_tokens is None:
+        _CONTEXT_PROBE.get_context_length(provider.name)
+        _CONTEXT_PROBE.probe_next_size(provider.name)
+        return None
+    known = _CONTEXT_PROBE.get_context_length(provider.name)
+    return min(request.max_tokens, known) if known is not None else request.max_tokens
+
+
+def _record_gateway_rate_limit(response: Any) -> None:
+    """Coordinate a gateway 429 across callers until its retry window ends."""
+    headers = response.headers if hasattr(response, "headers") else {}
+    retry_after = headers.get("Retry-After")
+    try:
+        wait_s = float(retry_after) if retry_after is not None else 60.0
+    except (TypeError, ValueError):
+        wait_s = 60.0
+    _GATEWAY_RATE_LIMITS.record_rate_limit(
+        _GATEWAY_RATE_LIMIT_SCOPE, time.time() + max(wait_s, 0.0)
+    )
+
+
+def _raise_if_gateway_rate_limited() -> None:
+    """Refuse dispatch while a prior gateway 429 remains active."""
+    if _GATEWAY_RATE_LIMITS.is_rate_limited(_GATEWAY_RATE_LIMIT_SCOPE):
+        reset = _GATEWAY_RATE_LIMITS.get_reset_time(_GATEWAY_RATE_LIMIT_SCOPE)
+        raise LlmHttpError(
+            f"llm_rate_limited status=429 (coordinator until {reset})", status_code=429
+        )
+
+
+def _note_context_outcome(model: str, response: Any, *, requested_tokens: int | None) -> None:
+    """Learn context bounds only from provider overflow or successful evidence."""
+    if response.status_code == 400 and requested_tokens is not None:
+        try:
+            body_text = str(response.text).lower()
+        except Exception:
+            body_text = ""
+        if any(term in body_text for term in ("context", "maximum", "token")):
+            _CONTEXT_PROBE.record_overflow(model, requested_tokens)
+            return
+    if response.status_code < 400 and requested_tokens is not None:
+        _CONTEXT_PROBE.record_success(model, requested_tokens)
+        _GATEWAY_RATE_LIMITS.clear(_GATEWAY_RATE_LIMIT_SCOPE)
+
+
+def _seed_context_probe(provider: LlmGatewayProvider) -> None:
+    """Seed known model context from provider metadata."""
+    metadata = provider.metadata
+    if metadata is not None and metadata.max_tokens > 0:
+        _CONTEXT_PROBE.set_known_length(provider.name, metadata.max_tokens)
 
 
 def _responses_payload(
@@ -459,14 +515,18 @@ async def _stream_body(
     return summary.body()
 
 
-def _checked_body(response: Any) -> dict[str, object]:
+def _checked_body(
+    response: Any, *, model: str = "", requested_tokens: int | None = None
+) -> dict[str, object]:
     """Map gateway statuses to retryable, truthful Invocation failures."""
 
+    _note_context_outcome(model, response, requested_tokens=requested_tokens)
     if response.status_code == 401:
         raise LlmAuthError(
             "llm_auth_failed status=401 (check gateway credentials)", status_code=401
         )
     if response.status_code == 429:
+        _record_gateway_rate_limit(response)
         raise LlmHttpError("llm_rate_limited status=429", status_code=429)
     if response.status_code >= 400:
         raise LlmHttpError(
@@ -515,6 +575,19 @@ async def register_provider_models(
         raise ProviderRegistrationError(f"LiteLLM gateway unreachable: {exc}") from exc
 
 
+def _adapter_response_body(adapter_provider: Any, response: Any) -> dict[str, object]:
+    """Map an adapter response through its error taxonomy and normalizer."""
+    if response.status_code == 429:
+        _record_gateway_rate_limit(response)
+    if response.status_code >= 400:
+        raise _adapter_error(adapter_provider.spec, adapter_provider.adapter, response.status_code)
+    body = _json_body(response)
+    normalized = adapter_provider.adapter.normalize_response(body)
+    if not isinstance(normalized, dict):
+        raise RuntimeError("adapter normalize_response returned a non-object body")
+    return normalized
+
+
 async def _dispatch_adapter_model_chat(
     adapter_provider: AdapterGatewayProvider,
     request: ModelChatRequest,
@@ -541,9 +614,6 @@ async def _dispatch_adapter_model_chat(
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
-    if response.status_code >= 400:
-        raise _adapter_error(adapter_provider.spec, adapter_provider.adapter, response.status_code)
-    body = _json_body(response)
     fields = _adapter_log_fields(adapter_provider)
     logger.info(
         "extension adapter model call: adapter=%s model=%s %s",
@@ -552,7 +622,7 @@ async def _dispatch_adapter_model_chat(
         log_fields_suffix(fields),
         extra=fields,
     )
-    return adapter_provider.adapter.normalize_response(body)
+    return _adapter_response_body(adapter_provider, response)
 
 
 async def _post_model_chat(
@@ -583,7 +653,9 @@ async def _post_model_chat(
         ) as streamed:
             if not streamed.is_success:
                 await streamed.aread()
-                _checked_body(streamed)
+                max_tokens = payload.get("max_tokens")
+                requested_tokens = max_tokens if isinstance(max_tokens, int) else None
+                _checked_body(streamed, model=provider.name, requested_tokens=requested_tokens)
             body = await _stream_body(streamed, responses=responses, on_chunk=on_chunk)
             body["_provider_response_headers"] = dict(streamed.headers)
             return body
@@ -592,7 +664,9 @@ async def _post_model_chat(
         headers=endpoint.authorization_header(),
         json=payload,
     )
-    body = _checked_body(response)
+    max_tokens = payload.get("max_tokens")
+    requested_tokens = max_tokens if isinstance(max_tokens, int) else None
+    body = _checked_body(response, model=provider.name, requested_tokens=requested_tokens)
     body["_provider_response_headers"] = dict(getattr(response, "headers", {}))
     return body
 
@@ -610,6 +684,8 @@ async def _dispatch_gateway_model_chat(
     if protocol not in {"chat_completions", "responses", "auto"}:
         raise ValueError(f"unsupported model gateway protocol: {protocol!r}")
 
+    _seed_context_probe(provider)
+    _raise_if_gateway_rate_limited()
     try:
         async with shared_client(timeout=endpoint.timeout_s) as client:
             if protocol == "auto" and not request.tools:
