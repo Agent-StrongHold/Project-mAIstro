@@ -107,7 +107,6 @@ class BuilderSandbox(Protocol):
     def read_file(self, path: str) -> str: ...
     def write_file(self, path: str, content: str) -> None: ...
     def edit_file(self, path: str, old_string: str, new_string: str) -> str: ...
-    def run_command(self, cmd: str, *, timeout: int = _DEFAULT_TIMEOUT) -> str: ...
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str: ...
     def diff(self) -> str: ...
     def search(self, pattern: str, *, glob: str = "**/*.py") -> list[str]: ...
@@ -242,9 +241,14 @@ class SandboxedShell:
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str:
         """Run a fixed argv list with shell=False — no parsing, no metachar check.
 
-        Use this for structured tools (run_tests, run_lint, git_status) where
-        the caller constructs the argv directly and no user-controlled string
-        ever reaches the shell.
+        Structured tools (run_tests, run_lint, git_status) construct the argv
+        themselves, but #57's ``run_command`` forwards MODEL-AUTHORED argv
+        here, so the executable token is no longer assumed trusted: argv[0]
+        goes through the same path check as every ``run()`` token. A bare
+        command name (``python``, ``git``) resolves relative to the root and
+        passes; an absolute executable outside the root — the string path
+        always raised on — now raises `SandboxEscapeError` here too, instead
+        of executing via PATH-independent absolute resolution.
         """
         if not argv:
             raise BlockedCommandError("Empty argv is not allowed")
@@ -257,9 +261,12 @@ class SandboxedShell:
         for pattern in _BLOCKED_PATTERNS:
             if pattern in cmd_lower:
                 raise BlockedCommandError(f"Blocked command: {pattern!r} in {argv!r}")
-        self._check_paths(argv[1:])
+        # argv[0] included: the executable is a path token like any other.
+        # The argv[1:] slice predates model-authored argv (#57 run_command)
+        # and let argv[0]="/bin/..." execute outside the root.
+        self._check_paths(argv)
         try:
-            result = subprocess.run(  # nosec B603 — shell=False, argv from trusted caller
+            result = subprocess.run(  # nosec B603 — shell=False, argv path-checked above
                 argv,
                 shell=False,
                 cwd=self._root,
@@ -443,9 +450,6 @@ class LocalWorktreeSandbox:
             )
         target.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
         return f"edited {path} (1 replacement)"
-
-    def run_command(self, cmd: str, *, timeout: int = _DEFAULT_TIMEOUT) -> str:
-        return self._require_shell().run(cmd, timeout=timeout)
 
     def run_argv(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> str:
         return self._require_shell().run_argv(argv, timeout=timeout)
