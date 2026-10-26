@@ -79,6 +79,46 @@ JOB_TARGET_SERVICE = {
 }
 
 _FROM_RE = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+
+
+def _dockerfile_from_images(text: str) -> list[str]:
+    """External `FROM` images in a Dockerfile, skipping RUN/COPY heredoc bodies.
+
+    Mirrors `scripts/prepull-base-images.sh`: a Python `from X import ...` line
+    inside `RUN python - <<'PY'` is not a Dockerfile instruction (#2271).
+    """
+    images: list[str] = []
+    aliases: set[str] = set()
+    heredoc: str | None = None
+    heredoc_strip = False
+    for raw in text.splitlines():
+        if heredoc is not None:
+            line = raw.lstrip("\t") if heredoc_strip else raw
+            if line == heredoc:
+                heredoc = None
+                heredoc_strip = False
+            continue
+        opened = _HEREDOC_OPEN_RE.search(raw)
+        if opened is not None:
+            heredoc = opened.group(1)
+            heredoc_strip = "<<-" in raw
+            # Fall through: the opener line may still be a real instruction.
+        match = _FROM_RE.match(raw)
+        if match is None:
+            continue
+        tokens = [t for t in match["rest"].split() if not t.startswith("--")]
+        if not tokens or "import" in {t.lower() for t in tokens[1:]}:
+            continue
+        image = tokens[0]
+        if "as" in [t.lower() for t in tokens]:
+            idx = [t.lower() for t in tokens].index("as")
+            if idx + 1 < len(tokens):
+                aliases.add(tokens[idx + 1].lower())
+        if image.lower() == "scratch" or image.lower() in aliases:
+            continue
+        images.append(image)
+    return images
 
 
 def _compose_services() -> dict[str, Any]:
@@ -146,20 +186,7 @@ def test_every_shipped_from_line_is_accounted_for() -> None:
     pulled = set(_list(*BUILT_DOCKERFILES))
 
     for name in BUILT_DOCKERFILES:
-        text = (ROOT / name).read_text()
-        aliases: set[str] = set()
-        for line in text.splitlines():
-            match = _FROM_RE.match(line)
-            if match is None:
-                continue
-            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
-            image = tokens[0]
-            if "as" in [t.lower() for t in tokens]:
-                idx = [t.lower() for t in tokens].index("as")
-                if idx + 1 < len(tokens):
-                    aliases.add(tokens[idx + 1].lower())
-            if image.lower() == "scratch" or image.lower() in aliases:
-                continue
+        for image in _dockerfile_from_images((ROOT / name).read_text()):
             assert image in pulled, (
                 f"{name} builds on {image!r}, which the pre-pull step does not "
                 f"cover. It pulls: {sorted(pulled)}"
@@ -268,20 +295,7 @@ def test_every_compose_from_line_is_accounted_for() -> None:
     pulled = set(_list(*COMPOSE_DOCKERFILES))
 
     for name in COMPOSE_DOCKERFILES:
-        text = (ROOT / name).read_text()
-        aliases: set[str] = set()
-        for line in text.splitlines():
-            match = _FROM_RE.match(line)
-            if match is None:
-                continue
-            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
-            image = tokens[0]
-            if "as" in [t.lower() for t in tokens]:
-                idx = [t.lower() for t in tokens].index("as")
-                if idx + 1 < len(tokens):
-                    aliases.add(tokens[idx + 1].lower())
-            if image.lower() == "scratch" or image.lower() in aliases:
-                continue
+        for image in _dockerfile_from_images((ROOT / name).read_text()):
             assert image in pulled, (
                 f"{name} builds on {image!r}, which the pre-pull step does not "
                 f"cover. It pulls: {sorted(pulled)}"
@@ -377,6 +391,24 @@ def test_a_platform_flag_is_not_mistaken_for_the_image(tmp_path: Path) -> None:
 def test_lowercase_from_is_recognised(tmp_path: Path) -> None:
     """Dockerfile keywords are case-insensitive; a missed one is a missed image."""
     assert _list(_write(tmp_path, "from python:3.12-slim as base\n")) == ["python:3.12-slim"]
+
+
+def test_python_from_import_inside_run_heredoc_is_not_an_image(tmp_path: Path) -> None:
+    """#2271 image smoke embeds `from datetime import ...` in a RUN heredoc.
+
+    Case-insensitive Dockerfile parsing must not treat that as `FROM datetime`
+    (or `FROM maistro.scheduling.cron`) and try to pull it from Docker Hub.
+    """
+    body = (
+        "FROM python:3.13.16-slim-bookworm AS runtime\n"
+        "RUN python - <<'PY'\n"
+        "from datetime import UTC, datetime\n"
+        "from maistro.scheduling.cron import parse_cron\n"
+        "print(parse_cron, datetime, UTC)\n"
+        "PY\n"
+    )
+
+    assert _list(_write(tmp_path, body)) == ["python:3.13.16-slim-bookworm"]
 
 
 def test_the_same_image_twice_is_pulled_once(tmp_path: Path) -> None:
