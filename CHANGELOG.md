@@ -2085,10 +2085,11 @@ or placeholder-only section.
 ### Security
 
 - **Keep Conductor decryption keys and SQLite sidecars out of backup artifacts
-  (#88).** Capture only the online database snapshot and documented ciphertext,
-  reject overlapping backup/escrow roots and reused or unsafe destinations, and
-  refuse contaminated Conductor captures during restore verification. Same-day
-  retries must use fresh disjoint roots after preserving any previous attempt.
+  (#88).** Capture only the online database snapshot, documented ciphertext, and
+  wizard-authored `persona_templates/*.yaml`; reject overlapping backup/escrow
+  roots and reused or unsafe destinations; and refuse contaminated Conductor
+  captures during restore verification. Same-day retries must use fresh
+  disjoint roots after preserving any previous attempt.
 
 
 - **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,

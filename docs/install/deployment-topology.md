@@ -149,13 +149,15 @@ The decrypting identity must never live only beside the ciphertext it opens, so
 The off-host backup stream carries ciphertext only; replicate the escrow off-host
 through your secret manager by a separate path.
 
-The Conductor capture is allowlisted: only the online `state.db` snapshot and
-regular `secrets.age` / `user_credentials.enc` files enter `conductor-data/`.
-Live SQLite files, WAL/SHM/journal sidecars, decryption keys, hidden files and
-unknown volume contents are not copied. Symlink or non-regular ciphertext and
-key inputs fail the backup rather than being followed or silently skipped.
-The restore verifier rejects unexpected or linked Conductor capture entries,
-even if their hashes match or `SKIP_CONDUCTOR_BACKUP=1` is set.
+The Conductor capture is allowlisted: the online `state.db` snapshot, regular
+`secrets.age` / `user_credentials.enc` files, and the optional
+`persona_templates/*.yaml` directory (wizard-authored persona definitions under
+`CONDUCTOR_DATA_DIR`) enter `conductor-data/`. Live SQLite files, WAL/SHM/journal
+sidecars, decryption keys, hidden files and unknown volume contents are not
+copied. Symlink or non-regular ciphertext, key, or persona-template inputs fail
+the backup rather than being followed or silently skipped. The restore verifier
+rejects unexpected or linked Conductor capture entries, even if their hashes
+match or `SKIP_CONDUCTOR_BACKUP=1` is set.
 
 `BACKUP_ROOT` and `ESCROW_ROOT` must resolve to disjoint directory trees: neither
 may contain the other, including through symlink aliases. Both dated destinations

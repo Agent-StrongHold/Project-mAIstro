@@ -179,6 +179,44 @@ def test_only_snapshot_and_ciphertext_enter_artifact(tmp_path: Path) -> None:
     assert not any("cp -a /data/." in command for command in copies)
 
 
+def test_persona_templates_reject_unexpected_names(tmp_path: Path) -> None:
+    env = _fixture(tmp_path)
+    templates = Path(env["TEST_CONDUCTOR"]) / "persona_templates"
+    templates.mkdir()
+    (templates / "book_club_custom.yaml").write_text("kind: workspace\nid: book_club_custom\n")
+    (templates / "skip_me.txt").write_text("not a template")
+    result = _backup(env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "unexpected persona template name" in result.stderr
+
+
+def test_persona_templates_are_captured_and_verified(tmp_path: Path) -> None:
+    env = _fixture(tmp_path)
+    source = Path(env["TEST_CONDUCTOR"])
+    templates = source / "persona_templates"
+    templates.mkdir()
+    (templates / "book_club_custom.yaml").write_text("kind: workspace\nid: book_club_custom\n")
+    (source / "unknown").mkdir()
+    (source / "unknown" / "admin.key").write_bytes(b"nested secret")
+    result = _backup(env)
+    assert result.returncode == 0, result.stderr
+    dest = Path(env["BACKUP_ROOT"]) / STAMP
+    data = dest / "conductor-data"
+    assert {p.name for p in data.iterdir()} == {
+        "state.db",
+        "secrets.age",
+        "user_credentials.enc",
+        "persona_templates",
+    }
+    captured = data / "persona_templates"
+    assert {p.name for p in captured.iterdir()} == {"book_club_custom.yaml"}
+    assert (captured / "book_club_custom.yaml").read_text() == (
+        "kind: workspace\nid: book_club_custom\n"
+    )
+    assert _verify(dest).returncode == 0
+    assert "persona_templates/book_club_custom.yaml" in (dest / "manifest.sha256").read_text()
+
+
 @pytest.mark.parametrize(
     "missing",
     [("secrets.age",), ("user_credentials.enc",), ("secrets.age", "user_credentials.enc")],
@@ -315,6 +353,18 @@ def test_sealed_contamination_is_rejected(tmp_path: Path, name: str) -> None:
     result = _verify(tmp_path)
     assert result.returncode != 0
     assert "unexpected conductor-data entry" in result.stderr
+
+
+def test_sealed_persona_template_contamination_is_rejected(tmp_path: Path) -> None:
+    data = tmp_path / "conductor-data"
+    templates = data / "persona_templates"
+    templates.mkdir(parents=True)
+    (data / "state.db").write_bytes(b"snapshot")
+    (templates / "not-a-persona.yaml").write_bytes(b"bad id shape")
+    _seal(tmp_path)
+    result = _verify(tmp_path)
+    assert result.returncode != 0
+    assert "unexpected persona template name" in result.stderr
 
 
 @pytest.mark.parametrize(

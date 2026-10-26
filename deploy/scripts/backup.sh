@@ -6,11 +6,11 @@
 #      runs continuously on the primary (archive_command in docker-compose.prod.yml).
 #   2. Redis RDB snapshot (SAVE, then copy dump.rdb).
 #   3. File-store rsync.
-#   3.5. Conductor durable state (state.db, secrets.age, user_credentials.enc)
-#        and credential escrow (admin.key, credential_master.key) — the escrow
-#        is deliberately written OUTSIDE the backup artifact, because a backup
-#        that ships off-host must carry ciphertext only. See
-#        docs/install/deployment-topology.md §2.1.
+#   3.5. Conductor durable state (state.db, secrets.age, user_credentials.enc,
+#        persona_templates/*.yaml) and credential escrow (admin.key,
+#        credential_master.key) — the escrow is deliberately written OUTSIDE
+#        the backup artifact, because a backup that ships off-host must carry
+#        ciphertext only. See docs/install/deployment-topology.md §2.1.
 #   4. Config snapshot note (config is version-controlled in git — ADR-081)
 #      plus a sha256 integrity manifest over every component above, which
 #      verify-restore.sh re-checks before restoring anything.
@@ -169,6 +169,7 @@ docker run --rm -v "${FILE_STORE_VOLUME}:/files:ro" -v "${DEST}:/dest" alpine \
 #                           sessions, schedules, audit log.
 #     secrets.age           age-encrypted secrets vault (SPEC-011).
 #     user_credentials.enc  Fernet-encrypted per-user provider tokens.
+#     persona_templates/    Wizard-authored PersonaTemplate YAML files.
 #   state.db is snapshotted with the SQLite online-backup API through the
 #   running container (a raw copy of a live SQLite file can be torn); the
 #   remaining files are static ciphertext, safe to copy.
@@ -195,7 +196,26 @@ PY
           [ -f "/data/$f" ] && [ ! -L "/data/$f" ] || { echo "[backup] FAIL: ciphertext must be a regular file: $f" >&2; exit 1; }
           cp -p "/data/$f" "/dest/conductor-data/$f"
         fi
-      done'
+      done
+      # Wizard-authored persona templates live under persona_templates/*.yaml
+      # (persona_authoring.user_templates_dir). Capture that known application-
+      # data directory with the same regular-file / name checks; never follow
+      # symlinks or copy unknown volume contents beside the templates.
+      if [ -e /data/persona_templates ] || [ -L /data/persona_templates ]; then
+        [ -d /data/persona_templates ] && [ ! -L /data/persona_templates ] \
+          || { echo "[backup] FAIL: persona_templates must be a real directory" >&2; exit 1; }
+        mkdir /dest/conductor-data/persona_templates
+        for f in /data/persona_templates/* /data/persona_templates/.[!.]* /data/persona_templates/..?*; do
+          [ -e "$f" ] || [ -L "$f" ] || continue
+          base=${f##*/}
+          # Same id shape as persona_authoring.PERSONA_ID_PATTERN + .yaml
+          printf '%s' "$base" | grep -Eq '^[a-z][a-z0-9_]*\.yaml$' \
+            || { echo "[backup] FAIL: unexpected persona template name: $base" >&2; exit 1; }
+          [ -f "$f" ] && [ ! -L "$f" ] \
+            || { echo "[backup] FAIL: persona template must be a regular file: $base" >&2; exit 1; }
+          cp -p "$f" "/dest/conductor-data/persona_templates/$base"
+        done
+      fi'
   compose exec -T "${CONDUCTOR_SERVICE}" cat /tmp/state.db.backup-snapshot \
     > "${DEST}/conductor-data/state.db"
   compose exec -T "${CONDUCTOR_SERVICE}" rm -f /tmp/state.db.backup-snapshot

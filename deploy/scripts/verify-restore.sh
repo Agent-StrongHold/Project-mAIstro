@@ -98,8 +98,25 @@ verify_sha256() {
 }
 
 # A checksum can faithfully seal leaked keys or a stale SQLite WAL too. The
-# Conductor capture has exactly three allowed regular files; refuse any other
-# entry rather than replaying a sidecar over the online-backup snapshot.
+# Conductor capture allows the online state.db snapshot, optional ciphertext
+# files, and the optional persona_templates/ application-data directory;
+# refuse any other entry rather than replaying a sidecar over the snapshot.
+verify_persona_templates() {
+  local dir="$1" entry base
+  [[ -d "${dir}" && ! -L "${dir}" ]] \
+    || fail_artifact "persona_templates must be a real directory"
+  [[ -r "${dir}" && -x "${dir}" ]] \
+    || fail_artifact "persona_templates must be readable and searchable"
+  for entry in "${dir}"/* "${dir}"/.[!.]* "${dir}"/..?*; do
+    [[ -e "${entry}" || -L "${entry}" ]] || continue
+    [[ -f "${entry}" && ! -L "${entry}" ]] \
+      || fail_artifact "persona_templates must contain only regular files"
+    base="${entry##*/}"
+    [[ "${base}" =~ ^[a-z][a-z0-9_]*\.yaml$ ]] \
+      || fail_artifact "unexpected persona template name; keys and SQLite sidecars must not be in the backup"
+  done
+}
+
 verify_conductor_isolation() {
   local data="${1}/conductor-data" entry
   [[ ! -L "${data}" ]] || fail_artifact "conductor-data must not be a symlink"
@@ -108,6 +125,13 @@ verify_conductor_isolation() {
   [[ -r "${data}" && -x "${data}" ]] || fail_artifact "conductor-data must be readable and searchable"
   for entry in "${data}"/* "${data}"/.[!.]* "${data}"/..?*; do
     [[ -e "${entry}" || -L "${entry}" ]] || continue
+    if [[ -d "${entry}" && ! -L "${entry}" ]]; then
+      case "${entry##*/}" in
+        persona_templates) verify_persona_templates "${entry}" ;;
+        *) fail_artifact "unexpected conductor-data entry; keys and SQLite sidecars must not be in the backup" ;;
+      esac
+      continue
+    fi
     [[ -f "${entry}" && ! -L "${entry}" ]] \
       || fail_artifact "conductor-data must contain only regular files"
     case "${entry##*/}" in
