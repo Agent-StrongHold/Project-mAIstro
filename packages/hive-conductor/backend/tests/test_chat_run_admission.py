@@ -287,6 +287,7 @@ def test_wrong_workspace_session_id_on_complete_is_refused(
     assert gateway.requests == []
     _run(conversation_sessions.delete(USER, sid))
 
+
 @pytest.mark.contract("behavioral")
 def test_stream_turn_returns_its_run_id_and_completes_the_run(
     authed_client: Any, container: Container, gateway: _Gateway
