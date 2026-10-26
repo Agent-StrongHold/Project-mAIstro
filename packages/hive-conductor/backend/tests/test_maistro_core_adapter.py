@@ -35,6 +35,9 @@ def _fake_container() -> SimpleNamespace:
         # fallback-composition path under test.
         model_chat_client=None,
         a2a_delegator=object(),
+        # #847: the adapter threads the container's canonical audit log into
+        # create_agents so pre-Sentinel tool denials leave scoped evidence.
+        audit_log=None,
         agents={},
     )
 
@@ -61,12 +64,14 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     """Hive must consume the prompt store selected by the core Container (#122)."""
     selected_prompt_manager = object()
     selected_assembly_policy = object()
+    selected_audit_log = object()
     container = SimpleNamespace(
         prompt_manager=selected_prompt_manager,
         context_assembly_policy=selected_assembly_policy,
         context_builder=object(),
         warden=object(),
         sentinel=object(),
+        audit_log=selected_audit_log,
         learning_store=object(),
         learning_extractor=object(),
         outcome_store=object(),
@@ -115,6 +120,10 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     )
 
     assert captured["prompt_manager"] is selected_prompt_manager
+    # #847: the canonical audit trail reaches the agents so pre-Sentinel tool
+    # denials (strategy allowlist gate, undeclared-tool boundary) leave scoped
+    # authorization-denied evidence.
+    assert captured["audit_log"] is selected_audit_log
     config = captured["config"]
     assert config.provider_config_path == "/etc/hive/providers.yaml"
     assert config.model_bindings[0].binding_id == "canvas-quality"
@@ -254,6 +263,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         context_builder=object(),
         warden=object(),
         sentinel=object(),
+        audit_log=None,
         learning_store=object(),
         learning_extractor=object(),
         outcome_store=object(),

@@ -49,25 +49,6 @@ RECOVERABLE_ERRORS: frozenset[ErrorType] = frozenset(
     }
 )
 
-DEFAULT_TOOLS: dict[AgentRole, list[str]] = {
-    AgentRole.PLANNER: ["file_ops.read", "file_ops.list", "shell.run_read_only"],
-    AgentRole.CODER: ["file_ops.read", "file_ops.write", "file_ops.list", "shell.run"],
-    AgentRole.REVIEWER: ["file_ops.read", "file_ops.list"],
-    AgentRole.SCOUT: [
-        "file_ops.read",
-        "file_ops.list",
-        "shell.run_read_only",
-        "git.log",
-        "git.diff",
-    ],
-    AgentRole.ARCHITECT: ["file_ops.read", "file_ops.list"],
-    AgentRole.EXTRACTOR: ["file_ops.read", "file_ops.write", "file_ops.list"],
-    AgentRole.VALIDATOR: ["file_ops.read", "file_ops.list", "shell.run_read_only"],
-    AgentRole.INTENT_ROUTER: [],
-    AgentRole.ARTIFACT: ["file_ops.read", "file_ops.write"],
-    AgentRole.CONVERSATION: [],
-}
-
 _PROMPT_NAME_MAP: dict[AgentRole, str] = {
     AgentRole.PLANNER: "planner.decompose",
     AgentRole.CODER: "coder.generate",
@@ -113,9 +94,11 @@ class AgentSpec(BaseModel):
     recipe_name: str | None = None
     result_type: str | None = None
 
-    # Security
-    tools_allowed: list[str] = Field(default_factory=list)
-    write_scopes: list[str] = Field(default_factory=list)
+    # Security: #847 removed the unused `tools_allowed`/`write_scopes` fields.
+    # They looked like enforcement but had no production reader; the effective
+    # capability envelope is the host-owned intersection at the governed
+    # Invocation boundary (AgentIdentity.tools -> base.py allowlist ->
+    # Sentinel), never a spec-side declaration.
 
     # Scheduling
     lane: Lane = Lane.BACKGROUND
@@ -126,8 +109,6 @@ class AgentSpec(BaseModel):
 
     def with_defaults(self) -> AgentSpec:
         """Fill role-derived defaults without overwriting explicit values."""
-        if not self.tools_allowed:
-            self.tools_allowed = list(DEFAULT_TOOLS.get(self.role, []))
         if self.prompt_name is None:
             self.prompt_name = _PROMPT_NAME_MAP.get(self.role)
         return self

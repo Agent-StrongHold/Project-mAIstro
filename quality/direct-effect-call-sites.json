@@ -162,6 +162,7 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
+<<<<<<< HEAD
 >>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
@@ -180,6 +181,20 @@
       "owner": "#57",
       "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
+||||||| 78133c093
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_browse_url",
+      "line": 1379,
+      "category": "TOOL_EFFECT",
+      "entry_point": "hive.browse_url",
+      "callee": "_browse_url",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+    },
+=======
+>>>>>>> 5056cf06948deaab421605746d931419cc605f5a
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_check_blockers::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_check_blockers",
@@ -248,6 +263,7 @@
       "owner": "#1195",
       "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing jira search tool."
     },
+<<<<<<< HEAD
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_web_search",
@@ -265,6 +281,20 @@
       "owner": "#57",
       "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
+||||||| 78133c093
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_web_search",
+      "line": 1363,
+      "category": "TOOL_EFFECT",
+      "entry_point": "hive.web_search",
+      "callee": "_web_search",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#57",
+      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+    },
+=======
+>>>>>>> 5056cf06948deaab421605746d931419cc605f5a
     "packages/hive-conductor/backend/services/eval_bootstrap.py::_extract_criteria::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/eval_bootstrap.py",
       "qualname": "_extract_criteria",
@@ -280,12 +310,18 @@
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",
 <<<<<<< HEAD
+<<<<<<< HEAD
       "line": 654,
 ||||||| 833a98a91
       "line": 556,
 =======
       "line": 668,
 >>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
+||||||| 78133c093
+      "line": 668,
+=======
+      "line": 689,
+>>>>>>> 5056cf06948deaab421605746d931419cc605f5a
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -296,18 +332,18 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_browse_url",
-      "line": 248,
+      "line": 261,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#57",
-      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+      "rationale": "Provider backend of the canonical legacy-tool Invocation: _run_tool_node requires NodeContext and records the outer Binding -> Invocation before _call_tool_node runs (#57 retired the no-identity compatibility branch; test_legacy_dag_node pins the refusal). Migrated through the canonical seam rather than a second tool executor."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_clarify",
-      "line": 238,
+      "line": 246,
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
@@ -318,13 +354,13 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_web_search",
-      "line": 227,
+      "line": 232,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#57",
-      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+      "rationale": "Provider backend of the canonical legacy-tool Invocation: _run_tool_node requires NodeContext and records the outer Binding -> Invocation before _call_tool_node runs (#57 retired the no-identity compatibility branch; test_legacy_dag_node pins the refusal). Migrated through the canonical seam rather than a second tool executor."
     },
     "packages/hive-conductor/backend/services/mcp_client.py::test_jira_rest::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/services/mcp_client.py",
@@ -366,9 +402,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.browse",
       "callee": "client.browse",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#57",
-      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+      "rationale": "BrowserClient call inside the shipped browse_url implementation, which since #57 runs only as the provider backend beneath a canonical Invocation (services.governed_tools for the boot/chat seam, the legacy-tool Invocation for DAG nodes). Same arrangement as execute_model_chat for model egress (#56)."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::web_search::TOOL_EFFECT:browser.search_web#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -377,9 +413,9 @@
       "category": "TOOL_EFFECT",
       "entry_point": "browser.search_web",
       "callee": "client.search_web",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#57",
-      "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
+      "rationale": "BrowserClient fallback inside the shipped web_search implementation, which since #57 runs only as the provider backend beneath a canonical Invocation (services.governed_tools for the boot/chat seam, the legacy-tool Invocation for DAG nodes). Same arrangement as execute_model_chat for model egress (#56)."
     },
     "packages/hive-conductor/backend/services/ui_auto_climb.py::generate_edit::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
@@ -549,7 +585,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 276,
+      "line": 298,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
@@ -617,8 +653,14 @@
       "line": 239,
 =======
       "qualname": "_post_chat_completion",
+<<<<<<< HEAD
       "line": 437,
 >>>>>>> 4f8811f92f7bd492e52da1e8e68a7b14a39358ae
+||||||| 78133c093
+      "line": 437,
+=======
+      "line": 444,
+>>>>>>> 5056cf06948deaab421605746d931419cc605f5a
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

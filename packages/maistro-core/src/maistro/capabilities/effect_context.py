@@ -57,10 +57,12 @@ async def binding_scope_policy(
     It also carries the legacy-tool effect floor: legacy workflow tools are
     still compatibility providers, but their actual calls must not inherit the
     workflow admission approval. A binding marked destructive/mutating
-    therefore gets its own governed decision.
+    therefore gets its own governed decision, and so does an irreversible tool
+    effect whose tier was resolved from the host-owned ToolContractRegistry
+    and carried as an admission fact rather than chosen by model arguments.
     """
 
-    del request, context
+    del context
     if binding.capability.startswith("legacy_tool:") and binding.config.get("effect") in {
         "mutate",
         "destroy",
@@ -69,6 +71,12 @@ async def binding_scope_policy(
             Decision.REQUIRE_APPROVAL,
             reason="legacy workflow effect requires independent approval",
             rule="m1.legacy-tool-effect",
+        )
+    if isinstance(request, dict) and request.get("_tool_reversibility") == "irreversible":
+        return PolicyVerdict(
+            Decision.REQUIRE_APPROVAL,
+            reason="irreversible tool effect requires approval",
+            rule="tool.reversibility",
         )
     return PolicyVerdict(
         Decision.ALLOW,
