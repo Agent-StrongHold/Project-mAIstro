@@ -254,6 +254,53 @@ def test_the_vm_probe_refuses_a_docker_without_kata_runtimes(
     assert "do not include Kata" in note
 
 
+def test_the_vm_probe_refuses_a_non_kata_vmm_without_the_supported_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KVM plus a VMM that is not the shipped Kata profile is still not Tier 1.
+    firecracker/cloud-hypervisor/qemu are detected only as operator
+    diagnostics; claiming hardware virtualization without the supported
+    kata-runtime + docker deployment profile would promise a boundary the
+    selector cannot actually launch (#76 support matrix) — so the probe fails
+    closed and names the missing pieces."""
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(
+        detect_module,
+        "_which",
+        lambda name: None if name == detect_module.KATA_RUNTIME_BINARY else f"/usr/bin/{name}",
+    )
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "kata-runtime and docker on PATH" in note
+
+
+def test_the_vm_probe_refuses_a_docker_daemon_that_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kata-runtime and docker on PATH is still not Tier 1 when the docker
+    daemon itself will not answer `docker info`: the probe reads the failed
+    runtime survey as absent-with-reason instead of claiming the tier."""
+    import subprocess
+
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(detect_module, "_which", lambda name: f"/usr/bin/{name}")
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout=b"", stderr=b"Cannot connect to the Docker daemon"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "docker daemon is unavailable" in note
+
+
 # --- the backend's security content: its flags --------------------------------
 
 
