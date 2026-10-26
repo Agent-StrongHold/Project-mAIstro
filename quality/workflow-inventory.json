@@ -154,7 +154,7 @@
         "pull_request",
         "workflow_dispatch"
       ],
-      "rationale": "Diff-scoped mutation gate on pull requests that touch Python: mutates the changed lines of changed mutation-critical files (quality/mutation-critical-files.json) with the tests coverage says execute each line, and fails fast on the first un-baselined survivor. On-demand dispatch reruns the gate."
+      "rationale": "Diff-scoped mutation gate on every pull request: mutates the changed lines of changed mutation-critical files (quality/mutation-critical-files.json) with the tests coverage says execute each line, and fails fast on the first un-baselined survivor. PRs that change no mutation-critical file exit green with no mutation run, so the required check can always report (#262 AC-2; a paths-filtered trigger left non-Python PRs waiting forever for evidence that could never exist). On-demand dispatch reruns the gate."
     },
     {
       "id": "mutation-nightly",
