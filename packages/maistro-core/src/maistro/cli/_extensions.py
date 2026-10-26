@@ -58,6 +58,7 @@ from rich.console import Console
 from rich.table import Table
 from typer import Argument, Exit, Option, Typer
 
+from maistro.extensions.attribution import attribution_from_install_record
 from maistro.extensions.certification import (
     MANIFEST_PROFILE,
     PUBLICATION_PROFILE,
@@ -292,6 +293,14 @@ def extensions_show(
         console.print(f"  package:       sha256:{record.identity.package_sha256}")
         console.print(f"  manifest:      sha256:{record.identity.manifest_sha256}")
         console.print(f"  signature:     {_short_digest(record.signature)}")
+        # M9-I1 (#976): the canonical attribution evidence this install's
+        # effects carry in telemetry — the same version-tagged payload that
+        # rides in Binding snapshots, log fields, and Event provenance.
+        attribution = attribution_from_install_record(record)
+        console.print(f"  attribution:   {attribution.describe()}")
+        console.print(
+            f"  attribution payload: {json.dumps(attribution.to_payload(), sort_keys=True)}"
+        )
         console.print(f"  catalog:       {record.provenance.catalog_url}")
         console.print(
             f"  catalog snap:  sha256:{record.provenance.catalog_snapshot_sha256} "

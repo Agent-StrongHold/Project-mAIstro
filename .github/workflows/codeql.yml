@@ -14,10 +14,14 @@ name: "CodeQL Advanced"
 on:
   # Opt-in verification of a selected repair branch; existing automatic triggers stay unchanged.
   workflow_dispatch:
+  # `develop` is the integration branch the Security tab is judged against.
+  # Push/PR were `main`-only, so CodeQL only refreshed on the weekly cron —
+  # last upload sat on 774ae42f while tip already held the path/stack-trace
+  # fixes, and ~19 alerts stayed "open" with no code left to change.
   push:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
   schedule:
     - cron: '34 19 * * 4'
 
