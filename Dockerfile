@@ -23,6 +23,16 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
+#
+# #2136 evaluated Dependabot's 3.13.16 -> 3.15.0 index bump and rejected it:
+# the locked, hash-pinned image set has no cp315 artifacts — psycopg-binary
+# 3.3.4 ships no cp315 wheel and no sdist, so --require-hashes fails closed
+# under 3.15; coincurve 21.0.0 (still latest upstream) stops at cp313, which
+# rules the 3.14 line out the same way; bitarray 3.9.2 stops at cp314. The
+# builder installs no compiler, so there is no source-build fallback either
+# (verified 2026-10-25/26 by replaying the builder's install inside the 3.15
+# base). Re-attempt the bump only when every native package in the `image`
+# extra ships cp315 wheels.
 FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
