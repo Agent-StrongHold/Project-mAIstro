@@ -277,10 +277,14 @@ def test_host_transfer_fails_closed_without_nofollow_support(
     root.mkdir()
     monkeypatch.setattr(sandbox_paths, "_NOFOLLOW", 0)
 
+    from maistro.sandbox.paths import make_beneath_guest_readable
+
     with pytest.raises(OSError, match="no-follow"):
         read_beneath(root, "leaf")
     with pytest.raises(OSError, match="no-follow"):
         write_beneath(root, "leaf", b"x")
+    with pytest.raises(OSError, match="no-follow"):
+        make_beneath_guest_readable(root, "leaf", mount="/work")
 
 
 def test_symlinked_parent_is_allowed_only_when_resolution_stays_inside(tmp_path: Path) -> None:

@@ -375,3 +375,62 @@ class TestOnAKataHost:
         for host in ("1.1.1.1", "2606:4700:4700::1111", "169.254.169.254", "10.0.0.1"):
             assert f"DENIED {host}" in out, f"{host} was not probed: {out}"
         assert "DNS DENIED" in out
+
+
+class TestLifecycleBoundary:
+    """Teardown and outside-the-context-manager refusals (stub-backed, so the
+    contract holds on every host, not only where Kata is deployable)."""
+
+    def test_exit_destroys_through_the_bridge_and_removes_the_seed(self, tmp_path: Path) -> None:
+        backend = _StubVMSandbox()
+        sb = ContainerBuilderSandbox(_repo(tmp_path), selector=_selector(backend))
+
+        with sb:
+            seed = sb._seed_dir
+            assert seed is not None and seed.is_dir()
+
+        assert backend.destroyed == ["stub-1"]
+        assert sb._bridge is None and sb._instance is None and sb._backend is None
+        assert seed is not None and not seed.exists()
+
+    def test_adapters_used_outside_their_context_manager_refuse(self, tmp_path: Path) -> None:
+        sb = ContainerBuilderSandbox(_repo(tmp_path), selector=_selector(_StubVMSandbox()))
+
+        with pytest.raises(RuntimeError, match="outside its context manager"):
+            sb.sync_to_host()
+        with pytest.raises(RuntimeError, match="outside its context manager"):
+            sb._exec(["true"])
+        with pytest.raises(RuntimeError, match="outside its context manager"):
+            sb.read_file("hello.py")
+
+    def test_exit_is_idempotent_and_a_second_exit_destroys_nothing(self, tmp_path: Path) -> None:
+        """The issue-76 parity item: teardown twice must be one teardown. The
+        second pass sees the reset components and does nothing — no double
+        destroy on the backend, no double rmtree of the seed."""
+        backend = _StubVMSandbox()
+        sb = ContainerBuilderSandbox(_repo(tmp_path), selector=_selector(backend))
+
+        with sb:
+            pass
+        sb.__exit__(None, None, None)  # type: ignore[func-returns-value]
+
+        assert backend.destroyed == ["stub-1"]
+        assert sb._seed_dir is None
+
+    def test_a_failed_spawn_cleans_up_the_seed_without_a_backend(self, tmp_path: Path) -> None:
+        """A backend that refuses at spawn leaves no seed directory and no
+        half-bound adapter: __enter__'s failure path runs __exit__ with no
+        backend/instance, closing the bridge and removing the seed."""
+
+        class _RefusingBackend(_StubVMSandbox):
+            async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
+                raise RuntimeError("no isolation available")
+
+        backend = _RefusingBackend()
+        sb = ContainerBuilderSandbox(_repo(tmp_path), selector=_selector(backend))
+
+        with pytest.raises(RuntimeError, match="no isolation available"):
+            sb.__enter__()
+
+        assert sb._backend is None and sb._instance is None
+        assert sb._seed_dir is None

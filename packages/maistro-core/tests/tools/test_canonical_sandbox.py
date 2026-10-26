@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from maistro.config.settings import SandboxSettings
-from maistro.sandbox import SandboxInstance, SandboxSelector
+from maistro.sandbox import (
+    ExecResult,
+    SandboxInstance,
+    SandboxSelector,
+)
 from maistro.sandbox.network import EgressMode
 from maistro.tools.sandbox import canonical
 
@@ -94,3 +98,88 @@ async def test_env_is_sanitized_and_trusted_env_passes_verbatim(monkeypatch):
     config = backend.spawn.call_args.kwargs["config"]
     assert config.env == {"TZ": "UTC", "HARNESS_PROVIDER_KEY": "intentional"}
     await container.destroy()
+
+
+# --- the facade surface agents actually call (#76 clarification) -------------
+
+
+def _facade_backend() -> AsyncMock:
+    backend = AsyncMock()
+    backend.tier = "vm"
+    backend.supports_scoped_egress = False
+    backend.spawn.return_value = SandboxInstance(
+        id="facade", backend="recording", isolation_tier="vm"
+    )
+    backend.exec.return_value = ExecResult(exit_code=0, stdout="out", stderr="err", duration_ms=1)
+    backend.read_file.return_value = b"file-bytes"
+    return backend
+
+
+async def _facade(
+    backend: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> canonical.CanonicalSandboxContainer:
+    selector = SandboxSelector()
+    selector.register("vm", backend)
+    monkeypatch.setattr(canonical, "build_selector", lambda: selector)
+    return await canonical.create_sandbox(
+        "/tmp/maistro-workspace/issue-76",
+        SandboxSettings(timeout=60),
+    )
+
+
+async def test_facade_exec_runs_safe_commands_and_blocks_dangerous_ones(monkeypatch):
+    backend = _facade_backend()
+    container = await _facade(backend, monkeypatch)
+
+    code, output = await container.exec("ls -la")
+
+    assert (code, output) == (0, "outerr")
+    argv = backend.exec.call_args.args[1]
+    assert argv == ["/bin/bash", "-lc", "ls -la"]
+    assert backend.exec.call_args.kwargs["timeout_s"] == 60
+
+    backend.exec.reset_mock()
+    code, output = await container.exec("sudo rm -rf /")
+
+    assert code == 1
+    assert "blocked by safety filter" in output
+    backend.exec.assert_not_awaited()
+    await container.destroy()
+
+
+async def test_facade_file_transfers_are_confined_to_the_canonical_workspace(monkeypatch):
+    backend = _facade_backend()
+    container = await _facade(backend, monkeypatch)
+
+    assert await container.read_file("sub/report.txt") == "file-bytes"
+    assert backend.read_file.call_args.args[1] == "/workspace/sub/report.txt"
+
+    await container.write_file("sub/report.txt", "hello")
+    assert backend.write_file.call_args.args[1] == "/workspace/sub/report.txt"
+    assert backend.write_file.call_args.args[2] == b"hello"
+    await container.destroy()
+
+
+def test_facade_paths_refuse_everything_outside_the_canonical_workspace():
+    with pytest.raises(ValueError, match="canonical sandbox paths must use /workspace"):
+        canonical.CanonicalSandboxContainer._safe_path("/elsewhere", "file.txt")
+    with pytest.raises(ValueError, match="Absolute paths are not allowed"):
+        canonical.CanonicalSandboxContainer._safe_path(canonical.CONTAINER_WORKSPACE, "/etc/shadow")
+    with pytest.raises(ValueError, match="Path traversal detected"):
+        canonical.CanonicalSandboxContainer._safe_path(
+            canonical.CONTAINER_WORKSPACE, "../../etc/shadow"
+        )
+
+
+async def test_facade_context_manager_destroys_and_ttl_expires(monkeypatch):
+    backend = _facade_backend()
+    container = await _facade(backend, monkeypatch)
+
+    async with container as entered:
+        assert entered is container
+        assert not container.expired
+        # Age the facade past its TTL without waiting for it.
+        container.created_at -= container.ttl + 1
+        assert container.expired
+
+    backend.destroy.assert_awaited_once()
