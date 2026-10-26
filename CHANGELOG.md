@@ -23,13 +23,38 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CodeQL workflow scope test expects `develop` triggers (follow-up to #2357).**
+  `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
+  CodeQL Advanced was widened to `develop`; align the pin so CI catches
+  regressions of the Security-tab refresh path. DevSkim also gains
+  `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
+  another product commit.
+
 ### Security
 
+<<<<<<< HEAD
 - **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
   the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
   session now returns the same 404 as a missing id; provenance-omit-and-admit
   is gone. Workspace switch clears the prior transcript immediately and Chat
   Retry re-hydrates after load failures (AC-3/AC-7).
+=======
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+>>>>>>> origin/develop
 
 - **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
   code-scanning alerts on develop).** Route mutation-baseline CI error
