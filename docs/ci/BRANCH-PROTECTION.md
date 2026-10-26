@@ -42,9 +42,9 @@ is also required live on both branches; because it is produced by
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
-| `Analyze (actions)` | ○ | ● |
-| `Analyze (javascript-typescript)` | ○ | ● |
-| `Analyze (python)` | ○ | ● |
+| `Analyze (actions)` | adv | ● |
+| `Analyze (javascript-typescript)` | adv | ● |
+| `Analyze (python)` | adv | ● |
 | `Compliance registry` | ● | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
