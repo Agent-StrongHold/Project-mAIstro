@@ -29,6 +29,18 @@ function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accen
   return "muted";
 }
 
+type TopologyProposalEvidence = {
+  from_value?: unknown;
+  to_value?: unknown;
+  expected_improvement?: unknown;
+};
+
+function topologyProposalOf(item: AttentionItem): TopologyProposalEvidence | null {
+  const raw = item.evidence?.topology_proposal;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as TopologyProposalEvidence;
+}
+
 function AttentionRow({
   item,
   workspaceId,
@@ -52,6 +64,9 @@ function AttentionRow({
     pausedReason === "awaiting_role_delegate";
   const isOptimizer = item.source_kind === "optimizer_proposal";
   const isMessage = item.source_kind === "agent_message";
+  const topology = isOptimizer ? topologyProposalOf(item) : null;
+  const topologyImprovement =
+    typeof topology?.expected_improvement === "string" ? topology.expected_improvement : "";
   const inspectLabel =
     isMessage || isOptimizer ? "Stay on Attention" : "Open run";
 
@@ -136,6 +151,25 @@ function AttentionRow({
         >
           {item.evidence.body}
         </p>
+      ) : null}
+      {topology ? (
+        <div
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: "var(--pencil)",
+            fontFamily: "var(--mono)",
+            border: "1px solid var(--line)",
+            padding: "6px 8px",
+          }}
+          data-testid="attention-topology-proposal"
+        >
+          <strong style={{ color: "var(--ink)" }}>Topology mutation:</strong>{" "}
+          {String(topology.from_value ?? "—")} → {String(topology.to_value ?? "—")}
+          {topologyImprovement ? (
+            <div style={{ marginTop: 4 }}>{topologyImprovement}</div>
+          ) : null}
+        </div>
       ) : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <button type="button" onClick={() => onInspect(inspectionHref(item))}>

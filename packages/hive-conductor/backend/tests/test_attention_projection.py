@@ -816,7 +816,7 @@ async def test_messages_and_optimizer_map_into_attention_classes(run_store) -> N
         "prop-here": {
             "id": "prop-here",
             "dag_id": "dag-a",
-            "kind": "model_swap",
+            "kind": "topology_mutation",
             "rationale": "cheaper model",
             "priority_score": 0.8,
             "decision": "pending",
@@ -824,6 +824,13 @@ async def test_messages_and_optimizer_map_into_attention_classes(run_store) -> N
             "field_path": "nodes.0.model",
             "class": "propose",
             "blocked_by_edit_lock": False,
+            "topology_proposal": {
+                "kind": "swap_model",
+                "target_node_id": "n1",
+                "from_value": "m-a",
+                "to_value": "m-strong",
+                "expected_improvement": "higher quality",
+            },
         },
         "prop-elsewhere": {
             "id": "prop-elsewhere",
@@ -881,6 +888,13 @@ async def test_messages_and_optimizer_map_into_attention_classes(run_store) -> N
         assert by_id["prop-here"]["interruption"] == "waiting"
         assert by_id["prop-here"]["source_kind"] == "optimizer_proposal"
         assert by_id["prop-here"]["evidence"]["accept_href"].endswith("/accept")
+        assert by_id["prop-here"]["evidence"]["topology_proposal"] == {
+            "kind": "swap_model",
+            "target_node_id": "n1",
+            "from_value": "m-a",
+            "to_value": "m-strong",
+            "expected_improvement": "higher quality",
+        }
         # Priority order: severity before queued before proactive.
         assert _ids(body) == ["msg-crit", "msg-warn", "msg-info", "prop-here"]
         assert body["summary"]["counts_by_interruption"] == {
@@ -904,6 +918,80 @@ async def test_messages_and_optimizer_map_into_attention_classes(run_store) -> N
             stores.messages.pop(key)
         for key, row in prior_msgs.items():
             stores.messages[key] = row
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        for key, row in prior_props.items():
+            stores.optimizer_proposals[key] = row
+
+
+async def test_optimizer_workspace_filter_runs_before_list_cap(run_store) -> None:
+    """Newer foreign Workspace proposals must not hide this Workspace's pending row.
+
+    ``list_proposals`` caps at 200 after sorting newest-first; filtering by
+    Workspace only after that cap would drop an older in-Workspace proposal
+    when 200 newer foreign rows fill the page.
+    """
+    import stores
+    from services.attention import list_attention, set_message_rows_provider
+    from services.optimizer import list_proposals
+
+    ws = await _workspace("admin", "Attention opt cap ws")
+    other = await _workspace("admin", "Attention opt cap other")
+    prior_props = {
+        k: stores.optimizer_proposals[k] for k in list(stores.optimizer_proposals.keys())
+    }
+    try:
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        # 200 newer pending proposals in the other Workspace (created_at later).
+        for i in range(200):
+            pid = f"prop-foreign-{i:03d}"
+            stores.optimizer_proposals[pid] = {
+                "id": pid,
+                "dag_id": "dag-b",
+                "kind": "model_swap",
+                "rationale": "foreign",
+                "priority_score": 0.1,
+                "decision": "pending",
+                "workspace_id": other,
+                "created_at": f"2026-09-26T12:{i // 60:02d}:{i % 60:02d}Z",
+            }
+        stores.optimizer_proposals["prop-local-old"] = {
+            "id": "prop-local-old",
+            "dag_id": "dag-a",
+            "kind": "prompt_rewrite",
+            "rationale": "local older",
+            "priority_score": 0.9,
+            "decision": "pending",
+            "workspace_id": ws,
+            "created_at": "2026-09-25T12:00:00Z",
+            "topology_proposal": {
+                "kind": "rewrite_prompt",
+                "from_value": "old prompt",
+                "to_value": "new prompt",
+            },
+        }
+        set_message_rows_provider(lambda: [])
+
+        scoped = list_proposals(decision="pending", workspace_id=ws, limit=200)
+        assert [p["id"] for p in scoped] == ["prop-local-old"]
+
+        unscoped = list_proposals(decision="pending", limit=200)
+        assert "prop-local-old" not in {p["id"] for p in unscoped}
+        assert len(unscoped) == 200
+
+        body = await list_attention("admin", ws, now=_NOW)
+        assert body is not None
+        by_id = {item["source_id"]: item for item in body["items"]}
+        assert "prop-local-old" in by_id
+        assert by_id["prop-local-old"]["evidence"]["topology_proposal"]["from_value"] == (
+            "old prompt"
+        )
+        assert by_id["prop-local-old"]["evidence"]["topology_proposal"]["to_value"] == (
+            "new prompt"
+        )
+    finally:
+        set_message_rows_provider(None)
         for key in list(stores.optimizer_proposals.keys()):
             stores.optimizer_proposals.pop(key)
         for key, row in prior_props.items():

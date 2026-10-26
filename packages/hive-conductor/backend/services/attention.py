@@ -332,24 +332,40 @@ def _optimizer_item(row: dict[str, Any], *, workspace_id: str) -> _Item | None:
         if rationale
         else f"Optimizer suggests {kind} on DAG {dag_id}"
     )
+    topology = row.get("topology_proposal")
+    evidence: dict[str, Any] = {
+        "dag_id": dag_id or None,
+        "kind": kind,
+        "field_path": row.get("field_path"),
+        "rationale": rationale or None,
+        "priority_score": score,
+        "class": row.get("class"),
+        "blocked_by_edit_lock": bool(row.get("blocked_by_edit_lock")),
+        "interruption": "waiting",
+        "accept_href": f"/v1/optimizer/proposals/{proposal_id}/accept",
+        "reject_href": f"/v1/optimizer/proposals/{proposal_id}/reject",
+    }
+    # Preserve concrete mutation details so Accept can show from→to (ex-
+    # OptimizationInbox). Do not invent a topology when the proposal has none.
+    if isinstance(topology, dict):
+        evidence["topology_proposal"] = {
+            key: topology.get(key)
+            for key in (
+                "kind",
+                "target_node_id",
+                "from_value",
+                "to_value",
+                "expected_improvement",
+            )
+            if key in topology
+        }
     return _Item(
         source_kind="optimizer_proposal",
         source_id=proposal_id,
         workspace_id=workspace_id,
         attention_class="proactive",
         reason=reason,
-        evidence={
-            "dag_id": dag_id or None,
-            "kind": kind,
-            "field_path": row.get("field_path"),
-            "rationale": rationale or None,
-            "priority_score": score,
-            "class": row.get("class"),
-            "blocked_by_edit_lock": bool(row.get("blocked_by_edit_lock")),
-            "interruption": "waiting",
-            "accept_href": f"/v1/optimizer/proposals/{proposal_id}/accept",
-            "reject_href": f"/v1/optimizer/proposals/{proposal_id}/reject",
-        },
+        evidence=evidence,
         answer_href=None,
     )
 
@@ -357,8 +373,12 @@ def _optimizer_item(row: dict[str, Any], *, workspace_id: str) -> _Item | None:
 def _optimizer_items(*, workspace_id: str) -> list[_Item]:
     # Read through services.optimizer.list_proposals (already an allowed
     # importer of optimizer_proposals) so Attention does not gain a store edge.
+    # Scope by Workspace *before* the 200 cap so another Workspace's newer
+    # pending rows cannot hide this Workspace's proposals.
     items: list[_Item] = []
-    for row in list_proposals(decision=DECISION_PENDING, limit=_MAX_ITEMS):
+    for row in list_proposals(
+        decision=DECISION_PENDING, workspace_id=workspace_id, limit=_MAX_ITEMS
+    ):
         if not isinstance(row, dict):
             continue
         item = _optimizer_item(row, workspace_id=workspace_id)
