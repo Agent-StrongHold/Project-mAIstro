@@ -1392,7 +1392,11 @@ jobs:
           # _persist_installed_skill, and the radon ledger dropped that row.
           # The xenon re-run reports the block identities matching the
           # ledger one-for-one; module and average axes clean.
-          XENON_BASELINE: 127
+          # 127 -> 126: #57 removed BuildersLearningStrategy._run_pr_diagnostics
+          # (C 11) while folding the PR-diagnostics path into the governed tool
+          # contract, and the radon ledger dropped the same row. The ceiling
+          # follows the ledger down in the same PR, as the scope test requires.
+          XENON_BASELINE: 126
 
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
