@@ -33,11 +33,11 @@ from maistro.extensions.service import (
     LoadedExtension,
     UnwiredExtensionLoader,
 )
+from maistro.identity import Principal
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import extensions as extensions_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
 
 PAYLOAD = b"extension-payload-v1"
 
@@ -149,10 +149,9 @@ class _Harness:
         )
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 

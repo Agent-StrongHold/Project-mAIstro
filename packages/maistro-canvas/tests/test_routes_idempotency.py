@@ -35,7 +35,7 @@ from maistro_canvas.types import CanvasRecord, GenerationJobRecord, JobStatus, L
 pytestmark = pytest.mark.asyncio
 
 TEST_TOKEN = "test-canvas-token"
-ORG = "default"  # CurrentUser().org_id default for the standalone deployment
+ORG = "default"  # Principal org_id default for the standalone deployment
 
 
 class _Store:

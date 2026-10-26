@@ -14,21 +14,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from maistro.identity import Principal
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.memory.user_model import InMemoryUserModelStore, promote_evidence
 from maistro.memory.user_model.service import UserModelService
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro_server.api import user_model as user_model_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
 
 STATEMENT = "owns a Canon 7D camera and 70-200mm lens"
 
 
-def _principal(user_id: str) -> AuthenticatedPrincipal:
-    return AuthenticatedPrincipal(
+def _principal(user_id: str) -> Principal:
+    return Principal(
         user_id=user_id,
-        token=f"token-{user_id}",
         roles=frozenset({"user"}),
     )
 

@@ -28,7 +28,8 @@ from typing import Any, Protocol
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
-from maistro_canvas.auth import CurrentUser, get_current_user
+from maistro.identity import Principal
+from maistro_canvas.auth import get_current_user, scope_org_id
 from maistro_canvas.canvas.asset_compositor import (
     PlannedRender,
     RenderPlan,
@@ -462,7 +463,7 @@ def make_router(get_store: GetStore) -> APIRouter:
     factory producing a session-bound ``PostgresAssetStore``.
 
     Scope (#857): every handler resolves the caller's org from the
-    authenticated principal (``auth.org_id``) and passes it to the store;
+    authenticated principal's org scope and passes it to the store;
     a body-provided ``org_id`` (books) is only a selection, refused when it
     names a scope other than the caller's. The store predicates every
     query on it, so a guessed id from another org answers 404.
@@ -482,11 +483,11 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def register_definition(
         body: AssetDefinitionIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
         try:
             defn = _definition_in_to_dataclass(body)
-            saved = await store.register_definition(defn, org_id=auth.org_id)
+            saved = await store.register_definition(defn, org_id=scope_org_id(auth))
             return _definition_to_out(saved)
         except Exception as exc:
             raise _http_error(exc) from exc
@@ -495,9 +496,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_definition(
         asset_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
-        defn = await store.get_definition(asset_id, org_id=auth.org_id)
+        defn = await store.get_definition(asset_id, org_id=scope_org_id(auth))
         if defn is None:
             raise HTTPException(
                 404,
@@ -512,9 +513,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def list_definitions(
         kind: str = Query(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> list[AssetDefinitionOut]:
-        defs = await store.list_definitions_by_kind(kind, org_id=auth.org_id)
+        defs = await store.list_definitions_by_kind(kind, org_id=scope_org_id(auth))
         return [_definition_to_out(d) for d in defs]
 
     @router.put("/asset-definitions/{asset_id}", response_model=AssetDefinitionOut)
@@ -522,13 +523,13 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: AssetDefinitionIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetDefinitionOut:
         if asset_id != body.asset_id:
             raise HTTPException(409, {"detail": "asset_id in path and body do not match"})
         try:
             saved = await store.update_definition(
-                _definition_in_to_dataclass(body), org_id=auth.org_id
+                _definition_in_to_dataclass(body), org_id=scope_org_id(auth)
             )
             return _definition_to_out(saved)
         except Exception as exc:
@@ -541,7 +542,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: AssetSheetIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
         if asset_id != body.asset_id:
             raise HTTPException(409, {"detail": "asset_id in path and body do not match"})
@@ -553,7 +554,7 @@ def make_router(get_store: GetStore) -> APIRouter:
             generation_params=dict(body.generation_params),
         )
         try:
-            await store.upsert_sheet(sheet, org_id=auth.org_id)
+            await store.upsert_sheet(sheet, org_id=scope_org_id(auth))
         except Exception as exc:
             raise _http_error(exc) from exc
         return AssetSheetOut(**body.model_dump())
@@ -562,9 +563,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_sheet(
         asset_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
-        sheet = await store.get_sheet(asset_id, org_id=auth.org_id)
+        sheet = await store.get_sheet(asset_id, org_id=scope_org_id(auth))
         if sheet is None:
             raise HTTPException(
                 404,
@@ -583,7 +584,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         asset_id: str = Path(...),
         body: RegenerateRequest = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetSheetOut:
         try:
             sheet = await store.regenerate_sheet(
@@ -591,7 +592,7 @@ def make_router(get_store: GetStore) -> APIRouter:
                 body.sheet_image,
                 refs=tuple(body.refs) if body.refs is not None else None,
                 params=body.generation_params,
-                org_id=auth.org_id,
+                org_id=scope_org_id(auth),
             )
             return AssetSheetOut(
                 asset_id=sheet.asset_id,
@@ -609,11 +610,11 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def upsert_instance(
         body: AssetInstanceIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetInstanceOut:
         try:
             instance = _instance_in_to_dataclass(body)
-            saved = await store.upsert_instance(instance, org_id=auth.org_id)
+            saved = await store.upsert_instance(instance, org_id=scope_org_id(auth))
             return _instance_to_out(saved)
         except Exception as exc:
             raise _http_error(exc) from exc
@@ -622,9 +623,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_instance(
         instance_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> AssetInstanceOut:
-        instance = await store.get_instance(instance_id, org_id=auth.org_id)
+        instance = await store.get_instance(instance_id, org_id=scope_org_id(auth))
         if instance is None:
             raise HTTPException(404, {"detail": f"AssetInstance {instance_id!r} not found"})
         return _instance_to_out(instance)
@@ -633,9 +634,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def remove_instance(
         instance_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> None:
-        await store.remove_instance(instance_id, org_id=auth.org_id)
+        await store.remove_instance(instance_id, org_id=scope_org_id(auth))
 
     @router.get(
         "/canvases/{canvas_id}/instances",
@@ -644,9 +645,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def list_instances(
         canvas_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> list[AssetInstanceOut]:
-        rows = await store.list_instances(canvas_id, org_id=auth.org_id)
+        rows = await store.list_instances(canvas_id, org_id=scope_org_id(auth))
         return [_instance_to_out(r) for r in rows]
 
     # ── ChildProfile ────────────────────────────────────────────────
@@ -656,7 +657,7 @@ def make_router(get_store: GetStore) -> APIRouter:
         profile_id: str = Path(...),
         body: ChildProfileIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> ChildProfileOut:
         if profile_id != body.profile_id:
             raise HTTPException(409, {"detail": "profile_id in path and body do not match"})
@@ -670,7 +671,7 @@ def make_router(get_store: GetStore) -> APIRouter:
             reading_level=body.reading_level,
         )
         try:
-            await store.upsert_profile(profile, org_id=auth.org_id)
+            await store.upsert_profile(profile, org_id=scope_org_id(auth))
         except Exception as exc:
             raise _http_error(exc) from exc
         return ChildProfileOut(**body.model_dump())
@@ -679,9 +680,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_profile(
         profile_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> ChildProfileOut:
-        profile = await store.get_profile(profile_id, org_id=auth.org_id)
+        profile = await store.get_profile(profile_id, org_id=scope_org_id(auth))
         if profile is None:
             raise HTTPException(404, {"detail": f"ChildProfile {profile_id!r} not found"})
         return ChildProfileOut(
@@ -704,18 +705,18 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def create_book(
         body: BookIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
         # The body's ``org_id`` is a selection, never an authority (#857):
         # naming a scope other than the caller's is refused rather than
         # silently re-scoped, and the stored scope is always the caller's.
-        if body.org_id and body.org_id != auth.org_id:
+        if body.org_id and body.org_id != scope_org_id(auth):
             raise HTTPException(
                 403,
                 {
                     "detail": (
                         f"org_id {body.org_id!r} is not selectable by this principal;"
-                        f" resources are created in {auth.org_id!r}"
+                        f" resources are created in {scope_org_id(auth)!r}"
                     )
                 },
             )
@@ -730,7 +731,7 @@ def make_router(get_store: GetStore) -> APIRouter:
                 world_style=world_style,
                 style_volumes=volumes,
                 profile_id=body.profile_id,
-                org_id=auth.org_id,
+                org_id=scope_org_id(auth),
             )
             return _book_to_out(book)
         except Exception as exc:
@@ -740,9 +741,9 @@ def make_router(get_store: GetStore) -> APIRouter:
     async def get_book(
         book_id: str = Path(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
-        book = await store.get_book(book_id, org_id=auth.org_id)
+        book = await store.get_book(book_id, org_id=scope_org_id(auth))
         if book is None:
             raise HTTPException(404, {"detail": f"Book {book_id!r} not found"})
         return _book_to_out(book)
@@ -752,17 +753,17 @@ def make_router(get_store: GetStore) -> APIRouter:
         book_id: str = Path(...),
         body: BookIn = Body(...),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> BookOut:
         if book_id != body.book_id:
             raise HTTPException(409, {"detail": "book_id in path and body do not match"})
-        if body.org_id and body.org_id != auth.org_id:
+        if body.org_id and body.org_id != scope_org_id(auth):
             raise HTTPException(
                 403,
                 {
                     "detail": (
                         f"org_id {body.org_id!r} is not selectable by this principal;"
-                        f" resources are updated in {auth.org_id!r}"
+                        f" resources are updated in {scope_org_id(auth)!r}"
                     )
                 },
             )
@@ -774,9 +775,9 @@ def make_router(get_store: GetStore) -> APIRouter:
                 world_style=_world_style_in_to_dc(body.world_style),
                 style_volumes=volumes,
                 profile_id=body.profile_id,
-                org_id=auth.org_id,
+                org_id=scope_org_id(auth),
             )
-            saved = await store.update_book(book, org_id=auth.org_id)
+            saved = await store.update_book(book, org_id=scope_org_id(auth))
             return _book_to_out(saved)
         except Exception as exc:
             raise _http_error(exc) from exc
@@ -788,29 +789,29 @@ def make_router(get_store: GetStore) -> APIRouter:
         canvas_id: str = Path(...),
         body: PlanRequest = Body(default_factory=PlanRequest),
         store: AssetStore = Depends(store_dep),
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> RenderPlanModel:
         try:
-            instances = await store.list_instances(canvas_id, org_id=auth.org_id)
+            instances = await store.list_instances(canvas_id, org_id=scope_org_id(auth))
             world_style: WorldStyle | None = None
             volumes: tuple[StyleVolume, ...] = ()
             profile: ChildProfile | None = None
 
             if body.book_id is not None:
-                book = await store.get_book(body.book_id, org_id=auth.org_id)
+                book = await store.get_book(body.book_id, org_id=scope_org_id(auth))
                 if book is None:
                     raise HTTPException(404, {"detail": f"Book {body.book_id!r} not found"})
                 world_style = book.world_style
                 volumes = book.style_volumes
                 if profile is None and book.profile_id is not None:
-                    profile = await store.get_profile(book.profile_id, org_id=auth.org_id)
+                    profile = await store.get_profile(book.profile_id, org_id=scope_org_id(auth))
 
             if body.world_style is not None:
                 world_style = _world_style_in_to_dc(body.world_style)
             if body.style_volumes is not None:
                 volumes = tuple(_deser_style_volume(sv.model_dump()) for sv in body.style_volumes)
             if body.profile_id is not None:
-                profile = await store.get_profile(body.profile_id, org_id=auth.org_id)
+                profile = await store.get_profile(body.profile_id, org_id=scope_org_id(auth))
 
             if world_style is None:
                 raise HTTPException(
@@ -830,14 +831,14 @@ def make_router(get_store: GetStore) -> APIRouter:
             async def _registry_lookup(
                 asset_id: str,
             ) -> AssetDefinition | None:
-                return await store.get_definition(asset_id, org_id=auth.org_id)
+                return await store.get_definition(asset_id, org_id=scope_org_id(auth))
 
             # plan_render expects a sync callable; wrap by pre-fetching
             # all referenced definitions. For most pages this is small.
             referenced_ids = {i.definition for i in instances if isinstance(i.definition, str)}
             preloaded: dict[str, AssetDefinition | None] = {}
             for aid in referenced_ids:
-                preloaded[aid] = await store.get_definition(aid, org_id=auth.org_id)
+                preloaded[aid] = await store.get_definition(aid, org_id=scope_org_id(auth))
 
             def lookup(asset_id: str) -> AssetDefinition | None:
                 return preloaded.get(asset_id)

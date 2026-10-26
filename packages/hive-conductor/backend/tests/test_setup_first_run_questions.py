@@ -214,7 +214,7 @@ def test_terminal_staged_defaults_provision_the_declaration_named_accounts(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes import setup as setup_routes
     from services import registration_policy as rp
     from services.model_store import JsonStore, ModelStore
@@ -226,7 +226,7 @@ def test_terminal_staged_defaults_provision_the_declaration_named_accounts(
         DEFAULT_HARDWARE_PRESET,
     )
 
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
     monkeypatch.setattr(stores, "username_claims", JsonStore("username_claims"))
     monkeypatch.setattr(setup_routes, "_get_kv", lambda: None)
 

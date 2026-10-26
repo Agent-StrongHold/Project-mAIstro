@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 
 CLAIM_STORE = "username_claims"
 CLAIM_SCHEMA_VERSION = 1
@@ -67,25 +67,25 @@ class UsernameRegistry:
         self._users = users
         self._claims = claims
 
-    def _durable_user(self, user_id: str) -> HiveUser | None:
-        user = cast(HiveUser | None, self._users.get(user_id))
+    def _durable_user(self, user_id: str) -> HiveAccount | None:
+        user = cast(HiveAccount | None, self._users.get(user_id))
         if user is not None:
             return user
         backend = getattr(self._users, "_persisted", None)
         getter = getattr(backend, "get", None)
         if not callable(getter):
             return None
-        user = cast(HiveUser | None, getter("users", user_id, HiveUser))
+        user = cast(HiveAccount | None, getter("users", user_id, HiveAccount))
         if user is not None:
             self._users._data[user_id] = user
         return user
 
-    def _all_users(self) -> list[HiveUser]:
+    def _all_users(self) -> list[HiveAccount]:
         users = list(self._users.values())
         backend = getattr(self._users, "_persisted", None)
         lister = getattr(backend, "list_all", None)
         if callable(lister):
-            durable = lister("users", HiveUser)
+            durable = lister("users", HiveAccount)
             by_id = {user.id: user for user in users}
             by_id.update({user.id: user for user in durable})
             users = list(by_id.values())
@@ -117,7 +117,7 @@ class UsernameRegistry:
         """
         return self._refresh_claim(claim_key(username)) is not None
 
-    def resolve(self, username: str) -> HiveUser | None:
+    def resolve(self, username: str) -> HiveAccount | None:
         """Resolve through the canonical index, never by first matching row."""
         key = claim_key(username)
         record = self._refresh_claim(key)
@@ -135,14 +135,14 @@ class UsernameRegistry:
             return None
         return user
 
-    def _legacy_candidates(self, normalized: str) -> list[HiveUser]:
+    def _legacy_candidates(self, normalized: str) -> list[HiveAccount]:
         return [
             user for user in self._all_users() if normalize_username(user.username) == normalized
         ]
 
     def migrate_legacy_claims(self) -> None:
         """Index unique legacy rows and quarantine duplicate historical rows."""
-        grouped: dict[str, list[HiveUser]] = {}
+        grouped: dict[str, list[HiveAccount]] = {}
         for user in self._all_users():
             grouped.setdefault(normalize_username(user.username), []).append(user)
         for normalized, candidates in grouped.items():
@@ -186,7 +186,7 @@ class UsernameRegistry:
         self,
         claims: list[tuple[str, str, str]],
         records: list[tuple[str, str, str]],
-        batch: list[HiveUser],
+        batch: list[HiveAccount],
     ) -> None:
         backend = getattr(self._users, "_persisted", None)
         atomic = getattr(backend, "put_raw_with_unique_claims", None)
@@ -210,7 +210,7 @@ class UsernameRegistry:
             self._claims._data[key] = json.loads(raw)
             self._users._data[user.id] = user
 
-    def create_users(self, users: Iterable[HiveUser]) -> None:
+    def create_users(self, users: Iterable[HiveAccount]) -> None:
         """Create one or more users with their claims as one durable unit."""
         batch = list(users)
         if not batch:
@@ -257,7 +257,9 @@ class UsernameRegistry:
         if not atomic(claims, records):
             raise UsernameAllocationError("username rollback did not match its accounts")
 
-    def _rollback_memory(self, batch: list[HiveUser], claims: list[tuple[str, str, str]]) -> None:
+    def _rollback_memory(
+        self, batch: list[HiveAccount], claims: list[tuple[str, str, str]]
+    ) -> None:
         for _, key, expected_id in claims:
             record = self._claims.get(key)
             if not isinstance(record, dict) or record.get("user_id") != expected_id:
@@ -269,7 +271,7 @@ class UsernameRegistry:
         for user in batch:
             self._users._data.pop(user.id, None)
 
-    def rollback_users(self, users: Iterable[HiveUser]) -> None:
+    def rollback_users(self, users: Iterable[HiveAccount]) -> None:
         """Remove accounts and claims after a later setup step fails.
 
         The durable backend verifies each claim still belongs to the supplied
@@ -325,7 +327,7 @@ def migrate_legacy_claims() -> None:
     _default_registry().migrate_legacy_claims()
 
 
-def resolve(username: str) -> HiveUser | None:
+def resolve(username: str) -> HiveAccount | None:
     registry = _default_registry()
     registry.migrate_or_index_one(username)
     return registry.resolve(username)
@@ -337,9 +339,9 @@ def is_claimed(username: str) -> bool:
     return registry.is_claimed(username)
 
 
-def create_users(users: Iterable[HiveUser]) -> None:
+def create_users(users: Iterable[HiveAccount]) -> None:
     _default_registry().create_users(users)
 
 
-def rollback_users(users: Iterable[HiveUser]) -> None:
+def rollback_users(users: Iterable[HiveAccount]) -> None:
     _default_registry().rollback_users(users)
