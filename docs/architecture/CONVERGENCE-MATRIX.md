@@ -45,7 +45,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 
 **What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 52 name a module, 73 declare there is no module owner, and 31 are prose the checker cannot reach.
 
-<!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
+<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
@@ -58,12 +58,12 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Repo tooling | `scripts`, `_vulture_whitelist` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
 | Builders pipeline | `maistro.builders` via `maistro.cli._builders_tui` | ReAct interactive turn plus reusable five-stage Builders domain composition | `maistro.graph.durable_runs` through `maistro.builders.interactive` (canonical Run/NodeRun/Attempt); legacy executor is parity-only | canonical Run/Graph stores via `maistro.runs.wiring`; session history retains run IDs | — |
-| Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
+| Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store`, `workspaces.backlog.store` (BacklogItems, #98: in-memory + SQLite; PostgreSQL falls back to in-memory until its slice lands) | `projects.authorization` |
 | Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc | `persistence.pg_agents` | `agents.intents` routing table only |
 | Capability / Provider / Binding / Invocation | `maistro.capabilities` | the canonical effect path | `capabilities.invocation` | `capabilities.invocation_store`, `approval_store`; durable Binding and Invocation stores on SQLite or PostgreSQL through `capabilities.effect_context` when a database is configured (#1321), in-memory otherwise | `capabilities.governed_invocation` |
 | Model providers | `maistro.providers` | Provider implementations | n/a | — | — |
 | Router and classifier | `maistro.router`, `maistro.classifier` | Provider selection policy | n/a (pure decision) | — | — |
-| Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval` (unreachable), `tools.reversibility_registry` (unreachable) |
+| Tool execution | `maistro.tools` | Invocation | shipped hive tool effects execute beneath canonical Invocations: the boot/chat seam constructs `GovernedToolExecutor` (`services.governed_tools`, #57) and legacy DAG tool nodes run inside their legacy-tool Invocation (no-identity compat branch retired, #57) | — | `tools.approval` (unreachable); `tools.reversibility_registry` reached by `tools.contracts` — the #57 governed executor resolves every admitted tool call's tier from it (#57) |
 | Sandbox isolation | `maistro.sandbox` | ExecutionRuntime implementation | its own session records | — | — |
 | Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire`, `maistro.extensions`, `maistro_ext_sdk`, `maistro_ext_harness` | Capability supply chain; the published extension SDK is the family's out-of-tree author contract, and the host harness (#974) is its local conformance runner over those public contracts | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
 | Credentials | `maistro.credentials` | Binding material | `credentials.router` scoped rotation state, reached from Provider selection on the Invocation path (#58) | encrypted per-user store | — |
