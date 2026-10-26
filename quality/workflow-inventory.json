@@ -332,6 +332,18 @@
         "workflow_dispatch"
       ],
       "rationale": "On-demand #862/#860 release-soak pressure case (scripts/soak-compose-pressure.py): reads the containment ceiling of a shipped Compose service straight out of the profile, replays it onto a disposable container on the real Docker/Podman daemon, drives OOM and PID exhaustion, and records containment evidence JSON for the soak record - a deliberate release measurement, not a gate. Wires no policy into production; the containment policy itself is enforced per-PR by scripts/check-compose-resources.py in ci.yml."
+    },
+    {
+      "id": "issue-metadata-integrity",
+      "file": ".github/workflows/issue-metadata-integrity.yml",
+      "disposition": "ACTIVE",
+      "triggers": [
+        "issues",
+        "pull_request",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "rationale": "Checks metadata on issue edits and daily across the backlog; PRs run the isolated repair safety tests. Native hierarchy mutation is manual-only, source-pinned, journaled and verified in bounded batches; no automatic reparenting or priority/state changes."
     }
   ],
   "retained_branches": [
