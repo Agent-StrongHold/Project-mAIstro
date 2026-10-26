@@ -1512,3 +1512,26 @@ async def test_audit_log_wiring_without_relational_backend_returns_signed_memory
     [stored] = await audit.get_entries()
     assert stored.signature
     assert audit.verify(stored)
+
+
+async def test_sqlite_backend_wires_the_durable_backlog_store(tmp_path: Path) -> None:
+    """#98: a `sqlite:` deployment keeps its BacklogItems across restarts, on
+    the same connection -- and so in the same transaction -- as the Projects
+    they are filed in."""
+    from maistro.workspaces.backlog.sqlite_store import SqliteBacklogItemStore
+
+    container = await _container(database_url=f"sqlite:///{tmp_path / 'backlog.db'}")
+    try:
+        assert isinstance(container.backlog_store, SqliteBacklogItemStore)
+        assert container.backlog_store._project_store is container.project_scope_store
+    finally:
+        if container.db_pool is not None:
+            await container.db_pool.close()
+
+
+async def test_memory_backend_wires_the_in_memory_backlog_reference() -> None:
+    from maistro.workspaces.backlog import InMemoryBacklogItemStore
+
+    container = await _container()
+
+    assert isinstance(container.backlog_store, InMemoryBacklogItemStore)
