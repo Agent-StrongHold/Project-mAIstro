@@ -323,7 +323,6 @@ class TaskRunner:
         # released the receipt is dropped so this process's reads project the
         # owner's Run truth instead of a stale non-terminal copy (#1690).
         claim_lost = False
-        result: ConductorOutput | None = None
         async with self._queue.claim(task_id):
             # Planning phase
             if not await self._queue.update_status(task_id, TaskStatus.PLANNING):
@@ -385,8 +384,6 @@ class TaskRunner:
                 result = exc.output
 
             if not claim_lost:
-                if result is None:
-                    raise RuntimeError(f"task {task_id} finished without a conductor result")
                 await self._settle_outcome(task_id, result)
 
         if claim_lost:
