@@ -185,6 +185,10 @@ def test_nonterminal_canonical_status_leaves_the_row_open(authed_client: Any, st
     assert row is not None
     assert row["finished_at"] is None
     assert records[run_id]["finished_at"] is None
+    # #1036: mirror the exact canonical nonterminal status — never leave the
+    # row stuck at the store's in-flight default "running".
+    assert row["status"] == status
+    assert records[run_id]["status"] == status
 
     # Persist/reopen: a replica rehydrates the fixture and the row is still
     # exactly as open as the writer left it — reopen finishes nothing.
@@ -193,6 +197,7 @@ def test_nonterminal_canonical_status_leaves_the_row_open(authed_client: Any, st
     reopened = replica.get_run(run_id)
     assert reopened is not None
     assert reopened["finished_at"] is None
+    assert reopened["status"] == status
 
 
 def test_terminal_outcomes_finish_normally(authed_client: Any) -> None:
