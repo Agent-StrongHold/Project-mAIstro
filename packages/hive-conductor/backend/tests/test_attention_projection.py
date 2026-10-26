@@ -186,8 +186,10 @@ async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> 
     assert ancient["answer_href"] == "/v1/hitl/att-ancient/ask/answer"
     assert body["summary"] == {
         "counts_by_class": {"time_sensitive": 1, "queued": 2},
+        "counts_by_interruption": {"popup": 1, "queued": 2},
         "highest_class": "time_sensitive",
         "rising": ["att-due/ask"],
+        "waiting_quality": {"count": 0, "valuable_source_ids": []},
         "truncated": False,
         "hitl_unavailable": False,
         "dismissed_count": 0,
@@ -248,8 +250,10 @@ async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> 
     assert body["items"][0]["source_id"] == "att-urgent/ask"
     assert body["summary"] == {
         "counts_by_class": {"time_sensitive": 1, "queued": 205},
+        "counts_by_interruption": {"popup": 1, "queued": 205},
         "highest_class": "time_sensitive",
         "rising": ["att-urgent/ask"],
+        "waiting_quality": {"count": 0, "valuable_source_ids": []},
         "truncated": True,
         "hitl_unavailable": False,
         "dismissed_count": 0,
@@ -325,8 +329,10 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
     assert body["items"] == []
     assert body["summary"] == {
         "counts_by_class": {},
+        "counts_by_interruption": {},
         "highest_class": None,
         "rising": [],
+        "waiting_quality": {"count": 0, "valuable_source_ids": []},
         "truncated": False,
         "hitl_unavailable": False,
         "dismissed_count": 0,
@@ -702,3 +708,291 @@ async def test_include_dismissed_keeps_items_and_counts(run_store) -> None:
     assert body is not None
     assert set(_ids(body)) == {"att-keep-inc/ask", "att-hide-inc/ask"}
     assert body["summary"]["dismissed_count"] == 1
+
+
+def test_priority_ladder_orders_severity_before_proactive() -> None:
+    """#1049: severity > time_sensitive > blocking > queued > follow_up > proactive."""
+    from services.attention import ATTENTION_CLASSES, _Item
+
+    assert ATTENTION_CLASSES == (
+        "severity",
+        "time_sensitive",
+        "blocking",
+        "queued",
+        "follow_up",
+        "proactive",
+    )
+    items = [
+        _Item("k", "proactive", "ws", "proactive", "p"),
+        _Item("k", "severity", "ws", "severity", "s"),
+        _Item("k", "queued", "ws", "queued", "q"),
+        _Item("k", "follow_up", "ws", "follow_up", "f"),
+        _Item("k", "blocking", "ws", "blocking", "b"),
+        _Item(
+            "k",
+            "time_sensitive",
+            "ws",
+            "time_sensitive",
+            "t",
+            deadline=_NOW + timedelta(hours=1),
+        ),
+    ]
+    items.sort(key=_Item.sort_key)
+    assert [i.attention_class for i in items] == list(ATTENTION_CLASSES)
+
+
+def test_age_alone_does_not_escalate_class() -> None:
+    """Escalation needs evidence other than elapsed time (#1049)."""
+    from services.attention import INTERRUPTION_FOR_CLASS, _Item
+
+    ancient = _Item(
+        "hitl_node_run",
+        "old/ask",
+        "ws",
+        "queued",
+        "still queued after months",
+        evidence={"paused_at": (_NOW - timedelta(days=400)).isoformat()},
+    )
+    assert ancient.attention_class == "queued"
+    assert INTERRUPTION_FOR_CLASS[ancient.attention_class] == "queued"
+    # No automatic promotion helper keyed only on age exists on the item.
+    assert "escalated_because_old" not in ancient.evidence
+
+
+async def test_messages_and_optimizer_map_into_attention_classes(run_store) -> None:
+    """MessageBoard + OptimizationInbox MERGE: class + interruption mapping."""
+    import stores
+    from services.attention import list_attention, set_message_rows_provider
+
+    ws = await _workspace("admin", "Attention merge sources")
+    other = await _workspace("admin", "Attention merge other")
+    planted = {
+        "msg-crit": {
+            "id": "msg-crit",
+            "from_agent": "Warden",
+            "to": "admin",
+            "subject": "Critical finding",
+            "body": "needs eyes",
+            "priority": "critical",
+            "read": False,
+            "category": "security",
+            "created_at": _NOW.isoformat(),
+        },
+        "msg-warn": {
+            "id": "msg-warn",
+            "from_agent": "Quota",
+            "to": "admin",
+            "subject": "Quota warning",
+            "body": "75%",
+            "priority": "warning",
+            "read": False,
+            "category": "quota",
+            "created_at": _NOW.isoformat(),
+        },
+        "msg-info": {
+            "id": "msg-info",
+            "from_agent": "DreamLoop",
+            "to": "all",
+            "subject": "Idea",
+            "body": "optional",
+            "priority": "info",
+            "read": False,
+            "category": "mission",
+            "created_at": _NOW.isoformat(),
+        },
+        "msg-read": {
+            "id": "msg-read",
+            "from_agent": "System",
+            "to": "admin",
+            "subject": "Already read",
+            "body": "skip",
+            "priority": "critical",
+            "read": True,
+            "category": "system",
+            "created_at": _NOW.isoformat(),
+        },
+    }
+    proposals = {
+        "prop-here": {
+            "id": "prop-here",
+            "dag_id": "dag-a",
+            "kind": "topology_mutation",
+            "rationale": "cheaper model",
+            "priority_score": 0.8,
+            "decision": "pending",
+            "workspace_id": ws,
+            "field_path": "nodes.0.model",
+            "class": "propose",
+            "blocked_by_edit_lock": False,
+            "topology_proposal": {
+                "kind": "swap_model",
+                "target_node_id": "n1",
+                "from_value": "m-a",
+                "to_value": "m-strong",
+                "expected_improvement": "higher quality",
+            },
+        },
+        "prop-elsewhere": {
+            "id": "prop-elsewhere",
+            "dag_id": "dag-b",
+            "kind": "retry_count_tune",
+            "rationale": "other ws",
+            "priority_score": 0.9,
+            "decision": "pending",
+            "workspace_id": other,
+            "field_path": "nodes.0.retry",
+            "class": "propose",
+            "blocked_by_edit_lock": False,
+        },
+        "prop-decided": {
+            "id": "prop-decided",
+            "dag_id": "dag-a",
+            "kind": "prompt_rewrite",
+            "rationale": "done",
+            "priority_score": 0.7,
+            "decision": "accepted",
+            "workspace_id": ws,
+            "field_path": "nodes.0.prompt",
+            "class": "propose",
+            "blocked_by_edit_lock": False,
+        },
+    }
+    prior_msgs = {k: stores.messages[k] for k in list(stores.messages.keys())}
+    prior_props = {
+        k: stores.optimizer_proposals[k] for k in list(stores.optimizer_proposals.keys())
+    }
+    try:
+        for key in list(stores.messages.keys()):
+            stores.messages.pop(key)
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        for key, row in planted.items():
+            stores.messages[key] = row
+        for key, row in proposals.items():
+            stores.optimizer_proposals[key] = row
+        # Mirror main.py's wire: tests call list_attention without booting the app.
+        set_message_rows_provider(lambda: list(stores.messages.values()))
+
+        body = await list_attention("admin", ws, now=_NOW)
+        assert body is not None
+        by_id = {item["source_id"]: item for item in body["items"]}
+        assert set(by_id) == {"msg-crit", "msg-warn", "msg-info", "prop-here"}
+        assert by_id["msg-crit"]["attention_class"] == "severity"
+        assert by_id["msg-crit"]["interruption"] == "blocking"
+        assert by_id["msg-crit"]["source_kind"] == "agent_message"
+        assert by_id["msg-warn"]["attention_class"] == "queued"
+        assert by_id["msg-warn"]["interruption"] == "queued"
+        assert by_id["msg-info"]["attention_class"] == "proactive"
+        assert by_id["msg-info"]["interruption"] == "waiting"
+        assert by_id["prop-here"]["attention_class"] == "proactive"
+        assert by_id["prop-here"]["interruption"] == "waiting"
+        assert by_id["prop-here"]["source_kind"] == "optimizer_proposal"
+        assert by_id["prop-here"]["evidence"]["accept_href"].endswith("/accept")
+        assert by_id["prop-here"]["evidence"]["topology_proposal"] == {
+            "kind": "swap_model",
+            "target_node_id": "n1",
+            "from_value": "m-a",
+            "to_value": "m-strong",
+            "expected_improvement": "higher quality",
+        }
+        # Priority order: severity before queued before proactive.
+        assert _ids(body) == ["msg-crit", "msg-warn", "msg-info", "prop-here"]
+        assert body["summary"]["counts_by_interruption"] == {
+            "blocking": 1,
+            "queued": 1,
+            "waiting": 2,
+        }
+        assert body["summary"]["waiting_quality"]["count"] == 2
+        assert "prop-here" in body["summary"]["waiting_quality"]["valuable_source_ids"]
+
+        # Optimizer does not bleed across Workspaces; messages are user-global.
+        other_body = await list_attention("admin", other, now=_NOW)
+        assert other_body is not None
+        other_ids = set(_ids(other_body))
+        assert "prop-elsewhere" in other_ids
+        assert "prop-here" not in other_ids
+        assert {"msg-crit", "msg-warn", "msg-info"} <= other_ids
+    finally:
+        set_message_rows_provider(None)
+        for key in list(stores.messages.keys()):
+            stores.messages.pop(key)
+        for key, row in prior_msgs.items():
+            stores.messages[key] = row
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        for key, row in prior_props.items():
+            stores.optimizer_proposals[key] = row
+
+
+async def test_optimizer_workspace_filter_runs_before_list_cap(run_store) -> None:
+    """Newer foreign Workspace proposals must not hide this Workspace's pending row.
+
+    ``list_proposals`` caps at 200 after sorting newest-first; filtering by
+    Workspace only after that cap would drop an older in-Workspace proposal
+    when 200 newer foreign rows fill the page.
+    """
+    import stores
+    from services.attention import list_attention, set_message_rows_provider
+    from services.optimizer import list_proposals
+
+    ws = await _workspace("admin", "Attention opt cap ws")
+    other = await _workspace("admin", "Attention opt cap other")
+    prior_props = {
+        k: stores.optimizer_proposals[k] for k in list(stores.optimizer_proposals.keys())
+    }
+    try:
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        # 200 newer pending proposals in the other Workspace (created_at later).
+        for i in range(200):
+            pid = f"prop-foreign-{i:03d}"
+            stores.optimizer_proposals[pid] = {
+                "id": pid,
+                "dag_id": "dag-b",
+                "kind": "model_swap",
+                "rationale": "foreign",
+                "priority_score": 0.1,
+                "decision": "pending",
+                "workspace_id": other,
+                "created_at": f"2026-09-26T12:{i // 60:02d}:{i % 60:02d}Z",
+            }
+        stores.optimizer_proposals["prop-local-old"] = {
+            "id": "prop-local-old",
+            "dag_id": "dag-a",
+            "kind": "prompt_rewrite",
+            "rationale": "local older",
+            "priority_score": 0.9,
+            "decision": "pending",
+            "workspace_id": ws,
+            "created_at": "2026-09-25T12:00:00Z",
+            "topology_proposal": {
+                "kind": "rewrite_prompt",
+                "from_value": "old prompt",
+                "to_value": "new prompt",
+            },
+        }
+        set_message_rows_provider(lambda: [])
+
+        scoped = list_proposals(decision="pending", workspace_id=ws, limit=200)
+        assert [p["id"] for p in scoped] == ["prop-local-old"]
+
+        unscoped = list_proposals(decision="pending", limit=200)
+        assert "prop-local-old" not in {p["id"] for p in unscoped}
+        assert len(unscoped) == 200
+
+        body = await list_attention("admin", ws, now=_NOW)
+        assert body is not None
+        by_id = {item["source_id"]: item for item in body["items"]}
+        assert "prop-local-old" in by_id
+        assert by_id["prop-local-old"]["evidence"]["topology_proposal"]["from_value"] == (
+            "old prompt"
+        )
+        assert by_id["prop-local-old"]["evidence"]["topology_proposal"]["to_value"] == (
+            "new prompt"
+        )
+    finally:
+        set_message_rows_provider(None)
+        for key in list(stores.optimizer_proposals.keys()):
+            stores.optimizer_proposals.pop(key)
+        for key, row in prior_props.items():
+            stores.optimizer_proposals[key] = row

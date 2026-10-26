@@ -25,11 +25,9 @@ import {
   Workflow,
   PlayCircle,
   Boxes,
-  Zap,
   Repeat,
   ListTodo,
   CalendarClock,
-  Inbox,
   Bell,
   Gauge,
   ScrollText,
@@ -76,16 +74,15 @@ const fullNav = [
   // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
   // as the primary nav entry; those four stay URL-reachable until deleted.
   { to: "/capabilities", icon: Boxes, label: "Capabilities" },
-  { to: "/optimizer", icon: Zap, label: "Optimizer" },
-  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
-  // implemented routes with no navigation entry (audit GLO-01). Each is a
-  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
-  // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
-  // Skills, Work Items, Memory) deliberately stay off this list —
-  // docs/route-inventory.md records their URL-only dispositions. Evolution
-  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
-  { to: "/messages", icon: Inbox, label: "Messages" },
+  // #1049 MERGE: Optimizer + Messages nav entries removed — both surfaces
+  // project into Attention. Old /optimizer and /messages URLs redirect there.
+  // #1417: Quotas, Containers, CLI and Audit were registered routes with no
+  // navigation entry (audit GLO-01). Each is a retained surface per the
+  // cutover plan (PROJECT rows, and CLI/Containers under contracts #292/#382),
+  // so they stay discoverable; legacy pages scheduled for replacement
+  // (Agents, Topology, Integrations, Skills, Work Items, Memory) stay off
+  // this list — docs/route-inventory.md. Evolution: #2275 hid the route for
+  // v1.0 (restore v1.2 / #51).
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until

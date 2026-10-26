@@ -125,6 +125,18 @@ test("Attention loads the Workspace projection API and shows summary", async () 
   await expect(empty.or(list)).toBeVisible();
 });
 
+test("legacy message/optimizer URLs land on Attention and do not revive modules", async () => {
+  await page.goto("/messages", { waitUntil: "domcontentloaded" });
+  await page.waitForURL("**/attention");
+  await expect(page.getByTestId("workspace-attention")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toHaveCount(0);
+
+  await page.goto("/optimizer", { waitUntil: "domcontentloaded" });
+  await page.waitForURL("**/attention");
+  await expect(page.getByTestId("workspace-attention")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Optimization Inbox", exact: true })).toHaveCount(0);
+});
+
 test("Defer/Dismiss hides an item and preference survives reload", async () => {
   // Seed a failed-run Attention item via the projection store is hard from
   // Playwright; instead plant a dismissal against a synthetic source id and
