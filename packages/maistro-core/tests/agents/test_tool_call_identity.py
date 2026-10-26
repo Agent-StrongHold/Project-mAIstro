@@ -11,7 +11,7 @@ import pytest
 
 from maistro.agents.artificer import strategy as artificer_module
 from maistro.agents.artificer.strategy import ArtificerStrategy
-from maistro.agents.base import Agent
+from maistro.agents.base import Agent, _build_tool_schema
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.strategies.delegate import DelegateStrategy
 from maistro.agents.strategies.react import ReactStrategy
@@ -22,7 +22,7 @@ from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse, ToolCallDef
 from maistro.types.agent import AgentIdentity
-from maistro.types.tool import ToolCall
+from maistro.types.tool import ToolCall, ToolDefinition
 
 _CALLER = AuthContext(user_id="operator", roles=frozenset({"operator"}))
 
@@ -89,6 +89,16 @@ def _agent(
             permission_table={"lookup": frozenset({"operator" if grant else "admin"})},
         ),
         tool_executor=executor,
+        tool_registry=SimpleNamespace(
+            get=lambda name: (
+                ToolDefinition(
+                    name=name,
+                    parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                )
+                if name == "lookup"
+                else None
+            )
+        ),
         tracer=MagicMock() if traced else None,
     )
     return agent, provider
@@ -172,7 +182,9 @@ async def test_agent_overrides_supplied_identity_and_depth(monkeypatch: pytest.M
     executor = _RecordingExecutor()
     agent, _ = _agent("react", executor, monkeypatch, name="trusted-agent")
     governed = agent._governed_tool_executor(
-        None, {"auth": _CALLER, "delegation_depth": 99}, delegation_depth=2
+        [_build_tool_schema("lookup", registry=agent._tool_registry)],
+        {"auth": _CALLER, "delegation_depth": 99},
+        delegation_depth=2,
     )
     call = ToolCall("provider-id", "lookup", {"agent_name": "forged", "delegation_depth": 99})
 
@@ -231,7 +243,11 @@ async def test_authorization_repairs_arguments_without_changing_provider_identit
         ),
         post_call=AsyncMock(return_value="safe result"),
     )
-    governed = agent._governed_tool_executor(None, {"auth": _CALLER}, delegation_depth=1)
+    governed = agent._governed_tool_executor(
+        [_build_tool_schema("lookup", registry=agent._tool_registry)],
+        {"auth": _CALLER},
+        delegation_depth=1,
+    )
 
     result = await governed.execute_tool_call(
         ToolCall("provider-id", "lookup", {"query": 1}), tool_round=2
@@ -286,5 +302,9 @@ async def test_agent_declaration_narrows_sentinel_grant(
         if message.get("role") == "tool"
     ]
     assert len(results) == 2
-    expected = "hook result" if allowed else "Error: Permission denied for undeclared tool 'lookup'"
+    # #57 strategy-level validation refuses an undeclared name before the
+    # executor boundary is reached, so its allowlist refusal is the message
+    # the model sees; Agent._authorize_and_invoke keeps the same membership
+    # decision (and its own refusal string) as the inner defense in depth.
+    expected = "hook result" if allowed else "Error: tool 'lookup' is not in the Agent allowlist"
     assert results == [expected, expected]
