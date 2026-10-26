@@ -3128,7 +3128,16 @@ async def _tool_profile_set(
         # and answered `updated: True`, so the model told the user their fact
         # was saved when nothing held it (#699).
         return {"error": f"profile not saved: {exc}"}
-    audit_workspace_preference(actor=user_id, field=field, value=value, source="agent")
+    # Off the loop: Pg-backed audit schedules onto this ASGI loop and then
+    # blocks on future.result — calling it inline deadlocks the worker for
+    # the audit timeout whenever an Agent saves a Workspace preference.
+    await asyncio.to_thread(
+        audit_workspace_preference,
+        actor=user_id,
+        field=field,
+        value=value,
+        source="agent",
+    )
     return {"updated": True, "field": field, "value": value}
 
 

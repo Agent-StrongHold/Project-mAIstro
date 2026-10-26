@@ -8,7 +8,7 @@
  * Learned defaults are never applied without an explicit accept.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiPatch } from "../lib/api";
 import {
   LANDING_PREF_KEY,
@@ -31,8 +31,17 @@ export function LandingSuggestionBanner() {
   const [path, setPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Interval/storage refresh closes over a stable callback; read live busy/error
+  // so a failed dismiss is not wiped by the next poll.
+  const busyRef = useRef(busy);
+  const errorRef = useRef(error);
+  busyRef.current = busy;
+  errorRef.current = error;
 
   const refresh = async () => {
+    // Keep a failed dismiss/accept visible — do not let the poll clear the
+    // retry path while the user still needs to re-save the cooldown.
+    if (busyRef.current || errorRef.current) return;
     try {
       const profile = await loadProfile();
       const decision = decideLandingSuggestion({
@@ -94,23 +103,24 @@ export function LandingSuggestionBanner() {
 
   const dismiss = async () => {
     if (busy) return;
+    const target = path;
     setBusy(true);
     setError(null);
-    // Soft local suppress immediately so the banner stays gone even if the
-    // profile PATCH is slow; durable cooldown is the preference-aware owner.
-    suppressLandingSuggestion(path);
-    setPath(null);
     try {
+      // Persist the durable cooldown first. Only hide + locally suppress after
+      // success so a failed save stays visible and retryable (Codex P2).
       const profile = await loadProfile();
       const next = mergeSuggestionCooldown(
         profile.preferences?.[SUGGESTION_COOLDOWN_PREF_KEY],
-        path,
+        target,
         Date.now(),
       );
       await apiPatch("/v1/profile", {
         field: SUGGESTION_COOLDOWN_PREF_KEY,
         value: next,
       });
+      suppressLandingSuggestion(target);
+      setPath(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save suggestion cooldown.");
     } finally {
@@ -141,10 +151,10 @@ export function LandingSuggestionBanner() {
         Make default
       </button>
       <button type="button" data-testid="landing-suggestion-dismiss" disabled={busy} onClick={() => void dismiss()}>
-        Not now
+        {error ? "Retry Not now" : "Not now"}
       </button>
       {error ? (
-        <span role="alert" style={{ color: "var(--danger)", width: "100%" }}>
+        <span role="alert" style={{ color: "var(--danger)", width: "100%" }} data-testid="landing-suggestion-error">
           {error}
         </span>
       ) : null}
