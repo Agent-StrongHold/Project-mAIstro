@@ -122,6 +122,8 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.backlog.store import BacklogItemStore
+from maistro.workspaces.backlog.wiring import wire_backlog_store
 from maistro.workspaces.backlog_history.store import BacklogHistoryStore
 from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
 from maistro.workspaces.campaigns.store import CampaignStore
@@ -292,6 +294,8 @@ class Container:
     #: it lives in the `goal_reader` seam below, over the canonical Workspace
     #: authorization path (#1150).
     goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+    #: Workspace/Project-scoped BacklogItems (#98), on the Project store's backend.
+    backlog_store: BacklogItemStore = None  # type: ignore[assignment]
 
     @property
     def goal_reader(self) -> ScopedGoalStore:
@@ -2662,6 +2666,11 @@ async def create_container(
         # The configured Workspace is provisioned at composition, not left to
         # the first operator action (#1152 review) — why is on the helper.
         await _provision_configured_workspace(workspace_store, config.workspace_id)
+        backlog_store = await wire_backlog_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,
@@ -2951,7 +2960,6 @@ async def create_container(
         spawn_harness_node = AgentSpawnHarnessNode(
             adapters=wired_harness_adapters, effect_context=capability_effects
         )
-
         # --- Personas golden records (SPEC-192) --------------------------------
         from maistro.personas.golden import InMemoryGoldenRecordStore
 
@@ -2992,6 +3000,7 @@ async def create_container(
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
             persona_store=persona_store,
+            backlog_store=backlog_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
