@@ -400,8 +400,9 @@ class TestDuplicateNames:
         with pytest.raises(gate.ContractError, match="two workflows emit"):
             gate._refuse_duplicates(rows)
 
-    def test_one_workflow_repeating_a_name_is_not_a_collision(self, gate) -> None:
-        gate._refuse_duplicates([("A", "test", "every PR"), ("A", "test", "every PR")])
+    def test_one_workflow_repeating_a_name_is_a_collision(self, gate) -> None:
+        with pytest.raises(gate.ContractError, match="two jobs in one workflow emit"):
+            gate._refuse_duplicates([("A", "test", "every PR"), ("A", "test", "every PR")])
 
     def test_the_real_workflows_have_no_collisions(self, gate) -> None:
         gate._refuse_duplicates(gate.collect())

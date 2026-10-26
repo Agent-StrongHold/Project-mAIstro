@@ -882,6 +882,14 @@ or placeholder-only section.
   is re-applied when a turn terminalizes. Workspace-scoped admitters share
   one process-wide `max_retained` budget; more users do not multiply it.
   Tracking refuses foreign-Workspace and non-chat Runs.
+
+- **Reusable CI check discovery resolves optional string defaults (#1609).**
+  The required-check contract discovers single-level local reusable workflow
+  names, including both same-revision local path syntaxes, date-shaped names,
+  and omitted optional string inputs with an implicit empty value. Conditional
+  or dependency-bound callers, ambiguous names and unsupported nested, matrix, or conditional callee jobs
+  fail closed; production check names and branch-protection requirements stay
+  unchanged.
 - **Conductor batch inspection respects existing projection scope (#1036).**
   Canonical fallback applies only when no projection exists, keeping verdict-list
   visibility consistent with detail and stream admission for colliding run IDs.
