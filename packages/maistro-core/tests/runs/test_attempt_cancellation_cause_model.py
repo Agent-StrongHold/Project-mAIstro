@@ -20,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
-from maistro.runs.lifecycle import reclaim_attempt, transition_attempt
+from maistro.runs.lifecycle import transition_attempt
 from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, ExecutionLease, RunStatus
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -290,28 +290,19 @@ class TestExistingPathsStillLeaveTheCauseUnknown:
         assert "cancellation_cause" not in attempt.model_dump()
         assert set(attempt.model_dump()) == LEGACY_PAYLOAD_FIELDS
 
-    def test_reclaim_writes_status_and_error_but_no_durable_cause(self) -> None:
-        """Reclaim already lands on CANCELLED; it must not upgrade to a cause.
+    def test_generic_cancel_still_leaves_the_cause_unknown(self) -> None:
+        """Requested/generic CANCELLED paths stay unknown; reclaim is #2354.
 
-        Existing unknown-CANCELLED history is not reclassified by staging the
-        field, and the reclaim path itself stays a status/error writer until a
-        recovery leaf decides otherwise.
+        P1a proved staging upgraded no existing CANCELLED producer. P2a
+        (#2354) is the reclaim writer leaf — covered in
+        ``test_reclaim_attempt_lease_construction.py``. Generic
+        ``transition_attempt`` to CANCELLED must still omit the cause.
         """
         running = transition_attempt(Attempt(node_run_id="nr-1", ordinal=1), AttemptStatus.RUNNING)
-        lease = ExecutionLease(
-            node_run_id=running.node_run_id,
-            attempt_id=running.attempt_id,
-            lease_epoch=1,
-            holder="quiet-executor",
-        )
-        leased = Attempt.model_validate({**running.model_dump(), "execution_lease": lease})
+        cancelled = transition_attempt(running, AttemptStatus.CANCELLED, error="asked to stop")
 
-        reclaimed = reclaim_attempt(leased, at=datetime.now(UTC))
-
-        assert reclaimed.status is AttemptStatus.CANCELLED
-        assert reclaimed.cancellation_cause is None
-        assert reclaimed.error is not None and "quiet-executor" in reclaimed.error
-        assert "cancellation_cause" not in json.loads(reclaimed.model_dump_json())
+        assert cancelled.cancellation_cause is None
+        assert "cancellation_cause" not in json.loads(cancelled.model_dump_json())
 
     async def test_the_shared_consumer_claim_builder_leaves_the_cause_unknown(self) -> None:
         """The one builder every consumption path mints Attempts through."""
