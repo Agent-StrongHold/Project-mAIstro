@@ -23,6 +23,42 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CodeQL workflow scope test expects `develop` triggers (#2357).**
+  `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
+  CodeQL Advanced was widened to `develop`; align the pin so CI catches
+  regressions of the Security-tab refresh path. DevSkim also gains
+  `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
+  another product commit.
+
+### Security
+
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+
+- **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
+  code-scanning alerts on develop).** Route mutation-baseline CI error
+  annotations through the allowlisted `_ci_error_annotation` scrubber
+  (CodeQL `py/clear-text-logging-sensitive-data`). Move DevSkim integrity-pin
+  suppressions onto the same line as each `scripts/vendor_bfcl.py` digest;
+  clear remaining script/product false positives (loopback CLI default,
+  ontology `TODO` enum, placeholder-gate prose, pip-audit curve triage) with
+  same-line dated ignores or rewording. Expand DevSkim `ignore-globs` for
+  immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
+  Security tab stays actionable without editing cage-guarded trees.
+
 ### Added
 
 - **Acceptance-based repository delivery planner (#1629).** New read-only
@@ -37,6 +73,29 @@ or placeholder-only section.
   tooling only — no product Goal/Backlog/Run authority and no issue closes
   from it.
 
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
 - **Workspace Approvals projection over the existing capability + HITL APIs
   (#2278, Parity P-1).** New `/approvals` page lists
   `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts
@@ -63,16 +122,67 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Attention defer/dismiss preference evidence (#1049).** `POST`/`DELETE
+  /v1/workspaces/{id}/attention/dismiss` records Workspace-scoped defer/dismiss
+  preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
+  filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
+  the Attention page write that door; answering still stays on the HITL answer
+  route. Approve/reject pauses submit `{ verdict }` (not a text-only
+  `{ answer }`) so the durable store can resume. Does not settle HITL or Run
+  state outside that door.
+
+- **DAG Run projection writers honor nonterminal mirroring (#1036).** HTTP
+  `_record_run_projection` and live `LiveRunProjection.record_result` now
+  mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
+  `record_outcome` (exact status, `finished_at` null) instead of leaving the
+  row at the store default or coercing missing status to `failed`.
+
+- **Bounded learned-landing suggestion (#1050).** Immediate Home→surface hops
+  (published streak band) can show a non-blocking proposal to make that surface
+  the default. Accept PATCHes `workspace_default_landing`; dismiss suppresses
+  further nags for that path. Explicit non-Home default outranks learning.
+
+- **Chat stream abort marks the optimistic turn interrupted (#1822).** Switching
+  Workspace/session mid-stream aborts the request, epoch-gates late
+  delta/brief/done frames, and marks the in-flight assistant bubble interrupted
+  until reopen replaces from GET truth.
+
+- **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
+  Authenticated `/` now prefers the last Workspace surface (tracked in owned
+  `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
+  absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
+  24h+full session); otherwise it uses `workspace_default_landing` (Home
+  baseline). Chat `brief` stream frames honor the same stream-epoch gate as
+  content patches so a late interview brief cannot paint onto a switched
+  Workspace/session.
+
+- **Goals waiting-human links to Approvals (#65).** A Goal whose execution
+  disposition is `waiting_human` offers Open in Approvals with the blocked
+  run id — joining the #2278 Approvals surface without a second HITL store.
+
+- **Home Goals section reads Goal inspection (#65).** Workspace Home projections
+  list Goals through `services.goal_inspection` (same door as `/goals`) instead
+  of reporting the Goal service unavailable or reading the retiring missions
+  store.
+
+- **Attention Answer CTA posts to the HITL door (#1049).** The Attention page
+  submits answers through `/v1/hitl/{run}/{node}/answer` — the same authority
+  as CLI — then refreshes the projection. Defer/dismiss persistence remains a
+  later slice.
+
+- **DagRuns Cancel control through the inspection door (#1036).** Non-terminal
+  Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
+  (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
+  seam — no product-private lifecycle writer.
+
 - **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
   store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
   also exposes `workspace_restore_aggressiveness`
   (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
-  restored after absence — the durable band; exact windows are applied by
-  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  restored after absence. Both fields PATCH/profile_set the same profile
   document; out-of-allow-list writes are refused (400). Missing or invalid
-  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
-  driven restoration behavior remain later #1050 slices.
+  reads still mean Workspace Home / balanced.
 
 - **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
   existing Workspace Attention projection (HITL pauses + failed Runs) with the
