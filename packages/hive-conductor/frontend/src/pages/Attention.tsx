@@ -4,7 +4,7 @@
 // optimizer accept/reject posts to the canonical proposal doors. Defer/dismiss
 // is preference evidence only — never a second lifecycle store.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, apiGet } from "../lib/api";
 import type { AttentionItem, AttentionPayload } from "../lib/attention";
@@ -232,11 +232,6 @@ function AttentionRow({
               </div>
             </>
           )}
-          {error ? (
-            <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert">
-              {error}
-            </p>
-          ) : null}
         </div>
       ) : (
         <span style={{ fontSize: 12, color: "var(--pencil)" }}>
@@ -247,8 +242,8 @@ function AttentionRow({
               : "No answer door (deadline passed or non-HITL)"}
         </span>
       )}
-      {error && !door ? (
-        <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert">
+      {error ? (
+        <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert" data-testid="attention-item-error">
           {error}
         </p>
       ) : null}
@@ -262,32 +257,61 @@ export default function Attention() {
   const [payload, setPayload] = useState<AttentionPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Drop in-flight loads (incl. post-answer/dismiss refresh) after Workspace switch.
+  const loadGenerationRef = useRef(0);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+  activeWorkspaceIdRef.current = activeWorkspaceId;
 
   const load = useCallback(async () => {
-    if (!activeWorkspaceId) {
-      setPayload(null);
-      setError(null);
-      setLoading(false);
+    const workspaceId = activeWorkspaceIdRef.current;
+    const generation = ++loadGenerationRef.current;
+    if (!workspaceId) {
+      if (generation === loadGenerationRef.current) {
+        setPayload(null);
+        setError(null);
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);
     try {
-      const data = await apiGet<AttentionPayload>(attentionPath(activeWorkspaceId));
+      const data = await apiGet<AttentionPayload>(attentionPath(workspaceId));
+      if (
+        generation !== loadGenerationRef.current ||
+        activeWorkspaceIdRef.current !== workspaceId
+      ) {
+        return;
+      }
       setPayload(data);
       setError(null);
     } catch (e) {
+      if (
+        generation !== loadGenerationRef.current ||
+        activeWorkspaceIdRef.current !== workspaceId
+      ) {
+        return;
+      }
       setError(e instanceof ApiError ? e.message : "Couldn't load Attention.");
       setPayload(null);
     } finally {
-      setLoading(false);
+      if (
+        generation === loadGenerationRef.current &&
+        activeWorkspaceIdRef.current === workspaceId
+      ) {
+        setLoading(false);
+      }
     }
-  }, [activeWorkspaceId]);
+  }, []);
 
   useEffect(() => {
     if (!workspacesReady) return;
     const first = setTimeout(() => void load(), 0);
-    return () => clearTimeout(first);
-  }, [load, workspacesReady]);
+    return () => {
+      clearTimeout(first);
+      // Abandon in-flight loads (initial or post-mutation) for the prior Workspace.
+      loadGenerationRef.current += 1;
+    };
+  }, [load, workspacesReady, activeWorkspaceId]);
 
   const summary = payload?.summary;
   const items = payload?.items ?? [];
@@ -386,7 +410,12 @@ export default function Attention() {
                   item={item}
                   workspaceId={activeWorkspaceId}
                   onInspect={(href) => navigate(href)}
-                  onAnswered={() => void load()}
+                  onAnswered={() => {
+                    // Dismiss/answer may finish after a Workspace switch; do not
+                    // refresh B with a mutation that began on A.
+                    if (activeWorkspaceIdRef.current !== activeWorkspaceId) return;
+                    void load();
+                  }}
                 />
               ))}
             </ul>
