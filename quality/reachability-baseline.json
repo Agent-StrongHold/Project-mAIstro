@@ -35,7 +35,6 @@
     "_vulture_whitelist",
     "maistro.capabilities.providers.harness_stub",
     "maistro.capabilities.tests_fakes",
-    "maistro.classifier.logging",
     "maistro.cli._container",
     "maistro.cli._container.docker_runtime",
     "maistro.cli._container.lifecycle",
