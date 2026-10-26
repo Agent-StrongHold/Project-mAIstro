@@ -1895,6 +1895,30 @@ class PgRunStore:
                 reclaimed.append(settled)
         return reclaimed
 
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed.
+
+        Row-locked like ``renew_lease`` / ``transition_attempt``: the expiry
+        decision and the CANCELLED+RECOVERED write share one transaction so a
+        concurrent renew cannot extend a lease this call has already decided
+        to reclaim, and a concurrent reclaim cannot rewrite a winner (#2358).
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
+
     async def _require_attempt(self, attempt_id: str, *, conn: Any = None) -> Attempt:
         """Load an Attempt, reusing an open connection when inside a transaction.
 
