@@ -5,8 +5,9 @@ bounded Recent Runs projection in one shot. The websocket transport cannot
 wait for settlement: its whole contract is frames while the Run is in flight.
 `LiveRunProjection` is the same projection, recorded incrementally — one
 `pm_node_*` event per live node transition, each durably appended (with its
-sequence number) BEFORE the transport sends the matching frame, plus the
-terminal `finish_run` when the Run settles.
+sequence number) BEFORE the transport sends the matching frame, plus
+`record_outcome` when the Run settles (#1036 terminality: terminal finishes
+the row; nonterminal mirrors open with no invented `finished_at`).
 
 Scope comes from the caller's `DagExecutionScope` — the same authorized
 scope the execution itself was admitted into (`canonical_dag_runner._scope`
