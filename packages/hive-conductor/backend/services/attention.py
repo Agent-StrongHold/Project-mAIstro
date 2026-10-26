@@ -2,10 +2,14 @@
 
 Owner decision (2026-09-25, on #1049): Attention is computed on every read
 from the owners that already hold the state — human-paused NodeRuns in the
-durable run store and failed Runs behind the scoped Run-inspection door. Nothing
-here is persisted, and nothing here transitions anything: an item's
-`answer_href` points at the canonical HITL answer route, which stays the only
-way to settle a pause.
+durable run store and failed Runs behind the scoped Run-inspection door.
+An item's ``answer_href`` points at the canonical HITL answer route, which
+stays the only way to settle a pause.
+
+The one thing this module may persist is a **defer/dismiss preference**
+(same shape as Home adaptive dismissals): evidence that the user asked not
+to see a source id in this Workspace. That is not a second Attention store
+and does not transition HITL/Run state.
 
 Classification uses deterministic evidence only. A persisted HITL deadline
 inside the horizon makes an item time-sensitive; every other human pause and
@@ -18,9 +22,10 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import stores
 from routes.hitl import PendingHumanWork, _pending_items
 
 from maistro.graph.durable_runs import (
@@ -33,7 +38,11 @@ from maistro.graph.durable_runs.hitl import hitl_deadline, settlement_time
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL, PAUSE_AWAITING_HUMAN_REVIEW
 from services.dag_run_inspection import list_visible_runs
 from services.dag_run_store import MAX_RUNS
+from services.model_store import JsonStore
 from services.workspace_authority import hitl_membership_mutation_lock, is_member
+
+DISMISSALS_STORE = "attention_dismissals"
+dismissal_store: JsonStore = stores.register_json_store(JsonStore(DISMISSALS_STORE))
 
 #: The issue's priority ladder, most important first. Only `time_sensitive`
 #: and `queued` have a deterministic producer today; the others are named so
@@ -82,7 +91,7 @@ class _Item:
 
 async def _paused_records(
     user_id: str, workspace_id: str
-) -> tuple[list[tuple[Any, PendingHumanWork]], bool]:
+) -> tuple[list[tuple[Any, PendingHumanWork]], bool, bool]:
     """Human pauses in one Workspace, walked the way `/v1/hitl/pending` walks them.
 
     The same canonical walk (`pending_hitl_records`, #1109): the store's
@@ -95,10 +104,20 @@ async def _paused_records(
     behind such pages is still reached within one request's inspection
     ceiling. What the second value reports is the one honest remaining cap:
     the record ceiling stopped the walk early, so a later read may find more.
-    """
-    from services.dag_agents import get_run_store
 
-    store = get_run_store()
+    The third value is ``True`` when the canonical graph spine is not wired
+    (standalone Conductor / e2e without a Container). HITL pauses cannot be
+    read then — that is an unavailable source, not an empty queue — but
+    failed-Run projections still answer, so Attention stays a 200 read
+    rather than a 500 for a missing HITL owner.
+    """
+    from services.dag_agents import CanonicalGraphUnavailable, get_run_store
+
+    try:
+        store = get_run_store()
+    except CanonicalGraphUnavailable:
+        return [], False, True
+
     authorization = HitlAuthorization(
         effective_principal=user_id,
         workspace_ids=frozenset({workspace_id}),
@@ -116,7 +135,7 @@ async def _paused_records(
     for record in scan.records:
         for item in _pending_items(record):
             found.append((record, item))
-    return found, not scan.exhausted
+    return found, not scan.exhausted, False
 
 
 def _deadline(record: Any, node_id: str) -> datetime | None:
@@ -195,7 +214,76 @@ async def _failed_runs(user_id: str, workspace_id: str) -> list[_Item]:
     ]
 
 
-def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
+def _dismissal_key(workspace_id: str, source_kind: str, source_id: str) -> str:
+    return f"{workspace_id}:{source_kind}:{source_id}"
+
+
+def record_dismissal(
+    workspace_id: str,
+    source_kind: str,
+    source_id: str,
+    *,
+    actor: str,
+    action: str = "dismiss",
+) -> dict[str, Any]:
+    """Record defer/dismiss for one Attention source id (preference evidence).
+
+    Does not settle HITL or change Run state. Keyed by Workspace + source so
+    another Workspace's Attention is never filtered by this preference.
+    """
+    if not source_kind or not source_id:
+        raise ValueError("an Attention dismissal names source_kind and source_id")
+    if action not in {"dismiss", "defer"}:
+        raise ValueError("action must be dismiss or defer")
+    key = _dismissal_key(workspace_id, source_kind, source_id)
+    now = datetime.now(UTC)
+    prior = dismissal_store.get(key)
+    prior_count = int(prior.get("count", 0)) if isinstance(prior, dict) else 0
+    prior_first = prior.get("first_at") if isinstance(prior, dict) else None
+    record = {
+        "workspace_id": workspace_id,
+        "source_kind": source_kind,
+        "source_id": source_id,
+        "action": action,
+        "count": prior_count + 1,
+        "first_at": prior_first or now.isoformat(),
+        "last_at": now.isoformat(),
+        "dismissed_by": actor,
+    }
+    dismissal_store[key] = record
+    return record
+
+
+def clear_dismissal(workspace_id: str, source_kind: str, source_id: str) -> bool:
+    """Forget a defer/dismiss preference. Returns True when a row was removed."""
+    key = _dismissal_key(workspace_id, source_kind, source_id)
+    if key in dismissal_store:
+        dismissal_store.pop(key)
+        return True
+    return False
+
+
+def dismissed_source_ids(workspace_id: str) -> set[tuple[str, str]]:
+    """``(source_kind, source_id)`` pairs hidden for this Workspace."""
+    prefix = f"{workspace_id}:"
+    out: set[tuple[str, str]] = set()
+    for key, record in dismissal_store.items():
+        if not key.startswith(prefix) or not isinstance(record, dict):
+            continue
+        kind = str(record.get("source_kind") or "")
+        sid = str(record.get("source_id") or "")
+        if kind and sid:
+            out.add((kind, sid))
+    return out
+
+
+def _summary(
+    items: list[_Item],
+    *,
+    truncated: bool,
+    hitl_unavailable: bool,
+    dismissed_count: int,
+) -> dict[str, Any]:
     counts = Counter(item.attention_class for item in items)
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
@@ -206,6 +294,10 @@ def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
             if item.attention_class == "time_sensitive"
         ],
         "truncated": truncated,
+        # Honest source status: HITL pauses need the canonical graph spine.
+        # When it is down, failed-Run items may still populate the page.
+        "hitl_unavailable": hitl_unavailable,
+        "dismissed_count": dismissed_count,
     }
 
 
@@ -228,6 +320,7 @@ async def list_attention(
     *,
     now: datetime,
     horizon: timedelta = DEFAULT_TIME_SENSITIVE_HORIZON,
+    include_dismissed: bool = False,
 ) -> dict[str, Any] | None:
     """The caller's Attention items in one Workspace, or None when not a member.
 
@@ -235,17 +328,35 @@ async def list_attention(
     cannot tell the two apart. Counts cover everything scanned; `rising`
     names only returned items. `truncated` means the result may be partial:
     the record ceiling stopped the walk, or `items` was cut to the page cap.
+    Deferred/dismissed source ids are filtered unless ``include_dismissed``.
     """
     now = settlement_time(now)
     if not await is_member(user_id, workspace_id):
         return None
-    paused, scan_capped = await _paused_records(user_id, workspace_id)
+    paused, scan_capped, hitl_unavailable = await _paused_records(user_id, workspace_id)
     items = [_human_item(record, pending, now=now, horizon=horizon) for record, pending in paused]
     items.extend(await _failed_runs(user_id, workspace_id))
+    hidden = dismissed_source_ids(workspace_id)
+    dismissed_count = 0
+    if hidden and not include_dismissed:
+        kept: list[_Item] = []
+        for item in items:
+            if (item.source_kind, item.source_id) in hidden:
+                dismissed_count += 1
+            else:
+                kept.append(item)
+        items = kept
+    elif hidden:
+        dismissed_count = sum(1 for item in items if (item.source_kind, item.source_id) in hidden)
     items.sort(key=_Item.sort_key)
     truncated = scan_capped or len(items) > _MAX_ITEMS
     return {
         "workspace_id": workspace_id,
         "items": [_public(item, rank) for rank, item in enumerate(items[:_MAX_ITEMS], start=1)],
-        "summary": _summary(items, truncated=truncated),
+        "summary": _summary(
+            items,
+            truncated=truncated,
+            hitl_unavailable=hitl_unavailable,
+            dismissed_count=dismissed_count,
+        ),
     }

@@ -28,37 +28,15 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from maistro.extensions import (
-    INHERITANCE_SEMANTICS,
-    ArtifactMismatch,
-    ExtensionCandidate,
+from maistro.extensions.health import (
     ExtensionErrorRecord,
     ExtensionHealthService,
-    ExtensionInstallRecord,
-    ExtensionInstallService,
-    ExtensionLifecycleError,
     ExtensionOperationalStatus,
     ExtensionOperatorAction,
-    ExtensionPackage,
-    ExtensionPin,
-    ExtensionPinned,
-    ExtensionPolicyEngine,
-    ExtensionPolicyViolation,
-    ExtensionScope,
-    ExtensionTransition,
     ExtensionUsageDigest,
-    InspectionConflict,
-    InvalidTransition,
-    ManifestRejected,
     OperatorDecision,
-    OrgExtensionPolicy,
-    PolicyAuditEvent,
-    PolicyConfigurationError,
-    PolicyDecision,
     RankingMetric,
-    RollbackRefused,
     SloPosition,
-    UnknownInstall,
     state_for_action,
 )
 
@@ -66,8 +44,36 @@ from maistro.extensions import (
 # module path, not the package root: at the root the name
 # ``WorkspaceExtensionPolicy`` is the #969 effective-authority input, and
 # this file's policy layer is the #971 enablement/ceiling policy.
-from maistro.extensions.policy import WorkspaceExtensionPolicy
-from maistro.extensions.types import TrustClaim
+from maistro.extensions.policy import (
+    INHERITANCE_SEMANTICS,
+    ExtensionCandidate,
+    ExtensionPin,
+    ExtensionPolicyEngine,
+    OrgExtensionPolicy,
+    PolicyAuditEvent,
+    PolicyConfigurationError,
+    PolicyDecision,
+    WorkspaceExtensionPolicy,
+)
+from maistro.extensions.service import (
+    ExtensionInstallService,
+    ExtensionPolicyViolation,
+)
+from maistro.extensions.types import (
+    ArtifactMismatch,
+    ExtensionInstallRecord,
+    ExtensionLifecycleError,
+    ExtensionPackage,
+    ExtensionPinned,
+    ExtensionScope,
+    ExtensionTransition,
+    InspectionConflict,
+    InvalidTransition,
+    ManifestRejected,
+    RollbackRefused,
+    TrustClaim,
+    UnknownInstall,
+)
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
     get_workspace_store,

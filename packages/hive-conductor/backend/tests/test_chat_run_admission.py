@@ -225,7 +225,9 @@ def test_session_id_is_provenance_not_a_second_run_identity(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
     ws = _workspace()
-    sid = authed_client.post("/v1/chat/sessions", json={"title": "t"}).json()["id"]
+    sid = authed_client.post("/v1/chat/sessions", json={"title": "t", "workspace_id": ws}).json()[
+        "id"
+    ]
 
     first = _complete(authed_client, workspace_id=ws, session_id=sid)
     second = _complete(authed_client, workspace_id=ws, session_id=sid)
@@ -242,23 +244,17 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 def test_a_session_id_the_caller_does_not_own_is_not_recorded(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
-    from datetime import UTC, datetime
+    from services import conversation_sessions
 
-    from models.schemas import ChatSession
-    from services.owned_records import Owner, owned_chat_sessions
-
-    now = datetime.now(UTC)
-    foreign = "someone-elses-session"
-    owned_chat_sessions(Owner(id="someone-else")).create(
-        foreign, ChatSession(id=foreign, title="t", messages=[], created_at=now, updated_at=now)
-    )
+    foreign_ws = _workspace(owner="someone-else", name="foreign")
+    foreign = _run(conversation_sessions.create("someone-else", foreign_ws, "t")).session_id
 
     r = _complete(authed_client, session_id=foreign)
 
     assert r.status_code == 200
     run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
     assert "session_id" not in run.provenance
-    owned_chat_sessions(Owner(id="someone-else")).discard(foreign)
+    _run(conversation_sessions.delete("someone-else", foreign))
 
 
 @pytest.mark.contract("behavioral")
@@ -794,3 +790,86 @@ def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> No
     _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
 
     assert admitter.calls == ["release:run-1", "sweep"]
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_skips_non_string_model_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-str assistant content must not call SessionStore (coverage #1822)."""
+    calls: list[object] = []
+
+    async def _append(*_a: object, **_k: object) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _append,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-ns"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": None}}]},
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_swallows_append_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transcript append failure must not undo an already-answered Run."""
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("session store unavailable")
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _boom,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-fail"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+
+@pytest.mark.contract("behavioral")
+def test_client_turn_id_normalizes_and_rejects_invalid() -> None:
+    """#1822 AC-4: nonempty ≤128 client turn keys survive; blanks/long/non-str do not."""
+    assert chat_runs._client_turn_id(None) is None
+    assert chat_runs._client_turn_id(12) is None
+    assert chat_runs._client_turn_id("") is None
+    assert chat_runs._client_turn_id("   ") is None
+    assert chat_runs._client_turn_id("x" * 129) is None
+    assert chat_runs._client_turn_id("  turn-abc  ") == "turn-abc"
+    assert chat_runs._client_turn_id("x" * 128) == "x" * 128
+
+
+@pytest.mark.contract("behavioral")
+def test_admit_turn_records_client_turn_id(container: Container) -> None:
+    """admit_turn keeps a normalized client turn_id on the AdmittedTurn."""
+
+    async def _turn() -> str | None:
+        turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
+            _principal(),
+            [{"role": "user", "content": "hi"}],
+            turn_id="  client-turn-1  ",
+        )
+        return turn.client_turn_id
+
+    assert _run(_turn()) == "client-turn-1"

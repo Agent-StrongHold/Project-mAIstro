@@ -6,7 +6,7 @@ services:
     image: ${MAISTRO_ENGINE_IMAGE:-maistro-engine:local}
     container_name: maistro-engine
     ports:
-      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${MAISTRO_PORT:-8000}:8000"
+      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${MAISTRO_PORT:-8000}:8000"  # DevSkim: ignore DS162092 until 2027-12-31
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -17,14 +17,14 @@ services:
       # One gateway, set once (#808). LITELLM_BASE_URL is the canonical input
       # -- the gateway's root, no /v1 -- and every alias below is *derived*
       # from it, so the four names the code reads cannot disagree. They used
-      # to be four hardcoded copies of http://litellm:4000: setting them in
+      # to be four hardcoded copies of http://litellm:4000: setting them in  # DevSkim: ignore DS137138 until 2027-12-31
       # .env changed nothing, and pointing the stack at a hosted or corporate
       # gateway needed a hand-written override. LITELLM_URL is still accepted
       # because the engine's own error message told people to set it.
       # LITELLM_API_BASE may be set explicitly for a gateway whose
       # OpenAI-compatible path is not <root>/v1.
       #
-      # The http:// defaults are the bundled proxy's service name on this
+      # The http:// defaults are the bundled proxy's service name on this  # DevSkim: ignore DS137138 until 2027-12-31
       # stack's private bridge network -- container to container, never off
       # the host, with no CA that could sign `litellm` -- the same footing as
       # the langfuse and maistro-engine URLs below. A hosted gateway set in
@@ -50,7 +50,7 @@ services:
       # export from this stack is not driven by these: spans leave only over
       # OTLP, and nothing here sets OTEL_EXPORTER_OTLP_ENDPOINT (see the
       # note on the hive-conductor service below).
-      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_HOST=http://langfuse:3000  # DevSkim: ignore DS137138 until 2027-12-31
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini/gemini-2.5-flash}
@@ -105,7 +105,7 @@ services:
       # (#1820: the rootless-Podman profile must actually complete). Docker
       # runs CMD-SHELL through sh unchanged, so both runtimes probe the same
       # endpoint the same way.
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')\""]  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
       interval: 10s
       timeout: 5s
       retries: 3
@@ -136,6 +136,39 @@ services:
     cpus: 0.25
     restart: "no"
 
+  conductor-layout-check:
+    # Same fail-closed contract as postgres-layout-check, for the Conductor
+    # volume: #331 moved CONDUCTOR_DATA_DIR from /data (the volume's mount
+    # root) to /data/conductor so `maistro security restore` can swap the
+    # data directory by rename. A volume created before that change still
+    # has state.db, secrets.age, and admin.key at the root; letting the
+    # Conductor boot now would create /data/conductor, open an EMPTY state
+    # database, and re-arm first-run setup while every existing account sits
+    # orphaned one level up. Refuse instead, with the migration spelled out.
+    # Read-only mount: this check can never touch the data.
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -e /data/state.db ] || [ -e /data/secrets.age ] || [ -e /data/admin.key ]; then
+          if [ ! -e /data/conductor/state.db ]; then
+            echo >&2 "ERROR: legacy Conductor data layout detected: state.db/secrets.age/admin.key sit at the volume root, but CONDUCTOR_DATA_DIR is /data/conductor (#331). Starting now would open an EMPTY database and re-arm first-run setup. Stop the Conductor, move the coupled files down as one unit, then start:"
+            echo >&2 "  docker compose stop hive-conductor"
+            echo >&2 "  docker compose run --rm --no-deps --user root --entrypoint sh hive-conductor -c 'cd /data && mv state.db state.db-wal state.db-shm secrets.age admin.key credential_master.key user_credentials.enc conductor/ 2>/dev/null; test -e conductor/state.db'"
+            echo >&2 "  docker compose start hive-conductor"
+            exit 78
+          fi
+        fi
+    volumes:
+      - conductor-data:/data:ro
+    # Bounded like postgres-layout-check; the #862 resource gate enforces a
+    # 128 MiB memory floor even for one-shot containers.
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    cpus: 0.25
+    restart: "no"
+
   postgres:
     # Supported majors are 17-19; 18 is the default here and what CI matrixes
     # against (alongside 17). A legacy root-layout volume is rejected by
@@ -151,7 +184,7 @@ services:
       # Keeping PGDATA explicit prevents image-tag and volume-layout drift.
       PGDATA: /var/lib/postgresql/18/docker
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:5433:5432"  # DevSkim: ignore DS162092 until 2027-12-31
     volumes:
       - pgdata:/var/lib/postgresql
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -179,10 +212,10 @@ services:
     image: ghcr.io/berriai/litellm@sha256:af8050ea45707c42a0572c5cceaa5cebaa89cee4c5cd0585cf879a529804b898
     container_name: maistro-litellm
     ports:
-      # Host interface the gateway binds to. Default 127.0.0.1 = loopback only
-      # (this machine). Set LITELLM_BIND_ADDR=0.0.0.0 in .env to expose it to your
+      # Host interface the gateway binds to. Default 127.0.0.1 = loopback only  # DevSkim: ignore DS162092 until 2027-12-31
+      # (this machine). Set LITELLM_BIND_ADDR=0.0.0.0 in .env to expose it to your  # DevSkim: ignore DS162092 until 2027-12-31
       # LAN. See .env.example for the trade-offs.
-      - "${LITELLM_BIND_ADDR:-127.0.0.1}:4000:4000"
+      - "${LITELLM_BIND_ADDR:-127.0.0.1}:4000:4000"  # DevSkim: ignore DS162092 until 2027-12-31
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/litellm
@@ -203,7 +236,7 @@ services:
       - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_HOST=http://langfuse:3000  # DevSkim: ignore DS137138 until 2027-12-31
     volumes:
       - ./litellm_config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml"]
@@ -220,10 +253,10 @@ services:
     image: langfuse/langfuse:2
     container_name: maistro-langfuse
     ports:
-      - "127.0.0.1:3100:3000"
+      - "127.0.0.1:3100:3000"  # DevSkim: ignore DS162092 until 2027-12-31
     environment:
       - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/langfuse
-      - NEXTAUTH_URL=http://localhost:3100
+      - NEXTAUTH_URL=http://localhost:3100  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
       - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET in .env}
       - SALT=${LANGFUSE_SALT:?Set LANGFUSE_SALT in .env}
     depends_on:
@@ -244,7 +277,7 @@ services:
       dockerfile: packages/hive-conductor/Dockerfile
     container_name: maistro-hive-conductor
     ports:
-      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${HIVE_PORT:-8101}:8101"
+      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${HIVE_PORT:-8101}:8101"  # DevSkim: ignore DS162092 until 2027-12-31
     environment:
       - PYTHONUNBUFFERED=1
       # The engine's database, not a second one: the embedded runtime's
@@ -280,13 +313,13 @@ services:
       # Engine router for DAG execution. Settings.maistro_base_url /
       # maistro_router_api_key (config.py) read these MAISTRO_* names directly;
       # CONDUCTOR_ROUTER_URL/ROUTER_API_KEY are not bound to any field, so task
-      # dispatch silently fell back to localhost with no auth. Required (#402):
+      # dispatch silently fell back to localhost with no auth. Required (#402):  # DevSkim: ignore DS162092 until 2027-12-31
       # the value must exist in .env -- under this name, which is what the
       # installer writes -- because an empty key means the Workspace bridge
       # never starts (ADR-092326-97c4). MAISTRO_ACCESS_TOKEN, the name this
       # used to be interpolated from, is gone: it was a second spelling of the
       # same credential that nothing read.
-      - MAISTRO_BASE_URL=http://maistro-engine:8000
+      - MAISTRO_BASE_URL=http://maistro-engine:8000  # DevSkim: ignore DS137138 until 2027-12-31
       - MAISTRO_ROUTER_API_KEY=${MAISTRO_ROUTER_API_KEY:?Run ./install.sh to generate MAISTRO_ROUTER_API_KEY}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
       # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
@@ -297,12 +330,16 @@ services:
       # out only over OTLP — a build with INSTALL_OBSERVABILITY=1 plus
       # OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS (see
       # packages/hive-conductor/backend/adapters/telemetry_langfuse.py).
-      - LANGFUSE_BASE_URL=http://langfuse:3000
+      - LANGFUSE_BASE_URL=http://langfuse:3000  # DevSkim: ignore DS137138 until 2027-12-31
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      # Foundation state (SQLite/vault/state) on a persistent volume. /data is
-      # pre-owned by the nonroot uid 65532 in the image so the volume is writable.
-      - CONDUCTOR_DATA_DIR=/data
+      # Foundation state (SQLite/vault/state) on a persistent volume. The data
+      # directory sits INSIDE the volume (which is mounted at /data), not at
+      # the mount root: `maistro security restore` swaps the data directory
+      # itself by rename, and a mount point cannot be renamed (EBUSY). Both
+      # levels are pre-owned by the nonroot uid 65532 in the image, so an
+      # empty named volume inherits that ownership (#331).
+      - CONDUCTOR_DATA_DIR=/data/conductor
       # Human login mode + OIDC metadata; secrets remain in the /data vault.
       - HUMAN_AUTH_MODE=${HUMAN_AUTH_MODE:-hybrid}
       - OAUTH_PROVIDERS=${OAUTH_PROVIDERS:-{}}
@@ -323,6 +360,8 @@ services:
     volumes:
       - conductor-data:/data
     depends_on:
+      conductor-layout-check:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       litellm:
@@ -340,7 +379,7 @@ services:
     restart: unless-stopped
     healthcheck:
       # Same podman-safe quoting as the engine healthcheck above (#1820).
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')\""]  # DevSkim: ignore DS162092 until 2027-12-31; ignore DS137138 until 2027-12-31
       interval: 15s
       timeout: 5s
       retries: 3

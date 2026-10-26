@@ -20,24 +20,42 @@ store (#1176). The product path across a forced (SIGKILL) restart — recover,
 execute exactly once on the same Run, idempotent replay — is pinned by
 `packages/maistro-server/tests/test_task_restart_recovery.py`.
 
-What remains limited: the task *receipt* a fresh process serves is still the
-living queue's answer (ADR-018 best-effort rows), so terminal state after a
-restart is read through the canonical Run (`GET /v1/runs/{run_id}`) and
-idempotent resubmission rather than rehydrating every historical receipt
-into memory; and without a database the spine is in-process only, so
-admitted tasks are still lost on restart (`run_store_in_process_only`).
-Wave-level crash recovery (crash-loop quarantine, checkpoint version
-gating) remains [ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s
-orchestrator path.
+What remains limited: task **dispatch** is per-process — a replica's queue runs
+what it admitted or recovered at its own startup, so a queued task waits for
+its accepting replica (or a successor's recovery) rather than being dequeued by
+a peer mid-flight — and the in-memory receipt store holds only this process's
+own tasks. Cross-replica **visibility** is closed (#1690): `GET /v1/tasks/{id}`
+and `GET /v1/tasks/{id}/result` read the shared durable tier (TaskRecord row,
+then canonical Run, projected over both) when the local queue cannot answer,
+and `DELETE /v1/tasks/{id}` cancels through the canonical Run from any replica,
+so behind round-robin a client that creates a task and polls it converges on
+the Run's truth from every replica; a foreign principal gains nothing through
+the durable lookup. Historical receipts for tasks a process never admitted are
+served by projection rather than rehydrated into memory; without a database the
+spine is in-process only, so admitted tasks are still lost on restart
+(`run_store_in_process_only`). Wave-level crash recovery (crash-loop
+quarantine, checkpoint version gating) remains
+[ADR-056](docs/adr/ADR-056-task-crash-recovery.md)'s orchestrator path.
 
-### Canvas background job runner
+### Canvas built-in worker — product E2E still pending
 
-Canvas jobs can be created, but they do not advance unless an external runner
-is configured and operating. The shipped service does not provide a built-in
-worker that consumes those jobs.
+The built-in Canvas worker described by SPEC-203 now ships: jobs admitted
+through the Canvas generation routes are claimed, executed, retried, and
+recovered by `CanvasJobRunner` over the canonical Run/NodeRun/Attempt spine,
+and a supported deployment can run the worker as a first-class service
+(`maistro-canvas-worker`, configured entirely through the environment) or
+in-process with the router lifecycle — no external ad-hoc runner is
+required, and multiple workers never double-process one job (atomic claims,
+fenced writes, lease reaping).
 
-Tracking: add the runner described by SPEC-203 before treating canvas jobs as
-self-progressing work.
+What keeps this entry open is proof at the product level: the #773/#95
+Design Studio cutover E2E — delegate a Canvas-backed artifact branch, leave
+and reload the UI, and observe the same durable work complete — has not run
+yet. Until it does, canvas jobs as exercised by the shipped product surfaces
+cannot be described as end-to-end self-progressing.
+
+Tracking: close this entry after the #773 product E2E exercises the built-in
+worker durably.
 
 ### Canvas publish and export
 
@@ -113,9 +131,10 @@ configuration. This is a separate limitation from Design Studio's product
 cutover: neither the currently mounted route surface nor the current Studio UI
 is yet the complete end-to-end production boundary.
 
-Tracking: complete #95 under the continuing #286 Design Studio product lane,
-with #93 supplying the supported built-in worker after the canonical Canvas
-execution dependency lands. [SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md)
+Tracking: complete #95 under the continuing #286 Design Studio product lane
+(the supported built-in Canvas worker from #93 has shipped; the Studio's
+cutover to it has not).
+[SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md)
 remains the Proposed `maistro-server` Canvas capability boundary; its historical
 filename and legacy migration notes must not be read as a separate current
 product identity.
@@ -245,11 +264,12 @@ The following text is intended to be copied verbatim into the release notes.
 > memory store boundary — deployments run agent-managed by default and can set
 > `system_managed` to strip agent write authority — but read-path gating,
 > hybrid per-block tags and denial events are not wired, and no product-level
-> E2E proves a denied write yet. Canvas jobs require an external runner; Canvas publish/export
-> is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
-> are explicitly unsupported), while print-on-demand and external destinations
-> are not implemented. The mounted Canvas data routes are unconfigured in the
-> default shipped service and return `503`. Design Studio can discover
-> resources and select artifact modes, but visual generation and
-> editing/preview still need wired providers. Conductor can run in degraded
-> mode when optional services are unavailable.
+> E2E proves a denied write yet. The built-in Canvas worker ships and advances
+> jobs durably; the Design Studio product E2E over it (#773) is still pending.
+> Canvas publish/export is governed at `/v2/canvas` (png/webp/jpg/html/pptx
+> where configured; pdf/svg are explicitly unsupported), while print-on-demand
+> and external destinations are not implemented. The mounted Canvas data
+> routes are unconfigured in the default shipped service and return `503`.
+> Design Studio can discover resources and select artifact modes, but visual
+> generation and editing/preview still need wired providers. Conductor can run
+> in degraded mode when optional services are unavailable.

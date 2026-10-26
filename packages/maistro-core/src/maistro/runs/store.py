@@ -58,6 +58,7 @@ from maistro.runs.sources import (
     ADMISSION_SOURCE,
     CHAT_SOURCE,
     EPHEMERAL_ADMISSION_SOURCES,
+    TASK_QUEUE_SOURCE,
     occurrence_key,
 )
 from maistro.runs.store_boundary import RunStoreBoundary, require_admitted_actor
@@ -637,6 +638,26 @@ class RunStore(Protocol):
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        """The Run admitted for one task receipt id (#1690), or None.
+
+        The read half of cross-replica task visibility: the Run is committed
+        before a `POST /tasks` 202 is answerable, so any process sharing this
+        store can resolve a receipt id it never admitted, even when the
+        accepting replica's best-effort TaskRecord write (ADR-018) never
+        landed. Scoped to `admission_source` by default because the
+        ``task_id`` provenance key is the task queue's own; callers reaching
+        for another source must say so explicitly. None means no Run claims
+        this receipt id — the same "not found" a `get_run` miss means, not an
+        error.
+        """
+        ...
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run: ...
@@ -658,13 +679,31 @@ class RunStore(Protocol):
         principal_id: str | None = None,
     ) -> Run: ...
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun: ...
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun: ...
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None
     ) -> NodeRun | None: ...
 
     async def list_node_runs(self, run_id: str) -> list[NodeRun]: ...
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Durably merge ``patch`` into a NodeRun's provenance (top-level keys).
+
+        Explore-wave thesis provenance (M7-A8) is written here once at NodeRun
+        creation and extended afterwards only by contract-checked writers. The
+        merge is a shallow top-level update: callers composing nested records
+        (``explore_wave``) pass the full nested value they want stored.
+        """
+        ...
 
     async def transition_node_run(
         self,
@@ -992,6 +1031,7 @@ class InMemoryRunStore:
                     if principal is not None
                     else None
                 ),
+                system_active=len(active),
             )
         except RunConcurrencyExceeded:
             self._release_occurrence_claim(run, run.run_id)
@@ -1414,6 +1454,26 @@ class InMemoryRunStore:
                 return run.model_copy(deep=True)
         return None
 
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The in-memory store is small by construction (bounded, pruned), so
+        # the reference implementation scans; the durable stores answer from
+        # their provenance expressions instead.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") != task_id:
+                continue
+            if (
+                admission_source is not None
+                and run.provenance.get(ADMISSION_SOURCE) != admission_source
+            ):
+                continue
+            return run.model_copy(deep=True)
+        return None
+
     async def attach_delegation_receipt(
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run:
@@ -1556,7 +1616,13 @@ class InMemoryRunStore:
         score = self._eval_scores.get(eval_id)
         return score.model_copy(deep=True) if score is not None else None
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         run = self._require_run(run_id)
         if run.status in TERMINAL_RUN_STATUSES:
             raise RunIntegrityError("cannot create NodeRun under a terminal Run")
@@ -1564,9 +1630,24 @@ class InMemoryRunStore:
         if not any(node.node_id == node_id for node in graph.nodes):
             raise RunIntegrityError(f"node_id {node_id!r} is not present in the Run Graph snapshot")
         ordinal = 1 + sum(node_run.run_id == run_id for node_run in self._node_runs.values())
-        node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+        node_run = NodeRun(
+            run_id=run_id,
+            node_id=node_id,
+            ordinal=ordinal,
+            provenance=dict(provenance or {}),
+        )
         self._node_runs[node_run.node_run_id] = node_run
         return node_run.model_copy(deep=True)
+
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        node_run = self._require_node_run(node_run_id)
+        self._refuse_under_terminal_run(node_run)
+        merged = {**node_run.provenance, **patch}
+        updated = node_run.model_copy(update={"provenance": merged})
+        self._node_runs[node_run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def get_node_run(
         self, node_run_id: str, *, principal_id: str | None = None
