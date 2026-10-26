@@ -88,7 +88,6 @@
     "maistro.tools.approval.types",
     "maistro.tools.media",
     "maistro.tools.net_guard",
-    "maistro.tools.reversibility_registry",
     "maistro_canvas.canvas.asset_compositor",
     "maistro_canvas.canvas.asset_executor",
     "maistro_canvas.canvas.asset_routes",

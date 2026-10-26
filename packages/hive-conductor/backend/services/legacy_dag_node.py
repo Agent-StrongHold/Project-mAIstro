@@ -27,6 +27,7 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from services.governed_tools import hive_tool_reversibility, validate_hive_tool_arguments
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,10 @@ async def _tool_web_search(
 
     all_results = []
     max_r = tool_config.get("max_results", 5)
+    # Validate the entire batch before its first effect: a malformed later
+    # parent-derived query must not leave a partially executed tool batch.
+    for query in queries[:5]:
+        validate_hive_tool_arguments("web_search", {"query": query, "max_results": max_r})
     for query in queries[:5]:
         model_kwargs = {"model_call": model_call} if model_call is not None else {}
         all_results.append(await web_search(query, max_results=max_r, **model_kwargs))
@@ -234,6 +239,9 @@ async def _tool_clarify(
     from services.tool_executor import clarify
 
     questions = tool_config.get("questions", [])
+    validate_hive_tool_arguments(
+        "clarify", {"questions": questions, "context": {"input": task_desc}}
+    )
     model_kwargs = {"model_call": model_call} if model_call is not None else {}
     answers = await clarify(questions, {"input": task_desc}, **model_kwargs)
     return "\n".join(
@@ -245,10 +253,12 @@ async def _tool_clarify(
 async def _tool_browse_url(tool_config: dict[str, Any]) -> str:
     from services.tool_executor import browse_url
 
-    result = await browse_url(
-        tool_config.get("url", ""),
-        tool_config.get("task", "Extract key information"),
-    )
+    arguments = {
+        "url": tool_config.get("url", ""),
+        "task": tool_config.get("task", "Extract key information"),
+    }
+    validate_hive_tool_arguments("browse_url", arguments)
+    result = await browse_url(arguments["url"], arguments["task"])
     return json.dumps(result, indent=2)
 
 
@@ -393,6 +403,10 @@ async def _run_tool_node(
                 )
             workspace_id = str(ctx.workspace_id or "hive-standalone-compat")
             project_id = str(ctx.project_id or "hive-standalone-compat")
+            # Dispatcher membership is not a contract or an authorization
+            # grant. Use the same host registry as Agent/chat admission and
+            # refuse names with no schema before entering any provider code.
+            reversibility = hive_tool_reversibility(tool_name)
             binding = Binding(
                 workspace_id=workspace_id,
                 project_id=project_id,
@@ -430,17 +444,24 @@ async def _run_tool_node(
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=f"legacy-tool:{tool_name}",
-                request={"task": task_desc, "tool_config": node.get("tool_config", {})},
+                request={
+                    "_tool_name": tool_name,
+                    "_tool_reversibility": reversibility.value,
+                    "task": task_desc,
+                    "tool_config": node.get("tool_config", {}),
+                },
                 resolver=resolve,
                 executor=execute,
                 actor_id=str(ctx.user_id or ""),
             )
             response = str(invocation.result or "")
         else:
-            # Compatibility helper callers without a NodeContext predate the
-            # canonical execution path and have no durable effect identity.
-            # Canonical production execution always supplies NodeContext above.
-            response = await _call_tool_node(node, nid, inbound, results, task_desc)
+            # Retired (#57): executing a shipped tool effect with no canonical
+            # identity was the direct-effect bypass this issue closes. The
+            # canonical production path (LegacyConductorNode) always supplies
+            # NodeContext; a caller that cannot is refused rather than run
+            # ungoverned.
+            raise RuntimeError("governed legacy tool call requires NodeContext identity")
         results[nid] = {"role": role, "response": response, "success": True}
     except Exception as exc:
         logger.error("Tool node %s failed: %s", nid, exc)
