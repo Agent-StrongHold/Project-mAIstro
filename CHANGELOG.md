@@ -25,7 +25,7 @@ or placeholder-only section.
 
 ### Fixed
 
-- **CodeQL workflow scope test expects `develop` triggers (#2357).**
+- **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
@@ -506,6 +506,18 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Workspace BacklogItem service (#98, partial).** `maistro.workspaces.backlog`
+  adds a Workspace/Project-scoped `BacklogItem` record, a backend-independent
+  `BacklogItemStore` contract with version compare-and-set updates, acyclic
+  same-Workspace dependency and parent relations, and an exact
+  `(goal_id, goal_revision)` Goal reference. It has in-memory and SQLite
+  (`workspace_backlog_items`, `workspace_backlog_dependencies`) stores, wired
+  as `Container.backlog_store`. maistro-server serves it at
+  `/workspaces/{workspace_id}/backlog`: members read it, contributors and
+  owners write it, and a stale `expected_version` gets 409 with the current
+  item. On PostgreSQL the store is still in-process and logs a warning.
+  BACKLOG.md remains the authority.
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
@@ -518,6 +530,7 @@ or placeholder-only section.
   `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
   declaring their authorities, and an accepted-outcome-required check on
   parked Run resume).
+
 
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
@@ -861,6 +874,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. Workspace-scoped admitters share
+  one process-wide `max_retained` budget; more users do not multiply it.
+  Tracking refuses foreign-Workspace and non-chat Runs.
+
 - **Reusable CI check discovery resolves optional string defaults (#1609).**
   The required-check contract discovers single-level local reusable workflow
   names, including both same-revision local path syntaxes, date-shaped names,
@@ -868,7 +890,6 @@ or placeholder-only section.
   or dependency-bound callers, ambiguous names and unsupported nested, matrix, or conditional callee jobs
   fail closed; production check names and branch-protection requirements stay
   unchanged.
-
 - **Conductor batch inspection respects existing projection scope (#1036).**
   Canonical fallback applies only when no projection exists, keeping verdict-list
   visibility consistent with detail and stream admission for colliding run IDs.
