@@ -240,6 +240,7 @@ async def _admit(req: ChatCompletionRequest, request: Request, messages: list[di
         messages,
         workspace_id=extra.get("workspace_id"),
         session_id=extra.get("session_id"),
+        turn_id=extra.get("turn_id"),
     )
 
 

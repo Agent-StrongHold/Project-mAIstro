@@ -1031,7 +1031,6 @@
         "packages/maistro-core/src/maistro/resilience/context_probe.py::unused method 'record_overflow'",
         "packages/maistro-core/src/maistro/resilience/context_probe.py::unused method 'set_known_length'",
         "packages/maistro-core/src/maistro/resilience/fallback.py::unused method 'next_endpoint_after_failure'",
-        "packages/maistro-core/src/maistro/resilience/rate_coordination.py::unused method 'clear_all'",
         "packages/maistro-core/src/maistro/resilience/rate_coordination.py::unused method 'is_rate_limited'",
         "packages/maistro-core/src/maistro/resilience/rate_coordination.py::unused method 'record_rate_limit'",
         "packages/maistro-core/src/maistro/resilience/slo.py::unused method 'record_downtime'",

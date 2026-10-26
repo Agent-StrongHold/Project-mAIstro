@@ -28,6 +28,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +37,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.capabilities.binding import ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.providers.extension_attribution import log_fields_suffix
 from maistro.http import shared_client
 from maistro.providers.types import ModelMetadata
+from maistro.resilience.context_probe import ContextProbe
+from maistro.resilience.rate_coordination import RateLimitCoordinator
 
 if TYPE_CHECKING:
     from maistro.capabilities.provider_adapters import AdapterGatewayProvider
@@ -51,6 +55,45 @@ MODEL_GATEWAY_CREDENTIAL_PROVIDER = "litellm"
 DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF = "litellm-gateway"
 
 _GATEWAY_TRUST_TIER = "t1"
+
+logger = logging.getLogger(__name__)
+#: Cross-instance 429 coordination for the approved gateway Provider (#2318).
+_GATEWAY_RATE_LIMITS = RateLimitCoordinator()
+#: Adaptive context-window probe for models that omit a declared max (#2318).
+_CONTEXT_PROBE = ContextProbe()
+_GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
+
+
+def _adapter_identity_suffix(spec: Any) -> str:
+    """The declared package identity, as an error-message suffix.
+
+    Empty for a package that declares no identity (M9-I1, #976): legacy
+    adapters keep their message shape, while declaring packages make every
+    error traceable to the exact version and publisher without a registry
+    lookup — the message travels with the Invocation evidence, so the
+    identity of the failing package is readable even after that package is
+    upgraded or removed.
+    """
+
+    if not getattr(spec, "version", ""):
+        return ""
+    return f" {spec.version} (publisher {spec.publisher!r})"
+
+
+def _adapter_log_fields(adapter_provider: Any) -> dict[str, str]:
+    """Flat log fields naming the adapter package behind one governed call.
+
+    Declared identity becomes the canonical extension-attribution fields; a
+    legacy adapter logs only its id, so the line never claims an identity the
+    package did not declare. No field here carries request, payload, or
+    credential material — identity only.
+    """
+
+    attribution = adapter_provider.extension_attribution
+    if attribution is not None:
+        fields: dict[str, str] = attribution.to_log_fields()
+        return fields
+    return {"adapter_id": str(adapter_provider.spec.adapter_id)}
 
 
 class GatewayEndpoint(BaseModel):
@@ -232,19 +275,20 @@ def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
     from maistro.capabilities.provider_adapters import AdapterErrorKind
 
     kind = adapter.error_kind_for(status)
+    identity = _adapter_identity_suffix(spec)
     if kind == AdapterErrorKind.AUTH:
         return LlmAuthError(
-            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r} "
+            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r}{identity} "
             "rejected the resolved credential)",
             status_code=status,
         )
     if kind == AdapterErrorKind.RATE_LIMITED:
         return LlmHttpError(
-            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r})",
+            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r}{identity})",
             status_code=status,
         )
     return LlmHttpError(
-        f"llm_http_error status={status} (adapter {spec.adapter_id!r}, kind={kind!r})",
+        f"llm_http_error status={status} (adapter {spec.adapter_id!r}{identity}, kind={kind!r})",
         status_code=status,
     )
 
@@ -500,6 +544,14 @@ async def _dispatch_adapter_model_chat(
     if response.status_code >= 400:
         raise _adapter_error(adapter_provider.spec, adapter_provider.adapter, response.status_code)
     body = _json_body(response)
+    fields = _adapter_log_fields(adapter_provider)
+    logger.info(
+        "extension adapter model call: adapter=%s model=%s %s",
+        adapter_provider.spec.adapter_id,
+        adapter_provider.model,
+        log_fields_suffix(fields),
+        extra=fields,
+    )
     return adapter_provider.adapter.normalize_response(body)
 
 
@@ -659,7 +711,8 @@ def _adapter_preflight(
         payload = adapter_provider.adapter.normalize_request(adapter_provider.name, request)
     except Exception as exc:
         raise EffectNotApplied(
-            f"adapter {spec.adapter_id!r} refused the request before any HTTP "
+            f"adapter {spec.adapter_id!r}"
+            f"{_adapter_identity_suffix(spec)} refused the request before any HTTP "
             f"effect occurred: {type(exc).__name__}: {exc}"
         ) from exc
     api_key = endpoint.api_key
@@ -734,6 +787,12 @@ async def probe_adapter_health(adapter: Any) -> bool:
         return False
 
 
+def reset_gateway_resilience_state() -> None:
+    """Clear process-local gateway resilience state between tests or recycle."""
+    _GATEWAY_RATE_LIMITS.clear_all()
+    _CONTEXT_PROBE.clear()
+
+
 __all__ = [
     "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
@@ -747,4 +806,5 @@ __all__ = [
     "execute_model_chat",
     "probe_adapter_health",
     "register_provider_models",
+    "reset_gateway_resilience_state",
 ]
