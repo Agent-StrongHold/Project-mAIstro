@@ -854,6 +854,26 @@
       "effect_owner": "stores.home_adaptive_dismissals"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "POST",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "dismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records Attention defer/dismiss preference evidence (#1049); does not settle HITL",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "undismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears Attention defer/dismiss preference so the item can resurface",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/home.py",
       "method": "POST",
       "route": "/{workspace_id}/home/adaptive/compose",
@@ -2684,6 +2704,36 @@
       "production_enabled": true,
       "reason": "registers through the real backend route",
       "effect_owner": "routes/auth.py register"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/hitl/${runId}/${nodeId}/answer",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Attention Answer CTA posts to the canonical HITL answer door (#1049)",
+      "effect_owner": "routes/hitl.py answer_human_work (durable HITL store)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/workspaces/${workspaceId}/attention/dismiss",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Attention Defer/Dismiss CTA writes preference evidence (#1049)",
+      "effect_owner": "routes/attention.py dismiss_workspace_attention"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/dagRuns.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/dag-runs/${runId}/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "DagRuns Cancel control posts through the #1036 inspection cancel door",
+      "effect_owner": "routes/dag_runs.py cancel_run -> RunExecutionService.cancel_run"
     },
     {
       "source": "packages/hive-conductor/frontend/src/lib/profile.ts",
