@@ -63,6 +63,24 @@ gate remain required in rulesets 21421373 (develop) and 21701487 (main).
 No ruleset change is part of this slice. Full exact-head hosted CI and fresh
 independent review remain merge prerequisites.
 
+## Revalidation after develop sync (2026-10-26, head 98e2adf0b)
+
+The branch absorbed develop through `05070ff0777a` (merge `98e2adf0ba50`); the
+surface is unchanged: the sole workflow delta is Quality's Vulture step
+condition, and `vulture-ratchet.yml` is untouched. Re-run at that head:
+
+- Exact scan `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1,248 reviewed identities = 1,248 findings against base `05070ff0777a` —
+  develop's own ledger maintenance lowered the reviewed set from the 1,328
+  recorded above; candidate matches base with no unbanked debt, so no ledger
+  amendment was needed.
+- Ownership 80/80, quality-split 96/96, vulture-baseline/ratchet-provenance/
+  merge-group/autonomous-merge-adjacent 53/53 tests pass.
+- Ruff lint and format clean; suite-inventory gate matches (21 suites).
+- Workflow gates pass: required-checks, uv-setup, workflow-inventory,
+  workflow-write-safety, branch-protection, backlog-consistency, ac-state,
+  agent-store-writes, contract-markers (+provenance), convergence-matrix.
+
 ## Residual scope
 
 This does not close #1357, #160 or #1605. Resolved-environment pip-audit
