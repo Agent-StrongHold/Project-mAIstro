@@ -10,6 +10,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
@@ -427,15 +428,55 @@ def renew_attempt_lease(
 
 
 def reclaim_attempt(attempt: Attempt, *, at: datetime | None = None) -> Attempt:
-    """Settle one Attempt whose lease lapsed, naming the holder that went quiet."""
+    """Settle one Attempt whose finite lease lapsed, as CANCELLED+RECOVERED (#2354).
+
+    This is the first authorized RECOVERED writer (#232 P2a): an expired
+    canonical lease under active CREATED/RUNNING. Live leases, leaseless
+    Attempts, infinite leases (``expires_at is None``), and already-terminal
+    rows are refused here so a caller cannot invent recovery evidence. The
+    dedicated orphan/prelaunch writers are separate leaves; generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+
+    Physical ``result`` and ``metrics`` are preserved: reclaim closes the
+    worker proof, it does not erase evidence the Attempt already recorded.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
     lease = attempt.execution_lease
-    holder = lease.holder if lease is not None else "unknown"
-    return transition_attempt(
+    if lease is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with no execution lease; "
+            "leaseless orphan recovery is a dedicated writer, not lease reclaim"
+        )
+    if lease.expires_at is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with an infinite lease; "
+            "a lease without expires_at never lapses"
+        )
+    if lease.expires_at > moment:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} while its lease is still live "
+            f"(expires_at={lease.expires_at.isoformat()}, at={moment.isoformat()})"
+        )
+
+    # Status/error/finished_at via the shared transition table, then stamp
+    # RECOVERED outside ``transition_attempt`` so the generic path never grows
+    # a RECOVERED argument (parent #232: only None or REQUESTED there).
+    settled = transition_attempt(
         attempt,
         RECLAIMED_ATTEMPT_STATUS,
-        at=at,
-        error=reclaimed_attempt_error(holder),
+        at=moment,
+        result=attempt.result,
+        error=reclaimed_attempt_error(lease.holder),
+        metrics=attempt.metrics,
     )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
 
 
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
