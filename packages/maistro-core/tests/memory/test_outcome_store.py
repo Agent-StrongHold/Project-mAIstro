@@ -10,6 +10,8 @@ from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 def _outcome(
     task_type: str = "coding",

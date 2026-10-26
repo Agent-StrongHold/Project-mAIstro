@@ -10,6 +10,8 @@ from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.protocols.memory import EpisodicStore, LearningStore, OutcomeStore
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 class TestProtocolConformance:
     @pytest.mark.ac("ADR-014/AC-1")

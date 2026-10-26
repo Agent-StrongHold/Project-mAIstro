@@ -9,6 +9,8 @@ from maistro.memory.episodic.tiers import clamp_weight, decay, reinforce
 from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 def _mem(
     mid: str = "m1",

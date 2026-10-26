@@ -14,6 +14,8 @@ from maistro.memory.types import (
     Outcome,
 )
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 class TestWeightBounds:
     @pytest.mark.ac("ADR-013/AC-1")

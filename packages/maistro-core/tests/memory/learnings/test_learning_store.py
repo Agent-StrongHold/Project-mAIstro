@@ -8,6 +8,8 @@ from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.types import EpistemicType, Learning, MemoryScope
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 def _lr(
     tool: str = "shell",

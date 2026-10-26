@@ -147,17 +147,17 @@ ADR decision files (15):
 
 SPEC files (15):
 
-- [SPEC-092826-a774](../specs/SPEC-092826-a774-creative-brief-contract.md) — status: AC
-- [SPEC-092826-a780](../specs/SPEC-092826-a780-versioned-creative-artifact-state.md) — status: AC
+- [SPEC-092826-a774](../specs/SPEC-092826-a774-creative-brief-contract.md) — status: AC Defined
+- [SPEC-092826-a780](../specs/SPEC-092826-a780-versioned-creative-artifact-state.md) — status: AC Defined
 - [SPEC-092926-7a01](../specs/SPEC-092926-7a01-closed-loop-design-process.md) — status: Proposed
 - [SPEC-092926-7a02](../specs/SPEC-092926-7a02-closed-loop-design-process-contract.md) — status: Proposed
 - [SPEC-093026-7a90](../specs/SPEC-093026-7a90-closed-loop-design-process-contract.md) — status: Proposed
-- [SPEC-100126-5445](../specs/SPEC-100126-5445-learning-epistemics.md) — status: Tests
-- [SPEC-100126-a9c4](../specs/SPEC-100126-a9c4-canonical-promotion-contract.md) — status: AC
-- [SPEC-100126-b779](../specs/SPEC-100126-b779-cross-artifact-consistency-evaluation.md) — status: AC
+- [SPEC-100126-5445](../specs/SPEC-100126-5445-learning-epistemics.md) — status: Tests Passing
+- [SPEC-100126-a9c4](../specs/SPEC-100126-a9c4-canonical-promotion-contract.md) — status: AC Defined
+- [SPEC-100126-b779](../specs/SPEC-100126-b779-cross-artifact-consistency-evaluation.md) — status: AC Defined
 - [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) — status: Proposed
 - [SPEC-100426-b103](../specs/SPEC-100426-b103-knowledge-stage-ladder.md) — status: Accepted
-- [SPEC-100826-c0e1](../specs/SPEC-100826-c0e1-coin-ledger-billing-identity.md) — status: AC
+- [SPEC-100826-c0e1](../specs/SPEC-100826-c0e1-coin-ledger-billing-identity.md) — status: AC Defined
 - [SPEC-102426-976a](../specs/SPEC-102426-976a-extension-telemetry-attribution.md) — status: Accepted
 - [SPEC-282](../specs/SPEC-282-self-generated-curriculum.md) — status: Proposed
 - [SPEC-283](../specs/SPEC-283-learning-lifecycle.md) — status: Accepted
