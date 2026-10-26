@@ -53,3 +53,36 @@ current environment did not reproduce that configured deployment profile:
 These results are a fresh verification record, not a substitute for rerunning
 live Kata conformance and the server orphan-cleanup/restart behavior together
 on the documented deployment profile.
+
+## Combined live rerun on the Kata profile (2026-10-26, head `9ef2204c`)
+
+That substitute has now been executed: both suites ran together on the same
+host in the same round, on the documented deployment profile (KVM usable,
+kata-runtime on PATH, docker daemon answering with the `kata` runtime):
+
+- Placement proof: `build_selector().available_tiers == ['vm']` via
+  `KataSandboxBackend`, and all four standard policies — UNTRUSTED_CODE,
+  BENCHMARK_EVAL, TRUSTED_TOOL, BROWSER_AUTOMATION — select the Kata backend
+  through the canonical selector on this host. This also makes the server
+  suite's `_canonical_sandbox_placeable()` gate true, so the orphan-cleanup
+  class no longer skips here.
+- `uv run pytest packages/maistro-core/tests/sandbox/test_kata_live_conformance.py
+  -v --timeout=600` → **10 passed in 30.45s, 0 skipped**: all four policies
+  launch real work through the selected backend, and the host boundary, file
+  transfer, file budget, output overflow, timeout and cancellation cases each
+  verified guest removal on real Kata VMs.
+- `uv run pytest packages/maistro-server/tests/test_sigterm_shutdown.py -v
+  --timeout=600` → **3 passed, 0 skipped in 20.57s**, including
+  `TestStopRestartLeavesNoOrphanedSandboxes::
+  test_stop_destroys_seeded_sandbox_and_restart_is_clean` — the previously
+  skipped server cleanup path executed against the canonical
+  `maistro.tools.sandbox.canonical.create_sandbox` with no orphaned
+  `kata-*` containers after stop and restart.
+- Idempotent destroy and the cancelled-destroy window are covered by
+  executed unit tests in `test_kata_backend.py` (double `destroy()` and the
+  destroyed-between-lock-and-instance case), which ran inside this round's
+  core producer leg (17,164 passed).
+- The bubblewrap-tier cases in `test_real_backend.py` still skip here, with
+  the probe's own reason ("bwrap: Creating new namespace failed: Resource
+  temporarily unavailable") — explicit unsupported-host skips, not counted
+  as proof; the selected backend carries the executed evidence.
