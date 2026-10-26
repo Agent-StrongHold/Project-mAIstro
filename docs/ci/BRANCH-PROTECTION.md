@@ -95,6 +95,7 @@ is also required live on both branches; because it is produced by
 | `SAST / Semgrep` | adv | adv |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
+| `audit` | ○ | ○ |
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
@@ -109,11 +110,13 @@ is also required live on both branches; because it is produced by
 | `hive-conductor-e2e` | adv | ● |
 | `hive-conductor-e2e-ui` | adv | ● |
 | `integration-scope` | ● | adv |
+| `issue-metadata-tests` | ○ | ○ |
 | `lint-and-type-check` | ● | ● |
 | `object storage (MinIO)` | adv | ● |
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `repair` | ○ | ○ |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |
