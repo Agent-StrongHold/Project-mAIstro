@@ -255,6 +255,8 @@ export default function ChatPage() {
   const listEndRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamEpochRef = useRef(0);
+  // #1822 AC-4: blocks double-click before React re-renders `streaming`.
+  const sendInFlightRef = useRef(false);
   // Monotonic generation for session open/create requests, bumped on every
   // Workspace switch and before each drawer-triggered open/create, so a late
   // response can never commit another Workspace's transcript or selection.
@@ -412,8 +414,18 @@ export default function ChatPage() {
 
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming || !activeWorkspaceId || !activeId) return;
+      if (
+        !text.trim() ||
+        streaming ||
+        sendInFlightRef.current ||
+        !activeWorkspaceId ||
+        !activeId
+      ) {
+        return;
+      }
+      sendInFlightRef.current = true;
       const sessionId = activeId;
+      const turnId = generateId();
       const epoch = streamEpochRef.current;
       streamAbortRef.current?.abort();
       const abort = new AbortController();
@@ -460,6 +472,9 @@ export default function ChatPage() {
             messages: outbound,
             workspace_id: activeWorkspaceId,
             session_id: sessionId,
+            // Client turn key for #1822 AC-4; backend may use it as SessionStore
+            // idempotence when present (extra=allow on ChatCompletionRequest).
+            turn_id: turnId,
           },
           abort.signal,
         );
@@ -489,6 +504,9 @@ export default function ChatPage() {
               continue;
             }
             if (evt.type === "brief") {
+              // Same epoch gate as patchAssistant (#1822): a late brief after
+              // Workspace/session switch must not paint onto the new selection.
+              if (streamEpochRef.current !== epoch) continue;
               // The interview's state after this turn: open (summary + question),
               // drafted (the draft, nothing written), or gone (dropped).
               const view: BriefView | null = evt.interview || evt.draft ? evt : null;
@@ -539,6 +557,25 @@ export default function ChatPage() {
         }
       } catch (e: unknown) {
         if (abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          // #1822: mark the optimistic bubble interrupted on the origin session
+          // even after the epoch bump (switch/unmount). Reopening the session
+          // replaces from GET truth; late frames stay epoch-gated out.
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    status: undefined,
+                    steps: (m.steps ?? []).map((st) =>
+                      st.status === "running" ? { ...st, status: "error" } : st,
+                    ),
+                    content: m.content || "",
+                    interrupted: true,
+                  }
+                : m,
+            ),
+          }));
           return;
         }
         const message = e instanceof Error ? e.message : "stream failed";
@@ -549,6 +586,7 @@ export default function ChatPage() {
           content: `Error: ${message}`,
         }));
       } finally {
+        sendInFlightRef.current = false;
         if (streamEpochRef.current === epoch) {
           setStreaming(false);
           setTimeout(() => textareaRef.current?.focus(), 0);
@@ -747,6 +785,15 @@ export default function ChatPage() {
                     <span className="dot" />
                     <span className="dot" />
                     {msg.status}
+                  </div>
+                )}
+                {msg.interrupted && !msg.status && (
+                  <div
+                    className="chat-status"
+                    aria-label="Interrupted"
+                    data-testid="chat-interrupted"
+                  >
+                    Interrupted — reopen the session for persisted truth
                   </div>
                 )}
                 {msg.content && (

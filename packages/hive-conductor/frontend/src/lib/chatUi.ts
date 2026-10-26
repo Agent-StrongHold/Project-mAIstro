@@ -18,6 +18,8 @@ export interface Message {
   reasoning?: string; // assistant only — streamed thinking / reasoning tokens
   steps?: ToolStep[]; // assistant only — the live tool/status timeline
   status?: string; // assistant only — transient status line while streaming
+  /** True when the stream was aborted mid-turn (#1822); not a completed answer. */
+  interrupted?: boolean;
   timestamp: Date;
 }
 
