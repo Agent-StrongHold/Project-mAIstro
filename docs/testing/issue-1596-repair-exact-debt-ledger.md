@@ -131,3 +131,61 @@ PostgreSQL legs in the workspaces suite are unchanged. The route-handler
 `V103` markers move new FastAPI surface out of the reviewed ledger population;
 if owners prefer ledger banking for handlers, this can be revisited when a
 grant can be landed on develop through normal review.
+
+## Re-verification at b581b7d19 (2026-10-26 round)
+
+The repair above is carried at branch head `b581b7d19af9` (the earlier head
+`929c54e7a` is not an ancestor of it; the marker set, the `pyproject.toml`
+`V103` registration, and the net −1 ledger prune all survived the develop
+merges). origin/develop tip `78133c093e0a` is merged; the branch is 16 ahead,
+0 behind. Every merge-queue failure at that head was re-run locally with CI's
+exact invocations:
+
+- **SAST / Bandit** (`security.yml` exact args, after `uv sync --locked
+  --all-extras`): 0 Medium+ findings, rc=0. The earlier job failure does not
+  reproduce; its log excerpt contains only the script text, consistent with an
+  install/network outage rather than a finding.
+- **SAST / Semgrep** (exact `uvx semgrep` invocation with all four config
+  sources): 364 rules, 0 findings, rc=0.
+- **SAST / Gitleaks** v8.30.1 over the PR range
+  `78133c093..b581b7d19`: 6 commits scanned, no leaks, rc=0.
+- **exact-debt-ledger**, all three CI steps: `check-ratchet-provenance.py`
+  (RATCHET_BASE_REV=origin/develop) rc=0 — reachability 102→102, dispositions
+  102→102, no candidate-approved expansion on any ratchet;
+  `check-shipped-surface-truth.py` rc=0; `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` rc=0 — 1253 reviewed → 1252
+  findings, zero deltas in either direction.
+- **pr-base**: `check-pr-base.py --base develop --labels ""` → `ok`, rc=0 (the
+  earlier failure had no usable log; nothing to fix in-tree).
+- **Quality / Mypy strict**: in CI's environment (`uv sync --locked
+  --all-extras` + `uv pip install -e packages/maistro-evolve`), `uv run mypy
+  --strict packages/maistro-core/src` → Success, 837 source files, rc=0.
+  (With a dev-only sync it reports missing-stub errors in unrelated modules —
+  an environment artifact, not a code defect.)
+- Other Quality sub-gates at CI's exact commands: `check-radon-baseline.py`
+  (127→127), `check-route-permissions.py` (41 declared, 0 new),
+  `check-wiring-reads.py`, `check-agent-store-writes.py`,
+  `check-convergence-matrix.py` (52 subsystems / 1483 modules),
+  `check-backlog-consistency.py`, `check-execution-lifecycles.py` (19→19) —
+  all rc=0.
+- Tests: `test_container_wiring.py` + `workspaces/backlog/` +
+  `test_backlog_api.py` → 134 passed; `packages/maistro-core/tests/workspaces`
+  → 359 passed, 41 skipped (PostgreSQL legs); `packages/maistro-server/tests/api`
+  → 624 passed, 7 skipped. `ruff check .` and `ruff format --check .` clean;
+  suite inventory matches for both maistro-core and maistro-server suites.
+- The `test` job's `RuntimeError('Event loop is closed')` excerpts come from a
+  pre-existing aiosqlite teardown thread warning raised by
+  `test_context_assembly_uses_the_canonical_scope_store` (present on develop,
+  outside this diff); no `filterwarnings = error` is configured, so it is
+  non-fatal, and the job's own conclusion was `cancelled` (sibling cascade),
+  not a test failure.
+- **CodeQL Analyze (javascript-typescript)**: the check run is `neutral` with
+  "configuration not found" (a develop/merge-ref config mismatch); this diff
+  touches no JavaScript/TypeScript, so the failure is infrastructure, not this
+  change.
+- **Supply chain (pip-audit)**: CI reported a PyPI registry/network outage
+  after 3 attempts; environmental, no code action.
+
+No source, ledger, gate, or workflow file changed in this round: the repair
+was already in-tree, and this section records that the previously failing
+gates pass at the carried head.
