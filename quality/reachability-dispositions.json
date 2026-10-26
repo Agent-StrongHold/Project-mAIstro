@@ -40,20 +40,6 @@
       ]
     },
     {
-      "id": "canvas-assetinstance",
-      "subsystem": "Canvas ability",
-      "disposition": "CONNECT",
-      "rationale": "The ADR-044 AssetInstance replacement, complete but not cut over: routes.py still wires the legacy executor and compositor. ADR-045, which performs the cutover, is still Proposed.",
-      "root": "maistro_canvas.canvas.routes, after the ADR-045 cutover",
-      "modules": [
-        "maistro_canvas.canvas.asset_compositor",
-        "maistro_canvas.canvas.asset_executor",
-        "maistro_canvas.canvas.asset_routes",
-        "maistro_canvas.canvas.asset_store",
-        "maistro_canvas.canvas.asset_tool"
-      ]
-    },
-    {
       "id": "capabilities-test-doubles",
       "subsystem": "Capability / Provider / Binding / Invocation",
       "disposition": "LIBRARY",
