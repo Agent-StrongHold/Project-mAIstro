@@ -4,7 +4,7 @@
  * their URLs redirect here without reviving those modules.
  */
 import { expect, test } from "@playwright/test";
-import { loginAsPM, setupIfNeeded } from "./session";
+import { loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -25,6 +25,11 @@ test("Capabilities is reachable from the icon rail and loads the API surface", a
 });
 
 test("Capabilities happy path: list slots and re-discover over the public API", async ({ page }) => {
+  // POST /v1/capabilities/discover requires config.write (authorization.py).
+  // loginAsPM only seeds dags.write; admin holds config.write without elevation
+  // (same pattern as settings / credentials / workspace-lifecycle e2e).
+  await loginAsAdmin(page);
+
   const listPromise = page.waitForResponse(
     (r) => r.url().includes("/v1/capabilities") && !r.url().includes("discover") && r.request().method() === "GET",
     { timeout: 15000 },
