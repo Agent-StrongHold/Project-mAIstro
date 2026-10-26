@@ -38,7 +38,7 @@ test("index redirects to Workspace Home", async () => {
   await expect(page.getByTestId("workspace-home")).toBeVisible();
 });
 
-test("Home loads layout projections and shows Goals unavailable honestly", async () => {
+test("Home loads layout projections and shows the Goals section honestly", async () => {
   const layout = page.waitForResponse(
     (res) => res.url().includes("/home/layout") && res.request().method() === "GET" && res.ok(),
   );
@@ -49,9 +49,11 @@ test("Home loads layout projections and shows Goals unavailable honestly", async
   await page.goto("/home");
   await Promise.all([layout, projections]);
   await expect(page.getByTestId("home-regions")).toBeVisible();
-  await expect(page.getByTestId("home-section-goals-unavailable")).toContainText(
-    /canonical Goal service is not available/i,
-  );
+  // #65: Goals project through goal_inspection — empty or listed, not the
+  // retired "Goal service unavailable" placeholder. Do not `.or()` the empty
+  // copy with the Goals heading (Playwright strict mode matches both).
+  await expect(page.getByTestId("home-section-goals-unavailable")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Goals" })).toBeVisible();
 });
 
 test("pinning a Home region posts to the layout pin authority", async () => {
