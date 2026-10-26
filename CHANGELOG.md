@@ -23,7 +23,67 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CodeQL workflow scope test expects `develop` triggers (follow-up to #2357).**
+  `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
+  CodeQL Advanced was widened to `develop`; align the pin so CI catches
+  regressions of the Security-tab refresh path. DevSkim also gains
+  `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
+  another product commit.
+
+### Security
+
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+
+- **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
+  code-scanning alerts on develop).** Route mutation-baseline CI error
+  annotations through the allowlisted `_ci_error_annotation` scrubber
+  (CodeQL `py/clear-text-logging-sensitive-data`). Move DevSkim integrity-pin
+  suppressions onto the same line as each `scripts/vendor_bfcl.py` digest;
+  clear remaining script/product false positives (loopback CLI default,
+  ontology `TODO` enum, placeholder-gate prose, pip-audit curve triage) with
+  same-line dated ignores or rewording. Expand DevSkim `ignore-globs` for
+  immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
+  Security tab stays actionable without editing cage-guarded trees.
+
 ### Added
+
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
 
 - **Workspace Approvals projection over the existing capability + HITL APIs
   (#2278, Parity P-1).** New `/approvals` page lists
