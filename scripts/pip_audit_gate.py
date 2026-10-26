@@ -79,7 +79,7 @@ ALLOWED: dict[tuple[str, str], str] = {
         "of scope and has stated there is no planned fix, so there is no "
         "version to upgrade to. Transitive via bip-utils (the `identity` "
         "extra). maistro.identity derives on Ed25519 and secp256k1 only — it "
-        "never touches P-256 — and the attack additionally requires local "
+        "never touches P-256 — and the attack additionally requires local "  # DevSkim: ignore DS440100 until 2027-12-31 — triage prose naming the curve, not a hard-coded key
         "timing measurement of signing operations. Not reachable as used."
     ),
 }
