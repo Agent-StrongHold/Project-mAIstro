@@ -158,7 +158,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Resilience | `maistro.container`, `resilience.slo` | `none` | KEEP — #2318 wired context probe + rate coordination onto the LLM gateway Provider and stage ``retry_policy`` onto graph node attempt handling | ADR-038 | circuit/SLO primitives wired to real producers | #63 |
 | Collaboration | none | `all` | CONNECT | — | collaborative edit correlated to Run | #34 |
 | Reactor loop | `maistro.reactor` (installer-launched) | `none` | KEEP | — | loop timing tests | — |
-| Prompts and personas | `maistro.container`, `routes.agents` | `few` | KEEP | ADR-081226-e626 | persona seed/eval protocol tests | — |
+| Prompts and personas | `maistro.container`, `routes.agents` | `none` | KEEP — (`few` → `none`: agent factory soul upserts record structured diffs via `maistro.prompts.diff`) | ADR-081226-e626 | persona seed/eval protocol tests | — |
 | Codebase analysis | `maistro.tools` call sites | `none` | KEEP | ADR-065 | tool-level tests | — |
 | Core CLI | `maistro.cli` console script | `few` | KEEP — thin client, no local lifecycle | ADR-096 | CLI commands hit the Conductor API; `maistro portability` is the stateless exception — local agent/skill file conversion, no store | — |
 | Shared contracts and config | imported by every package | `none` | LIBRARY | ADR-019, ADR-081226-034b | dependency-direction + compatibility-owner fitness checks | #36 |
