@@ -8653,3 +8653,31 @@ the queue, backends, store, models, `maistro.tasks.__init__`, or any
 `quality/*.json`. Activation still requires the separately reviewed #1845
 integration head; this round does not claim the feature or parent #1845 is
 complete.
+
+### Develop sync to 78133c093e0a (#2335) and re-verification at merged head 05c343439e22
+
+The dispatched branch was behind the assigned develop base
+(`78133c093e0a5cd0d2a7e8538afa703521c70d07`), so `origin/develop` was merged in
+(`05c343439e22`, clean, no conflicts). Develop's #2335 wired
+`maistro.classifier.logging` into `maistro.classifier.engine`, so that change
+removed one `reachability-baseline` row, one `reachability-dispositions` group
+and two `vulture-baseline` rows. The merge took develop's side for all three
+files and this branch contributes no `quality/` rows of its own:
+`git diff --numstat origin/develop HEAD -- quality/` is EMPTY (the row-loss
+hazard in AGENTS.md does not apply here — verified by count, not by assuming a
+clean merge).
+
+Re-run at the merged head (base `78133c093e0a`, candidate `05c343439e22`), all
+rc=0: `check-reachability` (102 unreachable of 1477 — develop's
+`classifier.logging` became reachable, the leaf stays classified),
+`check-reachability-dispositions` (35 groups / 102 modules),
+`check-ratchet-provenance` (9/9, reachability 102 -> 102),
+`check-shipped-surface-truth`, `check-vulture-baseline` at CI argv
+(1253 = 1253, unclassified 0, never_allowlist 0), `ruff check .`,
+`ruff format --check .` (3539 files), `check-suite-inventory` (21 suites, and
+`--suite packages/maistro-core/tests` matches with no delta — this round adds no
+tests), plus the reachability meta set + develop's new
+`classifier/test_engine_logging_connect.py` (55 passed) and the leaf battery
+(`test_admission_generation_assessment` + `test_root_admission_identity` +
+`test_idempotency` + `test_pack_contracts` +
+`test_runs_admission_identity_publication` → 415 passed).
