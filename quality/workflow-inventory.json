@@ -33,8 +33,8 @@
       "id": "devskim",
       "file": ".github/workflows/devskim.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule"],
-      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop and a weekly schedule."
+      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
+      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop and a weekly schedule; manual workflow_dispatch re-runs recover a cancelled tip SARIF upload (#2359)."
     },
     {
       "id": "enqueue-merge-queue",
