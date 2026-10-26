@@ -107,10 +107,12 @@ function GoalDetail({
   view,
   onOpenGoal,
   onOpenRun,
+  onOpenApprovals,
 }: {
   view: GoalView;
   onOpenGoal: (id: string) => void;
   onOpenRun: (id: string) => void;
+  onOpenApprovals: (runId: string | null) => void;
 }) {
   const disp = disposition(view.execution_disposition);
   return (
@@ -179,6 +181,21 @@ function GoalDetail({
           <p style={{ fontSize: 13, color: "#c4452a", marginTop: 8 }}>
             Blocker: run {view.blocker.run_id} finished as {view.blocker.status}
             {view.blocker.error ? ` — ${String(view.blocker.error)}` : ""}
+          </p>
+        )}
+        {/* #65: waiting-human disposition joins Approvals (#2278) — same run
+            id the Approvals page already deep-links back to /dag-runs. */}
+        {view.execution_disposition === "waiting_human" && (
+          <p style={{ fontSize: 13, marginTop: 8 }}>
+            <button
+              type="button"
+              onClick={() =>
+                onOpenApprovals(view.blocker?.run_id ?? view.runs[0]?.run_id ?? null)
+              }
+            >
+              Open in Approvals
+            </button>{" "}
+            to answer the HITL pause for this Goal.
           </p>
         )}
         {(view.parent_goal_id || view.subgoals.length > 0) && (
@@ -459,6 +476,9 @@ export default function Goals() {
                 view={selected}
                 onOpenGoal={(id) => openGoal(id)}
                 onOpenRun={(runId) => navigate(`/dag-runs?run=${encodeURIComponent(runId)}`)}
+                onOpenApprovals={(runId) =>
+                  navigate(runId ? `/approvals?run=${encodeURIComponent(runId)}` : "/approvals")
+                }
               />
             ) : (
               <EmptyState
