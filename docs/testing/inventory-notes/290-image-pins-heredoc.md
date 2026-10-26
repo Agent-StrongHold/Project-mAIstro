@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +3
+  tests/: +4
 ---
 # #290 repair: the image-pins gate understands Dockerfile heredocs
 
@@ -13,7 +13,7 @@ body as Dockerfile grammar: `FROM_RE` is case-insensitive, so the Python lines
 `FROM datetime` / `FROM maistro.scheduling.cron` — two phantom "mutable image
 references" that failed `Quality / Image pins` on every run of the tree.
 
-## The fix (no test identity reused; +3)
+## The fix (no test identity reused; +4)
 
 `scripts/check-image-pins.py` now tracks BuildKit heredoc bodies:
 an instruction line containing `<<[-]?['"]?DELIM['"]?` opens a body that is
@@ -22,6 +22,14 @@ Skipping is semantically correct, not a gate loosening: Docker never parses
 Dockerfile grammar inside a heredoc body, so a `FROM` line there is command
 data with no image-reference effect, while every real `FROM`/`COPY --from`
 before and after the body is judged exactly as before.
+
+The same heredoc shape is mirrored in the second consumer of Dockerfile
+parsing, `scripts/prepull-base-images.sh`: its test gained
+`test_python_from_import_inside_run_heredoc_is_not_an_image`, pinning that
+the pre-pull step never tries to pull `datetime` (or
+`maistro.scheduling.cron`) from a registry because a Python `from X import`
+line sat inside the smoke test's heredoc. That test is the fourth `tests/`
+identity counted in the delta above.
 
 Three tests pin the parser's contract in `tests/test_check_image_pins.py`:
 
@@ -41,4 +49,8 @@ Three tests pin the parser's contract in `tests/test_check_image_pins.py`:
   (before the fix: 2 violations naming Dockerfile lines 271–272).
 - `uv run pytest tests/test_check_image_pins.py -q` — 41 passed (38 prior +
   3 new).
+- `uv run pytest tests/test_prepull_base_images.py -q` — 28 collected nodes
+  pass (23 `def test` functions — 22 prior + 1 new — with parametrization
+  expanding to 28 nodes; the inventory delta counts node IDs, and 6043 + 1
+  new node here is exactly what the gate now expects for `tests/`).
 - `uv run ruff check .` / `uv run ruff format --check .` — clean.
