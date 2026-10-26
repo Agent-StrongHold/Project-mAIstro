@@ -2,64 +2,78 @@
   "_comment": "One reviewed disposition for every GitHub workflow (#400). Until this inventory existed, `.github/workflows/` was governed only by the gates that happened to parse it: stream1-diagnostic.yml sat pinned to a branch deleted after #373 landed, swallowing every failure with `|| true`, unable to fail and reading to every agent as an active pattern. ACTIVE = event-triggered gate or automation; its trigger branches must be live remote refs (or reviewed retained_branches rows). MANUAL_DIAGNOSTIC = workflow_dispatch-only, an on-demand measurement an operator or agent invokes deliberately. RETIRED = removed; names `replaced_by` (what now covers its function), a `removal_owner` and a `removal_issue` -- a retirement is a decision, not permission to resurrect, so a RETIRED file that reappears on disk fails the gate. Checked by scripts/check-workflow-inventory.py in both directions (a workflow file with no entry fails; an entry naming no file fails), plus the three rots that let stream1 go unnoticed: dead trigger branches, pinned commits the repository no longer contains, and blanket error swallowing (`|| true`, `continue-on-error: true`) with no written reason within six lines. The gate does NOT verify that a workflow's declared job graph still does what its rationale says; rationales are reviewed prose, not proofs.",
   "workflows": [
     {
-      "id": "issue-metadata-integrity",
-      "file": ".github/workflows/issue-metadata-integrity.yml",
-      "disposition": "ACTIVE",
-      "triggers": [
-        "issues",
-        "pull_request",
-        "schedule",
-        "workflow_dispatch"
-      ],
-      "rationale": "Checks metadata on issue edits and daily across the backlog; PRs run the isolated repair safety tests. Native hierarchy mutation is manual-only, source-pinned, journaled and verified in bounded batches; no automatic reparenting or priority/state changes."
-    },
-    {
       "id": "cage-guard",
       "file": ".github/workflows/cage-guard.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request"],
+      "triggers": [
+        "merge_group",
+        "pull_request"
+      ],
       "rationale": "Guards the workflow cage on PRs and merge-queue candidates: the write-safety and required-checks declarations must hold on the tree being merged."
     },
     {
       "id": "ci",
       "file": ".github/workflows/ci.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push"
+      ],
       "rationale": "The primary test gate: unit suites, service-backed suites (Postgres/MinIO), hive-conductor e2e, wheel imports and the docker build, on PRs, merge-queue candidates and pushes to the maintained branches."
     },
     {
       "id": "codeql",
       "file": ".github/workflows/codeql.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
+      "triggers": [
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
       "rationale": "GitHub CodeQL static analysis over Actions, JavaScript/TypeScript and Python, on main-targeted PRs, pushes to main, a weekly schedule and opt-in manual verification of a selected branch."
     },
     {
       "id": "compliance-evidence",
       "file": ".github/workflows/compliance-evidence.yml",
       "disposition": "ACTIVE",
-      "triggers": ["push", "workflow_dispatch"],
+      "triggers": [
+        "push",
+        "workflow_dispatch"
+      ],
       "rationale": "Regenerates the compliance evidence bundle from quality/compliance-registry.json on pushes to the maintained branches; on-demand for evidence rebuilds."
     },
     {
       "id": "devskim",
       "file": ".github/workflows/devskim.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
-      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop, weekly schedule, and on-demand workflow_dispatch."
+      "triggers": [
+        "pull_request",
+        "push",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop, weekly schedule, and manual re-run for cancelled tip SARIF uploads."
     },
     {
       "id": "enqueue-merge-queue",
       "file": ".github/workflows/enqueue-merge-queue.yml",
       "disposition": "ACTIVE",
-      "triggers": ["schedule", "workflow_dispatch", "workflow_run"],
+      "triggers": [
+        "schedule",
+        "workflow_dispatch",
+        "workflow_run"
+      ],
       "rationale": "Enqueues eligible PRs into the merge queue after a qualifying workflow_run, with a scheduled sweep and a manual entry point."
     },
     {
       "id": "ethicalcheck",
       "file": ".github/workflows/ethicalcheck.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand apisec ethicalcheck DAST probe against a deployed target; dispatch-only because it needs operator-supplied target input."
     },
     {
@@ -67,7 +81,7 @@
       "file": ".github/workflows/cross-product-parity-strict.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
       "triggers": [
-            "workflow_dispatch"
+        "workflow_dispatch"
       ],
       "rationale": "Manual-only M1-closeout invocation of the #459 cross-product parity suite (MAISTRO_PARITY_STRICT=1 turns every dependency blocker into a failure). Dispatch-only because it is an on-demand closeout measurement that fails today on the CONDUCTOR_INSPECTION blocker (#1036), so it is deliberately outside the PR check contract (#459, PR #1641)."
     },
@@ -75,112 +89,163 @@
       "id": "formal-conformance-nightly",
       "file": ".github/workflows/formal-conformance-nightly.yml",
       "disposition": "ACTIVE",
-      "triggers": ["schedule", "workflow_dispatch"],
+      "triggers": [
+        "schedule",
+        "workflow_dispatch"
+      ],
       "rationale": "Nightly full Hypothesis property-conformance sweep on a schedule; dispatch for replaying a night on demand."
     },
     {
       "id": "formal-conformance",
       "file": ".github/workflows/formal-conformance.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push"
+      ],
       "rationale": "Property-based formal conformance on every PR, merge-queue candidate and push to the maintained branches."
     },
     {
       "id": "gate-c",
       "file": ".github/workflows/gate-c.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push", "workflow_dispatch"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "workflow_dispatch"
+      ],
       "rationale": "Gateway smoke: installs through the documented path, proves the migration chain across the Postgres major upgrade, and tears down clean."
     },
     {
       "id": "gates-ran",
       "file": ".github/workflows/gates-ran.yml",
       "disposition": "ACTIVE",
-      "triggers": ["workflow_run"],
+      "triggers": [
+        "workflow_run"
+      ],
       "rationale": "Execution-evidence publisher (#262 AC-2): after a CI/quality run, verifies every required check actually reported on the exact candidate head."
     },
     {
       "id": "integration-scope",
       "file": ".github/workflows/integration-scope.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request"],
+      "triggers": [
+        "merge_group",
+        "pull_request"
+      ],
       "rationale": "Aggregate check for specialized integration evidence: every classifier-selected specialized job (services, e2e, containers) must have completed on the candidate."
     },
     {
       "id": "merge-latency",
       "file": ".github/workflows/merge-latency.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand merge-queue latency measurement over a caller-supplied window; a diagnostic, not a gate."
     },
     {
       "id": "mutation",
       "file": ".github/workflows/mutation.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "workflow_dispatch"],
+      "triggers": [
+        "pull_request",
+        "workflow_dispatch"
+      ],
       "rationale": "Diff-scoped mutation gate on pull requests that touch Python: mutates the changed lines of changed mutation-critical files (quality/mutation-critical-files.json) with the tests coverage says execute each line, and fails fast on the first un-baselined survivor. On-demand dispatch reruns the gate."
     },
     {
       "id": "mutation-nightly",
       "file": ".github/workflows/mutation-nightly.yml",
       "disposition": "ACTIVE",
-      "triggers": ["schedule", "workflow_dispatch"],
+      "triggers": [
+        "schedule",
+        "workflow_dispatch"
+      ],
       "rationale": "Nightly full-tree mutation measurement of the critical set: sharded by stable packet identity, publishes killed/survived/timeout/no-coverage/error counts plus candidate baseline/history artifacts; on-demand dispatch reruns either."
     },
     {
       "id": "quality",
       "file": ".github/workflows/quality.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push"
+      ],
       "rationale": "The 8-pillar PR-blocking bag: coverage, property tests, code smells, types, mutation subset, contracts, architecture fitness, docstrings -- plus the repository's inventory and ratchet gates."
     },
     {
       "id": "registry",
       "file": ".github/workflows/registry.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push"
+      ],
       "rationale": "Spec/ADR registry conformance: the ADR and SPEC corpus must stay machine-checkable against the registry CLI."
     },
     {
       "id": "release",
       "file": ".github/workflows/release.yml",
       "disposition": "ACTIVE",
-      "triggers": ["push"],
+      "triggers": [
+        "push"
+      ],
       "rationale": "Publishes the release on v* tags: builds each published image exactly once into its `-rc` quarantine repository, scans the candidate digest with Trivy and Grype (the same policy security.yml enforces on PRs and nightlies), applies the release tags to the scanned digest via `imagetools create`, then signs and verifies it with provenance (#611, #346 AC-5)."
     },
     {
       "id": "release-installer",
       "file": ".github/workflows/release-installer.yml",
       "disposition": "ACTIVE",
-      "triggers": ["push", "workflow_dispatch"],
+      "triggers": [
+        "push",
+        "workflow_dispatch"
+      ],
       "rationale": "Builds and attaches the platform installers on v* tags (push) with a dispatch entry point for rebuilds."
     },
     {
       "id": "rsi-harvest",
       "file": ".github/workflows/rsi-harvest.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand RSI harvest over operator-supplied inputs; runs the self-improvement loop in its container boundary by explicit request only."
     },
     {
       "id": "runner-cost",
       "file": ".github/workflows/runner-cost.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand runner cost census over a caller-supplied window; a measurement diagnostic, never blocking."
     },
     {
       "id": "security",
       "file": ".github/workflows/security.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push", "schedule"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push",
+        "schedule"
+      ],
       "rationale": "Security bag: Bandit, Semgrep, gitleaks, Trivy/Grype container scans, SBOM and signing on PRs, merge-queue candidates, maintained-branch pushes and a daily schedule."
     },
     {
       "id": "vulture-ratchet",
       "file": ".github/workflows/vulture-ratchet.yml",
       "disposition": "ACTIVE",
-      "triggers": ["merge_group", "pull_request", "push"],
+      "triggers": [
+        "merge_group",
+        "pull_request",
+        "push"
+      ],
       "rationale": "Dead-code ratchet: vulture findings are held to the reviewed per-identity ledger in quality/vulture-baseline.json on every PR and merge-queue candidate."
     },
     {
@@ -200,56 +265,72 @@
       "id": "working-memory-bench",
       "file": ".github/workflows/working-memory-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #301 / ADR-082226-5104 §8 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes — a measurement, not a gate."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #301 / ADR-082226-5104 \u00a78 working-memory projection benchmark (per-projection RAM, hydration cost, recall and traversal latency at caller-supplied concurrency); deterministic and offline, run when the memory substrate changes \u2014 a measurement, not a gate."
     },
     {
       "id": "model-routing-bench",
       "file": ".github/workflows/model-routing-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes — a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #914 / epic #900 M8-B1 model-routing benchmark (shipped CostAwareRouter vs task-conditioned candidate policies over one shared corpus and one shared, policy-independent outcome table); deterministic and offline, run when the router, the model catalog, or the outcome model changes \u2014 a measurement, not a gate. Wires no candidate policy into production; the research disposition lives in docs/research/914-task-conditioned-model-routing.md."
     },
     {
       "id": "outcome-routing-bench",
       "file": ".github/workflows/outcome-routing-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #916 (RESEARCH M8-B3) outcome-learned routing benchmark (scripts/bench_outcome_routing.py: contextual-bandit policies — shrunk contextual means, eps-greedy, LinUCB, contextual Thompson — vs the shipped static scorer under delayed, sparsified, nonstationary feedback, plus clipped-IPS/doubly-robust off-policy evaluation); deterministic and offline, re-measured when the router, the world model, or the policies change — a measurement, not a gate. Wires no learner into production; the research disposition lives in docs/research/916-contextual-bandit-model-routing.md."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #916 (RESEARCH M8-B3) outcome-learned routing benchmark (scripts/bench_outcome_routing.py: contextual-bandit policies \u2014 shrunk contextual means, eps-greedy, LinUCB, contextual Thompson \u2014 vs the shipped static scorer under delayed, sparsified, nonstationary feedback, plus clipped-IPS/doubly-robust off-policy evaluation); deterministic and offline, re-measured when the router, the world model, or the policies change \u2014 a measurement, not a gate. Wires no learner into production; the research disposition lives in docs/research/916-contextual-bandit-model-routing.md."
     },
     {
       "id": "speculative-parallel-bench",
       "file": ".github/workflows/speculative-parallel-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change — a measurement, not a gate."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #917 / epic #900 M8-B4 speculative-parallel model-call benchmark (serial-fallback vs single-strong vs parallel-early-stop vs parallel-verifier over the governed model seam); deterministic and offline, run when the candidate-policy assumptions change \u2014 a measurement, not a gate."
     },
     {
       "id": "fleet-routing-bench",
       "file": ".github/workflows/fleet-routing-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand #934 (RESEARCH M8-F1) heterogeneous fleet benchmark (scripts/bench_fleet_routing.py: hosted-only / local-only / shipped-router / difficulty-aware local-first fleet policies over one shared corpus and one shared, policy-independent outcome table, across benign, local-outage, hosted-outage, and capacity-pressure scenarios); deterministic and offline, re-measured when the router, the fleet catalog, or the outcome model changes - a measurement, not a gate. Wires no fleet policy into production; the research disposition lives in docs/research/934-heterogeneous-fleet-benchmark.md."
     },
     {
       "id": "graph-pattern-reuse-bench",
       "file": ".github/workflows/graph-pattern-reuse-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #929 / epic #903 M8-D5 Graph-pattern induction/reuse benchmark (mining successful Runs into versioned canonical Graph candidates per ADR-082926-65bf, naive/guarded reuse vs from-scratch planning on held-out Goals with a latent validation-drift phase); deterministic and offline, run when the corpus model, the induction bar, or the planners change — a measurement, not a gate. Wires no reuse path into production; the research disposition lives in docs/research/929-graph-pattern-induction-reuse.md."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #929 / epic #903 M8-D5 Graph-pattern induction/reuse benchmark (mining successful Runs into versioned canonical Graph candidates per ADR-082926-65bf, naive/guarded reuse vs from-scratch planning on held-out Goals with a latent validation-drift phase); deterministic and offline, run when the corpus model, the induction bar, or the planners change \u2014 a measurement, not a gate. Wires no reuse path into production; the research disposition lives in docs/research/929-graph-pattern-induction-reuse.md."
     },
     {
       "id": "m4i-adaptive-vs-fixed-bench",
       "file": ".github/workflows/m4i-adaptive-vs-fixed-bench.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
-      "rationale": "On-demand #106 / epic M4-I adaptive-vs-fixed routing benchmark (scripts/bench_m4i_adaptive_vs_fixed.py: quality-triggered escalation plus text/image observation selection vs fixed single-alias baselines on one shared workload, through the real llm.summarize node, the governed model egress, and the durable executor's supervision fold, against a deterministic stub gateway); deterministic and offline, re-measured when the escalation/routing contracts or the quality heuristic change — a measurement, not a gate. The recorded numbers live in docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json; the behavioral assertions live in packages/maistro-core/tests/graph/verification/test_adaptive_vs_fixed_baseline.py."
+      "triggers": [
+        "workflow_dispatch"
+      ],
+      "rationale": "On-demand #106 / epic M4-I adaptive-vs-fixed routing benchmark (scripts/bench_m4i_adaptive_vs_fixed.py: quality-triggered escalation plus text/image observation selection vs fixed single-alias baselines on one shared workload, through the real llm.summarize node, the governed model egress, and the durable executor's supervision fold, against a deterministic stub gateway); deterministic and offline, re-measured when the escalation/routing contracts or the quality heuristic change \u2014 a measurement, not a gate. The recorded numbers live in docs/benchmarks/m4i-adaptive-vs-fixed-baseline.json; the behavioral assertions live in packages/maistro-core/tests/graph/verification/test_adaptive_vs_fixed_baseline.py."
     },
     {
       "id": "soak-pressure",
       "file": ".github/workflows/soak-pressure.yml",
       "disposition": "MANUAL_DIAGNOSTIC",
-      "triggers": ["workflow_dispatch"],
+      "triggers": [
+        "workflow_dispatch"
+      ],
       "rationale": "On-demand #862/#860 release-soak pressure case (scripts/soak-compose-pressure.py): reads the containment ceiling of a shipped Compose service straight out of the profile, replays it onto a disposable container on the real Docker/Podman daemon, drives OOM and PID exhaustion, and records containment evidence JSON for the soak record - a deliberate release measurement, not a gate. Wires no policy into production; the containment policy itself is enforced per-PR by scripts/check-compose-resources.py in ci.yml."
     }
   ],
