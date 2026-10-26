@@ -184,6 +184,53 @@ def merge_suggestion_cooldown(
     return pruned
 
 
+def _validate_landing_value(value: Any) -> str:
+    if not isinstance(value, str):
+        raise PreferenceValueError(f"{LANDING_KEY} must be a path string")
+    path = value.strip().split("?", 1)[0].split("#", 1)[0]
+    if path not in ALLOWED_LANDING_PATHS:
+        allowed = ", ".join(sorted(ALLOWED_LANDING_PATHS))
+        raise PreferenceValueError(f"{LANDING_KEY} must be one of: {allowed}")
+    return path
+
+
+def _validate_restore_value(value: Any) -> str:
+    if not isinstance(value, str):
+        raise PreferenceValueError(f"{RESTORE_KEY} must be a string")
+    band = value.strip().lower()
+    if band not in ALLOWED_RESTORE_VALUES:
+        allowed = ", ".join(sorted(ALLOWED_RESTORE_VALUES))
+        raise PreferenceValueError(f"{RESTORE_KEY} must be one of: {allowed}")
+    return band
+
+
+def _validate_cooldown_value(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} must be an object")
+    out: dict[str, int] = {}
+    eligible = ", ".join(sorted(ALLOWED_LANDING_PATHS - {DEFAULT_LANDING_PATH}))
+    for key, raw_until in value.items():
+        if not isinstance(key, str):
+            raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} keys must be paths")
+        path = key.strip().split("?", 1)[0].split("#", 1)[0]
+        if path not in ALLOWED_LANDING_PATHS or path == DEFAULT_LANDING_PATH:
+            raise PreferenceValueError(
+                f"{SUGGESTION_COOLDOWN_KEY} paths must be one of: {eligible}"
+            )
+        try:
+            until = int(raw_until)
+        except (TypeError, ValueError) as exc:
+            raise PreferenceValueError(
+                f"{SUGGESTION_COOLDOWN_KEY} values must be epoch-ms integers"
+            ) from exc
+        if until <= 0:
+            raise PreferenceValueError(
+                f"{SUGGESTION_COOLDOWN_KEY} values must be positive epoch-ms"
+            )
+        out[path] = until
+    return out
+
+
 def validate_preference_field(field: str, value: Any) -> Any:
     """Validate a single preference write.
 
@@ -193,46 +240,11 @@ def validate_preference_field(field: str, value: Any) -> Any:
     rather than silently coerced — the UI already normalizes before PATCH.
     """
     if field == LANDING_KEY:
-        if not isinstance(value, str):
-            raise PreferenceValueError(f"{LANDING_KEY} must be a path string")
-        path = value.strip().split("?", 1)[0].split("#", 1)[0]
-        if path not in ALLOWED_LANDING_PATHS:
-            allowed = ", ".join(sorted(ALLOWED_LANDING_PATHS))
-            raise PreferenceValueError(f"{LANDING_KEY} must be one of: {allowed}")
-        return path
+        return _validate_landing_value(value)
     if field == RESTORE_KEY:
-        if not isinstance(value, str):
-            raise PreferenceValueError(f"{RESTORE_KEY} must be a string")
-        band = value.strip().lower()
-        if band not in ALLOWED_RESTORE_VALUES:
-            allowed = ", ".join(sorted(ALLOWED_RESTORE_VALUES))
-            raise PreferenceValueError(f"{RESTORE_KEY} must be one of: {allowed}")
-        return band
+        return _validate_restore_value(value)
     if field == SUGGESTION_COOLDOWN_KEY:
-        if not isinstance(value, dict):
-            raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} must be an object")
-        out: dict[str, int] = {}
-        for key, raw_until in value.items():
-            if not isinstance(key, str):
-                raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} keys must be paths")
-            path = key.strip().split("?", 1)[0].split("#", 1)[0]
-            if path not in ALLOWED_LANDING_PATHS or path == DEFAULT_LANDING_PATH:
-                allowed = ", ".join(sorted(ALLOWED_LANDING_PATHS - {DEFAULT_LANDING_PATH}))
-                raise PreferenceValueError(
-                    f"{SUGGESTION_COOLDOWN_KEY} paths must be one of: {allowed}"
-                )
-            try:
-                until = int(raw_until)
-            except (TypeError, ValueError) as exc:
-                raise PreferenceValueError(
-                    f"{SUGGESTION_COOLDOWN_KEY} values must be epoch-ms integers"
-                ) from exc
-            if until <= 0:
-                raise PreferenceValueError(
-                    f"{SUGGESTION_COOLDOWN_KEY} values must be positive epoch-ms"
-                )
-            out[path] = until
-        return out
+        return _validate_cooldown_value(value)
     return value
 
 
