@@ -10,7 +10,6 @@ applied silently; accept is explicit.
 from __future__ import annotations
 
 import pytest
-
 from services.workspace_preferences import (
     SUGGESTION_COOLDOWN_MS,
     merge_suggestion_cooldown,
@@ -95,7 +94,9 @@ def test_reject_cooldown_suppresses_nag_until_expiry() -> None:
     cooldown = merge_suggestion_cooldown(None, "/goals", now_ms=now)
     assert cooldown["/goals"] == now + SUGGESTION_COOLDOWN_MS
     assert suggestion_on_cooldown(cooldown, "/goals", now_ms=now + 1) is True
-    assert suggestion_on_cooldown(cooldown, "/goals", now_ms=now + SUGGESTION_COOLDOWN_MS + 1) is False
+    assert (
+        suggestion_on_cooldown(cooldown, "/goals", now_ms=now + SUGGESTION_COOLDOWN_MS + 1) is False
+    )
 
     pattern = {"path": "/goals", "streak": LEARNED_STREAK_MIN, "lastAtMs": now}
     show, reason = _decide(

@@ -259,13 +259,9 @@ def test_ordinary_profile_fields_are_not_audited_as_workspace_prefs() -> None:
     from services.workspace_preferences import audit_workspace_preference
 
     audit_workspace_preference(actor="admin", field="name", value="Blake", source="agent")
-    assert not any(
-        e.get("action") == "profile_preference_set" for e in stores.audit_log.values()
-    )
+    assert not any(e.get("action") == "profile_preference_set" for e in stores.audit_log.values())
     log_audit("login", "someone")
-    audit_workspace_preference(
-        actor="admin", field=RESTORE_KEY, value="off", source="agent"
-    )
+    audit_workspace_preference(actor="admin", field=RESTORE_KEY, value="off", source="agent")
     assert (
         sum(1 for e in stores.audit_log.values() if e.get("action") == "profile_preference_set")
         == 1
