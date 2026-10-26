@@ -10,6 +10,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
@@ -427,15 +428,102 @@ def renew_attempt_lease(
 
 
 def reclaim_attempt(attempt: Attempt, *, at: datetime | None = None) -> Attempt:
-    """Settle one Attempt whose lease lapsed, naming the holder that went quiet."""
+    """Settle one Attempt whose finite lease lapsed, as CANCELLED+RECOVERED (#2354).
+
+    This is the first authorized RECOVERED writer (#232 P2a): an expired
+    canonical lease under active CREATED/RUNNING. Live leases, leaseless
+    Attempts, infinite leases (``expires_at is None``), and already-terminal
+    rows are refused here so a caller cannot invent recovery evidence. The
+    dedicated orphan/prelaunch writers are separate leaves; generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+
+    Physical ``result`` and ``metrics`` are preserved: reclaim closes the
+    worker proof, it does not erase evidence the Attempt already recorded.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
     lease = attempt.execution_lease
-    holder = lease.holder if lease is not None else "unknown"
-    return transition_attempt(
+    if lease is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with no execution lease; "
+            "leaseless orphan recovery is a dedicated writer, not lease reclaim"
+        )
+    if lease.expires_at is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with an infinite lease; "
+            "a lease without expires_at never lapses"
+        )
+    if lease.expires_at > moment:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} while its lease is still live "
+            f"(expires_at={lease.expires_at.isoformat()}, at={moment.isoformat()})"
+        )
+
+    # Status/error/finished_at via the shared transition table, then stamp
+    # RECOVERED outside ``transition_attempt`` so the generic path never grows
+    # a RECOVERED argument (parent #232: only None or REQUESTED there).
+    settled = transition_attempt(
         attempt,
         RECLAIMED_ATTEMPT_STATUS,
-        at=at,
-        error=reclaimed_attempt_error(holder),
+        at=moment,
+        result=attempt.result,
+        error=reclaimed_attempt_error(lease.holder),
+        metrics=attempt.metrics,
     )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
+def compensate_unlaunched_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    result: object | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle the executor's own CREATED prelaunch failure as CANCELLED+RECOVERED (#2369).
+
+    Third authorized RECOVERED writer (#232 P2d): only CREATED with
+    ``started_at is None`` and no prior ``cancellation_cause``. This is
+    compensation for work that never launched — not a death inference and not
+    a requested stop. RUNNING, already-terminal, launched (``started_at`` set),
+    or already-caused rows are refused so a race winner's cause is never
+    rewritten. Generic ``transition_attempt`` still must not accept
+    ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status is not AttemptStatus.CREATED:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); prelaunch compensation requires CREATED"
+        )
+    if attempt.started_at is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} after it started; "
+            "started_at marks a launched Attempt outside the prelaunch leaf"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result if result is None else result,
+        error=error,
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
 
 
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
@@ -546,6 +634,7 @@ __all__ = [
     "UnearnedRunCompletion",
     "cascaded_node_run_error",
     "check_completion_is_earned",
+    "compensate_unlaunched_attempt",
     "is_reclaimed_attempt",
     "latest_node_runs",
     "lease_is_expired",

@@ -23,6 +23,7 @@ from maistro.runs.concurrency import (
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     refuse_completion_under_terminal_run,
@@ -743,6 +744,41 @@ class RunStore(Protocol):
         now: datetime | None = None,
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]: ...
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed (#2358 / #232 P2b).
+
+        Re-reads under the store's authoritative mutation protection, then
+        commits ``CANCELLED`` + ``cancellation_cause=RECOVERED`` +
+        ``finished_at`` together via ``reclaim_attempt``. Returns the newly
+        written row, or ``None`` when nothing new was written (live lease,
+        already terminal, no/infinite lease). Missing ids raise
+        ``AttemptNotFound`` — never invent a reclaim for an absent row.
+        """
+        ...
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure (#2369 / #232 P2d).
+
+        Re-reads under authoritative mutation protection, checks the fence,
+        then commits ``CANCELLED`` + ``RECOVERED`` via
+        ``compensate_unlaunched_attempt``. Refuses RUNNING / terminal / stale
+        fence / already-caused winners rather than rewriting them.
+        """
+        ...
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
@@ -1790,10 +1826,47 @@ class InMemoryRunStore:
         )
         reclaimed: list[Attempt] = []
         for attempt in doomed[:limit]:
-            settled = reclaim_attempt(attempt, at=moment)
+            # Re-check under the same dict authority the write uses: a
+            # concurrent renew (or other terminalizer) can land between the
+            # sort snapshot and this write. Skip, do not rewrite.
+            current = self._attempts.get(attempt.attempt_id)
+            if current is None or not lease_is_expired(current, moment):
+                continue
+            settled = reclaim_attempt(current, at=moment)
             self._attempts[attempt.attempt_id] = settled
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        attempt = self._require_attempt(attempt_id)
+        if not lease_is_expired(attempt, moment):
+            return None
+        settled = reclaim_attempt(attempt, at=moment)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        attempt = self._require_attempt(attempt_id)
+        self._validate_fence(attempt, fencing_token)
+        settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None

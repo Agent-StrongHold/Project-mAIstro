@@ -48,6 +48,7 @@ from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLi
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     refuse_completion_under_terminal_run,
@@ -1894,6 +1895,54 @@ class PgRunStore:
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed.
+
+        Row-locked like ``renew_lease`` / ``transition_attempt``: the expiry
+        decision and the CANCELLED+RECOVERED write share one transaction so a
+        concurrent renew cannot extend a lease this call has already decided
+        to reclaim, and a concurrent reclaim cannot rewrite a winner (#2358).
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure.
+
+        Row-locked like ``transition_attempt``: fence check and
+        CANCELLED+RECOVERED write share one transaction so a concurrent launch
+        or terminalizer cannot leave a rewritten cause (#2369).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
 
     async def _require_attempt(self, attempt_id: str, *, conn: Any = None) -> Attempt:
         """Load an Attempt, reusing an open connection when inside a transaction.
