@@ -1428,7 +1428,11 @@ class ScheduleRunAdmitter:
         fire_id: str | None = None,
         requested_by: str | None = None,
     ) -> str:
-        graph = template.instantiate(project_id=schedule.project_id, name=schedule.name or None)
+        graph = template.instantiate(
+            project_id=schedule.project_id,
+            name=schedule.name or None,
+            workspace_id=schedule.workspace_id,
+        )
         provenance: dict[str, Any] = {
             ADMISSION_SOURCE: SCHEDULE_SOURCE,
             SCHEDULE_ID_KEY: schedule.schedule_id,
