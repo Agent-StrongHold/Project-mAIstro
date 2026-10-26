@@ -2,13 +2,20 @@
 
 The SPA owns observation + proposal (`decideLandingSuggestion` /
 `recordImmediateLandingHop` in ``frontend/src/lib/landing.ts``). These tests
-pin the published streak minimum and precedence so docs and the SPA stay
-aligned — not a second authority.
+pin the published streak minimum, suppress, and profile cooldown so docs and
+the SPA stay aligned — not a second authority. Learned defaults are never
+applied silently; accept is explicit.
 """
 
 from __future__ import annotations
 
 import pytest
+
+from services.workspace_preferences import (
+    SUGGESTION_COOLDOWN_MS,
+    merge_suggestion_cooldown,
+    suggestion_on_cooldown,
+)
 
 LEARNED_STREAK_MIN = 3
 DEFAULT_LANDING = "/home"
@@ -34,6 +41,8 @@ def _decide(
     pattern: dict[str, object] | None,
     explicit: str,
     suppressed: set[str],
+    cooldown: dict[str, int] | None = None,
+    now_ms: int = 0,
     streak_min: int = LEARNED_STREAK_MIN,
 ) -> tuple[bool, str]:
     if _resolve(explicit) != DEFAULT_LANDING:
@@ -45,6 +54,8 @@ def _decide(
         return False, "ineligible"
     if path in suppressed:
         return False, "suppressed"
+    if suggestion_on_cooldown(cooldown, path, now_ms=now_ms):
+        return False, "cooldown"
     if int(pattern["streak"]) < streak_min:
         return False, "insufficient"
     return True, path
@@ -76,6 +87,34 @@ def test_proposal_requires_streak_and_respects_suppress_and_explicit() -> None:
 
     show, reason = _decide(pattern=pattern, explicit="/chat", suppressed=set())
     assert show is False and reason == "explicit"
+
+
+def test_reject_cooldown_suppresses_nag_until_expiry() -> None:
+    """Dismiss stores a profile cooldown — ignore does not nag every return."""
+    now = 1_700_000_000_000
+    cooldown = merge_suggestion_cooldown(None, "/goals", now_ms=now)
+    assert cooldown["/goals"] == now + SUGGESTION_COOLDOWN_MS
+    assert suggestion_on_cooldown(cooldown, "/goals", now_ms=now + 1) is True
+    assert suggestion_on_cooldown(cooldown, "/goals", now_ms=now + SUGGESTION_COOLDOWN_MS + 1) is False
+
+    pattern = {"path": "/goals", "streak": LEARNED_STREAK_MIN, "lastAtMs": now}
+    show, reason = _decide(
+        pattern=pattern,
+        explicit="/home",
+        suppressed=set(),
+        cooldown=cooldown,
+        now_ms=now + 60_000,
+    )
+    assert show is False and reason == "cooldown"
+
+    show, detail = _decide(
+        pattern=pattern,
+        explicit="/home",
+        suppressed=set(),
+        cooldown=cooldown,
+        now_ms=now + SUGGESTION_COOLDOWN_MS + 1,
+    )
+    assert show is True and detail == "/goals"
 
 
 @pytest.mark.parametrize("path", sorted(ALLOWED - {DEFAULT_LANDING}))

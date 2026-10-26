@@ -6,9 +6,8 @@ module is the allow-list and normalize path so a bad or hostile value cannot
 steer the SPA off an in-app surface or invent a second settings owner.
 
 Consumption of ``workspace_restore_aggressiveness`` (recent-return restore)
-is applied by the SPA landing redirect (`DefaultLandingRedirect` +
-`decideLanding` in ``frontend/src/lib/landing.ts``, #1050/#1822). This module
-owns the durable preference contract only.
+belongs to the session-continuity path (#1822); this module only owns the
+durable preference contract.
 """
 
 from __future__ import annotations
@@ -17,6 +16,8 @@ from typing import Any
 
 LANDING_KEY = "workspace_default_landing"
 RESTORE_KEY = "workspace_restore_aggressiveness"
+#: path → epoch-ms until which a learned-landing proposal stays quiet (#1050).
+SUGGESTION_COOLDOWN_KEY = "workspace_landing_suggestion_cooldown"
 
 #: Surfaces a user may pin as their Workspace default. Home is the baseline.
 ALLOWED_LANDING_PATHS: frozenset[str] = frozenset(
@@ -45,6 +46,23 @@ ALLOWED_RESTORE_VALUES: frozenset[str] = frozenset(
 
 DEFAULT_RESTORE_VALUE = "balanced"
 
+#: Absolute absence windows (ms) per band — lockstep with frontend landing.ts.
+RESTORE_ABSOLUTE_MS: dict[str, int] = {
+    "off": 0,
+    "brief": 15 * 60 * 1000,
+    "balanced": 4 * 60 * 60 * 1000,
+    "generous": 24 * 60 * 60 * 1000,
+}
+
+#: How long dismiss/"Not now" keeps a learned proposal quiet (7 days).
+#: Preference-aware: stored on the profile so a return does not re-nag.
+SUGGESTION_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
+
+#: Workspace preference keys that must leave an audit trail when mutated.
+AUDITED_PREFERENCE_KEYS: frozenset[str] = frozenset(
+    {LANDING_KEY, RESTORE_KEY, SUGGESTION_COOLDOWN_KEY}
+)
+
 
 class PreferenceValueError(ValueError):
     """A preference value is not in the Workspace allow-list."""
@@ -72,6 +90,100 @@ def normalize_restore_aggressiveness(raw: Any) -> str:
     return value
 
 
+def interpret_restore_aggressiveness_request(text: str) -> str | None:
+    """Map common natural-language restore requests to a durable band.
+
+    The Agent still writes via ``profile_set`` on ``RESTORE_KEY`` — this helper
+    pins the phrase→band contract for tests and tool guidance; it is not a
+    second settings owner.
+    """
+    if not isinstance(text, str):
+        return None
+    lowered = " ".join(text.strip().lower().split())
+    if not lowered:
+        return None
+    hold_longer = (
+        "hold onto my sessions longer" in lowered
+        or "hold onto sessions longer" in lowered
+        or ("hold onto" in lowered and "session" in lowered and "longer" in lowered)
+        or ("take me back" in lowered and "come back" in lowered)
+    )
+    if hold_longer:
+        return "generous"
+    if "stop restoring" in lowered or "never restore" in lowered:
+        return "off"
+    if "brief" in lowered and "restore" in lowered:
+        return "brief"
+    return None
+
+
+def restore_window_ms(
+    aggressiveness: str,
+    *,
+    left_at_ms: int,
+    session_started_at_ms: int,
+) -> int:
+    """Absolute (+ proportional for balanced/generous) restore window in ms."""
+    band = normalize_restore_aggressiveness(aggressiveness)
+    absolute = RESTORE_ABSOLUTE_MS[band]
+    if band in {"balanced", "generous"} and 0 < session_started_at_ms <= left_at_ms:
+        session_len = left_at_ms - session_started_at_ms
+        proportion = 1.0 if band == "generous" else 0.5
+        return max(absolute, int(session_len * proportion))
+    return absolute
+
+
+def normalize_suggestion_cooldown(raw: Any) -> dict[str, int]:
+    """Return a safe path→until_ms map; drop unknown or expired-invalid entries."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        path = normalize_landing_path(key)
+        if path == DEFAULT_LANDING_PATH:
+            continue
+        try:
+            until = int(value)
+        except (TypeError, ValueError):
+            continue
+        if until <= 0:
+            continue
+        out[path] = until
+    return out
+
+
+def suggestion_on_cooldown(
+    cooldown: dict[str, int] | None,
+    path: str,
+    *,
+    now_ms: int,
+) -> bool:
+    """True when ``path`` is still inside a stored dismiss cooldown."""
+    target = normalize_landing_path(path)
+    if not cooldown or target == DEFAULT_LANDING_PATH:
+        return False
+    until = cooldown.get(target)
+    if until is None:
+        return False
+    return int(until) > now_ms
+
+
+def merge_suggestion_cooldown(
+    prior: Any,
+    path: str,
+    *,
+    now_ms: int,
+    cooldown_ms: int = SUGGESTION_COOLDOWN_MS,
+) -> dict[str, int]:
+    """Record a dismiss for ``path`` and prune expired entries."""
+    current = normalize_suggestion_cooldown(prior)
+    pruned = {p: until for p, until in current.items() if until > now_ms}
+    target = normalize_landing_path(path)
+    if target != DEFAULT_LANDING_PATH:
+        pruned[target] = now_ms + max(0, int(cooldown_ms))
+    return pruned
+
+
 def validate_preference_field(field: str, value: Any) -> Any:
     """Validate a single preference write.
 
@@ -96,13 +208,63 @@ def validate_preference_field(field: str, value: Any) -> Any:
             allowed = ", ".join(sorted(ALLOWED_RESTORE_VALUES))
             raise PreferenceValueError(f"{RESTORE_KEY} must be one of: {allowed}")
         return band
+    if field == SUGGESTION_COOLDOWN_KEY:
+        if not isinstance(value, dict):
+            raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} must be an object")
+        out: dict[str, int] = {}
+        for key, raw_until in value.items():
+            if not isinstance(key, str):
+                raise PreferenceValueError(f"{SUGGESTION_COOLDOWN_KEY} keys must be paths")
+            path = key.strip().split("?", 1)[0].split("#", 1)[0]
+            if path not in ALLOWED_LANDING_PATHS or path == DEFAULT_LANDING_PATH:
+                allowed = ", ".join(sorted(ALLOWED_LANDING_PATHS - {DEFAULT_LANDING_PATH}))
+                raise PreferenceValueError(
+                    f"{SUGGESTION_COOLDOWN_KEY} paths must be one of: {allowed}"
+                )
+            try:
+                until = int(raw_until)
+            except (TypeError, ValueError) as exc:
+                raise PreferenceValueError(
+                    f"{SUGGESTION_COOLDOWN_KEY} values must be epoch-ms integers"
+                ) from exc
+            if until <= 0:
+                raise PreferenceValueError(
+                    f"{SUGGESTION_COOLDOWN_KEY} values must be positive epoch-ms"
+                )
+            out[path] = until
+        return out
     return value
 
 
 def validate_preferences_document(values: dict[str, Any]) -> dict[str, Any]:
     """Validate every known Workspace key in a full preferences replace."""
     out = dict(values)
-    for key in (LANDING_KEY, RESTORE_KEY):
+    for key in (LANDING_KEY, RESTORE_KEY, SUGGESTION_COOLDOWN_KEY):
         if key in out:
             out[key] = validate_preference_field(key, out[key])
     return out
+
+
+def audit_workspace_preference(
+    *,
+    actor: str,
+    field: str,
+    value: Any,
+    source: str,
+) -> None:
+    """Write a durable audit entry for an Agent/UI Workspace preference change.
+
+    Reversible via the same profile keys (PATCH / profile_set / Profile UI).
+    Never grants authorization — preference writes cannot widen scopes.
+    """
+    if field not in AUDITED_PREFERENCE_KEYS:
+        return
+    from routes.audit import log_audit
+
+    detail: dict[str, Any] = {"field": field, "source": source}
+    # Cooldown maps can be large; summarize rather than dump every until-ms.
+    if field == SUGGESTION_COOLDOWN_KEY and isinstance(value, dict):
+        detail["paths"] = sorted(str(k) for k in value)
+    else:
+        detail["value"] = value
+    log_audit("profile_preference_set", actor, target=field, detail=detail)
