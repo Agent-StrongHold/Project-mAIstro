@@ -321,3 +321,69 @@ evidence does not support it — #1614 AC-5 demands branch
    -> #795 is open; the registry enforces shared canonical Run identity
    (`test_noncanonical_run_identity_is_rejected`) and advertises no
    execution. Correct deferral, not a gap.
+
+## Round 9 verification/repair record (2026-10-26, merge of origin/develop 292ff7a00 → 07171074f + AC-evidence repair)
+
+Driver's local battery at the round-8 head was green (ruff pair, 7 pack
+tests, design-suite inventory); the repair run died on a provider timeout,
+not a check failure. This round, independently re-executed and extended:
+
+- **Develop sync**: origin/develop advanced 3 commits past the round-8 base
+  5056cf069 (7714424b0 durable DAG metrics, 05070ff07 backlog stores,
+  292ff7a00 Turing chat retention). Verified zero file overlap with the
+  branch's 13-file diff (`comm -12` of the two name-only diffs → empty), then
+  merged as 07171074f — conflict-free. `git diff --numstat origin/develop --
+  quality/` → empty (no ledger rows lost; branch never touched quality/).
+  Branch is 0 behind / 19 ahead of origin/develop.
+- **Battery re-run at 07171074f**: `uv sync --locked --extra dev` ok;
+  ruff check + `format --check` (3556 files) ok; design suite 669 passed,
+  1 skipped; full CI-exact `check-suite-inventory.py` → 21 suites, 35023 node
+  IDs ok; vulture CI-exact (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, RATCHET_BASE_REV=origin/develop) → 1248 = 1248, exit 0
+  at base 292ff7a008.
+- **lint-and-type-check steps re-run CI-exact** (the failing job):
+  verify-monorepo-layout ok; check-merge-markers ok; mypy on the workflow's
+  10-package list (core, server, turing, canvas, bootstrap, registry, evolve,
+  rsi, **design**, ext-harness) after `uv sync --locked --all-extras` →
+  Success, 1120 files; check-cross-package-imports ok (3543 files);
+  check-extension-imports ok (both policies); check-durable-table-inventory
+  ok (122 tables — gate input changed in this merge);
+  check-frontend-api-routes ok (215 sites → 250 routes);
+  check-frontend-typed-client ok (42/120, none new); check-api-route-contracts
+  ok (306 handlers). Remaining job steps (extension scaffold/gallery wheels,
+  deployment/secret/compose/retired-guidance) were green in CI at 60f9bc247
+  and this merge touches none of their inputs beyond what the steps above
+  cover directly.
+- **Merge coherence**: 217 tests across the packages develop's 3 commits
+  touched (core backlog stores + chat admission + container wiring, server
+  backlog API, turing chat retention/chat) → 217 passed.
+- **Closure gate root cause reproduced with the gate's own functions** at
+  this head against dispatch-captured GitHub state: `closing_targets(PR
+  body)` → [1614]; `acceptance_criteria(#1614)` → 5 registered, 5 unticked;
+  `problems_for` → CI's verbatim strings ("open direct children" + "5 of 5
+  registered criteria unproven"). `closing_targets("Part of #1614")` → []
+  (ok path). Unchanged conclusion: GitHub-state-only; the tree cannot
+  discharge it, and this lane may not edit the PR body or tick the issue's
+  checklist.
+- **AC evidence repair (tree-side, in scope)**: #1614's identity criterion
+  names `website` and `small_business`; the identity test bound only
+  game/novel/training_program/product. Extended
+  `test_same_goal_two_packs_share_identity_scheme` to bind the same Goal to
+  all of them (site/ops assertions added). Added
+  `test_missing_graph_template_is_rejected` — the other half of AC-1's
+  rejection clause had no degenerate-path test. Design suite now 670 passed,
+  1 skipped; inventory note delta +7 → +8 (addendum appended); suite
+  inventory re-proven ok per-suite and full; mypy re-proven Success at the
+  final tree.
+- **`foreign_harness` backend is NOT missing**: `interactive.json` advertises
+  it, and `docs/architecture/FOREIGN-HARNESS-NODES.md` documents M1-D
+  (#1613) as in-tree: HarnessRunner capability slot, subprocess/codex
+  adapters, `check-foreign-harness-egress.py` CI step. The #1614 closure
+  clarification's condition is satisfied by the repository itself.
+- **AC-5 name mismatch (recorded, not repairable here)**: #1614 asks the PR
+  to be `feat/m7-a15-pack-extension` off develop; the open PR head is
+  `issue-1614-pack-extension`. The off-develop half is proven (0 behind,
+  clean merges); the branch-name half is GitHub state this lane cannot
+  change. The `novel`-vs-#985 identity decision likewise remains a GitHub
+  product decision (no in-repo ADR names it); the registry implements
+  `novel` as a distinct pack per #1619's ticked criterion.

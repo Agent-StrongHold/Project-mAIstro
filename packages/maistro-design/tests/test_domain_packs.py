@@ -31,17 +31,26 @@ def test_bundled_packs_load_through_one_registry() -> None:
 
 
 def test_same_goal_two_packs_share_identity_scheme() -> None:
+    # #1614's identity proof names website and small_business specifically;
+    # #1619's scenario binds the same Goal to game, novel, training_program,
+    # and product (deck). One Goal, every cohort pack, one identity scheme.
     registry = load_bundled_packs()
     goal = "goal-atelier-workspace"
     game = registry.bind("game", goal)
     novel = registry.bind("novel", goal)
     training = registry.bind("training_program", goal)
     deck = registry.bind("product", goal)
+    site = registry.bind("website", goal)
+    ops = registry.bind("small_business", goal)
     assert game["goal_id"] == novel["goal_id"] == training["goal_id"] == deck["goal_id"]
-    assert game["run_identity"] == deck["run_identity"] == "canonical"
+    assert site["goal_id"] == ops["goal_id"] == game["goal_id"]
+    assert game["run_identity"] == deck["run_identity"] == site["run_identity"] == "canonical"
     assert game["rubric_dimension_ids"] != novel["rubric_dimension_ids"]
+    assert site["rubric_dimension_ids"] != ops["rubric_dimension_ids"]
     assert game["pack_id"] == "game"
     assert deck["pack_id"] == "product"
+    assert site["pack_id"] == "website"
+    assert ops["pack_id"] == "small_business"
 
 
 def test_missing_rubric_is_rejected() -> None:
@@ -51,6 +60,23 @@ def test_missing_rubric_is_rejected() -> None:
                 "pack_id": "orphan",
                 "graph_template": "loop.explore-execute-evaluate-refine",
                 "rubric_dimensions": [],
+                "backends": ["builders"],
+                "artifact_kinds": ["note"],
+                "fence_points": ["rubric-lock"],
+            }
+        )
+
+
+def test_missing_graph_template_is_rejected() -> None:
+    # The other half of the extension rule's rejection clause (#1614): a pack
+    # missing its graph template is refused by the same required-fields check
+    # that refuses a missing rubric catalog.
+    with pytest.raises(PackContractError, match="required fields"):
+        _as_pack(
+            {
+                "pack_id": "orphan",
+                "graph_template": "",
+                "rubric_dimensions": [{"id": "x", "label": "X"}],
                 "backends": ["builders"],
                 "artifact_kinds": ["note"],
                 "fence_points": ["rubric-lock"],

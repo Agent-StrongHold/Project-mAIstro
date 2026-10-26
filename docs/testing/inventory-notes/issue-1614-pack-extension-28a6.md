@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +7
+  packages/maistro-design/tests: +8
 ---
 # issue-1614-pack-extension-28a6
 
@@ -42,3 +42,13 @@ added to `test_domain_packs.py` to cover the remaining partial branch arcs in
 `_require_contract_fields`, `_rubric_dimensions`, and `DomainPackRegistry.load_file`
 (non-canonical `run_identity`, a rubric catalog with no mapping entries, and a
 non-object manifest). No tests were removed or renamed.
+
+Addendum (round-9 verification/repair, merge of origin/develop 292ff7a00 at
+`07171074f`): `test_same_goal_two_packs_share_identity_scheme` now also binds
+the same Goal to `website` and `small_business` — #1614's identity criterion
+names those two packs explicitly, and the earlier binding list covered only
+game/novel/training_program/product. One test added,
+`test_missing_graph_template_is_rejected`, covering the other half of the
+extension rule's rejection clause (a pack whose graph template is missing is
+refused by the same required-fields check). Net +1 test; delta above updated
++7 → +8. No tests were removed or renamed.
