@@ -545,9 +545,7 @@ class DagRunStore:
         """
         parsed = parse_canonical_status(status)
         if parsed is not None and parsed not in TERMINAL_RUN_STATUSES:
-            await self.record_status(
-                run_id, status=status, canonical_run_id=canonical_run_id
-            )
+            await self.record_status(run_id, status=status, canonical_run_id=canonical_run_id)
             return
         run = self._runs.get(run_id)
         if run and run.finished_at is None:
