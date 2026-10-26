@@ -965,7 +965,6 @@
         "packages/maistro-core/src/maistro/projects/store.py::unused method 'remove_member'",
         "packages/maistro-core/src/maistro/projects/store.py::unused method 'remove_member'",
         "packages/maistro-core/src/maistro/projects/types.py::unused method 'can_mutate'",
-        "packages/maistro-core/src/maistro/prompts/diff.py::unused function 'compute_diff'",
         "packages/maistro-core/src/maistro/protocols/agents.py::unused method 'export_gitagent'",
         "packages/maistro-core/src/maistro/protocols/agents.py::unused method 'import_gitagent'",
         "packages/maistro-core/src/maistro/protocols/embeddings.py::unused method 'embed_batch'",

@@ -140,16 +140,6 @@
       ]
     },
     {
-      "id": "prompts-diff",
-      "subsystem": "Prompts and personas",
-      "disposition": "CONNECT",
-      "rationale": "Prompt diffing with no caller; the persona eval protocol of ADR-060 is its consumer.",
-      "root": "the ADR-060 persona eval path",
-      "modules": [
-        "maistro.prompts.diff"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
