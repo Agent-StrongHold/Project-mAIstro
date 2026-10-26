@@ -1,5 +1,67 @@
 # CR1619 — closure-gate repair handoff at a1c7425c1 (round 6)
 
+## Round 8 verification record (2026-10-26, at 707a5b0d0 — no code changes this round)
+
+Re-verifier/writer round. Tree unchanged except this note; develop did not
+advance (`git fetch` → `origin/develop` = `78133c093` = merge-base of HEAD;
+branch 0 behind, 15 ahead — the round-7 merge stands as the sync). The
+GitHub-side PR head is still `fd2a030b` (`mergeable_state: behind`) because
+this lane may not push; the driver must push `707a5b0d0`.
+
+Independently re-executed (not trusted from round 7), with two new proofs:
+
+- Driver battery re-run: `uv sync --locked --extra dev` ok; ruff check +
+  `format --check` (3538 files) ok; `pytest
+  packages/maistro-design/tests/test_domain_packs.py -q` → 7 passed; full
+  `pytest packages/maistro-design/tests -q` → 669 passed, 1 skipped; FULL
+  `check-suite-inventory.py` (CI invocation) → 21 suites, 34794 node IDs ok.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact, RATCHET_BASE_REV=origin/develop) → exit 0,
+  base `78133c093e0a`, candidate `707a5b0d0391`, 1253 = 1253.
+- mypy trap re-proven the honest way: with the dev-only venv, `mypy --strict
+  packages/maistro-core/src` fails on `maistro/cli/_install.py:20`
+  (import-not-found `maistro_bootstrap.cli`) — a file this branch never
+  touched. After `uv sync --locked --all-extras` (what CI's quality-mypy
+  runs), CI-exact mypy → Success 832 files; AGENTS.md 10-package list →
+  Success 944 files. The error was environment, not branch.
+- **SAST children proven green locally** (all three were cancelled, never
+  failed, at fd2a030b): bandit CI-exact (`-ll --confidence-level=medium`,
+  core+conductor+server) → 0 Medium+; semgrep (maistro-rules + p/security-audit
+  + p/owasp-top-ten + p/secrets, both excludes) → 364 rules, 2266 files,
+  0 findings, exit 0; gitleaks 8.30.1 PR-range (`origin/develop..HEAD`) →
+  no leaks. The CI "SAST (bandit + semgrep + gitleaks) = failure" aggregate
+  is therefore a cancellation artifact, not a finding.
+- **Gate C — canonical clean install PROVEN GREEN locally** (cancelled, never
+  failed, in CI): clean-state step (`rm -f .env; rm -rf .maistro-install;
+  compose down`) → `./install.sh --skip-wizard --no-cli --no-open` with Gate
+  C's env (MAISTRO_SKIP_WIZARD=1, INSTALL_CLI=0, OPEN_BROWSER=0,
+  AUTO_INSTALL_DEPS=0, START_STACK=1) → engine image `maistro-engine:local`
+  + `cr-1619-hive-conductor` built, stack up → /health/live, engine
+  /health/ready, conductor /health/ready all polled OK → `alembic_version`
+  = `068` (matches the gate's `^[0-9a-z_]+$` assertion) → candidate digest
+  recorded (`sha256:11953b11ca68…`) → torn down. Local-only adaptations:
+  ports (engine 18000, conductor 18101, pg 25433, litellm 24000, langfuse
+  23100) + renamed containers via an owner-600 `docker-compose.override.yml`
+  that was deleted after the run and never committed — sibling worktrees
+  (auto-290/auto-325) own the default ports and the fixed container names on
+  this shared daemon. Two transient infra failures during pulls/builds
+  (ghcr CDN connection resets, `uv export` inside the hive-conductor image
+  exit 2 on a dropped PyPI connection) both passed on retry — network, not
+  tree. `quality/` numstat vs origin/develop still empty.
+- Closure gate root cause re-reproduced with the gate's own functions at
+  this head against the dispatch-captured GitHub state:
+  `closing_targets(PR body)` → `[1614]`; `acceptance_criteria(#1614)` →
+  5 registered, all unticked; `problems_for` → CI's verbatim string
+  ("5 of 5 registered criteria unproven (unticked: AC-1 … AC-5)");
+  `Part of #1614` first line → `closing_targets` → `[]` → gate's ok path.
+  Conclusion unchanged: the one completed CI failure is GitHub-state-only;
+  the tree cannot discharge it.
+- Not re-run locally: `check-ac-state.py --run-tests --ratchet --mandate`
+  (Quality / Acceptance state child) — cancelled in CI, never reported a
+  failure; a local run needs the full service-backed corpus (PG + alembic +
+  ~180 AC tests across all packages), out of scope for a design-packs-only
+  diff. Recorded honestly as cancelled-not-failed, UNVERIFIED locally.
+
 ## Round 7 verification record (2026-10-26, at 8fae8c814 = merge of origin/develop 78133c09)
 
 Develop advanced one commit past the round-5 merge base (`41deb105c`):
