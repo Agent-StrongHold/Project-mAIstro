@@ -74,13 +74,13 @@ _DISTRIBUTION_IMPORT_OVERRIDES: dict[str, frozenset[str]] = {
 # adds its ID here with reasoning specific enough to re-audit.
 ALLOWED: dict[tuple[str, str], str] = {
     ("ecdsa", "PYSEC-2026-1325"): (
-        "Minerva timing side channel on the P-256 curve via "
-        "SigningKey.sign_digest(). Upstream considers side-channel attacks out "
-        "of scope and has stated there is no planned fix, so there is no "
-        "version to upgrade to. Transitive via bip-utils (the `identity` "
-        "extra). maistro.identity derives on Ed25519 and secp256k1 only — it "
-        "never touches P-256 — and the attack additionally requires local "
-        "timing measurement of signing operations. Not reachable as used."
+        "Minerva timing side channel on secp256r1 via SigningKey.sign_digest(). "
+        "Upstream considers side-channel attacks out of scope and has stated "
+        "there is no planned fix, so there is no version to upgrade to. "
+        "Transitive via bip-utils (the `identity` extra). maistro.identity "
+        "derives on Ed25519 and secp256k1 only — it never touches secp256r1 — "
+        "and the attack additionally requires local timing measurement of "
+        "signing operations. Not reachable as used."
     ),
 }
 
