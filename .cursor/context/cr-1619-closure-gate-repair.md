@@ -1,6 +1,39 @@
-# CR1619 — closure-gate repair handoff at cad7db7f0 (round 4)
+# CR1619 — closure-gate repair handoff at a1c7425c1 (round 6)
 
-## Round 4 update (2026-10-25, this round)
+## Round 6 verification record (2026-10-26, this round)
+
+Verifier/writer round at head `a1c7425c1` (= merge of origin/develop
+`41deb105c`, which is still develop's tip — `git fetch` + `git rev-parse
+origin/develop` → `41deb105c`; no new sync needed). Tree unchanged except
+this note; no code or ledger edits were required or made.
+
+Re-executed, not trusted from round 4:
+
+- Driver battery (job b541df05ee7c): `uv sync --locked --extra dev` ok;
+  `ruff check .` ok; `ruff format --check .` (3537 files) ok;
+  `pytest packages/maistro-design/tests/test_domain_packs.py -q` → 7 passed;
+  `check-suite-inventory.py --suite packages/maistro-design/tests` → ok.
+- Full design suite: `pytest packages/maistro-design/tests -q` → 669 passed,
+  1 skipped. `check-merge-markers.py` → ok.
+- mypy, workflow-exact 10-package list → Success, 1112 source files.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI's exact args) → exit 0, 1255 reviewed identities.
+- `verify-monorepo-layout.sh`, `check-cross-package-imports.py`,
+  `check-shell-execution.py`, `check-build-context.py` → all ok.
+- Closure gate reproduced mechanically at this head with the gate's own
+  functions (scripts/check-closure-targets.py loaded as a module) against the
+  dispatch-captured PR body and #1614 record:
+  `acceptance_criteria(#1614 body)` → 5 registered, unticked AC-1..AC-5;
+  `closing_targets(PR body)` → `[1614]`; `problems_for(...)` → CI's exact
+  error string ("5 of 5 registered criteria unproven"). With the first line
+  as `Part of #1614`: `closing_targets` → `[]`, gate ok/exit 0.
+- Conclusion unchanged and now re-proven at the current head: the ONLY
+  failing CI step (`lint-and-type-check` → check-closure-targets) reads the
+  PR body and issue state from GitHub — no tree change can alter its verdict.
+  The one-line GitHub-side PR-body edit (see "The repair" below) remains the
+  sole outstanding action and is outside this lane's authority.
+
+## Round 4 (2026-10-25, at cad7db7f0)
 
 - origin/develop advanced two more commits past `09d56b6a0b` (`8edb51fb9`
   builders-domain CONNECT, `4019249e8` design.orchestrate CONNECT + vulture
