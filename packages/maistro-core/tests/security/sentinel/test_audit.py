@@ -10,7 +10,10 @@ from datetime import UTC, datetime
 import pytest
 
 from maistro.security._types import AuditEntry
-from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.sentinel.audit import (
+    InMemoryAuditLog,
+    log_scoped_tool_denial,
+)
 from maistro.security.sentinel.signing import (
     AuditSignatureError,
     AuditSigner,
@@ -120,6 +123,34 @@ class TestInMemoryAuditLog:
         # retained row whose decision bytes differ.
         forged = replace(stored, detail="forged")
         assert not log.verify(forged)
+
+    @pytest.mark.asyncio
+    async def test_pre_sentinel_tool_denial_is_retained_and_signed(self) -> None:
+        """The allowlist refusal survives the signing merge as scoped evidence."""
+
+        @dataclass
+        class _Auth:
+            user_id: str = "user-1"
+            org_id: str = "org-1"
+
+        log = InMemoryAuditLog(signer=AuditSigner(b"k" * 32))
+        await log_scoped_tool_denial(
+            log,
+            tool_name="undeclared_tool",
+            reason="tool is outside the effective allowlist",
+            auth=_Auth(),
+            agent_name="agent-1",
+        )
+
+        [stored] = await log.get_entries(org_id="org-1")
+        assert stored.boundary == "tool_allowlist"
+        assert stored.verdict == "denied"
+        assert stored.action == "tool_dispatch"
+        assert stored.tool_name == "undeclared_tool"
+        assert stored.detail == "tool is outside the effective allowlist"
+        assert (stored.user_id, stored.org_id, stored.agent_id) == ("user-1", "org-1", "agent-1")
+        assert log.verify(stored)
+        assert await log.get_entries() == []
 
     @pytest.mark.asyncio
     async def test_a_different_key_cannot_verify_a_decision(self) -> None:

@@ -491,3 +491,48 @@ async def fetch():
     return await shared_client().get(build_url())
 """
     assert gate.analyze_source(source) == []
+
+
+def test_a_newly_introduced_raw_hive_tool_call_is_rejected_by_the_audit(gate) -> None:
+    """#57 criterion 11: a direct/raw tool path must not slip past the gate.
+
+    A caller that bypasses ``services.governed_tools`` and calls the shipped
+    hive tool implementation directly -- the exact shape the #57 migration
+    removed from the chat surface -- surfaces as a ``TOOL_EFFECT`` site the
+    ledger has no disposition for, and the audit refuses it.
+    """
+    source = """
+from services.tool_executor import web_search
+
+async def shortcut(query):
+    return await web_search(query, max_results=3)
+"""
+    sites = gate.analyze_source(source, "packages/hive-conductor/backend/routes/shortcut.py")
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("TOOL_EFFECT", "hive.web_search"),
+    ]
+    raw_site = sites[0]
+    failures = gate.audit({}, {raw_site.id: raw_site})
+    assert any(message.startswith("NEW ") for message in failures), failures
+
+
+def test_a_newly_introduced_raw_browser_client_call_is_rejected_by_the_audit(gate) -> None:
+    """#57 criterion 11, backend side: driving BrowserClient directly -- around
+    both the governed tool seam and the shipped provider backends -- is a new
+    TOOL_EFFECT site the audit refuses until it carries a reviewed disposition."""
+    source = """
+from maistro.tools.browser import BrowserClient
+
+async def scrape(url):
+    client = BrowserClient()
+    try:
+        return await client.browse(url, "extract")
+    finally:
+        await client.aclose()
+"""
+    sites = gate.analyze_source(source, "packages/hive-conductor/backend/routes/scrape.py")
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("TOOL_EFFECT", "browser.browse"),
+    ]
+    failures = gate.audit({}, {site.id: site for site in sites})
+    assert any(message.startswith("NEW ") for message in failures), failures
