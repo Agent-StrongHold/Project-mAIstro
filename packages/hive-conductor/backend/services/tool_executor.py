@@ -382,17 +382,28 @@ async def dispatch_tool(
     return await function(*arguments)
 
 
-def admitted_tool_executor(calls: AdmittedModelCalls) -> ToolCallExecutor:
-    """Bind boot Agent tools to the existing execution and effect authorities.
+def admitted_tool_executor(calls: AdmittedModelCalls, *, container: Any = None) -> ToolCallExecutor:
+    """Bind boot Agent tools to the governed tool execution authority (#57).
 
-    Agent/delegation/response-round/ToolCall identity names the logical effect.
-    It supplies no actor, scope, Binding or credential. The admission adapter
-    rereads persisted records and re-resolves the operator Binding every time.
+    Agent/delegation/response-round/ToolCall identity names the logical model
+    sub-effect. It supplies no actor, scope, Binding or credential: the model
+    admission adapter rereads persisted records and re-resolves the operator
+    Binding every time, and the tool effect itself crosses the canonical
+    Binding -> Invocation boundary in ``services.governed_tools`` with the
+    host-owned schema/allowlist/reversibility contract enforced first. A
+    contract refusal (unlisted name, bad schema, missing live execution
+    identity) is the same readable error string the raw dispatcher produced,
+    never a silent ungoverned effect.
     """
 
     async def execute(
         call: ToolCall, agent_name: str, delegation_depth: int, tool_round: int
     ) -> Any:
+        scope = json.dumps(
+            [agent_name, delegation_depth, tool_round, call.id, call.name],
+            separators=(",", ":"),
+        )
+
         async def model_call(request: ModelChatRequest) -> str:
             from maistro.runs.store import RunIntegrityError
 
@@ -402,10 +413,6 @@ def admitted_tool_executor(calls: AdmittedModelCalls) -> ToolCallExecutor:
                 raise RunIntegrityError(
                     "model-backed Agent tools require the existing Agent identity"
                 )
-            scope = json.dumps(
-                [agent_name, delegation_depth, tool_round, call.id, call.name],
-                separators=(",", ":"),
-            )
             result = await calls.complete(
                 request=request, effect_key=f"agent-tool:{scope}", timeout_s=30.0
             )
@@ -420,6 +427,22 @@ def admitted_tool_executor(calls: AdmittedModelCalls) -> ToolCallExecutor:
                 raise RuntimeError("Agent tool model returned no text content")
             return content
 
-        return await dispatch_tool(call.name, call.arguments, model_call=model_call)
+        from maistro.tools.contracts import ToolContractError
+        from services.governed_tools import governed_hive_tool
+
+        try:
+            return await governed_hive_tool(
+                call.name,
+                dict(call.arguments),
+                model_call=model_call,
+                container=container,
+                effect_scope=scope,
+            )
+        except ToolContractError as exc:
+            # Admission refused before any provider effect: report the typed
+            # refusal to the strategy rather than falling back to a raw call.
+            # Identity/admission errors from the model sub-effect keep
+            # propagating exactly as the raw dispatcher's did.
+            return f"Error: {exc}"
 
     return ToolCallExecutor(execute)
