@@ -127,6 +127,21 @@ def required_permission(method: str, path: str) -> str | None:
         and _parts[4] == "home"
     ):
         return None
+    # Workspace Attention (#1049): defer/dismiss is preference evidence on
+    # the read projection — same posture as Home adaptive dismiss. Routes
+    # require dags.write (matching GET /attention and /v1/hitl) and
+    # membership themselves; a workspaces.write gate here would refuse
+    # sessions that can already read Attention and answer HITL, and would
+    # leave the route-level scope check unreachable.
+    if (
+        method in {"POST", "DELETE"}
+        and len(_parts) >= 6
+        and _parts[1] == "v1"
+        and _parts[2] == "workspaces"
+        and _parts[4] == "attention"
+        and _parts[5] == "dismiss"
+    ):
+        return None
     if method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
         return None
     if method == "GET" and (path == "/v1/eval-judge" or path.startswith("/v1/eval-judge/")):
