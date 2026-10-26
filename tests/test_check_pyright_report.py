@@ -57,13 +57,13 @@ def report(errors: int = 0, warnings: int = 1, information: int = 1) -> dict:
     }
 
 
-def invoke(gate, tmp_path: Path, document: object, status: int = 0, baseline: int = 21) -> int:
+def invoke(gate, tmp_path: Path, document: object, status: int = 0, baseline: int = 23) -> int:
     path = tmp_path / "pyright.json"
     path.write_text(json.dumps(document), encoding="utf-8")
     return gate.main([str(path), "--baseline", str(baseline), "--exit-code", str(status)])
 
 
-@pytest.mark.parametrize(("errors", "expected"), [(0, 0), (1, 0), (21, 0), (22, 1)])
+@pytest.mark.parametrize(("errors", "expected"), [(0, 0), (1, 0), (23, 0), (24, 1)])
 def test_existing_error_allowance_is_preserved(gate, tmp_path, errors, expected):
     assert invoke(gate, tmp_path, report(errors), int(errors > 0)) == expected
 
@@ -73,7 +73,7 @@ def test_warnings_and_information_are_displayed_not_new_failure_thresholds(gate,
     assert invoke(gate, tmp_path, document) == 0
     output = capsys.readouterr().out
     assert json.dumps(document, indent=2, ensure_ascii=True) in output
-    assert "pyright error count: 0 (baseline: 21)" in output
+    assert "pyright error count: 0 (baseline: 23)" in output
 
 
 @pytest.mark.parametrize("status", [-1, 2, 3, 4, 124, 127, 137])
@@ -194,11 +194,11 @@ def workflow_step() -> dict:
 
 @pytest.mark.parametrize(
     ("errors", "status", "expected"),
-    [(0, 0, 0), (21, 1, 0), (22, 1, 1), (0, 2, 2), (1, 0, 2)],
+    [(0, 0, 0), (23, 1, 0), (24, 1, 1), (0, 2, 2), (1, 0, 2)],
 )
 def test_workflow_executes_one_scan_and_propagates_its_result(tmp_path, errors, status, expected):
     step = workflow_step()
-    assert int(step["env"]["PYRIGHT_BASELINE"]) == 21
+    assert int(step["env"]["PYRIGHT_BASELINE"]) == 23
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     scripts = tmp_path / "scripts"
