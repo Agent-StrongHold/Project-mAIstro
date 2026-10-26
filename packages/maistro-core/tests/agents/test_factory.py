@@ -784,3 +784,32 @@ class TestCreateAgentsGovernedPath:
         agents = await create_agents(**kwargs)
 
         assert isinstance(agents["scribe"]._llm, GovernedLLMClient)
+
+
+class TestCreateAgentsAuditWiring:
+    """#847: the canonical audit trail reaches every constructed Agent."""
+
+    @pytest.fixture(autouse=True)
+    def _preamble(self, tmp_path: Path) -> None:
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+
+    async def test_audit_log_passed_to_every_agent(self, tmp_path: Path) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        audit_log = InMemoryAuditLog()
+        kwargs = _create_agents_kwargs(tmp_path, audit_log=audit_log)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is audit_log for agent in agents.values())
+
+    async def test_audit_log_defaults_to_none(self, tmp_path: Path) -> None:
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        kwargs = _create_agents_kwargs(tmp_path)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is None for agent in agents.values())
