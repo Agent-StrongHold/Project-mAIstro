@@ -49,6 +49,22 @@ class TestProjectsAuthorizationScope:
         assert required_permission("POST", "/v1/projects/webhooks/external-build") is None
         assert required_permission("POST", "/v1/projects/webhooks/external-build/") is None
 
+    def test_unprivileged_session_cannot_mutate_projects(self, authed_client: Any) -> None:
+        """Live-middleware proof: a session with no assigned or elevated
+        permissions is denied at the AuthMiddleware boundary, not in-route
+        (review follow-up: exercise the endpoints without the admin fixture)."""
+        for method, path in (
+            ("POST", "/v1/projects"),
+            ("POST", "/v1/projects/proj-1/scan"),
+            ("POST", "/v1/projects/proj-1/deploy"),
+            ("DELETE", "/v1/projects/proj-1"),
+        ):
+            response = authed_client.request(method, path, json={})
+            assert response.status_code == 403, (method, path, response.status_code)
+            assert response.json() == {
+                "detail": "Permission 'projects.write' required. Elevate to proceed."
+            }
+
 
 class TestTheProjectsScanActuallyScans:
     """Behavioral coverage for POST /v1/projects/{project_id}/scan (scan contract)."""
