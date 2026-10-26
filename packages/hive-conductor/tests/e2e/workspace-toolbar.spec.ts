@@ -47,9 +47,21 @@ test.afterAll(async () => {
 test("the Simple/Power toggle is gone, not silently inert", async () => {
   // The hamburger/drawer only render at narrow widths (index.css, 900px);
   // at desktop width the button is display:none and never clickable.
+  // Land on /home directly with restore off so DefaultLandingRedirect cannot
+  // steer admin into /chat (admin cannot use chat; prior suites may have
+  // written that preference on the shared profile).
+  await page.request.put("/v1/profile", {
+    data: {
+      preferences: {
+        workspace_default_landing: "/home",
+        workspace_restore_aggressiveness: "off",
+      },
+    },
+  });
+  await page.evaluate(() => window.localStorage.removeItem("hive_last_surface"));
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Open menu", exact: true }).click();
+  await page.goto("/home", { waitUntil: "domcontentloaded" });
+  await page.locator("button.hamburger[aria-label='Open menu']").click();
   const drawer = page.locator(".drawer.open");
   await expect(drawer).toBeVisible({ timeout: 15000 });
   // Narrowly the retired control's own markup, not the unrelated light/dark
