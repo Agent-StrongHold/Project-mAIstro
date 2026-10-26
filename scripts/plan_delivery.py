@@ -27,21 +27,25 @@ class PlanError(ValueError):
 
 
 def require(condition: bool, message: str) -> None:
+    """Raise PlanError when a required condition is false."""
     if not condition:
         raise PlanError(message)
 
 
 def text(value: Any, name: str) -> str:
+    """Validate and return a non-empty text value."""
     require(isinstance(value, str) and bool(value.strip()), f"{name}: nonempty text required")
     return str(value)
 
 
 def positive(value: Any, name: str, *, zero: bool = False) -> int:
+    """Validate and return a non-negative/positive integer."""
     require(type(value) is int and value >= (0 if zero else 1), f"{name}: invalid integer")
     return int(value)
 
 
 def strings(value: Any, name: str, *, nonempty: bool = False) -> list[str]:
+    """Validate and return a list of unique text values."""
     require(isinstance(value, list), f"{name}: list required")
     result = [text(item, name) for item in value]
     require(len(set(result)) == len(result), f"{name}: duplicate entries")
@@ -50,6 +54,7 @@ def strings(value: Any, name: str, *, nonempty: bool = False) -> list[str]:
 
 
 def timestamp(value: Any) -> datetime:
+    """Parse a timezone-aware UTC timestamp."""
     try:
         result = datetime.fromisoformat(text(value, "observed_at").replace("Z", "+00:00"))
     except ValueError as exc:
@@ -59,6 +64,7 @@ def timestamp(value: Any) -> datetime:
 
 
 def scope_path(value: str) -> str:
+    """Validate and canonicalize a repository-relative path."""
     path = PurePosixPath(value)
     require(
         not path.is_absolute()
@@ -73,6 +79,7 @@ def scope_path(value: str) -> str:
 
 
 def scopes_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Return whether two scopes share paths or resources."""
     if set(left["resources"]) & set(right["resources"]):
         return True
     return any(
@@ -83,12 +90,14 @@ def scopes_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def validate_scope(row: dict[str, Any]) -> None:
+    """Validate and canonicalize a task or reservation scope."""
     row["paths"] = [scope_path(p) for p in strings(row.get("paths"), "paths")]
     strings(row.get("resources"), "resources")
     require(bool(row["paths"] or row["resources"]), "an explicit file/resource scope is required")
 
 
 def task_map(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate tasks and return them keyed by id."""
     require(isinstance(snapshot.get("tasks"), list) and bool(snapshot["tasks"]), "tasks required")
     result: dict[str, dict[str, Any]] = {}
     for original in snapshot["tasks"]:
@@ -147,6 +156,7 @@ def evidenced(row: dict[str, Any], base_sha: str) -> bool:
 
 
 def reservations(snapshot: dict[str, Any], tasks: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate ownership reservations."""
     require(isinstance(snapshot.get("reservations"), list), "reservations must be a list")
     result = []
     owners = set()
@@ -169,6 +179,7 @@ def reservations(snapshot: dict[str, Any], tasks: dict[str, Any]) -> list[dict[s
 def refresh_reasons(
     snapshot: dict[str, Any], current_sha: str, now: datetime, max_age: int
 ) -> list[str]:
+    """Return reasons the snapshot must be refreshed."""
     require(
         type(snapshot.get("version")) is int and snapshot["version"] == 1,
         "unsupported snapshot version",
@@ -192,6 +203,7 @@ def refresh_reasons(
 
 
 def issue_states(snapshot: dict[str, Any], tasks: dict[str, Any]) -> dict[int, str]:
+    """Validate and return issue states."""
     require(isinstance(snapshot.get("issues"), list), "issues required")
     result = {}
     for row in snapshot["issues"]:
@@ -207,6 +219,7 @@ def issue_states(snapshot: dict[str, Any], tasks: dict[str, Any]) -> dict[int, s
 def downstream(
     tasks: dict[str, Any], order: list[str], done: set[str]
 ) -> tuple[dict[str, int], list[str]]:
+    """Compute longest dependency chain and its path."""
     children: dict[str, list[str]] = {key: [] for key in tasks}
     for key, row in tasks.items():
         for parent in row["depends_on"]:
@@ -230,6 +243,7 @@ def downstream(
 def recommendation(
     row: dict[str, Any], done: set[str], held: list[dict[str, Any]]
 ) -> dict[str, Any]:
+    """Build a recommendation for a pending task."""
     owners = [r["owner"] for r in held if row["id"] in r["tasks"]]
     conflicts = [r["owner"] for r in held if r["owner"] not in owners and scopes_overlap(row, r)]
     blockers = [*row["external_blockers"], *[d for d in row["depends_on"] if d not in done]]
@@ -251,6 +265,7 @@ def recommendation(
 def select_frontier(
     frontier: list[dict[str, Any]], tasks: dict[str, Any], held: list[dict[str, Any]], limit: int
 ) -> None:
+    """Select a bounded, non-overlapping frontier."""
     available = max(0, limit - sum(r["active"] for r in held))
     selected: list[dict[str, Any]] = []
     active_owners = {r["owner"] for r in held if r["active"]}
@@ -274,6 +289,7 @@ def select_frontier(
 def plan(
     snapshot: dict[str, Any], *, current_sha: str, now: datetime, max_age: int = 900, wip: int = 3
 ) -> dict[str, Any]:
+    """Build a delivery plan from a reviewed snapshot."""
     positive(wip, "wip")
     positive(max_age, "max_age")
     refresh = refresh_reasons(snapshot, current_sha, now, max_age)
@@ -337,6 +353,7 @@ def plan(
 
 
 def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build an object rejecting duplicate JSON keys."""
     result: dict[str, Any] = {}
     for key, value in pairs:
         require(key not in result, f"duplicate JSON key: {key}")
@@ -345,6 +362,7 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for the delivery planner."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path)
     parser.add_argument("--current-sha", required=True, help="freshly fetched develop SHA")

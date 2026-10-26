@@ -1,7 +1,7 @@
 {
   "version": 1,
   "repository": "Agent-StrongHold/Project-mAIstro",
-  "base_sha": "20e6cd4a7f8b57273fa090b5afe9f2c39a9fb923",
+  "base_sha": "20e6cd4a7f8b57273fa090b5afe9f2c39a9fb923", "_devskim": "devskim: ignore DS173237 -- git commit SHA, not a credential",
   "observed_at": "2026-09-27T07:48:00Z",
   "coverage": {"open_prs_complete": false, "branches_complete": false, "issue_comments_complete": false},
   "issues": [{"number":62,"state":"open"},{"number":66,"state":"open"},{"number":76,"state":"open"},{"number":98,"state":"open"},{"number":100,"state":"open"},{"number":103,"state":"open"},{"number":286,"state":"open"},{"number":374,"state":"open"},{"number":805,"state":"open"},{"number":806,"state":"open"},{"number":1047,"state":"open"},{"number":1099,"state":"open"},{"number":1110,"state":"open"},{"number":1133,"state":"open"},{"number":1152,"state":"open"},{"number":1175,"state":"open"},{"number":1182,"state":"open"},{"number":1196,"state":"open"},{"number":1199,"state":"open"},{"number":1204,"state":"open"},{"number":1572,"state":"open"}],
