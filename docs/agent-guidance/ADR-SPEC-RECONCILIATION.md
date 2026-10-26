@@ -3,8 +3,8 @@
 **Audit coverage** (exact-filename accounting against this branch's tree)
 
 - ADR decision files (`docs/adr/*.md`, excluding `ADR-INDEX.md`, `ADR-000-template.md`, `DECISION-BACKLOG.md`, `OUT-OF-SCOPE.md`): **215 tracked; 200 domain-indexed**
-- SPEC files (`docs/specs/*.md`, excluding `README.md`): **227 tracked; 213 domain-indexed**
-- The audit snapshot itself covered 200/200 ADR decision files and 213/213 SPEC files with 0 missing. Fifteen ADRs and fourteen SPECs landed on `develop` after that snapshot (all present at this branch's base), so the corpus outgrew the audit as written. They are accounted for — enumerated with their verbatim front-matter status under **Post-snapshot arrivals** below — but are not yet folded into their domain indexes. Folding them in is the immediate next action before any "fully indexed" claim is restored.
+- SPEC files (`docs/specs/*.md`, excluding `README.md`): **228 tracked; 213 domain-indexed**
+- The audit snapshot itself covered 200/200 ADR decision files and 213/213 SPEC files with 0 missing. Fifteen ADRs and fifteen SPECs landed on `develop` after that snapshot (all present at this branch's base), so the corpus outgrew the audit as written. They are accounted for — enumerated with their verbatim front-matter status under **Post-snapshot arrivals** below — but are not yet folded into their domain indexes. Folding them in is the immediate next action before any "fully indexed" claim is restored.
 
 ## Highest-priority finding: canonical architecture is under-evidenced
 
@@ -145,7 +145,7 @@ ADR decision files (15):
 - [ADR-104](../adr/ADR-104-extension-context-least-authority.md) — status: Accepted
 - [ADR-105](../adr/ADR-105-provider-adapter-sdk.md) — status: Accepted
 
-SPEC files (14):
+SPEC files (15):
 
 - [SPEC-092826-a774](../specs/SPEC-092826-a774-creative-brief-contract.md) — status: AC
 - [SPEC-092826-a780](../specs/SPEC-092826-a780-versioned-creative-artifact-state.md) — status: AC
@@ -158,6 +158,7 @@ SPEC files (14):
 - [SPEC-100126-c041](../specs/SPEC-100126-c041-workspace-cutover-phase-0-contract.md) — status: Proposed
 - [SPEC-100426-b103](../specs/SPEC-100426-b103-knowledge-stage-ladder.md) — status: Accepted
 - [SPEC-100826-c0e1](../specs/SPEC-100826-c0e1-coin-ledger-billing-identity.md) — status: AC
+- [SPEC-102426-976a](../specs/SPEC-102426-976a-extension-telemetry-attribution.md) — status: Accepted
 - [SPEC-282](../specs/SPEC-282-self-generated-curriculum.md) — status: Proposed
 - [SPEC-283](../specs/SPEC-283-learning-lifecycle.md) — status: Accepted
 - [SPEC-284](../specs/SPEC-284-provider-adapter-sdk.md) — status: Implemented
