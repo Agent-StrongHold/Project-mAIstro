@@ -31,8 +31,9 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run
+from maistro.runs.model import CancellationCause
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
+from maistro.runs.store import ActiveAttemptExists, RunIntegrityError
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
@@ -248,19 +249,73 @@ async def test_reclaim_reports_an_attempt_something_else_already_settled() -> No
     persisted = await store.get(record.run_id)
     assert persisted is not None
     assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+
+
+async def test_graph_reclaim_persists_recovered_cause_on_canonical_row() -> None:
+    """P3a: Graph reclaim must not drop RECOVERED via generic transition_attempt."""
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=1)
+    )
+    assert attempt.execution_lease is not None
+    after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+
+    reclaimed = await execution_store.reclaim_expired_attempts(now=after)
+
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.status is AttemptStatus.CANCELLED
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    assert canonical.model_dump(mode="json")["cancellation_cause"] == "recovered"
+
+
+async def test_graph_reclaim_does_not_relabel_a_requested_cancellation() -> None:
+    """A requested CANCELLED winner must keep unknown/requested cause, not RECOVERED."""
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await run_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    await run_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="user cancelled",
+    )
+    after = attempt.execution_lease.expires_at + timedelta(days=1)
+
+    reclaimed = await execution_store.reclaim_expired_attempts(now=after)
+
+    assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.status is AttemptStatus.CANCELLED
+    assert canonical.cancellation_cause is None
+    assert canonical.error == "user cancelled"
 
 
 class _FenceRaceRunStore(InMemoryRunStore):
-    """Settles the Attempt and then reports the fence, like a lost race does."""
+    """Another recovery wins the exact-ID reclaim; this caller loses the ack."""
 
     race_once = False
 
-    async def transition_attempt(self, attempt_id: str, target: Any, **kwargs: Any) -> Any:
+    async def reclaim_expired_attempt(self, attempt_id: str, *, now: Any = None) -> Any:
         if self.race_once:
             self.race_once = False
-            await super().transition_attempt(attempt_id, target, **kwargs)
-            raise StaleExecutionFence("another recovery settled this Attempt first")
-        return await super().transition_attempt(attempt_id, target, **kwargs)
+            await super().reclaim_expired_attempt(attempt_id, now=now)
+            return None
+        return await super().reclaim_expired_attempt(attempt_id, now=now)
 
 
 async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -> None:
@@ -306,6 +361,7 @@ async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -
 
     assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
     assert reclaimed[0].status is AttemptStatus.CANCELLED
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
 
 
 # --- run and node-run transitions through the canonical store --------------
