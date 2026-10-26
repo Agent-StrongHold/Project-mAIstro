@@ -4840,6 +4840,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspace_id}/attention/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Workspace Attention
+         * @description Defer/dismiss one Attention source id for this Workspace (#1049).
+         */
+        post: operations["dismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_post"];
+        /**
+         * Undismiss Workspace Attention
+         * @description Clear a defer/dismiss preference so the item can surface again.
+         */
+        delete: operations["undismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/workspaces/{workspace_id}/feedback": {
         parameters: {
             query?: never;
@@ -5289,6 +5313,19 @@ export interface components {
              * @default []
              */
             allowed_tools: string[];
+        };
+        /** AttentionDismissBody */
+        AttentionDismissBody: {
+            /**
+             * Action
+             * @default dismiss
+             * @enum {string}
+             */
+            action: "dismiss" | "defer";
+            /** Sourceid */
+            sourceId: string;
+            /** Sourcekind */
+            sourceKind: string;
         };
         /**
          * AuditEntry
@@ -16692,6 +16729,79 @@ export interface operations {
     get_workspace_attention_v1_workspaces__workspace_id__attention_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttentionDismissBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_delete: {
+        parameters: {
+            query: {
+                sourceKind: string;
+                sourceId: string;
+            };
             header?: never;
             path: {
                 workspace_id: string;
