@@ -29,7 +29,7 @@ class NodeKind(StrEnum):
     INTEREST = "interest"
     PREFERENCE = "preference"
     SKILL = "skill"
-    TODO = "todo"
+    TODO = "todo"  # DevSkim: ignore DS176209 until 2027-12-31 — ontology enum member, not a work marker
     MOOD = "mood"
 
 
