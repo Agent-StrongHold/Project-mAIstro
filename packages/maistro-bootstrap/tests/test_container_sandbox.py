@@ -138,7 +138,7 @@ def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> N
         assert mode == "none"
 
         sb.write_file("probe.py", _EGRESS_PROBE)
-        out = sb.run_command("python probe.py", timeout=120)
+        out = sb.run_argv(["python", "probe.py"], timeout=120)
 
     assert "CONNECTED" not in out, f"candidate reached a network: {out}"
     assert "DNS RESOLVED" not in out, f"candidate resolved DNS: {out}"
