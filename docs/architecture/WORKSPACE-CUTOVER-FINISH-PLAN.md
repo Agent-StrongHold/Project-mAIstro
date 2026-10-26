@@ -10,10 +10,14 @@ lane owns, without inventing second lifecycle stores, and without closing
 epics from partial slices.
 
 **Architecture:** Workspaces surfaces are **projections** over canonical
-Goal/Run/HITL/Approval/capability/session services. The retirement ledger
-(`quality/workspace-retirement.json`) only shrinks when a replacement AC is
-proven in the same PR that deletes the asset. Contract:
-[`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md).
+Goal/Run/HITL/Approval/capability/session services. When a replacement AC is
+proven, the same PR deletes the asset and marks the ledger row
+`deleted: true` — **retain the row**. Do not drop a tracked path (or flip it
+to KEEP) unless an `untrack::<path>` grant has already landed at the trusted
+base (`scripts/check-workspace-retirement.py`). Replacement AC evidence does
+not authorize untracking. Contract:
+[`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md),
+[`WORKSPACE-RETIREMENT-DELETE-MAP.md`](WORKSPACE-RETIREMENT-DELETE-MAP.md).
 
 **Tech stack:** hive-conductor FastAPI + React (generated OpenAPI client),
 `maistro.goals` / Run inspection seams, Playwright surface-truth, pytest +
@@ -33,7 +37,7 @@ proven in the same PR that deletes the asset. Contract:
 | Treated #2275 / #2273 / #2278 as greenfield | Shells already ship on `develop` (Evolution unregistered, Capabilities + Approvals routes, e2e present). Remaining work is **closeout + deletes**, not rebuilds. |
 | “Waves” without file-level PR bites | Each open issue → ordered **PRs** with exact files, tests, and exit checks. |
 | Implied #2326 closes #1049/#1050/#1822/#65/#1036 | #2326 is **slice evidence only**. Issues stay open until every AC has a linked PR and a checked box. |
-| Bundled #804 / #1051 / #82 into the same finish lane | Those are **separate tracks** with hard P0 / child-issue gates. Do not start them from this plan’s Track A–C queue. |
+| Bundled #804 / #1051 / #82 into the same finish lane | #804 is its own gated track. **#82 is v1.0** (after #65). **#1051 is deferred v1.1** per [`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md) §9 — not on the cutover critical path. |
 | Calendar sequencing | Difficulty named by **subsystem + invasiveness + gate**, not days. |
 
 ---
@@ -43,7 +47,7 @@ proven in the same PR that deletes the asset. Contract:
 - Branch: `cursor/<slice>-8aa9` from current `origin/develop` (after #2326 merges).
 - Base every PR on `develop`. Squash merge. Restack before claiming green.
 - Never terminalize Goal/Run/HITL from Home/Attention/Chat UI code — delegate to canonical owners.
-- Same PR that deletes a ledger page also: removes `App.tsx` route + nav, updates `route-inventory.md`, marks/removes ledger entry, adds e2e that old URL does not revive the module.
+- Same PR that deletes a ledger page also: removes `App.tsx` route + nav, updates `route-inventory.md`, sets the ledger row `deleted: true` (**retain the row**; do not untrack without a base-landed `untrack::<path>` grant), adds e2e that old URL does not revive the module.
 - CHANGELOG `(#NNNN)`; inventory note if pytest count moves; OpenAPI regen if routes change (`dump-hive-openapi.py` → `gen:api`).
 - No day/week estimates in PRs or issue comments.
 
@@ -92,9 +96,11 @@ Track 0  Land #2326
    │
    ├─ Track D  Persistent Agent (#2276, #2277, #805, #806 → #804)              ◄── HARD GATE: P0.5/7–10
    │
-   ├─ Track E  Proactive + backlog (#1051, #100/#102 → #82)                    ◄── GATE: #1049 + #65
+   ├─ Track E  Backlog epic (#100/#102 → #82 MERGE)                            ◄── GATE: #65; v1.0 blocker
    │
-   └─ Track F  Epic + cutover exit (#1046, ledger empty, KNOWN-GAPS)
+   ├─ Track F  Epic + cutover exit (#1046, overdue DELETE clear, KNOWN-GAPS)
+   │
+   └─ Deferred v1.1  Proactive curation (#1051)                               ◄── NOT v1.0; §9 deferral
 ```
 
 ---
@@ -169,7 +175,7 @@ Track 0  Land #2326
 - Modify: `packages/hive-conductor/frontend/src/pages/Attention.tsx`
 - Delete: `pages/MessageBoard.tsx`, `pages/OptimizationInbox.tsx`
 - Modify: `App.tsx`, `AppShell.tsx` (remove `/messages`, `/optimizer` product nav; redirect old URLs to `/attention` **without** claiming MessageBoard still exists)
-- Modify: `quality/workspace-retirement.json` (MERGE rows → deleted)
+- Modify: `quality/workspace-retirement.json` (MERGE rows → `deleted: true`; **retain rows**)
 - Modify: `packages/hive-conductor/docs/route-inventory.md`
 - Test: attention projection unit tests + e2e Attention surfaces former optimizer/message classes
 
@@ -179,7 +185,7 @@ Track 0  Land #2326
 - [ ] Failing tests: escalation requires evidence ≠ elapsed time alone; reason recorded
 - [ ] Implement projection + UI indicators for rising/valuable Waiting
 - [ ] Multi-Workspace bleed test
-- [ ] Delete pages + ledger shrink + inventory + e2e old URLs
+- [ ] Delete pages; mark ledger rows `deleted: true` (do not drop rows); inventory + e2e old URLs
 - [ ] Evidence comment; close #1049
 
 **Invasiveness:** high (UI MERGE + projection model + ledger).
@@ -253,7 +259,7 @@ Track 0  Land #2326
 **Files:**
 - Delete: `pages/Agents.tsx`, `MCP.tsx`, `Skills.tsx`, `Topology.tsx`
 - Modify: `App.tsx` (remove routes; deep links → `/capabilities` or 404-without-module)
-- Modify: retirement ledger + route-inventory
+- Modify: retirement ledger (`deleted: true` on those rows; retain entries) + route-inventory
 - Test: e2e Capabilities enable/discover; foreign Workspace refuse; old `/agents` etc. do not load legacy modules
 
 - [ ] AC-1…6 evidence; close [#2273](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2273)
@@ -304,29 +310,42 @@ Write a **separate** implementation plan before D3/D4 (too large for this doc’
 
 ---
 
-# Track E — Proactive + backlog epic
+# Track E — Backlog epic (#82) — v1.0 critical path
 
-**Entry:** #1049 closed (Waiting classes) + #65 closed (Goal inspection) + #1047 already closed.
+**Entry:** #65 closed (Goal inspection). `ROADMAP.md` lists #82 as a v1.0 release
+blocker. Do **not** wait on #1051.
 
 | Order | Issue | Notes |
 |---|---|---|
-| E1 | [#1051](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1051) | Bounded discovery Runs; scout/curator; budgets; Home/Waiting only; no interrupt-by-default |
-| E2 | [#100](https://github.com/Agent-StrongHold/Project-mAIstro/issues/100), [#102](https://github.com/Agent-StrongHold/Project-mAIstro/issues/102) | Remaining #82 children (claim/lease; BACKLOG.md authority cutover) |
-| E3 | MERGE Missions/WorkItems under [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82) | Ledger MERGE; same delete rules as A3 |
-| E4 | Close #82 | After children + MERGE |
+| E1 | [#100](https://github.com/Agent-StrongHold/Project-mAIstro/issues/100), [#102](https://github.com/Agent-StrongHold/Project-mAIstro/issues/102) | Remaining #82 children (claim/lease; BACKLOG.md authority cutover) |
+| E2 | MERGE Missions/WorkItems under [#82](https://github.com/Agent-StrongHold/Project-mAIstro/issues/82) | Ledger MERGE; same delete rules as A3 (`deleted: true`, retain rows) |
+| E3 | Close #82 | After children + MERGE |
 
-Separate implementation plan required for E1 and E2.
+Separate implementation plan required for E1/E2.
+
+---
+
+# Deferred v1.1 — Proactive curation (#1051)
+
+**Not on the v1.0 cutover critical path.** Ratified in
+[`WORKSPACE-CUTOVER-PLAN.md`](WORKSPACE-CUTOVER-PLAN.md) §9 (Phase 1 step 7).
+
+| Issue | Notes |
+|---|---|
+| [#1051](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1051) | Bounded discovery Runs; scout/curator; budgets; Home/Waiting only; no interrupt-by-default. Soft deps: #1049 Waiting classes + #1047 user-model (already closed) — schedule after v1.0 tag, not before #82 / cutover exit. |
+
+Do not block Track E, Track F, or #1046 release closeout on #1051.
 
 ---
 
 # Track F — Epic + cutover exit
 
-**Entry:** Tracks A–C done; D/E either done or explicitly deferred with owners on milestone #7.
+**Entry:** Tracks A–C done; Track E (#82) done; Track D either done or explicitly deferred with owners on milestone #7. **#1051 stays deferred v1.1** — do not hold this exit on it.
 
-- [ ] Close [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046) only when #1049–#1051 (+ honesty children you kept in-scope) are closed; update epic checkbox list (still lists #776/#1047/#1048 as open in body — sync with actual closed state)
-- [ ] Retirement ledger: no overdue DELETE without deferral owner
+- [ ] Close [#1046](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1046) when v1.0 children (#1048–#1050, #776/#1047, honesty children kept in-scope, and #82 via Track E) are closed; **exclude #1051** (v1.1 per §9); update epic checkbox list (still lists #776/#1047/#1048 as open in body — sync with actual closed state; mark #1051 deferred)
+- [ ] Retirement ledger: no overdue DELETE without deferral owner; deleted assets keep `deleted: true` rows (untrack only with base-landed grant)
 - [ ] `KNOWN-GAPS.md` no longer accepts Conductor in-memory Workspace state
-- [ ] Milestone [#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7) / initiative [#449](https://github.com/Agent-StrongHold/Project-mAIstro/issues/449): close or re-scope leftovers to v1.1/v1.2 with named owners (#2275 restore → #51)
+- [ ] Milestone [#7](https://github.com/Agent-StrongHold/Project-mAIstro/issues/7) / initiative [#449](https://github.com/Agent-StrongHold/Project-mAIstro/issues/449): close or re-scope leftovers to v1.1/v1.2 with named owners (#2275 restore → #51; **#1051 → v1.1**)
 
 ---
 
@@ -341,7 +360,9 @@ Separate implementation plan required for E1 and E2.
 | 5 | **A3** #1049 MERGE | First large product PR |
 | 6 | **A4** then **A5** | Inspection authority → approvals resume e2e |
 | 7 | **B3** / **C\*** | Burn-down + CONNECT honesty |
-| — | **D/E** | Only after gates |
+| 8 | **E** (#82) | After #65; v1.0 blocker — before cutover exit |
+| — | **D** | Only after P0 gates |
+| — | **#1051** | Deferred v1.1 — off this queue |
 
 ---
 
@@ -351,5 +372,7 @@ Separate implementation plan required for E1 and E2.
 - Evolution restore (v1.2 / #51)
 - Building A2UI (#2323)
 - Closing #1049/#1050/#1822/#65/#1036 from #2326 alone
-- Starting #805/#806/#1051 without their entry gates
+- Starting #805/#806 without their entry gates
+- Pulling #1051 onto the v1.0 critical path or ahead of #82 / cutover exit
+- Dropping retirement ledger rows without a base-landed `untrack::<path>` grant
 - Silent learned-landing redirect without an explicit product decision in A2
