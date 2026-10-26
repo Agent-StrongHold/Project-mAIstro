@@ -32,6 +32,15 @@ history:
 **Tranche:** T1  
 **Depends on:** ADR-002
 
+> **Amendment (2026-10-19, #847):** the `tools_allowed`/`write_scopes`
+> fields and the `DEFAULT_TOOLS` map this ADR specced were removed from
+> `AgentSpec`. They were auto-populated declarations with no production
+> reader — security-looking configuration that never enforced anything. The
+> effective capability/write envelope is the host-owned intersection at the
+> governed Invocation boundary (`AgentIdentity.tools` -> the Agent allowlist
+> gate -> Sentinel), never a spec-side declaration. Everything else in this
+> ADR stands.
+
 ---
 
 ## Context

@@ -92,7 +92,7 @@ def test_the_adapter_never_constructs_a_docker_command(recorder: _Recording, san
     implementation beside the canonical selector. Today the only host-side
     subprocesses are the credential-boundary tar pipes."""
     with sandbox:
-        sandbox.run_command("echo hi")
+        sandbox.run_argv(["echo", "hi"])
         sandbox.read_file("hello.py")
         sandbox.write_file("new.py", "x = 1\n")
         sandbox.diff()

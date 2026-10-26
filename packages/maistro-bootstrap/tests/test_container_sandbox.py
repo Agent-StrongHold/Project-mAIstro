@@ -246,7 +246,7 @@ class TestTheBuilderSandboxShape:
         with ContainerBuilderSandbox(_repo(tmp_path), selector=_selector(backend)) as sb:
             assert sb.run_argv_status(["pytest", "-q"], timeout=900) == (1, "2 failed, 40 passed")
             assert sb.run_argv(["pytest", "-q"]) == "2 failed, 40 passed"
-            sb.run_command("python probe.py")
+            sb.run_argv(["python", "probe.py"])
             sb.diff()
             sb.search("EDITED")
 
@@ -254,7 +254,7 @@ class TestTheBuilderSandboxShape:
         timeouts = [timeout for _argv, timeout in backend.execs]
         assert argvs[0] == ["pytest", "-q"]
         assert argvs[1] == ["pytest", "-q"]
-        assert argvs[2] == ["sh", "-c", "python probe.py"]
+        assert argvs[2] == ["python", "probe.py"]
         assert argvs[3][:3] == ["git", "-C", "/workspace"]
         assert argvs[4][:3] == ["grep", "-rl", "--include"]
         assert timeouts[0] == 900
@@ -368,7 +368,7 @@ class TestOnAKataHost:
     def test_agent_commands_cannot_reach_any_network_by_default(self, tmp_path: Path) -> None:
         with ContainerBuilderSandbox(_repo(tmp_path)) as sb:
             sb.write_file("probe.py", _EGRESS_PROBE)
-            out = sb.run_command("python probe.py", timeout=120)
+            out = sb.run_argv(["python", "probe.py"], timeout=120)
 
         assert "CONNECTED" not in out, f"candidate reached a network: {out}"
         assert "DNS RESOLVED" not in out, f"candidate resolved DNS: {out}"
