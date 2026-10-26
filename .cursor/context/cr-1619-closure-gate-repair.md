@@ -387,3 +387,71 @@ not a check failure. This round, independently re-executed and extended:
   change. The `novel`-vs-#985 identity decision likewise remains a GitHub
   product decision (no in-repo ADR names it); the registry implements
   `novel` as a distinct pack per #1619's ticked criterion.
+
+## Round 10 verification/repair record (2026-10-26, merge of origin/develop 10f872fa7 → 5747da248 + CI-failure triage)
+
+Verifier/writer round. Develop advanced one commit past the round-9 base 292ff7a00:
+10f872fa7 ([M1][#1845] admission replay-generation classifier leaf, #1941). Its
+surface (admission_generation.py + 961-line contract suite, extensions/packs.py
++7, test_pack_contracts.py +14, check-reachability.py source-universe
+classification, CHANGELOG, convergence matrix, two inventory notes) is disjoint
+from this branch's 13-file maistro-design diff — verified via comm of name-only
+diffs before merging. Merged conflict-free as 5747da248;
+`git diff --numstat origin/develop -- quality/` → empty (no ledger rows lost or
+added; branch still touches no quality/ file). Branch now 20 ahead / 0 behind.
+
+The three failing CI jobs at 3a3817238 were triaged with each job's own
+invocations:
+
+- **hive-conductor-e2e-ui — network flake, not tree.** Reproduced CI-exact
+  (`docker compose -f docker-compose.test.yml --profile test up --build …`):
+  `RUN npm ci` (Dockerfile:15) failed 4/5 buildkit attempts with npm's
+  "Exit handler never called!" crash; the underlying cause was observed
+  directly in a standalone run of the same pinned image:
+  `ETIMEDOUT … registry.npmjs.org/yaml-ast-parser/-/yaml-ast-parser-0.0.43.tgz`.
+  The same command passed on retry (exit 0, "found 0 vulnerabilities"); the
+  tarball fetches HTTP 200/0.57 s from the host; the one build that got past
+  npm then hit `uv export`/PyPI exit 2 — the identical dropped-connection
+  signature round 8 recorded as "network, not tree". The frontend inputs
+  (package.json, package-lock.json, node:22-alpine digest) are byte-identical
+  to origin/develop, and e2e-ui was green in CI on this PR's earlier heads
+  (60f9bc247) with the same content — so the failure is the job's own
+  documented zero-retry registry-flake class (see the job's prepull comment),
+  not this branch's diff. Full local e2e execution remains blocked by the
+  local buildkit sandbox's lossy network; recorded honestly as not re-run to
+  completion locally.
+- **integration-scope — mechanical consequence of the above.** CI-exact scope
+  resolution at this head: required set =
+  [docker-build, hive-conductor-e2e, hive-conductor-e2e-ui, wheel-imports].
+  The aggregator fails closed whenever any required leg fails, so it inherits
+  the e2e-ui network flake. wheel-imports re-proven green locally CI-exact
+  (12 wheels built, `verify-wheel-imports.py --dist dist/ --python 3.12` →
+  all import from a clean venv, exit 0).
+- **lint-and-type-check — every tree child green; one GitHub-state step.** All
+  content steps re-run CI-exact at 5747da248: ruff pair (3558 files), mypy
+  10-package list after `uv sync --locked --all-extras` → Success 1121 files,
+  monorepo layout, merge-markers, cross-package imports, extension imports
+  (both policies), frontend-api-routes (215→250), frontend-typed-client
+  (42/120, none new), api-route-contracts (306 handlers, 0 canned),
+  deployment-claims, secret-field-labels, retired-guidance (477 files),
+  compose-secrets, compose-resources, durable-table-inventory (122 tables),
+  promotion-surface, connection-credentials, owned-store-access,
+  public-routes, shell-execution, build-context, reachability (101/1486),
+  radon (126=126), ratchet-provenance (0 violations, 55 consumers),
+  vulture CI-exact (RATCHET_BASE_REV=origin/develop) → 1248 = 1248, exit 0,
+  fix-list empty — no ledger amendment needed this round. Extension
+  scaffold/gallery steps unchanged and untouched by the merge.
+- **Closure gate re-reproduced LIVE (not from snapshots)** with the gate's own
+  invocation and a real token against today's GitHub state:
+  `check-closure-targets.py --body-file <PR 1619 body>` → exit 1, "…#1614's
+  acceptance record shows 5 of 5 registered criteria unproven…". The
+  prescribed repair was re-proven against the same live state:
+  first line `Part of #1614` → exit 0, "ok: PR body closes no issue by
+  keyword". The body edit is a GitHub mutation this lane may not perform;
+  it remains the driver's one-line action. Note the pull_request.edited
+  trigger re-runs the gate on the body edit alone — no push required.
+- Design suite 670 passed / 1 skipped; develop's admission leaf suites
+  (test_admission_generation_assessment + test_runs_admission_identity_publication)
+  135 passed; core extensions+tasks 2115 passed / 25 skipped; full
+  check-suite-inventory → 21 suites ok (develop's two new suites reconciled).
+  No test additions this round → no inventory delta.
