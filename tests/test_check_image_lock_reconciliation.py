@@ -526,6 +526,60 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
 
 
+# ------------------------------------------------- marker-split versions
+# fastmcp 4.1.3 resolves beartype per python_full_version, so the engine
+# export legitimately carries TWO pins for one name (`beartype==0.22.9 ;
+# python_full_version < '3.15'` and `beartype==0.23.1 ; python_full_version
+# >= '3.15'`). Collapsing the export to one pin per name made the hosted
+# 2026-10-24 gate fail a correct python:3.13 image that installed 0.22.9
+# because the last-emitted line said 0.23.1: the split, not the install,
+# chose that pair. Every emitted version of a split name must reconcile.
+
+# (The #1837 lane's parallel fix for the same defect was superseded by the
+# #93 resolution in the gate script: its two tuple-API parse tests and its
+# `2 marker-conditional pin(s)` OK-line phrasing assumed the pre-merge
+# `parse_expected -> tuple[set, set]` surface, which the merged gate no
+# longer has. The surviving `_SPLIT` tests below pin the merged gate's
+# lenient degradation and full-accepted-set reporting instead.)
+_SPLIT = (
+    "fastapi==0.142.2\n"
+    "beartype==0.22.9 ; python_full_version < '3.15'\n"
+    "beartype==0.23.1 ; python_full_version >= '3.15'\n"
+)
+
+
+def test_marker_split_pin_absent_from_image_still_gates_nothing(
+    gate, tmp_path, monkeypatch, capsys
+):
+    # A split name is still all-conditional: no branch of it may become a
+    # missing obligation, exactly like `pywin32` on a linux image.
+    expected = _write_expected(tmp_path, _SPLIT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+
+
+def test_version_outside_the_marker_split_fails_naming_every_branch(
+    gate, tmp_path, monkeypatch, capsys
+):
+    expected = _write_expected(tmp_path, _SPLIT)
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.24.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    # `_expected_clause` names every accepted branch of the split (the
+    # develop resolution of the duplicate fix, run 40085096483, is canonical;
+    # the clause also appends an `or`-joined form for operators).
+    assert (
+        "version mismatch     : beartype==0.24.0 (image) != "
+        "one of beartype==0.22.9, beartype==0.23.1" in out
+    )
+    # The out-of-split version is a single named mismatch — not also a
+    # confusing missing/extra pair.
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
+
+
 # The #330 regression, in the exact shape the lock produced it: beartype is
 # forked by python_full_version markers, the export lists BOTH pins, and a
 # py3.13 image correctly installs 0.22.9. The first cut of this gate keyed
