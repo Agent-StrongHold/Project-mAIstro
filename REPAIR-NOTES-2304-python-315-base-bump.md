@@ -108,3 +108,66 @@ weakening / ledger approval of a broken base / falsifying the PR's purpose).
 - `uv venv --python 3.13` (fresh managed install dir) → CPython 3.13.15 (reproduces the CI assert).
 - `docker manifest inspect python:{3.15.0-slim-bookworm, sha256:0e019bbd…}` → identical manifest lists.
 - PyPI coincurve 21.0.0 wheel inventory → cp39–cp313 only.
+
+## Re-verification round 2 (2026-10-26, head `783dc0839`) — all prior claims independently re-proven
+
+The first repair round analyzed `c5ee70aa8`; the branch has since merged develop tip
+`f52b8522b`. Re-verified everything from scratch rather than trusting the earlier
+evidence. `git diff f52b8522b..HEAD` is exactly two files: `packages/hive-conductor/Dockerfile`
+(the two `FROM` lines) and this notes file. Consequence used below: any gate failing at
+HEAD whose inputs exclude both files fails on develop tip too — it is inherited, not
+caused by the bump.
+
+Root cause 1 re-proven with the **exact pinned artifacts** (stronger than round 1's
+approximation with the host uv):
+
+- `docker run --rm -v <uv binary extracted from ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed321…> \
+  python:3.15.0-slim-bookworm@sha256:0e019bbd…` — the bumped base has **no `python3.13`**
+  (only Python 3.15.0); `uv venv --python 3.13` with a fresh `UV_PYTHON_INSTALL_DIR`
+  downloads a **managed CPython 3.13.15** → resolved `(3, 13, 15)`.
+- `(3, 13, 15) != (3, 13, 16)` fails the Dockerfile line-172 smoke
+  (`assert sys.version_info[:3] == (3, 13, 16)`), which is the exact CI failure shape of
+  `docker-build`, `hive-conductor-e2e`, `hive-conductor-e2e-ui`,
+  `Container scan + SBOM + cosign`, and `Gate C`.
+- PyPI `pypi.org/pypi/coincurve/21.0.0/json` re-fetched this round: 50 wheels,
+  cp tags `39/310/311/312/313` only — **no cp314, no cp315**. The contract cannot move
+  to 3.15 even in principle until upstream ships wheels.
+- Governing doc confirmed: `docs/security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md` lines
+  5–8 pin the image to CPython `3.13.16` and the coincurve 21.0.0 `cp313` wheels.
+
+Root cause 2 re-proven at the current head with CI's exact arguments
+(`quality.yml:2240`):
+
+- `uv run python scripts/check-image-pins.py` → exit 1, same 2 violations
+  (3.13.16-row used_by drift; unregistered 3.15.0 digest).
+- `uv run pytest tests/test_check_image_pins.py -q` → 1 failed, 37 passed;
+  the failure is `test_dunder_main_entrypoint_runs_the_real_gate`
+  (`assert [1] == [0]` — it runs the real gate), matching the CI `test` job.
+
+New in this round — the merge brought **develop-inherited** reds that do not exist in
+the round-1 analysis (which predates the `f52b8522b` merge) and are not caused by the
+bump:
+
+- `quality/workflow-inventory.json`, `.github/workflows/devskim.yml`, and `CHANGELOG.md`
+  at HEAD are byte-identical to `f52b8522b` (`git diff f52b8522b..HEAD` on each: empty).
+- `uv run python scripts/check-workflow-inventory.py` → 1 finding: the devskim row
+  declares `['pull_request','push','schedule']` but the file's actual `on:` keys are
+  `['pull_request','push','schedule','workflow_dispatch']` — `workflow_dispatch` was
+  added on develop by `44cb5ee97` without moving the inventory row.
+- `uv run python scripts/check-release-consistency.py` → 1 problem: the `CHANGELOG.md`
+  Unreleased entry "CodeQL workflow scope test expects `develop` triggers" links no
+  issue/PR — introduced by `73c065f52` on develop.
+- `Quality gate (Pillars 1–4, 7, 8)` `needs` both `quality-image-pins` and
+  `quality-workflow-inventory` (`quality.yml` ~2903): at HEAD it fails for **both**
+  reasons — one bump-caused, one develop-inherited. A maintainer fixing develop's
+  inventory row on this branch would not make the gate green, and vice versa.
+- `Coverage gate` `needs: [coverage-unit, coverage-archive, coverage-postgres]` (all
+  cancelled in the digest's run) and its combine leg re-runs the root suite that carries
+  `tests/test_check_image_pins.py` — red both upstream and, once reached, on the same
+  image-pins violation.
+
+Verdict unchanged: **NEEDS-REPAIR**. The three refusals stand, re-proven at the current
+head: the line-172 smoke is not weakened, the ledger is not made to approve a base that
+cannot build, and dependabot's commit is not reverted. The resolution decision remains
+the maintainer's (close per the #2118 precedent, or fund the 3.15 identity-contract
+migration once coincurve ships cp315 wheels).
