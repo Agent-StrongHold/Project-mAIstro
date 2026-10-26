@@ -157,8 +157,8 @@ def _userinfo_password(value: str) -> str:
     password containing a space or a `?` got past.
 
     Stopping at `/` and `#` is what keeps this from reading a query string as
-    userinfo: `http://host/p?a=b@c` cannot match, because the run cannot cross
-    the path separator to reach that `@`.
+    userinfo: a scheme URL whose path contains `?a=b@c` cannot match, because
+    the run cannot cross the path separator to reach that `@`.
     """
     match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/#]*)@", value)
     if not match:
