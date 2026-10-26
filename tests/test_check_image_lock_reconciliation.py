@@ -185,6 +185,25 @@ def test_parse_expected_empty_export_is_a_red_exit(gate, text):
         gate.parse_expected(text)
 
 
+def test_unconditional_pin_gates_presence_inside_a_version_fork(gate):
+    """If one version of a name is unconditional and another is a marked
+    alternate, the unconditional pin keeps gating presence: it applies in
+    every interpreter environment, while the marked line applies only where
+    its marker holds (line-level applicability inside a forked name — the
+    merged gate expresses this via fork evaluation, not a required/
+    conditional set split)."""
+    pins = gate.parse_expected("widgetlib==1.0\nwidgetlib==2.0 ; sys_platform == 'win32'\n")
+    required, conditional, forked = gate._classify_expected(pins, [])
+    assert not required and not conditional
+    assert {p.pin for p in forked["widgetlib"]} == {"widgetlib==1.0", "widgetlib==2.0"}
+    # The unconditional line applies everywhere — it is what gates presence.
+    linux = gate._applicable_forks(forked["widgetlib"], _image_env())
+    assert [p.pin for p in linux] == ["widgetlib==1.0"]
+    # The marked line joins it only where its marker holds.
+    win32 = gate._applicable_forks(forked["widgetlib"], _image_env(sys_platform="win32"))
+    assert [p.pin for p in win32] == ["widgetlib==1.0", "widgetlib==2.0"]
+
+
 # A lock that splits one package across environment markers exports several
 # `name==version` lines for the SAME name, each with its own marker — beartype
 # 0.22.9 for python_full_version < '3.15' and 0.23.1 for >= '3.15' in one
@@ -524,6 +543,110 @@ def test_conditional_pin_version_is_checked_when_it_ships(gate, tmp_path, monkey
     assert gate.main() == 1
     out = capsys.readouterr().out
     assert "version mismatch     : secretstorage==3.6.0 (image) != secretstorage==3.5.0" in out
+
+
+def _fork_export() -> str:
+    return "\n".join(
+        [
+            "fastapi==0.142.2",
+            "beartype==0.22.9 ; python_full_version < '3.15'",
+            "beartype==0.23.1 ; python_full_version >= '3.15'",
+        ]
+    )
+
+
+def test_resolution_fork_shipped_version_reconciles(gate, tmp_path, monkeypatch, capsys):
+    """The regression behind security.yml containers run 40093845270: the
+    engine image installs from `--require-hashes` on its own Python (3.13),
+    so the fork its interpreter chose is the locked set — beartype==0.22.9
+    while the same export also lists 0.23.1 for python >= '3.15'. The old
+    name-keyed parse kept only the last fork and red-flagged the image's
+    correct pin as a mismatch."""
+    expected = _write_expected(tmp_path, _fork_export())
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert "ships exactly the locked set" in out
+    # Reporting contract of the merged gate: without an @image-env@ line the
+    # fork degrades to the lenient rule and the OK line says so (this branch's
+    # gate counted lenient conditionals; the merged gate names the fork
+    # degradation explicitly instead).
+    assert (
+        "forks evaluated against the image interpreter's environment: no @image-env@ line — lenient"
+        in out
+    )
+
+
+def test_resolution_fork_any_locked_version_reconciles(gate, tmp_path, monkeypatch):
+    """The other side of the fork ships on a newer interpreter and must
+    reconcile just the same — fork acceptance is per-version, not first-line
+    wins."""
+    expected = _write_expected(tmp_path, _fork_export())
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.23.1")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+
+
+def test_version_outside_every_fork_is_a_mismatch(gate, tmp_path, monkeypatch, capsys):
+    """A version no fork locked is still a red mismatch — reported once, as
+    a skew naming every locked version, not as a missing+extra pair."""
+    expected = _write_expected(tmp_path, _fork_export())
+    _install_docker(monkeypatch, gate, _Docker(_dump("fastapi==0.142.2", "beartype==0.24.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert (
+        "version mismatch     : beartype==0.24.0 (image) != one of beartype==0.22.9, beartype==0.23.1"
+    ) in out
+    assert "locked, not in image" not in out
+    assert "in image, not locked" not in out
+
+
+def test_required_name_with_conditional_alternate_is_missing_only_when_absent(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """A name with one unconditional pin and one marked alternate gates
+    presence through the fork evaluation: the unconditional pin applies on
+    every interpreter, so shipping nothing is a missing pin — while the
+    marked alternate ships only where its marker holds, and the no-env
+    degradation stays lenient."""
+    expected = _write_expected(
+        tmp_path, "widgetlib==1.0\nwidgetlib==2.0 ; sys_platform == 'win32'\n"
+    )
+    # The applicable fork ships: reconciles, with the env-aware OK line.
+    dump = "\n".join(
+        [_env_line(python_full_version="3.13.16", python_version="3.13"), "widgetlib==1.0"]
+    )
+    _install_docker(monkeypatch, gate, _Docker(dump))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert (
+        "forks evaluated against the image interpreter's environment: yes"
+        in capsys.readouterr().out
+    )
+
+    # Without an env line the fork degrades to the lenient rule, so shipping
+    # the marked alternate reconciles too (this branch's original lenient
+    # contract, now scoped to the degradation case).
+    _install_docker(monkeypatch, gate, _Docker(_dump("widgetlib==2.0")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert "no @image-env@ line — lenient" in capsys.readouterr().out
+
+    # With the env line the unconditional pin gates presence: an image
+    # without the name is missing its applicable fork, by exact pin string.
+    expected2 = _write_expected(
+        tmp_path,
+        "fastapi==0.142.2\nwidgetlib==1.0\nwidgetlib==2.0 ; sys_platform == 'win32'\n",
+    )
+    _install_docker(monkeypatch, gate, _Docker("\n".join([_env_line(), "fastapi==0.142.2"])))
+    monkeypatch.setattr(sys, "argv", _argv(expected2))
+    assert gate.main() == 1
+    assert (
+        "locked, not in image : widgetlib==1.0 (marker: None) — applicable to the image interpreter"
+        in capsys.readouterr().out
+    )
 
 
 # The #330 regression, in the exact shape the lock produced it: beartype is

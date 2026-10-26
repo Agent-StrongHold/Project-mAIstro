@@ -286,22 +286,59 @@ jobs:
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
-      # The scope carries a `-r2` rotation (PR #2283, CI run 40091186336 job
-      # 120864018186): `--no-cache-filter runtime-apt` forces the apt stage to
-      # re-execute, but the scan of the freshly loaded image still reported the
-      # pre-advisory libbrotli1 1.1.0-2+b7 while the same build's own log showed
-      # deb13u1 unpacked — a stale result read out of this week-old cache scope
-      # is the only state source that can carry that layer, and it is the same
-      # replay class #795 closed at instruction level. Rotation severs every
-      # cached vertex under the old scope; a cache miss rebuilds, so the worst
-      # case is one cold build per workflow.
+      # This build reads and writes no GHA build cache. The runtime-apt
+      # stage's buildx cache key is the pinned base digest plus its RUN
+      # string — neither changes when the security mirror's answer does — so
+      # `scope=rsi-runner` keeps a pre-advisory result keyed as still-valid
+      # forever, and `--no-cache-filter` (kept below, defense in depth)
+      # forces the RUN to execute without guaranteeing the fresh result is
+      # the one the final stage binds to. That combination produced the
+      # libbrotli1 1.1.0-2+b7 phantom: three consecutive containers jobs
+      # (runs 40066333928, 40079655352, 40088280240) each executed the apt
+      # RUN fresh — their own logs unpack and set up 1.1.0-2+deb13u1 — yet
+      # the trivy step scanned an image whose dpkg state was the pre-fix
+      # b7, which no input of those builds could produce. release.yml
+      # already builds cold for the same class of reason; ci.yml's unscanned
+      # `(cached)` rsi-runner build still writes the scope, but nothing
+      # gates on it anymore. SECURITY_PATCH_KEY (per-run, consumed by the
+      # stamp the verify step below asserts) makes the stage's key unique
+      # per build even if a cache is ever re-attached here. This supersedes
+      # develop's one-shot `-r2` scope rotation (PR #2283): rotation severs
+      # the class once, detaching the scope plus the per-run stamp severs it
+      # permanently.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --no-cache-filter runtime-apt
-          --load --cache-from type=gha,scope=rsi-runner-r2
-          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
+          --build-arg SECURITY_PATCH_KEY=${{ github.run_id }}
+          --load .
+
+      # The stamp is written by the same RUN that applies the OS security
+      # patches, so its value proves WHICH execution of that stage the
+      # loaded image carries. With the cache detached above the answer must
+      # be this run; assert it anyway so any future replay mechanism fails
+      # here, loudly and attributed, instead of as a scanner-vs-build-log
+      # contradiction at the trivy step (localizing the b7 phantom took
+      # three red gate runs). The dpkg line is forensic context only.
+      - name: Verify the rsi-runner image carries this run's security-patch stage
+        run: |
+          stamp="$(docker run --rm --entrypoint cat \
+            "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            /etc/maistro-security-patch-key)"
+          echo "security-patch stamp: ${stamp} (run ${{ github.run_id }})"
+          if [ "${stamp}" != "${{ github.run_id }}" ]; then
+            echo "::error::rsi-runner image carries security-patch stamp '${stamp}', not this run (${{ github.run_id }}) — stale build-cache binding"
+            exit 1
+          fi
+          # Forensic context only: if dpkg-query fails (a future base image
+          # renamed or dropped libbrotli1), that must not fail the job — the
+          # real gate is the stamp assertion above, which exits 1 on any
+          # stale-cache binding. This swallow covers the listing's
+          # absence-of-package only, never a build or scan failure.
+          docker run --rm --entrypoint dpkg-query \
+            "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
+            -W -f='${Package} ${Version}\n' libbrotli1 || true
 
       - name: Verify live Python packages and Conductor identity contract
         run: |
