@@ -87,3 +87,37 @@ bringing develop to 78133c093), with CI's exact commands and base:
 No tree change was required this round: the repair of record remains 40ada5e6e
 (92 offline cases), which survives both develop syncs. The only red surface is
 still the default-branch `gates-ran` evaluator trap documented above.
+
+## Coverage gate re-proven at head d08ea3747 (2026-10-26, verified round)
+
+Re-proven after two further develop syncs (5c7c6b16f bringing develop to
+05070ff07, d08ea3747 bringing develop to 10f872fa7), with CI's exact commands
+and base. The cancellation at 789aa94e7 was never a gate failure; the last
+merge-queue evaluation simply predated this head.
+
+- Root producer, exact `quality.yml` argv with RATCHET_BASE_REV=origin/develop:
+  6100 passed / 139 skipped / 0 failed in 12m50s (+2 over the 99eda89ee round
+  from the develop syncs).
+- `coverage xml` then `scripts/check-diff-coverage.py coverage.xml --base
+  407b181c46b4f532dbad4b64d0c2195e7a814f75` (develop's tip, the PR base) →
+  exit 0: the same 9 measured `scripts/pi_recovery` modules, 6 exempt test
+  files. The three-dot diff resolves to merge-base 10f872fa7.
+- Publish-set floor (87%): `git diff HEAD 10f872fa7 -- packages/maistro-{core,
+  canvas,evolve,rsi,bootstrap}` is empty — the floor's measured trees are
+  byte-identical to the merge base, and the floor is evaluated before any
+  scripts-producer data joins.
+- Develop's tip 407b181c (#2333, ADR-044 AssetInstance connect) is one commit
+  ahead of the branch's merge base. A naive two-dot diff vs develop tip shows
+  -82/-37/-6/-215 lines in canvas/server files: those are develop's OWN new
+  lines absent from the branch, not branch deletions. The branch's diff vs the
+  merge base is pure addition (27 files: pi_recovery + docs). The next develop
+  sync should take #2333's content wholesale.
+- Suite inventory via `uv run python scripts/check-suite-inventory.py` → ok,
+  21 suites, `tests/: 6217`; vulture with CI's exact argv → 1248 reviewed =
+  1248 findings, base resolved to 10f872fa7; ruff check/format,
+  check-test-duplicates, `tests/test_check_diff_coverage.py` (18) and
+  `systemd-analyze --user verify` on the four unit templates all green;
+  `pytest tests/pi_recovery` 177 passed + 32 subtests.
+
+No tree change was required this round either; the branch at d08ea3747 is
+proven against every gate the cancelled run would have evaluated.
