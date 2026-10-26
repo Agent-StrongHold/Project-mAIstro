@@ -34,11 +34,11 @@ from maistro.extensions.service import ExtensionCodeLoader, ExtensionInstallServ
 from maistro.extensions.store import InMemoryExtensionStore
 from maistro.extensions.trust import TrustPolicy
 from maistro.extensions.types import ExtensionInstallRecord, ExtensionScope
+from maistro.identity import Principal
 from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import extensions as extensions_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
 
 PAYLOAD = b"extension-health-payload"
 SERVICE_CLOCK = datetime(2026, 10, 5, 12, 0, 0, tzinfo=UTC)

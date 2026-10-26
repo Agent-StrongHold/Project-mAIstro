@@ -34,11 +34,11 @@ from maistro.extensions.service import (
     ExtensionInstallService,
     LoadedExtension,
 )
+from maistro.identity import Principal
 from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import extensions as extensions_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro.identity import Principal
 
 PAYLOAD = b"extension-payload-v1"
 

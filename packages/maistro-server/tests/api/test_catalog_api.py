@@ -29,8 +29,8 @@ from maistro.extensions.types import (
     ExtensionManifest,
     PackageIdentity,
 )
-from maistro_server.api import catalog as catalog_api
 from maistro.identity import Principal
+from maistro_server.api import catalog as catalog_api
 from maistro_server.api.auth import verify_api_key
 
 
