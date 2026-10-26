@@ -646,45 +646,51 @@ class PgRunStore:
             backlog_remaining = len(rows) > limit
             selected = rows[:limit]
             run_ids = [row["run_id"] for row in selected]
+            # An empty sweep takes the same exit as a deleting one: the
+            # post-transaction probe below must run when nothing was deleted
+            # too — zero deletions is exactly when the stored level is the
+            # only health signal there is (as in the SQLite store).
+            outcome: PurgeOutcome
             if not run_ids:
-                return PurgeOutcome(scope=scope)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await conn.execute(
-                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
-                run_ids,
-            )
-            deleted_attempts = await conn.fetch(
-                """DELETE FROM canonical_attempts a
-                   USING canonical_node_runs n
-                   WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])
-                   RETURNING a.attempt_id""",
-                run_ids,
-            )
-            deleted_node_runs = await conn.fetch(
-                "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
-                run_ids,
-            )
-            deleted_runs = await conn.fetch(
-                "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
-                run_ids,
-            )
-            continuations = 0
-            if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
-                deleted_continuations = await conn.fetch(
-                    "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                outcome = PurgeOutcome(scope=scope)
+            else:
+                # Eval evidence is spine-attached (FK on run_id), so it dies with
+                # the Run tree, in the same transaction and before the rows it
+                # names (M7-A3).
+                await conn.execute(
+                    "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
                     run_ids,
                 )
-                continuations = len(deleted_continuations)
-            outcome = PurgeOutcome(
-                scope=scope,
-                runs=len(deleted_runs),
-                node_runs=len(deleted_node_runs),
-                attempts=len(deleted_attempts),
-                continuations=continuations,
-                backlog_remaining=backlog_remaining,
-            )
+                deleted_attempts = await conn.fetch(
+                    """DELETE FROM canonical_attempts a
+                       USING canonical_node_runs n
+                       WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])
+                       RETURNING a.attempt_id""",
+                    run_ids,
+                )
+                deleted_node_runs = await conn.fetch(
+                    "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
+                    run_ids,
+                )
+                deleted_runs = await conn.fetch(
+                    "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                    run_ids,
+                )
+                continuations = 0
+                if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+                    deleted_continuations = await conn.fetch(
+                        "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                        run_ids,
+                    )
+                    continuations = len(deleted_continuations)
+                outcome = PurgeOutcome(
+                    scope=scope,
+                    runs=len(deleted_runs),
+                    node_runs=len(deleted_node_runs),
+                    attempts=len(deleted_attempts),
+                    continuations=continuations,
+                    backlog_remaining=backlog_remaining,
+                )
         # Outside the transaction: the probe is read-only housekeeping and
         # must not extend the transaction's lock hold. A quiet scope publishes
         # too — zero deletions is exactly when the stored level is the only
