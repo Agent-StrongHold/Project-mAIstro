@@ -47,6 +47,27 @@ class TestWhatReachesTheConductor:
         assert run_task.await_args is not None
         assert run_task.await_args.args[0].description == "second"
 
+    async def test_no_fixed_identity_stand_in_reaches_run_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The handle supplies no generated/fixed execution identity (#1084).
+
+        The turn runs inside its Attempt's correlation scope, so the conductor
+        derives the persisted Run/NodeRun/Attempt itself; a turn-scoped tuple
+        with fixed node/attempt strings would override the canonical ids the
+        spine already bound.
+        """
+        run_task = AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True))
+        monkeypatch.setattr("maistro_server.conductor_agent.run_task", run_task)
+
+        await ConductorAgent().handle(
+            _messages(("user", "plan this")),
+            turn_id="turn-123",
+        )
+
+        assert run_task.await_args is not None
+        assert run_task.await_args.kwargs.get("invocation_identity") is None
+
     async def test_the_classifiers_tier_reaches_the_task(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

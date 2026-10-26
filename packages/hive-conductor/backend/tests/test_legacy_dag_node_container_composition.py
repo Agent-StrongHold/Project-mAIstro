@@ -139,6 +139,13 @@ async def _boot_container(
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", _GATEWAY_KEY)
     # The node's own model pin must outrank the ambient default.
     monkeypatch.setenv("CHAT_DEFAULT_MODEL", "ambient-default-alias")
+    # `get_settings` is lru_cached suite-wide: an earlier module's boot (e.g.
+    # test_dag_model_tools' container) may have cached a Settings carrying its
+    # own ambient key. The governed runtime must resolve THIS fixture's env,
+    # so state the env first, then force the next resolution through it.
+    import config as hive_config
+
+    hive_config.get_settings.cache_clear()
     return owner
 
 
@@ -149,7 +156,11 @@ def _fake_transport(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     calls: list[dict[str, Any]] = []
 
-    async def execute(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def execute(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
+        # ``on_chunk`` is the shipped streaming observer seam (SPEC-285); a
+        # non-streaming legacy LLM node dispatches with it unset.
         calls.append({"payload": _chat_payload(provider, request), "endpoint": endpoint})
         return {
             "model": f"{_MODEL}-2026-10",

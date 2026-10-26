@@ -12,6 +12,7 @@ import pytest
 from maistro.security.warden.detector import (
     Warden,
     WardenContext,
+    _coerce_context_item,
     _pattern_search,
     _scan_reject_patterns,
     context_from_messages,
@@ -787,3 +788,35 @@ async def test_a_large_benign_input_is_bounded(monkeypatch: Any) -> None:
     # Generous for a loaded runner; the point is "bounded", not "fast".
     # Catastrophic backtracking here would not finish at all.
     assert elapsed < 20
+
+
+class TestCoerceContextItemProvenance:
+    """`_coerce_context_item` must validate provenance, not assume it.
+
+    Provenance decides which side of the trust boundary a context item is
+    scanned from, so an untyped mapping value must be coerced through the
+    literal union explicitly: anything else is rejected loudly rather than
+    defaulted, stringified, or passed through.
+    """
+
+    @pytest.mark.parametrize("provenance", ["trusted", "untrusted"])
+    def test_explicit_provenance_is_carried_through(self, provenance: str) -> None:
+        context = _coerce_context_item({"role": "user", "content": "hi", "provenance": provenance})
+        assert context.provenance == provenance
+        assert context.content == "hi"
+
+    def test_missing_provenance_defaults_from_role(self) -> None:
+        trusted = _coerce_context_item({"role": "system", "content": "rules"})
+        untrusted = _coerce_context_item({"role": "user", "content": "hi"})
+        assert trusted.provenance == "trusted"
+        assert untrusted.provenance == "untrusted"
+
+    def test_invalid_provenance_is_rejected_loudly(self) -> None:
+        with pytest.raises(ValueError, match="must be 'trusted' or 'untrusted'"):
+            _coerce_context_item({"role": "user", "content": "hi", "provenance": "self-attested"})
+
+    def test_non_string_provenance_is_rejected_not_stringified(self) -> None:
+        # A truthy non-string (e.g. 1) must not coerce into the union, and
+        # must not fall through to the role-derived default either.
+        with pytest.raises(ValueError, match="must be 'trusted' or 'untrusted'"):
+            _coerce_context_item({"role": "user", "content": "hi", "provenance": 1})
