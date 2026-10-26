@@ -1,8 +1,8 @@
-// Workspace Attention (#1049) — projection over HITL pauses + failed Runs.
-//
-// Settling a HITL pause posts to the canonical answer door named by
-// `answer_href` (same authority as CLI). Failed Runs only offer inspection.
-// Defer/dismiss persistence and Messages/Optimizer MERGE remain later slices.
+// Workspace Attention (#1049) — projection over HITL pauses, failed Runs,
+// unread agent messages (ex-MessageBoard), and pending optimizer proposals
+// (ex-OptimizationInbox). Settling a HITL pause posts to `answer_href`;
+// optimizer accept/reject posts to the canonical proposal doors. Defer/dismiss
+// is preference evidence only — never a second lifecycle store.
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -11,9 +11,11 @@ import type { AttentionItem, AttentionPayload } from "../lib/attention";
 import {
   attentionClassLabel,
   attentionPath,
+  decideOptimizerProposal,
   dismissAttentionItem,
   hitlAnswerBody,
   inspectionHref,
+  interruptionLabel,
   parseHitlAnswerHref,
   submitHitlAnswer,
 } from "../lib/attention";
@@ -22,7 +24,7 @@ import { Card, EmptyState, Hex, LoadingSpinner, PageHeader } from "../components
 
 function classVariant(name: string): "ok" | "danger" | "warn" | "muted" | "accent" | "" {
   if (name === "time_sensitive" || name === "severity") return "danger";
-  if (name === "blocking") return "warn";
+  if (name === "blocking" || name === "popup") return "warn";
   if (name === "queued") return "accent";
   return "muted";
 }
@@ -48,6 +50,10 @@ function AttentionRow({
     pausedReason === "awaiting_human_approval" ||
     pausedReason === "awaiting_human_review" ||
     pausedReason === "awaiting_role_delegate";
+  const isOptimizer = item.source_kind === "optimizer_proposal";
+  const isMessage = item.source_kind === "agent_message";
+  const inspectLabel =
+    isMessage || isOptimizer ? "Stay on Attention" : "Open run";
 
   const submit = async (text: string) => {
     if (!door || !text.trim() || busy) return;
@@ -78,6 +84,20 @@ function AttentionRow({
     }
   };
 
+  const decideProposal = async (decision: "accept" | "reject") => {
+    if (!isOptimizer || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await decideOptimizerProposal(item.source_id, decision);
+      onAnswered();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : `Couldn't ${decision} proposal.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <li
       style={{
@@ -87,19 +107,39 @@ function AttentionRow({
         gap: 6,
       }}
       data-testid={`attention-item-${item.rank}`}
+      data-source-kind={item.source_kind}
+      data-interruption={item.interruption ?? ""}
     >
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
         <Hex variant={classVariant(item.attention_class)}>
           {attentionClassLabel(item.attention_class)}
         </Hex>
+        {item.interruption ? (
+          <Hex variant={classVariant(item.interruption)}>
+            {interruptionLabel(item.interruption)}
+          </Hex>
+        ) : null}
         <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
           #{item.rank} · {item.source_kind}
         </span>
       </div>
       <p style={{ margin: 0, fontSize: 14 }}>{item.reason}</p>
+      {isMessage && typeof item.evidence?.body === "string" && item.evidence.body ? (
+        <p
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: "var(--pencil)",
+            whiteSpace: "pre-wrap",
+            fontFamily: "var(--mono)",
+          }}
+        >
+          {item.evidence.body}
+        </p>
+      ) : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         <button type="button" onClick={() => onInspect(inspectionHref(item))}>
-          Open run
+          {inspectLabel}
         </button>
         <button
           type="button"
@@ -118,6 +158,26 @@ function AttentionRow({
           Dismiss
         </button>
       </div>
+      {isOptimizer ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }} data-testid="attention-optimizer-decide">
+          <button
+            type="button"
+            disabled={busy}
+            data-testid="attention-optimizer-accept"
+            onClick={() => void decideProposal("accept")}
+          >
+            {busy ? "Working…" : "Accept proposal"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            data-testid="attention-optimizer-reject"
+            onClick={() => void decideProposal("reject")}
+          >
+            Reject proposal
+          </button>
+        </div>
+      ) : null}
       {door ? (
         <div
           style={{ display: "grid", gap: 6, marginTop: 4 }}
@@ -180,9 +240,18 @@ function AttentionRow({
         </div>
       ) : (
         <span style={{ fontSize: 12, color: "var(--pencil)" }}>
-          No answer door (deadline passed or non-HITL)
+          {isOptimizer
+            ? "Settle via Accept/Reject (canonical optimizer doors)"
+            : isMessage
+              ? "Defer/Dismiss hides this message preference for the Workspace"
+              : "No answer door (deadline passed or non-HITL)"}
         </span>
       )}
+      {error && !door ? (
+        <p style={{ margin: 0, color: "#c4452a", fontSize: 12 }} role="alert">
+          {error}
+        </p>
+      ) : null}
     </li>
   );
 }
@@ -222,12 +291,13 @@ export default function Attention() {
 
   const summary = payload?.summary;
   const items = payload?.items ?? [];
+  const waitingQuality = summary?.waiting_quality;
 
   return (
     <div style={{ padding: 16 }} data-testid="workspace-attention">
       <PageHeader
         title="Attention"
-        subtitle="What needs you in this Workspace — ranked from canonical HITL pauses and failed Runs. Answers post to the same HITL door as CLI."
+        subtitle="What needs you in this Workspace — ranked from HITL pauses, failed Runs, agent messages, and optimizer suggestions. Answers stay on each source's canonical door."
         helpHref="/docs#workspaces"
       />
 
@@ -265,6 +335,12 @@ export default function Attention() {
                     {attentionClassLabel(name)} {count}
                   </Hex>
                 ))}
+              {summary?.counts_by_interruption &&
+                Object.entries(summary.counts_by_interruption).map(([name, count]) => (
+                  <Hex key={`i-${name}`} variant={classVariant(name)}>
+                    {interruptionLabel(name)} {count}
+                  </Hex>
+                ))}
               {summary?.truncated ? (
                 <Hex variant="warn">Truncated</Hex>
               ) : null}
@@ -281,6 +357,17 @@ export default function Attention() {
               {summary && summary.rising.length > 0 ? (
                 <span style={{ fontSize: 12, color: "var(--pencil)" }}>
                   Rising: {summary.rising.length}
+                </span>
+              ) : null}
+              {waitingQuality && waitingQuality.count > 0 ? (
+                <span
+                  style={{ fontSize: 12, color: "var(--pencil)" }}
+                  data-testid="attention-waiting-quality"
+                >
+                  Waiting: {waitingQuality.count}
+                  {waitingQuality.valuable_source_ids.length > 0
+                    ? ` · ${waitingQuality.valuable_source_ids.length} valuable`
+                    : ""}
                 </span>
               ) : null}
             </div>

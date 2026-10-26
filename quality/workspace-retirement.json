@@ -206,9 +206,8 @@
       "replaced_by": "Attention/Waiting (#1049)",
       "delete_by": "M3-E",
       "owner": "#1049",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
@@ -217,9 +216,8 @@
       "replaced_by": "Attention/Waiting (#1049)",
       "delete_by": "M3-E",
       "owner": "#1049",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
