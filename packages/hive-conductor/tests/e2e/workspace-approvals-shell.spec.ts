@@ -54,22 +54,38 @@ async function stubApprovalsQueues(
   });
 }
 
-test("AC-5: pending HITL → answer → Run resume link to dag-runs is visible", async ({ page }) => {
+test("AC-5: pending HITL → answer → pending clears; Run resume link targets dag-runs", async ({
+  page,
+}) => {
   const runId = "run-approvals-e2e-ac5";
   const nodeId = "ask-human";
   let answered = false;
+  const pendingItem = {
+    run_id: runId,
+    node_id: nodeId,
+    project_id: "proj-ac5",
+    payload: { question: "Approve deploy?" },
+    paused_at: "2026-10-26T00:00:00Z",
+  };
 
-  await stubApprovalsQueues(page, {
-    caps: [],
-    hitl: [
-      {
-        run_id: runId,
-        node_id: nodeId,
-        project_id: "proj-ac5",
-        payload: { question: "Approve deploy?" },
-        paused_at: "2026-10-26T00:00:00Z",
-      },
-    ],
+  await page.route("**/v1/capabilities/approvals", async (route: Route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ pending: [] }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  // Pending queue shrinks after a successful answer — proves loadHitl() ran.
+  await page.route("**/v1/hitl/pending", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(answered ? [] : [pendingItem]),
+    });
   });
 
   await page.route(`**/v1/hitl/${runId}/${nodeId}/answer`, async (route: Route) => {
@@ -90,9 +106,16 @@ test("AC-5: pending HITL → answer → Run resume link to dag-runs is visible",
   const runLink = page.getByRole("link", { name: `Run ${runId}` });
   await expect(runLink).toBeVisible();
   await expect(runLink).toHaveAttribute("href", `/dag-runs?run=${encodeURIComponent(runId)}`);
+  await runLink.click();
+  await page.waitForURL((url) => url.pathname.includes('/dag-runs') && url.searchParams.get('run') === runId);
+  await expect(page).toHaveURL(new RegExp(`[?&]run=${encodeURIComponent(runId)}`));
 
+  await page.goto("/approvals");
+  await expect(page.getByRole("button", { name: "Submit answer" })).toBeVisible();
   await page.getByRole("button", { name: "Submit answer" }).click();
   await expect.poll(() => answered).toBe(true);
+  await expect(page.getByText("No Runs waiting on a human")).toBeVisible();
+  await expect(page.getByRole("link", { name: `Run ${runId}` })).toHaveCount(0);
 });
 
 test("AC-1/AC-2: capability inbox approve posts CLI-shaped body to canonical door", async ({
