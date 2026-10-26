@@ -25,3 +25,17 @@ contract they already honored.
 No wall-clock, no fixture pinning: the assertions read the Dockerfiles the
 way `test_image_lock_contract.py` always has, naming the string that would
 have to change for the defect to come back.
+
+## Outcome (2026-10-26 repair round): the bump was rejected, the test stays
+
+The wheel-ceiling verification held up — the locked, hash-pinned image set
+has no cp315 artifacts (psycopg-binary 3.3.4: no cp315 wheel and no sdist;
+coincurve 21.0.0: cp313 max, which also rules out 3.14; bitarray 3.9.2:
+cp314 max) and the builder installs no compiler — so #2136's 3.15.0 base is
+unbuildable and the branch reverted to the 3.13.16 pin (both FROM lines and
+`uv venv --python 3.13`), with the rejection recorded in
+`quality/image-pins.json` and the Dockerfile header. This contract is
+version-agnostic and pins no version: the root-Dockerfile case passes with
+base 3.13 == spec 3.13, and it stays as the guard that any future digest
+bump across a minor must move the interpreter spec in the same change — or
+be rejected like this one.
