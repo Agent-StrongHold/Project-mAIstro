@@ -25,7 +25,7 @@ or placeholder-only section.
 
 ### Fixed
 
-- **CodeQL workflow scope test expects `develop` triggers (#2359).**
+- **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
@@ -506,6 +506,18 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Workspace BacklogItem service (#98, partial).** `maistro.workspaces.backlog`
+  adds a Workspace/Project-scoped `BacklogItem` record, a backend-independent
+  `BacklogItemStore` contract with version compare-and-set updates, acyclic
+  same-Workspace dependency and parent relations, and an exact
+  `(goal_id, goal_revision)` Goal reference. It has in-memory and SQLite
+  (`workspace_backlog_items`, `workspace_backlog_dependencies`) stores, wired
+  as `Container.backlog_store`. maistro-server serves it at
+  `/workspaces/{workspace_id}/backlog`: members read it, contributors and
+  owners write it, and a stale `expected_version` gets 409 with the current
+  item. On PostgreSQL the store is still in-process and logs a warning.
+  BACKLOG.md remains the authority.
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
@@ -518,6 +530,7 @@ or placeholder-only section.
   `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
   declaring their authorities, and an accepted-outcome-required check on
   parked Run resume).
+
 
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
@@ -861,6 +874,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. Workspace-scoped admitters share
+  one process-wide `max_retained` budget; more users do not multiply it.
+  Tracking refuses foreign-Workspace and non-chat Runs.
 - **Conductor batch inspection respects existing projection scope (#1036).**
   Canonical fallback applies only when no projection exists, keeping verdict-list
   visibility consistent with detail and stream admission for colliding run IDs.
@@ -2031,6 +2052,18 @@ or placeholder-only section.
   and `certifi` 2026.10.19. No code path changes; both distributions keep
   the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
 
+- **gitpython and graphql-core move past their open advisories (#1852
+  repair).** The locked dev set carried `gitpython` 3.1.62
+  (CVE-2026-114145, fixed in 3.2.1) and `graphql-core` 3.2.11
+  (CVE-2026-75507/75508, fixed in the 3.3.x line), so the pip-audit gate
+  (`scripts/pip_audit_gate.py`) failed on advisories outside its triaged
+  allowlist. Both are unconstrained transitive dependencies — `cosmic-ray`
+  -> `gitpython`, `moto[server]` -> `graphql-core` — so `uv.lock` alone
+  resolves them to `gitpython` 3.2.1 and `graphql-core` 3.3.0 (stable, not
+  the rc the advisory text named) with no manifest or floor change. No
+  shipped runtime image installs either distribution; the affected surfaces
+  are the dev toolset and the RSI runner's locked dev set.
+
 - **The license inventory gate stops accepting missing license metadata as a
   license, and stops hiding licensed shipped assets (#363).** Four defects in
   `scripts/check-license-inventory.py` are fixed against the acceptance
@@ -2083,6 +2116,18 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
+  The `age` binaries in the conductor image and the static Docker CLI in the
+  engine and research images are compiled in-tree from pinned release tags
+  precisely so a patched toolchain can ship them (#363 policy). The pinned
+  `golang:1.27.2-alpine` builder now emits stdlib 1.27.2, which trivy flags
+  with CVE-2026-111943 (HIGH, crypto/x509 MITM via untrusted intermediate
+  certificates, fixed in go1.26.10/1.27.3) — the container gate fails on the
+  conductor image's first scan step. All three Dockerfiles move to
+  `golang:1.27.3-alpine` (digest re-recorded in `quality/image-pins.json`);
+  the rebuilt binaries rescan clean at HIGH/CRITICAL with fixes, and the
+  conductor/observability runtime verify steps are unchanged.
 
 - **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
   regex injection, and scan-scope noise)** (no linked issue: GitHub
