@@ -8711,3 +8711,61 @@ first-hand against real servers:
 `hive-conductor-e2e`, `docker-build` and `wheel-imports` were **not** executed
 locally (compose/image builds outside this repair's budget); they exercise no
 file this branch changes.
+
+### Round 134 — verification at dispatched head f50d1279b (develop base 5056cf069, M2-A #2169 merge)
+
+The dispatched candidate is `f50d1279b` = the round-133 classified branch merged
+with `origin/develop` @ `5056cf06948d` ("M2-A — Harden governed tool execution",
+#2169); no conflicts, `quality/` numstat vs `origin/develop` EMPTY (verified by
+count). Driver preflight at this exact head: `check-0.log` uv sync OK,
+`check-1.log` ruff "All checks passed!", `check-2.log` 3546 files formatted,
+`check-3.log` 269 passed, `check-4.log` check-suite-inventory ok (18228
+identities, 0 dupes).
+
+Gates re-run first-hand at base `5056cf06948d` / candidate `f50d1279ba04`, all
+rc=0 — every gate red in the last merge-queue evaluation is now green at CI
+argv:
+
+| Gate | Result |
+| --- | --- |
+| `check-reachability.py` | rc=0 — 101 unreachable of 1480 production modules |
+| `check-ratchet-provenance.py` | rc=0 — 9/9 sub-ratchets OK (reachability 101 -> 101, no candidate-approved expansion) |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | rc=0 — 1249 reviewed identities = 1249 findings, unclassified 0, never_allowlist 0: the amend-the-vulture-ledger prescription is empty, no `quality/` edit |
+| `check-shipped-surface-truth.py` | rc=0 |
+| `check-reachability-dispositions.py` | rc=0 — 35 groups give all 101 unreachable modules a disposition (80 CONNECT, 20 LIBRARY, 1 RETIRE) |
+| `check-promotion-surface.py` | rc=0 |
+| reachability meta set (`test_reachability_baseline_identity` + `test_reachability_source_universe` + `test_check_reachability` + `test_no_placeholder_modules`) | 53 passed (0 failed) |
+| `scripts/ci_base_revision.py` + `ci_merge_group_scope.py --json` + `check-integration-scope.py --event-name merge_group --scope-json … --required-json` on the 10 changed paths | resolves cleanly; required specialized set = docker-build, hive-conductor-e2e(-ui), postgres (pg17), postgres (pg18), strike-ladder, wheel-imports — the ledger/test legs it also waits on are green above; the pg/strike-ladder/docker/e2e legs exercise no file this branch changes (no touched test imports a database) and pg18 runs-suite + strike-ladder were executed first-hand against real servers in the round-133 section below |
+
+Focused battery at this head: leaf suite alone **132 passed**;
+`test_root_admission_identity.py` + `test_idempotency_durable.py` **106 passed,
+1 skipped** (the issue's `tests/tasks/test_idempotency.py` was renamed
+`test_idempotency_durable.py` upstream by `7ced47d8c`, #2143, on develop);
+full five-suite battery (assessment + root identity + idempotency durable +
+pack contracts + admission-identity publication) **375 passed, 1 skipped**;
+leaf ruff check + format --check clean; mypy on the module Success;
+`check-suite-inventory.py` ok (21 suites match — no test additions, no delta).
+
+All four issue-required regression mutations re-killed first-hand at this head
+(module cp-backed up before each, md5-verified restored to
+`257a6e45c382349dd12f559099663fbc` after each, worktree clean):
+
+| Mutation | Focused result |
+| --- | --- |
+| Exact row swap `REPLACE_EXPIRED` <-> `TAKEOVER` (rows 1/5) | 66 failed / 66 passed |
+| Lease row moved before binding row | 14 failed / 118 passed |
+| Legacy-unresolved row deleted (legacy treated as v2) | 10 failed / 122 passed |
+| Mismatch row moved before expiry row | 22 failed / 110 passed |
+
+Leaf integrity unchanged: md5 `257a6e45c382349dd12f559099663fbc`, 153 lines,
+zero production importers under `packages/*/src`; the branch diff touches only
+`admission_generation.py` inside `src/maistro/tasks` and nothing under
+`src/maistro/runs`; `tasks/idempotency.py`, the queue, backends and
+`maistro.tasks.__init__` are untouched; all 10 issue-required named tests
+remain at `test_admission_generation_assessment.py:589-935`.
+
+Merge blocker unchanged and outside this leaf's authorization: activation
+requires the separately reviewed #1845 integration head landing the runtime
+consumer (the classification entry in `check-reachability.py` asks that change
+to prune it). The stack is left unmerged; this round claims implementation/test
+readiness and green candidate gates only, not parent #1845 completion.
