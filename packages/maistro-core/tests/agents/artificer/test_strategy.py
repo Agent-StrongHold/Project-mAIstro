@@ -579,6 +579,114 @@ class TestHandleToolCall:
         assert "[... truncated" in result_str
 
     @pytest.mark.asyncio
+    async def test_non_allowlisted_tool_refused_before_sentinel_and_executor(
+        self,
+    ) -> None:
+        """Model-selected names outside the Agent declaration never run (#57)."""
+
+        strategy = ArtificerStrategy()
+        sentinel = _FakeSentinel()
+        executed: list[str] = []
+
+        async def executor(name: str, args: dict[str, Any]) -> str:
+            executed.append(name)
+            return f"ran with {args}"
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=sentinel,
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"read_file"}),
+        )
+
+        assert "not in the Agent allowlist" in result_str
+        assert executed == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_schema_refused_even_when_allowlisted(self) -> None:
+        strategy = ArtificerStrategy()
+        tc = {"id": "call_1", "function": {"name": "drop_table", "arguments": "{}"}}
+
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=None,
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+            allowed_tools=frozenset({"drop_table"}),
+        )
+
+        assert "no schema is registered for tool 'drop_table'" in result_str
+
+    @pytest.mark.asyncio
+    async def test_unlisted_tool_denial_is_audited(self) -> None:
+        """#847: pre-Sentinel refusals leave scoped denial evidence."""
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = ArtificerStrategy()
+        audit_log = InMemoryAuditLog()
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=_FakeSentinel(),
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"read_file"}),
+            audit_log=audit_log,
+            agent_name="test-agent",
+        )
+
+        assert "not in the Agent allowlist" in result_str
+        page = await audit_log.get_page(denied=True)
+        entries = [entry for _row, entry in page.records]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.boundary == "tool_allowlist"
+        assert entry.verdict == "denied"
+        assert entry.tool_name == "write_file"
+        assert entry.agent_id == "test-agent"
+        assert entry.detail == "tool not in agent allowlist"
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_valid_call_writes_no_denial_audit(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = ArtificerStrategy()
+        audit_log = InMemoryAuditLog()
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{}"}}
+        await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=_FakeSentinel(),
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"write_file"}),
+            audit_log=audit_log,
+            agent_name="test-agent",
+        )
+
+        page = await audit_log.get_page(denied=True)
+        assert page.records == []
+
+    @pytest.mark.asyncio
     async def test_hostile_mapping_key_survives_repr_hiding_result(self) -> None:
         """#1094: the model-visible result string must contain mapping keys.
 
@@ -651,3 +759,149 @@ class TestPlan:
         )
 
         assert plan == "No plan generated"
+
+
+class TestToolCallGuardBranches:
+    """Refusal directions of the #57 pre-dispatch guards, exercised directly.
+
+    The diff-coverage gate scores changed lines per file; these tests close
+    the guard directions the #57 allowlist suites did not drive, so the gate
+    measures real evidence rather than an accidental pass.
+    """
+
+    def test_raw_arguments_error_unit_directions(self) -> None:
+        from maistro.agents.artificer.strategy import _raw_arguments_error
+
+        assert _raw_arguments_error("{oops", "t") == "Error: malformed arguments for tool 't'"
+        assert _raw_arguments_error("[1]", "t") == "Error: arguments for tool 't' must be an object"
+        assert _raw_arguments_error("{}", "t") is None
+
+    @pytest.mark.asyncio
+    async def test_apply_sentinel_passthrough_without_authority(self) -> None:
+        from maistro.agents.artificer.strategy import _apply_sentinel
+
+        blocked, error, args = await _apply_sentinel(None, None, "t", {"a": 1}, {})
+        assert (blocked, error) == (False, None)
+        assert args == {"a": 1}
+
+    @pytest.mark.asyncio
+    async def test_invalid_repaired_arguments_are_refused(self) -> None:
+        from maistro.agents.artificer.strategy import _apply_sentinel
+
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+        sentinel = _FakeSentinel(allowed=True, repaired_data={"path": 123})
+        blocked, error, repaired = await _apply_sentinel(
+            sentinel, _Auth(), "write_file", {"path": "a.py"}, schema
+        )
+        assert blocked is True
+        assert error is not None
+        assert error.startswith("Error: repaired arguments are invalid")
+        assert repaired == {"path": 123}
+
+    def test_invalid_model_arguments_refused_with_denial_reason(self) -> None:
+        from maistro.agents.artificer.strategy import _validate_model_tool_call
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+        blocked, refusal, schema, reason = _validate_model_tool_call(
+            "write_file", {"path": 123}, tools, frozenset({"write_file"})
+        )
+        assert blocked is True
+        assert refusal is not None
+        assert "invalid arguments for tool 'write_file'" in refusal
+        assert reason == "invalid tool arguments"
+        assert schema == tools[0]["function"]["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_malformed_arguments_are_refused_under_an_allowlist(self) -> None:
+        strategy = ArtificerStrategy()
+        executed: list[str] = []
+
+        async def executor(name: str, args: dict[str, Any]) -> str:
+            executed.append(name)
+            return f"ran with {args}"
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{not json"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+            allowed_tools=frozenset({"write_file"}),
+        )
+
+        assert "malformed arguments for tool 'write_file'" in result_str
+        assert executed == []
+
+    @pytest.mark.asyncio
+    async def test_non_object_arguments_are_refused_under_an_allowlist(self) -> None:
+        strategy = ArtificerStrategy()
+
+        async def executor(_name: str, _args: dict[str, Any]) -> str:
+            raise AssertionError("non-object arguments must be refused before the executor")
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "[1, 2]"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+            allowed_tools=frozenset({"write_file"}),
+        )
+
+        assert "arguments for tool 'write_file' must be an object" in result_str
+
+    @pytest.mark.asyncio
+    async def test_malformed_argument_denial_is_audited(self) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        strategy = ArtificerStrategy()
+        audit_log = InMemoryAuditLog()
+
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "{oops"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=_FakeSentinel(),
+            auth=_Auth(),
+            warden=None,
+            allowed_tools=frozenset({"write_file"}),
+            audit_log=audit_log,
+            agent_name="test-agent",
+        )
+
+        assert "malformed arguments for tool 'write_file'" in result_str
+        page = await audit_log.get_page(denied=True)
+        entries = [entry for _row, entry in page.records]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.verdict == "denied"
+        assert entry.tool_name == "write_file"
+        assert entry.agent_id == "test-agent"
+        assert entry.detail == "malformed tool arguments"

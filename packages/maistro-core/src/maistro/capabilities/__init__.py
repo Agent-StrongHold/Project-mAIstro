@@ -41,6 +41,7 @@ from maistro.capabilities.image_generation import (
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
+    ExpectedEffectEvidence,
     InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
@@ -123,6 +124,7 @@ __all__ = [
     "DenyAllGate",
     "DurableApproval",
     "EffectNotApplied",
+    "ExpectedEffectEvidence",
     "FallbackPolicy",
     "GovernedInvocationExecutionService",
     "GuardedHarnessRunner",
