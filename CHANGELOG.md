@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **GHAS scanner plumbing: DevSkim globs that match absolute paths, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** DevSkim
+  `ignore-globs` for `.github/**`, `deploy/**`, `alembic/**`, `formal/**`,
+  `quality/**`, and `hive-conductor/eval/**` were listed but ineffective:
+  DenyFilters run against absolute runner paths, so unprefixed patterns never
+  matched. Every directory ignore now starts with `**/` (guarded by
+  `test_directory_globs_are_absolute_path_safe`). CodeQL Advanced now runs on
+  `develop` push/PR (was `main` + weekly cron only), so tip fixes stop rotting
+  behind a stale `774ae42f` analysis. Pip-audit ecdsa triage prose avoids the
+  DS440100 curve false positive without a suppression comment.
+
 - **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
   code-scanning alerts on develop).** Route mutation-baseline CI error
   annotations through the allowlisted `_ci_error_annotation` scrubber
