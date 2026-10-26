@@ -744,6 +744,23 @@ class RunStore(Protocol):
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]: ...
 
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed (#2358 / #232 P2b).
+
+        Re-reads under the store's authoritative mutation protection, then
+        commits ``CANCELLED`` + ``cancellation_cause=RECOVERED`` +
+        ``finished_at`` together via ``reclaim_attempt``. Returns the newly
+        written row, or ``None`` when nothing new was written (live lease,
+        already terminal, no/infinite lease). Missing ids raise
+        ``AttemptNotFound`` — never invent a reclaim for an absent row.
+        """
+        ...
+
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
     ) -> Attempt | None: ...
@@ -1790,10 +1807,31 @@ class InMemoryRunStore:
         )
         reclaimed: list[Attempt] = []
         for attempt in doomed[:limit]:
-            settled = reclaim_attempt(attempt, at=moment)
+            # Re-check under the same dict authority the write uses: a
+            # concurrent renew (or other terminalizer) can land between the
+            # sort snapshot and this write. Skip, do not rewrite.
+            current = self._attempts.get(attempt.attempt_id)
+            if current is None or not lease_is_expired(current, moment):
+                continue
+            settled = reclaim_attempt(current, at=moment)
             self._attempts[attempt.attempt_id] = settled
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        attempt = self._require_attempt(attempt_id)
+        if not lease_is_expired(attempt, moment):
+            return None
+        settled = reclaim_attempt(attempt, at=moment)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None

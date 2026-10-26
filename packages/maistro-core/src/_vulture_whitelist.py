@@ -341,6 +341,14 @@ _VULTURE_WHITELIST = (
     SqliteRunStore.get_eval_score,
     PgRunStore.record_eval_score,
     PgRunStore.get_eval_score,
+    # Exact-ID lease reclaim (#2358 / #232 P2b). Protocol + three stores ship
+    # ahead of the Graph adapter caller (P3a); tests exercise the seam, and
+    # this packages/*/src scan does not read tests — same posture as the
+    # eval-score write/read seam above.
+    RunStore.reclaim_expired_attempt,
+    InMemoryRunStore.reclaim_expired_attempt,
+    SqliteRunStore.reclaim_expired_attempt,
+    PgRunStore.reclaim_expired_attempt,
     EvalMethod.MODEL_JUDGE,
     EvalMethod.HUMAN,
     EvalJudge._validate_judge,

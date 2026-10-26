@@ -1520,6 +1520,11 @@ class SqliteRunStore:
         today, and not something to make load-bearing. The candidate set is
         already narrowed to non-terminal Attempts by the status predicate,
         which is the part that matters for cost.
+
+        Selection outside the write lock is only a candidate list. Each row is
+        re-read and re-validated inside ``_write_lock`` so a renewal (or other
+        terminalizer) that won between nominating and writing is skipped —
+        batch returns only newly written rows (#2358 / #232 P2b+P2c).
         """
         moment = now if now is not None else datetime.now(UTC)
         cursor = await self._conn.execute(
@@ -1533,17 +1538,42 @@ class SqliteRunStore:
         )
         reclaimed: list[Attempt] = []
         async with self._write_lock:
-            for attempt in doomed[:limit]:
-                settled = reclaim_attempt(attempt, at=moment)
+            for nominee in doomed[:limit]:
+                current = await self.get_attempt(nominee.attempt_id)
+                if current is None or not lease_is_expired(current, moment):
+                    continue
+                settled = reclaim_attempt(current, at=moment)
                 await self._update_payload(
                     "canonical_attempts",
                     "attempt_id",
-                    attempt.attempt_id,
+                    nominee.attempt_id,
                     settled.status.value,
                     json_of(settled),
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None

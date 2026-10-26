@@ -389,6 +389,12 @@ class ReferenceModel:
             raise ModelRefusal("illegal")
         if attempt.status in TERMINAL_ATTEMPT_STRINGS:
             raise ModelRefusal("illegal")
+        # Mirror #2354 / production reclaim_attempt: only an expired finite
+        # lease qualifies. Live / missing / infinite leases refuse.
+        if attempt.lease_expires_at is None:
+            raise ModelRefusal("illegal")
+        if attempt.lease_expires_at > at:
+            raise ModelRefusal("illegal")
         holder = attempt.lease_holder if attempt.lease_holder is not None else "unknown"
         attempt.status = "cancelled"
         attempt.error = (
@@ -1217,6 +1223,8 @@ PROBES: dict[str, list[tuple[Any, ...]]] = {
         ("node_move", "n0", "queued", False),
         ("attempt_new", "n0"),
         ("attempt_move", "n0", "running"),
+        ("lease_new", "n0"),
+        ("tick", 6),  # past LEASE_TTL so #2354 reclaim qualifies
         ("reclaim", "n0"),
     ],
     "M10-cascade-error-anonymized": [
@@ -1394,7 +1402,8 @@ def ordinary_reclaim_error_names_holder(make: type[Executor]) -> None:
     executor.op_attempt_move("n0", "running", at)
     at = _advance(at)
     executor.op_lease_new("n0", at)
-    at = _advance(at)
+    # #2354: reclaim requires an expired finite lease (LEASE_TTL = 5s).
+    at = _advance(at, seconds=6)
     executor.op_reclaim("n0", at)
     attempt = executor.latest_attempt("n0")
     assert attempt is not None

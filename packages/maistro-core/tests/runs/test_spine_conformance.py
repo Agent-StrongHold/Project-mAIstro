@@ -2643,12 +2643,16 @@ async def _assert_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
 
     assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
     assert reclaimed[0].status is AttemptStatus.CANCELLED
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED, (
+        "batch reclaim must persist RECOVERED with CANCELLED (#2358 / #232 P2b)"
+    )
     assert "worker-A" in (reclaimed[0].error or ""), (
         "a reclaimed Attempt must name the holder that went quiet, or it is "
         "indistinguishable from one a user cancelled"
     )
     settled = await store.get_attempt(attempt.attempt_id)
     assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
     assert node_run.node_run_id  # the NodeRun is reconciled by the reconciler, not the sweep
 
 
