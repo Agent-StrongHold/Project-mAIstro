@@ -729,6 +729,147 @@ jobs:
   # acceptance criterion asks for -- one CI check whose pass/fail is legible as
   # "did cross-product spine parity hold" rather than buried in one line of a
   # much larger suite.
+  # #80 / M2-B5: the designated hardware-capable conformance lane for the real
+  # ContainerBuilderSandbox backend. The publish-set partition (#654) keeps
+  # quality.yml `coverage-unit` as the bootstrap suite's no-services producer;
+  # this job is the *service-backed* site — it provisions the rootless daemon
+  # whose user-namespace mapping ADR-093 Decision 2 requires, proves the
+  # fail-closed refusal on a rootful daemon first, proves cgroup v2 memory
+  # enforcement before the suite runs, and only then executes the escape and
+  # conformance suite against real containers. Declared as a service-backed
+  # whole-suite site in tests/test_unit_suite_execution_partition.py.
+  sandbox-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      # Rootlesskit needs the AppArmor unprivileged-userns relaxation the same
+      # way bubblewrap does (Ubuntu 24.04 ships it =1); set it explicitly so
+      # the lane does not depend on another job's step ordering.
+      - name: Relax AppArmor unprivileged user-namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The Builder conformance module targets the production
+      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
+      # from the test directory so the repository (and any ambient secrets) is
+      # never sent as a Docker build context.
+      - name: Build the real Builder sandbox image
+        run: >-
+          docker build --tag maistro-builders:latest
+          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
+          packages/maistro-bootstrap/tests
+      # ADR-093 Decision 2: ContainerBuilderSandbox refuses a rootful,
+      # user-namespace-unmapped daemon — container uid 0 there IS host uid 0,
+      # the D-04 regression this conformance suite exists to prevent. Prove
+      # the fail-closed branch first, against the runner's own rootful system
+      # daemon, before the lane switches to a rootless one.
+      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
+        run: >-
+          uv run pytest
+          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+          -v --tb=short
+      # The escape suite itself runs where the sandbox actually starts: a
+      # daemon whose containers get non-host uids (rootless or
+      # userns-remapped). Provisioning notes (rounds 19-32,
+      # docs/testing/inventory-notes/l80-*-repair.md): uidmap/slirp4netns come
+      # from Ubuntu's own repos; the rootless toolchain comes from Docker's
+      # pinned static bundle; the runner user needs XDG_RUNTIME_DIR and a
+      # logind session (linger) for delegated cgroup v2, which is what makes
+      # --memory enforceable; the firewall/bridge/port-publish plane is off
+      # because the rootless netns cannot authorize NAT chains (the network
+      # default-deny is per-container, --network=none) and securityfs is
+      # masked only inside the daemon's private mount namespace via
+      # scripts/ci-rootless-mountns.sh (host AppArmor policy untouched).
+      - name: Start a rootless Docker daemon for the conformance lane
+        env:
+          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
+        run: |
+          set -euxo pipefail
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          # enable-linger can fail when logind already tracks a session for
+          # this uid; the delegated-cgroup proof below (reading memory.max
+          # back under a 64m limit) still fails the lane hard if linger was
+          # actually load-bearing.
+          sudo loginctl enable-linger "$uid" || true
+          # A failed or partial apt is tolerated only because the `command -v`
+          # probe immediately below re-proves uidmap/slirp4netns exist before
+          # the daemon start depends on them (same posture as the age install).
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          command -v newuidmap slirp4netns
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
+            | tar xz -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
+          lane_dir="$RUNNER_TEMP/docker-l80"
+          mkdir -p "$lane_dir"
+          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
+            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
+          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
+            --iptables=false \
+            --ip6tables=false \
+            --userland-proxy=false \
+            --bridge=none \
+            --storage-driver=vfs \
+            --data-root="$lane_dir/data" \
+            --exec-root="$lane_dir/exec" \
+            --pidfile="$lane_dir/docker.pid" \
+            --host="unix://$lane_dir/docker.sock" \
+            > "$lane_dir/dockerd.log" 2>&1 &
+          daemon_ready=0
+          for _ in $(seq 1 60); do
+            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              daemon_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$daemon_ready" -ne 1 ]; then
+            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            # Diagnostic tail on an already-failing path: the `exit 1` below
+            # still fails the step, and a vanished log must not mask the
+            # not-ready error that is the actual finding.
+            tail -n 200 "$lane_dir/dockerd.log" || true
+            exit 1
+          fi
+          docker --host "unix://$lane_dir/docker.sock" info \
+            --format '{{json .SecurityOptions}}' | grep -q rootless
+          echo "MAISTRO_LANE_DOCKER_SOCK=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
+      # Seed the rootless daemon from the image built above instead of
+      # rebuilding it: the lane's budget belongs to the conformance run. The
+      # first docker talks to the runner's rootful system daemon explicitly;
+      # the second targets the lane daemon socket.
+      - name: Load the Builder sandbox image into the rootless daemon
+        run: |
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest \
+            | docker --host "$MAISTRO_LANE_DOCKER_SOCK" load
+          # Prove the daemon can actually enforce the sandbox's resource
+          # budget before the suite runs on it. Rootless dockerd needs the
+          # delegated cgroup v2 subtree set up by the linger step; without it,
+          # --memory is silently dropped and the exhaustion test would fail
+          # opaquely. Reading memory.max back from inside a 64m-limited
+          # container is the enforcement proof; "max" means unbounded, i.e.
+          # not enforced.
+          enforced="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
+            --memory=64m --memory-swap=64m \
+            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
+          echo "memory.max under a 64m limit: $enforced"
+          if [ "$enforced" != "67108864" ]; then
+            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
+            exit 1
+          fi
+      - name: Run the real Builder sandbox conformance lane
+        run: DOCKER_HOST="$MAISTRO_LANE_DOCKER_SOCK" uv run pytest packages/maistro-bootstrap/tests -v --tb=short
+
   cross-product-parity:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -371,6 +371,18 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
    establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
    against hostile code, which is what Tiers 1 and 2 are still for.
+   The Docker-backed Builder sandbox has the matching conformance lane (#80, M2-B5):
+   `packages/maistro-bootstrap/tests/test_container_sandbox.py` instantiates the production
+   `ContainerBuilderSandbox` and exercises filesystem, process, namespace, network, device,
+   host-socket, credential and privilege attacks against real containers, plus resource
+   budget, timeout kill and cleanup. Network and credential access are proven default-deny;
+   seeding is proven not to copy `.env`, `.git` or unrelated host files into the sandbox;
+   the suite refuses a daemon where container root maps to host root (ADR-093 Decision 2)
+   and the writable surface is pinned down to `/workspace` and `/tmp`. The CI lane that runs
+   it against a rootless daemon is described in
+   [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md)
+   and [`docs/testing/inventory-notes/l80-seed-path-replacement.md`](docs/testing/inventory-notes/l80-seed-path-replacement.md);
+   the supported-backend matrix is [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md).
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced
