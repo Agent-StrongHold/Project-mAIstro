@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +9
 ---
 
 # P2d: owned CREATED prelaunch compensation (#2369 / #232)
@@ -11,6 +11,8 @@ locked write on in-memory / SQLite / PostgreSQL) and wires
 failures commit CANCELLED+RECOVERED under the fence. Requested
 CancelledError stays on the ordinary CANCELLED path (not stamped
 RECOVERED). RUNNING / terminal / stale-fence winners refuse.
+`DurableRunExecutionStore` implements the same leaf so Graph execution
+satisfies `AttemptExecutionStore`.
 
 ## Collected node IDs
 
@@ -19,3 +21,7 @@ RECOVERED). RUNNING / terminal / stale-fence winners refuse.
 - construction: CREATED → CANCELLED+RECOVERED; RUNNING / started_at /
   already-cancelled refusals
 - store: persist under matching fence; stale fence; RUNNING winner; missing id
+
+`packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py` (+1):
+
+- compensate mirrors CANCELLED+RECOVERED onto the durable projection

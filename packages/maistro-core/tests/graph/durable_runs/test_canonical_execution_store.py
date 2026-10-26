@@ -203,6 +203,31 @@ async def test_more_than_one_unmirrored_attempt_is_a_disagreement() -> None:
         await execution_store.create_attempt(node_run_id)
 
 
+async def test_compensate_unlaunched_mirrors_cancelled_recovered_onto_the_projection() -> None:
+    """P2d: Graph execution store must expose the CREATED prelaunch leaf so
+    AttemptExecutionService can accept DurableRunExecutionStore as its store."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="graph launch boom",
+    )
+
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "graph launch boom"
+
+
 async def test_reclaim_leaves_alone_an_attempt_whose_holder_renewed() -> None:
     """The projection can be stale by exactly one renewal. Cancelling on that
     evidence would terminalize demonstrably live work, which is the one thing

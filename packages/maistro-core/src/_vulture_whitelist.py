@@ -101,6 +101,7 @@ from maistro.goals.reconciliation.store import (
     SqliteGoalStore,
 )
 from maistro.governance.promotion import PromotionContract, PromotionLedger
+from maistro.graph.durable_runs.execution_store import DurableRunExecutionStore
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
@@ -356,6 +357,7 @@ _VULTURE_WHITELIST = (
     InMemoryRunStore.compensate_unlaunched_attempt,
     SqliteRunStore.compensate_unlaunched_attempt,
     PgRunStore.compensate_unlaunched_attempt,
+    DurableRunExecutionStore.compensate_unlaunched_attempt,
     EvalMethod.MODEL_JUDGE,
     EvalMethod.HUMAN,
     EvalJudge._validate_judge,

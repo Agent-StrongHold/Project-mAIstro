@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     renew_attempt_lease,
@@ -439,6 +440,52 @@ class DurableRunExecutionStore:
         await self._mutate(update)
         assert renewed is not None
         return renewed.model_copy(deep=True)
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle CREATED prelaunch failure as CANCELLED+RECOVERED (#2369 / #232 P2d).
+
+        When a canonical RunStore is wired, that store is the write authority;
+        this view mirrors the settled Attempt into the durable graph projection.
+        Local-only mode applies the same lifecycle leaf under the run lock.
+        """
+        if self._run_store is not None:
+            canonical = await self._run_store.compensate_unlaunched_attempt(
+                attempt_id,
+                fencing_token=fencing_token,
+                at=at,
+                result=result,
+                error=error,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
+        settled: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                self._validate_fence(attempt, fencing_token)
+                settled = compensate_unlaunched_attempt(
+                    attempt, at=at, result=result, error=error
+                )
+                attempts[index] = settled
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert settled is not None
+        return settled.model_copy(deep=True)
 
     async def reclaim_expired_attempts(
         self,
