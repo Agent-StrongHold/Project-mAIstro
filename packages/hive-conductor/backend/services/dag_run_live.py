@@ -101,30 +101,39 @@ class LiveRunProjection:
             return None
 
     async def record_result(self, result: dict[str, Any]) -> None:
-        """Mirror a canonical result; only terminal statuses finish the row.
+        """Mirror the canonical outcome (start-if-needed + #1036 terminality).
 
         Node events were already appended live; re-appending them here would
-        duplicate every node in the SSE replay, so this records only what the
-        live path could not know: the returned status and the bounded result.
-        A Run that produced no live events (recovered/detached execution)
-        still gets its full projection row here.
+        duplicate every node in the SSE replay, so this records only lifecycle
+        status. Terminal statuses finish the row; nonterminal statuses call
+        ``record_status`` (no invented ``finished_at``). Missing/unknown
+        status is logged and left alone — never coerced to ``failed``.
         """
         run_id = str(result.get("run_id") or "")
         if not run_id:
             return
         try:
-            from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+            from maistro.runs.model import RunStatus
             from services.dag_run_store import get_dag_run_store
 
-            # Validate before even opening a row. Missing/unknown status is a
-            # logged projection failure, never an invented failed outcome.
-            status = RunStatus(str(result.get("status")))
+            raw = result.get("status")
+            if raw is None or raw == "":
+                logger.warning(
+                    "dag_run_live_projection_result_missing_status run_id=%s dag_id=%s",
+                    run_id,
+                    self._dag_id,
+                )
+                return
+            # Validate before mutate — unknown vocabulary must not invent a finish.
+            status = RunStatus(str(raw))
             store = get_dag_run_store()
             await self._ensure_started(store, run_id)
-            if status in TERMINAL_RUN_STATUSES:
-                await store.finish_run(run_id, status=status.value, result=result)
-            else:
-                await store.record_nonterminal_result(run_id, status=status.value, result=result)
+            await store.record_outcome(
+                run_id,
+                status=status.value,
+                result=result,
+                canonical_run_id=run_id,
+            )
         except Exception:
             logger.warning(
                 "dag_run_live_projection_result_not_recorded run_id=%s dag_id=%s",
