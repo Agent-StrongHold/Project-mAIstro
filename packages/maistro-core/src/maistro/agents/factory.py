@@ -20,6 +20,7 @@ GitAgent format on disk:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from pathlib import Path
@@ -61,7 +62,10 @@ async def _upsert_agent_soul(
     previous = ""
     getter = getattr(prompt_manager, "get", None)
     if callable(getter):
-        previous = await getter(name, label=label) or ""
+        fetched = getter(name, label=label)
+        if inspect.isawaitable(fetched):
+            fetched = await fetched
+        previous = "" if fetched is None else str(fetched)
     diff: list[Any] | None = None
     if previous and previous != content:
         diff = compute_diff(

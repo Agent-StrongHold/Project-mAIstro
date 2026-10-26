@@ -246,7 +246,7 @@ def _run(cmd: _Cmd) -> _Outcome:
         if outcome.ok or outcome.missing is not None or attempt == attempts:
             return outcome
         time.sleep(cmd.retry_delay)
-    return outcome  # pragma: no cover - loop always returns
+    raise AssertionError("upgrade command retry loop exited without return")
 
 
 def _coerce(value: bytes | str | None) -> str:
