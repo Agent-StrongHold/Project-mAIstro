@@ -1,13 +1,71 @@
 ---
 lane: L1084
 issue: "#1084 [M1-D2][#56] Converge shipped Hive chat and Agent model egress onto canonical Provider/Binding/Invocation"
-round: "repair fa273657, 2026-10-25 (Invocation actor join fixed; Pyright re-proven CI-exact; workspace join documented as #1824-coordinated residual)"
-head: this commit (child of 1e46a81a4; see the round section below for evidence)
+round: "repair auto-1084@18f9a0ab, 2026-10-26 (direct-effect inventory repaired from committed conflict markers; named Quality/Pyright gate re-proven CI-exact green at this head)"
+head: this commit (child of 18f9a0ab0; see the round section below for evidence)
 ---
 
 # 1084 lane notes (read before touching this branch)
 
-## Round fa273657 (this head): actor join fixed, workspace join bounded
+## Round 18f9a0ab (this head): direct-effect inventory un-conflicted, pyright re-proven
+
+- **Root cause of the red gates:** salvage merge commit `12691a9c6`
+  (driver-commit of worker work) committed `quality/direct-effect-call-sites.json`
+  with unresolved diff3 conflict markers from the stacked develop merges
+  (`<<<<<<< HEAD … ||||||| 833a98a91 … ======= … >>>>>>> 4f8811f92f`, nested
+  against `78133c093`/`5056cf069`). The file had been invalid JSON on the branch
+  since `03c32a8e2` (the earlier salvage commit). This made
+  `scripts/check-model-egress.py` exit 1 via a JSONDecodeError in its
+  `check_direct_effects` leg — it is not a production regression and not a
+  scanner guess; the file itself was the breakage. No other tree file carries
+  conflict markers (grep over packages/ scripts/ docs/ quality/ .github/).
+- **Resolution is a verified union, not a side pick.** Develop-side rows
+  (51 sites, canonical for #57 provider-backend dispositions on shared keys:
+  legacy_dag_node/browser INTENTIONAL_LIBRARY/INFRASTRUCTURE) minus 5 sites
+  proven absent from this tree, plus the branch's live convergence rows:
+  - removed (raw call gone, verified by grep AND by the gate's own AST scan
+    reporting nothing new): `llm_http.HttpOpenAIProtocolLLM.complete`,
+    `maistro_core._HttpOpenAILLMClient.complete` (class deleted),
+    `chat_completion._tool_analyze_dashboard` MODEL_EFFECT (vision dispatch now
+    goes through `build_llm_port()`; the remaining `client.post` at :1914 is the
+    internal widgets/screenshot endpoint, not a model call),
+    `conductor._call_gateway` (governed composition, no raw client.post),
+    `llm_gateway._post_chat_completion` (renamed).
+  - added from the branch: `llm_gateway._post_model_chat#1/#2` (stream/post)
+    and `._dispatch_adapter_model_chat#1` — the renamed approved-Provider
+    helpers (#2318 radon factoring).
+  - two branch rows (`chat_completion._tool_browse_url/_tool_web_search`
+    TOOL_EFFECT) were dropped as STALE by the gate: develop's #57 migration
+    routes them through `services.governed_tools`, so the direct calls no
+    longer exist — the branch rows predate that landing.
+  - Gate result: `check-model-egress.py` exit 0 — census "16 physical model
+    caller(s), no candidate-approved expansion" + "Direct-effect inventory
+    matches code and every site is dispositioned" (49 sites).
+  - `quality/model-egress.json` 4-row pruning vs develop (adapters.llm_http,
+    adapters.maistro_core, maistro.agents.conductor, services.chat_completion)
+    is the intended migration shrink, not silent merge loss — the census gate
+    validates it against the current tree.
+- **Named CI gate (Quality / Pyright) re-proven CI-exact at this head:**
+  `uv sync --locked --all-extras`, `uv pip install -e packages/maistro-evolve`,
+  `uv pip install pyright` (1.1.414), `uv run pyright --outputjson
+  packages/maistro-core/src` → 12 errors / 57 warnings;
+  `scripts/check-pyright-report.py --baseline 23 --exit-code 1` → gate exit 0
+  (12 <= 23). The merge-queue "Quality / Pyright: failure" evaluated an older
+  head; nothing to fix in code.
+- **Prior verify blocker (check-6 collection error) already fixed on this
+  head:** `_adapter_response_body` exists in llm_gateway.py (:578, restored by
+  `fee80e648`); `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest
+  packages/maistro-core/tests --collect-only -q` → 18330 collected, 0 errors.
+- **Focused suites green at this head:** core egress/tool_choice/gateway-
+  resilience/container-wiring/model-egress-composition/conductor 137 passed;
+  server conductor_agent 26 passed; hive chat_run_admission + vision dispatch
+  + llm_http/maistro_core adapters + effective_gateway_key 84 passed; hive
+  dag_model_tools + legacy_dag_node_composition + api 72 passed.
+  ruff check + format clean; mypy --strict maistro-core/src clean.
+- Develop sync: origin/develop tip `10f872fa7` IS an ancestor of this head
+  (merge `18f9a0ab0`); 0 commits behind.
+
+## Round fa273657: actor join fixed, workspace join bounded
 
 - **Develop sync current:** `git merge-base HEAD origin/develop` = `2014ab888c0b`
   = origin/develop tip; the earlier "develop sync conflict preserved" block is
