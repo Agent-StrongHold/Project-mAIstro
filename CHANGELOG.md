@@ -25,7 +25,7 @@ or placeholder-only section.
 
 ### Fixed
 
-- **CodeQL workflow scope test expects `develop` triggers (#2357).**
+- **CodeQL workflow scope test expects `develop` triggers (#2359).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains

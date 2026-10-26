@@ -8,14 +8,22 @@ missing seam as a failure. No missing product behavior is recreated here.
 
 from __future__ import annotations
 
-import importlib
+import asyncio
+import contextlib
 import json
+import shutil
+import sys
+import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from maistro.graph.definitions import Graph, Node
+from maistro.identity import Principal
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from tests.cross_product_parity.harness import (
     BUILDERS,
@@ -59,10 +67,6 @@ def _unavailable_real_seam(owner: str) -> ScenarioExecution:
     )
 
 
-def _builders_scenario() -> ScenarioExecution:
-    return _unavailable_real_seam("Builders (#49/#1068)")
-
-
 def _scheduler_scenario() -> ScenarioExecution:
     return _unavailable_real_seam("scheduler (#231)")
 
@@ -73,6 +77,285 @@ def _evolve_scenario() -> ScenarioExecution:
 
 def _golden_scenario() -> ScenarioExecution:
     return _unavailable_real_seam("golden observation (#463)")
+
+
+_PARITY_USER = "builders-parity-owner"
+_PARITY_FOREIGN_USER = "builders-parity-outsider"
+_HIVE_BACKEND = str(Path(__file__).resolve().parents[2] / "packages" / "hive-conductor" / "backend")
+
+
+class _CompletedRunner:
+    """A TurnRunner double whose ReAct turn finishes on its first model reply."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    async def execute_turn(self, *, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"content": self._content, "stop_reason": "end_turn"}
+
+
+class _ParkedRunner:
+    """A TurnRunner double whose physical work only ends when it is released."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    async def execute_turn(self, *, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        await self.release.wait()
+        return {"content": "late completion", "stop_reason": "end_turn"}
+
+
+class _ParityRequest:
+    """Just what the dag-runs route handlers read off a request."""
+
+    def __init__(self, user_id: str) -> None:
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id, username=user_id))
+
+
+def _bind_hive_backend() -> None:
+    """Import the Conductor app modules the scenario observes through."""
+    if _HIVE_BACKEND in sys.path:
+        sys.path.remove(_HIVE_BACKEND)
+    sys.path.insert(0, _HIVE_BACKEND)
+
+
+async def _wait_for_running_turn(
+    run_store: Any,
+    workspace_id: str,
+    *,
+    timeout_s: float = 15.0,
+) -> str:
+    """Poll the canonical store until an admitted Run is physically mid-flight."""
+    from maistro.runs import RunStatus
+
+    deadline = time.monotonic() + timeout_s
+    last_statuses: list[str] = []
+    while time.monotonic() < deadline:
+        runs = await run_store.list_recent_runs(workspace_id, limit=25)
+        last_statuses = sorted(run.status.value for run in runs)
+        running = [run for run in runs if run.status is RunStatus.RUNNING]
+        if running:
+            return running[0].run_id
+        await asyncio.sleep(0.01)
+    raise ScenarioAbstained(
+        "the in-flight Builders turn never reached canonical RUNNING within "
+        f"{timeout_s}s (observed: {last_statuses})"
+    )
+
+
+async def _builders_conductor_scenario() -> ScenarioExecution:
+    """Scenario 1 as a real execution, not a source probe.
+
+    REAL_SCENARIO_EVIDENCE: builders-conductor
+
+    The producer half runs the shipped Builders interactive composition
+    (``CanonicalInteractiveTurnExecutor`` -> ``CanonicalGraphPipelineExecutor``,
+    the same executor the ``maistro builders`` CLI process opens through
+    ``BuildersExecutionSpine``) against the supported durable SQLite spine, so
+    the Workspace/Project/Graph/Run identity chain and the physical
+    NodeRun/Attempt evidence are real records, not test doubles of the spine.
+
+    The observer half is Conductor's landed inspection/control seam
+    (#1036's ``dag_run_inspection`` plus the #1169 cancel route), wired to the
+    same canonical stores through the engine bridge exactly as the app wires
+    it. The scenario requires: the projection store never recorded the Run,
+    list/detail answer by the canonical id alone, the NodeRun/Attempt tree is
+    readable through the scoped seam, an observer outside the Workspace is
+    refused indistinguishably from a missing id, and cancel through the same
+    id fences the canonical Run so the still-running Builders turn can never
+    publish success over it.
+
+    The post-fence settlement of the in-flight durable walk (how the aborted
+    attempt's own records close out) is #44/#1169 territory; this scenario
+    pins only the cross-product contract: Conductor's cancel decided, and no
+    Builders-local completion overrode it.
+    """
+    _bind_hive_backend()
+
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests, create_workspace
+
+    from maistro.builders.interactive import CanonicalInteractiveTurnExecutor
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    scratch = Path(tempfile.mkdtemp(prefix="builders-conductor-parity-"))
+    profile = None
+    monkey = pytest.MonkeyPatch()
+    try:
+        # The producer acts as a member of a real canonical Workspace (the
+        # Conductor-side authority the observation half authorizes against).
+        view = await create_workspace(
+            creator_user_id=_PARITY_USER,
+            name="Builders parity",
+            persona_template_id="pm_fleet",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        profile = await open_durable_profile(scratch / "spine.sqlite3", workspace_id=view.id)
+        producer = CanonicalInteractiveTurnExecutor(
+            run_store=profile.run_store,
+            durable_store=CanonicalDurableRunStore(profile.run_store, profile.continuation_store),
+            workspace_id=profile.workspace_id,
+            project_id=profile.project_id,
+            actor_principal_id=_PARITY_USER,
+        )
+
+        # -- Producer: one real interactive turn becomes canonical work. ------
+        done = await producer.execute(
+            session_id="parity-session-1",
+            repo="agent-stronghold/project-maistro",
+            prompt="ship the parity scenario",
+            messages=[{"role": "user", "content": "ship the parity scenario"}],
+            runner=_CompletedRunner("spec, tests, code, review: all green"),
+        )
+        assert done.status is RunStatus.COMPLETED, f"turn ended {done.status}: {done.error}"
+        run_id = done.run_id
+
+        # -- Observer: Conductor inspects the same canonical id. --------------
+        # The producer never recorded a projection row: the dag_run_store is
+        # not the discovery mechanism for another product's Run (#1036).
+        assert get_dag_run_store().get_run(run_id) is None
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            SimpleNamespace(
+                run_store=profile.run_store,
+                run_reader=ScopedRunReader(
+                    profile.run_store,
+                    canonical_store_for_tests(),
+                    profile.project_store,
+                ),
+            ),
+        )
+
+        detail = await visible_run_detail(_PARITY_USER, run_id)
+        assert detail is not None
+        assert detail["id"] == detail["canonical_run_id"] == run_id
+        assert detail["workspace_id"] == view.id == profile.workspace_id
+        assert detail["project_id"] == profile.project_id
+        assert detail["status"] == "completed"
+        node_runs = detail.get("node_runs") or []
+        assert node_runs, "the completed turn must expose physical NodeRun evidence"
+        attempts = [attempt for node in node_runs for attempt in node.get("attempts", [])]
+        assert attempts, "the completed turn must expose physical Attempt evidence"
+        assert all(attempt["status"] == "completed" for attempt in attempts)
+        assert await can_inspect_run(_PARITY_USER, run_id)
+        assert await visible_run_ids(_PARITY_USER, [run_id, "no-such-run"]) == {run_id}
+        listed = await list_visible_runs(_PARITY_USER, limit=25)
+        assert run_id in {row["id"] for row in listed}
+
+        # A caller outside the producing Workspace is refused without learning
+        # the id exists -- the same answer a missing id gets (#1174).
+        assert await visible_run_detail(_PARITY_FOREIGN_USER, run_id) is None
+        assert not await can_inspect_run(_PARITY_FOREIGN_USER, run_id)
+        assert await visible_run_ids(_PARITY_FOREIGN_USER, [run_id]) == set()
+
+        # -- Control: cancel a genuinely mid-flight turn by the same id. ------
+        parked = _ParkedRunner()
+        live = asyncio.create_task(
+            producer.execute(
+                session_id="parity-session-2",
+                repo="agent-stronghold/project-maistro",
+                prompt="long-running turn",
+                messages=[{"role": "user", "content": "long-running turn"}],
+                runner=parked,
+            )
+        )
+        live_id = await _wait_for_running_turn(profile.run_store, profile.workspace_id)
+        response = await cancel_route(live_id, _ParityRequest(_PARITY_USER))
+        assert response == {
+            "run_id": live_id,
+            "status": "cancelled",
+            "cancelled": True,
+        }
+        fenced = await profile.run_store.get_run(live_id)
+        assert fenced is not None and fenced.status is RunStatus.CANCELLED
+        after = await visible_run_detail(_PARITY_USER, live_id)
+        assert after is not None and after["status"] == "cancelled"
+
+        # The still-parked physical work can no longer publish success over
+        # the fence: it is released, and whatever the durable walk does with
+        # its own in-flight settlement (#44/#1169), the canonical record and
+        # every inspection read stay cancelled.
+        parked.release.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(live), timeout=30.0)
+        except TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            if not live.done():
+                raise
+        except Exception:
+            pass
+        if not live.done():
+            live.cancel()
+            with contextlib.suppress(BaseException):
+                await live
+        if live.done() and not live.cancelled():
+            # Retrieve the outcome so the loop stays warning-free; the
+            # turn's own aborted-settlement error is #44/#1169 evidence,
+            # not a pass/fail input for this scenario.
+            live.exception()
+        turn_completed_cleanly = (
+            live.done()
+            and not live.cancelled()
+            and live.exception() is None
+            and live.result().status is RunStatus.COMPLETED
+        )
+        assert not turn_completed_cleanly, (
+            "a cancelled Builders turn must never complete successfully"
+        )
+        final = await profile.run_store.get_run(live_id)
+        assert final is not None and final.status is RunStatus.CANCELLED
+        final_detail = await visible_run_detail(_PARITY_USER, live_id)
+        assert final_detail is not None and final_detail["status"] == "cancelled"
+
+        return ScenarioExecution(
+            {
+                "producer": "builders",
+                "observer": "conductor",
+                "run_id": run_id,
+                "workspace_id": profile.workspace_id,
+                "project_id": profile.project_id,
+                "producer_status": detail["status"],
+                "physical_node_runs": len(node_runs),
+                "physical_attempts": len(attempts),
+                "projection_rows_for_run": 0,
+                "foreign_observer_visible": False,
+                "cancelled_run_id": live_id,
+                "cancelled_status": final_detail["status"],
+            }
+        )
+    finally:
+        monkey.undo()
+        if profile is not None:
+            await profile.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _validate_builders_observation(observation: Mapping[str, Any]) -> None:
+    """The strict invariant over the real producer/observer records (#2210)."""
+    assert observation["producer"] == "builders"
+    assert observation["observer"] == "conductor"
+    for field in ("run_id", "workspace_id", "project_id", "cancelled_run_id"):
+        assert observation[field], f"observation lacks canonical {field}"
+    assert observation["producer_status"] == "completed"
+    assert observation["physical_node_runs"] >= 1
+    assert observation["physical_attempts"] >= 1
+    assert observation["projection_rows_for_run"] == 0
+    assert observation["foreign_observer_visible"] is False
+    assert observation["cancelled_status"] == "cancelled"
 
 
 def _required_golden_scenarios() -> tuple[tuple[str, str], ...]:
@@ -119,8 +402,9 @@ def _validate_golden_observation(observation: Mapping[str, object]) -> None:
 
 BUILDERS_SCENARIO = ParityScenario(
     name="builders-producer-to-conductor",
-    dependencies=(BUILDERS, CONDUCTOR_INSPECTION),
-    execute=_builders_scenario,
+    dependencies=(BUILDERS, CONDUCTOR_INSPECTION, REAL_BUILDERS_CONDUCTOR_SCENARIO),
+    execute=_builders_conductor_scenario,
+    validate_observation=_validate_builders_observation,
 )
 SCHEDULER_SCENARIO = ParityScenario(
     name="scheduler-occurrence-to-conductor",
@@ -220,45 +504,27 @@ def test_second_run_id_mapping_and_private_terminal_state_are_rejected() -> None
 def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
     """Scenario 1 activation contract for Builders -> Conductor parity.
 
-    ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` stays an evidenced blocker even once
-    ``CONDUCTOR_INSPECTION`` lands: the assertions below only check that the
-    import/source seams exist, not that a real Run was created and observed
-    through them, so this scenario cannot be trusted as closure evidence until
-    that dependency's own marker lands alongside real executable assertions.
+    The scaffold-era import/source checks below are still true, but they are
+    no longer the evidence: ``_builders_conductor_scenario`` now executes the
+    real producer -> spine -> observer boundary, and
+    ``test_builders_required_scenario_emits_strict_closeout_evidence`` runs it
+    through the closeout machinery. This test stays as the cheap seam check
+    that fails before the scenario ever runs if the public surface regresses.
     """
-    dependency = dependency_assessment(
-        BUILDERS, CONDUCTOR_INSPECTION, REAL_BUILDERS_CONDUCTOR_SCENARIO
-    )
-    if not dependency.ready:
-        assert dependency.blockers
-        return
-
-    builders_execution = importlib.import_module("maistro.builders.graph_executor")
-    executor = builders_execution.CanonicalGraphPipelineExecutor
-    assert executor.__name__ == "CanonicalGraphPipelineExecutor"
-    route_source = (
-        Path(__file__).resolve().parents[2]
-        / "packages"
-        / "hive-conductor"
-        / "backend"
-        / "routes"
-        / "dag_runs.py"
-    ).read_text(encoding="utf-8")
-    assert "from services.dag_run_store import get_dag_run_store" not in route_source
-    assert "run_store" in route_source
+    require_dependencies(BUILDERS, CONDUCTOR_INSPECTION, REAL_BUILDERS_CONDUCTOR_SCENARIO)
 
 
 def test_builders_required_scenario_emits_strict_closeout_evidence() -> None:
     """Scenario 1 through the closeout machinery (#1069).
 
-    Development mode records the abstaining scaffold as BLOCKED with its named
-    blockers; the strict closeout job turns the same evidence into a FAILED
-    machine-readable record and a suite failure, so a source-ready seam can
-    never masquerade as an executed producer -> observer scenario.
+    The Builders -> Conductor scenario is a real execution now, so it must
+    record PASSED evidence in development mode: a regression back to an
+    abstaining scaffold (or any parity break in the real producer/observer
+    boundary) shows up here as BLOCKED/FAILED instead of a green check.
     """
     evidence = execute_scenario_sync(BUILDERS_SCENARIO)
-    if evidence.status == "BLOCKED":
-        assert evidence.blockers or evidence.error
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
@@ -587,8 +853,8 @@ async def test_strict_closeout_reports_every_required_scenario() -> None:
         probes=(SourceProbe("tests/cross_product_parity/no-such-closeout-seam.py"),),
     )
     scenarios = (
-        ParityScenario("first-required", (missing,), _builders_scenario),
-        ParityScenario("second-required", (missing,), _scheduler_scenario),
+        ParityScenario("first-required", (missing,), _scheduler_scenario),
+        ParityScenario("second-required", (missing,), _evolve_scenario),
     )
 
     with pytest.raises(CloseoutFailure) as raised:
@@ -699,14 +965,21 @@ def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> No
 
     Codex review (PR #1641): once a scenario's named product dependency lands,
     an import/source-token check alone is not proof the scenario executed a
-    real cross-product Run through the product's own path. Each of scenarios
-    1, 2, 3 and 6 carries its own permanent, evidence-backed blocker
-    (``REAL_*`` in harness.py) precisely so the compound
-    ``dependency_assessment`` call stays unavailable -- and strict mode stays
-    red -- until that scaffold is replaced with a real execution.
+    real cross-product Run through the product's own path. Scenarios 2, 3 and
+    6 still carry their permanent, evidence-backed blockers (``REAL_*`` in
+    harness.py) precisely so the compound ``dependency_assessment`` call stays
+    unavailable -- and strict mode stays red -- until each scaffold is replaced
+    with a real execution. Scenario 1 (Builders -> Conductor) made that
+    replacement, so its ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` marker must now
+    read as available: its blocker is cleared by construction once the real
+    scenario exists, and the real execution itself is what
+    ``test_builders_required_scenario_emits_strict_closeout_evidence`` proves.
     """
+    assert REAL_BUILDERS_CONDUCTOR_SCENARIO.available(), (
+        "the Builders -> Conductor real-scenario marker regressed to unavailable: "
+        "the real scenario execution was lost"
+    )
     for dependency in (
-        REAL_BUILDERS_CONDUCTOR_SCENARIO,
         REAL_SCHEDULE_CONDUCTOR_SCENARIO,
         REAL_EVOLVE_CONDUCTOR_SCENARIO,
         REAL_GOLDEN_PRODUCT_OBSERVATION,
