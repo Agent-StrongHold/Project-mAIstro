@@ -1,6 +1,48 @@
 # CR1619 — closure-gate repair handoff at a1c7425c1 (round 6)
 
-## Round 6 verification record (2026-10-26, this round)
+## Round 7 verification record (2026-10-26, at 8fae8c814 = merge of origin/develop 78133c09)
+
+Develop advanced one commit past the round-5 merge base (`41deb105c`):
+`78133c093` "Connect classifier decision logging through ClassifierEngine
+(#34) (#2335)" — maistro-core classifier engine + its new test, the retired
+`ea7e` context note, and a ledger prune. Merged as `8fae8c814`; clean, zero
+conflicts (develop's surface is disjoint from this branch's packs surface).
+
+- **Ledger hygiene (AGENTS.md rule):** develop's `78133c09` itself removed
+  13 quality rows (reachability-baseline −1, reachability-dispositions −10,
+  vulture-baseline −2) — the `+1/+10/+2` seen in the pre-merge
+  `diff 78133c09..fd2a030b6` were that deletion in reverse; the branch itself
+  adds no quality rows (`diff --numstat 41deb105c fd2a030b6 -- quality/` is
+  empty). Post-merge `git diff --numstat origin/develop -- quality/` is empty:
+  HEAD's ledgers are byte-identical to develop's; no rows lost in the merge.
+- Battery re-proven at `8fae8c814` (all with CI's exact invocations):
+  ruff check + format --check (3538 files) ok; mypy workflow-exact
+  10-package list → Success, 1112 source files; pytest
+  `packages/maistro-design/tests -q` → 669 passed, 1 skipped;
+  FULL `check-suite-inventory.py` (CI invocation) → 21 suites ok,
+  34794 node IDs (develop's new classifier suite reconciles); vulture
+  CI-exact args → exit 0, baseline `78133c093e0a`, candidate `8fae8c814ab4`,
+  1253 = 1253; reachability (102 unreachable, 35 disposition groups),
+  reachability-dispositions, promotion-surface (81 tolerated),
+  merge-markers, monorepo layout, cross-package imports, doc-links,
+  shell-execution, contract-markers, `check_enumerations.py`,
+  `tools/lint_lifecycle.py`, `uv sync --locked --extra dev` → all exit 0.
+- AC-4 re-proven structurally at this head: `git diff --name-only
+  --diff-filter=A 41deb105c..HEAD` lists only the 8 `catalog/*.json`
+  manifests, `test_domain_packs.py`, the two inventory notes, this context
+  note, and (via the merge) develop's own classifier test; no new package
+  directory, no server/Design Studio route file touched.
+- Closure gate reproduced again at this head with the gate's own functions
+  (`scripts/check-closure-targets.py` as a module) against the
+  dispatch-captured bodies: `closing_targets(PR body)` → `[1614]`;
+  `acceptance_criteria(#1614)` → 5 registered, all unticked;
+  `problems_for(...)` → CI's exact strings (EPIC tag + "5 of 5 registered
+  criteria unproven"); first line as `Part of #1614` → `closing_targets` →
+  `[]` (gate's ok path). Conclusion unchanged: the only failing CI step
+  reads GitHub state; the one-line GitHub-side PR-body edit remains the
+  sole outstanding action and is outside this lane's authority.
+
+## Round 6 verification record (2026-10-26, at a1c7425c1)
 
 Verifier/writer round at head `a1c7425c1` (= merge of origin/develop
 `41deb105c`, which is still develop's tip — `git fetch` + `git rev-parse
