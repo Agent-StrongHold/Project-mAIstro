@@ -44,3 +44,34 @@ missing-ID refusal that preserves the existing window. CI measures core and
 Turing in separate coverage producers; Turing's composition proof alone cannot
 count as coverage of core. These tests complement that product-path evidence
 without changing production code or the coverage floor.
+
+## Revalidation at the develop-merge head (2026-10-26)
+
+The branch was merged with develop (`78133c093`) into `ce2a6d1dd`; the
+conflict-free result keeps this PR's seven surfaces as its only delta against
+develop, and `quality/` is byte-identical to develop (no ledger rows moved).
+All gates were re-run at that head, no production change was needed:
+
+- Behavioral: `uv run --frozen pytest
+  packages/maistro-turing/backend/tests/test_chat.py
+  packages/maistro-core/tests/runs/test_chat_admission.py -q --tb=line` —
+  72 passed (29 Turing chat as above; core grew by develop's +10, the delta
+  recorded in this note). Full `packages/maistro-turing/backend/tests` 137
+  passed under the coverage producer; `packages/maistro-turing/tests` 225
+  passed; `packages/maistro-core/tests/runs` 1505 passed / 368 skipped (the
+  skips are the PostgreSQL legs).
+- Ratchet gates, CI-exact invocations: vulture `packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` 1253 = 1253; radon
+  127 = 127; reachability, promotion surface and direct-effect inventory all
+  pass; suite inventory matches the recorded baseline plus this note's
+  deltas (core 18037, Turing backend 137).
+- Diff coverage reproduced package-separated (`--source` core over
+  `tests/runs`, `--source` Turing backend over `backend/tests`, branch arcs):
+  `check-diff-coverage.py --base 78133c093` — both measured files at or above
+  90% lines / 80% branch arcs.
+- SAST at the pinned CI versions: gitleaks 8.30.1 `no leaks found` over both
+  `78133c093..ce2a6d1dd` and the pending push range `e7fd99e74096..ce2a6d1dd`
+  (the historical fingerprints that failed earlier push scans at `8f05e0e8`
+  are not in either range); semgrep 364 rules / 2258 files / 0 findings;
+  bandit 0 Medium+ findings. Ruff check and format clean; mypy clean over the
+  944-file package set.
