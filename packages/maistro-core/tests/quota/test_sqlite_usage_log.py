@@ -312,6 +312,80 @@ async def test_empty_log_snapshot_is_a_no_op(persist: SqliteUsageLog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_purge_aggregates_before_deleting_and_respects_boundary(
+    persist: SqliteUsageLog,
+) -> None:
+    log = InMemoryUsageLog()
+    log.record("provider:model", input_tokens=2, output_tokens=3, now=99.0)
+    log.record("provider:model", input_tokens=5, output_tokens=7, now=100.0)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=100.0) == 1
+    cursor = await persist._conn.execute(
+        "SELECT input_tokens, output_tokens FROM usage_event_aggregates"
+    )
+    assert await cursor.fetchall() == [(2, 3)]
+    restored = await persist.restore()
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=100.0) == 5.0
+
+
+@pytest.mark.asyncio
+async def test_purge_is_bounded_and_legal_hold_is_scope_isolated(
+    persist: SqliteUsageLog,
+) -> None:
+    log = InMemoryUsageLog()
+    for timestamp in (1.0, 2.0, 3.0):
+        log.record("held", input_tokens=1, now=timestamp)
+        log.record("free", input_tokens=1, now=timestamp)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=10.0, limit=1, legal_hold_scopes=("held",)) == 1
+    cursor = await persist._conn.execute(
+        "SELECT COUNT(*) FROM usage_events WHERE scope_key = 'held'"
+    )
+    assert (await cursor.fetchone())[0] == 3
+    cursor = await persist._conn.execute(
+        "SELECT COUNT(*) FROM usage_events WHERE scope_key = 'free'"
+    )
+    assert (await cursor.fetchone())[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_bounded_purges_never_double_count_aggregates(
+    persist: SqliteUsageLog,
+) -> None:
+    """A bounded delete must aggregate exactly the batch it deletes.
+
+    Expired rows outnumber the batch limit here, so the sweeper must be
+    called repeatedly. Aggregating every expired row while deleting only a
+    bounded batch would re-aggregate the survivors on the next sweep and
+    corrupt the durable reconciliation record with double-counted usage.
+    """
+    log = InMemoryUsageLog()
+    for i in range(7):
+        log.record("provider:model", input_tokens=1, output_tokens=2, now=float(i))
+    log.record("other:model", input_tokens=10, now=3.0)
+    await persist.snapshot(log)
+
+    purged = 0
+    for _ in range(20):
+        deleted = await persist.purge_expired(before=6.5, limit=2)
+        if deleted == 0:
+            break
+        purged += deleted
+
+    assert purged == 8  # all rows are older than the 6.5 cutoff
+    cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+    assert (await cursor.fetchone())[0] == 0
+    cursor = await persist._conn.execute(
+        "SELECT SUM(input_tokens), SUM(output_tokens) FROM usage_event_aggregates"
+    )
+    # Exactly the deleted raw usage -- not the double-counted survivors of
+    # earlier bounded sweeps.
+    assert await cursor.fetchall() == [(7 * 1 + 10, 7 * 2)]
+
+
+@pytest.mark.asyncio
 async def test_restore_reproduces_max_retention_pruning(persist: SqliteUsageLog) -> None:
     log = InMemoryUsageLog()
     log.record("groq:kimi-k2", input_tokens=1, now=1000.0)
@@ -398,3 +472,155 @@ async def test_an_unreported_call_restores_as_unreported_not_missing(
 
     (event,) = restored.events_for("openai:gpt-4")
     assert event.usage_reported is False
+
+
+@pytest.mark.asyncio
+async def test_a_purge_publishes_the_accounting_tables_stored_volume(
+    persist: SqliteUsageLog,
+) -> None:
+    """The raw-vs-aggregate split (#325) is only provable as a level: after a
+    purge the raw table's gauge shows exactly the rows that survived, the
+    aggregates show the day-buckets the raw rows were folded into, and the
+    oldest-record series shows how far back each reaches. A purge that
+    deletes nothing still publishes — a quiet table is when the level is the
+    only health signal there is."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _rows(table: str) -> float | None:
+        values = [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "sqlite"}
+        ]
+        return sum(values) if values else None
+
+    retention_health._LAST_PROBE.clear()
+    log = InMemoryUsageLog()
+    log.record("provider:model", input_tokens=2, output_tokens=3, now=99.0)
+    log.record("provider:model", input_tokens=5, output_tokens=7, now=100.0)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=100.0) == 1
+
+    assert _rows("usage_events") == 1.0  # the boundary row (t=100) is retained
+    assert _rows("usage_event_aggregates") == 1.0  # the one folded day-bucket
+    oldest_raw = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "usage_events", "backend": "sqlite"}
+    ]
+    assert oldest_raw == [100.0]  # the retained row is the oldest retained record
+
+    # Draining everything publishes the empty level: zero rows, no oldest
+    # record — an absent series, never a fabricated epoch-origin zero.
+    retention_health._LAST_PROBE.clear()
+    assert await persist.purge_expired(before=1_000.0) == 1
+    assert _rows("usage_events") == 0.0
+    assert _rows("usage_event_aggregates") == 1.0  # aggregates outlive raw rows
+    oldest_after = [
+        s
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "usage_events", "backend": "sqlite"}
+    ]
+    assert oldest_after == []
+
+
+@pytest.mark.asyncio
+async def test_purge_then_snapshot_does_not_double_count_idle_scope(
+    persist: SqliteUsageLog,
+) -> None:
+    """Regression (#325 review): a flush must not resurrect purged events.
+
+    `record` prunes only the scope it touches, so a scope that goes idle can
+    retain events far past the purge horizon. Before the fix, a `snapshot`
+    after `purge_expired` reinserted such an event (its durable `event_id`
+    row was gone), and the next sweep aggregated it a second time —
+    snapshot → purge → snapshot → purge doubled a single 7-token event.
+    """
+    t0 = 1_000_000.0
+    log = InMemoryUsageLog(max_retention_s=86_400.0)
+    log.record("provider:model", input_tokens=7, now=t0)
+    await persist.snapshot(log)  # flushed while fresh — 7 tokens durable
+
+    # The scope goes idle and the process ages far past the in-memory
+    # retention window; the sweep horizon is legal (older than it).
+    horizon = t0 + 5 * 86_400.0
+    assert await persist.purge_expired(before=horizon) == 1
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7
+
+    # The stale in-memory copy must not be reinserted now that its durable
+    # row is gone; otherwise the next sweep aggregates it a second time.
+    await persist.snapshot(log)
+    assert await persist.purge_expired(before=horizon) == 0
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7  # not 14
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_retirement_by_identity_keeps_a_replicas_late_distinct_event(
+    persist: SqliteUsageLog,
+) -> None:
+    """Regression (review): retirement is per identity, not per timestamp.
+
+    Two replicas share this database and each hold a distinct event for one
+    scope at the same timestamp. The first replica flushes, a sweep folds
+    its event into the aggregates and retires it; the second replica then
+    flushes late. Under the old per-scope timestamp watermark the late
+    event's identical timestamp read as "already retired" and it was
+    silently dropped — accounting kept 7 tokens instead of 14. A scope
+    timestamp does not establish that every event at or below it has been
+    accounted for, so only the tombstoned `event_id` is suppressed.
+    """
+    t0 = 1_000.0
+    horizon = t0 + 5 * 86_400.0
+    first = InMemoryUsageLog()
+    first.record("provider:model", input_tokens=7, now=t0, event_id="event-a")
+    second = InMemoryUsageLog()
+    second.record("provider:model", input_tokens=7, now=t0, event_id="event-b")
+
+    await persist.snapshot(first)
+    assert await persist.purge_expired(before=horizon) == 1
+
+    # The second replica's distinct event arrives only after the sweep, at
+    # the retired event's timestamp — it must still be persisted.
+    await persist.snapshot(second)
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT event_id FROM usage_events WHERE scope_key = 'provider:model'"
+        )
+        assert [row[0] for row in await cursor.fetchall()] == ["event-b"]
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 7  # only the retired event so far
+
+    # ...and it must aggregate exactly once, like any other event.
+    assert await persist.purge_expired(before=horizon) == 1
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute(
+            "SELECT COALESCE(SUM(input_tokens), 0) FROM usage_event_aggregates"
+        )
+        assert (await cursor.fetchone())[0] == 14
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0
+
+    # The retired identity itself stays suppressed: replaying the first
+    # replica's stale copy must not resurrect `event-a` even though its
+    # timestamp now sits at the watermark the late event passed.
+    await persist.snapshot(first)
+    async with persist._operation_lock:
+        cursor = await persist._conn.execute("SELECT COUNT(*) FROM usage_events")
+        assert (await cursor.fetchone())[0] == 0

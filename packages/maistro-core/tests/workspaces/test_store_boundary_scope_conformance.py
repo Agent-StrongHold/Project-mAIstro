@@ -548,13 +548,17 @@ def test_the_audit_log_has_no_by_id_mutation() -> None:
     A by-id update or delete added to an audit store must arrive with its own
     scoped case here rather than inherit the append's answer.
     """
-    allowed = {"log", "get_entries", "ensure_schema", "get_page", "verify"}
+    allowed = {"log", "get_entries", "ensure_schema", "get_page", "verify", "purge_expired"}
     # get_page (#358) is the bounded keyset read: like get_entries it exposes
     # no by-id mutation path, so it is named here rather than inherited by
     # silence. A future update/delete by id still fails this set.
     # verify (ADR-073) is the proof check over a retained record's signature:
     # a pure read like get_entries, admitted by its own scoped case below
     # (test_audit_verify_is_a_read_not_a_mutation), never by silence.
+    # purge_expired (#325) is the bounded expiry batch, not a by-id delete:
+    # it selects strictly by cutoff timestamp, honors an explicit hold set,
+    # and is admitted by its own scoped case below
+    # (test_audit_purge_expired_is_expiry_batched_not_by_id), never by silence.
     for store in (InMemoryAuditLog, SqliteAuditLog, PgAuditLog):
         public = {
             name
@@ -584,6 +588,51 @@ async def test_audit_verify_is_a_read_not_a_mutation() -> None:
 
     # Neither verdict touched the log: still exactly the one retained record.
     assert [_without_proof(e) for e in await audit.get_entries(org_id="owner")] == [owner]
+
+
+async def test_audit_purge_expired_is_expiry_batched_not_by_id() -> None:
+    """The scoped case admitting ``purge_expired`` to the append-only surface.
+
+    The purge is retention's bounded expiry batch (#325), not a by-id delete:
+    selection is strictly ``timestamp < cutoff`` — never a caller-chosen row
+    — and an explicit hold set wins over expiry. This case proves both
+    properties on the durable sqlite store; the shared allowlist entry must
+    not become license for an arbitrary by-id delete.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import aiosqlite
+
+    from maistro.persistence.sqlite_audit import SqliteAuditLog
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = SqliteAuditLog(conn)
+        await audit.ensure_schema()
+        old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        fresh = datetime.now(UTC).isoformat()
+        await conn.executemany(
+            "INSERT INTO audit_log (timestamp, user_id, org_id, detail) VALUES (?, ?, ?, ?)",
+            [
+                (old, "held", "org", "held old"),
+                (old, "free", "org", "free old"),
+                (fresh, "free", "org", "free fresh"),
+            ],
+        )
+        await conn.commit()
+
+        removed = await audit.purge_expired(
+            before=datetime.now(UTC) - timedelta(days=1),
+            legal_hold_user_ids=("held",),
+        )
+
+        # Exactly the expired, unheld row went; the held row and the fresh
+        # row survive — the cutoff and the hold, not any by-id choice, decided.
+        assert removed == 1
+        remaining = [entry.detail for entry in await audit.get_entries(org_id="org")]
+        assert sorted(remaining) == ["free fresh", "held old"]
+    finally:
+        await conn.close()
 
 
 # ── the gap set itself ─────────────────────────────────────────────

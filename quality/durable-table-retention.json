@@ -85,9 +85,9 @@
       "owner_module": "packages/maistro-core/src/maistro/persistence/pg_audit.py",
       "data_class": "audit",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.persistence.pg_audit:PgAuditLog.purge_expired",
       "issue": "#325",
-      "notes": "Append-only audit trail with no retention. Legal hold and tamper-evidence are the importing product's (owner decision on #325)."
+      "notes": "Append-only audit trail. purge_expired (PgAuditLog on postgres, SqliteAuditLog on sqlite) deletes a bounded oldest-first batch in one transaction while skipping held user_ids \u2014 the mechanism only. Horizon, legal hold and tamper-evidence policy are the importing product's (owner decision on #325); nothing in-process drives it yet (no scheduler exists in this repo), so retention stays undecided until a driver names the policy."
     },
     {
       "table": "backlog_authority",
@@ -253,7 +253,7 @@
       "retention": "indefinite_by_decision",
       "deletion_path": null,
       "issue": "#113",
-      "notes": "Optional SQLite mirror of the in-memory CandidateArchive (M4-A6): the append-only ledger of candidate lifecycle events (created/retired/promoted/branched/blocked). Kept forever on purpose — deleting a lineage row erases the provenance the archive exists to preserve, so archive.py has no deletion path; retention evaluation and non-champion branching read retired snapshots forever. Bounded by the candidates a deployment actually creates."
+      "notes": "Optional SQLite mirror of the in-memory CandidateArchive (M4-A6): the append-only ledger of candidate lifecycle events (created/retired/promoted/branched/blocked). Kept forever on purpose \u2014 deleting a lineage row erases the provenance the archive exists to preserve, so archive.py has no deletion path; retention evaluation and non-champion branching read retired snapshots forever. Bounded by the candidates a deployment actually creates."
     },
     {
       "table": "canonical_attempts",
@@ -279,10 +279,10 @@
       "owner_module": "packages/maistro-core/src/maistro/events/envelope.py",
       "data_class": "event_history",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.events.pg_envelope:PgEventStore.purge_expired",
       "issue": "#325",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
-      "notes": "Preserved by the Run purge on purpose (runs/retention_scope.py). Has no retention of its own."
+      "notes": "Preserved by the Run purge on purpose (runs/retention_scope.py) \u2014 Run retention counts what it leaves behind rather than emptying the log. The table also has its own explicit bounded purge on every listed backend (SqliteEventLog.purge_expired on sqlite, PgEventStore.purge_expired on postgres: oldest-first, legal-hold-aware, transactional), kept test-driven like the other explicit mechanisms until a driver owns the horizon."
     },
     {
       "table": "canonical_event_outbox",
@@ -295,6 +295,19 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "canonical_event_stream_watermarks",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/envelope.py",
+      "data_class": "runtime_state",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-stream sequence high-water mark (pg_envelope.py carries the postgres twin). Kept forever on purpose: it is the allocation floor that keeps stream sequence numbers monotonic after the event purge deletes rows — deleting a stream's mark would rewind its sequence and silently drop events from readers resuming at an earlier cursor. Bounded by one two-column row per stream ever appended, not by event volume."
     },
     {
       "table": "canonical_node_runs",
@@ -655,7 +668,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#325",
-      "notes": "Durable user guidance (#780); superseded rows stay readable by design — invalidation is supersession, never deletion. Project deletion cascades via design_projects. Retention undecided on #325."
+      "notes": "Durable user guidance (#780); superseded rows stay readable by design \u2014 invalidation is supersession, never deletion. Project deletion cascades via design_projects. Retention undecided on #325."
     },
     {
       "table": "design_projects",
@@ -729,9 +742,9 @@
       "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
       "data_class": "event_history",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.events.pg_stores:PgEventLog.purge_expired",
       "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+      "notes": "Delivery history appended before handling; the SQLite twin is maistro.events.durable_log:SqliteEventLog.purge_expired. Both purge_expired methods delete a bounded oldest-first batch in one transaction, skip legal-held entity ids, and publish the table's stored-volume health after committing. The horizon and the driving schedule are the importing product's (owner decision on #325); nothing in-process drives the purge yet, so retention stays undecided until it is driven."
     },
     {
       "table": "event_replay_cursors",
@@ -1147,9 +1160,9 @@
       "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
       "data_class": "runtime_state",
       "retention": "undecided",
-      "deletion_path": "maistro.security.pg_strikes:PgRateLimiter.check_and_record",
+      "deletion_path": "maistro.security.pg_strikes:PgRateLimiter.purge_expired",
       "issue": "#325",
-      "notes": "PgRateLimiter.check_and_record deletes expired windows inline, but PgRateLimiter has no production caller (production uses InMemoryRateLimiter), so nothing writes or prunes this table today."
+      "notes": "Expired windows are deleted inline by PgRateLimiter.check_and_record, and PgRateLimiter.purge_expired removes an explicit bounded oldest batch for callers that sweep. PgRateLimiter still has no production caller (production uses InMemoryRateLimiter), so nothing writes or prunes this table in production today."
     },
     {
       "table": "security_strikes",
@@ -1171,9 +1184,9 @@
       "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
       "data_class": "security_evidence",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.security.pg_strikes:PgStrikeTracker.purge_expired",
       "issue": "#325",
-      "notes": "Appended on every strike and read in full on every lock check; nothing deletes it. Tamper-evidence and legal hold are the importing product's (owner decision on #325)."
+      "notes": "Appended on every strike and read back on lock checks. purge_expired deletes a bounded oldest-first batch of evidence rows in one transaction, never current strike state (security_strikes is untouched), with an explicit legal_hold_user_ids argument. The evidence horizon and the hold list are the importing product's (owner decision on #325); nothing in-process drives the purge yet, so retention stays undecided until it is driven."
     },
     {
       "table": "extension_installs",
@@ -1357,9 +1370,21 @@
       "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_usage_log.py",
       "data_class": "accounting",
       "retention": "undecided",
-      "deletion_path": null,
+      "deletion_path": "maistro.quota.sqlite_usage_log:SqliteUsageLog.purge_expired",
       "issue": "#325",
-      "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
+      "notes": "Aggregate-then-delete: purge_expired upserts per-(scope_key, day) sums into usage_event_aggregates and deletes the same bounded batch in one transaction, so deleting raw rows cannot corrupt accounting or current enforced quota state (the in-memory enforcement window is shorter than any horizon a caller passes). Legal hold is an explicit legal_hold_scopes argument. The horizon (a caller-supplied cutoff, not a code default) and the driving schedule are the importing product's (owner decision on #325); no in-process scheduler exists in this repo, so retention stays undecided until one drives it. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity."
+    },
+    {
+      "table": "usage_retired_events",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_usage_log.py",
+      "data_class": "runtime_state",
+      "retention": "indefinite_by_decision",
+      "deletion_path": "maistro.quota.sqlite_usage_log:SqliteUsageLog.purge_expired",
+      "issue": "#325",
+      "notes": "Per-event identity tombstones written in the same transaction as each purge. Kept beyond any plausible stale-copy replay lag (30 days, see _TOMBSTONE_WINDOW_S) and then expired by purge_expired itself. `snapshot` consults them to skip replaying in-memory events whose durable rows a purge already aggregated and deleted — deleting the tombstone would resurrect purged rows on the next flush and double-count them in the aggregates. Bounded by one row per retired event_id, not by event volume, and aged out past the tombstone window."
     },
     {
       "table": "workspace_backlog_history",
@@ -1408,7 +1433,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#1572",
-      "notes": "Canonical Goals (`maistro.goals`): desired state and accountability, never execution state. Append-only by contract; no deletion path in scope — terminal Goals are final records, and a driven purge belongs with the reconciliation consumer (#805/#806) that first deletes one."
+      "notes": "Canonical Goals (`maistro.goals`): desired state and accountability, never execution state. Append-only by contract; no deletion path in scope \u2014 terminal Goals are final records, and a driven purge belongs with the reconciliation consumer (#805/#806) that first deletes one."
     },
     {
       "table": "canonical_goal_revisions",
@@ -1483,6 +1508,18 @@
       "deletion_path": null,
       "issue": "#978",
       "notes": "Append-only operator decisions (enable/disable/quarantine/release) with actor and reason (M9-I3); the newest row per extension is the durable state that makes quarantines and disables survive restarts. Kept forever on purpose: 'who held this extension, when, and why' is audit evidence the health views and exports surface, and rewriting it would defeat the hold's provenance."
+    },
+    {
+      "table": "usage_event_aggregates",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_usage_log.py",
+      "data_class": "accounting",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-(scope_key, day) accounting totals that raw usage_events rows are folded into before deletion (SqliteUsageLog.purge_expired, same transaction as the delete). This is the long-lived half of the raw-versus-aggregate split the issue requires: the raw reconciliation evidence retires, the spend totals stay. Kept indefinitely by that decision; one row per scope per day with usage, so growth is bounded by scopes x days."
     },
     {
       "table": "goals",
