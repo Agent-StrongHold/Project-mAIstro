@@ -2756,6 +2756,16 @@
       "effect_owner": "routes/attention.py dismiss_workspace_attention"
     },
     {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/optimizer/proposals/${encodeURIComponent(proposalId)}/${decision}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Attention Accept/Reject CTA posts to the canonical optimizer proposal doors (#1049 MERGE)",
+      "effect_owner": "routes/optimizer.py accept_proposal / reject_proposal"
+    },
+    {
       "source": "packages/hive-conductor/frontend/src/lib/dagRuns.ts",
       "signal": "mutating-api-call",
       "method": "POST",
