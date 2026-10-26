@@ -78,6 +78,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1893",
       "reason": "#1893 (B2) ships maistro.tasks.admission_codec as an inactive contract leaf of the #1845 admission integration: it decodes forward-schema/legacy admission rows into the #1851 immutable DTOs or typed fail-closed errors, with no SQL mutation, HTTP mapping, queue change or live _assess change of its own, so no process entry point reaches it until the C leaf lands its consumer. #1851's maistro.runs.admission_identity is the DTO stack the codec decodes into. Both are dispositioned CONNECT (group runs-root-admission-contracts) in quality/reachability-dispositions.json and are expected to leave the baseline when the #1845 admission backend lands."
+    },
+    "@tool/plan_delivery": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1629",
+      "reason": "scripts/plan_delivery.py is a read-only operator/orchestrator planning CLI (#1629): it never runs as a CI gate, so unreachable from process entry points is the intended permanent state. Dispositioned LIBRARY in quality/reachability-dispositions.json (group operator-cli-tooling) alongside check_assertion_quality / generate_repo_tasks / openrouter_rpm_pacer. This grant authorizes exactly that one new @tool identity and its matching disposition; it does not authorize any other reachability debt."
     }
   },
   "vulture": {
