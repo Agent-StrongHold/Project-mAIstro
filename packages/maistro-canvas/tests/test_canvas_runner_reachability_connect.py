@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from maistro_canvas.canvas import composition
+import maistro_canvas.canvas.composition as composition
 from maistro_canvas.canvas.runner import CanvasJobRunner
 
 
