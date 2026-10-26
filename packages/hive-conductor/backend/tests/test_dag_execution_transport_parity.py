@@ -673,3 +673,82 @@ async def test_live_projection_swallows_malformed_events_and_store_failures(
     monkeypatch.undo()
     await recorder.record_result({"status": "completed"})
     assert dag_run_store.get_dag_run_store().get_run("r") is None
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["created", "queued", "running", "waiting", "paused"])
+async def test_live_projection_mirrors_nonterminal_without_finish(
+    admin_client: TestClient,
+    stored_dag: str,
+    status: str,
+) -> None:
+    """#1036: LiveRunProjection.record_result routes nonterminal through
+    record_outcome — exact status, finished_at null, never finish_run."""
+    from services.dag_execution_scope import authorize_hive_dag_scope
+    from services.dag_run_live import LiveRunProjection
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = _create_workspace(admin_client, f"Live nonterm {status}")
+    scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id="admin")
+    recorder = LiveRunProjection(dag_id=stored_dag, scope=scope)
+    run_id = f"run-live-{status}"
+
+    await recorder.record_result({"run_id": run_id, "status": status})
+
+    detail = get_dag_run_store().get_run(run_id)
+    assert detail is not None
+    assert detail["status"] == status
+    assert detail["finished_at"] is None
+    assert detail["workspace_id"] == workspace_id
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_status", [None, "", "sorta-done"])
+async def test_live_projection_never_coerces_missing_status_to_failed(
+    admin_client: TestClient,
+    stored_dag: str,
+    bad_status: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#1036: missing/unknown live result status logs and leaves no terminal
+    stamp — the old `or \"failed\"` coercion is gone."""
+    import logging
+
+    from services.dag_execution_scope import authorize_hive_dag_scope
+    from services.dag_run_live import LiveRunProjection
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = _create_workspace(admin_client, "Live no coerce")
+    scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id="admin")
+    recorder = LiveRunProjection(dag_id=stored_dag, scope=scope)
+    run_id = f"run-live-bad-{bad_status!s}"
+
+    # Seed an open mid-run row so a coerced finish would be visible.
+    await recorder.record_event(
+        {
+            "kind": "node_started",
+            "run_id": run_id,
+            "node_run_id": "nr-1",
+            "attempt_id": "a-1",
+            "node_id": "n1",
+            "role": "worker",
+        }
+    )
+    before = get_dag_run_store().get_run(run_id)
+    assert before is not None
+    assert before["finished_at"] is None
+
+    with caplog.at_level(logging.WARNING, logger="hive.dag_run_live"):
+        payload: dict[str, Any] = {"run_id": run_id}
+        if bad_status is not None:
+            payload["status"] = bad_status
+        await recorder.record_result(payload)
+
+    after = get_dag_run_store().get_run(run_id)
+    assert after is not None
+    assert after["finished_at"] is None
+    assert after["status"] == before["status"]
