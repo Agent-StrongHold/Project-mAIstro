@@ -7,10 +7,10 @@
  * something `showModal()` asks the *browser* to do. A jsdom suite would be
  * asserting against a stub of the exact behaviour in question.
  *
- * The Create Agent dialog stands in for all of them. That is the point of one
- * shared component: a consumer cannot have its own semantics, so proving one
- * proves the set. These use only what every dialog has — a title, a close
- * button, a backdrop.
+ * The New Mission dialog stands in for all of them (Agents Create was deleted
+ * with Agents.tsx in #2273). That is the point of one shared component: a
+ * consumer cannot have its own semantics, so proving one proves the set.
+ * These use only what every dialog has — a title, a close button, a backdrop.
  */
 
 import AxeBuilder from "@axe-core/playwright";
@@ -44,13 +44,10 @@ test.afterAll(async () => {
   await context.close();
 });
 
-async function openCreateAgent(): Promise<Locator> {
-  // `domcontentloaded`, not the default `load`: /agents holds a long-lived
-  // connection open, so the load event can be a long time coming and has
-  // nothing to do with the page being interactive.
-  await page.goto("/agents", { waitUntil: "domcontentloaded" });
+async function openCreateMission(): Promise<Locator> {
+  await page.goto("/missions", { waitUntil: "domcontentloaded" });
 
-  const create = page.getByRole("button", { name: /\+ Create/ }).first();
+  const create = page.getByRole("button", { name: "+ new", exact: true });
   await expect(create).toBeVisible({ timeout: 15000 });
   await create.focus();
   await create.click();
@@ -70,7 +67,7 @@ test.describe("Shared modal dialog semantics", () => {
   test("it is a dialog, and its accessible name is its title", async () => {
     // The previous implementation was two anonymous <div>s: assistive
     // technology saw containers appear with nothing to announce.
-    const dialog = await openCreateAgent();
+    const dialog = await openCreateMission();
 
     // `:modal` is true for exactly the dialogs `showModal()` opened — the
     // top-layer, background-inert ones. Asserting it rather than an
@@ -82,11 +79,11 @@ test.describe("Shared modal dialog semantics", () => {
     );
 
     expect(modal).toBe(true);
-    await expect(dialog).toHaveAccessibleName("Create Agent");
+    await expect(dialog).toHaveAccessibleName("New Mission");
   });
 
   test("focus moves into the dialog and cannot leave it by keyboard", async () => {
-    const dialog = await openCreateAgent();
+    const dialog = await openCreateMission();
 
     expect(await focusIsInsideTheDialog()).toBe(true);
 
@@ -101,7 +98,7 @@ test.describe("Shared modal dialog semantics", () => {
   });
 
   test("no control behind the dialog can be focused at all", async () => {
-    await openCreateAgent();
+    await openCreateMission();
 
     // Not "nothing outside is focused" but "nothing outside is focusABLE" —
     // the tab-order half of this issue's definition of done. Asking each
@@ -123,7 +120,7 @@ test.describe("Shared modal dialog semantics", () => {
   });
 
   test("Escape closes it and focus returns to the control that opened it", async () => {
-    const dialog = await openCreateAgent();
+    const dialog = await openCreateMission();
 
     await page.keyboard.press("Escape");
 
@@ -131,26 +128,24 @@ test.describe("Shared modal dialog semantics", () => {
     // Focus stranded on <body> is the failure a keyboard user feels: the next
     // Tab starts again at the top of the page instead of where they were.
     const restored = await page.evaluate(() => document.activeElement?.textContent?.trim());
-    expect(restored).toContain("Create");
+    expect(restored).toMatch(/\+?\s*new/i);
   });
 
   test("the close button closes it, and says what it closes", async () => {
-    const dialog = await openCreateAgent();
+    const dialog = await openCreateMission();
 
-    await page.getByRole("button", { name: "Close Create Agent" }).click();
+    await page.getByRole("button", { name: "Close New Mission" }).click();
 
     await expect(dialog).toBeHidden();
   });
 
   test("axe finds no violation in the open dialog", async () => {
-    await openCreateAgent();
+    await openCreateMission();
 
     // `color-contrast` is excluded, and only that: the two contrast findings in
     // this dialog are a green radio label and the panel's own surface, which
     // are palette decisions belonging to #376's typography and contrast floors.
-    // Every other rule runs, including the naming rules this issue is about —
-    // the scan reported the Model <select> as nameless and that is fixed here
-    // rather than suppressed.
+    // Every other rule runs, including the naming rules this issue is about.
     const results = await new AxeBuilder({ page })
       .include("dialog[open]")
       .disableRules(["color-contrast"])

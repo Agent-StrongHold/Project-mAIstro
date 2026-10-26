@@ -71,18 +71,18 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
-  // as the primary nav entry; those four stay URL-reachable until deleted.
+  // #2273: one Capabilities surface; Agents / MCP / Skills / Topology pages
+  // are deleted (old URLs redirect to /capabilities — not revived).
   { to: "/capabilities", icon: Boxes, label: "Capabilities" },
   { to: "/optimizer", icon: Zap, label: "Optimizer" },
   // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
   // implemented routes with no navigation entry (audit GLO-01). Each is a
   // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
   // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
-  // Skills, Work Items, Memory) deliberately stay off this list —
-  // docs/route-inventory.md records their URL-only dispositions. Evolution
-  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
+  // remaining legacy pages scheduled for replacement (Work Items, Memory)
+  // deliberately stay off this list — docs/route-inventory.md records their
+  // URL-only dispositions. Evolution is not URL-only either: #2275 removed
+  // its route for v1.0 (restore v1.2 / #51).
   { to: "/messages", icon: Inbox, label: "Messages" },
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },

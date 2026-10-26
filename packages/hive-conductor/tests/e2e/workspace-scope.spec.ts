@@ -21,7 +21,9 @@ let context: BrowserContext;
 let page: Page;
 const requests: string[] = [];
 
-const SCOPED_PAGES = ["/work-items", "/agents", "/missions"];
+// #2273: /agents redirects to Capabilities (not workspace-scoped); keep
+// pages that still issue workspace_id-scoped requests.
+const SCOPED_PAGES = ["/work-items", "/missions"];
 
 /** Every recorded request that names a workspace, split into blank and named. */
 function scoped(): { blank: string[]; named: string[] } {
@@ -37,8 +39,6 @@ function scoped(): { blank: string[]; named: string[] } {
 
 async function visitScopedPages() {
   for (const path of SCOPED_PAGES) {
-    // `domcontentloaded`: /agents keeps a long-lived connection open, so the
-    // load event is not a signal of anything.
     await page.goto(path, { waitUntil: "domcontentloaded" });
     // The provider resolves the workspace list after mount; give the page the
     // one round trip it needs so a request fired late is still seen.

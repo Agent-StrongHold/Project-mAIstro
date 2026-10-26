@@ -83,11 +83,16 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
  * they must keep rendering at their URL while staying out of the nav. */
 const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string }> = [
   { path: "/work-items", heading: "Jira drafts", navLabel: "Work Items" },
-  { path: "/skills", heading: "Skills", navLabel: "Skills" },
-  { path: "/agents", heading: "The Hive", navLabel: "Agents" },
-  { path: "/topology", heading: "Topology", navLabel: "Topology" },
-  { path: "/mcp", heading: "MCP", navLabel: "Integrations" },
   { path: "/memory", heading: "Memory", navLabel: "Memory" },
+];
+
+/** #2273: deleted capability pages — deep links redirect to Capabilities and
+ * must not revive Agents/MCP/Skills/Topology modules (Evolution-style). */
+const CAPABILITY_RETIREMENT_REDIRECTS: Array<{ path: string; navLabel: string }> = [
+  { path: "/agents", navLabel: "Agents" },
+  { path: "/mcp", navLabel: "Integrations" },
+  { path: "/skills", navLabel: "Skills" },
+  { path: "/topology", navLabel: "Topology" },
 ];
 
 /** What the setup wizard's daily user is granted: routes/setup.py's
@@ -350,6 +355,23 @@ test("URL-only legacy rows still render but stay out of the navigation", async (
   }
   const rail = page.locator(".icon-sidebar");
   for (const entry of URL_ONLY_ENTRIES) {
+    await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
+  }
+});
+
+test("retired capability URLs redirect to Capabilities without reviving legacy modules (#2273)", async () => {
+  const rail = page.locator(".icon-sidebar");
+  for (const entry of CAPABILITY_RETIREMENT_REDIRECTS) {
+    await page.goto(entry.path);
+    await page.waitForURL("**/capabilities");
+    await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+    // Legacy headings must not appear — that would mean the deleted page
+    // module was revived (same failure mode as Evolution for #2275).
+    await expect(page.getByRole("heading", { name: "The Hive", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "MCP", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Skills", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Topology", exact: true })).toHaveCount(0);
+    await expectSingleActiveRailEntry(page, "Capabilities");
     await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
   }
 });

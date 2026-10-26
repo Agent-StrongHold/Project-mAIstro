@@ -19,7 +19,6 @@ import Setup from "./pages/Setup";
 // Setup and Login (above) stay eager -- one of them is needed for the very
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
-const Agents = lazy(() => import("./pages/Agents"));
 const Approvals = lazy(() => import("./pages/Approvals"));
 const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
@@ -37,7 +36,6 @@ const Docs = lazy(() => import("./pages/Docs"));
 const Goals = lazy(() => import("./pages/Goals"));
 const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
-const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
 const MessageBoard = lazy(() => import("./pages/MessageBoard"));
 const Missions = lazy(() => import("./pages/Missions"));
@@ -47,8 +45,6 @@ const Schedules = lazy(() => import("./pages/Schedules"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Profile = lazy(() => import("./pages/Profile"));
 const Credentials = lazy(() => import("./pages/Credentials"));
-const Skills = lazy(() => import("./pages/Skills"));
-const Topology = lazy(() => import("./pages/Topology"));
 const WorkItems = lazy(() => import("./pages/WorkItems"));
 const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase"));
 
@@ -210,11 +206,15 @@ function AppRoutes() {
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
-                  {/* #2273: Capabilities is the primary product surface; Agents /
-                      MCP / Skills / Topology stay registered for deep links
-                      until the retirement slice deletes them. */}
+                  {/* #2273: Capabilities is the only product surface for slots /
+                      providers. Legacy /agents /mcp /skills /topology deep
+                      links redirect here — they must not revive the deleted
+                      page modules. */}
                   <Route path="capabilities" element={<Capabilities />} />
-                  <Route path="agents" element={<Agents />} />
+                  <Route path="agents" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="skills" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="mcp" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="topology" element={<Navigate to="/capabilities" replace />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
                   {/* #311 M0 containment lifted: the M2 Deck sanitizer
@@ -222,9 +222,6 @@ function AppRoutes() {
                       render sink, so the keyboard-complete Deck editor (#769)
                       is reachable at /decks and from Design Studio. */}
                   <Route path="decks" element={<DeckBuilder />} />
-                  <Route path="skills" element={<Skills />} />
-                  <Route path="mcp" element={<MCP />} />
-                  <Route path="topology" element={<Topology />} />
                   <Route path="optimizer" element={<OptimizationInbox />} />
                   {/* #1417: /optimization-inbox is an alias, not a second
                       surface -- it redirects to the canonical /optimizer so
