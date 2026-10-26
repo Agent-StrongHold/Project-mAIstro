@@ -1,28 +1,6 @@
 {
   "_comment": "Actual AST call sites at curated direct-effect boundaries for #55. Imports/definitions are not usage. Update with scripts/check_direct_effects.py --update, then review every blank disposition/owner/rationale.",
   "sites": {
-    "packages/hive-conductor/backend/adapters/llm_http.py::HttpOpenAIProtocolLLM.complete::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/adapters/llm_http.py",
-      "qualname": "HttpOpenAIProtocolLLM.complete",
-      "line": 129,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
-      "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 103,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
       "path": "packages/hive-conductor/backend/routes/widgets.py",
       "qualname": "widget_jira",
@@ -104,17 +82,6 @@
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus.score",
       "line": 310,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/chat_completion.py",
-      "qualname": "_tool_analyze_dashboard",
-      "line": 1908,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -441,17 +408,6 @@
       "owner": "#59",
       "rationale": "Canvas MCP-hosted model/provider effect bypasses canonical authorization; #59 owns MCP convergence using #56 model egress."
     },
-    "packages/maistro-core/src/maistro/agents/conductor.py::_call_gateway::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/maistro-core/src/maistro/agents/conductor.py",
-      "qualname": "_call_gateway",
-      "line": 270,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
@@ -484,17 +440,6 @@
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#286",
       "rationale": "The approved image.generate Provider implementation itself. The call executes beneath a resolved image.generate Binding, Binding-scoped credential routing and a governed Invocation (ImageGenerationEgress), so this site IS the governed image egress, not a bypass."
-    },
-    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_chat_completion::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
-      "qualname": "_post_chat_completion",
-      "line": 444,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#56",
-      "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The POST lives in `_post_chat_completion` (factored out of `execute_model_chat` for radon/#2318) and still executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
@@ -561,6 +506,39 @@
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_dispatch_adapter_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+      "qualname": "_dispatch_adapter_model_chat",
+      "line": 397,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+      "qualname": "_post_model_chat",
+      "line": 429,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "client.stream",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "56",
+      "rationale": "The approved Provider implementation's protocol-fallback helper: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::_post_model_chat::MODEL_EFFECT:openai-compatible-http#2": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+      "qualname": "_post_model_chat",
+      "line": 441,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "56",
+      "rationale": "The approved Provider implementation's protocol-fallback helper: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     }
   }
 }

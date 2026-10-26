@@ -127,7 +127,7 @@ async def test_explicit_tool_choice_survives_governed_adapter(
     request = recorded.await_args.kwargs["request"]
     assert isinstance(request, gateway.ModelChatRequest)
     assert request.tool_choice == choice
-    assert request.model_dump(exclude={"tool_choice", "response_format"}) == {
+    assert request.model_dump(exclude={"tool_choice", "response_format", "protocol", "stream"}) == {
         "model": "fast-model",
         "messages": messages,
         "temperature": 0.15,

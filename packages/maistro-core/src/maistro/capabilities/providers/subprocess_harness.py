@@ -183,7 +183,9 @@ class SubprocessHarnessRunner:
         # async destroy(); a fake may not). Without this, stopped sessions leak
         # containers until external cleanup.
         if session is not None:
-            destroy = getattr(session.sandbox, "destroy", None)
+            destroy: Callable[..., Awaitable[Any]] | None = getattr(
+                session.sandbox, "destroy", None
+            )
             if callable(destroy):
                 await destroy()
 
