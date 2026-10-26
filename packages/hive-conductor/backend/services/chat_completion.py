@@ -1679,8 +1679,16 @@ async def _cancellation_answer(
     canonical_run_id = str(record.get("canonical_run_id") or "")
     if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
         raise cancelled
+    # Mirror the spine's CANCELLED through the shared #1036 terminality
+    # contract — never a second product-private finish authority. The
+    # public cancel route never writes the projection at all; this chat
+    # awaiter only records after the spine fence was observed.
     with contextlib.suppress(Exception):
-        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+        await get_dag_run_store().record_outcome(
+            exec_id,
+            status="cancelled",
+            canonical_run_id=canonical_run_id,
+        )
     return {
         "run_id": exec_id,
         "dag_id": dag_id,
