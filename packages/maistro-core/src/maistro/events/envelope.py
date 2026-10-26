@@ -434,21 +434,26 @@ class SqliteEventStore:
             hold_sql = f" AND workspace_id NOT IN ({marks})"  # values remain bound
             params.extend(legal_hold_workspace_ids)
         params.append(limit)
-        await self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            cursor = await self._conn.execute(
-                "DELETE FROM canonical_event_log WHERE event_id IN ("  # nosec B608 - hold_sql is ?-placeholders only, all values bound
-                "SELECT event_id FROM canonical_event_log WHERE timestamp < ?"
-                + hold_sql
-                + " ORDER BY timestamp, event_id LIMIT ?)",
-                params,
-            )
-            await self._conn.commit()
-            await self._publish_table_health()
-            return max(cursor.rowcount, 0)
-        except BaseException:
-            await self._conn.rollback()
-            raise
+        # Serialized with append_with_disposition on the store lock: both drive
+        # BEGIN IMMEDIATE on the same connection, so an unguarded purge racing
+        # a live append would raise "cannot start a transaction within a
+        # transaction" instead of waiting its turn.
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "DELETE FROM canonical_event_log WHERE event_id IN ("  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                    "SELECT event_id FROM canonical_event_log WHERE timestamp < ?"
+                    + hold_sql
+                    + " ORDER BY timestamp, event_id LIMIT ?)",
+                    params,
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def _publish_table_health(self) -> None:
         """Publish the canonical event log's stored volume after a purge (#325).

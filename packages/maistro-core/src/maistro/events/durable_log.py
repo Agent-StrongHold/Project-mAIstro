@@ -236,6 +236,7 @@ class SqliteEventLog:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
@@ -258,19 +259,23 @@ class SqliteEventLog:
             hold_sql = f" AND entity_id NOT IN ({marks})"  # values remain bound
             params.extend(legal_hold_entity_ids)
         params.append(limit)
-        await self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            cursor = await self._conn.execute(
-                "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
-                "WHERE created_at < ?" + hold_sql + " ORDER BY id LIMIT ?)",
-                params,
-            )
-            await self._conn.commit()
-            await self._publish_table_health()
-            return max(cursor.rowcount, 0)
-        except BaseException:
-            await self._conn.rollback()
-            raise
+        # Serialized with append on the store lock: both write through the one
+        # connection, and the purge's BEGIN IMMEDIATE must wait for an in-flight
+        # append's transaction rather than start a second one on top of it.
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                    "WHERE created_at < ?" + hold_sql + " ORDER BY id LIMIT ?)",
+                    params,
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def _publish_table_health(self) -> None:
         """Publish the durable delivery log's stored volume after a purge (#325).
@@ -301,20 +306,21 @@ class SqliteEventLog:
     ) -> LoggedEvent:
         created_at = time.time()
         require_json_encodable_payload(payload or {})
-        cursor = await self._conn.execute(
-            """INSERT INTO event_log
-               (event_type, entity_type, entity_id, payload, source, created_at)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                event_type,
-                entity_type,
-                entity_id,
-                json.dumps(payload or {}),
-                source,
-                created_at,
-            ),
-        )
-        await self._conn.commit()
+        async with self._lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO event_log
+                   (event_type, entity_type, entity_id, payload, source, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    event_type,
+                    entity_type,
+                    entity_id,
+                    json.dumps(payload or {}),
+                    source,
+                    created_at,
+                ),
+            )
+            await self._conn.commit()
         row_id = cursor.lastrowid
         assert row_id is not None  # nosec B101 - INSERT always assigns a rowid
         return LoggedEvent(
