@@ -26,7 +26,6 @@ owners:
 
 # ADR-070126-6386: RSI code improvement as an evolve genome tournament
 
-**Status:** Proposed
 
 ## Context
 

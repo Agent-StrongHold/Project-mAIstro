@@ -30,7 +30,6 @@ history:
 
 # ADR-089: Intent Classifier
 
-**Status:** Accepted
 **Date:** 2026-05-30
 
 ---

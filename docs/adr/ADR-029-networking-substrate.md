@@ -32,7 +32,6 @@ history:
 
 # ADR-029: Networking & Identity Substrate — Pluggable transport layer
 
-**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-024 (DID/VC Identity), ADR-028 (Privilege Separation)
 

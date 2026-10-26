@@ -31,7 +31,6 @@ history:
 
 # ADR-009: Spawner pattern
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T1  
 **Depends on:** ADR-004, ADR-005, ADR-006, ADR-007, ADR-008

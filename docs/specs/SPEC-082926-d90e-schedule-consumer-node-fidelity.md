@@ -48,7 +48,6 @@ owners:
 
 # SPEC-082926-d90e: Schedule consumer node invocation fidelity
 
-- **Status:** AC Defined
 - **Decision:** ADR-082826-b601
 - **Closes:** #545
 

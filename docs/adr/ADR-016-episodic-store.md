@@ -28,7 +28,6 @@ history:
 
 # ADR-016: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013, ADR-014

@@ -27,7 +27,6 @@ history:
 
 # ADR-014: Memory protocols
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013

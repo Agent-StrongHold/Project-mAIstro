@@ -47,7 +47,6 @@ owners:
 
 # SPEC-081226-6b46: Capability, Provider, Binding and Invocation
 
-- **Status:** AC Defined
 - **Date:** 2026-08-12
 - **ADR:** `ADR-081226-6b46`
 

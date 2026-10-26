@@ -26,7 +26,6 @@ owners:
 
 # ADR-099: Builders pipeline as a DAG with gated verify-and-revise loops
 
-**Status:** Proposed
 
 ## Context
 

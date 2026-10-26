@@ -72,7 +72,6 @@ history:
 
 # ADR-066: P1 Resilience and Control
 
-**Status:** Proposed
 **Date:** 2026-05-20
 **Tranche:** T5
 **Depends on:** ADR-038 (reliability taxonomy), ADR-062 (graph execution protocol)

@@ -30,7 +30,6 @@ owners:
 
 # SPEC-100126-c041: Workspace cutover Phase 0 contract
 
-- **Status:** Proposed
 - **Date:** 2026-10-01
 - **Plan:** [`docs/architecture/WORKSPACE-CUTOVER-PLAN.md`](../architecture/WORKSPACE-CUTOVER-PLAN.md), Phase 0 (P0.1–P0.9)
 - **Issues:** #53, #373, #1048, #325, #804, #62, #364, #1037, #66. Epics #1046 (Adaptive Workspace) and #804 (Persistent Workspace Agent).
