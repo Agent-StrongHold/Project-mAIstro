@@ -70,3 +70,29 @@ windows. The PR #1626 body's "10 cases" count is stale relative to this
 proof-only branch: the per-version-observation repair it described was
 superseded by develop's stalled-active-frontier repair (#1942, #1861) and
 removed during the merge, leaving six cases.
+
+## Verification record (2026-10-26 repair round)
+
+Re-executed against this branch's head, with the PostgreSQL legs live against
+a real PostgreSQL 18 (pgvector, migrated to head):
+
+- `test_cross_store_crash_reconciliation.py`: **72 passed** — all three legs,
+  so the six cases above also hold against the `PgGraphContinuationStore` SQL.
+- `tests/runs/test_pg_spine_crash_windows.py`: **16 passed** — the durable
+  canonical-spine proof (both authorities on PostgreSQL, recovery through an
+  independently built pool, new physical work refused at the recovery replica)
+  is green on the same server. The cross-store file pins the continuation SQL
+  and repair shape; this suite owns the restart-across-pools proof.
+- `test_canonical_durable_store.py`: 16 passed, **4 xfailed, none xpassed**.
+- Guard sabotage from outside the tree (a `/tmp` pytest plugin, no repo edit):
+  forcing `_spine_is_quiet` true fails `test_a_walk_whose_spine_just_moved_is
+  _left_to_its_walker`; forcing `has_live_execution_lease` false fails
+  `test_a_walker_that_died_inside_a_later_node_is_recovered_once_its_lease
+  _lapses`; making `_reconcile_stalled_active_frontier` a no-op fails
+  `test_the_repair_gives_an_elapsed_claim_and_is_idempotent`.
+- Gates: `ruff check` / `ruff format --check` clean; `check-suite-inventory`
+  21 suite(s) match; `check-vulture-baseline` with CI's exact arguments
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) reports
+  1253 reviewed identities -> 1253 findings (no unbanked debt);
+  `check-release-consistency`, `check-retired-guidance` and
+  `check-workflow-inventory` all clean.
