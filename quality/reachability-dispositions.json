@@ -40,20 +40,6 @@
       ]
     },
     {
-      "id": "canvas-assetinstance",
-      "subsystem": "Canvas ability",
-      "disposition": "CONNECT",
-      "rationale": "The ADR-044 AssetInstance replacement, complete but not cut over: routes.py still wires the legacy executor and compositor. ADR-045, which performs the cutover, is still Proposed.",
-      "root": "maistro_canvas.canvas.routes, after the ADR-045 cutover",
-      "modules": [
-        "maistro_canvas.canvas.asset_compositor",
-        "maistro_canvas.canvas.asset_executor",
-        "maistro_canvas.canvas.asset_routes",
-        "maistro_canvas.canvas.asset_store",
-        "maistro_canvas.canvas.asset_tool"
-      ]
-    },
-    {
       "id": "capabilities-test-doubles",
       "subsystem": "Capability / Provider / Binding / Invocation",
       "disposition": "LIBRARY",
@@ -151,16 +137,6 @@
       ]
     },
     {
-      "id": "prompts-diff",
-      "subsystem": "Prompts and personas",
-      "disposition": "CONNECT",
-      "rationale": "Prompt diffing with no caller; the persona eval protocol of ADR-060 is its consumer.",
-      "root": "the ADR-060 persona eval path",
-      "modules": [
-        "maistro.prompts.diff"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
@@ -171,16 +147,6 @@
         "maistro_rsi.autorun",
         "maistro_rsi.harness_adapter",
         "maistro_rsi.rate_pacer"
-      ]
-    },
-    {
-      "id": "classifier-logging",
-      "subsystem": "Router and classifier",
-      "disposition": "CONNECT",
-      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
-      "root": "maistro.classifier.engine",
-      "modules": [
-        "maistro.classifier.logging"
       ]
     },
     {
@@ -226,14 +192,13 @@
       "id": "tools-approval-and-reversibility",
       "subsystem": "Tool execution",
       "disposition": "CONNECT",
-      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline.",
+      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline. maistro.tools.reversibility_registry left this group when #57 wired it: maistro.tools.contracts (GovernedToolExecutor/ToolContractRegistry) constructs the registry and resolves every tool call admitted at the governed seam's reversibility tier from it as an Invocation admission fact; hive-conductor's services.governed_tools is the shipped constructor (boot Agent tools and chat web tools), while legacy DAG tool nodes carry the legacy-tool effect floor on their own canonical Invocation.",
       "root": "governed tool Invocation (#57)",
       "modules": [
         "maistro.tools.approval",
         "maistro.tools.approval.gate",
         "maistro.tools.approval.protocols",
-        "maistro.tools.approval.types",
-        "maistro.tools.reversibility_registry"
+        "maistro.tools.approval.types"
       ]
     },
     {

@@ -27,6 +27,7 @@ from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
 from maistro.types.agent import AgentIdentity
 from maistro.types.config import AgentConfig
+from maistro.types.tool import ToolDefinition
 
 _DENIED = "Error: Permission denied for tool 'lookup'"
 _RAW = "raw lookup result"
@@ -71,6 +72,20 @@ def _agent(
         warden=warden,
         sentinel=sentinel,
         tool_executor=tool,
+        tool_registry=SimpleNamespace(
+            get=lambda name: (
+                ToolDefinition(
+                    name="lookup",
+                    parameters={
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"],
+                    },
+                )
+                if name == "lookup"
+                else None
+            )
+        ),
     )
 
 

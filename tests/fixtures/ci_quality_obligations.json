@@ -162,7 +162,7 @@
       "steps": [
         {
           "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
-          "sha256": "a2640b0367882284c08e3516243a2e4a5f98fddf142db900b874a0b59dd77598"
+          "sha256": "579e9c345159a574f691072e784a11e46dbc15b46184d93ccabf2859dcadcfeb"
         }
       ]
     },
@@ -382,7 +382,7 @@
       "steps": [
         {
           "name": "pyright (type cross-check \u2014 ratchet)",
-          "sha256": "a55e1623ab18e82ea427bd8abf605faf6441ef609869a06f23c9c18e3e0c7323"
+          "sha256": "a6463cd901a6fedf0c65f443aa48bc0e3ebe6e7510e56f580aa5857dfe48ece5"
         }
       ]
     },
