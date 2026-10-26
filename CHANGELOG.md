@@ -25,6 +25,20 @@ or placeholder-only section.
 
 ### Security
 
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+
 - **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
   code-scanning alerts on develop).** Route mutation-baseline CI error
   annotations through the allowlisted `_ci_error_annotation` scrubber
