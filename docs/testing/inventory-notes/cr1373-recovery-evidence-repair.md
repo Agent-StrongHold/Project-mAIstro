@@ -114,6 +114,61 @@ check + format clean; mypy clean (942 source files); vulture exit 0 (1256/1256
 identities banked, 0 unclassified); radon exit 0 (127/127); suite inventory ok
 (21 suites); backlog, execution-lifecycles, durable-table-inventory,
 convergence-matrix and M1-convergence-freeze (`--base 4019249e`) all exit 0.
+
+## Round: post-merge repair validation (`78be6f61d`, develop `10f872fa7` folded in)
+
+No source or test change this round; the prior job died on a provider timeout,
+not a check. Validation was repeated at the merged HEAD (develop base
+`10f872fa7`, whose admission-replay-classification changes touch
+recovery-adjacent seams):
+
+- Verifier battery at HEAD: ruff check/format, targeted durable-runs + a2a +
+  delegate + stores-gaps pytest, conductor recovery suites, both suite
+  inventories (Hive 4,181; Core 18,369) — all exit 0.
+- Full `packages/maistro-core/tests/graph/durable_runs`: 783 passed / 70
+  skipped / 4 xfailed; `packages/maistro-core/tests/a2a`: 295 passed;
+  conductor recovery: 28 passed.
+- CI-exact quality gates at HEAD: vulture
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  1248/1248 banked, base `10f872fa7`), radon ratchet (126/126), mypy strict
+  (953 files), doc links, interrogate docstring floors (nodes/durable_runs/
+  core/server), IFEval + BFCL vendored provenance, Hypothesis formal/ suite
+  (670 passed, editable maistro-evolve installed per the workflow's own
+  setup), agent store writes, model egress, design model egress,
+  execution-lifecycles, durable-table-inventory (122 tables),
+  convergence-matrix (1,486 modules), reachability + dispositions, backlog,
+  M1-convergence-freeze `--base 10f872fa7` — all exit 0.
+- acceptance-state `--run-tests --ratchet --mandate 10f872fa7` over a freshly
+  migrated pg18 database: initially failed on an unbanked design_coverage
+  improvement (44.26 measured vs 39.6633 floor folded from notes at the
+  develop base); banked 44.26 into this branch's own
+  `quality/ac-state-notes/auto-62.json` per the gate's instruction and re-ran
+  the CI-shaped command: exit 0, all counters exactly on bounds, mandate OK.
+  No shared ledger or grant was edited.
+- integration-scope reproduced with CI's exact steps: classifier scope JSON
+  well-formed for the branch's 29 changed paths; required set resolved
+  (docker-build, durable-events, hive e2e ×2, postgres ×2, strike-ladder,
+  wheel-imports); `node --test tests/ci/integration-scope.test.cjs` 12/12.
+- Required specialized legs executed for real on this machine at HEAD:
+  durable-events (events suite 489 passed + migration agreement 5 passed,
+  fresh postgres:17 database, PG legs required); postgres matrix pg17 and
+  pg18 — all 12 workflow steps each (migration chain, legacy-principal
+  live migration, alembic up/down/up, persistence, container wiring,
+  workspaces/personas/goals with PG legs required, hive workspace authority,
+  Canvas and Design supported-path E2E); strike-ladder (40 passed, PG leg
+  required); wheel-imports (12 wheels built, clean-venv import check passed).
+- Not executable locally: docker-build and hive-conductor-e2e image builds
+  died on buildkit DNS resolution of files.pythonhosted.org (three attempts,
+  `docker run` DNS healthy between attempts — local mirrored-WSL networking,
+  the same transient class CI's pre-pull script retries). The
+  branch-relevant build step `uv export --locked --package hive-conductor`
+  succeeded inside the failing image build each time, proving lock/pyproject
+  consistency; no Dockerfile, compose file or uv.lock path is in the branch
+  diff. UNVERIFIED locally: the hive api-tests leg and the docker image
+  build itself at HEAD.
+
+No test was added or removed this round, so the recorded inventory counts
+are unchanged; this note documents validation only.
 `check-ac-state.py --run-tests --ratchet` initially failed on an unbanked
 design_coverage improvement (measured 39.6633 vs folded floor 39.641, slack a
 regression could spend); banked to this branch's own
