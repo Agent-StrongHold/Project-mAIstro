@@ -41,14 +41,89 @@ function topologyProposalOf(item: AttentionItem): TopologyProposalEvidence | nul
   return raw as TopologyProposalEvidence;
 }
 
+
+/** Render the pause subject (question / draft / document) before HITL controls. */
+function PausePayload({ evidence }: { evidence: Record<string, unknown> }) {
+  const raw = evidence.payload;
+  if (!raw || typeof raw !== "object") return null;
+  const payload = raw as Record<string, unknown>;
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  const question =
+    typeof payload.question === "string"
+      ? payload.question
+      : payload.question && typeof payload.question === "object"
+        ? JSON.stringify(payload.question, null, 2)
+        : "";
+  const draft = typeof payload.draft === "string" ? payload.draft : "";
+  const document = typeof payload.document === "string" ? payload.document : "";
+  const context =
+    typeof payload.context_markdown === "string" ? payload.context_markdown : "";
+  const choices = Array.isArray(payload.choices)
+    ? payload.choices.filter((c): c is string => typeof c === "string")
+    : [];
+  const body = question || draft || document;
+  if (!title && !body && !context && choices.length === 0) return null;
+
+  const label = question ? "Question" : draft ? "Draft" : document ? "Document" : "Pause payload";
+
+  return (
+    <div
+      style={{
+        margin: 0,
+        fontSize: 12,
+        color: "var(--pencil)",
+        border: "1px solid var(--line)",
+        padding: "6px 8px",
+        display: "grid",
+        gap: 4,
+      }}
+      data-testid="attention-pause-payload"
+    >
+      <strong style={{ color: "var(--ink)" }}>{label}</strong>
+      {title ? <div style={{ fontFamily: "var(--mono)" }}>{title}</div> : null}
+      {body ? (
+        <pre
+          style={{
+            margin: 0,
+            whiteSpace: "pre-wrap",
+            fontFamily: "var(--mono)",
+            fontSize: 12,
+          }}
+        >
+          {body}
+        </pre>
+      ) : null}
+      {context ? (
+        <pre
+          style={{
+            margin: 0,
+            whiteSpace: "pre-wrap",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            opacity: 0.85,
+          }}
+        >
+          {context}
+        </pre>
+      ) : null}
+      {choices.length > 0 ? (
+        <div style={{ fontFamily: "var(--mono)" }}>Choices: {choices.join(" · ")}</div>
+      ) : null}
+    </div>
+  );
+}
+
 function AttentionRow({
   item,
   workspaceId,
+  mutationsEnabled,
   onInspect,
   onAnswered,
 }: {
   item: AttentionItem;
   workspaceId: string;
+  /** False when displayed items belong to a Workspace that is no longer active. */
+  mutationsEnabled: boolean;
   onInspect: (href: string) => void;
   onAnswered: () => void;
 }) {
@@ -56,6 +131,9 @@ function AttentionRow({
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [applyOutcome, setApplyOutcome] = useState<string | null>(null);
+  const [applyDetail, setApplyDetail] = useState<string | null>(null);
+  const canMutate = mutationsEnabled && !busy;
 
   const pausedReason = item.evidence?.paused_reason;
   const needsVerdict =
@@ -71,7 +149,7 @@ function AttentionRow({
     isMessage || isOptimizer ? "Stay on Attention" : "Open run";
 
   const submit = async (text: string) => {
-    if (!door || !text.trim() || busy) return;
+    if (!mutationsEnabled || !door || !text.trim() || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -86,7 +164,7 @@ function AttentionRow({
   };
 
   const hide = async (action: "dismiss" | "defer") => {
-    if (busy) return;
+    if (!mutationsEnabled || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -100,12 +178,25 @@ function AttentionRow({
   };
 
   const decideProposal = async (decision: "accept" | "reject") => {
-    if (!isOptimizer || busy) return;
+    if (!mutationsEnabled || !isOptimizer || busy) return;
     setBusy(true);
     setError(null);
+    setApplyOutcome(null);
+    setApplyDetail(null);
     try {
-      await decideOptimizerProposal(item.source_id, decision);
-      onAnswered();
+      const result = await decideOptimizerProposal(item.source_id, decision);
+      const body =
+        result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+      const outcome =
+        typeof body.apply_outcome === "string" ? body.apply_outcome : decision === "accept" ? "recorded" : "rejected";
+      const detail = typeof body.apply_detail === "string" ? body.apply_detail : "";
+      setApplyOutcome(outcome);
+      setApplyDetail(detail || null);
+      // Keep the row visible when accept did not fully apply so the operator
+      // can see follow-up (manual edit / escalation) before the projection drops it.
+      if (decision === "reject" || outcome === "applied") {
+        onAnswered();
+      }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : `Couldn't ${decision} proposal.`);
     } finally {
@@ -139,6 +230,7 @@ function AttentionRow({
         </span>
       </div>
       <p style={{ margin: 0, fontSize: 14 }}>{item.reason}</p>
+      <PausePayload evidence={item.evidence ?? {}} />
       {isMessage && typeof item.evidence?.body === "string" && item.evidence.body ? (
         <p
           style={{
@@ -177,7 +269,7 @@ function AttentionRow({
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={!canMutate}
           data-testid="attention-defer"
           onClick={() => void hide("defer")}
         >
@@ -185,7 +277,7 @@ function AttentionRow({
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={!canMutate}
           data-testid="attention-dismiss"
           onClick={() => void hide("dismiss")}
         >
@@ -193,23 +285,45 @@ function AttentionRow({
         </button>
       </div>
       {isOptimizer ? (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }} data-testid="attention-optimizer-decide">
-          <button
-            type="button"
-            disabled={busy}
-            data-testid="attention-optimizer-accept"
-            onClick={() => void decideProposal("accept")}
-          >
-            {busy ? "Working…" : "Accept proposal"}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            data-testid="attention-optimizer-reject"
-            onClick={() => void decideProposal("reject")}
-          >
-            Reject proposal
-          </button>
+        <div style={{ display: "grid", gap: 6 }} data-testid="attention-optimizer-decide">
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              disabled={!canMutate}
+              data-testid="attention-optimizer-accept"
+              onClick={() => void decideProposal("accept")}
+            >
+              {busy ? "Working…" : "Accept proposal"}
+            </button>
+            <button
+              type="button"
+              disabled={!canMutate}
+              data-testid="attention-optimizer-reject"
+              onClick={() => void decideProposal("reject")}
+            >
+              Reject proposal
+            </button>
+          </div>
+          {applyOutcome ? (
+            <div
+              style={{
+                fontSize: 12,
+                color: applyOutcome === "applied" ? "var(--ink)" : "#c4452a",
+                fontFamily: "var(--mono)",
+                border: "1px solid var(--line)",
+                padding: "6px 8px",
+              }}
+              data-testid="attention-optimizer-apply-outcome"
+            >
+              Apply outcome: {applyOutcome}
+              {applyDetail ? <div style={{ marginTop: 4 }}>{applyDetail}</div> : null}
+              {applyOutcome !== "applied" && applyOutcome !== "rejected" ? (
+                <div style={{ marginTop: 4 }}>
+                  Proposal remains listed until apply succeeds or you reject it.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {door ? (
@@ -217,11 +331,15 @@ function AttentionRow({
           style={{ display: "grid", gap: 6, marginTop: 4 }}
           data-testid={`attention-answer-${item.rank}`}
         >
-          {needsVerdict ? (
+          {!mutationsEnabled ? (
+            <span style={{ fontSize: 12, color: "var(--pencil)" }} data-testid="attention-stale-workspace">
+              Workspace changed — answer controls disabled until Attention reloads.
+            </span>
+          ) : needsVerdict ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <button
                 type="button"
-                disabled={busy}
+                disabled={!canMutate}
                 data-testid="attention-approve"
                 onClick={() => void submit("approved")}
               >
@@ -229,7 +347,7 @@ function AttentionRow({
               </button>
               <button
                 type="button"
-                disabled={busy}
+                disabled={!canMutate}
                 data-testid="attention-reject"
                 onClick={() => void submit("rejected")}
               >
@@ -247,7 +365,7 @@ function AttentionRow({
                   type="text"
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
-                  disabled={busy}
+                  disabled={!canMutate}
                   aria-label={`Answer for ${item.source_id}`}
                   style={{ display: "block", width: "100%", marginTop: 4 }}
                 />
@@ -255,7 +373,7 @@ function AttentionRow({
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button
                   type="button"
-                  disabled={busy || !answer.trim()}
+                  disabled={!canMutate || !answer.trim()}
                   onClick={() => void submit(answer)}
                 >
                   {busy ? "Submitting…" : "Submit answer"}
@@ -350,6 +468,8 @@ export default function Attention() {
   const summary = payload?.summary;
   const items = payload?.items ?? [];
   const waitingQuality = summary?.waiting_quality;
+  const mutationsEnabled =
+    Boolean(activeWorkspaceId) && payload?.workspace_id === activeWorkspaceId;
 
   return (
     <div style={{ padding: 16 }} data-testid="workspace-attention">
@@ -443,6 +563,7 @@ export default function Attention() {
                   key={`${item.source_kind}:${item.source_id}`}
                   item={item}
                   workspaceId={activeWorkspaceId}
+                  mutationsEnabled={mutationsEnabled}
                   onInspect={(href) => navigate(href)}
                   onAnswered={() => {
                     // Dismiss/answer may finish after a Workspace switch; do not
