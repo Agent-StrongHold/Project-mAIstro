@@ -33,7 +33,7 @@
       "id": "devskim",
       "file": ".github/workflows/devskim.yml",
       "disposition": "ACTIVE",
-      "triggers": ["pull_request", "push", "schedule"],
+      "triggers": ["pull_request", "push", "schedule", "workflow_dispatch"],
       "rationale": "Microsoft DevSkim SAST on PRs, pushes to develop and a weekly schedule."
     },
     {
