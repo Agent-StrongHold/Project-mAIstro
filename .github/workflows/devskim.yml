@@ -6,6 +6,9 @@
 name: DevSkim
 
 on:
+  # Manual re-upload when a tip push run is cancelled before SARIF lands
+  # (observed on #2357: push analysis cancelled while still queued).
+  workflow_dispatch:
   push:
     branches: [ "develop" ]
   pull_request:
@@ -63,33 +66,42 @@ jobs:
       # shipped surface, and its fixtures deliberately exercise eval/http
       # shapes the product must refuse.
       #
-      # `.github/**` — Actions workflows and Dependabot config. Loopback
-      # healthchecks and DEBUG= env toggles are the normal shape of CI
-      # glue; scanning them produced dozens of DS162092 notes that no
-      # product change can clear. Not in SHIPPED_TREES.
+      # Allowlist the shipped trees via `--include-globs` (DevSkim AllowFilters).
+      # `.github/`, `deploy/`, `alembic/`, `formal/`, `quality/`, and other
+      # non-product roots are simply never scanned — they are not in the
+      # allowlist. A deny-glob for `**/deploy/**` is unsafe: it also matches
+      # shipped `templates/**/deploy/**.jinja`.
       #
-      # `deploy/**` / `alembic/**` — ops scripts and migration env, not
-      # installed library/app code. Same location contract.
+      # Why not rely on deny-globs for `.github/**` alone? DevSkim's
+      # DenyFilters run against absolute `$GITHUB_WORKSPACE` paths
+      # (RecursiveExtractor FileNamePasses). A pattern like `.github/**`
+      # (no leading `**/`) never matches
+      # `/home/runner/work/.../.github/workflows/ci.yml`, so tip SARIF kept
+      # 36 `.github` findings while that glob was already listed. The
+      # allowlist does not have that footgun for roots we do not ship.
       #
-      # `packages/hive-conductor/eval/**` — immutable department eval fixtures
-      # (SPEC/cage-guard). Not a shipped runtime surface; DS176209 flags
-      # scenario prose. Do not edit those trees to silence scanners.
+      # Nested noise *inside* shipped trees still uses deny-globs; every
+      # directory deny MUST start with `**/` (enforced by
+      # `test_directory_globs_are_absolute_path_safe`).
       #
-      # `quality/**` — ratchet ledgers / baselines (JSON). Placeholder
-      # comments and identity strings are not executable product code.
+      # `**/hive-conductor/eval/**` — immutable department eval fixtures
+      # (SPEC/cage-guard), under packages/ so inside the allowlist; deny it.
       #
-      # Setting this input REPLACES the action's default, so `**/.git/**` and
-      # `**/bin/**` are repeated rather than inherited.
+      # Setting ignore-globs REPLACES the action's default, so `**/.git/**`
+      # and `**/bin/**` are repeated rather than inherited.
       #
-      # Deliberately NOT excluded: `docs/**` (a document telling an operator to
-      # use `http://` is a finding worth having, and the pattern would also
-      # reach shipped `templates/*/docs/**.jinja`), and no `exclude-rules` --
-      # suppressing a rule repo-wide would silence it on shipped code too,
-      # which is the opposite of the intent here.
+      # No `exclude-rules` — suppressing a rule repo-wide would silence it on
+      # shipped code too.
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,packages/hive-conductor/eval/**,quality/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          # `**/deploy/scripts/**` is required because `**/scripts/**` in the
+          # allowlist also matches ops scripts under deploy/; product compose
+          # templates live under `templates/**/deploy/` (not `deploy/scripts/`)
+          # and must stay scanned.
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,**/hive-conductor/eval/**,**/deploy/scripts/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          # AllowFilters also see absolute runner paths — prefix every root with **/.
+          extra-options: --include-globs **/packages/**,**/scripts/**,**/templates/**,**/extensions/**
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
