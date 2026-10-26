@@ -636,3 +636,32 @@ Regression checks re-run at this head: `ruff check .` /
 `ruff format --check .` clean; suite inventory ok for `tests/` (6041 = 6038
 + the 3 image-pins tests), `packages/hive-conductor/backend/tests` and
 `packages/hive-conductor/tests/e2e` (28, no delta).
+
+## Residual at this round's head: fresh container evidence infra-blocked locally
+
+The develop sync moved hive backend surfaces **outside** the #290 scope:
+every #290 timezone surface is byte-identical across the merge
+(`git diff 3df6a8043 f12babe1d --stat -- Dockerfile scheduler.py health.py
+docker-compose.test.yml test_scheduler_timezone_container.py
+tests/Dockerfile pyproject.toml maistro-core/scheduling schemas.py` is
+empty), so the timezone-behavior evidence recorded above still describes
+these surfaces. The shipped image at this head nevertheless differs from the
+last first-hand run's image (merge-baked routes/services), so a fresh
+CI-exact compose run at this head was attempted and is **not recorded**:
+15+ `docker compose build hive` / `docker build --network host` attempts all
+died inside the hermetic `uv export && uv pip install --require-hashes` RUN
+step with `dns error: Try again` / `Connect: operation timed out` on
+rotating packages (annotated_types, pycparser, python_multipart, idna,
+pgvector, ecdsa), plus the same instability in the age (`git clone`/`apk`)
+and npm (`Exit handler never called!`) stages — while small sequential
+in-build probes (`pip download` of 4 packages) and all host-side fetches
+succeeded throughout, i.e. the shared host's outbound path degrades only
+under bulk concurrent load, which the deliberately hermetic Dockerfile
+(`--no-config --no-cache`, no env injection point) cannot be throttled
+against. Local docker socket and images are otherwise healthy (62 GiB free
+RAM, 542 GiB disk). The hosted `hive-conductor-e2e` job runs this exact
+compose harness on the PR and remains the authoritative fresh evidence; the
+bare-host driver command that failed in the verifier battery now exits 0
+(5 skipped) via the unreachable-server guard proven above. Nothing in this
+round changed scheduler, health, Dockerfile, compose, or test logic beyond
+that guard's skip path.
