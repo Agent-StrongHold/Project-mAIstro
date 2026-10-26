@@ -382,7 +382,7 @@
       "steps": [
         {
           "name": "pyright (type cross-check \u2014 ratchet)",
-          "sha256": "a55e1623ab18e82ea427bd8abf605faf6441ef609869a06f23c9c18e3e0c7323"
+          "sha256": "a6463cd901a6fedf0c65f443aa48bc0e3ebe6e7510e56f580aa5857dfe48ece5"
         }
       ]
     },
