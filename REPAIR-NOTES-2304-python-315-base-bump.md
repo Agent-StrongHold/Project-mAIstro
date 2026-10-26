@@ -237,3 +237,67 @@ round: the line-172 smoke is not weakened, the ledger is not made to approve a b
 build, dependabot's commit is not reverted. The decision — close per precedent, or fund the 3.15
 migration (coincurve cp315 wheels + support-matrix/ADR change + lock regeneration) — belongs to a
 maintainer via GitHub; closing issues/PRs is outside this lane's authority.
+
+## Round 4 (2026-10-26, head `ccd8093f6`) — REPAIR EXECUTED: builder/runtime base split
+
+Round 3 treated "pybuild and runtime-apt must move together" as given. It is not: the
+bump's *purpose* is Debian OS/security-patch freshness of the runtime, while the
+*contract* lives in which CPython builds and runs the venv. Those are separable, and
+separating them completes dependabot's intent without touching any refused surface:
+
+- `pybuild` is restored to the registered `python:3.13.16-slim-bookworm@sha256:73aa5fae…`
+  pin — it IS the contract interpreter, so the line-172 smoke (`(3, 13, 16)`, identity
+  ARG pins, native-wheel import) passes by construction, exactly as on every green
+  pre-bump build (#1152 lineage).
+- `runtime-apt` carries the bump: `python:3.15.0-slim-bookworm@sha256:0e019bbd…`,
+  registered as its own row in `quality/image-pins.json` (`recorded_in: "#2304"`).
+- The final stage grafts pybuild's exact CPython 3.13.16 installation (binary,
+  `libpython3.13.so.1.0`, stdlib) + `ldconfig`, so the copied venv's absolute
+  `/usr/local/bin/python3.13` symlinks resolve with **no managed download anywhere**;
+  every interpreter byte is fixed by a ledger row. Both bases are Debian 12, so the
+  grafted binary runs against the glibc it was built against.
+- `docs/security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md` remains true as written: the
+  image *uses CPython 3.13.16* (what the app runs on) — only the OS patch layer moved.
+  The 3.15 migration stays upstream-blocked (coincurve cp315, round-3 evidence) and is
+  NOT attempted here.
+
+### Round-4 evidence (all commands run this round at the current tree)
+
+- `uv run python scripts/check-image-pins.py` → exit 0: "10 pinned base/tool image(s)
+  across 10 Dockerfile(s), all registered" (was the 2 CI violations).
+- `uv run pytest tests/test_check_image_pins.py tests/test_hive_conductor_image_split.py -q`
+  → 42 passed (includes CI's failing `test_dunder_main_entrypoint_runs_the_real_gate`).
+- New `tests/test_hive_conductor_image_split.py` (4 tests, inventory note with
+  `inventory-delta: tests/: +4`) holds the split closed: builder on its registered row +
+  system-interpreter venv, runtime digest registered and deliberately ≠ builder base,
+  the three graft COPYs + `ldconfig` present, and the smoke/ARG pins untouched.
+- `uv run python scripts/check-suite-inventory.py` → exit 0 (21 suites match; deltas
+  model, no baseline edit).
+- `docker buildx build -f packages/hive-conductor/Dockerfile
+  --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/ --load .` (security.yml
+  shape, minus the GHA-cache flags unavailable locally) → exit 0; the build itself
+  re-proves the smoke (it fails the build otherwise) and logs "Using CPython 3.13.16
+  interpreter at: /usr/local/bin/python3.13". Note: transient DNS flake to
+  files.pythonhosted.org killed three buildx-container attempts (the same registry-flake
+  class `buildx-build-retry.sh` wraps in CI); the daemon-builder build went green.
+- Built-image artifact probes (CI's docker-build probe + graft checks):
+  `find_spec('examples') is None` OK; `sys.version_info[:3] == (3, 13, 16)` with
+  `sys.executable = /app/venv/bin/python` → realpath `/usr/local/bin/python3.13`; the 3.15
+  base's own `python3.15` also present (proof the OS layer is genuinely the bumped base);
+  identity pins 2.12.2/21.0.0/1.6.2 + `ConductorSeed` derivation + native `coincurve`
+  import OK.
+- Boot: container serves `GET /health/ready` → 200 `{"ready":true,...}` (run with
+  `CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1`; without it the app's data-dir guard refuses —
+  by design, and itself proof the grafted interpreter executes the app).
+- `uv run pytest tests/ --ignore=tests/tools/registry -q` (CI `test` job's root leg,
+  CI-equivalent env) → **5809 passed, 140 skipped, 0 failed** (round 3: 1 failed).
+- Vulture ledger (CI's exact args) → exit 0, 1253 = 1253; `check-release-consistency.py`
+  → ok (CHANGELOG Dependencies entry links #2304); ruff check/format → clean.
+
+Gate mapping: Quality/Image pins + test + Coverage-gate (root-suite leg) + docker-build
++ Container scan / Gate C / e2e / e2e-ui (all failed at the identical pybuild
+`AssertionError: 3.13.15` during image build) are addressed by the green build + probes;
+Quality gate's only remaining dependency (workflow-inventory) was already green (round
+3); integration-scope only requires hive-conductor-e2e. Residual: the full compose e2e
+stacks were not re-run locally (20-min jobs with their own DB/Playwright services); the
+image they build is proven green here.

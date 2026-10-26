@@ -7,6 +7,13 @@
 # patch version here so a moving base tag cannot silently change that contract.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
+#
+# Since #2304 the builder and the runtime OS layer are deliberately different
+# bases: pybuild keeps the CPython 3.13.16 pin above (it IS the contract
+# interpreter), runtime-apt is only the Debian OS/security-patch layer and
+# moved to python:3.15.0-slim-bookworm, and the final stage grafts the
+# builder's exact CPython installation so the copied venv runs on the contract
+# interpreter without any managed download. See the stage comments below.
 # ---- frontend build ----
 # Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
 FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
@@ -57,9 +64,15 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
 # ---- builder: self-contained venv (has shell/pip) ----
-# Digest-pinned (#349); shared with the runtime stage below so both resolve to
-# the same CPython build.
-FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS pybuild
+# Digest-pinned (#349). This stage IS the identity contract: the CPython that
+# builds the venv is the CPython the shipped app runs on, so it keeps the
+# exact registered 3.13.16 build that coincurve 21.0.0 ships cp313 wheels for
+# and that the build smoke below asserts. #2304 moved the runtime OS layer to
+# python:3.15.0-slim-bookworm (see runtime-apt); bumping this stage to match
+# would leave no interpreter satisfying the contract on the base -- uv's
+# managed-download fallback resolves an unregistered 3.13.15, which is
+# exactly the silent interpreter change the header forbids.
+FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -188,6 +201,12 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
+#
+# #2304: this stage is the OS/security-patch layer only and carries no
+# interpreter contract, so it builds on python:3.15.0-slim-bookworm (digest
+# registered in quality/image-pins.json). The interpreter the app runs on is
+# NOT this stage's: the final stage grafts pybuild's registered CPython
+# 3.13.16 build so the shipped venv resolves.
 FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
@@ -210,6 +229,20 @@ ENV PATH="/app/venv/bin:$PATH" \
     CONDUCTOR_DATA_DIR=/data/conductor \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+# #2304: the runtime OS layer (runtime-apt above) is no longer the image the
+# venv was built in, so the builder's exact CPython installation is grafted
+# in: the venv's interpreter symlinks point at /usr/local/bin/python3.13,
+# which the 3.15 base does not ship. All three paths come from the same
+# digest-pinned pybuild image (the registered 3.13.16 build), and both bases
+# are Debian 12 (bookworm), so the grafted binary runs against the glibc it
+# was built against. No managed download exists anywhere in the shipped
+# image: every interpreter byte is fixed by a ledger row.
+COPY --from=pybuild /usr/local/bin/python3.13 /usr/local/bin/python3.13
+COPY --from=pybuild /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+COPY --from=pybuild /usr/local/lib/python3.13 /usr/local/lib/python3.13
+# ldconfig registers the grafted libpython3.13.so.1.0 the same way the base
+# image registers its own (ld.so.conf.d already covers /usr/local/lib).
+RUN ldconfig
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
@@ -237,6 +270,7 @@ RUN chown -R 65532:65532 /data
 RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
            /app/venv/bin/pip* \
            /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/lib/python3.15/site-packages/pip* \
            /usr/local/bin/pip*
 EXPOSE 8101
 WORKDIR /app/backend
