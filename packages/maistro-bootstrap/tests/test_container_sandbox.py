@@ -454,7 +454,7 @@ def test_container_environment_is_credential_default_deny(
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("DOCKER_CONFIG", str(config))
     with ContainerBuilderSandbox(tmp_path) as sb:
-        env = sb.run_command("env")
+        env = sb.run_argv(["env"])
 
     assert "l80-host-secret-sentinel" not in env
     assert "l80-proxy-secret" not in env
@@ -650,7 +650,7 @@ def test_nested_user_namespace_does_not_reopen_the_host(tmp_path: Path) -> None:
     _repo_with_file(tmp_path)
     with ContainerBuilderSandbox(tmp_path) as sb:
         payload = "touch /usr/l80-escape 2>&1"
-        out = sb.run_command(f"unshare -Ur sh -c '{payload}' || sh -c '{payload}'")
+        out = sb.run_argv(["sh", "-c", f"unshare -Ur sh -c '{payload}' || sh -c '{payload}'"])
         assert "Read-only file system" in out, out
         rc, _ = sb.run_argv_status(["test", "!", "-e", "/usr/l80-escape"])
         assert rc == 0, "a nested user namespace wrote into the image root"
@@ -674,7 +674,7 @@ def test_no_block_devices_reachable(tmp_path: Path) -> None:
     """A visible disk is a filesystem escape that needs no kernel bug."""
     _repo_with_file(tmp_path)
     with ContainerBuilderSandbox(tmp_path) as sb:
-        text = sb.run_command("ls /dev/sd* /dev/nvme* /dev/vd* /dev/loop* 2>&1")
+        text = sb.run_argv(["sh", "-c", "ls /dev/sd* /dev/nvme* /dev/vd* /dev/loop* 2>&1"])
         assert "No such file" in text
         # No line that is not an ls error — i.e. no device actually matched.
         assert not [line for line in text.splitlines() if not line.startswith("ls:")]
@@ -688,7 +688,7 @@ def test_no_host_unix_sockets_visible(tmp_path: Path) -> None:
     having no sockets."""
     _repo_with_file(tmp_path)
     with ContainerBuilderSandbox(tmp_path) as sb:
-        lines = sb.run_command("cat /proc/net/unix 2>/dev/null | wc -l")
+        lines = sb.run_argv(["sh", "-c", "cat /proc/net/unix 2>/dev/null | wc -l"])
         assert int(lines.strip()) <= 1, f"host unix sockets visible: {lines}"
 
 
@@ -699,7 +699,7 @@ def test_no_host_listening_ports_visible(tmp_path: Path) -> None:
     having no services — the live-network twin of the egress probe."""
     _repo_with_file(tmp_path)
     with ContainerBuilderSandbox(tmp_path) as sb:
-        lines = sb.run_command("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l")
+        lines = sb.run_argv(["sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l"])
         assert int(lines.strip()) <= 2, f"host listening ports visible: {lines}"
 
 
