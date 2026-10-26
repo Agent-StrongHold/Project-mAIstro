@@ -151,16 +151,6 @@
       ]
     },
     {
-      "id": "prompts-diff",
-      "subsystem": "Prompts and personas",
-      "disposition": "CONNECT",
-      "rationale": "Prompt diffing with no caller; the persona eval protocol of ADR-060 is its consumer.",
-      "root": "the ADR-060 persona eval path",
-      "modules": [
-        "maistro.prompts.diff"
-      ]
-    },
-    {
       "id": "rsi-unwired",
       "subsystem": "RSI autorun",
       "disposition": "CONNECT",
@@ -171,16 +161,6 @@
         "maistro_rsi.autorun",
         "maistro_rsi.harness_adapter",
         "maistro_rsi.rate_pacer"
-      ]
-    },
-    {
-      "id": "classifier-logging",
-      "subsystem": "Router and classifier",
-      "disposition": "CONNECT",
-      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
-      "root": "maistro.classifier.engine",
-      "modules": [
-        "maistro.classifier.logging"
       ]
     },
     {
