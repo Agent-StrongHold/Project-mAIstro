@@ -9,6 +9,7 @@ Invocation execution API.
 
 from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
+from maistro.agents.spec.agent_spec import AgentRole
 from maistro.backlog.markdown_io import ParsedItem
 from maistro.backlog.model import (
     BacklogClaim,
@@ -21,6 +22,7 @@ from maistro.backlog.pg_store import PgBacklogStore
 from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._backlog import RoleChoice
 from maistro.cli._backlog import cutover as backlog_cutover_command
@@ -171,6 +173,13 @@ provenance_snapshot = "provenance_snapshot"
 format_version = "format_version"
 
 _VULTURE_WHITELIST = (
+    # AgentRole's closed vocabulary is the agent-spec wire contract: role
+    # values round-trip through YAML manifests and API payloads by string
+    # value, and the spec tests pin the complete member set. #847 removed
+    # DEFAULT_TOOLS, the only in-src reference to the intent_router member;
+    # the vocabulary itself stays, so the member is named here the same way
+    # the #793 pack-contract enums are.
+    AgentRole.INTENT_ROUTER,
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
     # symbols load through __getattr__ and ConductorSeed's public API.
     identity_getattr,
@@ -188,6 +197,11 @@ _VULTURE_WHITELIST = (
     ResolvedBinding.resolved_at,
     Invocation._validate_invocation,
     InvocationExecutionService.invoke,
+    # The expected-effect evidence model (#57) validates its cross-field
+    # digest contract through Pydantic decorator dispatch; no scanned call
+    # site names the validator (same shape as Binding._validate_binding
+    # above).
+    ExpectedEffectEvidence._validate_evidence,
     # PersistedStore's atomic username-claim transactions (#1061). The durable
     # backend is reached from packages/hive-conductor's username_registry via
     # getattr(backend, ...) duck-typing, so no scanned call site names these
