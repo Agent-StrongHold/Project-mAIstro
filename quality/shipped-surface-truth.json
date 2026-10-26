@@ -700,7 +700,7 @@
       "disposition": "local-only",
       "production_enabled": true,
       "reason": "cross-artifact consistency inspection (#779): runs the deterministic evaluator over the submitted frozen snapshot and returns the result contract; it proposes refinement, it never rewrites project state",
-      "truth_contract": "pure evaluation of the request body — no store access, no durable effect, no model call; the same evaluator the design.consistency_eval graph node runs inside a Run"
+      "truth_contract": "pure evaluation of the request body \u2014 no store access, no durable effect, no model call; the same evaluator the design.consistency_eval graph node runs inside a Run"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
@@ -852,6 +852,26 @@
       "production_enabled": true,
       "reason": "records a counted, backend-side adaptive dismissal as negative reinforcement; viewer members are refused",
       "effect_owner": "stores.home_adaptive_dismissals"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "POST",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "dismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records Attention defer/dismiss preference evidence (#1049); does not settle HITL",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "undismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears Attention defer/dismiss preference so the item can resurface",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
     },
     {
       "source": "packages/hive-conductor/backend/routes/home.py",
@@ -2121,7 +2141,7 @@
       "disposition": "local-only",
       "production_enabled": true,
       "reason": "deterministic policy dry run for admin inspection (#971): same fixed rule order as enforcement, no record, no audit row",
-      "truth_contract": "stateless policy evaluation; persists nothing — the side-effect-free twin of the enforcement decision"
+      "truth_contract": "stateless policy evaluation; persists nothing \u2014 the side-effect-free twin of the enforcement decision"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
@@ -2714,6 +2734,36 @@
       "production_enabled": true,
       "reason": "registers through the real backend route",
       "effect_owner": "routes/auth.py register"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/hitl/${runId}/${nodeId}/answer",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Attention Answer CTA posts to the canonical HITL answer door (#1049)",
+      "effect_owner": "routes/hitl.py answer_human_work (durable HITL store)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/workspaces/${workspaceId}/attention/dismiss",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Attention Defer/Dismiss CTA writes preference evidence (#1049)",
+      "effect_owner": "routes/attention.py dismiss_workspace_attention"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/dagRuns.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/dag-runs/${runId}/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "DagRuns Cancel control posts through the #1036 inspection cancel door",
+      "effect_owner": "routes/dag_runs.py cancel_run -> RunExecutionService.cancel_run"
     },
     {
       "source": "packages/hive-conductor/frontend/src/lib/profile.ts",

@@ -81,7 +81,7 @@ re2 = [
 browser = [
     "browser-use>=0.1.40",
     "playwright>=1.49",
-    "openai>=1.40,<2",
+    "openai>=1.40,<4",
 ]
 # The Archive tier (ADR-082226-f436) — cold records below durable memory, on any
 # S3-compatible store. Optional because the homelab deployment uses

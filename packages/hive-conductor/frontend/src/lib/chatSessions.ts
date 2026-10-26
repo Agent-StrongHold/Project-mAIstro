@@ -47,6 +47,8 @@ export function openChatStream(
     messages: Array<{ role: string; content: string }>;
     workspace_id: string;
     session_id: string;
+    /** Client logical-turn key (#1822 AC-4); optional on the wire. */
+    turn_id?: string;
   },
   signal: AbortSignal,
 ): Promise<Response> {

@@ -60,7 +60,6 @@
     "maistro.memory.learnings.approval",
     "maistro.memory.learnings.promoter",
     "maistro.memory.mutations",
-    "maistro.prompts.diff",
     "maistro.repertoire",
     "maistro.repertoire.protocol",
     "maistro.repertoire.run",

@@ -14,7 +14,7 @@ vulnerabilities:
       2026-10-22 (trivy: fix column empty), so it cannot be patched by the
       apt layer that addresses CVE-2025-59375 in the same stage. Triaged:
       expat parses XML only from operator-supplied feed content, not
-      attacker-controlled network input, on 127.0.0.1-bound services.
+      attacker-controlled network input, on loopback-bound services.
       Re-triage when upstream ships a fix or Debian ships deb12u6; remove
       this entry and re-scan then.
   - id: CVE-2026-111497

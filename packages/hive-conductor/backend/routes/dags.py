@@ -170,16 +170,20 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        # Terminal only (#1877): `finish_run` stamps the row's `finished_at`,
-        # so calling it for a nonterminal Run would publish a completion time
-        # the canonical Run does not have. A nonterminal Run leaves the row
-        # open at the store's in-flight default; the read overlay (or the
-        # eventual terminal transition) is what gives it its real status.
+        # #1036 terminality contract: terminal → finish_run; nonterminal →
+        # record_status (exact canonical value, finished_at stays null). Never
+        # leave the row stuck at the store's default "running".
         if status in TERMINAL_RUN_STATUSES:
             await store.finish_run(
                 run_id,
                 status=status.value,
                 result=result,
+            )
+        else:
+            await store.record_status(
+                run_id,
+                status=status.value,
+                canonical_run_id=run_id,
             )
     except Exception:
         logger.warning(

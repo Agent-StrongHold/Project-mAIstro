@@ -846,3 +846,30 @@ async def test_persist_conversation_turn_swallows_append_failures(
         [{"role": "user", "content": "hi"}],
         {"choices": [{"message": {"content": "ok"}}]},
     )
+
+
+@pytest.mark.contract("behavioral")
+def test_client_turn_id_normalizes_and_rejects_invalid() -> None:
+    """#1822 AC-4: nonempty ≤128 client turn keys survive; blanks/long/non-str do not."""
+    assert chat_runs._client_turn_id(None) is None
+    assert chat_runs._client_turn_id(12) is None
+    assert chat_runs._client_turn_id("") is None
+    assert chat_runs._client_turn_id("   ") is None
+    assert chat_runs._client_turn_id("x" * 129) is None
+    assert chat_runs._client_turn_id("  turn-abc  ") == "turn-abc"
+    assert chat_runs._client_turn_id("x" * 128) == "x" * 128
+
+
+@pytest.mark.contract("behavioral")
+def test_admit_turn_records_client_turn_id(container: Container) -> None:
+    """admit_turn keeps a normalized client turn_id on the AdmittedTurn."""
+
+    async def _turn() -> str | None:
+        turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
+            _principal(),
+            [{"role": "user", "content": "hi"}],
+            turn_id="  client-turn-1  ",
+        )
+        return turn.client_turn_id
+
+    assert _run(_turn()) == "client-turn-1"

@@ -1,4 +1,4 @@
-"""DevSkim's `ignore-globs` must never take shipped code out of the scan.
+"""DevSkim must scan shipped code and skip non-product noise.
 
 An exclusion list is a quiet instrument: nothing fails when it removes too
 much, the scan just reports less and still goes green. The CodeQL config
@@ -8,7 +8,10 @@ that launches subprocesses against candidate repositories.
 
 So the rule these tests pin is not "keep the list short", it is: a glob may
 name a *location* that holds no shipped code, and may not name a filename
-shape that reaches across the tree into `packages/`.
+shape that reaches across the tree into `packages/`. Non-product roots
+(`.github/`, `deploy/`, …) are kept out by `--include-globs` allowlisting the
+shipped trees, not by a broad `**/deploy/**` deny that would also hide
+`templates/**/deploy/**`.
 """
 
 from __future__ import annotations
@@ -36,15 +39,27 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
-def _ignore_globs() -> list[str]:
-    """The globs the workflow actually passes to the action."""
+def _scanner_step() -> dict[str, object]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
     scanner = [s for s in steps if str(s.get("uses", "")).startswith("microsoft/DevSkim-Action")]
     assert len(scanner) == 1, "expected exactly one DevSkim scanner step"
-    raw = scanner[0].get("with", {}).get("ignore-globs")
+    return scanner[0]
+
+
+def _ignore_globs() -> list[str]:
+    """The globs the workflow actually passes to the action."""
+    raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
     assert raw, "the scanner step passes no ignore-globs — it would scan everything"
-    return [glob.strip() for glob in raw.split(",") if glob.strip()]
+    return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
+
+
+def _include_globs() -> list[str]:
+    """Allowlist passed via ``extra-options: --include-globs …``."""
+    extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
+    match = re.search(r"--include-globs\s+(\S+)", extra)
+    assert match, "DevSkim must pass --include-globs so non-product roots are never scanned"
+    return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
 
 
 def _as_regex(glob: str) -> re.Pattern[str]:
@@ -74,6 +89,13 @@ def _as_regex(glob: str) -> re.Pattern[str]:
     return re.compile(f"^{out}$")
 
 
+def _is_scanned(path: str) -> bool:
+    """Whether DevSkim would analyze ``path`` under the configured allow/deny."""
+    allowed = any(_as_regex(g).match(path) for g in _include_globs())
+    denied = any(_as_regex(g).match(path) for g in _ignore_globs())
+    return allowed and not denied
+
+
 def _shipped_sources() -> list[str]:
     seen: set[str] = set()
     for tree in SHIPPED_TREES:
@@ -97,6 +119,7 @@ def _shipped_sources() -> list[str]:
                     "third_party",
                     "swagger-ui",
                     "corpora",
+                    "eval",
                 }:
                     continue
                 # Bundled Open Design fixtures (json/md/css only) under
@@ -120,6 +143,7 @@ def _shipped_sources() -> list[str]:
 
 def test_the_scanner_step_is_configured() -> None:
     assert _ignore_globs(), "DevSkim must not run unconfigured"
+    assert _include_globs(), "DevSkim must allowlist shipped trees"
 
 
 def test_the_actions_own_defaults_are_not_silently_dropped() -> None:
@@ -142,16 +166,30 @@ def test_no_glob_names_a_filename_shape_reaching_into_packages() -> None:
     assert offenders == [], f"globs matching by filename shape: {offenders}"
 
 
+def test_directory_globs_are_absolute_path_safe() -> None:
+    """DevSkim DenyFilters match absolute paths under $GITHUB_WORKSPACE.
+
+    A glob like `.github/**` or `deploy/**` only matches when the path *starts*
+    with that prefix, so it never hits
+    `/home/runner/work/.../.github/workflows/ci.yml`. Every directory ignore
+    must therefore start with `**/` (the form that matched `**/tests/**` and
+    friends all along).
+    """
+    offenders = [g for g in _ignore_globs() if g.endswith("/**") and not g.startswith("**/")]
+    assert offenders == [], (
+        "directory ignore-globs must start with **/ so they match absolute "
+        "runner paths:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_no_shipped_source_file_is_excluded_from_the_scan() -> None:
-    globs = [(g, _as_regex(g)) for g in _ignore_globs()]
     sources = _shipped_sources()
     assert sources, "found no shipped sources — the tree layout changed, fix SHIPPED_TREES"
 
-    excluded = sorted(
-        f"{rel} (by {glob})" for rel in sources for glob, rx in globs if rx.match(rel)
-    )
+    excluded = sorted(rel for rel in sources if not _is_scanned(rel))
     assert excluded == [], (
-        "ignore-globs removes shipped code from the DevSkim scan:\n  " + "\n  ".join(excluded)
+        "include/ignore configuration removes shipped code from the DevSkim scan:\n  "
+        + "\n  ".join(excluded)
     )
 
 
@@ -162,8 +200,7 @@ def test_the_rsi_test_inventory_module_stays_in_scope() -> None:
     subprocess."""
     rel = "packages/maistro-rsi/src/maistro_rsi/test_inventory.py"
     assert (REPO_ROOT / rel).is_file(), "module moved — update or drop this regression"
-    for glob in _ignore_globs():
-        assert not _as_regex(glob).match(rel), f"{glob} excludes shipped runtime code"
+    assert _is_scanned(rel), "shipped runtime code dropped from the DevSkim scan"
 
 
 def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
@@ -172,8 +209,15 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
     rel = "templates/autonoetic/docs/adr/ADR-001-generated-product-baseline.md.jinja"
     if not (REPO_ROOT / rel).is_file():
         pytest.skip("template moved; the invariant is covered by the sweep above")
-    for glob in _ignore_globs():
-        assert not _as_regex(glob).match(rel), f"{glob} excludes a shipped template"
+    assert _is_scanned(rel), "shipped template dropped from the DevSkim scan"
+
+
+def test_shipped_template_deploy_stays_in_scope() -> None:
+    """A broad ``**/deploy/**`` deny would hide product compose templates."""
+    rel = "templates/autonoetic/deploy/compose.yml.jinja"
+    if not (REPO_ROOT / rel).is_file():
+        pytest.skip("template moved; the invariant is covered by the sweep above")
+    assert _is_scanned(rel), "**/deploy/** must not exclude shipped templates"
 
 
 @pytest.mark.parametrize(
@@ -190,8 +234,10 @@ def test_a_shipped_template_under_a_docs_directory_stays_in_scope() -> None:
         ".github/workflows/ci.yml",
         "deploy/scripts/backup.sh",
         "alembic/env.py",
+        "packages/hive-conductor/eval/departments/engineering.py",
+        "quality/vulture-baseline.json",
     ],
 )
 def test_the_noisy_trees_are_still_excluded(path: str) -> None:
-    """Narrowing must not have narrowed the list into uselessness."""
-    assert any(_as_regex(g).match(path) for g in _ignore_globs())
+    """Non-product roots miss the allowlist; nested noise hits ignore-globs."""
+    assert not _is_scanned(path), f"{path} is still in the DevSkim scan"

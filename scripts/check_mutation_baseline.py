@@ -384,7 +384,7 @@ def main(argv: list[str]) -> int:
         # diagnostic, never a silent 'unknown' or a write without identity.
         scheduler_tool_version, legacy_tool_version = _analyzer_versions(prov)
     except prov.RatchetProvenanceError as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        print(_ci_error_annotation(str(exc)), file=sys.stderr)
         return 2
 
     if args.write_baseline and _scheduler_telemetry_for(args.rows) is not None:
@@ -399,7 +399,7 @@ def main(argv: list[str]) -> int:
                 tool_version=scheduler_tool_version,
             )
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            print(f"::error::{exc}", file=sys.stderr)
+            print(_ci_error_annotation(str(exc)), file=sys.stderr)
             return 2
 
     current = scores(args.rows)
@@ -411,7 +411,7 @@ def main(argv: list[str]) -> int:
     try:
         prov.require_measurement(current, ratchet=RATCHET, what="mutation source outcomes")
     except prov.RatchetProvenanceError as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        print(_ci_error_annotation(str(exc)), file=sys.stderr)
         return 2
 
     if args.write_baseline:
@@ -448,7 +448,7 @@ def main(argv: list[str]) -> int:
                 )
             )
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"::error::{exc}", file=sys.stderr)
+            print(_ci_error_annotation(str(exc)), file=sys.stderr)
             return 2
 
     print(

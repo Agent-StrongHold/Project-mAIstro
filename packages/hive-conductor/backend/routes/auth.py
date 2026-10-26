@@ -12,7 +12,7 @@ import re
 import threading
 import time as _time
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, TypeGuard, cast
+from typing import Any, Literal, TypeGuard
 from uuid import uuid4
 
 import stores
@@ -434,10 +434,6 @@ def _cookie_samesite() -> Literal["lax", "strict", "none"]:
 
 def _human_auth_policy() -> HumanAuthModePolicy:
     return HumanAuthModePolicy(mode=get_settings().human_auth_mode)
-
-
-def _users() -> list[HiveAccount]:
-    return cast(list[HiveAccount], list(stores.users.values()))
 
 
 def _username_taken(username: str) -> bool:

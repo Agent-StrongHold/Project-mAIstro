@@ -155,7 +155,7 @@ Accompanying the paper:
 License
 -------
 Apache License, Version 2.0. Copyright The Google Research Authors.
-Full text: http://www.apache.org/licenses/LICENSE-2.0
+Full text: http://www.apache.org/licenses/LICENSE-2.0  # DevSkim: ignore DS137138 until 2027-12-31 — license URL, not a call target
 Each vendored .py file retains its original Apache 2.0 header.
 
 This repository (maistro-engine) is also Apache 2.0, so no license

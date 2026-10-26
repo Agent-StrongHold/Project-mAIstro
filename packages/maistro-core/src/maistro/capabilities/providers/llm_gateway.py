@@ -27,6 +27,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -35,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.capabilities.binding import ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.providers.extension_attribution import log_fields_suffix
 from maistro.http import shared_client
 from maistro.providers.types import ModelMetadata
 from maistro.resilience.context_probe import ContextProbe
@@ -49,6 +51,41 @@ MODEL_GATEWAY_CREDENTIAL_PROVIDER = "litellm"
 DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF = "litellm-gateway"
 
 _GATEWAY_TRUST_TIER = "t1"
+
+logger = logging.getLogger(__name__)
+
+
+def _adapter_identity_suffix(spec: Any) -> str:
+    """The declared package identity, as an error-message suffix.
+
+    Empty for a package that declares no identity (M9-I1, #976): legacy
+    adapters keep their message shape, while declaring packages make every
+    error traceable to the exact version and publisher without a registry
+    lookup — the message travels with the Invocation evidence, so the
+    identity of the failing package is readable even after that package is
+    upgraded or removed.
+    """
+
+    if not getattr(spec, "version", ""):
+        return ""
+    return f" {spec.version} (publisher {spec.publisher!r})"
+
+
+def _adapter_log_fields(adapter_provider: Any) -> dict[str, str]:
+    """Flat log fields naming the adapter package behind one governed call.
+
+    Declared identity becomes the canonical extension-attribution fields; a
+    legacy adapter logs only its id, so the line never claims an identity the
+    package did not declare. No field here carries request, payload, or
+    credential material — identity only.
+    """
+
+    attribution = adapter_provider.extension_attribution
+    if attribution is not None:
+        fields: dict[str, str] = attribution.to_log_fields()
+        return fields
+    return {"adapter_id": str(adapter_provider.spec.adapter_id)}
+
 
 #: Cross-instance 429 coordination for the approved gateway Provider (#2318).
 _GATEWAY_RATE_LIMITS = RateLimitCoordinator()
@@ -220,19 +257,20 @@ def _adapter_error(spec: Any, adapter: Any, status: int) -> Exception:
     from maistro.capabilities.provider_adapters import AdapterErrorKind
 
     kind = adapter.error_kind_for(status)
+    identity = _adapter_identity_suffix(spec)
     if kind == AdapterErrorKind.AUTH:
         return LlmAuthError(
-            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r} "
+            f"llm_auth_failed status={status} (adapter {spec.adapter_id!r}{identity} "
             "rejected the resolved credential)",
             status_code=status,
         )
     if kind == AdapterErrorKind.RATE_LIMITED:
         return LlmHttpError(
-            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r})",
+            f"llm_rate_limited status={status} (adapter {spec.adapter_id!r}{identity})",
             status_code=status,
         )
     return LlmHttpError(
-        f"llm_http_error status={status} (adapter {spec.adapter_id!r}, kind={kind!r})",
+        f"llm_http_error status={status} (adapter {spec.adapter_id!r}{identity}, kind={kind!r})",
         status_code=status,
     )
 
@@ -418,6 +456,14 @@ async def execute_model_chat(
     model_name = str(preflight.payload.get("model") or getattr(provider, "name", ""))
     response = await _post_chat_completion(preflight)
     if adapter_provider is not None:
+        fields = _adapter_log_fields(adapter_provider)
+        logger.info(
+            "extension adapter model call: adapter=%s model=%s %s",
+            adapter_provider.spec.adapter_id,
+            adapter_provider.model,
+            log_fields_suffix(fields),
+            extra=fields,
+        )
         return _adapter_response_body(adapter_provider, response)
     return _checked_body(response, model=model_name, requested_tokens=requested_cap)
 
@@ -507,7 +553,8 @@ def _adapter_preflight(
         payload = adapter_provider.adapter.normalize_request(adapter_provider.name, request)
     except Exception as exc:
         raise EffectNotApplied(
-            f"adapter {spec.adapter_id!r} refused the request before any HTTP "
+            f"adapter {spec.adapter_id!r}"
+            f"{_adapter_identity_suffix(spec)} refused the request before any HTTP "
             f"effect occurred: {type(exc).__name__}: {exc}"
         ) from exc
     api_key = endpoint.api_key

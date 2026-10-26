@@ -24,17 +24,14 @@ The writer census (every production writer of a row's status):
   terminal canonical status finishes the row, a non-terminal one is
   mirrored open with no invented `finished_at`, and a missing or
   non-canonical status records nothing.
-- The DAG run route (`routes.dags._record_run_projection`) applies its
-  own inline terminal-only gate (#1877) and calls `finish_run` directly,
-  never `record_outcome`: a terminal canonical outcome finishes the row,
-  while a non-terminal canonical state leaves the row open and
-  correlated at this store's in-flight default rather than mirroring the
-  canonical status.
-- `services.dag_run_live.LiveRunProjection.record_result` also calls
-  `finish_run` directly, with `result["status"] or "failed"` -- a
-  status-less settled result is stamped `failed`. That fallback is
-  pre-existing behavior outside this module, recorded here as open debt
-  in the #35/#1036 writer census.
+- The DAG run route (`routes.dags._record_run_projection`) applies the
+  #1036 terminality contract inline (#1877): a terminal canonical outcome
+  calls `finish_run`; a non-terminal canonical state calls `record_status`
+  so the row mirrors the exact status with no invented `finished_at`
+  (never left stuck at the store's in-flight default).
+- `services.dag_run_live.LiveRunProjection.record_result` routes through
+  `record_outcome` (same terminality contract). Missing or unknown status
+  is logged and records nothing -- never coerced to `failed`.
 - The chat tool's witnessed-attempt branches stamp display facts, never
   a copied or guessed canonical verdict: `_cancellation_answer`
   finishes a row `cancelled` only after the spine's cancel fence was
