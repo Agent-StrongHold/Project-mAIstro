@@ -25,7 +25,7 @@ or placeholder-only section.
 
 ### Fixed
 
-- **CodeQL workflow scope test expects `develop` triggers (follow-up to #2357).**
+- **CodeQL workflow scope test expects `develop` triggers (follow-up to #2357) (#2359).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
@@ -111,16 +111,67 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Attention defer/dismiss preference evidence (#1049).** `POST`/`DELETE
+  /v1/workspaces/{id}/attention/dismiss` records Workspace-scoped defer/dismiss
+  preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
+  filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
+  the Attention page write that door; answering still stays on the HITL answer
+  route. Approve/reject pauses submit `{ verdict }` (not a text-only
+  `{ answer }`) so the durable store can resume. Does not settle HITL or Run
+  state outside that door.
+
+- **DAG Run projection writers honor nonterminal mirroring (#1036).** HTTP
+  `_record_run_projection` and live `LiveRunProjection.record_result` now
+  mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
+  `record_outcome` (exact status, `finished_at` null) instead of leaving the
+  row at the store default or coercing missing status to `failed`.
+
+- **Bounded learned-landing suggestion (#1050).** Immediate Home→surface hops
+  (published streak band) can show a non-blocking proposal to make that surface
+  the default. Accept PATCHes `workspace_default_landing`; dismiss suppresses
+  further nags for that path. Explicit non-Home default outranks learning.
+
+- **Chat stream abort marks the optimistic turn interrupted (#1822).** Switching
+  Workspace/session mid-stream aborts the request, epoch-gates late
+  delta/brief/done frames, and marks the in-flight assistant bubble interrupted
+  until reopen replaces from GET truth.
+
+- **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
+  Authenticated `/` now prefers the last Workspace surface (tracked in owned
+  `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
+  absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
+  24h+full session); otherwise it uses `workspace_default_landing` (Home
+  baseline). Chat `brief` stream frames honor the same stream-epoch gate as
+  content patches so a late interview brief cannot paint onto a switched
+  Workspace/session.
+
+- **Goals waiting-human links to Approvals (#65).** A Goal whose execution
+  disposition is `waiting_human` offers Open in Approvals with the blocked
+  run id — joining the #2278 Approvals surface without a second HITL store.
+
+- **Home Goals section reads Goal inspection (#65).** Workspace Home projections
+  list Goals through `services.goal_inspection` (same door as `/goals`) instead
+  of reporting the Goal service unavailable or reading the retiring missions
+  store.
+
+- **Attention Answer CTA posts to the HITL door (#1049).** The Attention page
+  submits answers through `/v1/hitl/{run}/{node}/answer` — the same authority
+  as CLI — then refreshes the projection. Defer/dismiss persistence remains a
+  later slice.
+
+- **DagRuns Cancel control through the inspection door (#1036).** Non-terminal
+  Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
+  (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
+  seam — no product-private lifecycle writer.
+
 - **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
   store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
   also exposes `workspace_restore_aggressiveness`
   (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
-  restored after absence — the durable band; exact windows are applied by
-  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  restored after absence. Both fields PATCH/profile_set the same profile
   document; out-of-allow-list writes are refused (400). Missing or invalid
-  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
-  driven restoration behavior remain later #1050 slices.
+  reads still mean Workspace Home / balanced.
 
 - **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
   existing Workspace Attention projection (HITL pauses + failed Runs) with the

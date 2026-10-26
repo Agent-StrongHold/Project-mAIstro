@@ -6,8 +6,9 @@ module is the allow-list and normalize path so a bad or hostile value cannot
 steer the SPA off an in-app surface or invent a second settings owner.
 
 Consumption of ``workspace_restore_aggressiveness`` (recent-return restore)
-belongs to the session-continuity path (#1822); this module only owns the
-durable preference contract.
+is applied by the SPA landing redirect (`DefaultLandingRedirect` +
+`decideLanding` in ``frontend/src/lib/landing.ts``, #1050/#1822). This module
+owns the durable preference contract only.
 """
 
 from __future__ import annotations
