@@ -227,6 +227,10 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
         "memory_search if it's something you'd have saved earlier. "
         "When the user asks about performance, latency, TTFT, cost, or runtime data — use query_metrics. "
         "When they tell you something about themselves, their project, or preferences — use profile_set to save it. "
+        "Workspace restore phrases: 'hold onto my sessions longer' / 'take me back when I come back' → "
+        "profile_set workspace_restore_aggressiveness=generous (expands the restore window); "
+        "'always open this Workspace to Goals' → workspace_default_landing=/goals; "
+        "'go back to Home by default' → workspace_default_landing=/home. "
         "When you need context about the user or project — use profile_get first. "
         "For freeform notes/facts that don't fit profile fields — use memory_add. "
         "When they ask to forget something — use memory_delete or profile_delete. "
@@ -3052,6 +3056,8 @@ PROFILE_SCHEMA = {
         # #1050: how eagerly to restore a prior surface after absence
         # (off|brief|balanced|generous). Continuity consumer is #1822.
         "workspace_restore_aggressiveness",
+        # #1050: learned-landing dismiss cooldown (path → until epoch-ms).
+        "workspace_landing_suggestion_cooldown",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3096,7 +3102,19 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    from services.workspace_preferences import PreferenceValueError
+    from services.workspace_preferences import (
+        PreferenceValueError,
+        audit_workspace_preference,
+        interpret_restore_aggressiveness_request,
+    )
+
+    # Natural-language restore requests may arrive as the value when the model
+    # mirrors the user's words; map known phrases onto the durable band so the
+    # same RESTORE_KEY expands the window whether UI, API, or Agent wrote it.
+    if field == "workspace_restore_aggressiveness" and isinstance(value, str):
+        mapped = interpret_restore_aggressiveness_request(value)
+        if mapped is not None:
+            value = mapped
 
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
@@ -3110,6 +3128,7 @@ async def _tool_profile_set(
         # and answered `updated: True`, so the model told the user their fact
         # was saved when nothing held it (#699).
         return {"error": f"profile not saved: {exc}"}
+    audit_workspace_preference(actor=user_id, field=field, value=value, source="agent")
     return {"updated": True, "field": field, "value": value}
 
 
@@ -3169,7 +3188,9 @@ PROFILE_TOOLS = [
                 "their preferences, or corrections. Workspace product prefs: "
                 "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
                 "workspace_restore_aggressiveness (off|brief|balanced|generous — "
-                "how long to restore the prior surface after absence)."
+                "how long to restore the prior surface after absence). "
+                "Phrase 'hold onto my sessions longer' / 'take me back when I come back' "
+                "→ workspace_restore_aggressiveness=generous (expands the restore window)."
             ),
             "parameters": {
                 "type": "object",

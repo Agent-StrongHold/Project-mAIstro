@@ -44,6 +44,17 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
+
 - **Extension attribution evidence: identity, version, publisher, and provenance
   through canonical telemetry (#976).** `maistro.extensions` now ships the
   version-tagged `ExtensionAttribution` payload — the exact extension name,
