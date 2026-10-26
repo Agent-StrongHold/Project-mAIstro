@@ -164,13 +164,13 @@
       ]
     },
     {
-      "id": "classifier-logging",
-      "subsystem": "Router and classifier",
+      "id": "sessions-search",
+      "subsystem": "Sessions",
       "disposition": "CONNECT",
-      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
-      "root": "maistro.classifier.engine",
+      "rationale": "ADR-048 session search with no route. Under ADR-082226-5104 this becomes a pgvector query rather than a separate index.",
+      "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
       "modules": [
-        "maistro.classifier.logging"
+        "maistro.sessions.search"
       ]
     },
     {
@@ -407,6 +407,16 @@
       "modules": [
         "maistro.graph.executor",
         "maistro.graph.run"
+      ]
+    },
+    {
+      "id": "classifier-logging",
+      "subsystem": "Router and classifier",
+      "disposition": "CONNECT",
+      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
+      "root": "maistro.classifier.engine",
+      "modules": [
+        "maistro.classifier.logging"
       ]
     }
   ]
