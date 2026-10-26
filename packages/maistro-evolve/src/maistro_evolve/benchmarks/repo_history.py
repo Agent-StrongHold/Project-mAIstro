@@ -243,3 +243,18 @@ def corpus_metadata() -> dict[str, Any]:
         "fidelity": "real",
         "contamination_defence": "chronological (post-cutoff commits)",
     }
+
+
+# Vulture scan input, hosted in this reachable module the same way
+# packages/maistro-design/src/maistro_design/packs/__init__.py hosts its
+# contract names: ``RepoTask.repo_state`` is an annotation-only dataclass
+# field (a class-object reference would not resolve), so it is named through
+# this module variable instead. The field is corpus-schema surface — the
+# loader projects it from the digest-pinned corpus rows and the corpus
+# round-trip tests read it back — the same reviewed declarative posture as
+# its banked siblings (issue_text/gold_patch/test_patch in
+# quality/vulture-baseline.json). It became scanner-visible only when #847
+# removed an unrelated local variable of the same name from maistro-core.
+repo_state = "repo_state"
+
+_VULTURE_REFERENCES = (repo_state,)
