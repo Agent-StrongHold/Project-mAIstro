@@ -6,6 +6,9 @@
 name: DevSkim
 
 on:
+  # Manual re-upload when a tip push run is cancelled before SARIF lands
+  # (observed on #2357: push analysis cancelled while still queued).
+  workflow_dispatch:
   push:
     branches: [ "develop" ]
   pull_request:
