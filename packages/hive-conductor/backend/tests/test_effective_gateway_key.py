@@ -291,6 +291,9 @@ class TestNoPlaceholderCredential:
             # wiring in _construct_runtime reads them (#1152, #1824 merge).
             run_store=None,
             provider_adapter_catalog=None,
+            # #847: the adapter threads the container's canonical audit log into
+            # create_agents, so a faithful Container stub must carry it too.
+            audit_log=None,
         )
         captured: dict[str, Any] = {}
 
@@ -335,6 +338,9 @@ class TestNoPlaceholderCredential:
             agents={},
             run_store=None,
             provider_adapter_catalog=None,
+            # #847: the adapter reads container.audit_log when building the
+            # agent roster; the real Container always carries it.
+            audit_log=None,
         )
 
         async def fake_create_container(config):
