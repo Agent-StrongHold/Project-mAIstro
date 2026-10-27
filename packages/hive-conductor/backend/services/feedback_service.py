@@ -1,8 +1,8 @@
 """Phase 5 — Signal #4: user thumbs feedback persistence.
 
 Translates a `POST /v1/dag-runs/{run_id}/feedback` (or per-node) call into
-a `maistro.memory.outcomes.Outcome` write so the next run's
-`get_experience_context(project_id=…)` returns the thumbs-down lines as
+an `maistro.memory.outcomes.Outcome` write so the next run's
+`get_experience_context(project_id=...)` returns the thumbs-down lines as
 a "## User Thumbs-Down Patterns" prompt section.
 
 Design boundary: the route is dumb — validate body + auth, hand off here.
@@ -20,7 +20,7 @@ survives a restart and the optimizer reads from one source of truth.
 only supported way to read this signal. The optimizer and the topology
 comparison each used to iterate `store._outcomes` -- a private list that
 `InMemoryOutcomeStore` has and neither durable store does, so binding a
-durable store would have emptied both readers and raised nothing (#696).
+*durable* store would have emptied both readers and raised nothing (#696).
 
 Returned shape:
     {"recorded": True, "outcome_id": <int>, "signal": "user_thumb"}
@@ -68,6 +68,9 @@ async def record_thumb(
     org_id: str = "",
     run_id: str,
     thumb: str,
+    canonical_run_id: str = "",
+    node_run_id: str = "",
+    attempt_id: str = "",
     comment: str = "",
     node_id: str = "",
     dag_id: str = "",
@@ -95,9 +98,17 @@ async def record_thumb(
         org_id=org_id,
         user_id=user_id,
         project_id=project_id,
+        # `dag_run_id` is the Hive projection shown in the UI. The canonical
+        # provenance columns name the Run spine the route resolved (#337):
+        # `run_id` is the canonical Run, never a borrowed projection id. Empty
+        # canonical identities reach here only from direct service-level
+        # callers, which the HTTP route never is.
         dag_run_id=run_id,
         dag_id=dag_id,
         node_id=node_id,
+        run_id=canonical_run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
         thumb=thumb,
         thumb_comment=comment or "",
     )

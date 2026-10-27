@@ -378,7 +378,9 @@ def parse_actual(text: str) -> set[str]:
     pins: set[str] = set()
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith(("@", "+", "*", "-", "WARN", "Using", "Checked")):
+        if not line or line.startswith(
+            ("@", "+", "*", "-", "WARN", "Using", "Checked", _PYFULL_LINE)
+        ):
             continue
         m = _REQ.match(line)
         if m:
@@ -565,6 +567,107 @@ def reconcile_variance(
     return missing, extra, skewed
 
 
+# ---------------------------------------------------------------------------
+# Legacy `python-full-version` header (the #325 lane's in-image protocol)
+# ---------------------------------------------------------------------------
+# The develop-side protocol above emits the whole PEP 508 marker environment
+# on an `@image-env@` line. Older or exotic interpreters may carry only the
+# bare `python-full-version <ver>` header this lane originally captured; these
+# helpers keep that path readable and let `main()` fall back to it when no
+# `@image-env@` line is present.
+
+# One `python_full_version <op> '<version>'` clause inside a PEP 508 marker.
+# Only python-version clauses are evaluated; every other variable (platform,
+# implementation) is irrelevant to choosing between two pins of the same
+# distribution, which is the only case this gate needs to disambiguate.
+_PYFULL_CLAUSE = re.compile(r"python_full_version\s*(==|!=|<=|>=|<|>)\s*['\"]([^'\"]+)['\"]")
+
+#: The first line `_DUMP` printed on the #325 lane: the image interpreter's own
+#: `python_full_version`.
+_PYFULL_LINE = "python-full-version "
+
+
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    """`'3.13.16'` -> `(3, 13, 16)`, or `None` for anything else."""
+    parts = text.strip().split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def _python_full_version_clause_holds(op: str, bound: str, image_version: str) -> bool | None:
+    """Whether `image_version <op> bound` holds, compared the way PEP 508 says
+    `python_full_version` compares (release tuples, zero-padded). `None` for a
+    bound this stdlib-only comparison cannot represent."""
+    left, right = _version_tuple(image_version), _version_tuple(bound)
+    if left is None or right is None:
+        return None
+    width = max(len(left), len(right))
+    left, right = left + (0,) * (width - len(left)), right + (0,) * (width - len(right))
+    return {
+        "==": left == right,
+        "!=": left != right,
+        "<=": left <= right,
+        ">=": left >= right,
+        "<": left < right,
+        ">": left > right,
+    }[op]
+
+
+def _marker_selects_version(marker: str | None, image_version: str | None) -> bool | None:
+    """Whether `marker` applies on the image interpreter, or `None` when this
+    gate cannot tell (no image version dumped, or clauses it cannot evaluate).
+    Clauses other than `python_full_version` are ignored, not failed: a
+    `sys_platform` split carries one version per platform, and the image IS on
+    its own platform."""
+    if marker is None:
+        return True
+    if image_version is None:
+        return None
+    result = True
+    for op, bound in _PYFULL_CLAUSE.findall(marker):
+        holds = _python_full_version_clause_holds(op, bound, image_version)
+        if holds is None:
+            return None
+        result = result and holds
+    return result
+
+
+def parse_marker_variants(text: str) -> dict[str, list[tuple[str, str | None]]]:
+    """Names the export pins under MORE THAN ONE version, with their markers.
+
+    A python-version split (`beartype==0.22.9 ; < '3.15'` beside
+    `beartype==0.23.1 ; >= '3.15'`) is one distribution the image carries
+    exactly one build of, not a skew: the lenient conditional treatment cannot
+    disambiguate which pin the image should carry. Each entry lists
+    `(pin, marker)` per version — `marker` is `None` for an unconditioned row
+    — so the skew check can select the pin whose marker applies to the image's
+    own interpreter instead of an arbitrary one of the set.
+    """
+    by_name: dict[str, dict[str, str | None]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        m = _REQ.match(stripped)
+        if not m:
+            continue
+        marker = stripped.split(";", 1)[1].strip() if ";" in stripped else None
+        name = canon(m.group(1))
+        by_name.setdefault(name, {})[m.group(2)] = marker
+    return {
+        name: [(f"{name}=={version}", marker) for version, marker in versions.items()]
+        for name, versions in by_name.items()
+        if len(versions) > 1
+    }
+
+
+def image_python_version(dump_text: str) -> str | None:
+    """The `python-full-version` line `_DUMP` printed first, or `None`."""
+    for line in dump_text.splitlines():
+        if line.startswith(_PYFULL_LINE):
+            return line[len(_PYFULL_LINE) :].strip()
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image", required=True, help="image tag, e.g. maistro-engine:pr-123")
@@ -619,6 +722,16 @@ def main() -> int:
         return 1
     actual = parse_actual(proc.stdout)
     image_env = parse_image_env(proc.stdout)
+    if image_env is None:
+        # Fall back to the bare `python-full-version` header older dumps emit:
+        # build the two marker variables a python-version fork needs so the
+        # reconciler can still select the applicable branch instead of guessing.
+        py_version = image_python_version(proc.stdout)
+        if py_version is not None:
+            image_env = {
+                "python_full_version": py_version,
+                "python_version": ".".join(py_version.split(".")[:2]),
+            }
 
     missing, extra, skewed, conditional_count = _reconcile(
         pins_by_name, args.member, actual, image_env

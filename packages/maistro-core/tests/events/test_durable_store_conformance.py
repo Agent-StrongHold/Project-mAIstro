@@ -366,6 +366,184 @@ async def test_pg_replay_cursor_survives_a_pool_restart():
         await second_pool.close()
 
 
+async def test_pg_purge_publishes_the_delivery_log_stored_volume():
+    """The PostgreSQL leg of the delivery log's stored-volume probe (#325).
+
+    Same contract as the SQLite leg in `test_durable_log.py`, plus the
+    per-table size only PostgreSQL can measure. The truncation makes the
+    published levels this test's own rows, not a mixture with the other
+    PG tests' leftover rows (the isolation rule `_pg_pool` applies).
+    """
+    import time as time_mod
+
+    from maistro.events.pg_stores import PgEventLog
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    retention_health._LAST_PROBE.clear()
+    pool = await _pg_pool()
+    try:
+        store = PgEventLog(pool)
+        old = time_mod.time() - 10_000
+        await store.append("old.event")
+        # The append API stamps `time.time()`; backdate the first row so the
+        # purge has an expired batch and the probe has a distinct survivor.
+        await pool.execute("UPDATE event_log SET created_at = $1", old)
+        await store.append("fresh.event")
+
+        assert await store.purge_expired(before=time_mod.time() - 1) == 1
+
+        def _series(metric) -> list[float]:
+            return [
+                float(s["value"])
+                for s in metric.collect()
+                if s.get("labels", {}) == {"table": "event_log", "backend": "postgres"}
+            ]
+
+        assert _series(retention_table_rows) == [1.0]
+        assert _series(retention_table_bytes) and _series(retention_table_bytes)[-1] > 0
+        assert _series(retention_oldest_record_timestamp) == [pytest.approx(time_mod.time(), abs=5)]
+
+        # Draining the log drops the oldest-record series, not the table
+        # level: an empty table is rows=0 with no oldest record to report.
+        retention_health._LAST_PROBE.clear()
+        await store.purge_expired(before=time_mod.time() + 1)
+        assert _series(retention_table_rows) == [0.0]
+        assert _series(retention_oldest_record_timestamp) == []
+    finally:
+        await pool.close()
+
+
+async def test_pg_purge_rejects_a_nonpositive_limit() -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    import time as time_mod
+
+    from maistro.events.pg_stores import PgEventLog
+
+    pool = await _pg_pool()
+    try:
+        with pytest.raises(ValueError, match="limit must be positive"):
+            await PgEventLog(pool).purge_expired(before=time_mod.time() + 1, limit=0)
+    finally:
+        await pool.close()
+
+
+async def test_pg_purge_honors_legal_hold_entity_ids() -> None:
+    """The PG leg of the deletion-authority contract (#325): a held entity's
+    expired delivery history survives a purge that removes its equally
+    expired neighbors, and the batch still deletes at most `limit` rows."""
+    import time as time_mod
+
+    from maistro.events.pg_stores import PgEventLog
+
+    pool = await _pg_pool()
+    try:
+        store = PgEventLog(pool)
+        old = time_mod.time() - 10_000
+        await store.append("old.held", entity_id="held")
+        await store.append("old.free-1", entity_id="free")
+        await store.append("old.free-2", entity_id="free")
+        await pool.execute("UPDATE event_log SET created_at = $1", old)
+
+        removed = await store.purge_expired(
+            before=time_mod.time() + 1,
+            limit=10,
+            legal_hold_entity_ids=("held",),
+        )
+
+        assert removed == 2
+        surviving = await pool.fetch("SELECT DISTINCT entity_id FROM event_log")
+        assert [row["entity_id"] for row in surviving] == ["held"]
+    finally:
+        await pool.close()
+
+
+async def test_pg_purge_returns_zero_when_the_delete_status_is_unparseable() -> None:
+    """asyncpg reports a DELETE as "DELETE <n>"; a driver that someday says
+    something else must degrade the count to 0 — a parse failure is a
+    reporting problem, not a reason to fail a committed purge (#325)."""
+    import time as time_mod
+    from typing import Any
+
+    from maistro.events.pg_stores import PgEventLog
+
+    class _StatusOnlyTransaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class _StatusOnlyConnection:
+        async def execute(self, sql: str, *args: object) -> str:
+            return "PURGED"  # no numeric tail to parse
+
+        async def fetchrow(self, sql: str, *args: object) -> None:
+            return None  # the health probe finds no parseable sample
+
+        def transaction(self) -> _StatusOnlyTransaction:
+            return _StatusOnlyTransaction()
+
+    class _StatusOnlyPool:
+        def acquire(self) -> Any:
+            return self
+
+        async def __aenter__(self) -> _StatusOnlyConnection:
+            return _StatusOnlyConnection()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    assert (
+        await PgEventLog(_StatusOnlyPool()).purge_expired(  # type: ignore[arg-type]
+            before=time_mod.time() + 1
+        )
+        == 0
+    )
+
+
+async def test_pg_purge_throttles_the_stored_volume_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored-volume probe is the amortized cost of the sweep: two
+    purges inside one probe interval sample PostgreSQL once (#325)."""
+    import time as time_mod
+    from typing import Any
+
+    import maistro.events.pg_stores as pg_stores_module
+    from maistro.events.pg_stores import PgEventLog
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    samples: list[str] = []
+    real_sample = pg_stores_module.postgres_table_sample
+
+    async def counting_sample(fetchrow: Any, table: str, *args: Any, **kwargs: Any) -> Any:
+        samples.append(table)
+        return await real_sample(fetchrow, table, *args, **kwargs)
+
+    monkeypatch.setattr(pg_stores_module, "postgres_table_sample", counting_sample)
+
+    pool = await _pg_pool()
+    try:
+        store = PgEventLog(pool)
+        await store.append("e.1")
+        assert await store.purge_expired(before=time_mod.time() + 1) == 1
+        assert samples == ["event_log"]
+
+        # Inside the interval: the purge still runs, the probe does not.
+        await store.append("e.2")
+        assert await store.purge_expired(before=time_mod.time() + 1) == 1
+        assert samples == ["event_log"]
+    finally:
+        await pool.close()
+
+
 class TestTriggerStore:
     async def test_add_then_get_round_trips(self, trigger_store):
         trigger = TriggerDefinition(

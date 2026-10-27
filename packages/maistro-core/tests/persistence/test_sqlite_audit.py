@@ -3,9 +3,12 @@ in-memory sqlite3 DB (via aiosqlite)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -290,3 +293,209 @@ async def test_get_entries_invalid_filter_column_raises(
 async def test_get_entries_rejects_unknown_keyword(log: SqliteAuditLog) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
         await log.get_entries(status="denied")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_respects_boundary_and_legal_hold(log: SqliteAuditLog) -> None:
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "held", "a"), (old.isoformat(), "free", "a")],
+    )
+    await log._conn.commit()
+
+    removed = await log.purge_expired(
+        before=datetime.now(UTC) - timedelta(days=1),
+        legal_hold_user_ids=("held",),
+    )
+
+    assert removed == 1
+    cursor = await log._conn.execute("SELECT user_id FROM audit_log")
+    assert [row[0] for row in await cursor.fetchall()] == ["held"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_utc_entry_timestamp_is_stored_as_a_utc_instant(
+    log: SqliteAuditLog,
+) -> None:
+    """purge_expired orders the TEXT timestamp column lexically against a
+    UTC cutoff, so an entry logged with a non-UTC offset must be normalized
+    at write time: ``09:00-05:00`` is 14:00 UTC and must survive a 13:00 UTC
+    cutoff instead of sorting before it as literal text and getting purged
+    five hours early. The stored string keeps the same instant, so the
+    round-tripped record and its signature verification are untouched — the
+    timestamp is canonical metadata the proof never covers."""
+    logged_at = datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    await log.log(AuditEntry(boundary="tool_call", user_id="u", timestamp=logged_at))
+
+    cursor = await log._conn.execute("SELECT timestamp FROM audit_log")
+    (stored,) = await cursor.fetchone()  # type: ignore[misc]
+    assert stored == "2026-01-01T14:00:00+00:00"
+
+    [entry] = await log.get_entries(user_id="u")
+    assert entry.timestamp == logged_at
+    assert log.verify(entry)
+
+    # The retention scan sees the true instant: 13:00 UTC is before the
+    # record, 15:00 UTC is after it.
+    assert await log.purge_expired(before=datetime(2026, 1, 1, 13, tzinfo=UTC)) == 0
+    assert await log.purge_expired(before=datetime(2026, 1, 1, 15, tzinfo=UTC)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_purge_publishes_the_audit_tables_stored_volume(
+    log: SqliteAuditLog,
+) -> None:
+    """The audit horizon is the importing product's policy (the #325 owner
+    decision); the engine's contribution is making the table's actual level
+    observable. A purge publishes rows and the oldest retained record, and a
+    drained table's oldest-record series disappears rather than going stale."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "audit_log", "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    old = datetime.now(UTC) - timedelta(days=2)
+    keep = datetime.now(UTC) - timedelta(minutes=1)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "u", "a"), (keep.isoformat(), "u", "a")],
+    )
+    await log._conn.commit()
+
+    assert await log.purge_expired(before=datetime.now(UTC) - timedelta(days=1)) == 1
+
+    assert _series(retention_table_rows) == [1.0]  # the held-back row remains
+    assert len(_series(retention_oldest_record_timestamp)) == 1
+    assert _series(retention_oldest_record_timestamp)[0] == pytest.approx(keep.timestamp())
+
+    # Draining the log removes the oldest-record series instead of leaving
+    # the last value standing in for history that no longer exists.
+    retention_health._LAST_PROBE.clear()
+    await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1))
+    assert _series(retention_table_rows) == [0.0]
+    assert _series(retention_oldest_record_timestamp) == []
+
+
+@pytest.mark.asyncio
+async def test_purge_rejects_a_nonpositive_limit(log: SqliteAuditLog) -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before touching the table."""
+    await log._conn.execute(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        (datetime.now(UTC).isoformat(), "u", "a"),
+    )
+    await log._conn.commit()
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1), limit=0)
+
+    cursor = await log._conn.execute("SELECT COUNT(*) FROM audit_log")
+    assert (await cursor.fetchone())[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_purge_commits_nothing_and_leaves_the_store_usable(
+    log: SqliteAuditLog,
+) -> None:
+    """A purge that blows up mid-transaction must raise, leave every row in
+    place, and roll back — the connection is not left inside the aborted
+    BEGIN IMMEDIATE, so the next statement on the store works. This is the
+    no-partial-delete half of the #325 purge contract."""
+
+    class FailingDeleteConnection:
+        """Delegates everything except the purge DELETE, which fails."""
+
+        def __init__(self, inner: aiosqlite.Connection) -> None:
+            self._inner = inner
+
+        async def execute(self, sql: str, *args: Any) -> Any:
+            if "DELETE FROM audit_log" in sql:
+                raise RuntimeError("disk I/O error")
+            return await self._inner.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "u1", "a"), (old.isoformat(), "u2", "a")],
+    )
+    await log._conn.commit()
+
+    failing = SqliteAuditLog(FailingDeleteConnection(log._conn))  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="disk I/O error"):
+        await failing.purge_expired(before=datetime.now(UTC))
+
+    # Nothing was deleted, and the rolled-back connection still serves
+    # queries and accepts a later write.
+    cursor = await log._conn.execute("SELECT COUNT(*) FROM audit_log")
+    assert (await cursor.fetchone())[0] == 2
+    await log.log(AuditEntry(boundary="tool_call", user_id="after", detail="ok"))
+
+
+@pytest.mark.asyncio
+async def test_a_second_purge_inside_the_probe_interval_costs_no_probe(
+    log: SqliteAuditLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stored-volume probe is the amortized cost of the sweep: two
+    purges inside one probe interval sample the table once (#325)."""
+    import maistro.persistence.sqlite_audit as sqlite_audit_module
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    samples: list[str] = []
+    real_sample = sqlite_audit_module.sqlite_table_sample
+
+    async def counting_sample(conn: Any, table: str, *args: Any, **kwargs: Any) -> Any:
+        samples.append(table)
+        return await real_sample(conn, table, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_audit_module, "sqlite_table_sample", counting_sample)
+
+    await log.log(AuditEntry(boundary="tool_call", user_id="u", detail="ok"))
+    assert await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
+    assert samples == ["audit_log"]
+
+    # Inside the interval: the purge still runs, the probe does not.
+    await log.log(AuditEntry(boundary="tool_call", user_id="u", detail="ok"))
+    assert await log.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
+    assert samples == ["audit_log"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writers_queue_behind_the_write_lock(
+    log: SqliteAuditLog,
+) -> None:
+    """Overlapping log() and purge_expired() calls serialize, not fail.
+
+    log() and purge_expired() share one aiosqlite connection, so a purge's
+    `BEGIN IMMEDIATE` landing inside another writer's open transaction raises
+    "cannot start a transaction within a transaction" instead of waiting. The
+    write lock makes the second caller queue behind the first (#325 review).
+    """
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "u", "a") for _ in range(3)],
+    )
+    await log._conn.commit()
+
+    entry = AuditEntry(boundary="tool_call", user_id="u", detail="ok")
+    await asyncio.gather(
+        log.log(entry),
+        log.purge_expired(before=datetime.now(UTC) - timedelta(days=1)),
+        log.purge_expired(before=datetime.now(UTC) - timedelta(days=1), limit=1),
+    )
+
+    cursor = await log._conn.execute("SELECT COUNT(*) FROM audit_log")
+    assert (await cursor.fetchone())[0] == 1  # the new entry alone survives

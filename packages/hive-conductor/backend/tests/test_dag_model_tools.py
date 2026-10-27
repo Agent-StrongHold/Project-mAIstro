@@ -130,7 +130,11 @@ def _model_transport(monkeypatch: pytest.MonkeyPatch, *, content: str | None = N
 
     calls: list[dict[str, Any]] = []
 
-    async def execute(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def execute(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
+        # ``on_chunk`` is the shipped streaming observer seam (SPEC-285); a
+        # non-streaming tool call dispatches with it unset.
         calls.append({"payload": _chat_payload(provider, request), "endpoint": endpoint})
         return {
             "model": f"{_MODEL}-version",
@@ -355,7 +359,7 @@ async def test_failed_provider_is_unknown_evidence_and_a_failed_node(
 
     calls: list[str] = []
 
-    async def fail(provider: Any, request: Any, *, endpoint: Any) -> Any:
+    async def fail(provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None) -> Any:
         calls.append(provider.name)
         raise TimeoutError("provider completion unknown")
 
@@ -507,7 +511,9 @@ async def test_gateway_without_text_cannot_complete_the_tool(
 ) -> None:
     import maistro.capabilities.model_chat as model_chat
 
-    async def empty(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def empty(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
         return {"choices": choices}
 
     monkeypatch.setattr(model_chat, "execute_model_chat", empty)

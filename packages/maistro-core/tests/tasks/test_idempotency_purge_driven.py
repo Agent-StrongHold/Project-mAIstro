@@ -312,3 +312,49 @@ async def test_pg_purge_spares_a_claim_renewed_under_it(pg_pool: Any, clock: _Cl
     record = await store.get(scope)
     assert record is not None
     assert record.expires_at_us == renewed_until
+
+
+async def test_a_purge_publishes_the_claim_tables_stored_volume(store: Any, clock: _Clock) -> None:
+    """A stalled sweeper here is invisible in delete counts — claims stop,
+    deletes stop, and the rate looks healthy. The stored level is what still
+    shows the table holding every claim ever made, so the purge publishes it
+    (throttled per store) alongside the delete it just committed (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    if isinstance(store, InMemoryTaskIdempotencyStore):
+        pytest.skip("the in-memory tier is not a durable table with a health probe")
+    backend = "postgres" if isinstance(store, PgTaskIdempotencyStore) else "sqlite"
+    retention_health._LAST_PROBE.clear()
+
+    old = await _seed_expired(store, 3)
+    fresh = _scope("fresh")
+    assert isinstance(
+        await store.claim(fresh, fingerprint="fp", request="{}", now=_EXPIRED), Claimed
+    )
+    clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+    # Driven directly, not through a claim: the claim path purges before it
+    # inserts, so a gauge read through it would race the fresh row. The direct
+    # purge's snapshot is the deterministic point: three expired claims go,
+    # the unexpired one is the table's whole content.
+    assert await store.purge_expired(now=_EXPIRED) == 3
+
+    samples = [
+        float(s["value"])
+        for s in retention_table_rows.collect()
+        if s.get("labels", {}) == {"table": "task_idempotency", "backend": backend}
+    ]
+    assert samples == [1.0]  # the one unexpired claim; the three expired are gone
+    oldest = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "task_idempotency", "backend": backend}
+    ]
+    assert len(oldest) == 1
+    surviving = await store.get(fresh)
+    assert surviving is not None
+    assert oldest[0] == pytest.approx(surviving.created_at_us / 1_000_000)
+    assert await _surviving(store, old) == []

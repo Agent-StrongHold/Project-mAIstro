@@ -343,10 +343,15 @@ async def test_run_detail_reads_events_from_canonical_store(
     )
     import services.dag_run_inspection as inspection_mod
 
+    # The projection double models a reconnect that finds no row. The
+    # inspection path refreshes the shared projection before every read
+    # (#337, SPEC-083026-2601/AC-1), so the double carries the
+    # store's reload seam too -- a reload that finds nothing, and a get_run
+    # that answers None, is exactly 'projection unavailable'.
     monkeypatch.setattr(
         inspection_mod,
         "get_dag_run_store",
-        lambda: SimpleNamespace(get_run=lambda _run_id: None),
+        lambda: SimpleNamespace(reload=lambda: None, get_run=lambda _run_id: None),
     )
     reconnected = await visible_run_detail(_USER_ID, canonical_run_id)
     assert reconnected is not None
