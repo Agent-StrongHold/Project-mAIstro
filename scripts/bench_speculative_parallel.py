@@ -582,6 +582,7 @@ class StrategySummary:
     physical_calls: int
     invocations_completed: int
     invocations_unknown: int
+    invocations_failed: int
     invocations_recorded: int
     outage_tasks: int
     outage_success_rate: float
@@ -611,7 +612,7 @@ async def count_invocations(
     mismatch means a duplicate was hidden, which this benchmark refuses to do.
     """
 
-    counts = {"completed": 0, "unknown": 0, "other": 0, "recorded": 0}
+    counts = {"completed": 0, "unknown": 0, "failed": 0, "other": 0, "recorded": 0}
     for record in records:
         history = await effects.invocation_store.list_effect(
             run_id=label,
@@ -630,6 +631,10 @@ async def count_invocations(
             counts["completed"] += 1
         elif status is InvocationStatus.UNKNOWN:
             counts["unknown"] += 1
+        elif status is InvocationStatus.FAILED:
+            # A received refusal (the gateway's LlmHttpError, an
+            # EffectNotApplied) is proven no-effect: FAILED (retryable).
+            counts["failed"] += 1
         else:
             counts["other"] += 1
     return counts
@@ -725,6 +730,7 @@ async def run_strategy(
         physical_calls=len(gateway.records),
         invocations_completed=invocation_counts["completed"],
         invocations_unknown=invocation_counts["unknown"],
+        invocations_failed=invocation_counts["failed"],
         invocations_recorded=invocation_counts["recorded"],
         outage_tasks=len(outage_indices),
         outage_success_rate=round(outage_successes / max(len(outage_indices), 1), 4),

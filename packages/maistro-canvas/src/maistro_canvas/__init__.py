@@ -15,10 +15,13 @@ except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/u
     __version__ = "0.9.0-dev"
 
 from maistro_canvas.canvas.composition import (
+    AssetInstanceSurface,
     CanvasRuntime,
     bind_canvas_runner_lifecycle,
+    build_asset_instance_surface,
     build_canvas_router,
     build_canvas_runtime,
+    plan_asset_render,
 )
 from maistro_canvas.canvas.publishing import (
     DesignExportProvider,
@@ -115,6 +118,7 @@ __all__ = [
     # ADR-039 errors
     "AssetDefinitionNotFoundError",
     "AssetInstance",
+    "AssetInstanceSurface",
     "AssetRegistry",
     "AssetSheet",
     "AssetSheetNotFoundError",
@@ -186,6 +190,7 @@ __all__ = [
     "WorldStylePartial",
     "__version__",
     "bind_canvas_runner_lifecycle",
+    "build_asset_instance_surface",
     "build_canvas_router",
     "build_canvas_runtime",
     "canvas_state_digest",
@@ -195,5 +200,6 @@ __all__ = [
     "layer_type_to_kind",
     "merge_world_style",
     "normalise_rotation",
+    "plan_asset_render",
     "validate_canvas_dimensions",
 ]

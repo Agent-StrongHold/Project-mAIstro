@@ -8,7 +8,7 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -56,6 +56,13 @@ class FakeConnection:
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
+
+    async def fetchrow(self, query: str, *args: Any) -> FakeRecord | None:
+        """The retention-health probe reads one row (or None); the probe's
+        contract degrades an absent row to no sample, which is exactly what
+        an empty queue reports."""
+        self.calls.append(Call("fetchrow", query, args))
+        return None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
@@ -451,3 +458,94 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_purge_publishes_stored_volume(pg_pool: Any) -> None:
+    """The PostgreSQL audit probe publishes the one number SQLite cannot
+    honestly produce — `pg_total_relation_size` — alongside rows and the
+    oldest retained record (#325). audit_log is truncated per test, so the
+    counts are this test's own rows."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    retention_health._LAST_PROBE.clear()
+
+    audit = PgAuditLog(pg_pool)
+    await audit.log(AuditEntry(boundary="b", user_id="u", org_id="org"))
+    assert await audit.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "audit_log", "backend": "postgres"}
+        ]
+
+    assert _series(retention_table_rows) == [0.0]  # drained: the one row expired
+    assert len(_series(retention_table_bytes)) == 1
+    assert _series(retention_table_bytes)[0] > 0
+    assert _series(retention_oldest_record_timestamp) == []
+
+
+@pytest.mark.asyncio
+async def test_purge_rejects_a_nonpositive_limit(log: PgAuditLog) -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await log.purge_expired(before=datetime.now(UTC), limit=0)
+
+
+@pytest.mark.asyncio
+async def test_purge_legal_hold_compiles_the_held_scoped_query(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """A legal hold scopes the DELETE in SQL — `user_id <> ALL($2::text[])`
+    with the batch limit moved to $3 — so a held principal's evidence is
+    never in the deleted set, whatever rows qualify by age (#325)."""
+    before = datetime.now(UTC)
+    await log.purge_expired(before=before, limit=500, legal_hold_user_ids=("held",))
+
+    purges = [c for c in conn.calls if c.method == "execute" and "DELETE FROM audit_log" in c.query]
+    assert len(purges) == 1
+    assert "user_id <> ALL($2::text[])" in purges[0].query
+    assert "LIMIT $3" in purges[0].query
+    assert purges[0].args == (before.astimezone(UTC), ["held"], 500)
+
+
+@pytest.mark.asyncio
+async def test_purge_returns_zero_when_the_delete_status_is_unparseable(
+    log: PgAuditLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """asyncpg reports a DELETE as "DELETE <n>"; a driver that someday says
+    something else must degrade the count to 0 — a parse failure is a
+    reporting problem, not a reason to fail a committed purge (#325)."""
+
+    async def unparseable_status(query: str, *args: Any) -> str:
+        return "PURGED"  # no numeric tail to parse
+
+    monkeypatch.setattr(log._pool._conn, "execute", unparseable_status)
+    assert await log.purge_expired(before=datetime.now(UTC)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_second_purge_inside_the_probe_interval_probes_nothing(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """The stored-volume probe is the amortized cost of the sweep: two
+    purges inside one probe interval sample PostgreSQL once (#325)."""
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    await log.purge_expired(before=datetime.now(UTC))
+    probes_after_first = len([c for c in conn.calls if c.method == "fetchrow"])
+    assert probes_after_first >= 1  # the first purge probes
+
+    await log.purge_expired(before=datetime.now(UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probes_after_first

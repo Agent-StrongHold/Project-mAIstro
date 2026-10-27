@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -502,3 +503,245 @@ class TestEventStoreContract:
         assert failed.sequence == 1
         assert retried.sequence == 2
         assert [event.attempt_id for event in history] == ["attempt-1", "attempt-2"]
+
+
+async def test_a_sqlite_purge_publishes_the_event_log_stored_volume(
+    store: EventStore,
+) -> None:
+    """Run retention preserves the canonical event log on purpose, and this
+    store's own bounded purge is what bounds it instead — the stored level is
+    the signal that says that bound is actually being driven (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the probe rides the SQLite store's purge; the PG leg is in the PG suite")
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "sqlite"}
+        ]
+
+    retention_health._LAST_PROBE.clear()
+    old = time.time() - 10_000
+    fresh = time.time()
+    await store.append(
+        EventEnvelope(type="x", workspace_id="w1", run_id="r1", attempt_id="a1", timestamp=old)
+    )
+    await store.append(
+        EventEnvelope(type="x", workspace_id="w1", run_id="r2", attempt_id="a2", timestamp=fresh)
+    )
+
+    assert await store.purge_expired(before=time.time() - 1) == 1
+
+    assert _series(retention_table_rows) == [1.0]
+    assert _series(retention_oldest_record_timestamp) == [pytest.approx(fresh)]
+
+    # Draining the log removes the oldest-record series rather than leaving
+    # the last value to stand in for history that no longer exists.
+    retention_health._LAST_PROBE.clear()
+    await store.purge_expired(before=time.time() + 1)
+    assert _series(retention_table_rows) == [0.0]
+    assert _series(retention_oldest_record_timestamp) == []
+
+
+async def test_a_postgres_purge_publishes_the_event_log_stored_volume(
+    pg_pool: Any,
+) -> None:
+    """The PG leg of the probe: same series, plus the per-table size only
+    PostgreSQL can measure. `canonical_event_log` is shared across this
+    process's PG tests, so the row assertion is a delta between two probes
+    of this test's own appends."""
+    from maistro.events.pg_envelope import PgEventStore
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    store = PgEventStore(pg_pool)
+    await store.ensure_schema()
+    # canonical_event_log is shared across this process's PG tests and is not
+    # in the fixture's truncate list: clear it so the published levels are
+    # this test's own rows, not a mixture (same isolation rule the
+    # cursor_store fixture applies with TRUNCATE).
+    await pg_pool.execute("DELETE FROM canonical_event_log")
+    retention_health._LAST_PROBE.clear()
+
+    def _rows() -> float:
+        return sum(
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+        )
+
+    await store.purge_expired(before=time.time() + 1, limit=1)  # publish the level
+    assert _rows() == 0.0
+
+    old = time.time() - 10_000
+    fresh = time.time()
+    await store.append(
+        EventEnvelope(
+            type="x", workspace_id="ws-health", run_id="r1", attempt_id="a1", timestamp=old
+        )
+    )
+    await store.append(
+        EventEnvelope(
+            type="x", workspace_id="ws-health", run_id="r2", attempt_id="a2", timestamp=fresh
+        )
+    )
+    retention_health._LAST_PROBE.clear()
+    assert await store.purge_expired(before=time.time() - 1) == 1
+
+    assert _rows() == 1.0
+    samples = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+    ]
+    assert samples and samples[-1] <= fresh
+    sizes = [
+        float(s["value"])
+        for s in retention_table_bytes.collect()
+        if s.get("labels", {}) == {"table": "canonical_event_log", "backend": "postgres"}
+    ]
+    assert sizes and sizes[-1] > 0
+
+
+async def test_sequence_continues_after_a_purge_empties_the_stream(store: EventStore) -> None:
+    """Retention deletes event rows (#325); the stream cursor must not rewind.
+
+    Sequence allocation that read only the surviving MAX(sequence) restarts an
+    emptied stream at 1: a reader resuming from `after_sequence=N` silently
+    misses every new event until the reused numbers pass N. The durable
+    per-stream high-water mark is the allocation floor, so the next event
+    continues the sequence the deleted rows already handed out.
+    """
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the memory store has no purge; the PG leg is in the PG suite")
+
+    for index in range(2):
+        await store.append(
+            EventEnvelope(type=f"e.{index}", workspace_id="ws-purged", timestamp=1_000.0 + index)
+        )
+    assert await store.purge_expired(before=5_000.0) == 2
+    assert await store.list_stream("workspace:ws-purged") == []
+
+    resumed = await store.append(EventEnvelope(type="after.purge", workspace_id="ws-purged"))
+
+    assert resumed.sequence == 3
+    page = await store.list_stream("workspace:ws-purged", after_sequence=2)
+    assert [event.sequence for event in page] == [3]
+
+
+async def test_sequence_continues_after_a_purge_removes_the_highest_sequence(
+    store: EventStore,
+) -> None:
+    """Timestamps need not follow append order, so a purge can remove the
+    highest sequence while a lower-numbered row survives; MAX() over the
+    survivors would reuse the deleted number, and a reader parked at that
+    number would never see the new event."""
+    if not isinstance(store, SqliteEventStore):
+        pytest.skip("the memory store has no purge; the PG leg is in the PG suite")
+
+    # Appended second but stamped older: retention removes sequence 2, the
+    # stream's high-water mark, and leaves sequence 1 behind.
+    await store.append(EventEnvelope(type="e.1", workspace_id="ws-suffix", timestamp=2_000.0))
+    await store.append(EventEnvelope(type="e.2", workspace_id="ws-suffix", timestamp=1_000.0))
+
+    assert await store.purge_expired(before=1_500.0) == 1
+    assert [event.sequence for event in await store.list_stream("workspace:ws-suffix")] == [1]
+
+    next_event = await store.append(EventEnvelope(type="after.purge", workspace_id="ws-suffix"))
+
+    assert next_event.sequence == 3
+    page = await store.list_stream("workspace:ws-suffix", after_sequence=2)
+    assert [event.sequence for event in page] == [3]
+
+
+async def test_sqlite_purge_rejects_a_nonpositive_limit() -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, and the guard must refuse it before touching the table."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        await store.append(EventEnvelope(type="e.1", workspace_id="ws-guard"))
+        with pytest.raises(ValueError, match="limit must be positive"):
+            await store.purge_expired(before=time.time() + 1, limit=0)
+        assert len(await store.list_stream("workspace:ws-guard")) == 1
+    finally:
+        await conn.close()
+
+
+async def test_sqlite_purge_honors_legal_hold_workspaces() -> None:
+    """A legal hold is a deletion authority: rows in a held Workspace stay
+    through a purge that removes their equally expired neighbors (#325)."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        old = time.time() - 10_000
+        await store.append(EventEnvelope(type="e.held", workspace_id="ws-held", timestamp=old))
+        await store.append(EventEnvelope(type="e.free", workspace_id="ws-free", timestamp=old))
+
+        removed = await store.purge_expired(
+            before=time.time() + 1,
+            limit=10,
+            legal_hold_workspace_ids=("ws-held",),
+        )
+
+        assert removed == 1
+        assert [event.workspace_id for event in await store.list_stream("workspace:ws-held")] == [
+            "ws-held"
+        ]
+        assert await store.list_stream("workspace:ws-free") == []
+    finally:
+        await conn.close()
+
+
+async def test_a_failed_sqlite_purge_commits_nothing_and_leaves_the_store_usable() -> None:
+    """A purge that blows up mid-transaction must raise, leave every row in
+    place, and roll back — the connection is not left inside the aborted
+    BEGIN IMMEDIATE, so the next statement on the store works. This is the
+    no-partial-delete half of the #325 purge contract."""
+
+    class FailingDeleteConnection:
+        """Delegates everything except the purge DELETE, which fails."""
+
+        def __init__(self, inner: aiosqlite.Connection) -> None:
+            self._inner = inner
+
+        async def execute(self, sql: str, *args: Any) -> Any:
+            if "DELETE FROM canonical_event_log" in sql:
+                raise RuntimeError("disk I/O error")
+            return await self._inner.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = SqliteEventStore(conn)
+        await store.ensure_schema()
+        await store.append(EventEnvelope(type="e.1", workspace_id="ws-fail"))
+        await store.append(EventEnvelope(type="e.2", workspace_id="ws-fail"))
+
+        failing = SqliteEventStore(FailingDeleteConnection(conn))  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="disk I/O error"):
+            await failing.purge_expired(before=time.time() + 1)
+
+        # Nothing was deleted, and the rolled-back connection still serves
+        # queries and accepts a later append.
+        assert len(await store.list_stream("workspace:ws-fail")) == 2
+        assert await store.append(EventEnvelope(type="e.3", workspace_id="ws-fail"))
+    finally:
+        await conn.close()
