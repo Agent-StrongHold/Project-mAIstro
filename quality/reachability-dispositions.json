@@ -76,17 +76,6 @@
       ]
     },
     {
-      "id": "events-handlers-recipes",
-      "subsystem": "Events and checkpoints",
-      "disposition": "CONNECT",
-      "rationale": "ADR-086 handlers and recipes with no bus subscription in a shipped process. #61 migrates event families onto one envelope, which is where these get subscribed.",
-      "root": "the canonical event bus wiring (#61)",
-      "modules": [
-        "maistro.events.handlers",
-        "maistro.events.recipes"
-      ]
-    },
-    {
       "id": "events-envelope-library",
       "subsystem": "Events and checkpoints",
       "disposition": "LIBRARY",
