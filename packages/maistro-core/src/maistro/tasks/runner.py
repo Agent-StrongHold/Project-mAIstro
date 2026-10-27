@@ -363,6 +363,9 @@ class TaskRunner:
             )
             await self._emit_progress_webhook(task_id)
 
+            # Unset until the try/except below produces an outcome; the
+            # claim-lost branch intentionally leaves it unset.
+            result: ConductorOutput | None = None
             try:
                 result = await self._execute_work(task.run_id, request)
             except ConsumerClaimLost:
@@ -384,6 +387,8 @@ class TaskRunner:
                 result = exc.output
 
             if not claim_lost:
+                # Only the claim-lost branch leaves no outcome behind.
+                assert result is not None
                 await self._settle_outcome(task_id, result)
 
         if claim_lost:

@@ -6,6 +6,12 @@ import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
@@ -183,6 +189,13 @@ class PgSessionStore:
             # server timestamp is newer than this cutoff; an explicit zero or
             # negative TTL intentionally means "purge through now".
             await _purge_through(conn, time.time() - self._ttl_seconds)
+        # Published after the `async with` exits, so the probe reads a snapshot
+        # that includes this append and can never race a purge that is still
+        # uncommitted. Appends are where normal traffic drives retention, so
+        # this -- not only an explicit `purge_expired` -- must refresh the
+        # stored volume; the publisher throttles it (a retry that returned
+        # early above purged nothing and skips this, as it should).
+        await self._publish_table_health()
 
     async def purge_expired(self, ttl_seconds: int | None = None) -> int:
         """Delete messages older than the TTL. Returns the number removed."""
@@ -200,11 +213,37 @@ class PgSessionStore:
         # (Codex, #327). `append_messages` was already inside one.
         async with self._pool.acquire() as conn, conn.transaction():
             status = await _purge_through(conn, time.time() - ttl)
+        await self._publish_table_health()
         # asyncpg returns a command tag such as "DELETE 12".
         try:
             return int(str(status).rsplit(" ", 1)[-1])
         except ValueError:  # pragma: no cover - defensive
             return 0
+
+    async def _publish_table_health(self) -> None:
+        """Publish the conversation tables' stored volume after a purge (#325).
+
+        Same contract as the SQLite store's inline probe: the TTL is driven
+        on every append, and the stored level plus the oldest retained turn
+        is what shows it actually bounding the tables. PostgreSQL adds the
+        per-table size. Throttled per store by the publisher.
+        """
+        if not retention_health_probe_due("sessions:postgres"):
+            return
+        samples = []
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            for table in ("sessions", "session_turns"):
+                # Migrations 005/023 type both columns TIMESTAMPTZ, which
+                # asyncpg returns as `datetime` — the `unix_s` conversion
+                # would `float()` it, catch the TypeError, and report no
+                # oldest record for tables that have one.
+                sample = await postgres_table_sample(
+                    fetchrow, table, "timestamp", oldest_unit="datetime"
+                )
+                if sample is not None:
+                    samples.append(sample)
+        publish_retention_table_health("sessions:postgres", "postgres", samples, min_interval_s=0.0)
 
     async def produced_runs(self, session_id: str) -> list[str]:
         """The canonical Runs that produced this session's turns, oldest first.

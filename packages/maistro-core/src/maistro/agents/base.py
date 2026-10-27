@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import logging as _logging
 from collections import deque
+from copy import deepcopy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
 from maistro.security.normalize import to_scan_string
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import AgentResponse
 from maistro.types.tool import ToolCall
 
@@ -121,16 +124,18 @@ _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
 }
 
 
-def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, object]:
+def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, Any] | None:
     if registry is not None:
         defn = registry.get(name)
         if defn is not None:
+            if not isinstance(defn.parameters, dict) or defn.parameters.get("type") != "object":
+                return None
             return {
                 "type": "function",
                 "function": {
                     "name": defn.name,
                     "description": defn.description,
-                    "parameters": defn.parameters,
+                    "parameters": deepcopy(defn.parameters),
                 },
             }
 
@@ -138,16 +143,11 @@ def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, object]:
     if schema:
         return {
             "type": "function",
-            "function": {"name": name, **schema},
+            "function": {"name": name, **deepcopy(schema)},
         }
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": f"Run {name}",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
+    # An Agent declaration is not a schema. Unknown tools must neither be
+    # exposed as unrestricted input nor admitted by the shared tool boundary.
+    return None
 
 
 if TYPE_CHECKING:
@@ -245,6 +245,7 @@ class Agent:
         tool_executor: Any = None,
         tool_registry: Any = None,
         agent_resolver: Any = None,
+        audit_log: Any = None,
     ) -> None:
         self.identity = identity
         self._strategy = strategy
@@ -267,6 +268,9 @@ class Agent:
         self._tracer = tracer
         # Resolves a sub-agent name -> Agent for delegation. Callable or mapping.
         self._agent_resolver = agent_resolver
+        # Canonical audit trail for refusals that happen before Sentinel
+        # pre_call (#847): the strategy gate and this boundary's own denials.
+        self._audit_log = audit_log
 
     async def handle(
         self,
@@ -395,10 +399,7 @@ class Agent:
 
         tool_defs: list[dict[str, Any]] | None = None
         if self.identity.tools:
-            tool_defs = [
-                _build_tool_schema(name, registry=self._tool_registry)
-                for name in self.identity.tools
-            ]
+            tool_defs = self._tool_definitions() or None
 
         model = model_override or self.identity.model
         strategy_kwargs = self._build_strategy_kwargs(
@@ -534,6 +535,14 @@ class Agent:
         if status_callback:
             strategy_kwargs["status_callback"] = status_callback
         strategy_kwargs["identity"] = self.identity
+        # The declaration is an effective allowlist at execution time; a model
+        # response cannot add names merely because a provider accepts them.
+        strategy_kwargs["allowed_tools"] = frozenset(self.identity.tools)
+        # #847: refusals at the strategy gate precede Sentinel.pre_call, so
+        # they carry their own scoped denial evidence through the canonical
+        # audit log rather than only an error string.
+        if self._audit_log is not None:
+            strategy_kwargs["audit_log"] = self._audit_log
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs
@@ -825,6 +834,13 @@ class Agent:
                 trace.score("strategy_error", 0.0, "Strategy raised an exception")
             return None
 
+    def _tool_definitions(self) -> list[dict[str, Any]]:
+        return [
+            schema
+            for name in self.identity.tools
+            if (schema := _build_tool_schema(name, registry=self._tool_registry)) is not None
+        ]
+
     def _governed_tool_executor(
         self,
         tool_defs: list[dict[str, Any]] | None,
@@ -834,6 +850,12 @@ class Agent:
     ) -> ToolCallExecutor:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
+        # Strategies receive writable model exposures. Keep a host-owned deep
+        # snapshot so replacing a definition or editing nested properties
+        # cannot widen the contract at dispatch time.
+        host_tool_defs = deepcopy(tool_defs)
+        if host_tool_defs is None:
+            host_tool_defs = self._tool_definitions()
         # Analysis context of prior tool results, bounded by turns regardless
         # of how many tool calls the strategy makes. The sanitized string is
         # what flows back into model context, so that is what aggregates.
@@ -848,7 +870,7 @@ class Agent:
                 call.name,
                 call.arguments,
                 auth,
-                tool_defs,
+                host_tool_defs,
                 tool_call_id=call.id,
                 delegation_depth=delegation_depth,
                 tool_round=tool_round,
@@ -877,6 +899,14 @@ class Agent:
         # not the mutable tool schemas handed to strategy implementations.
         # Model-selected and strategy-authored calls share this boundary.
         if tool_name not in self.identity.tools:
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="tool not in agent allowlist",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
             return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
             _logging.getLogger("maistro.agent").warning(
@@ -885,15 +915,18 @@ class Agent:
                 self.identity.name,
                 "Sentinel" if self._sentinel is None else "caller auth",
             )
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="no sentinel or caller auth to authorize tool",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
             return f"Error: Permission denied for tool '{tool_name}'"
-        verdict = await self._sentinel.pre_call(
-            tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
-        )
-        if not verdict.allowed:
-            return f"Error: Permission denied for tool '{tool_name}'"
-        if verdict.repaired_data:
-            tool_args.clear()
-            tool_args.update(verdict.repaired_data)
+        refusal = await self._validate_tool_request(tool_name, tool_args, auth, tool_defs)
+        if refusal is not None:
+            return refusal
         return await self._invoke_raw_tool(
             tool_name,
             tool_args,
@@ -902,14 +935,66 @@ class Agent:
             tool_round=tool_round,
         )
 
+    async def _validate_tool_request(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        auth: Any,
+        tool_defs: list[dict[str, Any]] | None,
+    ) -> str | None:
+        """Check the host schema and Sentinel's materialized input before dispatch."""
+        schema = self._tool_schema(tool_name, tool_defs)
+        if schema is None:
+            return await self._tool_contract_refusal(
+                tool_name,
+                auth,
+                reason="no schema registered for requested tool",
+                message=f"Error: no schema is registered for tool '{tool_name}'",
+            )
+        verdict = await self._sentinel.pre_call(tool_name, tool_args, auth, deepcopy(schema))
+        if not verdict.allowed:
+            return f"Error: Permission denied for tool '{tool_name}'"
+        if verdict.repaired_data is not None:
+            tool_args.clear()
+            tool_args.update(verdict.repaired_data)
+        # Sentinel may repair arguments. Validate the exact materialized input,
+        # including empty repairs and unsupported schema types, before dispatch.
+        try:
+            validate_tool_arguments(schema, tool_args)
+        except ToolArgumentError as exc:
+            return await self._tool_contract_refusal(
+                tool_name,
+                auth,
+                reason="invalid tool arguments",
+                message=f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            )
+        return None
+
+    async def _tool_contract_refusal(
+        self, tool_name: str, auth: Any, *, reason: str, message: str
+    ) -> str:
+        if self._audit_log is not None:
+            await log_scoped_tool_denial(
+                self._audit_log,
+                tool_name=tool_name,
+                reason=reason,
+                auth=auth,
+                agent_name=self.identity.name,
+            )
+        return message
+
     @staticmethod
-    def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
+    def _tool_schema(
+        tool_name: str, tool_defs: list[dict[str, Any]] | None
+    ) -> dict[str, Any] | None:
         for tool in tool_defs or []:
             function = tool.get("function", {})
             if function.get("name") == tool_name:
-                parameters = function.get("parameters", {})
-                return parameters if isinstance(parameters, dict) else {}
-        return {}
+                parameters = function.get("parameters")
+                if isinstance(parameters, dict) and parameters.get("type") == "object":
+                    return parameters
+                return None
+        return None
 
     async def _invoke_raw_tool(
         self,

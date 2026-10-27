@@ -7,6 +7,11 @@ import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.sessions.turns import reject_blank_turn_id
 from maistro.sqlite_schema import serialized_schema_upgrade
 
@@ -260,4 +265,24 @@ class SqliteSessionStore:
             (cutoff,),
         )
         await self._conn.commit()
+        await self._publish_table_health()
         return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    async def _publish_table_health(self) -> None:
+        """Publish the conversation tables' stored volume after a purge (#325).
+
+        `purge_expired` runs inline on every append, so a TTL silently set to
+        never-expire would look identical to a healthy one in delete counts.
+        The stored level of `sessions` and `session_turns` — and how far back
+        the retained conversation reaches — is what actually shows the TTL
+        being enforced. Throttled per store by the publisher, so the inline
+        driver costs at most one probe per interval.
+        """
+        if not retention_health_probe_due("sessions:sqlite"):
+            return
+        samples = []
+        for table in ("sessions", "session_turns"):
+            sample = await sqlite_table_sample(self._conn, table, "timestamp", oldest_unit="unix_s")
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("sessions:sqlite", "sqlite", samples, min_interval_s=0.0)

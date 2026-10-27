@@ -239,15 +239,20 @@ def test_split_resolution_reconciles_with_whichever_branch_the_image_resolved(
 def test_split_resolution_still_fails_on_a_version_neither_branch_pins(
     gate, tmp_path, monkeypatch, capsys
 ):
+    """A version the lock offers under NEITHER marker still fails — the
+    marker-aware gate names the pin the image's own interpreter selects
+    (0.22.9 on a 3.13 image), not a set-arbitrary survivor. Without the
+    dumped interpreter version the split falls back to the lenient
+    treatment (test_marker_split_with_unevaluatable_marker_stays_lenient):
+    gating nothing beats guessing a row."""
     expected = _write_expected(tmp_path, SPLIT_EXPORT)
-    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.20.0")))
+    _install_docker(
+        monkeypatch, gate, _Docker(_dump("python-full-version 3.13.16", "beartype==0.20.0"))
+    )
     monkeypatch.setattr(sys, "argv", _argv(expected))
     assert gate.main() == 1
     out = capsys.readouterr().out
-    assert (
-        "version mismatch     : beartype==0.20.0 (image)"
-        " != one of beartype==0.22.9, beartype==0.23.1" in out
-    )
+    assert "version mismatch     : beartype==0.20.0 (image) != beartype==0.22.9" in out
     # Still a single named mismatch — not a confusing missing/extra pair.
     assert "locked, not in image" not in out
     assert "in image, not locked" not in out
@@ -837,3 +842,121 @@ def test_dunder_main_entrypoint_runs_the_real_gate(tmp_path, monkeypatch, capsys
     runpy.run_path(str(SCRIPT), run_name="__main__")
     assert exits == [0]
     assert "ships exactly the locked set" in capsys.readouterr().out
+
+
+# ------------------------------------------- marker-split dependencies (#325)
+
+
+def test_parse_marker_variants_finds_only_multi_version_names(gate):
+    """A python-version split is one distribution under two pins; a name with
+    a single row — conditional or not — is not a variant and keeps today's
+    treatment."""
+    text = "\n".join(
+        [
+            "fastapi==0.142.2",
+            "secretstorage==3.5.0 ; sys_platform == 'linux'",
+            "beartype==0.22.9 ; python_full_version < '3.15'",
+            "beartype==0.23.1 ; python_full_version >= '3.15'",
+        ]
+    )
+    variants = gate.parse_marker_variants(text)
+    assert list(variants) == ["beartype"]
+    assert variants["beartype"] == [
+        ("beartype==0.22.9", "python_full_version < '3.15'"),
+        ("beartype==0.23.1", "python_full_version >= '3.15'"),
+    ]
+
+
+def test_image_python_version_reads_the_dump_header(gate):
+    assert gate.image_python_version("python-full-version 3.13.16\nfoo==1.0\n") == "3.13.16"
+    assert gate.image_python_version("foo==1.0\n") is None
+
+
+def test_parse_actual_ignores_the_python_version_header(gate):
+    dump = "python-full-version 3.13.16\nauditable==1.2.3\n"
+    assert gate.parse_actual(dump) == {"auditable==1.2.3"}
+
+
+def test_marker_split_image_ships_the_applicable_pin_reconciles(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """`beartype` is the live case: cc549e3c5's fastmcp bump split it across a
+    python-version marker, and the image carries the pin its own interpreter
+    selects. That is exact conformance, not a skew — the pre-marker-aware gate
+    reported it red whenever its set iteration surfaced the other row."""
+    expected = _write_expected(
+        tmp_path,
+        "fastapi==0.142.2\n"
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    dump = _dump("python-full-version 3.13.16", "fastapi==0.142.2", "beartype==0.22.9")
+    _install_docker(monkeypatch, gate, _Docker(dump))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert "ships exactly the locked set" in capsys.readouterr().out
+
+
+def test_marker_split_selects_by_the_image_python_version(gate, tmp_path, monkeypatch, capsys):
+    """The same lock reconciles a 3.15+ image against the other row."""
+    expected = _write_expected(
+        tmp_path,
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    dump = _dump("python-full-version 3.15.1", "beartype==0.23.1")
+    _install_docker(monkeypatch, gate, _Docker(dump))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert "ships exactly the locked set" in capsys.readouterr().out
+
+
+def test_marker_split_wrong_pin_for_the_image_python_is_a_skew(gate, tmp_path, monkeypatch, capsys):
+    """Selecting the applicable pin must not loosen the gate: a 3.13 image
+    shipping the 3.15+ build is exactly the skew the heading names."""
+    expected = _write_expected(
+        tmp_path,
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    dump = _dump("python-full-version 3.13.16", "beartype==0.23.1")
+    _install_docker(monkeypatch, gate, _Docker(dump))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert "version mismatch     : beartype==0.23.1 (image) != beartype==0.22.9" in out
+
+
+def test_marker_split_with_unevaluatable_marker_stays_lenient(gate, tmp_path, monkeypatch, capsys):
+    """No dumped interpreter version (an older-format dump) means the
+    applicable pin cannot be chosen: a shipped LOCK BRANCH falls back to the
+    conditional treatment rather than a guessed row crying skew. The leniency
+    stops at the lock's own branches — a version the split never named is a
+    real divergence (the unknown-branch test above)."""
+    expected = _write_expected(
+        tmp_path,
+        "beartype==0.22.9 ; python_full_version < '3.15'\n"
+        "beartype==0.23.1 ; python_full_version >= '3.15'\n",
+    )
+    _install_docker(monkeypatch, gate, _Docker(_dump("beartype==0.22.9")))
+    monkeypatch.setattr(sys, "argv", _argv(expected))
+    assert gate.main() == 0
+    assert "ships exactly the locked set" in capsys.readouterr().out
+
+
+def test_marker_bound_without_a_patch_level_compares_zero_padded(gate):
+    """PEP 508 compares `python_full_version` as release tuples: the bound
+    `'3.15'` is `(3, 15, 0)`, so an image reporting `3.15.0` satisfies
+    `>= '3.15'`."""
+    assert gate._marker_selects_version("python_full_version >= '3.15'", "3.15.0") is True
+    assert gate._marker_selects_version("python_full_version < '3.15'", "3.15.0") is False
+    assert gate._marker_selects_version("python_full_version < '3.15'", "3.13.16") is True
+
+
+def test_marker_without_python_clauses_selects_unconditionally(gate):
+    """A platform-only split carries one version per platform; the image is on
+    its own platform, so there is nothing to disambiguate."""
+    assert gate._marker_selects_version("sys_platform == 'linux'", "3.13.16") is True
+    assert gate._marker_selects_version(None, "3.13.16") is True
+    # No interpreter version dumped: unknown, the caller's leniency signal.
+    assert gate._marker_selects_version("python_full_version >= '3.15'", None) is None

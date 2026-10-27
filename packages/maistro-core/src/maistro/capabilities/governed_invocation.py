@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from maistro.capabilities.approval_store import (
     ApprovalStatus,
@@ -17,6 +17,7 @@ from maistro.capabilities.approval_store import (
     redact_approval_value,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -112,12 +113,12 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The composition root installs this service for governed model effects and
-    for the rest of the canonical effect consumers, the retained PM polling
-    graph nodes among them, so policy decisions and terminal Invocation events
-    cover live provider calls rather than only direct test consumers. Policy
-    events and approvals remain governed side effects; neither path may bypass
-    the Invocation service or its effect identity.
+    The container composes this wrapper for canonical effect consumers; the
+    model egress composition uses the default M1 policy path in production.
+    Policy events and approvals remain governed side effects; neither path may
+    bypass the Invocation service or its effect identity. Stronger policy and
+    durable approval stores can be supplied by later compositions without
+    introducing a second execution authority.
     """
 
     def __init__(
@@ -174,6 +175,26 @@ class GovernedInvocationExecutionService:
         """Expose stale-effect discovery through the governed composition root."""
 
         return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def record_expected_effect_observation(
+        self, invocation_id: str, observed_post_state: Any
+    ) -> Invocation:
+        """Persist tool prediction observations without exposing the store."""
+
+        return await self._invocations.record_expected_effect_observation(
+            invocation_id, observed_post_state
+        )
+
+    @staticmethod
+    def expected_effect_mismatch_event(invocation: Invocation, *, tool_name: str) -> EventEnvelope:
+        """Build mismatch evidence through the canonical Invocation authority."""
+
+        return cast(
+            EventEnvelope,
+            InvocationExecutionService.expected_effect_mismatch_event(
+                invocation, tool_name=tool_name
+            ),
+        )
 
     async def reconcile(
         self,
@@ -255,6 +276,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        expected_effect: ExpectedEffectEvidence | None = None,
         actor_id: str = "",
     ) -> Invocation:
         context = InvocationPolicyContext(
@@ -317,6 +339,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                expected_effect=expected_effect,
                 actor_id=actor_id,
             )
         except asyncio.CancelledError:
