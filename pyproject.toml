@@ -245,6 +245,23 @@ constraint-dependencies = [
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
     "graphql-core>=3.3.0",
+    # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
+    # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
+    # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
+    # fastmcp 4.1.2; GHSA-xmj3-9gf7-h52w in setuptools 84.1.0 (which still
+    # satisfies the >= 78.1.1 floor the shipped image pins). fastmcp ships in
+    # no runtime image (the `[llm]` extra is not part of any image install)
+    # and setuptools enters the images only as the Dockerfile's explicit pin,
+    # which tracks this floor.
+    "fastmcp>=4.1.2",
+    "setuptools>=84.1.0",
+    # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
+    # authlib arrives via fastmcp / browser-use; dnspython via email-validator
+    # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
+    # direct production pin — floors keep the frozen dev env above the advisories.
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0",
 ]
 
 [tool.ruff]
@@ -293,8 +310,10 @@ ignore = ["E501", "UP046", "UP047"]
 # maistro_design/consistency.py; the round-4 merge resolution dropped it
 # believing only the removed creative_brief.py used it. It also covers
 # #773's CreativeBrief contract API: retained, test-consumed now,
-# production consumers arrive with #774/#775.
-external = ["V102", "V105", "V106", "V107"]
+# production consumers arrive with #774/#775. V103 (unused function) backs
+# the FastAPI route-handler markers in maistro_server/api/backlog.py (#98):
+# the decorator registers the handler, which name-level scanning cannot see.
+external = ["V102", "V103", "V105", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

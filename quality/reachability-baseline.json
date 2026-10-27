@@ -102,6 +102,7 @@
     "maistro_rsi.apply_agents",
     "maistro_rsi.autorun",
     "maistro_rsi.harness_adapter",
-    "maistro_rsi.rate_pacer"
+    "maistro_rsi.rate_pacer",
+    "maistro_canvas.canvas.runner"
   ]
 }

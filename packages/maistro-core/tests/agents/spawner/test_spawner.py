@@ -122,15 +122,14 @@ async def test_spawn_happy_path_populates_output_fields():
 
 
 @pytest.mark.asyncio
-async def test_spawn_applies_role_defaults_for_tools_and_prompt_name():
+async def test_spawn_applies_role_defaults_for_prompt_name():
     llm = FakeLLM()
     spawner = Spawner(llm)
-    spec = _spec()  # tools_allowed empty, prompt_name None -> with_defaults() fills both
+    spec = _spec()  # prompt_name None -> with_defaults() fills it (#847 removed tools_allowed)
 
     await spawner.spawn(spec)
 
     assert spec.prompt_name == "coder.generate"
-    assert "file_ops.write" in spec.tools_allowed
 
 
 @pytest.mark.asyncio

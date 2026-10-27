@@ -17,6 +17,7 @@ Responses→chat.completions fallback are all real; only the socket is not.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -24,7 +25,9 @@ import pytest
 from adapters.llm_http import HttpOpenAIProtocolLLM
 from models.schemas import ChatCompletionRequest
 
+from maistro.container import create_container
 from maistro.http import get_shared_client, override_transport
+from maistro.types.config import AgentConfig
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,13 +45,74 @@ def _adapter(variant: str = "chat_completions") -> HttpOpenAIProtocolLLM:
 
 
 def _req(**kw: Any) -> ChatCompletionRequest:
-    return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="m", **kw)
+    kw.setdefault("model", "m")
+    return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], **kw)
+
+
+async def test_hive_builder_uses_container_governed_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped Hive builder retains the real Container Invocation ledger."""
+    import services.chat_completion as chat_completion
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="k",
+            workspace_id="ws-hive",
+            litellm_url="https://gateway.invalid",
+            litellm_key="container-key",
+        )
+    )
+    monkeypatch.setattr(
+        chat_completion,
+        "get_settings",
+        lambda: SimpleNamespace(
+            litellm_api_base="https://gateway.invalid",
+            litellm_key="container-key",
+            llm_http_variant="chat_completions",
+        ),
+    )
+    monkeypatch.setattr(
+        chat_completion, "_resolve_litellm_api_key", lambda _settings: "container-key"
+    )
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=container)),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "hive-model-v1",
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            },
+        )
+
+    with override_transport(httpx.MockTransport(handler)):
+        port = chat_completion.build_llm_port()
+        result = await port.complete(_req())
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert port._client._egress is container.model_chat_egress  # type: ignore[attr-defined]
+    records = list(container.capability_effects.invocation_store._items.values())
+    assert len(records) == 1
+    assert records[0].binding.capability == "model.chat"
+    assert records[0].binding.provider_name == "m"
 
 
 class TestStreaming:
     """Both `stream()` branches — the two sites that had no coverage."""
 
+    @pytest.mark.contract("boundary")
     async def test_chat_completions_stream_yields_parsed_chunks(self) -> None:
+        """The one transport seam yields normalized chat.completions chunks.
+
+        Pins the boundary SPEC-285 declares: the adapter's `stream()` is the
+        approved seam -- same endpoint, same Authorization header -- and each
+        SSE `data:` event crosses it as a parsed chunk, not a buffered blob.
+        """
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -107,6 +171,67 @@ class TestStreaming:
         ):
             [c async for c in _adapter().stream(_req())]
 
+    async def test_an_unreachable_gateway_surfaces_as_a_compat_500(self) -> None:
+        """A governed refusal without an HTTP status keeps the 500 shape.
+
+        `EffectNotApplied` that never named a status (the endpoint was
+        unreachable, so no HTTP exchange happened) must still surface to the
+        legacy HTTP caller as a transport error — not as a silent success and
+        not as a crash — with the fallback 500 status.
+        """
+
+        def refuse(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        with (
+            override_transport(httpx.MockTransport(refuse)),
+            pytest.raises(httpx.HTTPStatusError) as excinfo,
+        ):
+            [c async for c in _adapter().stream(_req())]
+
+        assert excinfo.value.response.status_code == 500
+        assert "unreachable" in str(excinfo.value)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.ac("SPEC-285/AC-5")
+    async def test_stream_records_usage_on_the_governed_ledger(self) -> None:
+        """The shipped streaming bridge is the governed one, and it accounts.
+
+        Chunks flow to the caller parsed, while the Invocation that owns them
+        terminalizes with the usage the terminal usage chunk reported — the
+        accounting a buffered bridge lost (SPEC-285).
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=_sse(
+                    '{"choices":[{"delta":{"content":"he"}}]}',
+                    '{"choices":[{"delta":{"content":"llo"}}]}',
+                    '{"usage":{"prompt_tokens":7,"completion_tokens":2},"choices":[]}',
+                ),
+            )
+
+        adapter = _adapter()
+        with override_transport(httpx.MockTransport(handler)):
+            chunks = [c async for c in adapter.stream(_req(model="usage-probe"))]
+
+        assert [
+            c["choices"][0]["delta"]["content"]
+            for c in chunks
+            if c.get("choices") and c["choices"][0].get("delta", {}).get("content")
+        ] == ["he", "llo"]
+        egress = adapter._client._egress  # type: ignore[attr-defined]
+        rows = list(egress._effects.invocation_store._items.values())  # type: ignore[attr-defined]
+        # The adapter composes the process-ephemeral context, which earlier
+        # tests in this file may share — select this stream's Invocation by
+        # the model only it pins.
+        (mine,) = [r for r in rows if r.binding.provider_name == "usage-probe"]
+        assert mine.status.value == "completed"
+        assert mine.usage is not None
+        assert mine.usage.input_units == 7
+        assert mine.usage.output_units == 2
+
 
 class TestComplete:
     async def test_chat_completions_round_trip(self) -> None:
@@ -117,6 +242,50 @@ class TestComplete:
             out = await _adapter().complete(_req())
 
         assert out["choices"][0]["message"]["content"] == "ok"
+
+    async def test_a_responses_body_normalizes_to_the_chat_shape(self) -> None:
+        """Every Responses-output shape the adapter documents resolves.
+
+        The ingress adapter keeps the historical Responses→chat.completions
+        shape at the boundary: message items contribute their text parts
+        (output_text and input_text), plain-text content contributes its
+        string, and non-message items, non-dict items/content and textless
+        parts contribute nothing instead of crashing the turn.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/responses")
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_1",
+                    "model": "m",
+                    "output": [
+                        "not-a-dict",
+                        {"type": "reasoning", "content": [{"type": "summary_text", "text": "hm"}]},
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "alpha"},
+                                {"type": "input_text", "text": "beta"},
+                                "junk-string",
+                                {"type": "other", "text": {"nested": "not-a-str"}},
+                                {"text": "plain-str"},
+                            ],
+                        },
+                    ],
+                },
+            )
+
+        with override_transport(httpx.MockTransport(handler)):
+            out = await _adapter("responses").complete(_req())
+
+        # "reasoning" is not a message item; "junk-string" is not a dict;
+        # non-text-type content whose text is not a string contributes
+        # nothing; a typeless part's plain string text still counts.
+        assert out["choices"][0]["message"]["content"] == "alphabetaplain-str"
+        assert out["_hive_protocol"] == "responses"
+        assert out["id"] == "resp_1"
 
 
 class TestPooling:

@@ -599,6 +599,9 @@ async def test_resolve_run_and_take_over_resolved_carry_their_guards() -> None:
 async def test_purge_bounds_its_delete() -> None:
     pool = FakePool()
     pool.execute_results.append("DELETE 3")
+    # The post-purge health probe (#325) asks for the table first; the fake
+    # answers "absent" so the probe ends without further queries.
+    pool.fetchrow_results.append(None)
     store = PgTaskIdempotencyStore(pool)
 
     assert await store.purge_expired(now=_EXPIRED, limit=7) == 3

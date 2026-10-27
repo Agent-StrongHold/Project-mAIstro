@@ -12,6 +12,8 @@ Covers the acceptance shape of the M1-D2 boundary:
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -32,9 +34,14 @@ from maistro.capabilities.invocation import (
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     GovernedLLMClient,
+    GovernedModelChatClient,
+    ModelCallResult,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
+    _replay_result_chunks,
+    build_model_chat_client,
+    model_execution_context,
     resolve_model_chat_provider,
 )
 from maistro.capabilities.providers.llm_gateway import (
@@ -186,6 +193,231 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     assert stored.binding.capability == MODEL_CHAT_CAPABILITY
     assert stored.binding.provider_name == "fast-model"
     assert stored.usage == result.usage
+
+
+async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM compatibility callers cannot reach a model without an Invocation."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-client",
+        project_id="project-client",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-client",
+            project_id="project-client",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    assert isinstance(client, GovernedModelChatClient)
+    body = await client.complete(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata={
+            "run_id": "run-client",
+            "node_run_id": "node-client",
+            "attempt_id": "attempt-client",
+            "effect_key": "client:model",
+        },
+    )
+
+    assert body["choices"][0]["message"]["content"] == "hi"
+    history = await effects.invocation_store.list_effect(
+        run_id="run-client",
+        node_run_id="node-client",
+        binding_id=client._binding.binding_id,
+        effect_key="client:model",
+    )
+    assert len(history) == 1
+    assert history[0].binding.provider_name == "fast-model"
+
+
+async def test_compatibility_client_inherits_canonical_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent/Run callers retain ambient Workspace and Attempt correlation."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-run",
+        project_id="project-run",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-run",
+        project_id="project-run",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-run",
+            project_id="project-run",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    with bind_execution_context(
+        workspace_id="ws-run",
+        project_id="project-run",
+        run_id="run-context",
+        node_run_id="node-context",
+        attempt_id="attempt-context",
+    ):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={"effect_key": "context:model"},
+        )
+
+    binding_id = client._binding.binding_id
+    history = await effects.invocation_store.list_effect(
+        run_id="run-context",
+        node_run_id="node-context",
+        binding_id=binding_id,
+        effect_key="context:model",
+    )
+    assert len(history) == 1
+    assert history[0].attempt_id == "attempt-context"
+    assert history[0].binding.provider_name == "fast-model"
+
+
+async def test_compatibility_client_forwards_the_execution_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Invocation carries the actor the executing caller authenticated.
+
+    #1084: the compatibility path used to drop an actor the caller held, so
+    every chat/voice Invocation recorded an empty principal while its Run
+    carried the authenticated one. The actor crosses the same seam as the
+    execution identity — bound by the caller that authenticated it, never
+    invented here.
+    """
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-actor",
+            project_id="project-actor",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    with model_execution_context(
+        run_id="run-actor",
+        node_run_id="node-actor",
+        attempt_id="attempt-actor",
+        actor_id="alice",
+    ):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={"effect_key": "actor:model"},
+        )
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-actor",
+        node_run_id="node-actor",
+        binding_id=client._binding.binding_id,
+        effect_key="actor:model",
+    )
+    assert recorded.actor_id == "alice"
+
+
+async def test_compatibility_client_without_an_actor_records_no_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that supplies no actor still records "", never a guess.
+
+    The ledger reads an empty ``actor_id`` as "no actor" (budget matching
+    treats it as system). Fabricating a principal here would forge exactly
+    the attribution the actor-required guard (#1841) exists to prevent.
+    """
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    effects.credentials.add(
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-actor",
+        project_id="project-actor",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=Binding(
+            workspace_id="ws-actor",
+            project_id="project-actor",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+    await client.complete(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata={
+            "run_id": "run-anon",
+            "node_run_id": "node-anon",
+            "attempt_id": "attempt-anon",
+            "effect_key": "anon:model",
+        },
+    )
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-anon",
+        node_run_id="node-anon",
+        binding_id=client._binding.binding_id,
+        effect_key="anon:model",
+    )
+    assert recorded.actor_id == ""
 
 
 async def test_unpinned_unaliased_request_uses_router_selection(
@@ -1258,3 +1490,692 @@ async def test_client_complete_adopts_bound_context_or_refuses(
     assert body["choices"][0]["message"]["content"] == "hi"
     (entry,) = await tracker.get_all_usage()
     assert entry["request_count"] == 1
+
+
+# --- Incremental streaming through the governed lifecycle (SPEC-285) --------
+
+
+class _LiveStreamResponse:
+    """A real SSE wire the test paces: yields lines, waits when told to."""
+
+    def __init__(
+        self,
+        lines: list[str],
+        *,
+        after_line: Callable[[], Awaitable[None]] | None = None,
+        fail_at_line: int | None = None,
+        status: int = 200,
+    ) -> None:
+        self._lines = lines
+        self._after_line = after_line
+        self._fail_at_line = fail_at_line
+        self._served = 0
+        self.status_code = status
+        self.headers: dict[str, str] = {}
+
+    @property
+    def is_success(self) -> bool:
+        return self.status_code < 400
+
+    async def __aenter__(self) -> _LiveStreamResponse:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def aread(self) -> bytes:
+        return b""
+
+    async def aiter_lines(self) -> Any:
+        for line in self._lines:
+            if self._fail_at_line is not None and self._served >= self._fail_at_line:
+                raise RuntimeError("wire cut mid-stream")
+            self._served += 1
+            yield line
+            if self._after_line is not None:
+                await self._after_line()
+
+
+class _LiveStreamClient:
+    """httpx.AsyncClient stand-in: the socket is fake, the pacing is real."""
+
+    def __init__(
+        self,
+        lines: list[str],
+        *,
+        after_line: Callable[[], Awaitable[None]] | None = None,
+        fail_at_line: int | None = None,
+        status: int = 200,
+    ) -> None:
+        self._args: tuple[Any, ...] = ()
+        self._kwargs: dict[str, Any] = {}
+        self._lines = lines
+        self._after_line = after_line
+        self._fail_at_line = fail_at_line
+        self._status = status
+        self.dispatches = 0
+
+    async def __aenter__(self) -> _LiveStreamClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    def stream(self, *args: Any, **kwargs: Any) -> _LiveStreamResponse:
+        self.dispatches += 1
+        self._args, self._kwargs = args, kwargs
+        return _LiveStreamResponse(
+            self._lines,
+            after_line=self._after_line,
+            fail_at_line=self._fail_at_line,
+            status=self._status,
+        )
+
+
+def _stream_client(
+    monkeypatch: pytest.MonkeyPatch,
+    lines: list[str],
+    *,
+    after_line: Callable[[], Awaitable[None]] | None = None,
+    fail_at_line: int | None = None,
+    status: int = 200,
+) -> _LiveStreamClient:
+    client = _LiveStreamClient(
+        lines, after_line=after_line, fail_at_line=fail_at_line, status=status
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+    return client
+
+
+def _stream_effects() -> CapabilityEffectContext:
+    return _effects()
+
+
+def _sse_lines(*payloads: str) -> list[str]:
+    lines: list[str] = []
+    for payload in payloads:
+        lines.append(f"data: {payload}")
+        lines.append("")
+    lines.append("data: [DONE]")
+    return lines
+
+
+_IDENTITY = {
+    "run_id": "run-stream",
+    "node_run_id": "node-stream",
+    "attempt_id": "attempt-stream",
+    "effect_key": "stream:model",
+}
+
+
+def _streaming_client(
+    effects: CapabilityEffectContext,
+    registry: Any,
+    timeout_s: float,
+    protocol: str = "chat_completions",
+) -> GovernedModelChatClient:
+    """The compatibility client over real in-memory canonical authorities.
+
+    Each test names its own endpoint timeout: the shared-client pool keys on
+    it, so no test ever consumes another test's socket substitute.
+    """
+
+    return build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw", timeout_s=timeout_s),
+        workspace_id="ws1",
+        project_id="p1",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        protocol=protocol,
+        binding=Binding(
+            workspace_id="ws1",
+            project_id="p1",
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+    )
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-285/AC-1")
+async def test_stream_reaches_the_consumer_while_the_invocation_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunks cross to the caller live, before the Invocation terminalizes.
+
+    The wire refuses to emit its second line until the consumer has actually
+    received the first one through the governed bridge. A buffering regression
+    never satisfies that handshake, the wire aborts loudly, and the chunk
+    assertions fail — the proof is structural (the consumer observed a chunk
+    the provider had not finished producing), not wall-clock.
+    """
+
+    first_chunk_received = asyncio.Event()
+
+    async def pace() -> None:
+        # After the first line: hold the wire until the consumer has the chunk.
+        try:
+            await asyncio.wait_for(first_chunk_received.wait(), timeout=5)
+        except TimeoutError:
+            raise RuntimeError(
+                "bridge buffered the stream: the consumer never received the "
+                "first chunk while the provider was still producing"
+            ) from None
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"Hel"}}]}',
+        '{"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}',
+        '{"usage":{"prompt_tokens":10,"completion_tokens":3},"choices":[]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines, after_line=pace)
+    client = _streaming_client(effects, registry, timeout_s=101.0)
+
+    chunks: list[dict[str, Any]] = []
+    async for chunk in client.stream_chunks(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata=dict(_IDENTITY),
+    ):
+        chunks.append(chunk)
+        if len(chunks) == 1:
+            first_chunk_received.set()
+
+    def _contents(received: list[dict[str, Any]]) -> list[str]:
+        return [
+            c["choices"][0]["delta"]["content"]
+            for c in received
+            if c.get("choices") and c["choices"][0].get("delta", {}).get("content")
+        ]
+
+    assert _contents(chunks) == ["Hel", "lo"]
+    # The terminal usage chunk crosses too — it is part of the stream.
+    assert any(c.get("usage") for c in chunks)
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    # Terminalized, and only after full consumption — with the usage the
+    # terminal usage chunk reported, which a streamed call used to lose.
+    assert recorded.status is InvocationStatus.COMPLETED
+    assert recorded.usage is not None
+    assert recorded.usage.input_units == 10
+    assert recorded.usage.output_units == 3
+    assert isinstance(recorded.result, dict)
+    assert recorded.result["choices"][0]["message"]["content"] == "Hello"
+    assert recorded.result["choices"][0]["finish_reason"] == "stop"
+
+
+@pytest.mark.ac("SPEC-285/AC-2")
+async def test_stream_failure_midstream_terminalizes_and_reaches_the_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wire that dies mid-stream fails the Invocation and raises upstream."""
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"partial"}}]}',
+        '{"choices":[{"delta":{"content":" never"}}]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines, fail_at_line=2)
+    client = _streaming_client(effects, registry, timeout_s=102.0)
+
+    received: list[dict[str, Any]] = []
+    with pytest.raises(RuntimeError, match="wire cut mid-stream"):
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        ):
+            received.append(chunk)
+
+    assert [c["choices"][0]["delta"]["content"] for c in received] == ["partial"]
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    # A half-delivered stream is not a success: the record must say so.
+    assert recorded.status is InvocationStatus.UNKNOWN
+    assert "wire cut mid-stream" in str(recorded.error)
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-285/AC-3")
+async def test_stream_abandonment_never_leaves_a_completed_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer that walks away cancels the dispatch, truthfully recorded."""
+
+    first_chunk_received = asyncio.Event()
+
+    async def pace() -> None:
+        await first_chunk_received.wait()
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"only"}}]}',
+        '{"choices":[{"delta":{"content":"lost"}}]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines, after_line=pace)
+    client = _streaming_client(effects, registry, timeout_s=103.0)
+
+    stream = client.stream_chunks(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata=dict(_IDENTITY),
+    )
+    first = await anext(stream)
+    assert first["choices"][0]["delta"]["content"] == "only"
+    first_chunk_received.set()
+    await stream.aclose()
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    # The provider outcome is unknown — the Invocation must not claim success.
+    assert recorded.status is InvocationStatus.UNKNOWN
+    assert "cancelled" in str(recorded.error)
+
+
+@pytest.mark.ac("SPEC-285/AC-4")
+async def test_deduplicated_stream_replays_the_record_without_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replayed effect streams its recorded chunks and never re-dispatches."""
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"once"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    live = _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=104.0)
+
+    def consume() -> Any:
+        return client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        )
+
+    first = [chunk async for chunk in consume()]
+    second = [chunk async for chunk in consume()]
+
+    assert live.dispatches == 1, "a deduplicated stream must not re-dispatch"
+    assert [c["choices"][0]["delta"] for c in second] == [c["choices"][0]["delta"] for c in first]
+
+
+@pytest.mark.ac("SPEC-285/AC-2")
+async def test_stream_http_refusal_records_failed_not_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A not-applied HTTP refusal on the stream records FAILED, not UNKNOWN.
+
+    SPEC-285's failure table: the wire refusing before any chunk is an
+    `EffectNotApplied` (nothing was delivered, safe to reconcile), not an
+    unknown-outcome abort — the Invocation must say FAILED for the same
+    request a non-streaming call would fail with.
+    """
+
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, [], status=503)
+    client = _streaming_client(effects, registry, timeout_s=105.0)
+
+    with pytest.raises(RuntimeError, match="status=503"):
+        async for _ in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        ):
+            pass
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    assert recorded.status is InvocationStatus.FAILED
+    assert "status=503" in str(recorded.error)
+
+
+async def test_stream_text_helper_yields_only_content_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`stream()` is the text-only view: content deltas only, in order.
+
+    Reasoning deltas and empty terminal chunks are chunks on the wire but are
+    not assistant text — the compatibility helper must not leak them as text.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"Hel"}}]}',
+        '{"choices":[{"delta":{"reasoning_content":"thinking"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        '{"usage":{"prompt_tokens":1,"completion_tokens":1},"choices":[]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=106.0)
+
+    text = [
+        part
+        async for part in client.stream(
+            [{"role": "user", "content": "hello"}], "fast-model", metadata=dict(_IDENTITY)
+        )
+    ]
+
+    assert text == ["Hel"]
+
+
+async def test_stream_with_caller_scope_dispatches_under_the_scoped_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-named scope derives the scoped Binding and records under it.
+
+    The stream path scopes exactly like `complete`: the turn's metadata names
+    a foreign Workspace, so the client derives (never reaches past its
+    authority for) the scoped copy and the Invocation lands under it.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"scoped"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    )
+    effects = _stream_effects()
+    effects.credentials.add(
+        workspace_id="ws2",
+        project_id="p2",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="scoped-key",
+        ),
+    )
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=107.0)
+
+    chunks = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={**_IDENTITY, "workspace_id": "ws2", "project_id": "p2"},
+        )
+    ]
+    assert [c["choices"][0]["delta"].get("content") for c in chunks if c.get("choices")] == [
+        "scoped",
+        None,
+    ]
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id="model-chat:ws2:p2",
+        effect_key="stream:model",
+    )
+    assert recorded.binding.workspace_id == "ws2"
+    assert recorded.binding.project_id == "p2"
+    assert recorded.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.ac("SPEC-285/AC-5")
+async def test_stream_without_terminal_usage_records_none_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wire that never reports usage leaves the Invocation unmeasured.
+
+    `usage=None` is the truthful record; zero would fabricate a measurement
+    the provider never made.
+    """
+
+    lines = _sse_lines(
+        '{"choices":[{"delta":{"content":"bare"}}]}',
+        '{"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    )
+    effects = _stream_effects()
+    registry = _registry()
+    _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=108.0)
+
+    _ = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        )
+    ]
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    assert recorded.status is InvocationStatus.COMPLETED
+    assert recorded.usage is None
+
+
+def test_replay_falls_back_to_the_recorded_completion_body() -> None:
+    """A record without stored chunks replays its completion body once."""
+
+    result = ModelCallResult(
+        invocation_id="inv-1",
+        model="fast-model",
+        body={"choices": [{"message": {"role": "assistant", "content": "recorded"}}]},
+    )
+    chunks = list(_replay_result_chunks(result))
+    assert chunks == [{"choices": [{"delta": {"content": "recorded"}, "finish_reason": "stop"}]}]
+
+
+def test_replay_without_a_record_yields_nothing() -> None:
+    """No terminal record, no replayed chunks — silence, not fabrication."""
+
+    assert list(_replay_result_chunks(None)) == []
+
+
+@pytest.mark.ac("SPEC-285/AC-6")
+async def test_responses_protocol_streams_normalized_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto` streams the Responses endpoint through the same one Invocation.
+
+    The shipped default variant tries /responses first: its events cross the
+    observer normalized to chat.completions chunks, unusable wire noise is
+    skipped rather than fatal, and the same admitted, deduplicated Invocation
+    terminalizes with the usage the terminal event reported. A malformed
+    usage measurement stays unmeasured (`usage=None`), never zero.
+    """
+
+    lines = [
+        "data: not-json",  # unparseable: skipped, not fatal
+        "data: 123",  # JSON but not an object: skipped
+        'data: {"type":"response.output_text.delta","delta":"Hel"}',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"hm"}',
+        'data: {"type":"response.output_text.delta","delta":"lo"}',
+        'data: {"type":"response.some_future_event","x":1}',  # unrecognized: skipped
+        "data: {broken json",  # unparseable: skipped, not fatal
+        'data: {"type":"response.completed",'
+        '"response":{"usage":{"input_tokens":"many","output_tokens":3}}}',  # malformed usage
+    ]
+    effects = _stream_effects()
+    registry = _registry()
+    live = _stream_client(monkeypatch, lines)
+    client = _streaming_client(effects, registry, timeout_s=109.0, protocol="auto")
+
+    chunks = [
+        chunk
+        async for chunk in client.stream_chunks(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata=dict(_IDENTITY),
+        )
+    ]
+
+    # The request went to the Responses endpoint with the Responses payload…
+    assert "/responses" in str(live._args[1])
+    payload = live._kwargs["json"]
+    assert payload["stream"] is True
+    assert payload["input"] == [{"role": "user", "content": "hello"}]
+    # …normalized: text deltas crossed as content chunks, reasoning as
+    # reasoning_content, the terminal event as a stop chunk.
+    contents = [
+        c["choices"][0]["delta"]["content"]
+        for c in chunks
+        if c.get("choices") and c["choices"][0].get("delta", {}).get("content") is not None
+    ]
+    assert contents == ["Hel", "lo"]
+    assert any(c["choices"][0]["delta"].get("reasoning_content") == "hm" for c in chunks)
+    assert any(c.get("choices") and c["choices"][0].get("finish_reason") == "stop" for c in chunks)
+
+    (recorded,) = await effects.invocation_store.list_effect(
+        run_id="run-stream",
+        node_run_id="node-stream",
+        binding_id=client._binding.binding_id,
+        effect_key="stream:model",
+    )
+    # One governed Invocation for the streamed call; the malformed usage
+    # measurement is absent, not zeroed.
+    assert live.dispatches == 1
+    assert recorded.status is InvocationStatus.COMPLETED
+    assert recorded.usage is None
+
+
+async def test_auto_protocol_reraises_a_response_auth_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 401 from /responses must surface, not silently retry as chat."""
+
+    class _Resp:
+        status_code = 401
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "bad key"}
+
+    posts: list[str] = []
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> _Resp:
+            posts.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    effects = _effects()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    request = ModelChatRequest(
+        model="fast-model", messages=[{"role": "user", "content": "hi"}], protocol="auto"
+    )
+    with pytest.raises(RuntimeError, match="status=401"):
+        await egress.complete(
+            binding=_binding(),
+            run_id="r-auto",
+            node_run_id="nr-auto",
+            attempt_id="a-auto",
+            effect_key="auto:model",
+            request=request,
+        )
+    assert len(posts) == 1, "an auth refusal must not be retried on the other protocol"
+
+
+async def test_auto_protocol_falls_back_when_responses_refuses_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`auto` retries the chat endpoint when /responses refuses the request.
+
+    A not-applied refusal that is not an auth failure (here: the endpoint
+    rejecting the Responses payload with 404) falls back to
+    chat.completions; an auth refusal does not (the previous test).
+    """
+
+    posts: list[str] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, body: dict[str, Any]) -> None:
+            self.status_code = status_code
+            self._body = body
+
+        def json(self) -> dict[str, Any]:
+            return self._body
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> _Resp:
+            posts.append(url)
+            if url.endswith("/responses"):
+                return _Resp(404, {"error": "no responses route"})
+            return _Resp(200, _OK_BODY)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    effects = _effects()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    request = ModelChatRequest(
+        model="fast-model", messages=[{"role": "user", "content": "hi"}], protocol="auto"
+    )
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r-auto2",
+        node_run_id="nr-auto2",
+        attempt_id="a-auto2",
+        effect_key="auto2:model",
+        request=request,
+    )
+    assert [u.endswith("/responses") or u.endswith("/chat/completions") for u in posts] == [
+        True,
+        True,
+    ]
+    assert result.body["choices"][0]["message"]["content"] == "hi"
+
+
+def test_build_model_chat_client_supplies_default_authorities_when_omitted() -> None:
+    """Omitting the effect context composes the process-default one.
+
+    The compatibility constructor must not silently return an ungoverned
+    client: with no effects supplied it binds the process default context,
+    so a caller that forgets the authority still lands on the ledger.
+    """
+
+    client = build_model_chat_client(endpoint=GatewayEndpoint(base_url="http://gw", timeout_s=1.0))
+    assert isinstance(client, GovernedModelChatClient)
