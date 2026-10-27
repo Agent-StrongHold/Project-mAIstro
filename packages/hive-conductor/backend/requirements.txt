@@ -41,9 +41,12 @@ pynacl==1.6.2
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2
 structlog>=24.1.0,<26
-pytest>=9.0.3,<10
+# Cap below 9.2: pytest 9.2 moved FixtureManager storage to
+# _arg2node2fixturedefs, and pytest-bdd 9.0.0 still reads _arg2fixturedefs
+# (every step_defs scenario fails under the CI requirements.txt install).
+pytest>=9.0.3,<9.2
 pytest-asyncio>=0.25,<2
-pytest-bdd>=8.0.0,<9
+pytest-bdd>=8.0.0,<10
 hypothesis>=6.0.0,<7
 sqlalchemy[asyncio]>=2.0.0,<3
 # maistro-core is consumed via sys.path (conftest), not pip-installed, so its
