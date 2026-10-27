@@ -43,8 +43,6 @@
     "maistro.collaboration.session_collab",
     "maistro.collaboration.types",
     "maistro.events.convergence",
-    "maistro.events.handlers",
-    "maistro.events.recipes",
     "maistro.governance.conformance",
     "maistro.governance.conformance_types",
     "maistro.graph.executor",

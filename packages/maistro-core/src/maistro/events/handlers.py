@@ -10,7 +10,7 @@ import logging
 from typing import Any
 
 from maistro.auth.client import ServiceKeyClient
-from maistro.events.bus import Event, Trigger
+from maistro.events.bus import Event, EventBus, Trigger
 from maistro.http import shared_client
 
 logger = logging.getLogger("maistro.events.handlers")
@@ -239,3 +239,14 @@ BUILTIN_HANDLERS = {
     "ntfy": ntfy_action,
     "log": log_action,
 }
+
+
+def install_builtin_handlers(bus: EventBus) -> None:
+    """Subscribe ADR-086 builtin action handlers on a legacy :class:`EventBus`.
+
+    Process entry points call this once when constructing the bus so trigger
+    ``action_type`` values resolve to real handlers (#2313 / #836): an unhandled
+    action type must not manufacture firing evidence.
+    """
+    for action_type, handler in BUILTIN_HANDLERS.items():
+        bus.register_handler(action_type, handler)

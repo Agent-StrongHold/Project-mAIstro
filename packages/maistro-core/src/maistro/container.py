@@ -2780,6 +2780,12 @@ async def create_container(
 
         event_bus = EventBus()
 
+        # ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
+        # Recipes land disabled so localhost defaults cannot fire until ops arm them.
+        from maistro.events.wiring import wire_legacy_trigger_surface
+
+        wire_legacy_trigger_surface(event_bus)
+
         # ADR-047 delivery gateway (#2312 CONNECT): process ChannelRegistry with
         # the default log channel so outbound dispatch is process-reachable.
         from maistro.delivery.wiring import wire_process_delivery_gateway
