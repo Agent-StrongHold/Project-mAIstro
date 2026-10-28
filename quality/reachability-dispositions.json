@@ -12,10 +12,7 @@
         "@flat/hive-conductor/services.chatbot_integration",
         "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
-        "@flat/hive-conductor/services.onboard_db",
-        "@flat/hive-conductor/services.pipeline_orchestrator",
-        "@flat/hive-conductor/services.preference_calibration",
-        "@flat/hive-conductor/services.repo_scanner"
+        "@flat/hive-conductor/services.preference_calibration"
       ]
     },
     {
@@ -230,16 +227,6 @@
         "@flat/hive-conductor/services.ui_auto_climb",
         "@flat/hive-conductor/services.ui_climb_vm",
         "@flat/hive-conductor/services.ui_hill_climber"
-      ]
-    },
-    {
-      "id": "hive-project-onboarding",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "CONNECT",
-      "rationale": "routes/projects.py is a project onboarding flow \u2014 intake, scan, deploy, persisted through the Launch DB/Cache/Store \u2014 declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
-      "root": "main.py route registration",
-      "modules": [
-        "@flat/hive-conductor/routes.projects"
       ]
     },
     {
