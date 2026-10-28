@@ -39,8 +39,6 @@
     "maistro.collaboration.session_collab",
     "maistro.collaboration.types",
     "maistro.events.convergence",
-    "maistro.events.handlers",
-    "maistro.events.recipes",
     "maistro.governance.conformance",
     "maistro.governance.conformance_types",
     "maistro.graph.executor",
@@ -83,12 +81,6 @@
     "maistro.tools.approval.types",
     "maistro.tools.media",
     "maistro.tools.net_guard",
-    "maistro.tools.reversibility_registry",
-    "maistro_canvas.canvas.asset_compositor",
-    "maistro_canvas.canvas.asset_executor",
-    "maistro_canvas.canvas.asset_routes",
-    "maistro_canvas.canvas.asset_store",
-    "maistro_canvas.canvas.asset_tool",
     "maistro_canvas.canvas.tool",
     "maistro_evolve.architecture_fit",
     "maistro_evolve.benchmarks.repo_history",
@@ -97,7 +89,6 @@
     "maistro_rsi.apply_agents",
     "maistro_rsi.autorun",
     "maistro_rsi.harness_adapter",
-    "maistro_rsi.rate_pacer",
-    "maistro_canvas.canvas.runner"
+    "maistro_rsi.rate_pacer"
   ]
 }
