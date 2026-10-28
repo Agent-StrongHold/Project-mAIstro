@@ -73,7 +73,6 @@
     "maistro.security.task_policy",
     "maistro.security.trust_boundary",
     "maistro.security.warden.flag_response",
-    "maistro.sessions.search",
     "maistro.skills.catalog",
     "maistro.skills.connectors",
     "maistro.skills.forge",

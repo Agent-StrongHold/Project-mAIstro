@@ -78,6 +78,49 @@ class TestGetHistory:
         assert history == []
 
 
+class TestTranscript:
+    async def test_returns_full_retained_transcript_beyond_context_window(self) -> None:
+        store = InMemorySessionStore()
+        await store.append_messages(
+            "s1",
+            [
+                {"role": "user", "content": "target"},
+                *({"role": "assistant", "content": f"filler {i}"} for i in range(20)),
+            ],
+        )
+
+        transcript = await store.transcript("s1")
+
+        assert [m["content"] for m in transcript] == [
+            "target",
+            *(f"filler {i}" for i in range(20)),
+        ]
+
+    async def test_prunes_expired_by_ttl(self) -> None:
+        store = InMemorySessionStore(SessionConfig(ttl_seconds=5))
+        await store.append_messages("s1", [{"role": "user", "content": "old"}])
+        store._sessions["s1"][0] = (
+            store._sessions["s1"][0][0],
+            "user",
+            "old",
+            time.time() - 1000,
+        )
+
+        assert await store.transcript("s1") == []
+
+    async def test_ignores_config_max_messages(self) -> None:
+        store = InMemorySessionStore(SessionConfig(max_messages=1))
+        await store.append_messages(
+            "s1", [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+        )
+
+        assert len(await store.transcript("s1")) == 2
+
+    async def test_missing_session_returns_empty_list(self) -> None:
+        store = InMemorySessionStore()
+        assert await store.transcript("missing") == []
+
+
 class TestAppendMessages:
     async def test_skips_messages_with_invalid_role(self) -> None:
         store = InMemorySessionStore()

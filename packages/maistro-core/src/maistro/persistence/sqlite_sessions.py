@@ -110,6 +110,29 @@ class SqliteSessionStore:
         rows = list(reversed(list(await cursor.fetchall())))
         return [{"role": r[0], "content": r[1]} for r in rows]
 
+    async def transcript(
+        self,
+        session_id: str,
+        ttl_seconds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Return every retained message, oldest first.
+
+        The full TTL-bounded transcript without the model-context
+        ``max_messages`` truncation ``get_history`` applies — the body
+        ADR-048 session search aggregates over.
+        """
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
+        cutoff = time.time() - ttl
+
+        cursor = await self._conn.execute(
+            """SELECT role, content FROM sessions
+               WHERE session_id = ? AND timestamp > ?
+               ORDER BY seq""",
+            (session_id, cutoff),
+        )
+        rows = list(await cursor.fetchall())
+        return [{"role": r[0], "content": r[1]} for r in rows]
+
     async def append_messages(
         self,
         session_id: str,

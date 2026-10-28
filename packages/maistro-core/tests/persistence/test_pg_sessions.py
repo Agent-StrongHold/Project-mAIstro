@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -127,6 +128,41 @@ async def test_get_history_empty_returns_empty_list(
 ) -> None:
     conn.queue_fetch([])
     assert await store.get_history("s1") == []
+
+
+@pytest.mark.asyncio
+async def test_transcript_orders_ascending_without_limit(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+        ]
+    )
+    transcript = await store.transcript("s1")
+    assert transcript == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    call = conn.calls[0]
+    assert call.method == "fetch"
+    assert call.args[0] == "s1"
+    assert "LIMIT" not in call.query.upper()
+
+
+@pytest.mark.asyncio
+async def test_transcript_ttl_override_moves_cutoff_not_a_limit(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch([])
+    conn.queue_fetch([])
+    await store.transcript("s1")
+    await store.transcript("s1", ttl_seconds=60)
+    default_cutoff = conn.calls[0].args[1]
+    override_cutoff = conn.calls[1].args[1]
+    assert override_cutoff == pytest.approx(time.time() - 60, abs=5)
+    assert override_cutoff > default_cutoff
 
 
 def _purged_table(query: str) -> str:
