@@ -81,7 +81,6 @@
     "maistro.tools.approval.types",
     "maistro.tools.media",
     "maistro.tools.net_guard",
-    "maistro_canvas.canvas.runner",
     "maistro_canvas.canvas.tool",
     "maistro_evolve.architecture_fit",
     "maistro_evolve.benchmarks.repo_history",
