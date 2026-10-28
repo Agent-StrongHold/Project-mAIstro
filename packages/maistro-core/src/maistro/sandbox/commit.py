@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from maistro.sandbox.fence import SandboxFence, assert_fence_is_current
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from maistro.runs.store import RunStore
+    pass
 
 logger = logging.getLogger("maistro.sandbox.commit")
 
@@ -40,7 +40,7 @@ async def fenced_commit(
     fence: SandboxFence,
     publish: Callable[[], Awaitable[T]],
     *,
-    run_store: RunStore,
+    run_store: Any,
     description: str,
 ) -> T:
     """Run `publish` only if this fence is still the current execution.

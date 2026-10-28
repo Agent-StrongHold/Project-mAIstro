@@ -29,11 +29,17 @@ import math
 import os
 import resource
 import shutil
+import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import uuid4
 
+# Imported (not merely named in a string) so the `python -m` edge below is a
+# real dependency: the helper module must ship with the backend, and the
+# reachability graph has to be able to see it. Its own `main()` runs only under
+# `__main__`, so importing it here has no side effect.
+from maistro.sandbox.backends import _rlimit_exec
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
@@ -69,9 +75,9 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
     the caller believes it has one.
 
     A pure function of the config so the numbers are assertable without
-    spawning anything -- the same reason `build_argv` is separate. Applied in
-    `exec` through `preexec_fn`, which runs between `fork` and `exec` and so
-    lands on `bwrap` itself; every process in the sandbox inherits it.
+    spawning anything -- the same reason `build_argv` is separate. The limits
+    are applied by the execing helper immediately before bwrap starts, so every
+    process in the sandbox inherits them.
 
     Measured through a real sandbox: `RLIMIT_AS` turns a 2 GB allocation into
     `MemoryError`, `RLIMIT_FSIZE` stops `dd` at the limit, and `RLIMIT_CPU`
@@ -83,10 +89,9 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
     privileged -- but not claimed as a guarantee. See
     docs/security/SANDBOX-SUPPORT-MATRIX.md.
 
-    Applied in `exec` -- and, through the same hook, in the Tier-3 capability
-    probe (#1235) -- via `preexec_fn`, which runs between `fork` and `exec` and
-    so lands on `bwrap` itself; every process in the sandbox inherits it. The
-    probe shares the budgets because detection is an *evidence* mechanism: a
+    Applied in `exec` -- and in the Tier-3 capability probe (#1235) -- through
+    the same execing helper. The probe shares the budgets because detection is
+    an *evidence* mechanism: a
     tier the spawn cannot reproduce is exactly the false claim this subsystem
     refuses to make.
     """
@@ -105,26 +110,18 @@ def resource_limits(config: SandboxConfig) -> dict[int, tuple[int, int]]:
     }
 
 
-def preexec_for(limits: dict[int, tuple[int, int]]) -> Callable[[], None]:
-    """The fork-time hook that pins `limits` onto the child process.
+def limited_argv(limits: dict[int, tuple[int, int]], command: list[str]) -> list[str]:
+    """Apply rlimits through a tiny execing helper, never ``preexec_fn``.
 
-    There is no bwrap flag for an rlimit and no way to set one from inside a
-    boundary the workload controls, so the values are applied between `fork`
-    and `exec` and land on `bwrap` itself; everything inside the sandbox
-    inherits them.
-
-    One hook for `exec` and for the capability probe (#1235), so the two
-    cannot drift apart: detection evidences Tier 3 under the budgets the
-    backend will enforce, and a namespace that only builds un-budgeted reads
-    as absent -- with the reason -- instead of failing at spawn after the
-    policy check believed it had a boundary.
+    ``preexec_fn`` is unsafe in async and threaded runtimes because the child
+    can inherit locks held by another thread. The helper sets limits in its
+    single-threaded process and immediately ``execvp``s bwrap, so the limits
+    still reach every process in the sandbox without fork-time Python hooks.
     """
-
-    def apply_limits() -> None:
-        for which, values in limits.items():
-            resource.setrlimit(which, values)
-
-    return apply_limits
+    argv = [sys.executable, "-m", _rlimit_exec.__name__]
+    for which, (soft, hard) in limits.items():
+        argv += [str(which), str(soft), str(hard)]
+    return [*argv, "--", *command]
 
 
 class BubblewrapUnavailableError(RuntimeError):
@@ -316,13 +313,14 @@ class BubblewrapSandboxBackend:
             limits = resource_limits(config)
 
             process = await asyncio.create_subprocess_exec(
-                *argv,
+                *limited_argv(limits, argv),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                # Between fork and exec, so the limits are on `bwrap` and inherited
-                # by everything inside the sandbox. The same hook the capability
-                # probe runs under, so detection and spawn cannot disagree (#1235).
-                preexec_fn=preexec_for(limits),
+                # A fresh session so capture_process's process-group kill reaches
+                # the whole sandbox on timeout or output overflow. The rlimits
+                # ride in through the execing helper (limited_argv), never
+                # preexec_fn, so no fork-time Python hook runs in this
+                # async/threaded runtime (#76).
                 start_new_session=True,
             )
             captured = await capture_process(
@@ -331,7 +329,7 @@ class BubblewrapSandboxBackend:
                 max_stdout_bytes=config.max_stdout_bytes,
                 max_stderr_bytes=config.max_stderr_bytes,
             )
-            # `--die-with-parent` plus capture_process's process-group kill makes
+            # --die-with-parent plus capture_process's process-group kill makes
             # both timeout and output overflow terminate the complete workload.
             exit_code = process.returncode if process.returncode is not None else -1
             if captured.timed_out:
@@ -389,6 +387,6 @@ __all__ = [
     "TIMEOUT_EXIT_CODE",
     "BubblewrapSandboxBackend",
     "BubblewrapUnavailableError",
-    "preexec_for",
+    "limited_argv",
     "resource_limits",
 ]

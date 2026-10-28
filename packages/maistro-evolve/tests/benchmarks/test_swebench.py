@@ -14,6 +14,31 @@ from maistro_evolve.benchmarks.swebench import (
 
 from .conftest import make_genome
 
+
+def _selector_satisfies_trusted_tool() -> bool:
+    """Can the canonical selector actually place a TRUSTED_TOOL workload here?
+
+    The evolve benchmark executes untrusted candidate code through the
+    canonical selector (#76). On a host whose selector cannot evidence a
+    backend at the policy's tier (Kata/vm), the check fails closed — so a
+    test that asserts a *passing* check must skip rather than report a false
+    failure against a host that correctly refused.
+    """
+    try:
+        from maistro.sandbox import build_selector
+        from maistro.sandbox.policy import TRUSTED_TOOL
+
+        build_selector().select(TRUSTED_TOOL)
+    except Exception:
+        return False
+    return True
+
+
+requires_sandbox_backend = pytest.mark.skipif(
+    not _selector_satisfies_trusted_tool(),
+    reason="no canonical sandbox backend satisfies TRUSTED_TOOL on this host",
+)
+
 # A single small, fast sample used for most run_swebench tests. It deliberately
 # uses the real swe_01 identity so the production evaluator supplies its
 # undisclosed cases instead of letting a synthetic fixture bypass the hidden-
@@ -104,6 +129,7 @@ class TestRunSwebench:
         with pytest.raises(ValueError, match="requires an llm_call"):
             await run_swebench(genome, None)
 
+    @requires_sandbox_backend
     async def test_correct_fix_scores_full_marks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
         genome = make_genome()
@@ -121,6 +147,7 @@ class TestRunSwebench:
         assert result.metadata["total_samples"] == 1
         assert result.metadata["failures"] == []
 
+    @requires_sandbox_backend
     async def test_unfixed_buggy_code_scores_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
         genome = make_genome()
@@ -135,6 +162,7 @@ class TestRunSwebench:
         assert len(result.metadata["failures"]) == 1
         assert result.metadata["failures"][0]["id"] == "swe_01"
 
+    @requires_sandbox_backend
     async def test_malformed_response_fails_via_sandboxed_syntax_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

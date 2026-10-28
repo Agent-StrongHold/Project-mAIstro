@@ -29,13 +29,14 @@ from maistro.capabilities.providers.codex_app_server import (
     codex_app_server_microvm_factory,
     codex_app_server_microvm_runner,
 )
+from maistro.capabilities.providers.subprocess_harness import SelectorSandboxExec
 from maistro.capabilities.slots.harness_runner import SLOT_NAME, HarnessInputBlocked
 from maistro.graph.harness_executor import HarnessExecutionError, HarnessNodeExecutor
 from maistro.graph.types import AgentRole as GraphAgentRole
 from maistro.graph.types import HarnessOutput
 from maistro.policy import SequencePolicyEngine
 from maistro.security._types import WardenVerdict
-from maistro.tools.sandbox.microvm import MicroVMRunSpec, MicroVMSandbox
+from maistro.tools.sandbox.microvm import MicroVMRunSpec
 
 
 def _spec() -> AgentSpec:
@@ -393,7 +394,8 @@ class TestMicroVMWiring:
         launcher = _FakeLauncher()
         factory = codex_app_server_microvm_factory(launcher, env={"CODEX_MODEL_API_KEY": "k"})
         sandbox = await factory("/repos/target")
-        assert isinstance(sandbox, MicroVMSandbox)
+        assert isinstance(sandbox, SelectorSandboxExec)
+        assert sandbox._backend.tier == "vm"
         code, out = await sandbox.exec("codex-app-server session create")
         assert code == 0 and out == "vm-ran"
         assert launcher.specs[0].workspace == "/repos/target"

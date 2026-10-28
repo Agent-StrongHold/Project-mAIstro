@@ -64,21 +64,24 @@ import contextlib
 import json
 import shlex
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from maistro.agents.spec.agent_spec import AgentSpec
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SandboxFactory,
+    SelectorSandboxExec,
     SubprocessHarnessRunner,
     _message_text,
 )
 from maistro.tools.sandbox.microvm import (
     LauncherFn,
     MicroVMConfig,
-    MicroVMSandbox,
     VMMLauncher,
 )
+
+if TYPE_CHECKING:
+    from maistro.sandbox.policy import WorkloadPolicy
 
 CODEX_APP_SERVER_BINARY = "codex-app-server"
 
@@ -353,8 +356,9 @@ def codex_app_server_microvm_factory(
     *,
     config: MicroVMConfig | None = None,
     env: dict[str, str] | None = None,
+    policy: WorkloadPolicy | None = None,
 ) -> SandboxFactory:
-    """A ``SandboxFactory`` that boots a :class:`MicroVMSandbox` at each workdir.
+    """A ``SandboxFactory`` that uses the canonical selector for each workdir.
 
     The ``workdir`` passed to ``start_session`` becomes the VM's workspace —
     the repo the Codex App Server operates on. ``launcher`` is the VMM seam
@@ -366,13 +370,18 @@ def codex_app_server_microvm_factory(
     (issue #822).
     """
     scoped_env = dict(env or {})
+    from maistro.sandbox.policy import UNTRUSTED_CODE
+    from maistro.sandbox.wiring import build_launcher_selector
+
+    effective_policy = policy if policy is not None else UNTRUSTED_CODE
 
     async def factory(workdir: str) -> SandboxExec:
-        # trusted_env, not env: these are the App Server's own provider
-        # credentials, wired in by the operator rather than derived from a
-        # harness request, and the sandbox's allowlist would otherwise
-        # (correctly) strip them.
-        return MicroVMSandbox(launcher, config=config, workspace=workdir, trusted_env=scoped_env)
+        selector = build_launcher_selector(
+            launcher, config=config, workspace=workdir, trusted_env=scoped_env
+        )
+        _tier, backend = selector.select(effective_policy)
+        instance = await backend.spawn(config=selector.build_config(effective_policy))
+        return SelectorSandboxExec(backend, instance)
 
     return factory
 
@@ -384,10 +393,13 @@ def codex_app_server_microvm_runner(
     config: MicroVMConfig | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 300,
+    policy: WorkloadPolicy | None = None,
 ) -> CodexAppServerHarnessRunner:
     """Convenience: a :class:`CodexAppServerHarnessRunner` backed by a microVM."""
     return CodexAppServerHarnessRunner(
-        sandbox_factory=codex_app_server_microvm_factory(launcher, config=config, env=env),
+        sandbox_factory=codex_app_server_microvm_factory(
+            launcher, config=config, env=env, policy=policy
+        ),
         model=model,
         timeout=timeout,
     )
