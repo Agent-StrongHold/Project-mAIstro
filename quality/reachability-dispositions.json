@@ -139,16 +139,6 @@
       ]
     },
     {
-      "id": "sessions-search",
-      "subsystem": "Sessions",
-      "disposition": "CONNECT",
-      "rationale": "ADR-048 session search with no route. Under ADR-082226-5104 this becomes a pgvector query rather than a separate index.",
-      "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
-      "modules": [
-        "maistro.sessions.search"
-      ]
-    },
-    {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
       "disposition": "CONNECT",

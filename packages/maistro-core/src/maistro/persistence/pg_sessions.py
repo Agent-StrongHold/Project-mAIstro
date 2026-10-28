@@ -84,6 +84,30 @@ class PgSessionStore:
         rows = list(reversed(rows))
         return [{"role": r["role"], "content": r["content"]} for r in rows]
 
+    async def transcript(
+        self,
+        session_id: str,
+        ttl_seconds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Return every retained message, oldest first.
+
+        The full TTL-bounded transcript without the model-context
+        ``max_messages`` truncation ``get_history`` applies — the body
+        ADR-048 session search aggregates over.
+        """
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
+        cutoff = time.time() - ttl
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT role, content FROM sessions
+                   WHERE session_id = $1 AND timestamp > to_timestamp($2)
+                   ORDER BY seq""",
+                session_id,
+                cutoff,
+            )
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
+
     async def append_messages(
         self,
         session_id: str,
