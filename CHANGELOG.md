@@ -619,6 +619,11 @@ or placeholder-only section.
 
 ### Changed
 
+- **Vulture scans have one owner per existing event profile (#1357).** The
+  required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
+  Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,
+  trusted-base semantics, required status names and debt ledgers are unchanged.
+
 - **Quality and SAST checks can be retried independently (#1357).** Each Quality
   obligation and SAST scanner has its own job. The existing required check names
   now reject incomplete or unsuccessful dependency results, preserving branch
