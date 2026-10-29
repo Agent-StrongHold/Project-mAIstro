@@ -34,6 +34,12 @@ or placeholder-only section.
 
 ### Security
 
+- **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
+  the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
+  session now returns the same 404 as a missing id; provenance-omit-and-admit
+  is gone. Workspace switch clears the prior transcript immediately and Chat
+  Retry re-hydrates after load failures (AC-3/AC-7).
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in
