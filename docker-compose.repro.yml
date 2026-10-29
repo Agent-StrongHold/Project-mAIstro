@@ -1,0 +1,97 @@
+# Isolated Gate-C reproduction stack (docker-compose.repro.yml)
+#
+# Purpose: let any lane reproduce the canonical clean install WITHOUT
+# touching the production fleet. This file is standalone (not an override)
+# and deliberately does NOT reuse the production container names
+# (maistro-*) or ports (8000/8101/5432). On 2026-10-21 a lane stopped the
+# live maistro-* containers to free those ports, leaving the fleet down
+# for ~4h45m (see incident retro + #2250). This file exists so that never
+# happens again.
+#
+# Usage (from any worktree):
+#   export DB_PASSWORD=... LITELLM_MASTER_KEY=...   # any throwaway values
+#   # API_KEYS is required (no committed default — #367 / check-compose-secrets):
+#   #   export API_KEYS='["repro:throwaway"]'   # principal:secret format, see #843
+#   docker compose -f docker-compose.repro.yml -p repro-$$ up -d
+#   curl -f -H "Authorization: Bearer repro:throwaway" http://127.0.0.1:8800/health/live
+#   docker compose -f docker-compose.repro.yml -p repro-$$ down -v --remove-orphans
+#
+# NEVER point this stack at the production volumes, network, or names.
+# NEVER `docker stop`/`docker rm` a `maistro-*` container to free ports —
+# use the offsets below (8800/5434/8400) instead. 5434 is chosen because the
+# root stack already publishes 127.0.0.1:5433 (docker-compose.yml), so 5433
+# would collide whenever production is up — the exact scenario this file
+# must support.
+
+services:
+  repro-postgres:
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 1.5
+    pids_limit: 256
+
+    image: pgvector/pgvector:pg18
+    environment:
+      - POSTGRES_DB=maistro
+      - POSTGRES_USER=maistro
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD (throwaway ok)}
+    ports:
+      - "127.0.0.1:5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maistro -d maistro"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  repro-litellm:
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+
+    image: ghcr.io/berriai/litellm@sha256:af8050ea45707c42a0572c5cceaa5cebaa89cee4c5cd0585cf879a529804b898
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      # Same config the production stack mounts; without it the proxy
+      # starts with no model routes and every engine call 404s.
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY (throwaway ok)}
+    ports:
+      - "127.0.0.1:8400:4000"
+
+  repro-engine:
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2.0
+    pids_limit: 512
+
+    build: .
+    image: ${MAISTRO_ENGINE_IMAGE:-repro-engine:local}
+    depends_on:
+      repro-postgres:
+        condition: service_healthy
+    ports:
+      - "${MAISTRO_BIND_HOST:-127.0.0.1}:${REPRO_MAISTRO_PORT:-8800}:8000"
+    environment:
+      - DB_HOST=repro-postgres
+      - DB_PORT=5432
+      - DB_NAME=maistro
+      - DB_USER=maistro
+      - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD (throwaway ok)}
+      - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD (throwaway ok)}@repro-postgres:5432/maistro
+      - LITELLM_BASE_URL=http://repro-litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_URL=http://repro-litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_PROXY_URL=http://repro-litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_API_BASE=http://repro-litellm:4000/v1  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY (throwaway ok)}
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY (throwaway ok)}}
+      # Mandatory startup credentials (_validate_startup fails without them):
+      # the router key is what the engine's Conduit presents to LiteLLM, so it
+      # reuses the master key; auth stays on to mirror the canonical install.
+      - ROUTER_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY (throwaway ok)}
+      - REQUIRE_AUTH=true
+      # Required form only — never a literal or non-empty :- fallback (#367).
+      # Caller supplies a throwaway principal:secret JSON list, e.g.
+      #   API_KEYS='["repro:throwaway"]'
+      - API_KEYS=${API_KEYS:?Set API_KEYS for repro (e.g. ["repro:throwaway"])}

@@ -262,7 +262,7 @@ def test_main_exit_codes_and_output(gate: Any, tmp_path: Path, capsys: Any) -> N
         )
 
     assert gate.main(["--root", str(root)]) == 0
-    assert "OK: 8 supported Compose profiles" in capsys.readouterr().out
+    assert "OK: 9 supported Compose profiles" in capsys.readouterr().out
 
     broken = root / "docker-compose.yml"
     broken.write_text(
