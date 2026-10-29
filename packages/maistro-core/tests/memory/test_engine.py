@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from maistro.memory.store import (
     get_async_session_factory,
@@ -19,17 +20,20 @@ class TestEngine:
     def teardown_method(self) -> None:
         reset_engine_cache()
 
+    @pytest.mark.ac("ADR-011/AC-1")
     def test_get_engine_no_url_returns_none(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "")
         engine = get_engine()
         assert engine is None
 
+    @pytest.mark.ac("ADR-011/AC-3")
     def test_get_engine_idempotent(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "")
         e1 = get_engine()
         e2 = get_engine()
         assert e1 is e2
 
+    @pytest.mark.ac("ADR-011/AC-4")
     def test_reset_cache_clears_singleton(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "")
         e1 = get_engine()
@@ -52,10 +56,11 @@ class TestEngine:
         monkeypatch.setattr("maistro.memory.store.create_async_engine", _boom)
         assert get_engine() is None
 
+    @pytest.mark.ac("ADR-011/AC-2")
     def test_get_engine_success_returns_engine(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://example/db")
         engine = get_engine()
-        assert engine is not None
+        assert isinstance(engine, AsyncEngine)
 
     def test_get_async_session_factory_success(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://example/db")
@@ -68,6 +73,7 @@ class TestEngine:
             async for _ in get_db_session():
                 pass
 
+    @pytest.mark.ac("ADR-011/AC-6")
     async def test_get_db_session_yields_session(self, monkeypatch) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://example/db")
         sessions = []

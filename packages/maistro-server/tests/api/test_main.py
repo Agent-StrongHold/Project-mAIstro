@@ -456,6 +456,7 @@ class TestLifespan:
 
         assert captured["progress_webhook"] is not None
 
+    @pytest.mark.ac("ADR-011/AC-5")
     async def test_lifespan_disposes_engine_on_shutdown(self) -> None:
         test_app = MagicMock()
         test_app.state = MagicMock()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.memory.episodic.ranking import rank, score
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 
@@ -17,6 +19,7 @@ def _mem(memory_id: str, weight: float) -> EpisodicMemory:
     )
 
 
+@pytest.mark.ac("ADR-016/AC-8")
 def test_score_is_sum_of_lexical_and_vector_times_weight() -> None:
     mem = _mem("m1", weight=0.5)
 
@@ -25,6 +28,7 @@ def test_score_is_sum_of_lexical_and_vector_times_weight() -> None:
     assert result == (0.4 + 0.2) * 0.5
 
 
+@pytest.mark.ac("ADR-016/AC-8")
 def test_score_is_zero_for_zero_weight_regardless_of_relevance() -> None:
     mem = _mem("m1", weight=0.0)
 

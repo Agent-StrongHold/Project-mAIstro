@@ -3,8 +3,9 @@ id: ADR-015
 title: Learning type + InMemoryLearningStore
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-013
   - maistro-engine#ADR-014
@@ -15,7 +16,17 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/learnings/test_learning_store.py
+ac-modules:
+  AC-1: maistro.memory.learnings.store
+  AC-2: maistro.memory.learnings.store
+  AC-3: maistro.memory.learnings.store
+  AC-4: maistro.memory.learnings.store
+  AC-5: maistro.memory.learnings.store
+  AC-6: maistro.memory.learnings.store
+  AC-7: maistro.memory.learnings.store
+  AC-8: maistro.memory.learnings.store
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -24,11 +35,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against InMemoryLearningStore and focused learning-store acceptance tests.
 ---
 
 # ADR-015: Learning type + InMemoryLearningStore
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013, ADR-014
@@ -45,14 +59,14 @@ Port `InMemoryLearningStore` into `src/maistro/memory/learnings/store.py`. Key f
 
 ## Acceptance criteria
 
-- [ ] `store()` deduplicates: same tool + same org + ≥50% key overlap → overwrites, does not add
-- [ ] `store()` does NOT dedup across different orgs
-- [ ] `store()` evicts oldest when at capacity
-- [ ] `find_relevant()` returns learnings with matching trigger keys, org-filtered
-- [ ] `find_relevant()` excludes learnings from other orgs
-- [ ] `mark_used()` increments `hit_count` for all provided IDs
-- [ ] `check_auto_promotions()` changes status to "promoted" at threshold
-- [ ] `get_promoted()` only returns status="promoted" entries
+- [x] **AC-1** `store()` deduplicates: same tool + same org + ≥50% key overlap → overwrites, does not add
+- [x] **AC-2** `store()` does NOT dedup across different orgs
+- [x] **AC-3** `store()` evicts oldest when at capacity
+- [x] **AC-4** `find_relevant()` returns learnings with matching trigger keys, org-filtered
+- [x] **AC-5** `find_relevant()` excludes learnings from other orgs
+- [x] **AC-6** `mark_used()` increments `hit_count` for all provided IDs
+- [x] **AC-7** `check_auto_promotions()` changes status to "promoted" at threshold
+- [x] **AC-8** `get_promoted()` only returns status="promoted" entries
 
 ## Test plan
 
@@ -70,3 +84,8 @@ Port `InMemoryLearningStore` into `src/maistro/memory/learnings/store.py`. Key f
 ## Source references
 
 - `stronghold/src/stronghold/memory/learnings/store.py`
+
+
+## 2026-09-28 implementation audit
+
+Verified against the current InMemoryLearningStore and `packages/maistro-core/tests/memory/learnings/test_learning_store.py`. Deduplication, org isolation, bounded eviction, relevance lookup, usage tracking, threshold promotion, and promoted-only retrieval are directly exercised. SPEC-216 carries the same completed behavioral contract but its lifecycle status remains to be reconciled during the spec audit.

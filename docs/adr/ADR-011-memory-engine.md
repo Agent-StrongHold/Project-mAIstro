@@ -3,8 +3,9 @@ id: ADR-011
 title: Memory engine + session factory wiring
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-002
 implements: []
@@ -14,7 +15,16 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_engine.py
+  - packages/maistro-server/tests/api/test_main.py
+ac-modules:
+  AC-1: maistro.memory.store
+  AC-2: maistro.memory.store
+  AC-3: maistro.memory.store
+  AC-4: maistro.memory.store
+  AC-5: maistro_server.main
+  AC-6: maistro.memory.store
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -23,11 +33,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against current memory engine implementation, server lifespan wiring, and focused engine/session tests.
 ---
 
 # ADR-011: Memory engine + session factory wiring
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-002
@@ -56,12 +69,12 @@ def reset_engine_cache() -> None: ...               # test helper, clears lru_ca
 
 ## Acceptance criteria
 
-- [ ] `get_engine()` returns `None` when `DATABASE_URL` unset
-- [ ] `get_engine()` returns an `AsyncEngine` when `DATABASE_URL` is set
-- [ ] `get_engine()` is idempotent (same object returned on repeated calls)
-- [ ] `reset_engine_cache()` clears the cache for test isolation
-- [ ] `main.lifespan` creates engine on startup, disposes on shutdown
-- [ ] `get_db_session()` yields a usable `AsyncSession`
+- [x] **AC-1** `get_engine()` returns `None` when `DATABASE_URL` unset
+- [x] **AC-2** `get_engine()` returns an `AsyncEngine` when `DATABASE_URL` is set
+- [x] **AC-3** `get_engine()` is idempotent (same object returned on repeated calls)
+- [x] **AC-4** `reset_engine_cache()` clears the cache for test isolation
+- [x] **AC-5** `main.lifespan` creates engine on startup, disposes on shutdown
+- [x] **AC-6** `get_db_session()` yields a usable `AsyncSession`
 
 ## Test plan
 
@@ -75,3 +88,8 @@ def reset_engine_cache() -> None: ...               # test helper, clears lru_ca
 
 - `./src/maistro/memory/store.py` (existing)
 - `./src/maistro/config/settings.py` (`DatabaseSettings`)
+
+
+## 2026-09-28 implementation audit
+
+Verified against `packages/maistro-core/src/maistro/memory/store.py`, `packages/maistro-server/src/maistro_server/main.py`, and `packages/maistro-core/tests/memory/test_engine.py`. The engine/session factory is cached and DB-optional, server lifespan initializes and disposes it, cache reset is wired for shutdown/test isolation, and focused tests exercise configured/unconfigured engine creation plus session yielding.

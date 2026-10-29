@@ -3,8 +3,9 @@ id: ADR-017
 title: Outcome + InMemoryOutcomeStore
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-013
   - maistro-engine#ADR-014
@@ -15,7 +16,14 @@ blocks: []
 blocked-by: []
 contracts:
   - boundary
-tests: []
+tests:
+  - packages/maistro-core/tests/memory/test_outcome_store.py
+ac-modules:
+  AC-1: maistro.memory.outcomes
+  AC-2: maistro.memory.outcomes
+  AC-3: maistro.memory.outcomes
+  AC-4: maistro.memory.outcomes
+  AC-5: maistro.memory.outcomes
 layer: Memory
 owners:
   - '@BlakeMatthews-dev'
@@ -24,11 +32,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against InMemoryOutcomeStore and focused outcome-store tests.
 ---
 
 # ADR-017: Outcome + InMemoryOutcomeStore
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013, ADR-014
@@ -45,11 +56,11 @@ Port `InMemoryOutcomeStore` into `src/maistro/memory/outcomes.py`. FIFO eviction
 
 ## Acceptance criteria
 
-- [ ] `record()` stores outcome and returns an integer ID
-- [ ] `record()` evicts oldest when at cap
-- [ ] `get_task_completion_rate()` returns `{total, succeeded, failed, rate, by_model}`
-- [ ] `get_task_completion_rate()` respects the `days` window
-- [ ] `get_task_completion_rate()` is org-filtered when `org_id` provided
+- [x] **AC-1** `record()` stores outcome and returns an integer ID
+- [x] **AC-2** `record()` evicts oldest when at cap
+- [x] **AC-3** `get_task_completion_rate()` returns `{total, succeeded, failed, rate, by_model}`
+- [x] **AC-4** `get_task_completion_rate()` respects the `days` window
+- [x] **AC-5** `get_task_completion_rate()` is org-filtered when `org_id` provided
 
 ## Test plan
 
@@ -64,3 +75,8 @@ Port `InMemoryOutcomeStore` into `src/maistro/memory/outcomes.py`. FIFO eviction
 ## Source references
 
 - `stronghold/src/stronghold/memory/outcomes.py`
+
+
+## 2026-09-28 implementation audit
+
+Verified against `packages/maistro-core/tests/memory/test_outcome_store.py` and the current InMemoryOutcomeStore. Recording, bounded eviction, completion-rate math, model breakdown, time-window filtering, and org isolation are directly exercised. The Outcome domain and store have since expanded with additional telemetry without invalidating these original guarantees.
