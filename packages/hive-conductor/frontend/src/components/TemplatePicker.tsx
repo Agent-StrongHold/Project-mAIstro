@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
-
-type Template = { id: string; name: string; description: string; widget_count: number };
+import type { DashboardDemoSummary } from "../api/entities";
+import { apiGet } from "../lib/api";
 
 export function TemplatePicker({ onSelect, onClose }: { onSelect: (id: string) => void; onClose: () => void }) {
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const [templates, setTemplates] = useState<DashboardDemoSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/v1/dashboard/demos", { credentials: "same-origin" })
-      .then(r => r.json())
-      .then(d => setTemplates(Array.isArray(d) ? d : []))
+    apiGet<DashboardDemoSummary[]>("/v1/dashboard/demos")
+      .then((d) => setTemplates(Array.isArray(d) ? d : []))
       .catch(() => setTemplates([]))
       .finally(() => setLoading(false));
   }, []);
