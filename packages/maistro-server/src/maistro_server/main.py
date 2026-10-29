@@ -34,7 +34,7 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
-from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL, TaskAttemptExecutor
 from maistro.tasks.http_contract import (
     IDEMPOTENCY_KEY_HEADER,
     WORKSPACE_ID_HEADER,
@@ -45,6 +45,10 @@ from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
+from maistro_server.abandoned_attempt_recovery import (
+    start_abandoned_attempt_recovery,
+    stop_abandoned_attempt_recovery,
+)
 from maistro_server.api import (
     a2a,
     canvas,
@@ -646,9 +650,13 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).
-        attempts=TaskAttemptExecutor(run_store),
+        # The TTL is collectable because this lifespan also ticks
+        # `recover_abandoned_attempts` (#232). Without the tick a leased
+        # Attempt whose worker died would stay RUNNING forever.
+        attempts=TaskAttemptExecutor(run_store, lease_ttl=DEFAULT_TASK_LEASE_TTL),
     )
     await _runner.start()
+    start_abandoned_attempt_recovery(container)
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
     # No signal handler is installed here. Uvicorn owns SIGTERM/SIGINT for the
@@ -665,6 +673,9 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Stop the sweep before the runner drains and the spine is dropped, so
+        # a tick cannot reclaim against a store this process is tearing down.
+        await stop_abandoned_attempt_recovery()
         # Graceful shutdown: drain tasks → flush quota snapshots → cleanup.
         # Reached via Uvicorn's SIGTERM/SIGINT handling — the drain is bounded
         # (`SHUTDOWN_DRAIN_TIMEOUT`), tasks the deadline cancels are marked
