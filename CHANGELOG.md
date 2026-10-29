@@ -30,7 +30,7 @@ or placeholder-only section.
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
   `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
-  another product commit.
+  another product commit. (#2359)
 
 ### Security
 
