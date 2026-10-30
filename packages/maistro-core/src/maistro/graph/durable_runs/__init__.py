@@ -49,7 +49,7 @@ from .legacy_archive import (
     LegacyRunNotResumable,
 )
 from .protocol import DurableRunStore, RecoveryInfrastructureError
-from .recovery import recover_queued_graph_runs, resume_due_graph_runs
+from .recovery import poll_external_results, recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .time_travel import (
     GraphStateEpoch,
@@ -97,6 +97,7 @@ __all__ = [
     "expire_hitl_pauses",
     "pending_hitl_node_ids",
     "pending_hitl_records",
+    "poll_external_results",
     "recover_queued_graph_runs",
     "resume_due_graph_runs",
     "resume_durable_graph",
