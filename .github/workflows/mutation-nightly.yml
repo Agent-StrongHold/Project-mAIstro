@@ -106,7 +106,7 @@ jobs:
       # restored checkpoint against the live source/test hashes and the exact
       # commit, so a stale hit is rejected rather than trusted.
       - name: Restore mutation checkpoints
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: mutation-checkpoints
           key: mutation-checkpoints-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
