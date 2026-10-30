@@ -24,12 +24,16 @@ permissions:
   contents: read
 
 on:
+  # No `paths:` filter. "Mutation gate (changed critical lines)" is a required
+  # check for every pull request (#262 AC-2), and a check that cannot report on
+  # a branch must not be required there (docs/ci/REQUIRED-CHECKS.md). A
+  # paths-filtered trigger left PRs that touch no listed path with no check run
+  # at all, so the gates-ran publisher waited forever for execution evidence
+  # that could never exist and the merge queue read the pending aggregate as
+  # "commit status not successful". The job below is self-scoping: it computes
+  # critical ∩ changed and exits green when nothing mutation-critical changed,
+  # so firing on every PR adds evidence, never a new failure mode.
   pull_request:
-    paths:
-      - 'packages/**/*.py'
-      - 'quality/mutation-critical-files.json'
-      - 'quality/mutation-baseline.json'
-      - '.github/workflows/mutation.yml'
   workflow_dispatch:
 
 concurrency:

@@ -61,6 +61,18 @@ or placeholder-only section.
 
 ### Added
 
+- **Acceptance-based repository delivery planner (#1629).** New read-only
+  `python tools/plan_delivery.py` command (standard library only) turns a
+  reviewed JSON snapshot into a dispatch-ready execution plan: it credits only
+  complete, reviewed, exact-base acceptance evidence, rejects missing
+  dependencies, cycles, and duplicate proof/JSON keys, keeps closed-with-
+  residual issues blocked for reconciliation, reuses existing owners, protects
+  paths and shared interfaces, and bounds new work by active reservations plus
+  WIP. Refresh/handoff procedure in `.claude/skills/delivery-plan/SKILL.md`;
+  seed snapshot in `docs/planning/delivery-seed-2026-09-27.json`. Development
+  tooling only — no product Goal/Backlog/Run authority and no issue closes
+  from it.
+
 - **Extension attribution evidence: identity, version, publisher, and provenance
   through canonical telemetry (#976).** `maistro.extensions` now ships the
   version-tagged `ExtensionAttribution` payload — the exact extension name,
@@ -84,7 +96,6 @@ or placeholder-only section.
   gallery adapter package proves the chain end to end: its manifest id,
   version, publisher and the digests of the manifest and the wheel it
   publishes travel with one governed call into the terminal audit event.
-
 - **Workspace Approvals projection over the existing capability + HITL APIs
   (#2278, Parity P-1).** New `/approvals` page lists
   `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts
