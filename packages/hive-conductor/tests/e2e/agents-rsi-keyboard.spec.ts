@@ -1,16 +1,10 @@
 /**
- * Agent builder, intent routing and RSI Stop, keyboard only (#370).
+ * RSI Stop keyboard contract (#370), plus confirmation that /agents no longer
+ * hosts the retired Agents builder (#2273 — page deleted; URL redirects).
  *
- * Each of these was a click-only generic element: the builder's strategy
- * cards were <div onClick>, the Intent Map's agent cell was a <td onClick>,
- * and the Stop control for a running RSI run was a <span onClick> nested
- * inside the run row's <button> — invalid nested-interactive markup and a
- * safety control no keyboard could reach. Every step below is driven by key
- * presses; nothing is clicked.
- *
- * The roster and every /v1/rsi/* call are intercepted so the journeys do not
- * depend on a model provider or an RSI worker; the Stop POST is intercepted
- * and asserted, not sent.
+ * The Agent builder / Intent Map keyboard journeys lived on Agents.tsx and
+ * left with that module. RSI Stop remains here because it is still a shipped
+ * surface (#373 gates it behind PermissionBoundary("rsi.execute")).
  */
 
 import AxeBuilder from "@axe-core/playwright";
@@ -30,25 +24,6 @@ let page: Page;
 let rsiContext: BrowserContext;
 let rsiPage: Page;
 
-const AGENTS = [
-  { name: "Researcher", model: "gemini-3.5-pro" },
-  { name: "Coder", model: "claude-3.5-sonnet" },
-].map((a, i) => ({
-  id: `agent-${i}`,
-  name: a.name,
-  description: "",
-  model: a.model,
-  status: "idle",
-  capabilities: [],
-  skills: [],
-  config: { strategy: "react" },
-  tasks_completed: 0,
-  avg_response_time_ms: 0,
-  current_mission: null,
-  last_active: null,
-  created_at: "2026-09-26T00:00:00Z",
-}));
-
 const RUN_ID = "run-kbd-370";
 
 test.beforeAll(async ({ browser }) => {
@@ -57,11 +32,6 @@ test.beforeAll(async ({ browser }) => {
   await setupIfNeeded(page);
   await loginAsPM(page);
   await page.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
-
-  await page.route("**/v1/agents*", async (route) => {
-    if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({ json: AGENTS });
-  });
 });
 
 test.afterAll(async () => {
@@ -77,84 +47,13 @@ async function scanMain(p: Page) {
   expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(", ")}`)).toEqual([]);
 }
 
-test("the builder's strategy is a radio group operated with arrow keys", async () => {
+test("/agents redirects to Capabilities — Agents builder module is not revived (#2273)", async () => {
   await page.goto("/agents", { waitUntil: "domcontentloaded" });
-  const builderTab = page.getByRole("button", { name: "Builder", exact: true });
-  await expect(builderTab).toBeVisible({ timeout: 15000 });
-  await builderTab.focus();
-  await page.keyboard.press("Enter");
-
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "Intent Map", exact: true })).toBeFocused();
-  await page.keyboard.press("Tab");
-  const describe = page.getByRole("textbox");
-  await expect(describe).toBeFocused();
-  await page.keyboard.type("Summarise the week's incidents");
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: /Next/ })).toBeFocused();
-  await page.keyboard.press("Enter");
-
-  const group = page.getByRole("radiogroup", { name: "Choose a strategy" });
-  await expect(group).toBeVisible();
-  const react = group.getByRole("radio", { name: "ReAct" });
-  const plan = group.getByRole("radio", { name: "Plan & Execute" });
-  await expect(react).toBeChecked();
-  await expect(react).toHaveAccessibleDescription(/Reason-Act-Observe/);
-
-  // Focus is not lost when the step it was on unmounts: the next Tab lands
-  // on the checked strategy.
-  await page.keyboard.press("Tab");
-  await expect(react).toBeFocused();
-  await page.keyboard.press("ArrowDown");
-  await expect(plan).toBeChecked();
-  await expect(plan).toBeFocused();
-  await expect(react).not.toBeChecked();
-
-  await scanMain(page);
-
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: /Back/ })).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: /Next/ })).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.getByText("Select model", { exact: true })).toBeVisible();
-});
-
-test("intent routing is edited through a disclosure button and Escape returns focus", async () => {
-  await page.goto("/agents", { waitUntil: "domcontentloaded" });
-  const mapTab = page.getByRole("button", { name: "Intent Map", exact: true });
-  await expect(mapTab).toBeVisible({ timeout: 15000 });
-  // The select only offers the roster once it has loaded; before that its one
-  // option is the row's current agent and ArrowDown would change nothing.
-  await expect(page.getByText("Coder", { exact: true })).toBeVisible();
-  await mapTab.focus();
-  await page.keyboard.press("Enter");
-
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: /^Edit routing for tool_dispatch/ })).toBeFocused();
-  await page.keyboard.press("Tab");
-  const edit = page.getByRole("button", { name: /^Edit routing for research/ });
-  await expect(edit).toBeFocused();
-  await expect(edit).toHaveAttribute("aria-expanded", "false");
-
-  await page.keyboard.press("Enter");
-  await expect(edit).toHaveAttribute("aria-expanded", "true");
-  const select = page.getByRole("combobox", { name: "Agent for research" });
-  await expect(select).toBeFocused();
-  await expect(select).toHaveValue("Researcher");
-
-  await page.keyboard.press("ArrowDown");
-  await expect(select).toHaveValue("Coder");
-
-  await scanMain(page);
-
-  await page.keyboard.press("Escape");
-  await expect(select).toHaveCount(0);
-  await expect(edit).toBeFocused();
-  await expect(edit).toHaveAttribute("aria-expanded", "false");
-  await expect(edit).toHaveAccessibleName("Edit routing for research: Coder");
-  const row = page.getByRole("row").filter({ has: edit });
-  await expect(row).toContainText("claude-3.5-sonnet");
+  await page.waitForURL("**/capabilities");
+  await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "The Hive", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Builder", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Intent Map", exact: true })).toHaveCount(0);
 });
 
 test("a running RSI run's Stop is its own button and Enter sends the stop", async ({ browser }) => {
