@@ -7,9 +7,20 @@
       "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
       "recorded": "2026-10-22",
       "recorded_in": "#1152",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Since #2304 this pin is the Conductor image's pybuild (identity-contract) stage and the root engine image; the Conductor runtime OS layer moved to the 3.15.0-slim-bookworm row below.",
       "used_by": [
         "Dockerfile",
+        "packages/hive-conductor/Dockerfile"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.15.0-slim-bookworm",
+      "digest": "sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d",
+      "recorded": "2026-10-26",
+      "recorded_in": "#2304",
+      "note": "Runtime OS layer of the Conductor image (#2304): the runtime-apt stage and the final runtime build on the CPython 3.15.0 image build so Debian security-patch freshness of the OS layer moves independently of the interpreter contract. The app itself still runs on the registered CPython 3.13.16 build: pybuild keeps the 3.13.16 pin (coincurve 21.0.0 publishes cp313 wheels only; the build smoke asserts (3, 13, 16) and the identity distribution pins), and the final stage grafts pybuild's exact CPython 3.13.16 installation (binary + libpython + stdlib) so the copied venv's interpreter symlinks resolve without a managed download. Both bases are Debian 12 (bookworm), so the grafted binary runs against the glibc it was built against. The tag's manifest list was verified to resolve to this digest on 2026-10-26, and the built image's identity smoke, namespace prune and live health endpoint were exercised locally.",
+      "used_by": [
         "packages/hive-conductor/Dockerfile"
       ]
     },
