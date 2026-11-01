@@ -52,7 +52,6 @@ owners:
 
 # SPEC-100126-a9c4: Canonical promotion contract (M4-A9)
 
-- **Status:** AC Defined
 - **Date:** 2026-10-01
 - **ADR:** `ADR-100126-a9c4`
 - **Technical Area:** Governed promotion — prompts, skills, templates, policies, routing/harness configuration, authorized code

@@ -38,7 +38,6 @@ history:
 
 # ADR-105: Third-party provider adapter SDK (M9-E1, #961)
 
-- **Status:** Accepted
 - **Date:** 2026-10-05
 - **Deciders:** MAIstro maintainers
 - **Technical Area:** Capabilities, model providers, extension surface

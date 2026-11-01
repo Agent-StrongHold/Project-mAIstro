@@ -71,7 +71,6 @@ history:
 
 # ADR-064: Comprehensive Secret Redaction
 
-**Status:** Accepted
 **Date:** 2026-05-20
 **Tranche:** T3
 **Depends on:** IMP-050

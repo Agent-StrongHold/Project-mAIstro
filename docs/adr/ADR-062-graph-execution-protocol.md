@@ -26,7 +26,6 @@ history:
 
 # ADR-062: Graph Execution Protocol
 
-**Status:** Accepted
 **Date:** 2026-05-19
 **Tranche:** T4
 **Depends on:** IMP-001 (error classifier, `maistro/resilience/classifier.py`)
