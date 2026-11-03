@@ -1,0 +1,13 @@
+{
+  "pack_id": "interactive",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["builders", "foreign_harness"],
+  "artifact_kinds": ["loop", "dialogue", "failure-recovery"],
+  "fence_points": ["rubric-lock", "loop-accept"],
+  "rubric_dimensions": [
+    {"id": "loop-clarity", "label": "Loop clarity"},
+    {"id": "failure-recovery", "label": "Failure recovery"},
+    {"id": "conversation-contract", "label": "Conversation contract"}
+  ]
+}
