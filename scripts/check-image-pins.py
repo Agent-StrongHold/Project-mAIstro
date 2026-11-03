@@ -66,6 +66,11 @@ FROM_RE = re.compile(
     r"^\s*FROM\s+(?:(?:--\S+)\s+)*(?P<ref>\S+)(?:\s+AS\s+(?P<alias>\S+))?",
     re.IGNORECASE,
 )
+#: A BuildKit heredoc marker opening on an instruction line: `RUN <<'PY'`,
+#: `COPY <<-EOF /dest`, `RUN <<EOF <<JSON`. The leading `-` (tab-strip form)
+#: and optional quotes around the delimiter are each optional; the delimiter
+#: is case-sensitive, unlike Dockerfile keywords.
+HEREDOC_OPEN_RE = re.compile(r"<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 #: `ARG NAME[=default]` -- the default value is optional.
 ARG_RE = re.compile(
     r"^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<value>\S+))?", re.IGNORECASE
@@ -145,8 +150,25 @@ class DockerfileRefs:
         stages: set[str] = set()
         stage_count = 0
         arg_defaults: dict[str, str] = {}
+        # Delimiters of heredoc bodies currently open, innermost last: the
+        # (delimiter, strip-leading-tabs) pair from each `<<[-]DELIM` marker.
+        open_heredocs: list[tuple[str, bool]] = []
         for lineno, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
             line = raw.strip()
+            if open_heredocs:
+                # Inside a heredoc body: script/config content passed to the
+                # instruction's command. Docker never parses Dockerfile
+                # grammar there -- a body line reading `from datetime import`
+                # or even `FROM anything` is data, not an image reference --
+                # so body lines are skipped wholesale. Skipping cannot hide a
+                # real base: only the instruction line itself can open a
+                # heredoc, and it is parsed as an instruction below/before.
+                # `<<-` bodies terminate on a delimiter indented with tabs.
+                delim, strip_tabs = open_heredocs[-1]
+                candidate = line.lstrip("\t") if strip_tabs else line
+                if candidate == delim:
+                    open_heredocs.pop()
+                continue
             if not line or line.startswith("#"):
                 continue
             if self._record_arg(line, arg_defaults):
@@ -156,8 +178,14 @@ class DockerfileRefs:
                 stage_count = self._record_from(
                     from_match, lineno, stages, stage_count, arg_defaults
                 )
-                continue
-            self._record_copy_from(line, lineno, stages, stage_count, arg_defaults)
+            else:
+                self._record_copy_from(line, lineno, stages, stage_count, arg_defaults)
+            if "<<" in line:
+                # Heredoc markers sit on the instruction line; their bodies
+                # start on the next line. Multiple markers take sequential
+                # bodies, innermost-opened closes first.
+                for marker in HEREDOC_OPEN_RE.finditer(line):
+                    open_heredocs.append((marker.group(3), marker.group(1) == "-"))
         return self
 
     @staticmethod

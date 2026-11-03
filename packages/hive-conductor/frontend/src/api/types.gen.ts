@@ -7200,6 +7200,11 @@ export interface components {
             };
             /** Ready */
             ready: boolean;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
         };
         /** RegionPinBody */
         RegionPinBody: {
