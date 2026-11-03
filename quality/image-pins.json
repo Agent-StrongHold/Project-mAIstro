@@ -51,11 +51,11 @@
     },
     {
       "image": "node",
-      "tag": "22-alpine",
-      "digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Node 22.x line as of the recording date; frontend build stage only.",
+      "tag": "26-alpine",
+      "digest": "sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797",
+      "recorded": "2026-10-25",
+      "recorded_in": "#2120",
+      "note": "Node 26.x line (dependabot bump from 22-alpine in #2120, superseding the closed 25-alpine bump #1775). Frontend build stage only. Dependabot index pin verified against Docker Hub on 2026-10-25: the tag resolves to this OCI image index (4 platform manifests, linux/amd64 present).",
       "used_by": [
         "packages/hive-conductor/Dockerfile"
       ]
