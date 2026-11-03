@@ -18,16 +18,16 @@ Sources of truth:
 
 Six retained shipped surfaces had no entry point anywhere in the app
 (`/schedules`, `/messages`, `/quotas`, `/containers`, `/cli`, `/audit`). They
-now have `fullNav` entries. `/optimization-inbox` became a redirect to the
-canonical `/optimizer` so an alias hit resolves to the one nav-linked
-destination instead of rendering a second active-state-less copy of the page.
-The legacy pages scheduled for replacement by Workspace projections were
-deliberately **not** promoted (per §9 and the issue boundary); they are
-recorded below as URL-only with their owning issues.
+received `fullNav` entries under #1417. **#1049 MERGE** later removed Messages
+and Optimizer from primary nav and redirects `/messages`, `/optimizer`, and
+`/optimization-inbox` to `/attention` so bookmarks cannot revive the deleted
+MessageBoard / OptimizationInbox modules. The remaining legacy pages scheduled
+for replacement by Workspace projections stay URL-only with their owning
+issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-23 destinations, each reachable from both the desktop icon rail and the
+21 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
@@ -37,7 +37,7 @@ narrow-screen drawer (asserted by
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
 | `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
-| `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; API requires `dags.write`) | #1049 |
+| `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; MERGE MessageBoard + OptimizationInbox; API requires `dags.write`) | #1049 |
 | `/approvals` | Approvals | Approvals | KEEP — Parity P-1 projection over capability + HITL APIs | #2278 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
@@ -46,8 +46,6 @@ narrow-screen drawer (asserted by
 | `/missions` | Missions | Missions | MERGE → Workspace backlog (DELETE v1.0) | #82 (M3-C) |
 | `/backlog` | Backlog | Backlog | Workspace backlog (canonical) | #82 |
 | `/capabilities` | Capabilities | Capabilities | KEEP — unified surface (#2273 / `conductor-407`) | #2273 |
-| `/optimizer` | Optimization Inbox | Optimizer | MERGE → Attention/Waiting | #1049 (M3-E) |
-| `/messages` | Message Board | Messages | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/quotas` | Quotas & Stats | Quotas | PROJECT → Invocation usage | #718 (M3) |
 | `/knowledge` | KnowledgeBase | Inner Temple | DELETE v1.0 → Workspace/user memory | #776, #1047 (M3-E) |
 | `/rsi` | RSI | RSI | PROJECT → Evolve/RSI Run inspection | #51/#50 (M4/M5) |
@@ -57,8 +55,9 @@ narrow-screen drawer (asserted by
 | `/audit` | Audit Log | Audit | PROJECT → core audit store | P0.4 (§5) |
 | `/settings` | Settings | Settings | PROJECT → settings service | #1050 (M3-E) |
 
-`/schedules`, `/messages`, `/quotas`, `/containers`, `/cli` and `/audit` are
-the #1417 additions. Agents / Topology / Integrations left primary nav for
+`/schedules`, `/quotas`, `/containers`, `/cli` and `/audit` remain the #1417
+additions still on primary nav. `/messages` and `/optimizer` MERGEd into
+Attention (#1049). Agents / Topology / Integrations left primary nav for
 Capabilities (#2273); they remain URL-only until deleted.
 
 ## Canonical surfaces with a contextual or parent entry (no primary nav row)
@@ -66,7 +65,7 @@ Capabilities (#2273); they remain URL-only until deleted.
 | Route | Surface | Entry point | Disposition | Owner |
 |---|---|---|---|---|
 | `/profile` | Profile | Drawer user chip (`NavLink` on the signed-in username) | PROJECT → settings service | #1050 |
-| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
+| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Quotas, Audit, Containers, Agents, Missions, MCP, Settings, CLI, Attention) | RETIRE (M3) | cutover plan §5 |
 | `/decks` | Deck Builder | Embedded editor inside Design Studio (deck mode → "Open Deck editor"); the standalone route is the deep link to the same editor | KEEP (own lane) | #286, #773, #95 |
 
 ## Intentionally URL-only surfaces (documented exception)
@@ -104,7 +103,9 @@ One canonical entry per destination; no duplicate menu items.
 | Route | Resolves to | Kind |
 |---|---|---|
 | `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
-| `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
+| `/messages` | `/attention` (#1049 MERGE: MessageBoard deleted) | cutover redirect |
+| `/optimizer` | `/attention` (#1049 MERGE: OptimizationInbox deleted) | cutover redirect |
+| `/optimization-inbox` | `/attention` (#1049: former #1417 alias now follows Optimizer into Attention) | cutover redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
 
 ## Auth / setup routes (outside the shell)
@@ -116,14 +117,15 @@ One canonical entry per destination; no duplicate menu items.
 
 ## Permission contract check
 
-Reading any of the six newly linked pages is authenticated-only: no `GET`
-under `/v1/schedules`, `/v1/messages`, `/v1/quotas`, `/v1/containers`,
-`/v1/cli` or `/v1/audit` carries a permission, so every authenticated
-principal can load every surface. Their *mutations* are scope-gated in
-`backend/middleware/auth.py` (`_PROTECTED_OPS`): schedules take
-`schedules.write`, containers take `containers.control`, audit writes take
-`audit.write` (the app writes audit entries in-process, so the page itself is
-read-only for a principal without it).
+Reading the retained #1417 pages is authenticated-only: no `GET` under
+`/v1/schedules`, `/v1/quotas`, `/v1/containers`, `/v1/cli` or `/v1/audit`
+carries a permission, so every authenticated principal can load every
+surface. `/v1/messages` and `/v1/optimizer` remain as canonical owners
+projected into Attention (#1049); their SPA pages are gone. Mutations stay
+scope-gated in `backend/middleware/auth.py` (`_PROTECTED_OPS`): schedules
+take `schedules.write`, containers take `containers.control`, audit writes
+take `audit.write` (the app writes audit entries in-process, so the page
+itself is read-only for a principal without it).
 
 The shell therefore mirrors the mutation scope on exactly the two entries
 whose pages are wall-to-wall gated forms — Schedules (`schedules.write`) and

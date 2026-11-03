@@ -2,7 +2,7 @@
   "_comment": "Raw fetch and hand-typed frontend entity debt for Workspace cutover P0.3 (#1048). Judged against the trusted merge base; a fixed entry must be deleted here.",
   "metric_definition_version": "1",
   "summary": {
-    "hand_typed": 120,
+    "hand_typed": 114,
     "raw_fetch": 42
   },
   "tolerated": {
@@ -88,17 +88,11 @@
     "hand_typed::packages/hive-conductor/frontend/src/pages/Login.tsx:5:Mode": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Login.tsx:7:RegistrationMode": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Memory.tsx:5:Entry": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:13:MessagePriority": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:15:Message": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/MessageBoard.tsx:27:UnreadCount": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:10:MissionPriority": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:12:Mission": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:39:ThreadMsg": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:63:FilterTab": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Missions.tsx:9:MissionStatus": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/OptimizationInbox.tsx:11:Decision": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/OptimizationInbox.tsx:12:ProposalClass": "local interface/type in pages/ or components/",
-    "hand_typed::packages/hive-conductor/frontend/src/pages/OptimizationInbox.tsx:14:Proposal": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Quotas.tsx:16:PanelEnvelope": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Quotas.tsx:24:ProviderQuota": "local interface/type in pages/ or components/",
     "hand_typed::packages/hive-conductor/frontend/src/pages/Quotas.tsx:38:ProvidersResponse": "local interface/type in pages/ or components/",
