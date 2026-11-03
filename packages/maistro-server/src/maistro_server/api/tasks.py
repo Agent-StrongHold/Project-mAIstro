@@ -27,6 +27,9 @@ from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, Ta
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+#: Use the same retry horizon as chat when canonical Run admission is refused.
+TASK_CONCURRENCY_RETRY_AFTER_S = CHAT_TURN_RETRY_AFTER_S
+
 
 def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
     """Compatibility view of the non-delegated effective owner."""
@@ -112,16 +115,14 @@ async def create_task(
             detail=str(exc),
         ) from exc
     except RunConcurrencyExceeded as exc:
-        # Backpressure, not an admission outage (#1182): the Run store's
-        # governed ceiling is full and the same request admits once a slot
-        # frees. Nothing was admitted, so a 202 receipt here would invent an
-        # execution identity the canonical store refused — and a 500 would
-        # read as an outage. Same answer chat turns get, `Retry-After`
-        # included.
+        # Backpressure, not an admission outage (#1182, #860 F9): the
+        # canonical Run ceiling is full. Nothing was admitted, so return
+        # neither a successful receipt nor a server fault. Keep Retry-After
+        # on the exception; the error handler builds its own Response.
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"too many active runs for this {exc.scope}; retry shortly",
-            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+            detail=f"active root Run ceiling reached for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(TASK_CONCURRENCY_RETRY_AFTER_S)},
         ) from exc
     response.headers["Location"] = f"/tasks/{task.task_id}"
     return TaskCreatedResponse(

@@ -264,6 +264,20 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 **[engine-115] Default compose OTEL → Langfuse — Proposed; `gap-impl` — v1.0**
 - Default `docker compose up` stack wires observability export per [ADR-037](docs/adr/ADR-037-observability-taxonomy.md)
 
+**[engine-116] Cluster-wide rate-limit budget for multi-replica deployments — Accepted; `gap-spec` — v1.0**
+- Soak finding ([#860](https://github.com/Agent-StrongHold/Project-mAIstro/issues/860), parent #89):
+  limiter state is deliberately process-local per #842
+  ([`rate_limit.py`](packages/maistro-server/src/maistro_server/api/rate_limit.py)), so an
+  N-replica deployment enforces N x the configured budget and replica selection (or LB
+  round-robin) mints fresh allowance. Regression-locked:
+  `tests/test_soak_promotion_gates.py::test_replica_selection_has_an_independent_production_allowance`
+  reproduces independent per-replica budgets for authenticated and unauthenticated identities
+- [#860](https://github.com/Agent-StrongHold/Project-mAIstro/issues/860) promotion acceptance
+  requires rate limiting that "cannot be bypassed by replica selection" — unresolved before final
+  promotion. No spec or ADR captures the cluster-wide decision yet (`gap-spec`); candidate
+  mechanism is a coordinated shared store (e.g. the Redis the full stack already runs) behind the
+  existing limiter interface, decided before implementation
+
 ---
 
 ## Conductor variant items (`conductor-NNN`)

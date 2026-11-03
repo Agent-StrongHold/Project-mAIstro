@@ -1,0 +1,144 @@
+# Issue #860 — repair checkpoint (03083eaa)
+
+## Frozen scope
+
+Only issue #860 on `auto-860`, starting at
+`3cb52cf1c0a763349d6bd3e897ba6ca8e49e892e`, base
+`2154f845347c9541016288c760f8da3f5cd2e064`. Initial worktree clean.
+Review surfaces: existing soak runner/profile/promotion tests, relevant ADRs,
+prior failure `/home/dev/maistro/jobs/98a11313167b41a98a420abfda80c292/check-3.log`,
+and explicitly authorized vulture gate/ledger. No other issues or PRs are work items.
+Candidate changes are this report and only evidence-supported repairs on those surfaces.
+
+The dispatch snapshot supplies all ten acceptance criteria. The named prior
+result reports BLOCKED; it is not current validation. No `check-*.log` files
+were present in this job directory at the initial snapshot.
+
+Assumption: this is a writer CI-repair round, not a verifier-only round.
+Do not manufacture exact-RC deployment evidence from local unit tests.
+
+## Results
+
+Exact requested vulture command passed: 1323 reviewed identities / 1323
+findings, zero unclassified and zero never-allowlist findings. No ledger repair
+is supported by this scan. Historical check-3.log is a different failure:
+`test_ensure_schema_fences_ddl_behind_advisory_lock` expected 21 DDL statements
+and observed 24. Reproduction and focused acceptance validation follow.
+
+Read accepted ADR-081626-f383 (canonical lease authority), ADR-085
+(per-principal rate enforcement), current load profile and adjacent promotion
+tests. The profile explicitly calls this a host-process preflight, not an
+exact-RC runner, and lists representative-workload gaps. The replica-selection
+regression asserts separate allowances on two production middleware instances;
+a passing test there is evidence of a limitation, not acceptance success.
+
+Fresh focused pytest: **130 passed, 6 skipped**. Historical schema failure did
+not reproduce; the independent expected DDL list now includes the three
+Gauntlet audit columns (`test_pg_learnings.py:175–177`). Ruff lint and format
+checks passed (3277 files formatted). Deployment claims and execution lifecycle
+gates passed; the latter reports 19 classified / 19 discovered lifecycles.
+No code, tests, ledger, or inventory changes are justified by these results.
+The only changed file is this report. No added tests means no inventory delta.
+
+## Commands executed
+
+Validation commands used 1200-second tool timeouts:
+
+- `uv sync --locked --extra dev`: passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: passed; matches `.github/workflows/quality.yml:1078`.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-core/tests/runs/test_execution_fencing.py packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py -x -q`: 130 passed, 6 skipped. Live PostgreSQL coverage is not established by skipped tests.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: passed.
+- `uv run python scripts/check-deployment-claims.py`: passed (static existence, not live deployment validation).
+- `uv run python scripts/check-execution-lifecycles.py`: passed.
+
+## Architecture and acceptance
+
+Also read accepted ADR-081226-a66b, ADR-082526-b36a and ADR-082826-08f0.
+Later renewal/recovery decisions extend the original lease contract: a live
+lease forbids redispatch; expired work is reclaimed via the canonical lifecycle
+seam. No competing scheduler or authority is introduced. Preserve
+Goal -> Graph -> Run -> NodeRun -> Attempt. Admission counts cannot substitute
+for physical-work uniqueness or Goal desired-state reconciliation.
+
+| Criterion | Fresh evidence / residual gap |
+| --- | --- |
+| Representative RC profile | UNVERIFIED. Existing profile explicitly omits concurrent users/Workspaces, fan-out, successful model/tool work and Design/Canvas/background activity; exclusions need selected-RC justification. |
+| At least two deployed replicas | UNVERIFIED. Executed ASGI instances are not deployed application replicas. |
+| Sustained saturation, queue growth, lease reclaim, retry/backoff, leaks, shutdown | UNVERIFIED. Focused tests take seconds, not a sustained observation window. |
+| Schedule/task/Run/Attempt uniqueness and Goal reconciliation | UNVERIFIED under load. Fencing/recovery tests pass at bounded canonical seams; no deployed physical-work counter or sustained Goal workload. |
+| Non-bypassable rate/security/degraded behavior | NOT SATISFIED at the middleware seam: `tests/test_soak_promotion_gates.py:439` freshly passes by observing `[200,200,429]` independently on both replicas for the same identity. `rate_limit.py:93` allocates a local limiter; `main.py:648` installs that middleware in production. Full deployed security/degraded behavior UNVERIFIED. |
+| Full telemetry and explicit pass/fail thresholds | UNVERIFIED. No fresh production PostgreSQL latency/locks, application-loop, worker/RSS/descriptor/queue/error time series. Driver-loop sampling is not application-loop measurement. |
+| Kill/restart during active work with drain/fencing/recovery | UNVERIFIED. Bounded recovery tests pass, but no deployed active Attempt was killed under sustained traffic. |
+| Long exact-RC soak | UNVERIFIED. `scripts/soak/run_soak.py:744` always marks host preflight as not exact-RC; executed CLI regression at `tests/test_soak_promotion_gates.py:103` fails closed even for synthetic four-hour evidence. No immutable RC/configuration designated in this assignment. |
+| Findings classified to earliest broken invariant | UNVERIFIED for completeness without load. Existing `BACKLOG.md:267` engine-116 tracks the shared-budget gap. No GitHub mutations. |
+| Human/machine evidence tied to exact image/package/commit/config | UNVERIFIED. This report is source-head validation, not a hash-bound production soak pack. |
+
+## Handoff
+
+**BLOCKED** for issue acceptance. The supplied CI failure is not reproducible;
+the exact-debt ledger already matches the observed scan. Altering expectations,
+weakening promotion gates or banking guessed identities would not fix #860.
+
+Next requires an immutable RC/configuration, a representative production-path
+profile and a minimum four-hour production soak with full telemetry and active
+work recovery evidence. The cross-replica budget gap remains a prerequisite;
+repair it through the existing limiter/identity seam, not a new auth path.
+Another host-preflight run cannot satisfy this requirement.
+
+Progress: checked 1 issue, acceptance-complete 0, skipped 0, validation errors 0.
+This commit is a local handoff only, not integration approval or issue closure.
+
+## Fresh revalidation — job 44a74ef6
+
+Frozen item: #860 only, branch `auto-860`, clean starting HEAD
+`e2b7d34ea4c579d7938016c14713db481026c2ed`, dispatch base
+`2154f845347c9541016288c760f8da3f5cd2e064`. Assumption: writer repair round.
+The only changed file in this round is this existing report; earlier work is
+preserved. No tests were added, so no inventory delta is required.
+
+Inspected the supplied dispatch issue body (all ten criteria), prior result,
+and historical `98a11313167b41a98a420abfda80c292/check-3.log`. No
+`check-*.log` files existed in the current job directory at the initial snapshot.
+The historical failure is a 21-versus-24 DDL assertion, not vulture evidence.
+Its current test independently lists all 24 statements, including the three
+Gauntlet audit columns (`test_pg_learnings.py:175–177`). Production
+`pg_learnings.py:219` holds the transaction/advisory fence around those upgrades.
+Fresh execution did not reproduce the failure; no expectation change is justified.
+
+Commands executed with 1200-second validation timeouts:
+
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`: PASS, 1323 findings / 1323 reviewed identities, zero unclassified or never-allowlist findings. Matches `.github/workflows/quality.yml:1078`. No ledger amendment is supported by this scan. Output: `/tmp/860-44a74-vulture.log`.
+- `uv sync --locked --extra dev`: PASS, 256 resolved / 214 checked packages.
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py tests/test_soak_promotion_gates.py packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-core/tests/runs/test_execution_fencing.py packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py -x -q`: PASS, **130 passed, 6 skipped in 3.06 s**. Output: `/tmp/860-44a74-pytest.log`. Skips do not establish live PostgreSQL coverage.
+- `uv run ruff check .`: PASS.
+- `uv run ruff format --check .`: PASS, 3277 files.
+- `uv run python scripts/check-deployment-claims.py`: PASS; static component existence only.
+- `uv run python scripts/check-execution-lifecycles.py`: PASS, 19 classified / 19 discovered.
+
+Read repository instructions and accepted ADR-081626-f383, ADR-085,
+ADR-082526-b36a and ADR-082826-08f0. The later recovery contracts extend
+lease fencing: live work cannot be redispatched; reclaim uses canonical
+lifecycle authority. Nothing here replaces Goal -> Graph -> Run -> NodeRun ->
+Attempt or introduces another scheduler, authorization path or event authority.
+
+Acceptance recheck (not inherited verification):
+
+1. **Representative RC profile: UNVERIFIED.** Read `m3a-load-profile.md`; it explicitly lacks concurrent users/Workspaces, graph fan-out, successful model/tool work, Design/Canvas and sustained Goal reconciliation. Selected-RC applicability is not established.
+2. **Two deployed replicas: UNVERIFIED.** Executed middleware instances are ASGI fixtures, not a deployment of the promoted artifact.
+3. **Sustained saturation/reclaim/retry/leak observation: UNVERIFIED.** Three seconds of focused tests are not a sustained workload.
+4. **Physical-work uniqueness and Goal reconciliation: UNVERIFIED under load.** Canonical fencing/recovery regressions pass, but admission identities cannot prove physical-work uniqueness across deployed replicas.
+5. **Replica-selection non-bypass/security/degradation: NOT SATISFIED at the middleware seam.** Fresh `test_replica_selection_has_an_independent_production_allowance` execution observes `[200, 200, 429]` on each of two instances for the same identity. `rate_limit.py:93` creates an `InMemoryRateLimiter` per instance; `main.py:648` installs this middleware in production. Full deployed security/degraded behavior remains UNVERIFIED. The existing `BACKLOG.md:267` engine-116 item tracks the cluster-wide budget gap; no separate identity or authorization path should be invented here.
+6. **Full telemetry with thresholds: UNVERIFIED.** No fresh application event-loop, PostgreSQL query/lock, worker, RSS, descriptor, queue and error/timeout time series was captured. Driver-loop lag is not application-loop latency.
+7. **Active-work kill/restart/drain/fencing/recovery: UNVERIFIED under load.** Bounded recovery tests do not demonstrate this deployed scenario.
+8. **Long exact-RC soak: UNVERIFIED.** Inspected `run_soak.py:744`: host preflight always emits `exact_rc_artifact.ok=false`. Executed CLI regression rejects synthetic four-hour preflight evidence. No immutable RC artifact/configuration is designated by this assignment; another emulator run cannot substitute.
+9. **Findings classified at earliest invariant: UNVERIFIED for completeness.** The budget gap is already classified locally, but no new sustained-load investigation occurred. No GitHub mutations.
+10. **Human/machine evidence bound to promoted hashes: UNVERIFIED.** This is source-head validation, not a production soak evidence pack.
+
+Disposition: **BLOCKED**, not a CI-ledger repair opportunity. No failing gate
+was reproduced and no speculative production repair was made. Next requires
+selected immutable RC/configuration, the cluster-wide budget prerequisite,
+a representative production-path workload and at least four hours of exact-RC
+telemetry with active-work failure/recovery evidence. Do not dispatch another
+identical ledger repair without a new failing scan or changed prerequisites.
+Progress: checked 1 item, acceptance-complete 0, skipped 0, validation errors 0.
