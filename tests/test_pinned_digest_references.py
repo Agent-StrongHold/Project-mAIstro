@@ -31,6 +31,8 @@ PINNED_REF = re.compile(r"\b([a-z0-9._/-]+):([A-Za-z0-9._-]+)@sha256:([0-9a-f]{6
 # together with the refresh checklist that must keep it registered.
 REFERENCE_SURFACES = (
     (Path("scripts/smoke-engine-canvas.sh"), "engine canvas smoke control image"),
+    (Path("scripts/smoke-research-chromium.sh"), "research chromium smoke control image"),
+    (Path("scripts/smoke-rsi-runner-imports.sh"), "rsi-runner import smoke control image"),
 )
 
 
