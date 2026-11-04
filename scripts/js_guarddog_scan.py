@@ -44,8 +44,17 @@ def scan_direct_dependencies(
         for name, version in sorted(deps.items()):
             try:
                 completed = subprocess.run(
-                    [guarddog, "npm", "scan", name, "-v", version,
-                     "--no-sandbox", "--output-format", "json"],
+                    [
+                        guarddog,
+                        "npm",
+                        "scan",
+                        name,
+                        "-v",
+                        version,
+                        "--no-sandbox",
+                        "--output-format",
+                        "json",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=timeout,
@@ -91,7 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         surface, name, version = line.split()
         direct_deps[surface][name] = version
 
-    written = scan_direct_dependencies(dict(direct_deps), output_dir=args.output_dir, guarddog=args.guarddog)
+    written = scan_direct_dependencies(
+        dict(direct_deps), output_dir=args.output_dir, guarddog=args.guarddog
+    )
     for surface, path in sorted(written.items()):
         print(f"{surface} -> {path}")
     return 0
