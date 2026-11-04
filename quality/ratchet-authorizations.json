@@ -590,6 +590,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#364",
       "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_layer'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2311",
+      "reason": "FastAPI DELETE /{canvas_id}/layers/{layer_id} route handler on the transitional legacy /api/canvas surface (ADR-045 explicitly transitional). Deleting canvas/tool.py (#2311 RETIRE) removed the only other tree-wide definition-and-call of the name delete_layer, so vulture's name-based scan stopped crediting the route handler. Same blind-spot class as the sibling handlers (composite_canvas, delete_canvas, list_layer_jobs, start_generate) already banked under the fastapi-route-handler rule: decorated route handlers are reached through FastAPI dispatch, not a call site vulture can see."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'perspective'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2311",
+      "reason": "WorldStyle.perspective is a declarative pydantic model field (flat|one_point|two_point|isometric, ADR-039 world-style vocabulary). Deleting canvas/tool.py (#2311 RETIRE) removed the only tree-wide reader of the name, so vulture's name-based scan stopped crediting the field. Same declarative-field class as the pydantic-declarative-field rule. Follow-up filed to serialize perspective into asset-path world-style prompts so the field becomes honestly consumed rather than banked."
     }
   },
   "model-egress": {
