@@ -1173,6 +1173,108 @@ async def test_wakeup_never_steals_a_due_continuation_owned_elsewhere(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_wakeup_crosses_an_interleaved_foreign_prefix_longer_than_one_ticks_bound(
+    monkeypatch,
+) -> None:
+    """The due-path half of #1098, at the seam the issue names.
+
+    Ownership classes are interleaved (foreign/owned/foreign/owned...), then a
+    run of foreign-owned due continuations longer than one tick's inspection
+    ceiling sits ahead of the last owned one. A tick that filters ownership
+    after one unchanging globally bounded page never reaches it -- the exact
+    defect #1098 was filed against. A tick whose cursor advances per row and
+    resumes where the last one stopped reaches every owned continuation in a
+    bounded number of ticks and never attempts a foreign one.
+    """
+    from maistro.graph.durable_runs.fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation
+
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    records: list[object] = []
+    order: list[tuple[str, str]] = []
+
+    def _add(run_id: str, source: str) -> None:
+        run = _queued_run(run_id, source=source).model_copy(update={"status": RunStatus.WAITING})
+        # Strictly increasing resume_at in insertion order -- sub-second
+        # spacing so every row, including the last, is already due at `now`
+        # -- so the store's keyset ordering is exactly the scenario's ordering.
+        records.append(
+            _due_record(
+                run,
+                resume_at=now - timedelta(hours=1) + timedelta(microseconds=len(order)),
+            )
+        )
+        order.append((run_id, source))
+
+    # Interleaved ownership classes first (#1098's regression bullet): the
+    # cursor must advance past each foreign row to reach the owned one behind
+    # it, per row, not per page.
+    for index in range(3):
+        _add(f"foreign-interleaved-{index}", "some_other_consumer")
+        _add(f"owned-interleaved-{index}", "owned")
+    # Then more foreign-owned due continuations than one tick may inspect,
+    # ahead of the one owned continuation this consumer must still reach.
+    for index in range(DEFAULT_MAX_INSPECTED):
+        _add(f"foreign-prefix-{index:04d}", "some_other_consumer")
+    _add("owned-behind-the-prefix", "owned")
+
+    store = _Store(*records)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        # A resumed continuation settles; later ticks must not re-attempt it.
+        current = store.records[run_id]
+        store.records[run_id] = SimpleNamespace(
+            run_id=run_id,
+            run=current.run.model_copy(update={"status": RunStatus.COMPLETED}),
+            resume_at=current.resume_at,
+        )
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+    scan: ScanContinuation[tuple[str, str]] = ScanContinuation()
+
+    def _tick() -> int:
+        return recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+            now=now,
+            limit=1,
+            scan=scan,
+        )
+
+    # Three interleaved owned continuations, one per bounded tick, each
+    # reached only by walking past the foreign row ahead of it.
+    assert await _tick() == 1
+    assert calls == ["owned-interleaved-0"]
+    assert await _tick() == 1
+    assert calls == ["owned-interleaved-0", "owned-interleaved-1"]
+    assert await _tick() == 1
+    assert calls == [
+        "owned-interleaved-0",
+        "owned-interleaved-1",
+        "owned-interleaved-2",
+    ]
+
+    # The next tick spends its whole inspection ceiling on the foreign prefix
+    # and stops mid-store; the continuation must carry that position forward,
+    # not reset to the top and re-read the same prefix forever.
+    assert await _tick() == 0
+    assert scan.resume_after is not None, "the tick stopped at its bound mid-store"
+
+    # The tick after crosses the rest of the prefix and reaches the owned
+    # continuation behind it: bounded ticks, whatever the prefix length.
+    assert await _tick() == 1
+    assert calls[-1] == "owned-behind-the-prefix"
+
+    # No foreign continuation was ever attempted, interleaved or prefix: the
+    # ownership guard held at every position the walk inspected.
+    assert [run_id for run_id in calls if run_id.startswith("foreign-")] == []
+
+
+@pytest.mark.asyncio
 async def test_wakeup_requires_exactly_one_resolver_shape() -> None:
     """Both shapes means the caller cannot say which one wins; neither means
     the tick has no idea how to execute anything."""
