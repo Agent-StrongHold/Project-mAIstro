@@ -513,6 +513,97 @@ async def test_a_poisoned_due_candidate_does_not_starve_later_candidates(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_a_partially_claimed_poisoned_candidate_stays_recoverable_after_its_claim_expires(
+    monkeypatch, caplog
+) -> None:
+    """The due path's isolation must not strand a partially claimed Run (#1143).
+
+    ``resume_durable_graph`` persists its recovery claim -- ``resume_at``
+    pushed out to the claim TTL -- before anything downstream can fail, so a
+    candidate that fails *after* the claim is no longer "exactly as the scan
+    found it". Unlike the queued path (where a partial claim must raise, or
+    the Run is stranded between two scans), the due path keeps the candidate
+    durably recoverable: the due index still holds it, it is unattemptable
+    until the claim expires, and a later tick retries it. The tick must
+    isolate the failure, keep independent candidates moving, never re-attempt
+    the live claim (no double-resume), and reach the candidate again once the
+    claim has expired -- so repeated ticks can starve nobody, poisoned or not.
+    """
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    claim_ttl = timedelta(seconds=60)
+    poisoned = _record("poisoned", RunStatus.WAITING, now - timedelta(seconds=3))
+    second = _record("second", RunStatus.WAITING, now - timedelta(seconds=2))
+    store = _Store(poisoned, second)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        if run_id == "poisoned":
+            # Stand in for the real seam's claim checkpoint: ``resume_at``
+            # moves out to now + claim TTL (and the Run to RUNNING) before
+            # the candidate-local failure fires.
+            store.records[run_id] = SimpleNamespace(
+                run_id=run_id,
+                run=SimpleNamespace(status=RunStatus.RUNNING),
+                resume_at=now + claim_ttl,
+            )
+            raise RuntimeError("resolver bug after the claim")
+        # Terminal, but still carrying the resume_at the due listing
+        # contract guarantees: eligibility filters it by status, not by a
+        # null cursor key.
+        store.records[run_id] = SimpleNamespace(
+            run_id=run_id,
+            run=SimpleNamespace(status=RunStatus.COMPLETED),
+            resume_at=now - timedelta(seconds=2),
+        )
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    with caplog.at_level("ERROR", logger="maistro.graph.durable_runs.recovery"):
+        count = await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    # Tick 1: the poisoned candidate was attempted, failed after its claim,
+    # and was isolated rather than raised; the independent candidate behind it
+    # still ran, and the failure evidence names the Run and the sanitized cause.
+    assert count == 1
+    assert calls == ["poisoned", "second"]
+    assert "run_id=poisoned" in caplog.text
+    assert "RuntimeError: resolver bug after the claim" in caplog.text
+
+    # Tick 2, same moment: the poisoned candidate's claim is live, so it is
+    # not due and must not be re-attempted; the scan still advances past it.
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 0
+    )
+    assert calls == ["poisoned", "second"]
+
+    # Tick 3, after the claim expires: the poisoned candidate is due again and
+    # is retried -- isolated again on failure, never silently dropped.
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now + claim_ttl + timedelta(seconds=1),
+        )
+        == 0
+    )
+    assert calls == ["poisoned", "second", "poisoned"]
+
+
+@pytest.mark.asyncio
 async def test_a_deliberate_store_failure_aborts_the_tick_rather_than_isolating(
     monkeypatch,
 ) -> None:
