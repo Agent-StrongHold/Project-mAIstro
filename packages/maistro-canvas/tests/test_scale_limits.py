@@ -27,7 +27,6 @@ rejection — never a crash, never a silent acceptance.
 
 from __future__ import annotations
 
-import base64
 import io
 from collections.abc import Iterator
 from typing import Any
@@ -51,7 +50,6 @@ from maistro_canvas.canvas.limits import (
     validate_scale,
 )
 from maistro_canvas.canvas.routes import _make_canvas_router
-from maistro_canvas.canvas.tool import execute_canvas, get_or_create_canvas
 from maistro_canvas.types import (
     CanvasRecord,
     CompositeTimeoutError,
@@ -539,236 +537,6 @@ class TestRouteScaleValidation:
 
 
 # ---------------------------------------------------------------------------
-# Agent tool surface (execute_canvas)
-# ---------------------------------------------------------------------------
-
-
-def _tool_canvas(session: str) -> Any:
-    import maistro_canvas.canvas.tool as tool
-
-    tool._canvases.pop(session, None)
-    canvas = get_or_create_canvas(session, 1024, 1024)
-    img = Image.new("RGBA", (64, 64), RED)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    from maistro_canvas.canvas.tool import Layer
-
-    layer = Layer(
-        id="l1", name="l", layer_type="object", image_data=buf.getvalue(), width=64, height=64
-    )
-    canvas.add_layer(layer)
-    return canvas
-
-
-class TestToolScaleEnforcement:
-    @pytest.mark.asyncio
-    async def test_composite_rejects_demonstrated_payload_explicitly(self) -> None:
-        _tool_canvas("s1")
-        result = await execute_canvas("s1", "composite", layers=[{"layer_id": "l1", "scale": 1e6}])
-        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
-        assert "image_b64" not in result
-
-    @pytest.mark.asyncio
-    async def test_composite_rejects_encoded_string_scale(self) -> None:
-        _tool_canvas("s2")
-        result = await execute_canvas(
-            "s2", "composite", layers=[{"layer_id": "l1", "scale": "1e6"}]
-        )
-        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
-
-    @pytest.mark.asyncio
-    async def test_composite_rejects_nan_inf_and_zero_explicitly(self) -> None:
-        for bad in (float("nan"), float("inf"), float("-inf"), 0.0, -3.0):
-            session = f"s-nan-{abs(hash(bad))}"
-            _tool_canvas(session)
-            result = await execute_canvas(
-                session, "composite", layers=[{"layer_id": "l1", "scale": bad}]
-            )
-            assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE"), bad
-
-    @pytest.mark.asyncio
-    async def test_composite_valid_scale_succeeds(self) -> None:
-        _tool_canvas("s3")
-        result = await execute_canvas("s3", "composite", layers=[{"layer_id": "l1", "scale": 0.5}])
-        assert "error" not in result
-        assert result["image_b64"]
-
-    @pytest.mark.asyncio
-    async def test_composite_rejection_leaves_no_partial_output(self) -> None:
-        """A bad scale in the second spec aborts before ANY transform applies."""
-        canvas = _tool_canvas("s4")
-        result = await execute_canvas(
-            "s4",
-            "composite",
-            layers=[{"layer_id": "l1", "x": 5.0}, {"layer_id": "nope", "scale": 1e6}],
-        )
-        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
-        assert canvas.get_layer("l1").x == 0  # first spec was NOT applied
-
-    @pytest.mark.asyncio
-    async def test_transform_rejects_bad_scale_and_stores_nothing(self) -> None:
-        canvas = _tool_canvas("s5")
-        result = await execute_canvas("s5", "transform", layers=[{"layer_id": "l1", "scale": 1e6}])
-        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
-        assert canvas.get_layer("l1").scale == 1.0
-
-    @pytest.mark.asyncio
-    async def test_transform_applies_a_valid_scale(self) -> None:
-        """The validated scale is the value stored — not the raw request value."""
-        canvas = _tool_canvas("s5-ok")
-        result = await execute_canvas("s5-ok", "transform", layers=[{"layer_id": "l1", "scale": 2}])
-        assert "error" not in result, result
-        assert canvas.get_layer("l1").scale == 2.0
-
-    @pytest.mark.asyncio
-    async def test_transform_rejection_does_not_apply_sibling_fields(self) -> None:
-        """A rejected scale leaves x/y untouched — no half-applied transform."""
-        canvas = _tool_canvas("s5-x")
-        result = await execute_canvas(
-            "s5-x",
-            "transform",
-            layers=[{"layer_id": "l1", "x": 9.0, "y": 7.0, "scale": 1e6}],
-        )
-        assert result["error"].startswith("LAYER_SCALE_OUT_OF_RANGE")
-        layer = canvas.get_layer("l1")
-        assert (layer.x, layer.y, layer.scale) == (0, 0, 1.0)
-
-    @pytest.mark.asyncio
-    async def test_composite_rejection_does_not_commit_spec_transforms(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A render rejected mid-flight (budget) leaves the live transforms alone."""
-        import maistro_canvas.canvas.tool as tool
-
-        canvas = _tool_canvas("s-budget")
-        monkeypatch.setattr(tool, "load_image_limits", lambda: SMALL_LIMITS)
-        result = await execute_canvas(
-            "s-budget", "composite", layers=[{"layer_id": "l1", "x": 7.0, "scale": 10.0}]
-        )
-        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
-        layer = canvas.get_layer("l1")
-        assert (layer.x, layer.scale) == (0, 1.0)
-
-    def test_tool_canvas_dimensions_are_capped(self) -> None:
-        """The tool path holds base dimensions to the same caps as HTTP."""
-        from maistro_canvas.types import _MAX_DIM
-
-        with pytest.raises(ValueError, match="between"):
-            get_or_create_canvas("s6", _MAX_DIM * 2, 1024)
-
-
-# ---------------------------------------------------------------------------
-# Composite spec application, budget default, and the upload action
-# ---------------------------------------------------------------------------
-
-
-class TestCompositeSpecApplication:
-    """The composite request applies transform fields only after scale validation."""
-
-    @pytest.mark.asyncio
-    async def test_composite_applies_every_spec_field_and_skips_unknown_layers(self) -> None:
-        """x/y/scale/rotation/z_index/visible apply; an unknown layer id is skipped."""
-        canvas = _tool_canvas("s-app-1")
-        result = await execute_canvas(
-            "s-app-1",
-            "composite",
-            layers=[
-                {"layer_id": "ghost", "x": 99},  # unknown id — skipped, not an error
-                {
-                    "layer_id": "l1",
-                    "x": 5,
-                    "y": 6,
-                    "scale": 0.5,
-                    "rotation": 90,
-                    "z_index": 3,
-                    "visible": True,
-                },
-            ],
-        )
-        assert "error" not in result, result
-        layer = canvas.get_layer("l1")
-        assert layer is not None
-        assert (layer.x, layer.y, layer.scale, layer.rotation, layer.z_index, layer.visible) == (
-            5,
-            6,
-            0.5,
-            90,
-            3,
-            True,
-        )
-        assert canvas.get_layer("ghost") is None  # the skipped spec created nothing
-
-    @pytest.mark.asyncio
-    async def test_composite_with_no_layer_specs_renders_the_base_canvas(self) -> None:
-        """A composite without layer specs still renders — the spec loops are optional."""
-        _tool_canvas("s-app-2")
-        result = await execute_canvas("s-app-2", "composite", layers=None)
-        assert "error" not in result, result
-        assert result["image_b64"]
-        assert result["layer_count"] == 1
-
-    def test_composite_layers_builds_a_default_budget_when_omitted(self) -> None:
-        """_composite_layers charges the per-request budget itself when none is passed."""
-        from maistro_canvas.canvas.tool import Canvas, _composite_layers
-
-        canvas = Canvas(id="budgetless", width=64, height=64)
-        out = _composite_layers(canvas)
-        assert out[:8] == b"\x89PNG\r\n\x1a\n"
-
-
-class TestUploadAction:
-    """Upload decodes untrusted bytes in the bounded worker or fails explicitly."""
-
-    @pytest.mark.asyncio
-    async def test_upload_without_source_image_returns_the_requirement_error(self) -> None:
-        canvas = _tool_canvas("u0")
-        result = await execute_canvas("u0", "upload", source_image="")
-        assert result["error"] == "upload_image (via source_image param) is required"
-        assert set(canvas.layers) == {"l1"}  # nothing was persisted
-
-    @pytest.mark.asyncio
-    async def test_upload_adds_a_layer_from_base64_source(self) -> None:
-        canvas = _tool_canvas("u1")
-        img = Image.new("RGBA", (32, 32), RED)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        result = await execute_canvas(
-            "u1",
-            "upload",
-            source_image=base64.b64encode(buf.getvalue()).decode(),
-            layer_type="object",
-        )
-        assert "error" not in result, result
-        assert result["width"] == 32
-        assert result["height"] == 32
-        assert result["image_b64"]
-        stored = canvas.layers[result["layer_id"]]
-        assert stored.image_data  # re-encoded PNG bytes were persisted onto the layer
-
-    @pytest.mark.asyncio
-    async def test_upload_typed_worker_failure_is_explicit_and_persists_nothing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import maistro_canvas.canvas.tool as tool
-
-        canvas = _tool_canvas("u2")
-        img = Image.new("RGBA", (32, 32), RED)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        source = base64.b64encode(buf.getvalue()).decode()
-
-        async def timed_out(coro: Any, limits: Any = None) -> Any:
-            await coro
-            raise CompositeTimeoutError("decode/resize worker exceeded the configured timeout")
-
-        monkeypatch.setattr(tool, "run_with_resize_timeout", timed_out)
-        result = await execute_canvas("u2", "upload", source_image=source)
-        assert result["error"].startswith("COMPOSITE_TIMEOUT"), result
-        assert result.get("image_b64") is None  # no partial output
-        assert set(canvas.layers) == {"l1"}  # nothing was persisted for the failed upload
-
-
-# ---------------------------------------------------------------------------
 # HTTP surface: the typed #393 limit errors through the composite/export routes
 # ---------------------------------------------------------------------------
 
@@ -927,20 +695,6 @@ class TestScaleValidatedBeforeDecode:
             _run(compositor.composite(_canvas(), [_layer("a", "a", scale=1e6)]))
         assert store.fetch_count == 0  # no fetch, so no decode was ever forced
 
-    def test_tool_scale_is_validated_before_any_decode(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The tool path validates the scale before ``Image.open`` runs."""
-        from maistro_canvas.canvas.tool import _composite_layers
-
-        canvas = _tool_canvas("s-nodecode")
-        canvas.get_layer("l1").scale = 1e6  # type: ignore[attr-defined]
-        recording = _RecordingOpen(Image.open)
-        monkeypatch.setattr(Image, "open", recording)
-        with pytest.raises(LayerScaleLimitError, match="maximum"):
-            _composite_layers(canvas, limits=SMALL_LIMITS)
-        assert recording.calls == []  # the stored bytes were never decoded
-
 
 class TestDecodedPixelCap:
     """Pillow warns at ``MAX_IMAGE_PIXELS`` and raises only at 2x, so the
@@ -962,64 +716,6 @@ class TestDecodedPixelCap:
         finally:
             Image.Image.resize = original
         assert recording.requested == []
-
-    def test_tool_composite_rejects_decoded_layer_above_cap(self) -> None:
-        """The tool path holds stored layer bytes to the same per-image cap."""
-        import maistro_canvas.canvas.tool as tool
-        from maistro_canvas.canvas.tool import _composite_layers
-
-        tool._canvases.pop("s-decoded-cap", None)
-        canvas = get_or_create_canvas("s-decoded-cap", 256, 256)
-        canvas.add_layer(
-            tool.Layer(
-                id="huge",
-                name="huge",
-                layer_type="object",
-                image_data=_png((200, 200)),
-                width=200,
-                height=200,
-                scale=0.5,  # the resize target (100x100) is inside the cap
-            )
-        )
-        with pytest.raises(LayerPixelBudgetError, match="per-image maximum"):
-            _composite_layers(canvas, limits=SMALL_LIMITS)
-
-    @pytest.mark.asyncio
-    async def test_upload_between_cap_and_twice_cap_is_rejected_typed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """1600 px against a 1000-px cap: Pillow only warns — the explicit
-        check rejects it typed, and no layer is persisted."""
-        canvas = _tool_canvas("u-window")
-        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "1000")
-        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
-        result = await execute_canvas(
-            "u-window",
-            "upload",
-            source_image=base64.b64encode(_png((40, 40))).decode(),
-        )
-        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
-        assert "per-image maximum" in result["error"]
-        assert set(canvas.layers) == {"l1"}  # nothing was persisted
-
-    @pytest.mark.asyncio
-    async def test_upload_above_twice_cap_is_typed_not_a_raw_bomb(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """2500 px against a 1000-px cap: Pillow raises its raw
-        DecompressionBombError at open — translated into the typed error so
-        the tool reports an explicit code instead of a PIL traceback."""
-        canvas = _tool_canvas("u-bomb")
-        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "1000")
-        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
-        result = await execute_canvas(
-            "u-bomb",
-            "upload",
-            source_image=base64.b64encode(_png((50, 50))).decode(),
-        )
-        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
-        assert "decompression guard" in result["error"]
-        assert set(canvas.layers) == {"l1"}  # nothing was persisted
 
 
 class TestRotationBoundingBox:
@@ -1095,24 +791,3 @@ class TestRotationBoundingBox:
         layer.rotation = 45.0  # 20x20 -> 29x29 box, well inside the caps
         result = _run(compositor.composite(_canvas(), [layer]))
         assert Image.open(io.BytesIO(result.image_bytes)).size == (1024, 1024)
-
-    @pytest.mark.asyncio
-    async def test_tool_composite_rejects_rotation_above_the_per_image_cap(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The agent tool path bounds the rotated box too, and a rejected
-        rotation leaves the live layer transforms untouched."""
-        canvas = _tool_canvas("s-rot")
-        monkeypatch.setenv("MAISTRO_CANVAS_MAX_LAYER_PIXELS", "20000")
-        monkeypatch.setenv("MAISTRO_CANVAS_MAX_DIMENSION", "1000")
-        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
-        result = await execute_canvas(
-            "s-rot",
-            "composite",
-            layers=[{"layer_id": "l1", "scale": 2.0, "rotation": 45}],
-        )
-        # 64x64 @2x -> 128x128 fits the 20k cap; the 182x182 rotated box does not
-        assert result["error"].startswith("LAYER_PIXEL_BUDGET_EXCEEDED"), result
-        assert "rotated size" in result["error"]
-        layer = canvas.get_layer("l1")
-        assert (layer.scale, layer.rotation) == (1.0, 0)  # spec not committed

@@ -50,9 +50,10 @@ _VALID_ACTIONS = (
 class AssetTool:
     """In-process canvas asset tool.
 
-    Mirrors the legacy ``canvas/tool.py`` shape (dispatch on
-    ``action``, dict args/returns) so davinci's agent runtime can load
-    both side by side.
+    Mirrors the retired legacy ``canvas/tool.py``'s shape (dispatch on
+    ``action``, dict args/returns — that module was RETIREd per #2311 with
+    this surface as its replacement, parity evidence in
+    ``tests/test_asset_instance_parity.py``).
     """
 
     name: str = "canvas_asset"

@@ -46,7 +46,26 @@ and a supported deployment can run the worker as a first-class service
 (`maistro-canvas-worker`, configured entirely through the environment) or
 in-process with the router lifecycle — no external ad-hoc runner is
 required, and multiple workers never double-process one job (atomic claims,
-fenced writes, lease reaping).
+fenced writes, lease reaping). Since #2311 the default composition also
+starts a runner inside the maistro-server process itself: when a Canvas
+store is wired and the spine is durable, the server lifespan builds the
+runtime through `build_canvas_runtime` and runs the claim/lease/reap loop
+with the app's lifecycle, with a truthful logged skip otherwise.
+
+The server-composed runner's image provider is the governed egress
+(`maistro_server.canvas_runtime`): every generation crosses the Binding →
+Invocation → approved-provider boundary and stores bytes in `canvas_blobs`,
+replacing the retired `canvas/tool.py` direct LiteLLM POST (the unowned
+image-generation bypass under the #56 umbrella). Two truthful gaps remain
+by design: `refine` is unsupported (the governed gateway exposes no
+image-edits endpoint — deployments that need it supply an adapter through
+`maistro-canvas-worker`), and `seed` / `negative_prompt` / conditioning
+args are not yet part of the governed image request contract, so the
+server-composed client ignores them rather than smuggling them around the
+boundary. The default draft model comes from
+`MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL`; unset, model-default admissions fail
+with a configuration error naming the variable rather than guessing, and
+an unreadable gateway model list leaves the registry fail-closed.
 
 What keeps this entry open is proof at the product level: the #773/#95
 Design Studio cutover E2E — delegate a Canvas-backed artifact branch, leave
@@ -56,6 +75,17 @@ cannot be described as end-to-end self-progressing.
 
 Tracking: close this entry after the #773 product E2E exercises the built-in
 worker durably.
+
+### Orphaned `character_references` table in deployed POC databases
+
+The retired legacy canvas tool (#2311) was the only in-repo creator of the
+`character_references` table — its DDL was dead code ("migration managed
+separately" never landed; no alembic revision creates it), so the durable
+table inventory no longer carries an entry for it. Deployed POC databases
+may still hold the table with rows of user content: it is now ownerless
+durable data pending #325's retention contract. Nothing in this repository
+reads or writes it; a future migration should either adopt it under an
+owner or drop it explicitly behind #325's decision — never by accident.
 
 ### Canvas publish and export
 
