@@ -176,21 +176,62 @@ async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded)
     HITL pause must not make `/v1/hitl/pending` return an empty answer. Before
     the fix, `list_by_status(PAUSED, limit=N)` was queried once and filtered
     afterward, so a small `limit` could never see past a long enough
-    ineligible prefix -- the route has to actually page past it."""
-    client, _store, seed = seeded
-    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
-    for i in range(120):
-        await seed(f"hitl-machine-{i}", kind="timer", created_at=base + timedelta(seconds=i))
-    await seed(
-        "hitl-behind-the-prefix",
-        kind="hitl",
-        created_at=base + timedelta(seconds=1000),
+    ineligible prefix -- the route has to actually page past it.
+
+    The ineligible prefix shares the HITL pause's own Workspace/Project scope:
+    a single bounded generic-PAUSED read of that scope stops inside the prefix
+    and discloses nothing, which is exactly the route-level mutation this test
+    must fail. An earlier version seeded each prefix Run into its own
+    Workspace -- but the route walks one scope at a time, so no single
+    scope's read was ever starved and the test passed with the mutation
+    applied. Same-scope seeding closes that hole.
+    """
+    client, store, _seed = seeded
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-same-scope-prefix",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
     )
+    # Discovery walks authorized Projects (#1110), so the seeded records must
+    # live in this Workspace's canonical root Project to be in scope at all.
+    from services.workspace_authority import canonical_store_for_tests
 
-    body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+    root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
+    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    # More machine-only pauses than the request's limit (and than the walk's
+    # page size), all inside the one scope the HITL pause lives in.
+    run_ids = [f"hitl-machine-{index}" for index in range(_MACHINE_PREFIX)]
+    run_ids.append("hitl-behind-the-prefix")
+    try:
+        for index, run_id in enumerate(run_ids[:-1]):
+            await store.create(
+                _paused_record(
+                    run_id,
+                    workspace_id=workspace.id,
+                    project_id=root.project_id,
+                    kind="timer",
+                    created_at=base + timedelta(seconds=index),
+                )
+            )
+        await store.create(
+            _paused_record(
+                "hitl-behind-the-prefix",
+                workspace_id=workspace.id,
+                project_id=root.project_id,
+                created_at=base + timedelta(seconds=1000),
+            )
+        )
 
-    mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
-    assert len(mine) == 1
+        body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+        mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
+        assert len(mine) == 1
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
 
 
 async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -> None:
