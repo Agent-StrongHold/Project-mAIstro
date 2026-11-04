@@ -1323,6 +1323,17 @@ jobs:
           -f Dockerfile.research -t maistro-engine-research:ci
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
+      # #346 gap (b): the research image's whole purpose is the browser
+      # surface, and a green build says the layers assemble, not that Chromium
+      # is present or loadable. The smoke resolves the browser through
+      # Playwright — the same resolution the RESEARCH web tool performs — and
+      # executes it, on image contents alone; a browser-less control image
+      # must fail the same probe. Ported from the validated dead-lane probes
+      # (docs/testing/inventory-notes/claude-issue-346-smoke-tests.md) onto
+      # the evolved Dockerfile.research.
+      - name: Smoke the research image's Chromium surface (#346)
+        shell: bash
+        run: scripts/smoke-research-chromium.sh maistro-engine-research:ci
       # Scope rotated with security.yml's identical step (PR #2283, CI run
       # 40091186336): the old scope's week of cached results predates the
       # libbrotli1 deb13u1 security update, and a stale read out of it is the
@@ -1334,6 +1345,18 @@ jobs:
           -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
           --load --cache-from type=gha,scope=rsi-runner-r2
           --cache-to type=gha,scope=rsi-runner-r2,mode=max .
+      # #346 gap (b): the rsi-runner image's runtime contract is the one
+      # tools/run_rsi_isolated.sh operates — venv plus the source trees on
+      # PYTHONPATH (the root meta-package does not install maistro-rsi or
+      # maistro-evolve). The smoke mirrors that exact contract and imports
+      # the `python -m maistro_rsi run|evolve` entrypoints' own modules, on
+      # image contents alone; a workspace-less control image must fail the
+      # same probe. Ported from the validated dead-lane probes
+      # (docs/testing/inventory-notes/claude-issue-346-smoke-tests.md) onto
+      # the evolved Dockerfile.rsi-runner.
+      - name: Smoke the rsi-runner image's RSI runtime imports (#346)
+        shell: bash
+        run: scripts/smoke-rsi-runner-imports.sh maistro-rsi-runner:ci
 
   # #348: "CI rebuilds twice and compares dependency manifests". The maistro
   # engine image installs its entire Python set from `uv export --locked` +
