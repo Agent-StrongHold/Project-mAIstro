@@ -210,11 +210,14 @@ jobs:
           node-version: "22"
       # GuardDog's pinned floor lives in requirements-dev-tools.txt (the
       # declared dev-tools set); installing from that line keeps the workflow
-      # and the declaration from drifting apart. Python 3.12 because the
-      # pygit2/yara-python wheels guarddog depends on do not yet exist for
-      # newer interpreters.
+      # and the declaration from drifting apart. The sed strips the line's
+      # trailing comment: pip accepts comments only as whole lines in a
+      # requirements FILE, not inside a single requirement string, so the
+      # raw grep output ("guarddog>=3.2.0        # Apache-2.0 — ...") is an
+      # Invalid requirement error. Python 3.12 because the pygit2/yara-python
+      # wheels guarddog depends on do not yet exist for newer interpreters.
       - name: Install GuardDog
-        run: pip install "$(grep -E '^guarddog>=' requirements-dev-tools.txt)"
+        run: pip install "$(grep -E '^guarddog' requirements-dev-tools.txt | sed 's/[[:space:]]*#.*//')"
       - name: npm audit (retry transient registry outages)
         run: |
           set -eu
