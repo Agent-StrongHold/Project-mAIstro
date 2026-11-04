@@ -19,12 +19,22 @@
       "digest": "sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
       "recorded": "2026-10-24",
       "recorded_in": "#93",
-      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh).",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 \u2014 buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh). Digest split 2026-11-04 (#2401): Dockerfile.rsi-runner moved to its own refreshed pin (the 2026-11-04 tag re-resolution) after 50 HIGH + 1 CRITICAL kernel-header findings (linux-libc-dev via build-essential) surfaced in its GHA-cached CI build while cold builds scanned clean -- the #1152 key-chain doctrine, so only the affected image re-pins; this row's remaining users ship no linux-libc-dev and stay on the 2026-10-24 resolution.",
       "used_by": [
         "Dockerfile.research",
-        "Dockerfile.rsi-runner",
         "packages/hive-conductor/tests/Dockerfile",
         "deploy/sbx/template/Dockerfile.tests"
+      ]
+    },
+    {
+      "image": "python",
+      "tag": "3.12-slim",
+      "digest": "sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30",
+      "recorded": "2026-11-04",
+      "recorded_in": "#2401",
+      "note": "CPython 3.12.x line as of the recording date; rsi-runner only. Refreshed from the 2026-10-24 pin (a0f57064) for the #1152 key-chain doctrine (#2401): the rsi-runner image's GHA-cached build restored pre-point-release apt layers carrying vulnerable linux-libc-dev (build-essential dependency; 50 HIGH + 1 CRITICAL kernel advisories) that --no-cache-filter runtime-apt re-executes but cannot propagate past, while a cold build of the same Dockerfile installed the fixed 6.12.115-2 from the current trixie-security mirror. The digest bump changes the cache key chain from the FROM down so CI assembles the fresh layers. The pin's other users (Dockerfile.research, hive-conductor tests, sbx tests) ship no linux-libc-dev, scan clean, and stay on the previous row.",
+      "used_by": [
+        "Dockerfile.rsi-runner"
       ]
     },
     {
@@ -66,7 +76,7 @@
       "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
       "recorded": "2026-10-22",
       "recorded_in": "#1152",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries.",
+      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine \u2014 #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries.",
       "used_by": [
         "packages/hive-conductor/Dockerfile",
         "Dockerfile",
