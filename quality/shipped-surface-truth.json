@@ -24,8 +24,8 @@
     },
     {
       "issue": 382,
-      "disposition": "unresolved",
-      "scope": "container image build facade"
+      "disposition": "resolved",
+      "scope": "Containers build/suggest canned-success surfaces removed: routes return truthful 501 (PR #1887; packages/hive-conductor/backend/routes/containers.py, tests/test_containers_routes.py)"
     }
   ],
   "product_status_checks": [
