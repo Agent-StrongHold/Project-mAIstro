@@ -120,7 +120,7 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     python_tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
 
-    assert python_tags == ["3.13.16", "3.13.16"]
+    assert python_tags == ["3.13.18", "3.13.18"]
     # #348 moved the image's dependency contract out of a pip command line in
     # the Dockerfile and into maistro-server's `image` extra, which the
     # Dockerfile exports from the committed lock. The identity stack the
