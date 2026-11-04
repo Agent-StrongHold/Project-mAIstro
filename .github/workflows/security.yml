@@ -196,6 +196,65 @@ jobs:
           done
           uv run python scripts/pip_audit_gate.py pip-audit.json
 
+  js-supply-chain:
+    name: JS supply chain (npm audit + GuardDog + policy gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      # GuardDog's pinned floor lives in requirements-dev-tools.txt (the
+      # declared dev-tools set); installing from that line keeps the workflow
+      # and the declaration from drifting apart. Python 3.12 because the
+      # pygit2/yara-python wheels guarddog depends on do not yet exist for
+      # newer interpreters.
+      - name: Install GuardDog
+        run: pip install "$(grep -E '^guarddog>=' requirements-dev-tools.txt)"
+      - name: npm audit (retry transient registry outages)
+        run: |
+          set -eu
+          mkdir -p js-audit-reports
+          for surface in packages/hive-conductor/frontend packages/maistro-canvas/frontend packages/hive-conductor/tests/e2e; do
+            slug=$(echo "$surface" | tr '/' '_')
+            for attempt in 1 2 3; do
+              status=0
+              (cd "$surface" && npm audit --package-lock-only --json > "$GITHUB_WORKSPACE/js-audit-reports/$slug.json") || status=$?
+              if [ -s "$GITHUB_WORKSPACE/js-audit-reports/$slug.json" ] && \
+                 python -c "import json,sys; json.load(open(sys.argv[1]))" "$GITHUB_WORKSPACE/js-audit-reports/$slug.json" 2>/dev/null; then
+                echo "npm audit attempt ${attempt} for ${surface}: report complete (audit exit ${status})"
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::npm audit produced no usable report for ${surface} after 3 attempts — registry/network outage; retry the job"
+                exit 1
+              fi
+              echo "::warning::npm audit attempt ${attempt} for ${surface} produced no usable report; retrying in 15s"
+              sleep 15
+            done
+          done
+      # GuardDog scans every direct dependency at its LOCKED version (the
+      # scan list comes from the gate's own --direct-deps, so list and verdict
+      # share one source). --no-sandbox: the kernel sandbox guarddog wants is
+      # unavailable on hosted runners; the trade is documented in the gate's
+      # docstring — findings are parsed, never executed.
+      - name: GuardDog malicious-package scan (direct dependencies)
+        run: python scripts/js_guarddog_scan.py --output-dir js-guarddog-reports
+      - name: Policy gate (inventory, lock, license, provenance, typosquat, exceptions)
+        run: |
+          set -eu
+          args=()
+          for surface in packages/hive-conductor/frontend packages/maistro-canvas/frontend packages/hive-conductor/tests/e2e; do
+            slug=$(echo "$surface" | tr '/' '_')
+            args+=(--audit-report "$surface=js-audit-reports/$slug.json")
+            args+=(--guarddog-report "$surface=js-guarddog-reports/$slug.json")
+          done
+          python scripts/js_dependency_gate.py "${args[@]}"
+
   containers:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
