@@ -1,5 +1,15 @@
 """Canvas Studio REST API (spec 1189).
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): this legacy
+``/api/canvas`` surface serves the LayerRecord model while downstream
+consumers (the external launchers that mount this router) migrate to the
+ADR-042 AssetInstance routes under ``/v2/canvas``. It cannot regain
+authority: new product surface belongs on the AssetInstance path only.
+ADR-045 permits exactly this coexistence — "direct legacy routes may remain
+only as an explicitly transitional surface" — and deletion is gated on the
+ADR-044 Phase 2/3 bridge+backfill and ADR-046 so persisted Canvas state is
+never stranded.
+
 All routes go through make_canvas_router() so tests can inject fakes
 without touching app.state.  Production wires real deps via the DI
 container.

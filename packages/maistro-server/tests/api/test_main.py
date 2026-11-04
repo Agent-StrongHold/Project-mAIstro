@@ -168,6 +168,15 @@ class TestLifespan:
         # reasoning as the database above: these tests are not about that
         # check, and `test_startup.py` is.
         monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+        # The lifespan also starts the Canvas job runner when a durable spine
+        # and a Canvas store are present (#2311). These tests drive the
+        # lifespan with MagicMock containers that cannot satisfy that
+        # composition; the runner's own start/stop contract is covered in
+        # test_canvas_runtime.py, and the lifespan's start/skip decision has
+        # its own test below.
+        monkeypatch.setattr(
+            "maistro_server.main._start_canvas_job_runner", AsyncMock(return_value=None)
+        )
 
     @pytest.mark.contract("behavioral")
     async def test_lifespan_starts_and_stops_runner(self) -> None:
@@ -503,6 +512,15 @@ class TestRunStorePool:
         # reasoning as the database above: these tests are not about that
         # check, and `test_startup.py` is.
         monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+        # The lifespan also starts the Canvas job runner when a durable spine
+        # and a Canvas store are present (#2311). These tests drive the
+        # lifespan with MagicMock containers that cannot satisfy that
+        # composition; the runner's own start/stop contract is covered in
+        # test_canvas_runtime.py, and the lifespan's start/skip decision has
+        # its own test below.
+        monkeypatch.setattr(
+            "maistro_server.main._start_canvas_job_runner", AsyncMock(return_value=None)
+        )
 
     async def test_no_database_configured_is_none_not_an_error(self) -> None:
         assert await main_module._run_store_pool() is None
@@ -683,3 +701,90 @@ class TestCanvasAbilityWiring:
                 pass
 
         assert getattr(test_app.state, "canvas_store", None) is None
+
+
+class TestLifespanCanvasRunnerStart:
+    """#2311: the lifespan's Canvas-runner start/skip decision.
+
+    The real ``_start_canvas_job_runner`` runs (only the composition it
+    delegates to is patched), so the decision itself — durable spine and
+    wired store, or a truthful logged skip — is what's under test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_database_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+    @pytest.mark.contract("behavioral")
+    async def test_started_on_durable_spine_and_skipped_without_one(self) -> None:
+        from maistro_server import canvas_runtime
+
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        test_app.state.canvas_store = object()  # a wired store: the spine decides
+
+        for spine_pool, expected_calls in ((object(), 1), (None, 0)):
+            composed = AsyncMock(return_value=None)
+            mock_container = MagicMock()
+            mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
+            mock_container.flush_usage_log = AsyncMock()
+            mock_container.aclose = AsyncMock()
+            with (
+                patch("maistro.agents.conductor.run_task"),
+                patch("maistro.memory.store.get_engine", return_value=None),
+                patch("maistro.memory.store.reset_engine_cache"),
+                patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+                patch(
+                    "maistro_server.main.logger",
+                    MagicMock(ainfo=AsyncMock(), awarning=AsyncMock()),
+                ),
+                patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+                patch("maistro_server.main._run_store_pool", AsyncMock(return_value=spine_pool)),
+                patch(
+                    "maistro_server.main._build_container",
+                    AsyncMock(return_value=(mock_container, MagicMock())),
+                ),
+                patch.object(canvas_runtime, "start_canvas_job_runner", composed),
+            ):
+                async with lifespan(test_app):
+                    pass
+            assert composed.await_count == expected_calls
+
+    @pytest.mark.contract("behavioral")
+    async def test_skipped_when_no_store_is_wired(self) -> None:
+        """A durable spine with no Canvas store is still a skip: the runner
+        would have nothing durable to claim from."""
+        from maistro_server import canvas_runtime
+
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        # MagicMock attribute access would fabricate a store; delete it.
+        del test_app.state.canvas_store
+
+        composed = AsyncMock(return_value=None)
+        mock_container = MagicMock()
+        mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
+        mock_container.flush_usage_log = AsyncMock()
+        mock_container.aclose = AsyncMock()
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch(
+                "maistro_server.main.logger",
+                MagicMock(ainfo=AsyncMock(), awarning=AsyncMock()),
+            ),
+            patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
+            patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
+            patch(
+                "maistro_server.main._build_container",
+                AsyncMock(return_value=(mock_container, MagicMock())),
+            ),
+            patch.object(canvas_runtime, "start_canvas_job_runner", composed),
+        ):
+            async with lifespan(test_app):
+                pass
+        assert composed.await_count == 0

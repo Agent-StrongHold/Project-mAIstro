@@ -13,6 +13,7 @@
       "findings": [
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'composite_canvas'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_canvas'",
+        "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_layer'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'list_layer_jobs'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'start_generate'",
         "packages/maistro-server/src/maistro_server/api/health.py::unused function 'health_check'",
@@ -69,6 +70,7 @@
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'foreground'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'ground_plane'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'horizon_y'",
+        "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'perspective'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'sky'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'vanishing_x'",
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'COMPOSITE'",
@@ -459,8 +461,6 @@
       "rationale": "Dataclass/typed record fields are constructed and serialized by convention or reflection, not always read directly in package-local code.",
       "findings": [
         "packages/maistro-bootstrap/src/maistro_bootstrap/resolver.py::unused variable 'copier_hint'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused variable 'CREATE_TABLE_SQL'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused variable 'reference_images'",
         "packages/maistro-canvas/src/maistro_canvas/export.py::unused attribute 'bold'",
         "packages/maistro-canvas/src/maistro_canvas/export.py::unused attribute 'slide_height'",
         "packages/maistro-canvas/src/maistro_canvas/export.py::unused attribute 'slide_width'",
@@ -1337,11 +1337,6 @@
       "message_regex": "unused (function|class|method|variable|attribute)",
       "rationale": "Experimental and product-adjacent package APIs are retained as planned implementation surfaces pending per-package hardening specs.",
       "findings": [
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused function 'destroy_canvas'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused function 'execute_canvas'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused function 'list_character_references'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused function 'load_character_reference'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::unused function 'save_character_reference'",
         "packages/maistro-design/src/maistro_design/engine.py::unused attribute '_html_renderer'",
         "packages/maistro-design/src/maistro_design/engine.py::unused attribute '_svg_renderer'",
         "packages/maistro-design/src/maistro_design/engine.py::unused attribute '_typography_renderer'",

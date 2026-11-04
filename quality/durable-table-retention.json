@@ -307,7 +307,7 @@
       "retention": "indefinite_by_decision",
       "deletion_path": null,
       "issue": "#325",
-      "notes": "Per-stream sequence high-water mark (pg_envelope.py carries the postgres twin). Kept forever on purpose: it is the allocation floor that keeps stream sequence numbers monotonic after the event purge deletes rows — deleting a stream's mark would rewind its sequence and silently drop events from readers resuming at an earlier cursor. Bounded by one two-column row per stream ever appended, not by event volume."
+      "notes": "Per-stream sequence high-water mark (pg_envelope.py carries the postgres twin). Kept forever on purpose: it is the allocation floor that keeps stream sequence numbers monotonic after the event purge deletes rows \u2014 deleting a stream's mark would rewind its sequence and silently drop events from readers resuming at an earlier cursor. Bounded by one two-column row per stream ever appended, not by event volume."
     },
     {
       "table": "canonical_node_runs",
@@ -513,18 +513,6 @@
       "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment. One row per capability effect."
     },
     {
-      "table": "character_references",
-      "backends": [
-        "postgres"
-      ],
-      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py",
-      "data_class": "user_content",
-      "retention": "undecided",
-      "deletion_path": null,
-      "issue": "#325",
-      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
-    },
-    {
       "table": "characters",
       "backends": [
         "postgres"
@@ -705,7 +693,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#72",
-      "notes": "Host-signed delegation grants (#845), created by alembic 067 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition; the merged identity develop shipped, kept verbatim — a landed trunk migration never moves). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
+      "notes": "Host-signed delegation grants (#845), created by alembic 067 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition; the merged identity develop shipped, kept verbatim \u2014 a landed trunk migration never moves). Validity is TTL-filtered at read time in the shared decide() path; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the same open owner decision as elevation_grants."
     },
     {
       "table": "elevation_grants",
@@ -1384,7 +1372,7 @@
       "retention": "indefinite_by_decision",
       "deletion_path": "maistro.quota.sqlite_usage_log:SqliteUsageLog.purge_expired",
       "issue": "#325",
-      "notes": "Per-event identity tombstones written in the same transaction as each purge. Kept beyond any plausible stale-copy replay lag (30 days, see _TOMBSTONE_WINDOW_S) and then expired by purge_expired itself. `snapshot` consults them to skip replaying in-memory events whose durable rows a purge already aggregated and deleted — deleting the tombstone would resurrect purged rows on the next flush and double-count them in the aggregates. Bounded by one row per retired event_id, not by event volume, and aged out past the tombstone window."
+      "notes": "Per-event identity tombstones written in the same transaction as each purge. Kept beyond any plausible stale-copy replay lag (30 days, see _TOMBSTONE_WINDOW_S) and then expired by purge_expired itself. `snapshot` consults them to skip replaying in-memory events whose durable rows a purge already aggregated and deleted \u2014 deleting the tombstone would resurrect purged rows on the next flush and double-count them in the aggregates. Bounded by one row per retired event_id, not by event volume, and aged out past the tombstone window."
     },
     {
       "table": "workspace_backlog_history",
