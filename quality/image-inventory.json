@@ -74,7 +74,9 @@
       "coverage_exception": {
         "owner": "@BlakeMatthews-dev",
         "issue": "#346",
-        "reason": "CI cannot build it from a checkout alone: it is FROM docker/sandbox-templates:shell-docker and copies preseed tars that deploy/sbx/build.sh produces in the same run. Wiring the preseed step into the containers job is real work and is tracked on #346; recording the exception is what keeps it visible instead of letting a wrong disposition hide it."
+        "reason": "CI cannot build it from a checkout alone: it is FROM docker/sandbox-templates:shell-docker and copies preseed tars that deploy/sbx/build.sh produces in the same run. Wiring the preseed step into the containers job is real work and is tracked on #346; recording the exception is what keeps it visible instead of letting a wrong disposition hide it. The producer script is not a coverage gap for policy: build.sh fail-closes the same trivy/grype HIGH/CRITICAL and high-with-fix gates CI runs (pinned tool versions, refusal on mismatch) on both sbx images before any push, plus the pinned-syft license inventory. The exception covers the CI build/scan job only.",
+        "expires": "2027-04-30",
+        "version_scope": "sbx template and nested-test images built from deploy/sbx/template before the preseed step is wired into .github/workflows/security.yml:containers"
       }
     },
     {
@@ -88,7 +90,9 @@
       "coverage_exception": {
         "owner": "@BlakeMatthews-dev",
         "issue": "#346",
-        "reason": "Shares sbx-template's preseed precondition and its owner."
+        "reason": "Shares sbx-template's preseed precondition and its owner. The producer-side gates apply to this image too: deploy/sbx/build.sh fail-closes trivy/grype vulnerability scans and the pinned-syft license inventory on it before any push. The exception covers the CI build/scan job only.",
+        "expires": "2027-04-30",
+        "version_scope": "sbx template and nested-test images built from deploy/sbx/template before the preseed step is wired into .github/workflows/security.yml:containers"
       }
     },
     {
