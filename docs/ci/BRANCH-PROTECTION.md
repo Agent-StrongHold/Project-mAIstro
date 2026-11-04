@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **33** |
+| `develop` | yes | **0** | yes | no | no | **20** |
+| `main` | yes | **1** | no | no | no | **34** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -50,6 +50,7 @@ is also required live on both branches; because it is produced by
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
+| `JS supply chain (npm audit + GuardDog + policy gate)` | ● | ● |
 | `Mutation gate (changed critical lines)` | ○ | ○ |
 | `Quality / Acceptance state` | adv | adv |
 | `Quality / Agent store writes` | adv | adv |
