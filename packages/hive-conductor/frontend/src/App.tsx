@@ -31,6 +31,7 @@ const Containers = lazy(() => import("./pages/Containers"));
 const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
+const WorkspaceHome = lazy(() => import("./pages/WorkspaceHome"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
@@ -195,7 +196,7 @@ function AppRoutes() {
                       the canonical profile. Dashboard stays registered until
                       retirement burn-down (#2274) deletes it. */}
                   <Route index element={<DefaultLandingRedirect />} />
-                  <Route path="home" element={<Home />} />
+                  <Route path="home" element={<WorkspaceHome />} />
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
                   {/* #1049: Attention is the Workspace orchestration inbox

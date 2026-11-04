@@ -28,6 +28,8 @@ from services.chat_gate import (
 from services.chat_runs import AdmittedTurn, admit_turn, cancel_unstarted, execute_turn
 from services.program_hyperagent import user_id_from_request
 from services.request_principal import require_actor_id
+from services.workspace_agent import persona_template_id, resolve_workspace_agent
+from services.workspace_authority import visible_view
 
 from maistro.capabilities.model_chat import model_execution_context
 
@@ -226,10 +228,31 @@ async def _interview_turn(req: ChatCompletionRequest, request: Request):
     return await brief_turn(user_id_from_request(request), workspace_id, last_user)
 
 
-def _conversation_messages(req: ChatCompletionRequest) -> list[dict]:
+async def _conversation_messages(req: ChatCompletionRequest, request: Request) -> list[dict]:
     messages = list(req.messages)
-    if not any(message.get("role") == "system" for message in messages):
-        messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
+    if any(message.get("role") == "system" for message in messages):
+        return messages
+
+    extra = req.model_extra or {}
+    workspace_id = extra.get("workspace_id")
+    if isinstance(workspace_id, str) and workspace_id.strip():
+        user_id = user_id_from_request(request)
+        workspace = await visible_view(user_id, workspace_id)
+        if workspace is not None:
+            agent = await resolve_workspace_agent(workspace_id)
+            persona = persona_template_id(agent)
+            name = getattr(workspace, "name", None) or workspace_id
+            system = (
+                f'You are the Workspace Agent for "{name}" '
+                f"(persona template: {persona}). "
+                "This external chat surface is conversation-only (M0): do not claim to "
+                "have executed tools, changed external systems, or started runs. "
+                "Answer concisely and helpfully in character for this workspace."
+            )
+            messages.insert(0, {"role": "system", "content": system})
+            return messages
+
+    messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
     return messages
 
 
@@ -283,7 +306,7 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
             "choices": [{"message": {"role": "assistant", "content": turn.text}}],
             "brief": turn.payload(),
         }
-    messages = _conversation_messages(req)
+    messages = await _conversation_messages(req, request)
     turn = await _admit(req, request, messages)
     return await execute_turn(turn, messages, _model_call(turn, req, messages))
 
@@ -325,7 +348,7 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
 
     # Admitted before the response exists, so a turn that cannot be admitted
     # is a 503 rather than a 200 stream that then fails (#1037, #1108).
-    messages = _conversation_messages(req)
+    messages = await _conversation_messages(req, request)
     turn = await _admit(req, request, messages)
     run_id = turn.run.run_id
 

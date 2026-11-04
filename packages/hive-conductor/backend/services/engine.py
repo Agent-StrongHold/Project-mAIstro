@@ -45,6 +45,31 @@ __all__ = [
 #: optional component.
 EngineState = Literal["not_started", "starting", "ready", "degraded", "startup_failed", "stopped"]
 
+#: Satisfies ``create_container`` when Hive embeds maistro-core locally with a
+#: durable database but no maistro-server router credential (homelab compose
+# without remote task dispatch). Never sent to maistro-server; remote tasks
+# still require ``settings.maistro_router_api_key``.
+_EMBEDDED_LOCAL_ROUTER_KEY = "embedded-local-bridge"
+
+
+def _database_configured_for_embedded_container() -> bool:
+    from maistro.config.database import resolve_database_url
+
+    url = resolve_database_url()
+    return bool(url) and not url.startswith("memory://")
+
+
+def _embedded_bridge_requested(settings: Settings) -> bool:
+    """Whether this process should compose the in-process maistro Container."""
+    return bool(settings.maistro_router_api_key) or _database_configured_for_embedded_container()
+
+
+def _settings_for_embedded_bridge(settings: Settings) -> Settings:
+    """Settings passed to ``MaistroCoreBridge.start`` — includes a local-only
+    router key when the durable database is configured but no remote key is."""
+    if settings.maistro_router_api_key or not _database_configured_for_embedded_container():
+        return settings
+    return settings.model_copy(update={"maistro_router_api_key": _EMBEDDED_LOCAL_ROUTER_KEY})
 
 #: Health/JSON surfaces carry the exception *kind* only — never its message
 #: and never a traceback (#1181). Startup dependency errors (DSNs, tokens,
@@ -337,10 +362,10 @@ class EngineService:
             # function, so the later handler's `logging.getLogger(...)` raised
             # UnboundLocalError whenever this branch was not taken — turning
             # any failure below into a different, wrong error.
-            if settings.maistro_router_api_key:
+            if _embedded_bridge_requested(settings):
                 bridge = MaistroCoreBridge()
                 try:
-                    await bridge.start(settings)
+                    await bridge.start(_settings_for_embedded_bridge(settings))
                     self._bind_agent_port(bridge)
                     self._configured = True
                     # If a later step fails, the unwind must forget the

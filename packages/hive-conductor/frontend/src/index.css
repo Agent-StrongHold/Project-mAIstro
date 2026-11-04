@@ -520,6 +520,10 @@ a { color: var(--accent); }
    Sources are typed, never colour-only: the tag says it. */
 .brief-panel { margin: 16px 24px 0; padding: 12px 16px; font-size: var(--text-xs); border-radius: var(--radius-md); background: var(--well); border: 1px solid var(--hair); }
 .brief-panel-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; margin-bottom: 6px; }
+.brief-panel-lede { margin: 0 0 8px; font-weight: 400; color: var(--meta); line-height: 1.4; }
+.brief-panel-progress { height: 4px; border-radius: 2px; background: var(--hair); margin-bottom: 8px; overflow: hidden; }
+.brief-panel-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.2s var(--ease); }
+.brief-panel-written { margin-bottom: 6px; }
 .brief-panel-meta { font-family: var(--mono); font-weight: 500; color: var(--meta); }
 .brief-row { display: grid; grid-template-columns: 72px 1fr auto; gap: 8px; padding: 3px 0; align-items: baseline; border-top: 1px solid var(--hair); }
 .brief-row-label { color: var(--meta); }

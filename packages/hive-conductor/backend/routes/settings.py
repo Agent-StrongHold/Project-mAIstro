@@ -24,15 +24,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import ssl
 from typing import Any, Literal
+from urllib.parse import urlparse, urlunparse
 
 import httpx
+from config import get_settings as load_app_settings
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import BaseModel, ConfigDict, ValidationError
 from services import settings_store
 from services.provider_usage import provider_panel
+from services.secrets import effective_llm_gateway_key
 
 from routes.audit import audit_entries_view, log_audit
 
@@ -299,36 +303,118 @@ def _parse_gateway_catalog(data: object) -> list[str]:
     return sorted({m for m in model_ids if m})
 
 
-def _discover_gateway_models() -> tuple[list[str], dict[str, Any]]:
-    """Return (model_ids, discovery_metadata) for the configured gateway.
+_JEDAI_ALIAS_PREFIX = "jedai"
+_COMPOSE_GATEWAY_HOSTS = frozenset({"litellm", "maistro-litellm"})
+_OTHER_LLM_PROVIDER_ENV_KEYS = (
+    "GEMINI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+)
 
-    The metadata's `error.kind` carries the failure taxonomy the Setup wizard
-    surfaces (#287): `not_configured`, `auth`, `not_found`, `server`, `http`,
-    `policy`, `connectivity`, `tls`, `malformed`, `empty`, `unexpected`.
-    Messages are sanitized on purpose — failure class plus HTTP status, never
-    a gateway URL, key, or response body. The function never raises: the
-    contract is "answer with the best-known catalog plus the reason it is not
-    a live gateway catalog".
-    """
-    import os
 
-    base = os.environ.get("LITELLM_API_BASE") or os.environ.get("LITELLM_PROXY_URL") or ""
-    key = os.environ.get("LITELLM_API_KEY") or os.environ.get("LITELLM_PROXY_KEY") or ""
-    if not base:
-        return [settings_store.current().default_model], {
-            "discovered": False,
-            "source": "stored_default",
-            "error": {
-                "kind": "not_configured",
-                "message": "No LLM gateway is configured; the stored default is the only known-good model.",
-            },
-        }
+def _env_nonempty(name: str) -> bool:
+    return bool(os.environ.get(name, "").strip())
+
+
+def _jedai_virtual_key() -> str:
+    return (
+        os.environ.get("JEDAI_API_KEY", "").strip()
+        or os.environ.get("LITELLM_API_KEY_EXT", "").strip()
+    )
+
+
+def _jedai_gateway_configured() -> bool:
+    return bool(_jedai_virtual_key() and _env_nonempty("JEDAI_GATEWAY_API_BASE"))
+
+
+def _process_runs_in_container() -> bool:
+    return os.path.exists("/.dockerenv")
+
+
+def _host_reachable_gateway_base(base: str) -> str:
+    """Map compose-only gateway hostnames to loopback when Hive runs on the host."""
+    if not base or _process_runs_in_container():
+        return base
+    parsed = urlparse(base)
+    if (parsed.hostname or "") not in _COMPOSE_GATEWAY_HOSTS:
+        return base
+    port = parsed.port or 4000
+    return urlunparse(parsed._replace(netloc=f"127.0.0.1:{port}"))
+
+
+_LITELLM_BASE_ENV_KEYS = (
+    "LITELLM_API_BASE",
+    "LITELLM_PROXY_URL",
+    "LITELLM_BASE_URL",
+    "LITELLM_URL",
+    "MAISTRO_LLM_BASE_URL",
+)
+
+
+def _litellm_proxy_base_raw() -> str:
+    for name in _LITELLM_BASE_ENV_KEYS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return (load_app_settings().litellm_api_base or "").strip()
+
+
+def _litellm_proxy_configured() -> bool:
+    return bool(_litellm_proxy_base_raw())
+
+
+def _is_jedai_only_profile() -> bool:
+    if not _jedai_gateway_configured():
+        return False
+    # Prod/default stack: an explicit LiteLLM proxy wins over the homelab JedAI sidecar.
+    if _litellm_proxy_configured():
+        return False
+    return not any(_env_nonempty(key) for key in _OTHER_LLM_PROVIDER_ENV_KEYS)
+
+
+def _openai_compatible_models_url(api_base: str) -> str:
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return f"{base}/models"
+
+
+def _as_jedai_sidecar_aliases(upstream_ids: list[str]) -> list[str]:
+    prefixed: list[str] = []
+    for model_id in upstream_ids:
+        if model_id.startswith(f"{_JEDAI_ALIAS_PREFIX}/"):
+            prefixed.append(model_id)
+        else:
+            prefixed.append(f"{_JEDAI_ALIAS_PREFIX}/{model_id}")
+    return sorted(set(prefixed))
+
+
+def _litellm_proxy_env() -> tuple[str, str]:
+    settings = load_app_settings()
+    base = _host_reachable_gateway_base(_litellm_proxy_base_raw())
+    key = effective_llm_gateway_key(settings) or ""
+    if not key:
+        key = os.environ.get("LITELLM_API_KEY") or os.environ.get("LITELLM_PROXY_KEY") or ""
+    return base, key
+
+
+def _fetch_models_catalog(
+    url: str,
+    api_key: str,
+    *,
+    timeout: float = 5.0,
+) -> tuple[list[str], dict[str, Any]]:
+    kind = "unexpected"
+    message = "An unexpected error occurred while discovering gateway models."
     try:
-        headers = {}
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        url = f"{base.rstrip('/')}/models"
-        resp = httpx.get(url, headers=headers, timeout=5.0)
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = httpx.get(url, headers=headers, timeout=timeout)
         resp.raise_for_status()
         unique = _parse_gateway_catalog(resp.json())
         if not unique:
@@ -343,7 +429,10 @@ def _discover_gateway_models() -> tuple[list[str], dict[str, Any]]:
         return unique, {"discovered": True, "source": "gateway", "error": None}
     except httpx.UnsupportedProtocol:
         kind = "policy"
-        message = "The configured gateway URL uses a scheme that is not allowed; only http/https gateway URLs are permitted."
+        message = (
+            "The configured gateway URL uses a scheme that is not allowed; "
+            "only http/https gateway URLs are permitted."
+        )
     except httpx.TransportError as exc:
         if _is_tls_failure(exc):
             kind = "tls"
@@ -359,16 +448,100 @@ def _discover_gateway_models() -> tuple[list[str], dict[str, Any]]:
     except (json.JSONDecodeError, UnicodeDecodeError, _MalformedCatalogError):
         kind = "malformed"
         message = "The gateway response could not be parsed as a model catalog."
-    except Exception as exc:  # contract is never-raise: classify and degrade.
+    except Exception as exc:
         kind = "unexpected"
         message = "An unexpected error occurred while discovering gateway models."
         logger.info("gateway model discovery raised %s", type(exc).__name__)
     logger.warning("gateway model discovery failed: kind=%s detail=%s", kind, message)
-    return [settings_store.current().default_model], {
+    return [], {
         "discovered": False,
         "source": "stored_default",
         "error": {"kind": kind, "message": message},
     }
+
+
+def _discover_litellm_proxy_models(
+    *,
+    filter_prefix: str | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    base, key = _litellm_proxy_env()
+    if not base:
+        return [settings_store.current().default_model], {
+            "discovered": False,
+            "source": "stored_default",
+            "error": {
+                "kind": "not_configured",
+                "message": "No LLM gateway is configured; the stored default is the only known-good model.",
+            },
+        }
+    url = _openai_compatible_models_url(base)
+    models, discovery = _fetch_models_catalog(url, key)
+    if filter_prefix:
+        models = sorted(m for m in models if m.startswith(f"{filter_prefix}/"))
+        if models:
+            return models, {"discovered": True, "source": "gateway", "error": None}
+        if discovery.get("discovered") is False and discovery.get("error"):
+            error = discovery.get("error")
+            if isinstance(error, dict) and error.get("kind") == "empty":
+                return [], discovery
+            return [settings_store.current().default_model], discovery
+        return [], {
+            "discovered": False,
+            "source": "gateway",
+            "error": {
+                "kind": "empty",
+                "message": "The gateway answered but returned no models for this provider profile.",
+            },
+        }
+    if discovery.get("discovered"):
+        return models, discovery
+    error = discovery.get("error")
+    if (
+        discovery.get("source") == "gateway"
+        and isinstance(error, dict)
+        and error.get("kind") == "empty"
+    ):
+        return [], discovery
+    return [settings_store.current().default_model], discovery
+
+
+def _discover_gateway_models() -> tuple[list[str], dict[str, Any]]:
+    """Return (model_ids, discovery_metadata) for the configured gateway."""
+    if _is_jedai_only_profile():
+        jedai_base = os.environ.get("JEDAI_GATEWAY_API_BASE", "").strip()
+        upstream, jedai_discovery = _fetch_models_catalog(
+            _openai_compatible_models_url(jedai_base),
+            _jedai_virtual_key(),
+        )
+        if jedai_discovery.get("discovered"):
+            return _as_jedai_sidecar_aliases(upstream), jedai_discovery
+        filtered, proxy_discovery = _discover_litellm_proxy_models(
+            filter_prefix=_JEDAI_ALIAS_PREFIX
+        )
+        if filtered:
+            return filtered, {"discovered": True, "source": "gateway", "error": None}
+        if jedai_discovery.get("error"):
+            return [settings_store.current().default_model], {
+                "discovered": False,
+                "source": "stored_default",
+                "error": jedai_discovery["error"],
+            }
+        return filtered or [settings_store.current().default_model], proxy_discovery
+
+    models, discovery = _discover_litellm_proxy_models()
+    if discovery.get("discovered"):
+        return models, discovery
+
+    if _jedai_gateway_configured():
+        jedai_base = os.environ.get("JEDAI_GATEWAY_API_BASE", "").strip()
+        upstream, jedai_discovery = _fetch_models_catalog(
+            _openai_compatible_models_url(jedai_base),
+            _jedai_virtual_key(),
+        )
+        if jedai_discovery.get("discovered"):
+            return upstream, jedai_discovery
+
+    return models, discovery
 
 
 def _fetch_available_models() -> list[str]:

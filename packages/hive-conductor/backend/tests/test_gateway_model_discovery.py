@@ -48,11 +48,19 @@ def store() -> Any:
     settings_store.reset()
 
 
+def _clear_litellm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in settings_routes._LITELLM_BASE_ENV_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+
+
 def _gateway_env(monkeypatch: pytest.MonkeyPatch, base: str = "http://proxy.invalid/v1") -> None:
+    _clear_litellm_env(monkeypatch)
+    monkeypatch.delenv("JEDAI_GATEWAY_API_BASE", raising=False)
+    monkeypatch.delenv("JEDAI_API_KEY", raising=False)
     monkeypatch.setenv("LITELLM_API_BASE", base)
     monkeypatch.setenv("LITELLM_API_KEY", "unused-by-the-stub")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
 
 
 def _gateway_response(status: int, payload: Any) -> httpx.Response:
@@ -75,8 +83,17 @@ def test_no_configured_gateway_is_not_configured_not_discovered(
     store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _save_default()
-    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
+    _clear_litellm_env(monkeypatch)
+    monkeypatch.delenv("JEDAI_GATEWAY_API_BASE", raising=False)
+    monkeypatch.delenv("JEDAI_API_KEY", raising=False)
+    from config import Settings
+
+    monkeypatch.setattr(
+        settings_routes,
+        "load_app_settings",
+        lambda: Settings(litellm_api_base=None),
+    )
+    monkeypatch.setattr(settings_routes, "effective_llm_gateway_key", lambda _s: None)
 
     out = settings_routes.settings_models()
 
@@ -84,6 +101,82 @@ def test_no_configured_gateway_is_not_configured_not_discovered(
     assert out["discovered"] is False
     assert out["source"] == "stored_default"
     assert out["error"]["kind"] == "not_configured"
+
+
+def test_litellm_gateway_wins_over_jedai_homelab_profile(
+    store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_default()
+    monkeypatch.setenv("JEDAI_GATEWAY_API_BASE", "http://jedai.invalid/v1")
+    monkeypatch.setenv("JEDAI_API_KEY", "jedai-key")
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "MISTRAL_API_KEY",
+        "XAI_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    _gateway_env(monkeypatch, base="http://proxy.invalid/v1")
+    seen: list[str] = []
+
+    def _get(url: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        seen.append(url)
+        return _gateway_response(200, {"data": [{"id": "prod-model"}]})
+
+    monkeypatch.setattr(settings_routes.httpx, "get", _get)
+    out = settings_routes.settings_models()
+
+    assert seen == ["http://proxy.invalid/v1/models"]
+    assert out["models"] == ["prod-model"]
+    assert out["discovered"] is True
+
+
+def test_compose_litellm_hostname_maps_to_loopback_on_host(
+    store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_default()
+    monkeypatch.setattr(settings_routes, "_process_runs_in_container", lambda: False)
+    _gateway_env(monkeypatch, base="http://litellm:4000/v1")
+    seen: list[str] = []
+
+    def _get(url: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        seen.append(url)
+        return _gateway_response(200, {"data": [{"id": "local-proxy"}]})
+
+    monkeypatch.setattr(settings_routes.httpx, "get", _get)
+    out = settings_routes.settings_models()
+
+    assert seen == ["http://127.0.0.1:4000/v1/models"]
+    assert out["discovered"] is True
+    assert out["models"] == ["local-proxy"]
+
+
+def test_jedai_fallback_when_litellm_proxy_unreachable(
+    store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corporate JedAI + compose LiteLLM hostname: try proxy, then JedAI (#287)."""
+    _save_default()
+    _gateway_env(monkeypatch, base="http://litellm:4000/v1")
+    monkeypatch.setenv("JEDAI_GATEWAY_API_BASE", "https://jedai.invalid")
+    monkeypatch.setenv("JEDAI_API_KEY", "jedai-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "direct-key")
+
+    def _get(url: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        if "jedai.invalid" in url:
+            return _gateway_response(200, {"data": [{"id": "corp-model"}]})
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(settings_routes.httpx, "get", _get)
+
+    out = settings_routes.settings_models()
+
+    assert out["models"] == ["corp-model"]
+    assert out["discovered"] is True
+    assert out["source"] == "gateway"
+    assert out["error"] is None
 
 
 def test_a_gateway_answer_is_marked_discovered(

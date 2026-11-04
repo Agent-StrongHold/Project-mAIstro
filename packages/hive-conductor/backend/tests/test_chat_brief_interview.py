@@ -49,7 +49,7 @@ def llm(monkeypatch) -> _CountingLLM:
     return fake
 
 
-def _workspace(admin_client, *, share_with_user: bool = True) -> str:
+def _workspace(admin_client, *, share_with_user: bool = True, member_role: str = "editor") -> str:
     r = admin_client.post(
         "/v1/workspaces",
         json={"persona_template_id": "content_creator", "name": "Rooted Craft Co"},
@@ -58,7 +58,7 @@ def _workspace(admin_client, *, share_with_user: bool = True) -> str:
     ws = r.json()["id"]
     if share_with_user:
         r = admin_client.post(
-            f"/v1/workspaces/{ws}/members", json={"user_id": "user", "role": "editor"}
+            f"/v1/workspaces/{ws}/members", json={"user_id": "user", "role": member_role}
         )
         assert r.status_code == 200
     return ws
@@ -111,6 +111,24 @@ def test_a_work_request_in_a_workspace_opens_the_interview_instead_of_the_model(
 
 @pytest.mark.ac("SPEC-091726-7c2a/AC-2")
 @pytest.mark.ac("SPEC-091726-7c2a/AC-8")
+def _wire_goal_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    import services.engine as engine_mod
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.goals import InMemoryGoalStore
+    from maistro.goals.authorization import ScopedGoalStore
+
+    goal_store = InMemoryGoalStore()
+    workspaces = canonical_store_for_tests()
+    goal_reader = ScopedGoalStore(goal_store, workspaces)
+    monkeypatch.setattr(
+        engine_mod.EngineService,
+        "goal_reader",
+        property(lambda _self: goal_reader),
+    )
+
+
 def test_answers_advance_the_interview_and_commit_produces_the_draft(
     admin_client, authed_client, llm
 ) -> None:
@@ -145,6 +163,37 @@ def test_answers_advance_the_interview_and_commit_produces_the_draft(
     events = _stream(authed_client, "thanks", ws)
     assert [e["type"] for e in events] == ["done"]
     assert llm.calls == 1
+
+
+def test_commit_writes_a_goal_when_the_canonical_store_is_bridged(
+    admin_client, authed_client, llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from services.workspace_authority import canonical_store_for_tests
+
+    _wire_goal_reader(monkeypatch)
+    ws = _workspace(admin_client, member_role="owner")
+
+    async def _ensure_project_root() -> None:
+        project_store = canonical_store_for_tests().project_store
+        try:
+            await project_store.root_for_workspace(ws)
+        except Exception:
+            await project_store.create_root(ws)
+
+    asyncio.run(_ensure_project_root())
+    _stream(authed_client, "New reel about the grouting haze", ws)
+    for text in ("the grouting haze fix", "teach it", "the assembled cut", "you decide"):
+        _stream(authed_client, text, ws)
+
+    brief, done = _stream(authed_client, "commit it", ws)
+    assert brief["event"] == "drafted"
+    assert brief["written"][0]["kind"] == "goal"
+    assert brief["written"][0]["id"]
+    assert "A Goal was written" in done["content"]
+    assert "#458 and #774" not in done["content"]
+    assert llm.calls == 0
 
 
 @pytest.mark.ac("SPEC-091726-7c2a/AC-7")

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, apiGet, apiPost, fallbackMessage } from "../lib/api";
 import { randomId } from "../lib/ids";
 import type { ChatApiMessage, ChatSessionDetail, ChatSessionSummary } from "../lib/chatSessions";
@@ -12,6 +12,7 @@ import {
 import type {
   BriefField,
   BriefView,
+  BriefWritten,
   Message,
   Role,
   Session,
@@ -27,14 +28,49 @@ const SOURCE_LABEL: Record<BriefField["source"], string> = {
   open: "open",
 };
 
+function briefWrittenMeta(written?: BriefWritten[]) {
+  const goal = written?.find((w) => w.kind === "goal" && w.id);
+  if (goal) {
+    return (
+      <Link
+        to={`/goals?goal=${encodeURIComponent(goal.id)}`}
+        className="brief-panel-meta"
+        style={{ textDecoration: "underline" }}
+      >
+        Goal written — open in Goals
+      </Link>
+    );
+  }
+  return <span className="brief-panel-meta">nothing written yet</span>;
+}
+
+function BriefProgress({ known, needed }: { known: number; needed: number }) {
+  const pct = needed > 0 ? Math.min(100, Math.round((known / needed) * 100)) : 0;
+  return (
+    <div
+      className="brief-panel-progress"
+      role="progressbar"
+      aria-valuenow={known}
+      aria-valuemin={0}
+      aria-valuemax={needed}
+      aria-label={`Brief progress: ${known} of ${needed} fields captured`}
+    >
+      <div className="brief-panel-progress-fill" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
 function BriefSoFar({ brief }: { brief: BriefView }) {
   if (brief.draft) {
     return (
       <aside className="brief-panel card" aria-label="Brief draft">
         <div className="brief-panel-head">
           <span>Draft ready</span>
-          <span className="brief-panel-meta">nothing written yet</span>
+          {briefWrittenMeta(brief.written)}
         </div>
+        <p className="brief-panel-lede">
+          Review the draft below. When you commit, a revision-1 Goal can be written to Goals.
+        </p>
         {Object.entries(brief.draft.fields).map(([key, value]) => (
           <div key={key} className={`brief-row${brief.draft?.assumed.includes(key) ? " brief-row--assumed" : ""}`}>
             <span className="brief-row-label">{key}</span>
@@ -46,14 +82,20 @@ function BriefSoFar({ brief }: { brief: BriefView }) {
     );
   }
   if (!brief.summary) return null;
+  const { known, needed } = brief.summary;
   return (
     <aside className="brief-panel card" aria-label="Brief so far" aria-live="polite">
       <div className="brief-panel-head">
         <span>Brief so far</span>
         <span className="brief-panel-meta">
-          {brief.summary.known} of {brief.summary.needed} needed · nothing written yet
+          {known} of {needed} needed
         </span>
       </div>
+      <p className="brief-panel-lede">
+        Answer in Chat to fill gaps. Tags show whether each field came from you, records, or assumptions.
+      </p>
+      <BriefProgress known={known} needed={needed} />
+      <div className="brief-panel-written">{briefWrittenMeta(brief.written)}</div>
       {brief.summary.fields.map((f) => (
         <div key={f.key} className={`brief-row brief-row--${f.source}`}>
           <span className="brief-row-label">{f.label}</span>
@@ -241,7 +283,12 @@ export default function ChatPage() {
   const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
   const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
+  const [modelFilter, setModelFilter] = useState("");
   const MODELS = models;
+  const filteredModels =
+    modelFilter.trim().length === 0
+      ? MODELS
+      : MODELS.filter((m) => m.toLowerCase().includes(modelFilter.trim().toLowerCase()));
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -268,21 +315,27 @@ export default function ChatPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    fetchModelsCatalog()
-      .then((res) => res.json())
-      .then((data) => {
+    void (async () => {
+      try {
+        const [catalogRes, settings] = await Promise.all([
+          fetchModelsCatalog(),
+          apiGet<{ default_model?: string }>("/v1/settings").catch(() => ({ default_model: "" })),
+        ]);
+        const data = await catalogRes.json();
         const arr = Array.isArray(data) ? data : data.models || data.data || [];
         const list = arr
           .map((m: { id?: string; name?: string } | string) =>
             typeof m === "string" ? m : m.id || m.name || "",
           )
           .filter(Boolean);
-        if (list.length > 0) {
-          setModels(list);
-          setModel(list[0]);
-        }
-      })
-      .catch(() => {});
+        if (list.length === 0) return;
+        setModels(list);
+        const preferred = settings.default_model?.trim() || "";
+        setModel(list.includes(preferred) ? preferred : list[0]);
+      } catch {
+        /* picker stays empty until discovery succeeds */
+      }
+    })();
   }, []);
 
   const activeSession =
@@ -508,8 +561,17 @@ export default function ChatPage() {
               // Workspace/session switch must not paint onto the new selection.
               if (streamEpochRef.current !== epoch) continue;
               // The interview's state after this turn: open (summary + question),
-              // drafted (the draft, nothing written), or gone (dropped).
-              const view: BriefView | null = evt.interview || evt.draft ? evt : null;
+              // drafted (the draft plus any canonical writes), or gone (dropped).
+              const view: BriefView | null =
+                evt.interview || evt.draft
+                  ? {
+                      event: evt.event,
+                      summary: evt.summary ?? null,
+                      question: evt.question ?? null,
+                      draft: evt.draft,
+                      written: evt.written,
+                    }
+                  : null;
               updateSession(sessionId, (s) => ({ ...s, brief: view }));
             } else if (evt.type === "status") {
               patchAssistant((m) => ({ ...m, status: evt.message }));
@@ -720,7 +782,19 @@ export default function ChatPage() {
             </button>
             {modelOpen && (
               <ul className="model-dropdown" role="listbox" aria-label="Select model">
-                {MODELS.map((m) => (
+                {MODELS.length > 24 && (
+                  <li className="model-option model-option--search">
+                    <input
+                      className="input-field"
+                      type="search"
+                      placeholder="Filter models…"
+                      value={modelFilter}
+                      onChange={(e) => setModelFilter(e.target.value)}
+                      aria-label="Filter models"
+                    />
+                  </li>
+                )}
+                {filteredModels.map((m) => (
                   <li
                     key={m}
                     role="option"

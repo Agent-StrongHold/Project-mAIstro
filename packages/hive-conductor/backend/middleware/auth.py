@@ -64,6 +64,13 @@ _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 _PROTECTED_OPS = authorization.PROTECTED_OPS
 
 
+def _public_pre_setup_route(method: str, path: str) -> bool:
+    """Routes that must work before first-run provisioning (#287)."""
+    if method != "GET":
+        return False
+    return path == "/v1/settings/models" or _matches_public_prefix(path, "/v1/install/")
+
+
 def _matches_public_prefix(path: str, prefix: str) -> bool:
     """True if path is exactly prefix, or prefix followed by '/'.
 
@@ -169,7 +176,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # when no account exists yet to authenticate with. Public pre-setup;
         # normal auth applies once setup completes (same one-shot boundary as
         # /v1/setup/complete's 409 guard).
-        if _matches_public_prefix(path, "/v1/install/") and not self._setup_complete():
+        if _public_pre_setup_route(request.method, path) and not self._setup_complete():
             return await call_next(request)
 
         if request.method == "OPTIONS":

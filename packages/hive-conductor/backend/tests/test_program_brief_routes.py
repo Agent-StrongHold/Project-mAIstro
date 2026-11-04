@@ -24,6 +24,23 @@ def _clear_state():
             store.pop(key, None)
 
 
+def _wire_goal_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    import services.engine as engine_mod
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.goals import InMemoryGoalStore
+    from maistro.goals.authorization import ScopedGoalStore
+
+    goal_store = InMemoryGoalStore()
+    workspaces = canonical_store_for_tests()
+    goal_reader = ScopedGoalStore(goal_store, workspaces)
+    monkeypatch.setattr(
+        engine_mod.EngineService,
+        "goal_reader",
+        property(lambda _self: goal_reader),
+    )
+
+
 def _create_workspace(admin_client, persona_template_id: str = "content_creator") -> str:
     r = admin_client.post(
         "/v1/workspaces",
@@ -89,6 +106,27 @@ def test_answers_move_the_interview_and_the_draft_names_what_was_assumed(admin_c
     assert draft["sources"]["deadline"] == "assumed"
     assert draft["assumed"] == ["deadline", "voice", "claims", "mode"]
     assert r.json()["written"] == [], "no Goal or CreativeBrief store exists to write yet"
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-7")
+def test_draft_writes_a_goal_when_the_canonical_reader_is_bridged(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wire_goal_reader(monkeypatch)
+    ws = _create_workspace(admin_client)
+    admin_client.post(
+        f"/v1/program/brief/start?workspace_id={ws}",
+        json={"opening": "New reel about the grouting haze"},
+    )
+    for text in ("the grouting haze fix", "teach it", "the assembled cut", "you decide"):
+        admin_client.post(f"/v1/program/brief/answer?workspace_id={ws}", json={"answer": text})
+
+    r = admin_client.post(f"/v1/program/brief/draft?workspace_id={ws}")
+    assert r.status_code == 200
+    written = r.json()["written"]
+    assert len(written) == 1
+    assert written[0]["kind"] == "goal"
+    assert written[0]["id"]
 
 
 @pytest.mark.ac("SPEC-091726-7c2a/AC-7")

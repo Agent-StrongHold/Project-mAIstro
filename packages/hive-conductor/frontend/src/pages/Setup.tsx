@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { apiGet, fallbackMessage, ApiError } from "../lib/api";
+import { apiGet, fallbackMessage, ApiError, formatApiDetail } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
@@ -20,6 +20,8 @@ type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" 
 // list usable for offline setup, but it must never be presented as
 // successfully discovered gateway state.
 type ModelCheck = "pending" | "ok" | "failed";
+
+const PASSWORD_MIN_LENGTH = 8;
 
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
@@ -371,7 +373,7 @@ export default function Setup() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail ?? fallbackMessage(res.status));
+        throw new Error(formatApiDetail(data.detail) ?? fallbackMessage(res.status));
       }
       const data = await res.json();
       if (data.mnemonic) {
@@ -603,6 +605,9 @@ export default function Setup() {
                   <SecretField label="Daily user password" value={userPassword} onChange={setUserPassword} autoComplete="new-password" required style={{ flex: 1 }} />
                 </div>
               </div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
+                Each password must be at least {PASSWORD_MIN_LENGTH} characters.
+              </div>
             </div>
           )}
 
@@ -696,7 +701,11 @@ export default function Setup() {
               // The declared "auto" default already resolves the step via
               // resolvedHardware, so only an undeclared default blocks.
               (step === 1 && !resolvedHardware && Object.keys(presets).length > 0) ||
-              (step === 2 && (!adminUsername.trim() || !adminPassword || !userUsername.trim() || !userPassword))
+              (step === 2 &&
+                (!adminUsername.trim() ||
+                  adminPassword.length < PASSWORD_MIN_LENGTH ||
+                  !userUsername.trim() ||
+                  userPassword.length < PASSWORD_MIN_LENGTH))
             }>
               next {"\u2192"}
             </button>

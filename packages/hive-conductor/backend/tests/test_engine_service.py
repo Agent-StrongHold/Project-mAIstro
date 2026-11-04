@@ -171,6 +171,9 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
 ) -> None:
     from services.engine import EngineService
 
+    for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+
     class _Settings:
         maistro_router_api_key = ""
         maistro_base_url = "http://localhost:8000"
@@ -184,6 +187,37 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
     assert type(svc._agent_port).__name__ == "StubAgentPort"
     # production hive_mode → MaistroServerTaskBackend, never a TaskRunner
     assert type(svc._backend).__name__ == "MaistroServerTaskBackend"
+
+
+async def test_start_with_database_and_no_router_key_attempts_embedded_bridge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Homelab compose: DATABASE_URL without MAISTRO_ROUTER_API_KEY still composes
+    the Container so ``goal_reader`` and canonical Workspaces are live."""
+    from adapters.maistro_core import MaistroCoreBridge
+    from config import Settings
+    from services.engine import _EMBEDDED_LOCAL_ROUTER_KEY, EngineService
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'hive.db'}")
+    seen: list[str] = []
+
+    async def _record_start(self: MaistroCoreBridge, settings: Any) -> None:
+        seen.append(settings.maistro_router_api_key or "")
+        self._container = SimpleNamespace(goal_reader=object(), capabilities=None)
+
+    monkeypatch.setattr(MaistroCoreBridge, "start", _record_start)
+
+    settings = Settings(
+        maistro_router_api_key="",
+        maistro_base_url="http://localhost:8000",
+        hive_mode="production",
+        hive_default_workspace_id="default",
+    )
+
+    svc = EngineService()
+    await svc.start(settings)
+    assert seen == [_EMBEDDED_LOCAL_ROUTER_KEY]
+    assert type(svc._agent_port).__name__ == "MaistroCoreBridge"
 
 
 async def test_bridge_start_degradation_keeps_evolve_unavailable(

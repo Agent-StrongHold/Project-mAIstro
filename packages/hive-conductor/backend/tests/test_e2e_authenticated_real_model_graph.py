@@ -87,7 +87,7 @@ pytestmark = [pytest.mark.contract("behavioral")]
 
 GATEWAY_CONTENT = "E2E real-model gateway answer: canonical graph executed"
 GATEWAY_KEY = "e2e-gateway-key"
-GATEWAY_MODEL = "gemini/gemini-2.5-flash"
+GATEWAY_MODEL = "gemini/gemini-3-flash-preview"
 
 
 # --- the deployment's model-gateway interface, live on 127.0.0.1 -------------

@@ -33,6 +33,11 @@ export interface BriefField {
   source: "user" | "verbatim" | "record" | "assumed" | "open";
 }
 
+export interface BriefWritten {
+  kind: string;
+  id: string;
+}
+
 export interface BriefView {
   event: string;
   summary: {
@@ -49,6 +54,7 @@ export interface BriefView {
     can_assume: boolean;
   } | null;
   draft?: { fields: Record<string, string>; assumed: string[]; notes: string[] };
+  written?: BriefWritten[];
 }
 
 export interface Session {

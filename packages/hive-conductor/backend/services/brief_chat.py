@@ -5,9 +5,10 @@ belongs to the brief interview for the caller's workspace. It does when an
 interview is already open there, or when the turn asks for work to be made.
 Then the reply is the interview's, not a model's: the next question, a
 reflection of what was just recorded, the summary once every required field
-is known, or the draft once the person says commit. Nothing here writes a
-Goal; the draft is what the Goal and CreativeBrief writers (#458, #774) will
-consume, and the reply says so.
+is known, or the draft once the person says commit. On commit, a Goal is
+written when the canonical Goal store is bridged (#805); otherwise the draft
+is returned with ``written: []`` and the CreativeBrief writer (#774) remains
+separate.
 
 The phrasing is deterministic on purpose (ADR-091726-7c2a): the same answer
 gives the same reply on every run, so the behaviour is testable without a
@@ -36,6 +37,7 @@ from maistro.agents.brief_interview import (
     start_brief_interview,
 )
 from services import brief_store
+from services.goal_commit import commit_brief_as_goal
 from services.workspace_mode import is_workspace_request_authorized
 
 #: A turn that asks for something to be made. Deliberately narrow: a question
@@ -75,13 +77,14 @@ class BriefTurn:
     event: str
     brief: dict[str, Any]
     draft: dict[str, Any] | None = None
+    written: list[dict[str, str]] = field(default_factory=list)
     citations: list[str] = field(default_factory=list)
 
     def payload(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": "brief", "event": self.event, **self.brief}
         if self.draft is not None:
             out["draft"] = self.draft
-            out["written"] = []
+            out["written"] = self.written
         return out
 
 
@@ -172,12 +175,20 @@ def _reflect(reply: BriefReply) -> str:
             return ""
 
 
-def _draft_text(draft: dict[str, Any]) -> str:
+def _draft_text(draft: dict[str, Any], *, written: list[dict[str, str]]) -> str:
     fields = "; ".join(f"{_label(k).capitalize()}: {v}" for k, v in draft["fields"].items())
     assumed = ", ".join(_label(k) for k in draft["assumed"]) or "nothing"
+    goal_written = next((w for w in written if w.get("kind") == "goal"), None)
+    if goal_written and goal_written.get("id"):
+        tail = (
+            f"A Goal was written ({goal_written['id']}). "
+            "The CreativeBrief writer (#774) is still separate."
+        )
+    else:
+        tail = _NOT_WRITTEN
     return (
         f"Committed as a draft. {fields}. Assumed: {assumed}. Notes: "
-        f"{'; '.join(draft['notes']) or 'none'}. {_NOT_WRITTEN}"
+        f"{'; '.join(draft['notes']) or 'none'}. {tail}"
     )
 
 
@@ -200,16 +211,25 @@ def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     )
 
 
-def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn:
+async def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn:
     # Only called once brief_ready() holds, so the gate cannot refuse here.
     draft = commit_brief(_SCRIPT, state)
     brief_store.clear_interview(user_id, workspace_id)
+    written: list[dict[str, str]] = []
+    goal_id = await commit_brief_as_goal(user_id, workspace_id, draft)
+    if goal_id:
+        written.append({"kind": "goal", "id": goal_id})
+    citations = ["draft produced"]
+    citations.append(
+        f"written: goal {goal_id}" if goal_id else "written: nothing (no Goal store yet)"
+    )
     return BriefTurn(
-        text=_draft_text(draft),
+        text=_draft_text(draft, written=written),
         event="drafted",
         brief=_view(None),
         draft=draft,
-        citations=["draft produced", "written: nothing (no Goal store yet)"],
+        written=written,
+        citations=citations,
     )
 
 
@@ -259,5 +279,5 @@ async def brief_turn(user_id: str, workspace_id: str | None, text: str) -> Brief
     if state is None:
         return _start(user_id, workspace_id, text) if _WORK_REQUEST.search(text) else None
     if brief_ready(_SCRIPT, state) and _COMMIT.match(text):
-        return _drafted(user_id, workspace_id, state)
+        return await _drafted(user_id, workspace_id, state)
     return _answered(user_id, workspace_id, state, text)

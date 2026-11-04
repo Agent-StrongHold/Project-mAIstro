@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from services import brief_store
 from services import program_store as prog
+from services.goal_commit import commit_brief_as_goal
 from services.persona_authoring import all_persona_templates
 from services.program_hyperagent import (
     apply_guidance_and_pulse,
@@ -284,7 +285,11 @@ async def draft_brief(request: Request, workspace_id: str | None = None) -> dict
             "workspace_id": workspace_id,
         },
     )
-    return {"draft": draft, "written": [], **_brief_view(state)}
+    written: list[dict[str, str]] = []
+    goal_id = await commit_brief_as_goal(uid, project_id, draft)
+    if goal_id:
+        written.append({"kind": "goal", "id": goal_id})
+    return {"draft": draft, "written": written, **_brief_view(state)}
 
 
 @router.delete("/brief")

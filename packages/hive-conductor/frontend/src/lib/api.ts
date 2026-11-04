@@ -33,6 +33,36 @@ export function fallbackMessage(status: number): string {
   return "The request couldn't be completed. Try again.";
 }
 
+/** FastAPI validation arrays and structured `detail` → one human-readable string. */
+export function formatApiDetail(detail: unknown): string | undefined {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const parts: string[] = [];
+    for (const item of detail) {
+      if (!item || typeof item !== "object") {
+        parts.push(String(item));
+        continue;
+      }
+      const record = item as { msg?: unknown; loc?: unknown[] };
+      const text =
+        typeof record.msg === "string"
+          ? record.msg.replace(/^Value error, /, "")
+          : String(item);
+      const loc = Array.isArray(record.loc)
+        ? record.loc.filter((p) => p !== "body").join(".")
+        : "";
+      parts.push(loc ? `${loc}: ${text}` : text);
+    }
+    return parts.join(" ");
+  }
+  if (detail && typeof detail === "object") {
+    const code =
+      (detail as { message?: unknown }).message ?? (detail as { error?: unknown }).error;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
 // A hung request used to leave spinners and empty states up forever: nothing
 // in the shared client ever gave up on one (#1423). CRUD calls through this
 // client complete in well under this; the two genuinely long-running
@@ -118,15 +148,7 @@ async function request<T>(
         : undefined;
     // Human copy: a string detail verbatim, a structured detail's message/error
     // code, otherwise the status fallback — never "[object Object]".
-    let detail: string | undefined;
-    if (typeof detailObj === "string") {
-      detail = detailObj;
-    } else if (detailObj && typeof detailObj === "object") {
-      const code =
-        (detailObj as { message?: unknown }).message ??
-        (detailObj as { error?: unknown }).error;
-      if (typeof code === "string") detail = code;
-    }
+    const detail = formatApiDetail(detailObj);
     throw new ApiError(detail || fallbackMessage(r.status), r.status, path, detailObj);
   }
   return { data: parsed as T, status: r.status };

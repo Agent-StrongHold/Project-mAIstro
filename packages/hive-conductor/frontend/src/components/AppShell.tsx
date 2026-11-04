@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
 import { LandingSuggestionBanner } from "./LandingSuggestionBanner";
 import { LastSurfaceTracker } from "./LastSurfaceTracker";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useUser } from "../App";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { AppearanceToggle } from "./AppearanceToggle";
@@ -106,6 +106,12 @@ const fullNav = [
 // #1417 review: gated entries are only shown for sessions the canonical
 // authorization policy lets act on them (admins pass every gate, as in the
 // backend), so the nav never advertises a screen whose mutations all 403.
+function navLinkActive(to: string, isActive: boolean, pathname: string): boolean {
+  if (to !== "/home") return isActive;
+  const path = pathname.replace(/\/$/, "") || "/";
+  return path === "/home" || path === "/";
+}
+
 async function logout() {
   try {
     // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
@@ -123,6 +129,7 @@ async function logout() {
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
   const authorization = useAuthorization();
+  const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const nav = fullNav.filter((item) => {
     // One canonical filter for both gating spellings: `surface` resolves
@@ -164,7 +171,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <button className="drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close menu">&#x2715;</button>
         </div>
         <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", padding: "0 12px 8px" }}>
-          Multi-agent · multi-MCP · Force Convergence sandbox
+          Workspace agents · goals · workflows
         </div>
         {user && (
           <div className="drawer-user">
@@ -178,7 +185,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
             <NavLink
               key={item.to}
               to={item.to}
-              className={({ isActive }) => `drawer-link${isActive ? " active" : ""}`}
+              className={({ isActive }) =>
+                `drawer-link${navLinkActive(item.to, isActive, location.pathname) ? " active" : ""}`
+              }
               end={item.to === "/cli"}
               onClick={() => setDrawerOpen(false)}
               title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
@@ -200,7 +209,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <NavLink
             key={item.to}
             to={item.to}
-            className={({ isActive }) => `nav-icon${isActive ? " active" : ""}`}
+            className={({ isActive }) =>
+              `nav-icon${navLinkActive(item.to, isActive, location.pathname) ? " active" : ""}`
+            }
             end={item.to === "/cli"}
             title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
           >
