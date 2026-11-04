@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 from datetime import UTC, datetime
@@ -1292,3 +1293,166 @@ async def test_pg_observe_with_unresolved_terminal_status_marks_the_reservation_
     finally:
         await _cleanup(pool, suffix, [])
         await pool.close()
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_pg_concurrent_distinct_admissions_cannot_overspend_the_budget() -> None:
+    """#1196's PostgreSQL concurrency evidence: competing replicas racing
+    distinct Invocations against one limited budget cannot overspend it.
+
+    The SQLite seam proves the same race with two OS processes
+    (`test_two_os_processes_cannot_race_same_remaining_quota`); the PostgreSQL
+    seam serializes the read-hold-write critical section with a transactional
+    advisory lock. This is the proof that mechanism holds under real
+    concurrent pools: exactly as many admissions as the budget fits, every
+    loser durably denied, and the held total never above the limit.
+    """
+    asyncpg = pytest.importorskip("asyncpg")
+    suffix = uuid4().hex
+    budget_id = f"pg-budget-race-{suffix}"
+    binding = _binding(f"race-{suffix}")
+
+    async def estimate(_invocation: Invocation, _binding: Binding) -> QuotaEstimate:
+        return QuotaEstimate(principal_id="principal-pg", tokens=40)
+
+    pools = [await asyncpg.create_pool(_pg_dsn(), min_size=1, max_size=2) for _ in range(3)]
+    replicas = [PgInvocationQuota(pool, estimate=estimate, clock=lambda: 100) for pool in pools]
+    try:
+        await replicas[0].ensure_schema()
+        await replicas[0].register_budget(
+            QuotaBudget(
+                budget_id=budget_id,
+                unit="tokens",
+                limit=100,
+                period_start=0,
+                period_end=1000,
+                coverage_ref="test",
+                opening_spend=0,
+                provider_name="provider-pg",
+            )
+        )
+        # Six distinct Invocations, two per replica, all racing the same
+        # 100-token budget with 40-token bounds: exactly two fit (80 held);
+        # a third would take the held total to 120, over the limit.
+        invocations = [
+            _invocation(binding, invocation_id=f"pg-invocation-race-{index}-{suffix}")
+            for index in range(6)
+        ]
+
+        async def _attempt(quota: PgInvocationQuota, invocation: Invocation) -> str:
+            try:
+                await quota.reserve(invocation, binding)
+                return "admitted"
+            except InvocationQuotaDenied:
+                return "denied"
+
+        results = await asyncio.gather(
+            *(
+                _attempt(replicas[index % len(replicas)], invocations[index])
+                for index in range(len(invocations))
+            )
+        )
+
+        assert sorted(results) == ["admitted", "admitted"] + ["denied"] * 4
+        # The durable state agrees with the decisions: the budget's held total
+        # is exactly the two fitting holds -- never above the limit -- and each
+        # denial is a recorded decision, not a silently dropped candidate.
+        held = await pools[0].fetchval(
+            "SELECT COALESCE(SUM(held), 0) FROM invocation_quota_allocations WHERE budget_id=$1",
+            budget_id,
+        )
+        assert held == 80
+        states = {
+            row["invocation_id"]: row["state"]
+            for row in await pools[0].fetch(
+                "SELECT invocation_id, state FROM invocation_quota_reservations "
+                "WHERE invocation_id LIKE $1",
+                f"pg-invocation-race-%-{suffix}",
+            )
+        }
+        assert len(states) == 6
+        assert list(states.values()).count("held") == 2
+        assert list(states.values()).count("denied") == 4
+        denied_allocations = await pools[0].fetchval(
+            "SELECT COUNT(*) FROM invocation_quota_allocations a "
+            "JOIN invocation_quota_reservations r USING (invocation_id) "
+            "WHERE r.state = 'denied' AND a.invocation_id LIKE $1",
+            f"pg-invocation-race-%-{suffix}",
+        )
+        assert denied_allocations == 0
+    finally:
+        await _cleanup(pools[0], suffix, [budget_id])
+        for pool in pools:
+            await pool.close()
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_pg_concurrent_duplicate_settlement_charges_once() -> None:
+    """The replay half of #1196's concurrency evidence, raced: two replicas
+    settling the same completed Invocation concurrently must charge once.
+
+    Sequential duplicate settlement is already pinned across pool codecs
+    (`test_reservation_and_evidence_replay_across_pool_codecs_charge_once`);
+    this gathers the two `observe` calls so the loser arrives while the
+    winner's transaction is still in flight. The advisory lock plus evidence
+    identity must leave exactly one evidence row and one charge.
+    """
+    asyncpg = pytest.importorskip("asyncpg")
+    suffix = uuid4().hex
+    budget_id = f"pg-budget-settlerace-{suffix}"
+    binding = _binding(f"settle-race-{suffix}")
+
+    async def estimate(_invocation: Invocation, _binding: Binding) -> QuotaEstimate:
+        return QuotaEstimate(principal_id="principal-pg", tokens=40)
+
+    pools = [await asyncpg.create_pool(_pg_dsn(), min_size=1, max_size=2) for _ in range(2)]
+    replicas = [PgInvocationQuota(pool, estimate=estimate, clock=lambda: 100) for pool in pools]
+    try:
+        await replicas[0].ensure_schema()
+        await replicas[0].register_budget(
+            QuotaBudget(
+                budget_id=budget_id,
+                unit="tokens",
+                limit=100,
+                period_start=0,
+                period_end=1000,
+                coverage_ref="test",
+                opening_spend=0,
+                provider_name="provider-pg",
+            )
+        )
+        invocation = _invocation(binding, invocation_id=f"pg-invocation-settlerace-{suffix}")
+        await replicas[0].reserve(invocation, binding)
+
+        completed = invocation.model_copy(
+            update={
+                "status": InvocationStatus.COMPLETED,
+                "finished_at": datetime.now(UTC),
+                "usage": InvocationUsage(
+                    units="tokens", input_units=30, output_units=20, cost_cents=2.5
+                ),
+            }
+        )
+        await asyncio.gather(replicas[0].observe(completed), replicas[1].observe(completed))
+
+        row = await pools[0].fetchrow(
+            "SELECT spent, held FROM invocation_quota_allocations WHERE invocation_id=$1",
+            invocation.invocation_id,
+        )
+        assert (row["spent"], row["held"]) == (50, 0)
+        evidence = await pools[0].fetchval(
+            "SELECT COUNT(*) FROM invocation_quota_evidence WHERE invocation_id=$1",
+            invocation.invocation_id,
+        )
+        assert evidence == 1
+        state = await pools[0].fetchval(
+            "SELECT state FROM invocation_quota_reservations WHERE invocation_id=$1",
+            invocation.invocation_id,
+        )
+        assert state == "settled"
+    finally:
+        await _cleanup(pools[0], suffix, [budget_id])
+        for pool in pools:
+            await pool.close()
