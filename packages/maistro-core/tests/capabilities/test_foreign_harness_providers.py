@@ -9,6 +9,8 @@ microVM wiring that points the harness at the caller's workspace.
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import (
     OpenClawHarnessRunner,
@@ -20,7 +22,7 @@ from maistro.capabilities import (
 )
 from maistro.capabilities.providers.subprocess_harness import _Session
 from maistro.capabilities.slots.harness_runner import SLOT_NAME
-from maistro.tools.sandbox.microvm import MicroVMRunSpec, MicroVMSandbox
+from maistro.tools.sandbox.microvm import MicroVMRunSpec
 
 
 def _spec() -> AgentSpec:
@@ -207,12 +209,29 @@ class TestOpenClawMicroVMWiring:
         launcher = _FakeLauncher()
         factory = openclaw_microvm_factory(launcher, env={"OPENCLAW_GATEWAY_TOKEN": "t"})
         sandbox = await factory("/repos/target")
-        assert isinstance(sandbox, MicroVMSandbox)
         code, out = await sandbox.exec("openclaw agent --message 'hi'")
         assert code == 0 and out == "vm-ran"
+        # the VM's workspace is the workspace we pointed it at; the command line
+        # reaches the launcher verbatim through the selector-chosen backend
         assert launcher.specs[0].workspace == "/repos/target"
         # gateway credentials ride the operator-wired trusted env, not the turn
         assert launcher.specs[0].env == {"OPENCLAW_GATEWAY_TOKEN": "t"}
+        assert launcher.specs[0].command == "openclaw agent --message 'hi'"
+        assert launcher.specs[0].config.network == "none"  # the policy's deny, not the substrate's
+
+    async def test_a_policy_the_substrate_cannot_honour_refuses(self) -> None:
+        from maistro.sandbox import EgressGrant, EgressMode, WorkloadPolicy
+        from maistro.sandbox.backends.launcher_vm import LauncherVMUnavailableError
+
+        networked = WorkloadPolicy(
+            min_tier="vm",
+            egress=EgressGrant(mode=EgressMode.HOST, reason="test"),
+            reason="test policy",
+        )
+        factory = openclaw_microvm_factory(_FakeLauncher(), policy=networked)
+
+        with pytest.raises(LauncherVMUnavailableError, match="deny-only"):
+            await factory("/repos/target")
 
     async def test_runner_convenience_end_to_end(self) -> None:
         launcher = _FakeLauncher()
@@ -229,11 +248,28 @@ class TestPiMicroVMWiring:
         launcher = _FakeLauncher()
         factory = pi_microvm_factory(launcher, env={"ANTHROPIC_API_KEY": "k"})
         sandbox = await factory("/repos/target")
-        assert isinstance(sandbox, MicroVMSandbox)
         code, out = await sandbox.exec("pi -p 'hi'")
         assert code == 0 and out == "vm-ran"
+        # the VM's workspace is the repo we pointed it at; the command line
+        # reaches the launcher verbatim through the selector-chosen backend
         assert launcher.specs[0].workspace == "/repos/target"
         assert launcher.specs[0].env == {"ANTHROPIC_API_KEY": "k"}
+        assert launcher.specs[0].command == "pi -p 'hi'"
+        assert launcher.specs[0].config.network == "none"  # the policy's deny, not the substrate's
+
+    async def test_a_policy_the_substrate_cannot_honour_refuses(self) -> None:
+        from maistro.sandbox import EgressGrant, EgressMode, WorkloadPolicy
+        from maistro.sandbox.backends.launcher_vm import LauncherVMUnavailableError
+
+        networked = WorkloadPolicy(
+            min_tier="vm",
+            egress=EgressGrant(mode=EgressMode.HOST, reason="test"),
+            reason="test policy",
+        )
+        factory = pi_microvm_factory(_FakeLauncher(), policy=networked)
+
+        with pytest.raises(LauncherVMUnavailableError, match="deny-only"):
+            await factory("/repos/target")
 
     async def test_runner_convenience_end_to_end(self) -> None:
         launcher = _FakeLauncher()

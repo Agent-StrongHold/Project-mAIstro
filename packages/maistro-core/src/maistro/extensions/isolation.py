@@ -292,7 +292,6 @@ class ExtensionIsolationProfile:
             )
         return WorkloadPolicy(
             min_tier=self.min_tier,
-            network_allowed=self.egress.grants_network,
             max_memory_mb=self.memory_mb,
             max_timeout_s=self.timeout_s,
             reason=(
@@ -532,7 +531,6 @@ def build_sandbox_config(
         max_file_mb=(
             profile.max_file_mb if max_file_mb is None else min(max_file_mb, profile.max_file_mb)
         ),
-        network=profile.egress.grants_network,
         writable_paths=list(profile.writable_paths),
         read_paths=list(profile.readable_paths),
         env=dict(env or {}),

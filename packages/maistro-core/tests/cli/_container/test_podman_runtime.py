@@ -76,8 +76,9 @@ class TestIsAvailable:
         # An availability probe must not repoint every other Docker consumer in
         # the process. This used to assert the opposite — that `is_available()`
         # wrote DOCKER_HOST — which is how the leak survived: the test codified
-        # it. Leaking it sent maistro.tools.sandbox.docker's `docker` CLI child
-        # at Podman's socket, silently scoring sandboxed benchmarks as failures.
+        # it. Leaking it sent the canonical sandbox backends' `docker` CLI
+        # child (at the time, the retired maistro.tools.sandbox.docker's) at
+        # Podman's socket, silently scoring sandboxed benchmarks as failures.
         assert os.environ.get("DOCKER_HOST") == _DOCKER_HOST_BEFORE
 
     def test_client_binds_to_socket_without_touching_environ(

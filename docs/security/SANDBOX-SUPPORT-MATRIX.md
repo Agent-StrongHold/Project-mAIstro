@@ -16,33 +16,56 @@ untrusted code badly — it is a host on which untrusted code does not run.
 
 | Tier | ADR-093 name | Backend shipped | Host requirements | Status |
 |---|---|---|---|---|
-| 1 | Hardware VM | *none yet* | `/dev/kvm` readable/writable **and** one of `firecracker`, `cloud-hypervisor`, `qemu-system-x86_64` on `PATH` | Detected, not implemented — see below |
+| 1 | Hardware VM | `KataSandboxBackend` (`docker --runtime=kata`) | `/dev/kvm` readable/writable; `kata-runtime` and `docker` on `PATH`; Docker daemon reports a configured Kata runtime; a preloaded OCI image; guest image must ship util-linux `setpriv` | **Shipped**, selected by the canonical selector |
 | 2 | User-space kernel | *none yet* | `runsc` on `PATH` | Detected, not implemented |
 | 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
 | — | Fake | `FakeSandboxBackend` | none | Dev/test only, never registered automatically |
 
-Tiers 1 and 2 are *probed* but have no backend. That is deliberate and is the
-honest state: `detect_host_capabilities()` will report `vm` or `gvisor` where
-the host has them, and `build_selector` will simply not register a tier it
-cannot construct. The result is a refusal, not a silent downgrade.
+Tier 2 is *probed* but has no backend. Tier 1 is supported only through the
+Kata deployment profile named above: a generic VMM binary is not enough to
+claim support. `detect_host_capabilities()` and `build_selector` refuse a host
+that cannot construct that exact profile. The result is a refusal, not a
+silent downgrade.
+
+### Caller-wired vm substrate: the launcher seam (deny-only)
+
+`LauncherVMSandboxBackend` wraps SPEC-205's `VMMLauncher` seam as a vm-tier
+backend. It is never registered by `build_selector` — a launcher cannot be
+probed as a host capability — but callers that wire one (the opencode harness
+factory is the shipped example) register it behind a `SandboxSelector`, so
+policy admission, egress and budgets remain the selector's decision (#76).
+Its support surface is deliberately narrow: **deny-only**. No shipped launcher
+can filter destinations, and none provides a networked guest profile, so a
+`SCOPED` grant is refused at selection and a `HOST` grant at spawn — the
+substrate's own `network` field is overridden to `none` by the policy grant
+rather than trusted.
 
 ## What each workload requires
 
 From `maistro.sandbox.policy`:
 
-| Policy | Minimum tier | Runs on a Tier-3-only host? |
+| Policy | Minimum tier | Supported disposition |
 |---|---|---|
-| `UNTRUSTED_CODE` | `vm` | **No** — refused |
-| `BENCHMARK_EVAL` | `vm` | **No** — refused |
-| `TRUSTED_TOOL` | `container` | No — refused (no container backend is shipped) |
-| `BROWSER_AUTOMATION` | `container` | No — refused |
+| `UNTRUSTED_CODE` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
+| `BENCHMARK_EVAL` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
+| `TRUSTED_TOOL` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
+| `BROWSER_AUTOMATION` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
+| `BUILDER_AGENT` | `vm` (autonomous) | **No — a builders session is unattended model-generated work; Kata profile or refusal** |
 | `DEV_ONLY` | `fake` | Only when the process opted into the fake |
 
-On a host with only bubblewrap, every policy above `bubblewrap` refuses. This
-reads as restrictive because it is: ADR-093's Tier 3 is "a guardrail against
-accidents and prompt-injection mistakes, **not** a security boundary against
-hostile code", so a Tier-3 host is not permitted to run the workloads whose
-stated reason for existing is containment of hostile code.
+`BUILDER_AGENT` (#76) is the policy the builders agent session runs under
+(`ContainerBuilderSandbox`): the tier floor is the same `vm` as
+`UNTRUSTED_CODE`; its larger memory/time ceilings are session envelopes, not
+isolation strength. The adapter owns only the host-side credential boundary
+(denylist-filtered seed copy, `.git`-filtered sync-back); the sandbox itself
+comes from the selector, so a host without the Kata profile refuses the
+session instead of running it in a weaker private container.
+
+On a host with only bubblewrap, every standard policy refuses. This reads as
+restrictive because it is: ADR-093's Tier 3 is "a guardrail against accidents
+and prompt-injection mistakes, **not** a security boundary against hostile
+code", so a Tier-3 host is not permitted to run the workloads whose stated
+reason for existing is containment of hostile code.
 
 ## Execution-mode floors (ADR-093 decision 6)
 
@@ -65,6 +88,31 @@ container isolation" — so `TRUSTED_TOOL` and `BROWSER_AUTOMATION` carry
 `untrusted=False` and are not floored by mode. Applying it to them would refuse
 a first-party API call on every host without gVisor, which is the ADR being
 read past its own scope.
+
+### Tier-1 runtime notes (live-profile verified)
+
+The live conformance (`test_kata_live_conformance.py`) ran green against real
+Kata VMs on a 3.32.0 static deployment with docker registered via
+`runtimeType: io.containerd.kata.v2`. Two host behaviors it exposed are now
+part of the backend contract, not the guest's goodwill:
+
+- **No-new-privileges is enforced per exec.** Kata's guest agent applies the
+  container's NNP flag to the init process but not to later `docker exec`
+  processes, so `KataSandboxBackend.exec` re-asserts the promise itself via
+  util-linux `setpriv --no-new-privs`. A guest image without `setpriv` fails
+  the exec closed instead of silently weaker — this is why `setpriv` appears
+  in the Tier-1 requirements above.
+- **virtiofs enforces host mode bits against the guest's id mapping, and the
+  guests run with every capability dropped.** A 0700 mkdtemp bind or a 0600
+  transferred file is unreadable in-guest even to root there. The bind root
+  therefore gets /tmp semantics (sticky, world-writable — it is the
+  workload's scratch by definition) and `write_file` widens exactly the
+  written chain through the same `O_NOFOLLOW` walk as the write itself
+  (`make_beneath_guest_readable`); a symlink swapped in after the transfer
+  aborts the widening instead of escaping the sandbox root. Residual edge: a
+  directory the *guest* creates inside the bind is not writable by the
+  host-side transfer until the caller widens it — guest-created paths are
+  guest-owned on the share.
 
 ## Egress
 
@@ -96,6 +144,43 @@ This is the sandbox boundary, and it is a different thing from
 `maistro.security.ssrf`, which guards the engine's *own* outbound calls. That
 guard is worth nothing against candidate code, which can open a socket without
 going through Python at all.
+
+## Product consumers (the cutover invariant, #76)
+
+Every supported code-execution consumer enters through the selector; none
+constructs a direct Docker/process/microVM sandbox of its own:
+
+| Consumer | Policy | Backend it gets |
+|---|---|---|
+| Sandbox MCP tools (`maistro.tools.sandbox.canonical`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
+| Evolve benchmark checks (`maistro_evolve.benchmarks.sandbox_exec`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
+| RSI microVM adapter (`maistro_rsi.sandbox.microvm`) | `UNTRUSTED_CODE` | Kata profile, else refusal |
+| RSI contained validation + builders sessions (`ContainerBuilderSandbox`) | `BUILDER_AGENT` | Kata profile, else refusal |
+| opencode foreign harness (`opencode_microvm_factory`) | `UNTRUSTED_CODE` | launcher-vm substrate registered behind the selector (deny-only) |
+
+The generic command facade defaults to `UNTRUSTED_CODE`, not `TRUSTED_TOOL`:
+model-generated shell and benchmark code are not trusted first-party API calls.
+Settings memory/time requests are clamped through `selector.build_config`.
+`network_disabled=True` tightens any policy to DENY; false cannot manufacture
+an egress grant. A networked first-party caller must explicitly supply its
+policy. Launcher factories register only through canonical wiring; their
+memory/time requests are capped by the selected canonical config.
+
+Kata transfers share the canonical descriptor-relative no-follow primitives,
+anchored to an instance-owned workspace fd. Execution and teardown serialize
+with transfers. Bounded concurrent output capture terminates the host client
+and removes the guest on overflow, timeout, or cancellation; killing only the
+Docker client is insufficient. Lifecycle CLI capture is bounded as well.
+
+The builders adapter's host-side credential boundary (denylist-filtered seed
+copy, `.git`-filtered sync-back) is caller policy on top of the selected
+backend, not a second isolation implementation. The retired direct Docker
+adapter (`maistro.tools.sandbox.docker`) was removed outright by the #76
+cutover after its last product callers converged on the selector: no product
+path may import or construct it again
+(`packages/maistro-core/tests/sandbox/test_single_authority.py`). The
+bootstrap hardening suite asserts the adapter never constructs a container
+CLI itself.
 
 ## Failure behaviour
 
@@ -132,7 +217,9 @@ and vanish with it — that distinction is asserted rather than assumed, because
 that nothing a workload writes outlives the sandbox except under `/work`. The
 environment is `--clearenv`'d and repopulated only from `SandboxConfig.env`.
 Network requires `--share-net`, which is reachable only through a policy whose
-`network_allowed` is true.
+`egress` grant names `EgressMode.HOST`. Egress is the sole network authority: a
+policy carries no separate `network_allowed` boolean, and `SandboxConfig.network`
+is mechanically rejected when true rather than silently ignored.
 
 ### Resource budgets (#80)
 
@@ -185,9 +272,15 @@ workdir while a host operation or bwrap process is using it.
   namespace, device, host socket, credential, privilege — plus resource
   exhaustion and cleanup, and every expectation in it was measured against a
   live sandbox before it was written down. The bubblewrap lane in CI *is* the
-  designated conformance lane: Tiers 1 and 2 have no backend to conform, so
-  there is nothing a hardware-capable runner would additionally exercise until
-  one ships.
+  designated conformance lane for Tier 3. The canonical Kata backend has the
+  protocol-level launch and real-host-child safety assertions in
+  `packages/maistro-core/tests/sandbox/test_kata_backend.py`. Live selected-VM
+  checks are in `test_kata_live_conformance.py` (same directory): all four
+  policies launch workloads, with containment, deny egress, file limits,
+  transfer, overflow, timeout, and cancellation checks on the untrusted policy.
+  They explicitly skip when the host lacks Kata/KVM evidence. These skips
+  **do not establish VM acceptance**; a supported deployment must execute
+  this lane before issue #76 can be considered complete.
 
   What it establishes, concretely: the host's `/etc/passwd` and `/home` are not
   there to read; `/usr` is read-only; `/proc/1/root` is the sandbox's root and
