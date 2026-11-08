@@ -1,0 +1,54 @@
+{
+  "schema": "m3a860.production-schedule-occurrence-race/v1",
+  "captured_at": "2026-10-06T11:37:02.934546+00:00",
+  "stack": {
+    "git_head": "ad9b17cb9d25b4fab82799f6cc206a23e323234c",
+    "server_image_ids": [
+      "sha256:ef3698e0c56ae2827795254234adfd83af5a9bdad24839617e94d1ccccfa6ba0",
+      "sha256:e1952541787efab9ac80e8990d7c221b9e553bb5b5ab4f4874b3d8545d8c1102"
+    ]
+  },
+  "method": "scripts/soak/run_soak.py --claim-probe executed as two OS processes via docker exec against the production compose network DSN (postgres-primary), both constructing byte-identical schedules with the parent-pinned due instant (run_soak.py --claim-due-at), racing ScheduleRunAdmitter.admit_due on the same due occurrence.",
+  "defect_found_and_repaired": {
+    "defect": "the harness's Schedule was built without actor_principal_id; canonical Run creation validates it (packages/maistro-core/src/maistro/runs/model.py:321 'actor_principal_id is required'), so the exactly-once schedule-occurrence phase failed admission on every occurrence against current code \u2014 observed live (failures: ['actor_principal_id is required']) before the fix",
+    "repair": "scripts/soak/run_soak.py supplies actor_principal_id='soak-claim-actor' (fixture, same wiring as packages/maistro-core/tests/scheduling/test_pg_admission.py:56)",
+    "gate_impact": "none weakened; the promotion gate exactly_once_schedule_occurrence becomes executable again"
+  },
+  "race_same_container_two_processes": {
+    "workspace": "prod-race2-1791286583",
+    "winner": {
+      "process": "racer-1",
+      "run_ids": [
+        "11a9b61dabd2449f8869b95c2a5464da"
+      ],
+      "already_fired": []
+    },
+    "loser": {
+      "process": "racer-2",
+      "run_ids": [],
+      "already_fired": [
+        "2026-10-06 11:00:00+00:00"
+      ]
+    },
+    "spine_rows_for_workspace": 1
+  },
+  "race_across_physical_replicas": {
+    "workspace": "prod-race3-1791286602",
+    "racer_on_server_1": {
+      "run_ids": [
+        "430bafa7d53144a6a9f8e54742c81136"
+      ],
+      "already_fired": []
+    },
+    "racer_on_server_2": {
+      "run_ids": [],
+      "already_fired": [
+        "2026-10-06 11:00:00+00:00"
+      ]
+    },
+    "spine_rows_for_workspace": 1,
+    "note": "racing admittees ran in different replica containers with independent DB pools; canonical PostgreSQL fencing admitted exactly one Run"
+  },
+  "outcome": "H2 exactly-once schedule occurrence observed on the production artifact: 1 occurrence -> exactly 1 Run, loser reports already_fired, in both the same-container and cross-replica forms",
+  "promotion_disclaimer": "single-occurrence falsification probe at the assigned head; not a promotion soak"
+}
