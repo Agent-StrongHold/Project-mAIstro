@@ -171,6 +171,7 @@ wait forever for an `Expected` result.
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
+| security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `SAST / Bandit` | every PR |
 | security | `SAST / Gitleaks` | every PR |

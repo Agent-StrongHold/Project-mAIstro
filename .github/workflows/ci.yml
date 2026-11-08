@@ -699,8 +699,11 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: npm run build
         working-directory: packages/maistro-canvas/frontend
-      - run: npm audit --audit-level=high
-        working-directory: packages/maistro-canvas/frontend
+      # Vulnerability auditing for BOTH frontends moved to security.yml's
+      # js-supply-chain job (#344): scripts/js_dependency_gate.py is the single
+      # verdict, with owned/expiring exceptions, so this bare step (which
+      # passed moderate findings the gate triages, and would have kept failing
+      # on a triaged high one) can no longer disagree with it.
       - run: uv pip install --system -r packages/hive-conductor/backend/requirements.txt
       - run: python -m pytest packages/hive-conductor/backend/tests -v --tb=short
       # Every step above runs one tree in its own process, which is what let a
