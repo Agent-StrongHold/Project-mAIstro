@@ -4,6 +4,17 @@
 
 Shared Python runtime and monorepo substrate for AI agent platforms: orchestrator, agents, memory, security, skills, tools, and related packages. **v1.0 ships Workspaces** (`packages/hive-conductor`) alongside the library; Stronghold and Canvas book-maker are downstream. See [README.md](README.md), [ROADMAP.md](ROADMAP.md), [BACKLOG.md](BACKLOG.md), and [docs/adr/](docs/adr/) for governance and ADRs.
 
+## Agent guidance (progressive disclosure)
+
+Start with [`docs/agent-guidance/README.md`](docs/agent-guidance/README.md), then load only the domain index and atomic documents applicable to the task. Do not preload the full guidance, ADR, or specification corpus.
+
+- Development lifecycle / pre-1.0 posture / CI principles: [`docs/agent-guidance/development-standards/`](docs/agent-guidance/development-standards/README.md)
+- Human/agent authority, delegation/OBO, trust: [`docs/agent-guidance/authority-and-agency/`](docs/agent-guidance/authority-and-agency/README.md)
+- Repository mechanics and contribution conventions: [`docs/agent-guidance/repository-standards/`](docs/agent-guidance/repository-standards/README.md)
+- Specs and ADRs: route via [`docs/agent-guidance/README.md`](docs/agent-guidance/README.md) rather than preloading `docs/specs/` or `docs/adr/`
+
+For pre-1.0 work, optimize for the intended 1.0 architecture rather than preserving historical compatibility unless that compatibility independently belongs in the target design. When repository guidance conflicts, surface the conflict and follow the precedence in the agent-guidance router.
+
 ## Stack
 
 - Python **3.12+** (strict typing with mypy)

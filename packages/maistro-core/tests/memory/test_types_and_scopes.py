@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.memory.scopes import build_scope_filter, matches_scope
 from maistro.memory.types import (
     WEIGHT_BOUNDS,
@@ -12,18 +14,23 @@ from maistro.memory.types import (
     Outcome,
 )
 
+pytestmark = [pytest.mark.contract("boundary")]
+
 
 class TestWeightBounds:
+    @pytest.mark.ac("ADR-013/AC-1")
     def test_regret_floor_is_0_6(self) -> None:
         lo, hi = WEIGHT_BOUNDS[MemoryTier.REGRET]
         assert lo == 0.6
         assert hi == 1.0
 
+    @pytest.mark.ac("ADR-013/AC-2")
     def test_wisdom_floor_is_0_9(self) -> None:
         lo, hi = WEIGHT_BOUNDS[MemoryTier.WISDOM]
         assert lo == 0.9
         assert hi == 1.0
 
+    @pytest.mark.ac("ADR-013/AC-3")
     def test_observation_ceiling_is_0_5(self) -> None:
         lo, hi = WEIGHT_BOUNDS[MemoryTier.OBSERVATION]
         assert lo == 0.1
@@ -35,6 +42,7 @@ class TestWeightBounds:
 
 
 class TestBuildScopeFilter:
+    @pytest.mark.ac("ADR-013/AC-4")
     def test_always_includes_global(self) -> None:
         filters = build_scope_filter()
         scopes = [f[0] for f in filters]
@@ -88,6 +96,7 @@ class TestMatchesScope:
         filters = build_scope_filter()
         assert matches_scope(mem, filters)
 
+    @pytest.mark.ac("ADR-013/AC-6")
     def test_global_memory_different_org_blocked(self) -> None:
         mem = self._global_mem(org_id="org-A")
         # Caller is org-B
@@ -99,6 +108,7 @@ class TestMatchesScope:
         filters = build_scope_filter(org_id="org-A")
         assert matches_scope(mem, filters)
 
+    @pytest.mark.ac("ADR-013/AC-5")
     def test_team_scope_requires_both_team_and_org(self) -> None:
         # Memory is in team "alpha" of org "org-A"
         mem = self._team_mem("alpha", "org-A")
@@ -114,6 +124,23 @@ class TestMatchesScope:
 
 
 class TestLearningDataclass:
+    @pytest.mark.ac("ADR-013/AC-7")
+    def test_fields_round_trip_through_field_access(self) -> None:
+        lr = Learning(
+            learning="snapshot before deploy",
+            tool_name="shell",
+            trigger_keys=["deploy"],
+            org_id="org-1",
+            agent_id="agent-1",
+            scope=MemoryScope.AGENT,
+        )
+        assert lr.learning == "snapshot before deploy"
+        assert lr.tool_name == "shell"
+        assert lr.trigger_keys == ["deploy"]
+        assert lr.org_id == "org-1"
+        assert lr.agent_id == "agent-1"
+        assert lr.scope == MemoryScope.AGENT
+
     def test_default_scope_is_agent(self) -> None:
         lr = Learning(learning="do X")
         assert lr.scope == MemoryScope.AGENT

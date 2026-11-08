@@ -31,8 +31,12 @@ Historical snapshots ([DECISION-BACKLOG.md](adr/DECISION-BACKLOG.md), [testing/i
 | [persistence/](persistence/) | 1 | Durable vs ephemeral container state |
 | [research/](research/) | 32 | M8 research program ([README](research/README.md), charter + note index) — research notes, not governance |
 | [exploratory-sessions/](exploratory-sessions/) | 3 | Manual probing session logs |
+| [agent-guidance/](agent-guidance/) | ~30 | Progressive-disclosure router for ADRs, specs, and pre-1.0 operating standards |
+| [development-standards/](development-standards/) | 2 | Pre-1.0 development + CI operating standards (atomic) |
+| [authority-and-agency/](authority-and-agency/) | 2 | Human/agent authority and development threat model (atomic) |
+| [knowledge/](knowledge/) | 1 | Knowledge inventory / index |
 
-Root guides: [WAYS-OF-WORKING.md](WAYS-OF-WORKING.md), [quality-gates.md](quality-gates.md), [EXPLORATORY-TESTING.md](EXPLORATORY-TESTING.md).
+Root guides: [WAYS-OF-WORKING.md](WAYS-OF-WORKING.md), [agent-guidance/README.md](agent-guidance/README.md), [quality-gates.md](quality-gates.md), [EXPLORATORY-TESTING.md](EXPLORATORY-TESTING.md).
 
 ## Product naming
 
