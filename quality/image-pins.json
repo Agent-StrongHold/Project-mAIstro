@@ -24,7 +24,8 @@
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
         "packages/hive-conductor/tests/Dockerfile",
-        "deploy/sbx/template/Dockerfile.tests"
+        "deploy/sbx/template/Dockerfile.tests",
+        "packages/maistro-bootstrap/tests/Dockerfile.sandbox"
       ]
     },
     {
