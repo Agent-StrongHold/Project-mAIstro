@@ -127,7 +127,7 @@ wait forever for an `Expected` result.
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
-| mutation | `Mutation gate (changed critical lines)` | paths |
+| mutation | `Mutation gate (changed critical lines)` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |

@@ -202,10 +202,24 @@ class TestPolicyPriorityIsReachable:
     def test_every_package_source_is_in_the_workflow_scope(self, module):
         """The property, not the example. Any future priority entry that the
         workflow cannot see is unreachable ranking — this fails on the next one
-        too, without anyone remembering to add a test."""
-        workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        assert "'packages/**/*.py'" in workflow
-        assert "-- packages" in workflow
+        too, without anyone remembering to add a test.
+
+        The PR trigger must stay unfiltered. A ``paths:`` filter here left PRs
+        that touch no listed path with no check run at all, so the required
+        ``Mutation gate (changed critical lines)`` context never appeared and
+        the gates-ran publisher waited forever for evidence that could never
+        exist (#262 AC-2). Firing on every PR is a strict superset of any path
+        list; the job below still scopes its own diff to ``-- packages``.
+        """
+        import yaml
+
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8")) or {}
+        trigger = doc.get(True) if True in doc else doc.get("on") or {}
+        assert trigger.get("pull_request") is None, (
+            "the pull_request trigger must stay unfiltered so the required "
+            "Mutation gate check can report on every pull request"
+        )
+        assert "-- packages" in self.WORKFLOW.read_text(encoding="utf-8")
 
 
 class TestWorkflowDiffsAgainstItsOwnBase:
