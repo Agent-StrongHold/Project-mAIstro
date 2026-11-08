@@ -39,7 +39,7 @@
       "id": "maistro-engine-research",
       "dockerfile": "Dockerfile.research",
       "disposition": "DISTRIBUTED",
-      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign. Deliberately a Canvas-lean profile (#1825): it installs maistro-core and maistro-server but not maistro-canvas, so if it is driven as an API server its /v2/canvas answers 503 and the startup log says canvas_store_unavailable -- the truthful report; it can never stand in for the supported Canvas-enabled proof, which is owned by the root Dockerfile's maistro-engine image.",
+      "rationale": "The RESEARCH worker: browser-use + Playwright + Chromium on a Debian base. Its own header calls the browser surface 'the single largest remaining CVE source', which is why it was split out of the API image -- so it is the image that most needs scanning, and was the one not scanned. Operators build it where the web tool actually runs; nothing pushes it, so there is no published digest to sign. Deliberately a Canvas-lean profile (#1825): it installs maistro-core and maistro-server but not maistro-canvas, so if it is driven as an API server its /v2/canvas answers 503 and the startup log says canvas_store_unavailable -- the truthful report; it can never stand in for the supported Canvas-enabled proof, which is owned by the root Dockerfile's maistro-engine image. ci.yml:docker-build also runs scripts/smoke-research-chromium.sh on the built candidate: the image's venv Python resolves Chromium through Playwright (the same resolution the web tool performs) and executes it, on image contents alone, with a browser-less control image failing the same probe.",
       "built_by": [
         ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers"
@@ -53,7 +53,7 @@
       "id": "maistro-rsi-runner",
       "dockerfile": "Dockerfile.rsi-runner",
       "disposition": "DISTRIBUTED",
-      "rationale": "Full-isolation RSI runner: the entire self-improvement loop executes inside it and agent-authored code only ever runs there, so its contents are a containment boundary rather than a convenience. Built by tools/run_rsi_isolated.sh and tools/run_rsi_evolve_isolated.sh on an operator's machine; never pushed.",
+      "rationale": "Full-isolation RSI runner: the entire self-improvement loop executes inside it and agent-authored code only ever runs there, so its contents are a containment boundary rather than a convenience. Built by tools/run_rsi_isolated.sh and tools/run_rsi_evolve_isolated.sh on an operator's machine; never pushed. ci.yml:docker-build also runs scripts/smoke-rsi-runner-imports.sh on the built candidate: the operator contract's exact environment (workspace venv activated, the tools/run_rsi_isolated.sh PACKAGE_PATHS on PYTHONPATH) imports maistro_rsi and maistro_evolve on image contents alone, with a workspace-less control image failing the same probe.",
       "built_by": [
         ".github/workflows/ci.yml:docker-build",
         ".github/workflows/security.yml:containers"
