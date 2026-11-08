@@ -7,16 +7,25 @@ export type AttentionItem = {
   source_id: string;
   workspace_id: string;
   attention_class: string;
+  /** Issue interruption vocabulary: blocking | popup | queued | waiting. */
+  interruption?: string;
   rank: number;
   reason: string;
   evidence: Record<string, unknown>;
   answer_href: string | null;
 };
 
+export type AttentionWaitingQuality = {
+  count: number;
+  valuable_source_ids: string[];
+};
+
 export type AttentionSummary = {
   counts_by_class: Record<string, number>;
+  counts_by_interruption?: Record<string, number>;
   highest_class: string | null;
   rising: string[];
+  waiting_quality?: AttentionWaitingQuality;
   truncated: boolean;
   /** True when the canonical graph spine cannot supply HITL pauses. */
   hitl_unavailable?: boolean;
@@ -43,7 +52,37 @@ export function inspectionHref(item: AttentionItem): string {
     const runId = item.source_id.split("/")[0] || item.source_id;
     return `/dag-runs?run=${encodeURIComponent(runId)}`;
   }
+  // MessageBoard / OptimizationInbox MERGEd into Attention — stay here.
+  if (item.source_kind === "agent_message" || item.source_kind === "optimizer_proposal") {
+    return "/attention";
+  }
   return "/dag-runs";
+}
+
+/** Decide a pending optimizer proposal through its canonical owner (#1049). */
+export async function decideOptimizerProposal(
+  proposalId: string,
+  decision: "accept" | "reject",
+): Promise<unknown> {
+  const path = `/v1/optimizer/proposals/${encodeURIComponent(proposalId)}/${decision}`;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: "{}",
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new ApiError(detail || `Couldn't ${decision} proposal`, response.status, path);
+  }
+  if (response.status === 204) return undefined;
+  return response.json();
 }
 
 /** Parse a canonical HITL answer door (`/v1/hitl/{run}/{node}/answer`). */
@@ -161,6 +200,17 @@ const CLASS_LABELS: Record<string, string> = {
   proactive: "Proactive",
 };
 
+const INTERRUPTION_LABELS: Record<string, string> = {
+  blocking: "Blocking",
+  popup: "Popup",
+  queued: "Queued",
+  waiting: "Waiting",
+};
+
 export function attentionClassLabel(name: string): string {
   return CLASS_LABELS[name] ?? name;
+}
+
+export function interruptionLabel(name: string): string {
+  return INTERRUPTION_LABELS[name] ?? name;
 }
