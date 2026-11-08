@@ -1,5 +1,6 @@
 {
-  "_comment": "Legacy body '**Status:**' lines written before front matter was canonical (#379). Body status language is checked per-identity (#387): a new contradiction fails, and a fixed one must shrink this ledger in the same change. Banner and status-assertion contradictions are never baselined. This ledger is empty: the whole corpus now agrees with its front matter, so an entry here would be a tolerance nothing currently needs \u2014 fix the document instead.",
+  "metric_definition_version": "2",
+  "_comment": "ADR-092126-a28a metric v2 retires body status declarations regardless of value and scans ADR/spec records recursively, including normal Markdown indentation. The prior unversioned agreement ledger was empty; this deliberate transition retains exactly zero tolerated findings. Existing trusted-base grant requirements remain unchanged. Body status findings are per-identity; fixed entries must be pruned, and replacement-banner/status-assertion contradictions remain errors.",
   "known": [],
   "details": {}
 }

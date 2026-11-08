@@ -32,7 +32,6 @@ history:
 
 # ADR-027: Lightning-Native Federation — Payment-graph reputation and spam resistance
 
-**Status:** Deferred
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-023 (Agent Crypto Ops), ADR-024 (DID/VC Identity), ADR-029 (Networking Substrate)
 

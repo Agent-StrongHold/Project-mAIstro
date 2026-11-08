@@ -34,7 +34,6 @@ history:
 
 # SPEC-200 — Builders Safety Layer: Execution Contexts + Ephemeral Workspace
 
-> **Status:** Implemented — the builders safety layer shipped to `develop` in #107
 > (`maistro-bootstrap/src/maistro_bootstrap/builders/`). This document is the spec of record.
 
 ---
