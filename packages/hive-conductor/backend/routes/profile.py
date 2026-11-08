@@ -83,6 +83,7 @@ def put_profile(body: ProfileBody, request: Request) -> dict:
     a write that reached nothing. A storage failure is a 503 here.
     """
     from services import profile_store
+    from services.workspace_preferences import AUDITED_PREFERENCE_KEYS, audit_workspace_preference
 
     user_id = _user_id(request)
     try:
@@ -91,6 +92,14 @@ def put_profile(body: ProfileBody, request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ProfilePersistenceError, ProfileSchemaError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    for key in AUDITED_PREFERENCE_KEYS:
+        if key in body.preferences:
+            audit_workspace_preference(
+                actor=user_id,
+                field=key,
+                value=body.preferences[key],
+                source="api",
+            )
     return _answer(record)
 
 
@@ -105,6 +114,7 @@ def patch_profile(body: ProfileFieldBody, request: Request) -> dict:
     (Codex, #699).
     """
     from services import profile_store
+    from services.workspace_preferences import audit_workspace_preference
 
     user_id = _user_id(request)
     if not body.field:
@@ -115,6 +125,12 @@ def patch_profile(body: ProfileFieldBody, request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ProfilePersistenceError, ProfileSchemaError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    audit_workspace_preference(
+        actor=user_id,
+        field=body.field,
+        value=body.value,
+        source="api",
+    )
     return _answer(record)
 
 

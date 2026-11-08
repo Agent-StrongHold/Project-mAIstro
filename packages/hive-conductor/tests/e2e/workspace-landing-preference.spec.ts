@@ -168,6 +168,7 @@ test("learned-landing proposal accept writes the durable default; dismiss suppre
       preferences: {
         workspace_default_landing: "/home",
         workspace_restore_aggressiveness: "off",
+        workspace_landing_suggestion_cooldown: {},
       },
     },
   });
@@ -188,8 +189,20 @@ test("learned-landing proposal accept writes the durable default; dismiss suppre
   await page.getByTestId("landing-suggestion-dismiss").click();
   await expect(banner).toHaveCount(0);
 
-  // Dismiss suppresses — seeding the streak again must not re-nag.
+  // Dismiss writes a durable profile cooldown — seeding the streak again must
+  // not re-nag even after clearing the browser-local suppress key.
+  await expect
+    .poll(async () => {
+      const res = await page.request.get("/v1/profile");
+      const body = (await res.json()) as {
+        preferences?: { workspace_landing_suggestion_cooldown?: Record<string, number> };
+      };
+      return body.preferences?.workspace_landing_suggestion_cooldown?.["/goals"] ?? 0;
+    })
+    .toBeGreaterThan(Date.now());
+
   await page.evaluate(() => {
+    window.localStorage.removeItem("hive_landing_suggestion_suppressed");
     window.localStorage.setItem(
       "hive_landing_nav_pattern",
       JSON.stringify({ path: "/goals", streak: 5, lastAtMs: Date.now() }),
@@ -199,7 +212,16 @@ test("learned-landing proposal accept writes the durable default; dismiss suppre
   await page.goto("/home");
   await expect(page.getByTestId("landing-suggestion-banner")).toHaveCount(0);
 
-  // Clear suppress and accept → durable preference.
+  // Expire the profile cooldown and clear local suppress → accept writes durable default.
+  await page.request.put("/v1/profile", {
+    data: {
+      preferences: {
+        workspace_default_landing: "/home",
+        workspace_restore_aggressiveness: "off",
+        workspace_landing_suggestion_cooldown: {},
+      },
+    },
+  });
   await page.evaluate(() => {
     window.localStorage.removeItem("hive_landing_suggestion_suppressed");
     window.localStorage.setItem(
@@ -226,4 +248,17 @@ test("learned-landing proposal accept writes the durable default; dismiss suppre
   });
   await page.goto("/home");
   await expect(page.getByTestId("landing-suggestion-banner")).toHaveCount(0);
+});
+
+test("Agent-equivalent API restore aggressiveness expands the window key", async () => {
+  // Same durable key UI + profile_set write; "hold onto sessions longer" → generous.
+  const res = await page.request.patch("/v1/profile", {
+    data: { field: "workspace_restore_aggressiveness", value: "generous" },
+  });
+  expect(res.status()).toBe(200);
+  const profile = await page.request.get("/v1/profile");
+  const body = (await profile.json()) as {
+    preferences?: { workspace_restore_aggressiveness?: string };
+  };
+  expect(body.preferences?.workspace_restore_aggressiveness).toBe("generous");
 });
