@@ -64,6 +64,41 @@ python3 "$REPO_ROOT/scripts/check-license-inventory.py" \
     --output "$LICENSE_OUTPUT_DIR/license-inventory.json"
 info "License inventory: $LICENSE_OUTPUT_DIR/license-inventory.json"
 
+# Vulnerability scanning, same policy as CI's containers job (#346). CI
+# cannot build these images (the preseed daemon constraint recorded in
+# quality/image-inventory.json), so the producer owns this gate too: a
+# HIGH/CRITICAL trivy finding or a grype high-with-fix finding stops the
+# script BEFORE the push below, so a vulnerable image cannot leave the
+# build host. The tools are required on PATH at exactly the versions CI
+# pins (security.yml: trivy v0.73.0, grype v0.116.0) — the same fail-closed
+# pinned-tool contract as the syft license gate above: an unpinned or
+# missing scanner is a refusal, not a skip.
+TRIVY_VERSION="0.73.0"
+GRYPE_VERSION="0.116.0"
+command -v trivy >/dev/null 2>&1 || {
+    echo "trivy $TRIVY_VERSION is required to vulnerability-scan the sbx images" >&2
+    exit 1
+}
+trivy --version | grep -F "$TRIVY_VERSION" >/dev/null || {
+    echo "trivy $TRIVY_VERSION is required; refusing an unpinned vulnerability scan" >&2
+    exit 1
+}
+command -v grype >/dev/null 2>&1 || {
+    echo "grype $GRYPE_VERSION is required to vulnerability-scan the sbx images" >&2
+    exit 1
+}
+grype version | grep -F "$GRYPE_VERSION" >/dev/null || {
+    echo "grype $GRYPE_VERSION is required; refusing an unpinned vulnerability scan" >&2
+    exit 1
+}
+for image in "$TEMPLATE_TAG" "$TESTS_TAG"; do
+    info "trivy ${image} (HIGH/CRITICAL, ignore-unfixed)"
+    trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed \
+        --ignore "$REPO_ROOT/.trivyignore.yaml" "$image"
+    info "grype ${image} (high with fix available)"
+    grype "$image" --fail-on high --only-fixed --output table
+done
+
 if [[ -n "${PUSH_TAG:-}" ]]; then
     docker tag "$TEMPLATE_TAG" "$PUSH_TAG"
     info "Pushing $PUSH_TAG..."

@@ -34,6 +34,19 @@ or placeholder-only section.
 
 ### Security
 
+- **sbx image builds now vulnerability-scan before any push (#346).** CI
+  cannot build the Docker-Sandboxes template images (the preseed-daemon
+  constraint recorded in `quality/image-inventory.json`), so
+  `deploy/sbx/build.sh` owns their gate: it fail-closes trivy (HIGH/CRITICAL,
+  ignore-unfixed, the repository's `.trivyignore.yaml`) and grype
+  (--fail-on high --only-fixed) on both sbx images — at exactly the versions
+  CI pins, refusing an unpinned or missing scanner — before `PUSH_TAG` can
+  push or `sbx template load` can load. The two sbx coverage exceptions in
+  the image inventory now carry `expires` and `version_scope` per #346's
+  AC-4, and `scripts/check-image-inventory.py` enforces those fields and
+  fails on a lapsed exception. The shipped-surface matrix's #382 row is
+  refreshed to `resolved` (PR #1887's truthful 501s).
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in
