@@ -695,16 +695,6 @@
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
     },
-    "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::_generate_image@11": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
-    "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::execute_canvas@38": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
     "packages/maistro-canvas/src/maistro_canvas/export.py::export_pptx@11": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",

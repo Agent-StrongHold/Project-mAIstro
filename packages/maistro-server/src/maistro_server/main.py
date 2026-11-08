@@ -310,6 +310,66 @@ def _gateway_credential(settings: Settings) -> str:
     return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
 
 
+async def _stop_canvas_job_runner(handle: Any) -> None:
+    """Stop the Canvas runner boundedly, or no-op when none was started."""
+    if handle is None:
+        return
+    from maistro_server.canvas_runtime import stop_canvas_job_runner
+
+    await stop_canvas_job_runner(handle)
+
+
+async def _start_canvas_job_runner(
+    app: FastAPI, settings: Settings, container: Any, spine_pool: Any
+) -> Any:
+    """Start the Canvas job runner on this process, or skip truthfully (#2311).
+
+    Start conditions are exactly the two the issue's composition owes: a
+    wired Canvas store (PostgreSQL configured — the same resolver the spine
+    reads) and a durable spine (``spine_pool`` is not None). Anything else is
+    a logged skip, not a degraded start: a runner claiming against an
+    in-process spine cannot see admitted Runs, and the worker service refuses
+    the same situation for the same reason.
+
+    Returns the runner handle for the lifespan's shutdown, or None.
+    """
+    store = getattr(app.state, "canvas_store", None)
+    if spine_pool is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no durable PostgreSQL spine; Canvas jobs cannot be claimed in-process",
+        )
+        return None
+    if store is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no Canvas store wired; /v2/canvas answers 503",
+        )
+        return None
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro_server.canvas_runtime import start_canvas_job_runner
+
+    try:
+        return await start_canvas_job_runner(
+            store=store,
+            container=container,
+            endpoint=GatewayEndpoint(
+                base_url=settings.litellm.base_url,
+                api_key=_gateway_credential(settings),
+            ),
+            workspace_id=settings.workspace_id,
+        )
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        # Same contract as `_wire_canvas_ability`: a leaner environment
+        # without maistro-canvas keeps a truthful no-runner log rather than
+        # failing startup — the Canvas surface there already answers 503.
+        await logger.awarning(
+            "canvas_runner_not_started",
+            detail=f"maistro-canvas is not installed ({exc})",
+        )
+        return None
+
+
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -649,6 +709,16 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         attempts=TaskAttemptExecutor(run_store),
     )
     await _runner.start()
+
+    # ADR-045 / #2311: start CanvasJobRunner in the default composition. The
+    # shipped server process owns a live claim/lease/reap loop over the same
+    # durable generation_jobs queue the Canvas surfaces write to, so admitted
+    # jobs have a reachable consumer with no external runner. Truthful skip
+    # (logged) when the deployment has no durable spine or no Canvas store —
+    # an in-process spine cannot see admitted Runs, the same refusal the
+    # maistro-canvas-worker service makes for the same reason.
+    canvas_runner = await _start_canvas_job_runner(app, settings, container, spine_pool)
+
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
     # No signal handler is installed here. Uvicorn owns SIGTERM/SIGINT for the
@@ -671,6 +741,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # FAILED, and shutdown continues to process exit either way.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        # The Canvas runner stops before the container closes: its poll loop
+        # holds no provider calls while idle, and a stuck tick gets the same
+        # bounded cancel-and-abandon ladder the composition seam uses.
+        await _stop_canvas_job_runner(canvas_runner)
         container = getattr(app.state, "container", None)
         if container is not None:
             try:
