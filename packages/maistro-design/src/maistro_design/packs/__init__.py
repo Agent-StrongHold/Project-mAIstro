@@ -49,10 +49,14 @@ from maistro_design.packs.lifecycle import (
     snapshot_pack,
 )
 from maistro_design.packs.registry import (
+    DomainPackRegistry,
+    PackContractError,
     PackManifestError,
     PackRegistry,
     PackRegistryError,
     UnknownPackError,
+    bundled_pack_dir,
+    load_bundled_packs,
     parse_manifest,
 )
 from maistro_design.packs.rubric import GoalRubricCatalog, GoalRubricDimension
@@ -135,6 +139,7 @@ _VULTURE_WHITELIST = (
 
 __all__ = [
     "DomainPack",
+    "DomainPackRegistry",
     "ExecuteBackend",
     "FencePoint",
     "GoalRubricCatalog",
@@ -144,6 +149,7 @@ __all__ = [
     "PackActivationRecord",
     "PackConcurrentWriteConflict",
     "PackConfigurationInvalid",
+    "PackContractError",
     "PackGraphShape",
     "PackId",
     "PackIdentityConflict",
@@ -168,6 +174,8 @@ __all__ = [
     "SnapshotIntegrityError",
     "UnknownPackError",
     "WorkspacePackConfiguration",
+    "bundled_pack_dir",
+    "load_bundled_packs",
     "pack_from_snapshot",
     "pack_graph_template",
     "parse_manifest",
