@@ -58,15 +58,16 @@ narrow-screen drawer (asserted by
 | `/settings` | Settings | Settings | PROJECT → settings service | #1050 (M3-E) |
 
 `/schedules`, `/messages`, `/quotas`, `/containers`, `/cli` and `/audit` are
-the #1417 additions. Agents / Topology / Integrations left primary nav for
-Capabilities (#2273); they remain URL-only until deleted.
+the #1417 additions. Agents / Topology / Integrations / Skills left primary
+nav for Capabilities (#2273) and their page modules are deleted; old URLs
+redirect to `/capabilities`.
 
 ## Canonical surfaces with a contextual or parent entry (no primary nav row)
 
 | Route | Surface | Entry point | Disposition | Owner |
 |---|---|---|---|---|
 | `/profile` | Profile | Drawer user chip (`NavLink` on the signed-in username) | PROJECT → settings service | #1050 |
-| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
+| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Messages, Quotas, Audit, Containers, Missions, Optimizer, Settings, CLI, Capabilities) | RETIRE (M3) | cutover plan §5 |
 | `/decks` | Deck Builder | Embedded editor inside Design Studio (deck mode → "Open Deck editor"); the standalone route is the deep link to the same editor | KEEP (own lane) | #286, #773, #95 |
 
 ## Intentionally URL-only surfaces (documented exception)
@@ -77,16 +78,25 @@ or hides them and this issue may not promote or retire them:
 | Route | Surface | Rationale for staying unlinked | Owner |
 |---|---|---|---|
 | `/work-items` | Jira drafts (WorkItems) | Legacy surface MERGEd into the Workspace backlog; permanent promotion would fight the M3-C cutover | #82 (M3-C) |
-| `/skills` | Skills | Legacy surface replaced by Capabilities (#2273); page delete is a follow-up slice | #2273 |
-| `/agents` | Agents | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
-| `/topology` | Topology | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
-| `/mcp` | MCP / Integrations | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/memory` | Memory | Legacy surface replaced by user model / Workspace memory | #776, #1047 (M3-E) |
 | `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | #2275 (v1.2 restore; #51 Evolve impl) |
 
 `tests/e2e/navigation-coverage.spec.ts` asserts both halves of this contract:
 these routes still render (they are not deleted) and the shell renders no nav
 link for them.
+
+## Deleted capability surfaces (#2273) — redirect only
+
+| Former route | Former surface | Disposition |
+|---|---|---|
+| `/agents` | Agents ("The Hive") | **DELETE** — page module removed; `Navigate` to `/capabilities` (replace); must not revive `Agents.tsx` |
+| `/mcp` | MCP / Integrations | **DELETE** — same; must not revive `MCP.tsx` |
+| `/skills` | Skills | **DELETE** — same; must not revive `Skills.tsx` |
+| `/topology` | Topology | **DELETE** — same; must not revive `Topology.tsx` |
+
+`navigation-coverage.spec.ts` and `workspace-capabilities-shell.spec.ts` assert
+these URLs land on Capabilities with the Capabilities heading active, and that
+legacy nav labels stay absent.
 
 ## Hidden for v1.0 (no shipped route; restore later)
 
@@ -106,6 +116,10 @@ One canonical entry per destination; no duplicate menu items.
 | `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
 | `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
+| `/agents` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/mcp` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/skills` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/topology` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
 
 ## Auth / setup routes (outside the shell)
 
@@ -156,7 +170,8 @@ both chrome modes.
   `schedules.write`/`containers.control` rows (see the permission contract
   above); each landing leaves exactly one active rail entry carrying the
   destination's accessible name; back/forward returns canonical surfaces; the
-  two aliases/redirects resolve to their canonical destination; the four
-  URL-only rows render while staying unlinked.
+  aliases/redirects (including #2273 capability retirement URLs) resolve to
+  their canonical destination; remaining URL-only rows render while staying
+  unlinked; Evolution stays hidden.
 - `tests/e2e/design-studio-truthfulness.spec.ts` — `/cli/canvas` compatibility
   redirect preserved.

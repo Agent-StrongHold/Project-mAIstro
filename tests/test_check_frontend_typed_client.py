@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-frontend-typed-client.py"
 LOGIN = ROOT / "packages/hive-conductor/frontend/src/pages/Login.tsx"
 API = ROOT / "packages/hive-conductor/frontend/src/lib/api.ts"
-AGENTS = ROOT / "packages/hive-conductor/frontend/src/pages/Agents.tsx"
+# Agents.tsx was deleted in #2273; Backlog still carries hand-typed page shapes.
+BACKLOG = ROOT / "packages/hive-conductor/frontend/src/pages/Backlog.tsx"
 
 
 @pytest.fixture(scope="module")
@@ -38,8 +39,8 @@ def test_raw_fetch_inside_lib_is_ignored(gate) -> None:
 
 
 def test_hand_typed_in_pages_is_measured(gate) -> None:
-    violations = gate._scan_hand_typed(AGENTS)
-    assert any(item.kind == "hand_typed" and item.subject == "Agent" for item in violations)
+    violations = gate._scan_hand_typed(BACKLOG)
+    assert any(item.kind == "hand_typed" and item.subject == "BacklogItem" for item in violations)
 
 
 def test_waiver_skips_a_call_site(gate, tmp_path: Path) -> None:
@@ -59,7 +60,7 @@ def test_new_debt_needs_authorization(gate) -> None:
 
 
 def test_fixed_debt_must_leave_the_candidate_ledger(gate) -> None:
-    key = "hand_typed::packages/hive-conductor/frontend/src/pages/Agents.tsx:20:Agent"
+    key = "hand_typed::packages/hive-conductor/frontend/src/pages/Backlog.tsx:21:BacklogItem"
     assert gate.compare(set(), {key}, {key}, set()) == [
         f"{key}: fixed -- delete it from the candidate ledger"
     ]
