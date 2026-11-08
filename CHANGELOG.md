@@ -23,6 +23,17 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Conductor image runtime OS layer builds on `python:3.15.0-slim-bookworm`
+  (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
+  moved to the CPython 3.15.0 base build (fresh Debian 12 security-patch
+  state). The app keeps running on the registered CPython 3.13.16 contract
+  interpreter: the builder stage keeps the 3.13.16 pin and the runtime grafts
+  its exact installation (binary, libpython, stdlib), so the shipped venv
+  needs no managed download. Identity pins, the uv.lock install and the
+  build-time smoke are unchanged.
+
 ### Fixed
 
 - **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
