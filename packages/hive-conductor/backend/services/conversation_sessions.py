@@ -7,7 +7,9 @@ maistro SessionStore (container.session_store when the engine is up; an
 in-memory twin when tests run without a Container).
 
 Unscoped legacy `stores.chat_sessions` rows are not migrated and remain
-unreachable through these APIs (AC-6).
+unreachable through these APIs (AC-6). Disposition: **quarantine in place** —
+no broad admin/membership bypass. Any future attach-or-delete migration is
+owned by the #1822 closeout follow-up (not this module's runtime path).
 """
 
 from __future__ import annotations

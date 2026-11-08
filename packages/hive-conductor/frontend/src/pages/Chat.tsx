@@ -250,6 +250,8 @@ export default function ChatPage() {
   const [model, setModel] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  /** Bumped by Retry to re-run Workspace session hydrate (#1822 AC-7). */
+  const [sessionReloadToken, setSessionReloadToken] = useState(0);
   const [modelOpen, setModelOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const listEndRef = useRef<HTMLDivElement>(null);
@@ -349,10 +351,12 @@ export default function ChatPage() {
     setStreaming(false);
     setInput("");
     setLoadError(null);
+    // #1822 AC-3: drop the prior Workspace transcript immediately so a switch
+    // never paints Workspace A's messages while B is hydrating.
+    setSessions([]);
+    setActiveId("");
 
     if (!activeWorkspaceId) {
-      setSessions([]);
-      setActiveId("");
       setLoadingSessions(false);
       return;
     }
@@ -410,7 +414,13 @@ export default function ChatPage() {
     };
     // searchParams / setSearchParams are read only to consume ?session= once;
     // listing them would re-hydrate when the param is cleared.
-  }, [activeWorkspaceId, workspacesReady, createServerSession, openSession]);
+  }, [
+    activeWorkspaceId,
+    workspacesReady,
+    createServerSession,
+    openSession,
+    sessionReloadToken,
+  ]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -750,6 +760,14 @@ export default function ChatPage() {
               <div className="empty-state" role="alert">
                 <p className="empty-title">Chat unavailable</p>
                 <p className="empty-subtitle">{loadError}</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="chat-retry-load"
+                  onClick={() => setSessionReloadToken((n) => n + 1)}
+                >
+                  Retry
+                </button>
               </div>
             )}
             {isEmpty && (
@@ -770,7 +788,9 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            {activeSession.messages.map((msg) => (
+            {!loadingSessions &&
+              !loadError &&
+              activeSession.messages.map((msg) => (
               <div key={msg.id} className={`message message--${msg.role}`}>
                 {msg.role === "assistant" && msg.reasoning && (
                   <details className="chat-reasoning">

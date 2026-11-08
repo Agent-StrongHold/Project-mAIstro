@@ -292,9 +292,10 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 
 
 @pytest.mark.contract("behavioral")
-def test_a_session_id_the_caller_does_not_own_is_not_recorded(
+def test_a_session_id_the_caller_does_not_own_is_refused_before_the_model(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
+    """#1822 AC-5: foreign session id on complete/stream matches missing (404)."""
     from services import conversation_sessions
 
     foreign_ws = _workspace(owner="someone-else", name="foreign")
@@ -302,10 +303,40 @@ def test_a_session_id_the_caller_does_not_own_is_not_recorded(
 
     r = _complete(authed_client, session_id=foreign)
 
-    assert r.status_code == 200
-    run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
-    assert "session_id" not in run.provenance
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
     _run(conversation_sessions.delete("someone-else", foreign))
+
+
+@pytest.mark.contract("behavioral")
+def test_unknown_session_id_on_complete_matches_foreign_refusal(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    _workspace()
+    r = _complete(authed_client, session_id="00000000-0000-4000-8000-000000000000")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+
+
+@pytest.mark.contract("behavioral")
+def test_wrong_workspace_session_id_on_complete_is_refused(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    from services import conversation_sessions
+
+    ws_a = _workspace(name="A")
+    ws_b = _workspace(name="B")
+    sid = _run(conversation_sessions.create(USER, ws_a, "t")).session_id
+
+    r = _complete(authed_client, session_id=sid, workspace_id=ws_b)
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+    _run(conversation_sessions.delete(USER, sid))
 
 
 @pytest.mark.contract("behavioral")
