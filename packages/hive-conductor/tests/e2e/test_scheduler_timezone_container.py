@@ -1,0 +1,437 @@
+"""Container-level timezone verification for the shipped scheduler (#290).
+
+This file runs inside the api-tests container (tests/Dockerfile) against the
+LIVE shipped hive image — the point is to verify what the image actually
+ships, not what the developer environment resolves:
+
+  - a `UTC` schedule and a real IANA zone (`Europe/Berlin`) are accepted,
+    persisted, and their `next_run` is computed against the image's zone
+    database (the api-tests container computes the expected instant from its
+    own deliberately pinned `tzdata` wheel — see tests/Dockerfile); the UTC
+    schedule then fires *naturally* — the tick's admission path moves the
+    cursor past the computed occurrence on its own, with no manual fire —
+    which is the end-to-end proof that the shipped scheduler executes what
+    it computed;
+  - the Berlin `next_run` keeps its wall time (04:30) and the season-correct
+    offset (CET +1 / CEST +2), which is exactly the DST property that breaks
+    when a zone resolves through UTC by accident — whether the next
+    occurrence crosses a transition is calendar luck, and the deterministic
+    transition-crossing behaviour is pinned by maistro-core's
+    `test_cron.py` spring-forward and fall-back tests;
+  - an invalid zone is refused 422 at the boundary;
+  - /health reports `tz_database` and `scheduler` independently of process
+    liveness, with an actionable diagnostic when the zone database is broken;
+  - after a container restart (CI: hive is stopped and started again before
+    the restart-marked selection runs), schedules and their cursors survive
+    and the UTC schedule recomputes `next_run` from the persisted zone.
+
+The schedules target `daily-status`, the graph template the shipped image
+registers in its own process at boot: the canonical admission path refuses
+to fire a template that is not registered, so an arbitrary DAG id would
+leave the cursor — and with it `next_run` — untouched forever. The Berlin
+schedule is fired manually (its natural 04:30 fire is up to a day away)
+through the same canonical admission path the tick uses. Both paths need
+the canonical execution spine, which the harness wires deliberately: the
+compose file gives hive a file-backed SQLite `DATABASE_URL` (a supported
+shipped mode). The product frequency floor (#1200) is deployment
+configuration, so the suite does not assume the harness's selection: it
+asks the server under test what it enforces — the create-time refusal of a
+60s cron names `schedule_min_frequency_gap_s` and states the enforced
+number — and derives the UTC recurrence and every timing bound from that
+answer. The harness selects the hard minimum
+(`SCHEDULE_MIN_FREQUENCY_GAP_S=300`) so CI's natural fire lands inside the
+job budget; a deployment on the 900s default is verified just the same,
+with a proportionally longer wait.
+
+The suite also refuses to verify a foreign image: if the server under test
+does not expose this branch's tz health surface, it skips with an
+actionable reason rather than passing (or failing) against code this
+change did not ship.
+
+The restart-marked test is skipped unless `SCHED_TZ_AFTER_RESTART=1` is set
+in its environment — the pre-restart phase must not fail for not having
+restarted yet.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import httpx
+import pytest
+
+BASE = os.environ.get("HIVE_BASE_URL", "http://localhost:8101")
+_POLL_BUDGET = timedelta(seconds=90)  # the tick loop sleeps 30s between sweeps
+_TICK_S = 30  # services/scheduler.py sleeps this long between sweeps
+# Natural-fire margin on top of one recurrence: the tick that consumes a
+# computed occurrence sweeps at most one tick later; the margin absorbs
+# scheduler jitter without encoding any particular machine's speed.
+_NATURAL_FIRE_MARGIN_S = 120
+# The template the shipped image registers at boot; see module docstring.
+MISSION_TEMPLATE = "daily-status"
+UTC_NAME = "tz-verify UTC"
+BERLIN_NAME = "tz-verify Berlin"
+
+
+@pytest.fixture(scope="module")
+def client():
+    with httpx.Client(base_url=BASE, timeout=30.0) as c:
+        yield c
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _server_under_test_ships_this_change(client: httpx.Client):
+    """Refuse to verify a foreign image: skip with the fix, never a false run.
+
+    Every claim in this file is about what the shipped image built from this
+    tree does (that is the point of #290's "tested in the shipped image").
+    Pointed at an unrelated deployment — e.g. a shared dev stack built from
+    another tree — the suite could only produce evidence about code this
+    change did not ship, so it skips saying exactly that. The tz health
+    surface is this change's own marker: an image without it predates the
+    branch, whatever else it serves. The compose harness (the verification
+    path this file exists for) always exposes it, so CI runs everything.
+
+    A server that cannot be reached at all is the same situation with less
+    information: nothing answering the target URL is by definition not an
+    image built from this tree, so skip naming the harness command instead of
+    erroring with a bare ConnectTimeout. The harness cannot mask a real
+    failure this way — compose starts hive first (api-tests depends_on
+    service_healthy), so inside it this fixture always gets an answer.
+    """
+    try:
+        r = client.get("/health")
+    except httpx.TransportError as exc:
+        pytest.skip(
+            f"nothing answering at {BASE} ({type(exc).__name__}) — this suite "
+            "verifies the shipped image and must run inside the compose "
+            "harness: docker compose -f docker-compose.test.yml --profile "
+            "test up --build api-tests"
+        )
+    assert r.status_code == 200, f"health probe failed: {r.status_code} {r.text}"
+    if "tz_database" not in r.json():
+        pytest.skip(
+            f"server at {BASE} does not expose this branch's tz health surface "
+            "(#290) — it is not an image built from this tree. Verify against "
+            "the compose image: docker compose -f docker-compose.test.yml "
+            "--profile test up --build api-tests"
+        )
+
+
+@pytest.fixture(scope="module")
+def setup_done(client: httpx.Client):
+    """Run the setup wizard if not already done (same harness as the PM suite)."""
+    r = client.get("/v1/setup/status")
+    assert r.status_code == 200
+    if r.json().get("setup_complete"):
+        return True
+    r = client.post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "beast",
+            "conductor_name": "PM Test Hive",
+            "admin_username": "admin",
+            "admin_password": "adminpass123",
+            "user_username": "pmuser",
+            "user_password": "pmpass1234",
+            "optional_modules": [],
+        },
+    )
+    assert r.status_code == 200, f"Setup failed: {r.text}"
+    return True
+
+
+@pytest.fixture(scope="module")
+def admin_session(client: httpx.Client, setup_done):
+    """The setup wizard's admin — passes protected-op permission checks."""
+    r = client.post("/v1/auth/login", json={"username": "admin", "password": "adminpass123"})
+    assert r.status_code == 200, f"Admin login failed: {r.text}"
+    cookie = r.cookies.get("hive_session")
+    assert cookie, "No session cookie returned"
+    client.cookies.set("hive_session", cookie)
+    return cookie
+
+
+@pytest.fixture(scope="module")
+def workspace(client: httpx.Client, admin_session) -> str:
+    """A workspace the admin owns, so schedule writes are authorized.
+
+    `POST /v1/schedules` admits the body's `workspace_id` through the
+    canonical Workspace authority and then requires the actor to be a
+    writer member (#1201) — a schedule create without a membership-backed
+    selection is a 403, which is the shipped boundary behaving correctly.
+    """
+    r = client.get("/v1/workspaces/persona-templates")
+    assert r.status_code == 200, f"List persona templates failed: {r.text}"
+    templates = r.json()
+    assert templates, "no persona templates available to create a workspace"
+    r = client.post(
+        "/v1/workspaces",
+        json={"persona_template_id": templates[0]["id"], "name": "Schedule TZ Workspace"},
+    )
+    assert r.status_code == 201, f"Workspace create failed: {r.status_code} {r.text}"
+    return str(r.json()["id"])
+
+
+def _create_schedule(client: httpx.Client, name: str, cron: str, timezone: str, workspace_id: str):
+    return client.post(
+        "/v1/schedules",
+        json={
+            "name": name,
+            "cron_expression": cron,
+            "mission_template_id": MISSION_TEMPLATE,
+            "timezone": timezone,
+            "workspace_id": workspace_id,
+        },
+    )
+
+
+def _discover_floor_s(client: httpx.Client, workspace_id: str) -> int:
+    """Ask the server under test what frequency floor it actually enforces.
+
+    The floor is deployment configuration (default 900s, hard minimum 300s
+    — #1200), and this file must stay truthful against any shipped
+    deployment rather than assume the harness's selection. The create-time
+    refusal of a 60s cron is the floor's own diagnostic: the boundary names
+    the setting and states the enforced number, so the fastest admitted
+    recurrence is read from the server, not guessed. The probe creates no
+    row — it is refused before any exists, exactly like an unreadable cron.
+    """
+    refused = _create_schedule(client, "tz-verify floor probe", "* * * * *", "UTC", workspace_id)
+    assert refused.status_code == 422, f"60s cron was admitted: {refused.text}"
+    assert "schedule_min_frequency_gap_s" in refused.text, refused.text
+    match = re.search(r"one fire per (\d+)s", refused.text)
+    assert match, f"floor refusal did not state the enforced floor: {refused.text}"
+    return int(match.group(1))
+
+
+def _fastest_cron(floor_s: int) -> str:
+    """The floor-equal recurrence: one fire per floor, expressed in minutes."""
+    assert floor_s % 60 == 0, f"floor {floor_s}s is not a whole number of minutes"
+    minutes = floor_s // 60
+    assert minutes >= 1, f"floor {floor_s}s admits sub-minute recurrences"
+    return f"*/{minutes} * * * *"
+
+
+def _natural_fire_budget(floor_s: int) -> timedelta:
+    """Worst-case natural-fire wait at the server's floor.
+
+    The fastest admitted recurrence fires at most one floor-length boundary
+    away, and the tick consumes it at most one sweep later.
+    """
+    return timedelta(seconds=floor_s + _TICK_S + _NATURAL_FIRE_MARGIN_S)
+
+
+def _next_run(client: httpx.Client, schedule_id: str) -> dict:
+    """Poll until the schedule's `next_run` exists; the tick loop sweeps at 30s."""
+    deadline = datetime.now(UTC) + _POLL_BUDGET
+    while datetime.now(UTC) < deadline:
+        r = client.get(f"/v1/schedules/{schedule_id}")
+        assert r.status_code == 200, f"GET schedule failed: {r.text}"
+        body = r.json()
+        if body.get("next_run"):
+            return body
+        time.sleep(5)
+    pytest.fail(f"schedule {schedule_id} computed no next_run within {_POLL_BUDGET}")
+
+
+def _wait_for_natural_fire(
+    client: httpx.Client, schedule_id: str, computed: str, budget: timedelta
+) -> None:
+    """Poll until the tick consumes the computed occurrence on its own.
+
+    A fire the test asked for would prove nothing about the scheduler; the
+    cursor may only move past `computed` when the tick's admission path
+    created the Run for that occurrence by itself. This is the container-level
+    version of the unit suite's `evaluate` pins: the shipped image's loop,
+    over its own zone database, executing what it computed.
+    """
+    deadline = datetime.now(UTC) + budget
+    while datetime.now(UTC) < deadline:
+        r = client.get(f"/v1/schedules/{schedule_id}")
+        assert r.status_code == 200, f"GET schedule failed: {r.text}"
+        next_run = r.json().get("next_run")
+        if next_run and datetime.fromisoformat(next_run) > datetime.fromisoformat(computed):
+            return
+        time.sleep(10)
+    pytest.fail(f"schedule {schedule_id} never fired naturally past {computed} within {budget}")
+
+
+def test_utc_schedule_persists_and_computes_next_run(
+    client: httpx.Client, admin_session, workspace
+) -> None:
+    """UTC is computed, then executed, by the shipped scheduler itself.
+
+    The server's own refusal of a 60s cron states the frequency floor it
+    enforces (#1200); the fastest admitted recurrence is derived from that
+    answer, not assumed. That refusal also pins the actionable diagnostic:
+    a 422 naming `schedule_min_frequency_gap_s`, which the invalid-zone
+    test below relies on for its own 422 to be attributable to the zone
+    alone.
+    """
+    floor_s = _discover_floor_s(client, workspace)
+
+    requested_at = datetime.now(UTC)
+    r = _create_schedule(client, UTC_NAME, _fastest_cron(floor_s), "UTC", workspace)
+    assert r.status_code == 201, f"UTC schedule create failed: {r.text}"
+    body = r.json()
+    sid = body["id"]
+    assert body["timezone"] == "UTC"
+    assert body["enabled"] is True
+
+    projected = _next_run(client, sid)
+    assert projected["timezone"] == "UTC"
+    next_run = datetime.fromisoformat(projected["next_run"])
+    assert next_run.tzinfo is not None
+    now = datetime.now(UTC)
+    # The occurrence may become due between the projection read and this
+    # assertion (observed at a minute boundary). It must follow creation,
+    # not the later assertion time; the natural-fire poll below proves that
+    # the tick actually consumes it rather than accepting a stale cursor.
+    assert requested_at <= next_run <= now + timedelta(seconds=floor_s), (
+        requested_at,
+        now,
+        next_run,
+    )
+
+    # And the shipped scheduler executes what it computed: the cursor moves
+    # past this occurrence without any manual fire.
+    _wait_for_natural_fire(client, sid, projected["next_run"], _natural_fire_budget(floor_s))
+
+
+def test_berlin_schedule_keeps_wall_time_and_season_offset(
+    client: httpx.Client, admin_session, workspace
+) -> None:
+    """04:30 Europe/Berlin must fire at the zone-correct UTC instant.
+
+    Fired manually through the same admission path the tick uses (the
+    natural fire is up to a day away), then the cursor's `next_run` is the
+    zone-correct *next* 04:30. The api-tests container resolves the expected
+    instant from its own pinned `tzdata` wheel, so this compares two
+    independent zone databases' worth of arithmetic: the shipped image's
+    answer against the test image's.
+    """
+    r = _create_schedule(client, BERLIN_NAME, "30 4 * * *", "Europe/Berlin", workspace)
+    assert r.status_code == 201, f"Berlin schedule create failed: {r.text}"
+    sid = r.json()["id"]
+
+    # The fire drives a full canonical DAG execution synchronously (the route
+    # awaits `fire_now`, whose prompt consumption awaits the executor tick —
+    # scheduler.py `_consume_promptly`), so its latency is the executor's, not
+    # a transport constant: while the UTC schedule's natural fire was executing
+    # concurrently, this exact request observably outlived the client fixture's
+    # 30s default and ReadTimeout'd (driver validation battery at this head).
+    # One explicit generous bound for this one request absorbs machine speed
+    # the way `_NATURAL_FIRE_MARGIN_S` does, without asserting a latency
+    # contract the API never made; the GET polls keep the honest 30s.
+    fired = client.post(f"/v1/schedules/{sid}/run", json={}, timeout=300.0)
+    assert fired.status_code == 200, f"Manual fire failed: {fired.status_code} {fired.text}"
+
+    projected = _next_run(client, sid)
+    next_run = datetime.fromisoformat(projected["next_run"])
+    berlin = ZoneInfo("Europe/Berlin")
+
+    # Wall time survives: it is 04:30 *in Berlin*, not in UTC.
+    local = next_run.astimezone(berlin)
+    assert (local.hour, local.minute) == (4, 30), local
+
+    # Season-correct offset: CET (+1) in winter, CEST (+2) in summer — the
+    # DST property a zoneless or UTC-collapsed resolution cannot satisfy.
+    expected_offset = local.utcoffset()
+    assert expected_offset in (timedelta(hours=1), timedelta(hours=2)), expected_offset
+    if local.month in (1, 12):
+        assert expected_offset == timedelta(hours=1), expected_offset
+    if local.month == 7:
+        assert expected_offset == timedelta(hours=2), expected_offset
+
+    # And it is the *next* 04:30 Berlin from the fire, as an exact UTC instant.
+    now_berlin = datetime.now(UTC).astimezone(berlin)
+    candidate = now_berlin.replace(hour=4, minute=30, second=0, microsecond=0)
+    if candidate <= now_berlin:
+        candidate += timedelta(days=1)
+    delta = abs((next_run - candidate.astimezone(UTC)).total_seconds())
+    assert delta <= 60, (next_run, candidate.astimezone(UTC))
+
+
+def test_invalid_timezone_is_refused_at_the_boundary(
+    client: httpx.Client, admin_session, workspace
+) -> None:
+    cron = _fastest_cron(_discover_floor_s(client, workspace))
+    for zone in ("Mars/Olympus_Mons", "Not/AZone"):
+        r = _create_schedule(client, f"bad zone {zone}", cron, zone, workspace)
+        assert r.status_code == 422, f"{zone} was accepted: {r.status_code} {r.text}"
+        # The cron passes the frequency floor (it is the fastest admitted
+        # recurrence), so the 422 is attributable to the zone and nothing else.
+        assert "unknown timezone" in r.text, r.text
+
+
+def test_health_reports_tz_database_and_scheduler(client: httpx.Client) -> None:
+    """The shipped image's zone source is visible, and the scheduler runs."""
+    data = client.get("/health").json()
+    assert data["tz_database"]["status"] == "available", data["tz_database"]
+    assert data["tz_database"]["source"], "tz source must be recorded"
+    assert data["scheduler"]["running"] is True, data["scheduler"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("SCHED_TZ_AFTER_RESTART") != "1",
+    reason="runs only in the post-restart phase (CI starts hive again first)",
+)
+def test_restart_recovery_preserves_schedules_and_recomputes_next_run(
+    client: httpx.Client, admin_session
+) -> None:
+    """After the container restart, persisted schedules are intact and due.
+
+    In CI the hive container is stopped and started again before this
+    selection runs (same durable state dir, fresh process): persistence is
+    the state dir's, a naturally consumed UTC occurrence proves that the
+    restarted tick admits work again, and the Berlin cursor —
+    persisted before the restart — still names a future 04:30 Berlin.
+    """
+    r = client.get("/v1/schedules")
+    assert r.status_code == 200, r.text
+    by_name: dict[str, dict] = {}
+    for s in r.json():
+        if s.get("name") in (UTC_NAME, BERLIN_NAME) and s.get("enabled"):
+            kept = by_name.get(s["name"])
+            if kept is None or str(s.get("created_at")) > str(kept.get("created_at")):
+                by_name[s["name"]] = s
+    assert UTC_NAME in by_name, f"UTC schedule lost across restart: {sorted(by_name)}"
+    assert BERLIN_NAME in by_name, f"Berlin schedule lost across restart: {sorted(by_name)}"
+
+    now = datetime.now(UTC)
+
+    # A persisted future cursor alone proves no recovery: a live loop that
+    # never admits work would still pass a recent-past bound. Observe this
+    # new process consume an occurrence naturally, without manual fire.
+    utc_row = by_name[UTC_NAME]
+    if not utc_row.get("next_run"):
+        utc_row = _next_run(client, utc_row["id"])
+    utc_next = datetime.fromisoformat(utc_row["next_run"])
+    assert utc_next.tzinfo is not None
+    assert utc_next > now - timedelta(minutes=5), utc_row["next_run"]
+    floor_s = _discover_floor_s(client, utc_row["workspace_id"])
+    _wait_for_natural_fire(
+        client, utc_row["id"], utc_row["next_run"], _natural_fire_budget(floor_s)
+    )
+
+    # The Berlin cursor persisted across the restart and still names the
+    # zone-correct next occurrence: 04:30 wall time, season offset, future.
+    berlin_row = by_name[BERLIN_NAME]
+    if not berlin_row.get("next_run"):
+        berlin_row = _next_run(client, berlin_row["id"])
+    berlin_next = datetime.fromisoformat(berlin_row["next_run"])
+    berlin = ZoneInfo("Europe/Berlin")
+    local = berlin_next.astimezone(berlin)
+    assert (local.hour, local.minute) == (4, 30), local
+    assert local.utcoffset() in (timedelta(hours=1), timedelta(hours=2)), local
+    assert berlin_next > now - timedelta(minutes=5), berlin_row["next_run"]
+
+    # Scheduler is live again on the health surface, not merely up.
+    health = client.get("/health").json()
+    assert health["scheduler"]["running"] is True, health["scheduler"]
+    assert health["tz_database"]["status"] == "available", health["tz_database"]
