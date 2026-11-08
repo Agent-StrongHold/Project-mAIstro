@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_RELATIVE_FILES = (
     Path("docker-compose.yml"),
     Path("docker-compose.pm-poc.yml"),
+    Path("docker-compose.repro.yml"),
     Path("docker-compose.docker-sock.override.example.yml"),
     Path("deploy/docker-compose.prod.yml"),
     Path("packages/hive-conductor/docker-compose.yml"),
