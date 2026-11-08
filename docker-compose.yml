@@ -87,6 +87,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # #339: initialization completed, not just the server answering: this
+      # gate is what keeps a dependent service from racing the database
+      # bootstrap on an interrupted-init recovery start.
+      postgres-init:
+        condition: service_completed_successfully
       litellm:
         condition: service_started
     stop_grace_period: 30s
@@ -196,11 +201,85 @@ services:
     pids_limit: 512
     cpus: 2.0
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U maistro"]
+      # #339: a socket `pg_isready` answers inside the image entrypoint's
+      # temporary initialization server (listen_addresses='', unix socket
+      # only) -- before init-db.sql has created the litellm/langfuse
+      # databases -- so the old probe marked the stack healthy mid-bootstrap
+      # and LiteLLM and Langfuse crash-looped against databases that did not
+      # exist yet. The probe now goes over TCP to this service's own network
+      # address (the temporary server never listens on TCP; only the final
+      # server, which starts after every initdb.d script completed, can
+      # answer) and then runs a real query as the application user with the
+      # application password: healthy means the endpoint, the credentials,
+      # the user and the maistro database all answer -- and a wrong
+      # DB_PASSWORD against an existing volume fails HERE, in the health
+      # log, instead of as crash-loops in every dependent service. The
+      # service-name address is the same network path every dependent
+      # service connects on (Docker and Podman both resolve a compose
+      # service name to its container, including from itself).
+      # `$$` keeps Compose from interpolating on the host: the value expands
+      # inside the container, from the environment this service already sets.
+      test: ["CMD-SHELL", "pg_isready -U maistro -h postgres && PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -U maistro -h postgres -d maistro -Atc 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 5
+      # initdb plus the init scripts on slow storage can outlast the failure
+      # budget above. During start_period a failed probe does not count
+      # toward unhealthy (a successful probe still marks healthy
+      # immediately), so a slow first boot waits instead of aborting
+      # `compose up` -- the same contract the engine's first-boot migration
+      # budget above uses.
+      start_period: 300s
     restart: unless-stopped
+
+  postgres-init:
+    # #339: complete database initialization on every `up`, not only on the
+    # volume's first boot. The image entrypoint runs /docker-entrypoint-initdb.d
+    # exactly once -- when PGDATA is empty. A first boot interrupted inside
+    # init-db.sql (some CREATE DATABASE committed, the container killed
+    # before the rest) leaves a non-empty cluster with half the databases,
+    # and every later start skips initdb.d forever: the missing databases
+    # never appear and the service that needs them crash-loops. This one-shot
+    # re-runs the same idempotent init-db.sql once the server is healthy, so
+    # an interrupted initialization completes on the next start. Dependent
+    # services wait on its success: `postgres` healthy says the server and
+    # the application endpoint answer; `postgres-init` succeeding says every
+    # required database exists and answers -- the initialization-completed
+    # marker #339 asks for.
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg18}
+    environment:
+      # psql's own credential variables (libpq): the script below connects
+      # over TCP as the application user, so it authenticates exactly the
+      # way the dependent services do.
+      PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        # The dependency above already proved the endpoint answers with
+        # these credentials; psql's own connect timeout keeps a server that
+        # died between healthy and now from hanging this one-shot.
+        psql -v ON_ERROR_STOP=1 -h postgres -U maistro -d maistro -f /init-db.sql
+        # The completion marker: every database a dependent service connects
+        # to must exist and answer a real query. A missing database fails
+        # with its name in the message -- the diagnostic the interrupted-init
+        # recovery path needs (server-ready versus application-ready).
+        for db in litellm langfuse openwebui; do
+          psql -v ON_ERROR_STOP=1 -h postgres -U maistro -d "$db" \
+            -Atc 'SELECT 1' >/dev/null \
+            || { echo "postgres-init: required database '$db' does not answer" >&2; exit 1; }
+        done
+        echo "postgres-init: initialization complete; all required databases answer"
+    volumes:
+      - ./init-db.sql:/init-db.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Bounded like the other one-shots (#862 resource gate).
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 0.25
+    restart: "no"
 
   litellm:
     # Digest-pinned (v1.106.0-dev.3, multi-arch amd64/arm64). BerriAI deleted
@@ -243,6 +322,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # #339: wait for the litellm database to exist (initialization
+      # completed), not just for the server to answer.
+      postgres-init:
+        condition: service_completed_successfully
     mem_limit: 1g
     memswap_limit: 1g
     pids_limit: 256
@@ -262,6 +345,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # #339: wait for the langfuse database to exist (initialization
+      # completed), not just for the server to answer.
+      postgres-init:
+        condition: service_completed_successfully
     mem_limit: 1g
     memswap_limit: 1g
     pids_limit: 256
@@ -364,6 +451,10 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      # #339: initialization completed before the Conductor's embedded
+      # runtime opens the canonical Workspace store.
+      postgres-init:
+        condition: service_completed_successfully
       litellm:
         condition: service_started
       # The engine's entrypoint migrates under an advisory lock before it

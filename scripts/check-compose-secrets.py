@@ -293,6 +293,7 @@ _REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
 #: to check that claim against the compose file that passes it.
 _THIRD_PARTY_CONSUMERS: dict[str, str] = {
     "POSTGRES_PASSWORD": "the official postgres image",
+    "PGPASSWORD": "libpq/psql inside the postgres-init one-shot (#339), which authenticates over TCP exactly the way the dependent services do",
     "REPLICATION_PASSWORD": "postgres streaming replication (deploy/init-replication.sh)",
     "REDIS_PASSWORD": "the official redis image",
     "LANGFUSE_PUBLIC_KEY": "the langfuse server image",
