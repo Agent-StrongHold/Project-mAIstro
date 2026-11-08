@@ -25,8 +25,11 @@ permits a release merge commit as an explicit promotion marker and therefore
 does not require linear history.
 
 `autonomous-merge-admissibility` is a first-class required PR check. `gates-ran`
-is also required live on both branches; because it is produced by
-`workflow_run`, it is recorded under the policy's Ruleset-only
+is produced by a `workflow_run` publisher (a commit STATUS, not a check-run).
+Merge queues evaluate check-runs only, so `develop`'s ruleset no longer lists
+`gates-ran` under `additional_required_checks`; the enqueue controller
+(`scripts/check-enqueue-merge-queue.py`) still fail-closed enforces it at
+admission. `main` still records it under Ruleset-only
 `additional_required_checks` rather than in the generated PR-job grid below.
 
 ## Required set
@@ -155,10 +158,11 @@ The closeout proof for #162 is not merely a settings screenshot:
 ## Reconstructing the settings
 
 Use `.github/branch-protection.json` as the reviewable contract. The `ruleset`
-section records the live target, merge methods, `gates-ran`, and bypass mode;
-the surrounding branch fields record strictness, review count, stale-review and
-conversation behavior, creation/deletion/non-fast-forward restrictions, and the
-machine-checked required contexts.
+section records the live target, merge methods, bypass mode, and (on `main`)
+the Ruleset-only `gates-ran` context; the surrounding branch fields record
+strictness, review count, stale-review and conversation behavior,
+creation/deletion/non-fast-forward restrictions, and the machine-checked
+required check-run contexts.
 
 If the live settings drift, reconcile GitHub back to this artifact or amend the
 ADR and artifact together. Do not silently weaken a required check to make a PR
