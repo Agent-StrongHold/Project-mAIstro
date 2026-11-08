@@ -7,7 +7,7 @@
 # Base: shell-docker = Docker's arbitrary-code sandbox template WITH a private
 # Docker daemon inside the microVM — required because RSI's nested test
 # sandbox (maistro.tools.sandbox.docker) shells out to `docker run`.
-FROM docker/sandbox-templates:shell-docker@sha256:1560168ac5fb9ce23d413c878349334c5845c07e264cd675d7867f0c78ad1761
+FROM docker/sandbox-templates:shell-docker@sha256:b178ca62ec2e79af2a044e3ec321bdb72188690e1c15d573ea5524b397554d3d
 
 USER root
 
