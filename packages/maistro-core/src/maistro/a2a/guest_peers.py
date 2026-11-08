@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Protocol, cast, runtime_checkable
+from urllib.parse import quote
 
 from maistro.a2a.delegation_context import (
     DelegationContext,
@@ -134,6 +135,46 @@ class GuestPeerManager:
 
     def list_peers(self) -> list[PeerTrust]:
         return [p for p in self._peers.values() if p.active]
+
+    async def poll_result(self, peer_name: str, task_id: str) -> DelegationResult | None:
+        """Read a terminal result from a peer, or ``None`` while it runs.
+
+        Cross-instance delegation has no in-process task receipt to callback
+        into. The recovery tick therefore uses the peer's task-status resource
+        as its timer waker. A transport error is deliberately not a failed
+        delegation: the task may still be running, so the next tick must be
+        allowed to try again.
+        """
+        if not task_id:
+            return None
+        peer = self.get_peer(peer_name)
+        if peer is None or not peer.active:
+            return None
+        try:
+            async with shared_client(timeout=30.0) as client:
+                response = await client.get(
+                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/{quote(task_id, safe='')}",
+                    headers=self._peer_auth_headers(peer),
+                )
+                if response.status_code == 404:
+                    return DelegationResult("", peer_name, "not_found")
+                response.raise_for_status()
+                payload = response.json()
+            status = str(payload.get("status") or "")
+            if status not in {"completed", "failed", "cancelled"}:
+                return None
+            return DelegationResult(
+                task_id=str(payload.get("task_id") or task_id),
+                peer_name=peer_name,
+                status=status,
+                result=payload.get("result"),
+                error=payload.get("error"),
+            )
+        except Exception:
+            # Uncertain transport: the task may still be running on the peer,
+            # so the next recovery tick polls again instead of failing the
+            # delegation.
+            return None
 
     @staticmethod
     def _peer_auth_headers(peer: PeerTrust) -> dict[str, str]:

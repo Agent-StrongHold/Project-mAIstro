@@ -19,6 +19,7 @@ from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     RunStatus,
+    poll_external_results,
     recover_queued_graph_runs,
     resume_due_graph_runs,
     run_durable_graph,
@@ -572,7 +573,35 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     container = _container()
     if container is None or container.graph_run_store is None:
         return 0
-    return await resume_due_graph_runs(
+
+    # Completion polling is the cross-process counterpart to the in-process
+    # A2A receipt callback. A successful poll queues the canonical parent, so
+    # the normal queued recovery path consumes it without a second lifecycle.
+    # Containers without delegation surfaces (and partial test doubles) have
+    # nothing to poll, so the timed half proceeds on its own.
+    guest_peers = getattr(container, "guest_peers", None)
+    harness_adapters = getattr(container, "harness_adapters", None) or {}
+    polled = 0
+    if guest_peers is not None or harness_adapters:
+        polled = await poll_external_results(
+            store=container.graph_run_store,
+            guest_peers=guest_peers,
+            harness_adapters=harness_adapters,
+            limit=limit,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        )
+    recovered = 0
+    if polled:
+        recovered = await recover_queued_graph_runs(
+            store=container.graph_run_store,
+            run_store=container.run_store,
+            node_resolver_factory=_recovery_resolver,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+            admission_source="hive_legacy_dag",
+            events=_canonical_recovery_events(container),
+            limit=limit,
+        )
+    resumed = await resume_due_graph_runs(
         store=container.graph_run_store,
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
@@ -581,6 +610,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         limit=limit,
         scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
+    return recovered + resumed
 
 
 def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:
