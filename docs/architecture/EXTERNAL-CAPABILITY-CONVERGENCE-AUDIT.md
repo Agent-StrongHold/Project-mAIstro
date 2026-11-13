@@ -3,7 +3,7 @@
 **Status:** investigation / review proposal, not a decision record or permission to add a dependency.
 **Baseline:** Project-mAIstro develop, inspected 2026-11-13 through repository file reads and code search. External references are their public documentation on the same date.
 **Scope:** existing implementations **and** accepted/proposed ADRs and specs, including specifications whose status was reverted to Proposed during governance reconciliation.
-**Companions:** [Workspace cutover](WORKSPACE-CUTOVER-PLAN.md), [AG-UI spike](AG-UI-CONVERGENCE-SPIKE.md) on [draft PR #2411](https://github.com/Agent-StrongHold/Project-mAIstro/pull/2411), [ADR-039 external-adoption policy](../adr/ADR-039-external-library-adoption-policy.md), [SPEC-277 A2UI](../specs/SPEC-277-a2ui-surface-integration.md).
+**Companions:** [Workspace cutover](WORKSPACE-CUTOVER-PLAN.md), [AG-UI spike on draft PR #2411](https://github.com/Agent-StrongHold/Project-mAIstro/blob/feat/ag-ui-canonical-projection-spike/docs/architecture/AG-UI-CONVERGENCE-SPIKE.md), [ADR-039 external-adoption policy](../adr/ADR-039-external-library-adoption-policy.md), [SPEC-277 A2UI](../specs/SPEC-277-a2ui-surface-integration.md).
 
 > Research findings are not acceptance evidence. File inspection proves a code path exists, not that its end-to-end contract works. Tests, version/license/transitive-dependency audits, and reachable production wiring must be verified before a claim of completion. No tests were executed for this audit.
 
