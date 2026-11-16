@@ -220,3 +220,73 @@ Validation at the new merged HEAD:
 
 No test was added or removed this round, so the recorded inventory counts
 are unchanged; this note documents validation only.
+
+## Round: post-merge repair validation (`fb9a8d5cf`, develop `f8a2df966` folded in)
+
+No source or test change this round. The merge-queue evaluation at `4f0b6ecb`
+failed `integration-scope` plus ten Quality legs in one run whose BFCL log
+shows `##[error]fetch failed` — a runner network outage, and the aggregator's
+own block reads "Hosted PR snapshot incomplete or not the review head"
+(evidence waited on a SHA that was not the review head). Every named leg was
+reproduced locally with CI's exact commands at the new merged HEAD
+(`fb9a8d5cf`, develop `f8a2df966` — nltk bump, canvas.runner wiring, hive
+project onboarding routes, ADR-048 session search, events/recipes EventBus
+subscription, and the M1 retention closeout — all content develop already
+greened through its own queue):
+
+- Driver checks at HEAD: ruff check, ruff format (3,562 files), targeted
+  durable-runs/a2a/delegate/stores-gaps pytest (250 passed, 31 skipped),
+  conductor DAG/registered-DAG recovery (28 passed), both suite inventories
+  (Hive 4,199; Core 18,500) — all exit 0.
+- Broader recovery signal at HEAD: full `durable_runs` 795 passed / 76
+  skipped / 4 xfailed; `a2a` + delegate-remote 316 passed; mypy `--strict`
+  packages/maistro-core/src clean (839 files, CI's exact command after
+  `uv sync --locked --all-extras`).
+- Named CI-failed legs, each with the workflow's exact step command:
+  doc links (3,197 files, 0 broken), IFEval provenance (5 artifacts OK),
+  BFCL provenance (13 artifacts + shim OK), agent store writes OK, model
+  egress (16 callers, no candidate-approved expansion) + design model
+  egress OK, all 13 interrogate docstring-floor commands OK (after
+  `uv pip install interrogate`, per the workflow's own setup), Hypothesis
+  `formal/` 666 passed / 4 skipped (after `uv pip install -e
+  packages/maistro-evolve`, per the workflow's own setup).
+- durable-events reproduced on a fresh postgres:17 scratch container with
+  `MAISTRO_REQUIRE_PG_LEGS=1`: events suite 513 passed / 5 skipped (PG legs
+  required, none skipped-as-untested) and event-schema agreement 5 passed.
+- strike-ladder reproduced on a fresh postgres:17 scratch container with
+  `MAISTRO_REQUIRE_PG_LEGS=1`: 40 passed (the first run errored only because
+  the container was still initializing; green after `pg_isready`).
+- integration-scope reproduced with the workflow's exact steps at HEAD:
+  `ci_base_revision.py` resolves `f8a2df966` from the merge-group event;
+  `ci_merge_group_scope.py --json` over the 28 changed paths yields
+  docker_build/durable_events/hive_e2e/postgres/strike_ladder/wheel_imports
+  = true, object_storage = false; `check-integration-scope.py --required-json`
+  resolves the same eight required checks as prior rounds;
+  `node --test tests/ci/integration-scope.test.cjs` 12/12. The classifier
+  logic is sound; the CI failure was the hosted snapshot/evidence leg.
+- acceptance-state `--run-tests --ratchet --mandate f8a2df966` over a fresh
+  pg18 scratch database (migrated chain to head): first run failed exactly as
+  documented in earlier rounds — an unbanked design_coverage improvement
+  (44.4608 measured vs the branch note's 44.26 floor, raised by develop's
+  own doc/spec content in the merge). Banked 44.4608 into this branch's own
+  `quality/ac-state-notes/auto-62.json` per the gate's instruction
+  (`--bank` writes only that branch-scoped file) and re-ran the CI-shaped
+  command: exit 0, 10 debt counters exactly on ceilings, 1 progress counter
+  exactly on its floor, 0 unproven criteria, 0 chain violations. No shared
+  ledger or grant was edited.
+- CI-exact ratchets re-run at HEAD for the aggregate gate: vulture
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`,
+  1238/1238 banked), radon (126/126), reachability (1,485 modules, 88
+  unreachable attributed) + dispositions, convergence-matrix (52 subsystems),
+  durable-table-inventory (125 tables, develop-raised baseline),
+  execution-lifecycles (19 classified, 3 CANONICAL), backlog consistency —
+  all exit 0.
+
+Not re-run locally this round: the postgres matrix, wheel-imports,
+docker-build and hive-conductor e2e image builds (none in the failing set;
+the image builds previously died on local buildkit DNS, documented above),
+and diff coverage (needs CI's full coverage producer; the branch's source
+diff is unchanged for the files validated in the prior round).
+
+No test was added or removed this round, so the recorded inventory counts
+are unchanged; this note documents validation only.
