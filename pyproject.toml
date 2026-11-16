@@ -276,6 +276,22 @@ constraint-dependencies = [
     # the >= 1.30 compatibility floor in the manifests.
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
+    # Same shape again (trivy image gate, 2026-11-16, #2110 CI-repair round):
+    # four advisories the research image's locked export ships. oauthlib
+    # arrives via google-auth-oauthlib → requests-oauthlib; pyasn1 via
+    # google-auth → pyasn1-modules; pypdf via browser-use (maistro-core's
+    # `[browser]` extra) and soupsieve via beautifulsoup4 → markdownify,
+    # same browser chain — all four enter an image only through the research
+    # export (the API image's scan is clean on the same DB). CVE-2026-49272
+    # (oauthlib device-code validation bypass, HIGH) is fixed in 4.0.1;
+    # CVE-2026-119194/119195/119196/119197 (pyasn1 ASN.1 decoding DoS
+    # family) are fixed in 0.6.5; CVE-2026-119203/119204/119205/119206 and
+    # CVE-2026-119207/119208/119209 (pypdf parsing DoS family) are fixed by
+    # 6.21.4; CVE-2026-126190 (soupsieve) is fixed in 4.0.0.
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
 ]
 
 [tool.ruff]

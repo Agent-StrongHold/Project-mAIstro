@@ -346,3 +346,90 @@ Verdict for this round: the two locally-reproducible gate failures are fixed wit
 CI-exact proof; issue criteria remain proven (re-executed lane tests at this head); hosted
 rollup still UNVERIFIED (queued), Windows-runtime limits unchanged. No inventory-note update
 needed (no test count changed).
+
+## Round 6 — repair at 7de64446c2a4 (hive-conductor-e2e-ui + Container scan residuals)
+
+Driver checks (job a9b58ba36b214f40be55c081470cd442): uv sync --locked --extra dev,
+ruff check ., ruff format --check . — all exit 0 at the exact starting head.
+
+1. Actual CI evidence fetched (read-only) for the three red checks at 7de64446c
+   (run 43806818617, jobs 133099383970 + 133099866372 + 133099386119):
+   - Container scan + SBOM + cosign: the failing step was trivy-action_3 =
+     `maistro-engine-research:pr-2110` (HIGH/CRITICAL, exit-code 1, ignore-unfixed,
+     trivyignores .trivyignore.yaml). Findings: oauthlib 4.0.0 CVE-2026-49272
+     (fix 4.0.1), pyasn1 0.6.4 CVE-2026-119194/195/196/197 (fix 0.6.5),
+     pypdf 6.21.2 CVE-2026-119203/204/205/206/207/208/209 (fix 6.21.3/6.21.4),
+     soupsieve 3.0.3 CVE-2026-126190 (fix 4.0.0). The hive + engine scans in the
+     same job PASSED; the rsi-runner scan never ran (job died first).
+     The npm-audit lines in the truncated board log were build noise, not the failure.
+   - hive-conductor-e2e-ui: 240 passed / 1 failed / 1 flaky / 4 did-not-run
+     (serial suite). Failed (both attempts): rsi-polling-resilience.spec.ts:591
+     "a success resets the cadence to base and the failure ladder to fresh",
+     gapFresh 3760 vs >= 6800 — 3750 + 10ms = the BASE cadence measured as the
+     "fresh ladder" gap, twice. The flaky: :459 cap gap 45015 > 45010 (passed retry).
+     These specs are develop-inherited (PR #2110 touches no frontend/e2e file);
+     develop's own ci.yml run at f8a2df966 passed e2e-ui on 2026-11-08, and
+     develop's security workflow has been red since 2026-11-13 (engine image
+     x/net finding — which a7ba1f453 already fixed for this branch).
+   - integration-scope: meta-gate, failed only because hive-conductor-e2e-ui did.
+2. Container scan fix (pyproject.toml + uv.lock): four constraint-dependencies
+   floors in the established triage-comment shape (oauthlib>=4.0.1, pyasn1>=0.6.5,
+   pypdf>=6.21.4, soupsieve>=4.0.0) — all four roll up through the research
+   image's locked export only (google-auth-oauthlib→requests-oauthlib,
+   google-auth→pyasn1-modules, browser-use→pypdf/markdownify→beautifulsoup4→
+   soupsieve; browser-use = core's `[browser]` extra). `uv lock` re-resolved
+   exactly those four (oauthlib 4.0.1, pyasn1 0.6.5, pypdf 7.1.0, soupsieve
+   4.1.1 — browser-use 0.5.9 declares pypdf unbounded, 7.1.0 is in-range);
+   `uvx --from uv==0.12.5 uv lock --check` exit 0 (CI's pinned toolchain).
+   Local CI-exact proof: docker build -f Dockerfile.research ->
+   image carries oauthlib 4.0.1 / pyasn1 0.6.5 / pypdf 7.1.0 / soupsieve 4.1.1;
+   trivy v0.73.0 (CI's version) `image --severity HIGH,CRITICAL --ignore-unfixed
+   --ignorefile .trivyignore.yaml --scanners vuln,secret` -> **0 vulnerabilities**.
+   Dockerfile.rsi-runner installs via `uv sync --locked` on the same pyproject +
+   uv.lock, so the fix flows there too; hive/engine scans passed in CI on the
+   pre-fix tree already.
+   Supply chain (pip-audit) stays green: uv sync --locked --all-extras (219 rows,
+   none of the four packages are in that env), pip-audit --strict parses,
+   scripts/pip_audit_gate.py exit 0 (only the pre-triaged ecdsa PYSEC-2026-1325).
+3. e2e-ui fix (packages/hive-conductor/tests/e2e/rsi-polling-resilience.spec.ts,
+   test-only; the page's loop code is correct and untouched):
+   - :591 — the fixed `counts >= 4` milestone assumed exactly one manual refresh
+     request; a click Playwright re-verifies after the cleared banner shifts
+     layout can dispatch the refresh handler twice, and the extra manual refresh
+     then got indexed as a loop poll, so the base cadence (3.75s) was measured
+     as the "fresh ladder" gap (= the observed 3760, both attempts). Replaced
+     with banner-synced indexing: the banner's reappearance after setModes
+     ("abort") marks the first post-refresh outage poll in every dispatch
+     ordering (loop-poll, late duplicate refresh that succeeds, or one that
+     aborts — all three orderings produce the same asserted gaps).
+   - :459 — the observation loop advanced the fake clock +5ms per expect.poll
+     interval while the fetch's real-time finally raced those nudges: each
+     nudge landing before the rearm shifted the next deadline +5ms, so a slow
+     CI round-trip accumulated unbounded quanta into a gap (45015 = 3 nudges).
+     Replaced with one overshooting chunk per step (runFor(delay+5), timer due
+     strictly inside the chunk) and observation that never advances the clock,
+     making the rearm anchor deterministic and load-independent; the residual
+     +0..+15ms is Playwright's 5ms fire quantization, plus a rare exactly-1000ms
+     headless-Chromium timer-fire clamp seen once in a local soak. Bounds now
+     allow a stated 1100ms envelope (documented in-spec) — adjacent ladder rungs
+     are 7.5-15s apart, so discrimination is unchanged, and the 5-minute
+     burn-down (<=8 polls at the cap) still pins the cadence.
+   - Local proof (isolated compose project cr2110-ui, CI=1 budget, retries on):
+     rsi spec 6/6 clean iterations after the final bounds; full compose suite
+     `up --build --abort-on-container-exit --exit-code-from e2e-tests` ->
+     exit 0 with 245 passed / 1 flaky (dag-builder-unmount-cleanup, unrelated
+     environmental class, passed its retry) — the same command ci.yml runs.
+     A pre-fix local soak reproduced the CI signatures exactly (45015 > 45010;
+     gapFresh 3760-class indexing), so the repairs address the observed
+     failures, not a guess.
+4. Gates re-run green at this tree: ruff check . / format --check . exit 0;
+   check-vulture-baseline.py with CI's exact args (1238 = 1238, untouched);
+   check-suite-inventory.py exit 0 (21 suites match — playwright specs are not
+   pytest-inventoried and no test count changed, so the (+3) note stays
+   consistent); tests/test_get_ps1_wsl_detection.py 28 passed.
+5. Residuals: hosted rollup (SBOM/cosign/grype legs, hosted e2e-ui run) remains
+   UNVERIFIED until CI runs on the new head; the research image's pypdf 7.1.0
+   jump is metadata-valid (browser-use declares pypdf unbounded) but real
+   browser-tool behavior on pypdf 7 stays a hosted e2e concern (the image's
+   builder smoke passes: import maistro_server.main + browser-use/playwright
+   versions). No closure keywords; no issue-closure action.
