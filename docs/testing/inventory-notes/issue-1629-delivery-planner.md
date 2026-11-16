@@ -1,11 +1,14 @@
 ---
 inventory-delta:
-  tests/: +56
+  tests/: +54
 ---
 # #1629: acceptance-based repository delivery planner
 
 Suite: `tests/`
-Delta: +56 collected cases in `tests/test_plan_delivery.py`; no existing tests
+Delta: +54 collected cases in `tests/test_plan_delivery.py`; the 2 later
+reservation-scope cases in this same file carry their own delta under
+`cr-1640-reservation-scope-protection.md` (deltas sum across notes, so
+recounting them here would double-count). No existing tests
 removed, renamed, skipped or weakened. No baseline or workflow change.
 
 The cases execute the real planner and CLI over deterministic reviewed-snapshot
