@@ -40,7 +40,11 @@
 # the loaded image, so a stale binding fails the build step, loudly and
 # attributed, instead of as a scanner-vs-log contradiction two steps later.
 # Local builds stamp `local`.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime-apt
+# Base digest refreshed 2026-11-16 (#1836 containers-gate repair) together
+# with Dockerfile.research: the prior 2026-10-24 index pins CPython 3.12.15,
+# which grype 0.116.0 --only-fixed flags CVE-2026-115557 CRITICAL (fixed
+# *3.12.16); the refreshed index resolves 3.12.16-slim-trixie.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime-apt
 
 ARG SECURITY_PATCH_KEY=local
 
