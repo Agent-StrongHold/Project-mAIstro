@@ -38,7 +38,7 @@ from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
 from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
-from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder, get_default_quota_tracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
@@ -263,8 +263,15 @@ def default_effect_context() -> CapabilityEffectContext:
     if _ephemeral_context is None:
         # This named composition root deliberately selects the narrow scope
         # policy; unnamed contexts stay read-only until an application
-        # supplies one.
-        _ephemeral_context = new_effect_context(policy_evaluator=binding_scope_policy)
+        # supplies one. The usage ledgers mirror the process defaults the
+        # same way: the usage log outright, and the quota ledger when a
+        # composition root registered one — so a caller that crosses this
+        # context (the conductor's governed fallback among them) never
+        # omits its call class from ledger evidence a process carries (#718).
+        _ephemeral_context = new_effect_context(
+            policy_evaluator=binding_scope_policy,
+            quota_tracker=get_default_quota_tracker(),
+        )
     return _ephemeral_context
 
 
