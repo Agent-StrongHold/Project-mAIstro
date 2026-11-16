@@ -246,3 +246,52 @@ bundle is proven by the api e2e + durability rounds above) and
 is proven green and the compared manifests are hash-pinned by
 `--require-hashes` lock install, so rebuild variance is bounded to
 base-image digest drift, which the branch does not change).
+
+## Verification (service-backed closure round, head `bf9b7196012e`)
+
+Both items left open by the previous round were executed for real this
+time, against services (local docker daemon, same compose files CI
+uses), plus a first local trivy pass over the branch-touched images:
+
+- `hive-conductor-e2e-ui`: `docker compose -f docker-compose.test.yml
+  --profile test up --build --abort-on-container-exit --exit-code-from
+  e2e-tests e2e-tests` → **246 passed** in 5.2m, compose exit 0. (A
+  first attempt exited 1 from a stale orphaned `e2e-tests` container of
+  a previous compose project hash dying with SIGTERM under
+  `--abort-on-container-exit` — a state a fresh CI runner cannot have;
+  `down -v --remove-orphans` then a clean re-run passed. The rebuilt
+  hive image carries this branch's frontend bundle.) Settings page
+  load, Skills list, and Profile `whoami` from the issue's smoke plan
+  are covered inside that suite (`navigation-coverage.spec.ts` pins
+  `/settings` and `/skills` headings; `app-shell-loading.spec.ts` and
+  the workspace specs pin `whoami`); the Profile summary SSE stream and
+  `hctl status` remain manual-only.
+- `docker-rebuild-compare`: two independent no-cache engine rebuilds
+  via `scripts/buildx-build-retry.sh -- -f Dockerfile -t
+  maistro-engine:rebuild-{a,b} --no-cache --load .` → both exit 0, and
+  the venv distribution manifests diff clean — "two independent
+  rebuilds produced identical dependency manifests (126
+  distributions)". The rebuilt image carries `opentelemetry-api
+  ==1.45.2` (the branch's security floor).
+- Trivy (CI-pinned v0.73.0, CI-exact flags `--severity HIGH,CRITICAL
+  --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml`) over
+  the two images the branch's Dockerfile changes actually feed:
+  branch-built `hive-conductor` (frontend bundle from this tree) and
+  branch-built `maistro-engine` (docker-CLI 29.9.3 stage, in-image
+  `docker --version` = `v29.9.3, build 5457199`) → both exit 0. The
+  research/rsi-runner images differ from develop only through the
+  6-package lock closure (their Dockerfiles and CLI pins are untouched);
+  cosign keyless signing and the SBOM attest step are hosted-OIDC only
+  and stay with the hosted re-run.
+- Branch-content gates re-confirmed at this head (docs-only since
+  `2da5e0f35`): typed-client 40 raw / 119 hand-typed none-new, vulture
+  1238 == 1238 unclassified 0, compliance registry, shipped-surface,
+  suite inventory (21 suites), ruff pair, mypy 1120 files (CI arg
+  list), devskim scope 21 passed in 8.72s, cross-product-parity 26
+  passed, frontend `npm run build` exit 0, frontend-api-routes 217
+  sites → 257 routes, `hive-conductor-e2e` re-run → exit 0 (10 passed),
+  `verify-compose-durability.sh` re-run → exit 0.
+- npm dependency manifests are byte-identical to the merge base
+  (`git diff <base>..HEAD -- '**/package.json' '**/package-lock.json'`
+  is empty), so the containers job's frontend license surface is
+  unchanged by the branch.
