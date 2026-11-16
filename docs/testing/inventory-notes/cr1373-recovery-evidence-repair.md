@@ -336,3 +336,75 @@ CI's coverage producer).
 
 No test was added or removed this round, so the recorded inventory counts
 are unchanged; this note documents validation only.
+
+## Round: container-scan repair (`b868e47f9` head; Dockerfile docker-CLI CVE bump)
+
+The remaining failing leg at head `b868e47f9` was the merge-queue
+`Container scan + SBOM + cosign` job (run 43804171165, job 133090992402).
+The failing step, read from the authenticated job log, is **Trivy scan
+maistro-engine (HIGH/CRITICAL only)** — the npm-audit lines in the excerpt
+previously quoted from the log tail are the tail of an earlier `npm ci`
+build step, and `npm ci` does not fail on audit findings (reproduced
+locally with npm 9.2.0/node 22: a critical-vulnerability tree installs
+with exit 0). The real findings, identical to the local reproduction:
+
+- `usr/local/bin/docker` (gobinary): go-jose/v4 4.1.5 — CVE-2026-116587
+  (HIGH, fixed 4.1.6) and golang.org/x/net 0.60.0 — CVE-2026-78661
+  (HIGH, fixed 0.62.0). Both are vendored by docker/cli v29.9.1
+  (`vendor.mod`, commit `dfc520d`), the tag the root `Dockerfile` and
+  `Dockerfile.research` build the shipped CLI from.
+
+Fix (both Dockerfiles, same stage, byte-identical): bump
+`DOCKER_CLI_VERSION` to 29.9.3 (commit `5457199`, resolved through the
+annotated tag API; the in-stage `git rev-parse --short=7` check still
+pins it) and patch `golang.org/x/net` to v0.62.0 onto that tag with
+`go get` + `go mod vendor` — the same policy the `agebuild` stage uses
+for x/crypto and the root Dockerfile documents for toolchain CVEs.
+v29.9.2 vendors both advisories unfixed; v29.9.3 vendors go-jose 4.1.7
+upstream but still pins x/net 0.60.0, so the tag bump alone cannot close
+the second advisory (checked upstream vendor.mod for v29.9.2, v29.9.3
+and latest tag list before choosing). No repo surface asserts the CLI
+version (`tests/test_prepull_copy_sources.py` checks only the stage-alias
+property, unchanged).
+
+Proof on this machine (docker 29.1.3 server, trivy 0.73.0 with a fresh
+mirror.gcr.io/aquasec/trivy-db:2, image-mode scan like CI):
+
+- Old stage built verbatim from `git show HEAD:Dockerfile`:
+  `out/docker` scans **2 HIGH** — exactly CVE-2026-116587 (go-jose
+  4.1.5→4.1.6) and CVE-2026-78661 (x/net 0.60.0→0.62.0), the same table
+  the CI log shows.
+- New stage: builds clean (`go get`, `go mod vendor`, vendored
+  `-tags grpcnotrace` build all succeed); binary reports
+  `Docker version v29.9.3, build 5457199`; image scan reports
+  **0 HIGH/CRITICAL** for `out/docker` (and the go toolchain binaries
+  in that build-only stage).
+- The research image's CLI stage is byte-identical (diffed), so the
+  same proof transfers to the maistro-engine-research scan that CI
+  never reached.
+
+Driver battery re-run at `b868e47f9` (the prior job's own logs
+`check-0..6` also passed all seven checks with returncode 0 — that job
+died on a provider 404 (nous/poolside/laguna-s-2.1:free), i.e. driver
+infrastructure, not a repo check):
+
+- `uv run ruff check .` and `uv run ruff format --check .` — clean.
+- CI-exact vulture: `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` —
+  exit 0, 1238/1238 banked, no ledger amendment needed.
+- `durable_runs` full suite: 795 passed / 76 skipped / 4 xfailed;
+  M1-E2 convergence + cross-store reconciliation + stores-gaps:
+  120 passed / 31 skipped (PG legs skipped without a database);
+  a2a delegate/guest-peers/remote: 130 passed; conductor DAG +
+  registered-DAG recovery: 28 passed.
+- Both suite inventories ok (Hive 4,199; Core 18,500).
+- CI-shaped convergence gates: `check-m1-convergence-freeze.py --base
+  origin/develop`, `check-convergence-matrix.py` (52 subsystems, 1485
+  modules, 88 unreachable attributed) and `check-execution-lifecycles.py`
+  (19 classified, 3 CANONICAL) — all exit 0.
+- Production-level retirement check for ADR-083026-6e2a: no
+  `checkpoints` module and no `canonical_checkpoints` reference exists
+  under `packages/*/src`.
+
+No test was added or removed this round, so the recorded inventory counts
+are unchanged; this note documents the container-gate repair and validation.
