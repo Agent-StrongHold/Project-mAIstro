@@ -10,12 +10,19 @@ fix, and this is the same shape.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from maistro.graph import Graph, Node
-from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.observability.metrics import (
+    retention_backlog_age_seconds,
+    retention_backlog_remaining,
+    retention_purged_total,
+    retention_sweep_failures_total,
+    retention_sweep_last_success_timestamp,
+)
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import retention
 from maistro.runs.model import RunStatus
@@ -387,6 +394,142 @@ async def test_a_failed_sweep_leaves_its_scopes_backlog_standing() -> None:
     assert await failing.maybe_sweep(now=NOW) == 0
 
     assert _backlog("workspace") == 1.0
+
+
+# ── sweep health metrics (#325): last success, failures, backlog age ──
+
+
+class _FakeClock:
+    """Stand-in for the `time` module inside `retention`, so backlog ages are
+    asserted exactly instead of against wall-clock luck."""
+
+    def __init__(self) -> None:
+        self.monotonic_value = 1000.0
+
+    def monotonic(self) -> float:
+        return self.monotonic_value
+
+    def time(self) -> float:
+        return time.time()
+
+
+def _gauge_value(metric: object, mode: str) -> float | None:
+    """A gauge's current value for one mode label, or None if never set."""
+    values = [
+        float(sample["value"])  # type: ignore[index]
+        for sample in metric.collect()  # type: ignore[attr-defined]
+        if sample.get("labels", {}).get("mode") == mode
+    ]
+    return sum(values) if values else None
+
+
+def _failures(mode: str) -> float | None:
+    return _gauge_value(retention_sweep_failures_total, mode)
+
+
+def _last_success(mode: str) -> float | None:
+    return _gauge_value(retention_sweep_last_success_timestamp, mode)
+
+
+async def test_a_failed_sweep_is_counted_and_never_reported_successful() -> None:
+    """The runbook's sweep contract: a failed sweep is not reported as
+    successful. The failures counter moves; the last-success timestamp does
+    not — an operator alerting on 'no successful sweep since' can trust it."""
+    failures_before = _failures("workspace")
+    success_before = _last_success("workspace")
+    sweeper = RunRetentionSweeper(
+        SpyStore(purged=4, fail_with=RuntimeError("down")),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+
+    assert await sweeper.maybe_sweep(now=NOW) == 0
+
+    assert (_failures("workspace") or 0.0) - (failures_before or 0.0) == 1.0
+    assert _last_success("workspace") == success_before
+
+
+async def test_an_operator_sweep_failure_counts_and_still_raises() -> None:
+    failures_before = _failures("global")
+    sweeper = RunRetentionSweeper(
+        SpyStore(purged=4, fail_with=RuntimeError("down")),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=GLOBAL,
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="down"):
+        await sweeper.sweep_now(now=NOW)
+
+    assert (_failures("global") or 0.0) - (failures_before or 0.0) == 1.0
+
+
+async def test_a_committed_sweep_publishes_its_success_time_by_mode() -> None:
+    """The last-success gauge is per authorization mode and carries a real
+    unix timestamp that advances with the sweep that set it."""
+    workspace_before = _last_success("workspace")
+    global_before = _last_success("global")
+    scoped = RunRetentionSweeper(
+        SpyStore(purged=1), RetentionPolicy(sweep_interval_seconds=0), scope=SCOPE
+    )  # type: ignore[arg-type]
+
+    await scoped.sweep_now(now=NOW)
+
+    published = _last_success("workspace")
+    assert published is not None
+    assert published <= time.time()
+    if workspace_before is not None:
+        assert published >= workspace_before
+    assert _last_success("global") == global_before
+
+
+async def test_backlog_age_oldest_scope_and_drains_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The age gauge follows the oldest standing backlogged scope of its
+    mode: it grows while the scope stays backlogged, a global backlog does
+    not disturb it, and draining the scope returns it to zero."""
+    clock = _FakeClock()
+    monkeypatch.setattr(retention, "time", clock)
+    backlogged = RunRetentionSweeper(
+        SpyStore(purged=1, backlog=True),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+
+    await backlogged.sweep_now(now=NOW)
+    assert _gauge_value(retention_backlog_age_seconds, "workspace") == 0.0
+
+    clock.monotonic_value = 1007.0
+    await backlogged.sweep_now(now=NOW)
+    assert _gauge_value(retention_backlog_age_seconds, "workspace") == 7.0
+
+    # Another mode's backlog is independent: it neither resets nor extends
+    # the workspace-mode age (#818 bounded labels, per-mode series).
+    clock.monotonic_value = 1009.0
+    global_backlog = RunRetentionSweeper(
+        SpyStore(purged=1, backlog=True),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=GLOBAL,
+    )  # type: ignore[arg-type]
+    await global_backlog.sweep_now(now=NOW)
+    assert _gauge_value(retention_backlog_age_seconds, "workspace") == 7.0
+    assert _gauge_value(retention_backlog_age_seconds, "global") == 0.0
+
+    # Draining the scope retires the age with the backlog.
+    clock.monotonic_value = 1012.0
+    drained = RunRetentionSweeper(
+        SpyStore(purged=1, backlog=False),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+    await drained.sweep_now(now=NOW)
+    assert _backlog("workspace") == 0.0
+    assert _gauge_value(retention_backlog_age_seconds, "workspace") == 0.0
+
+    # The global scope is still backlogged, so a later sweep of its mode
+    # ages the same entry from its original entry instant, not from the
+    # last report.
+    await global_backlog.sweep_now(now=NOW)
+    assert _backlog("global") == 1.0
+    assert _gauge_value(retention_backlog_age_seconds, "global") == 3.0
 
 
 # ── per-Workspace throttle and backlog (#1175) ───────────────────
