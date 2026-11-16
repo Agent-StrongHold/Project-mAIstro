@@ -98,29 +98,33 @@ RUN uv export --locked --package maistro-server \
 # go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; CVE-2026-111943 HIGH
 # in stdlib 1.27.2, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
-# release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
+# release tag ourselves on the patched toolchain. Tag resolves to 5457199; fail
 # if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
 # independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+#
+# 29.9.3 bump (CR1373 CI repair, 2026-11-16): v29.9.1 vendored go-jose/v4 4.1.5
+# (CVE-2026-116587 HIGH, fixed in 4.1.6) and golang.org/x/net 0.60.0
+# (CVE-2026-78661 HIGH, fixed in 0.62.0); trivy flagged both inside the built
+# usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but still pins
+# x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
+# root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
+# and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
+# versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
+# vendor.sum), so only the x/net patch below remains.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    # Same doctrine as the root Dockerfile's dockerclibuild stage (#2120 repair
-    # round): the release tag is immutable, its vendored dependency set is not
-    # the CVE state. Trivy v0.73.0 flags CVE-2026-116587 (go-jose/v4 4.1.5,
-    # HIGH, fixed 4.1.6) and CVE-2026-78661 (golang.org/x/net 0.60.0, HIGH,
-    # fixed 0.62.0) in the research image's /usr/local/bin/docker — the root
-    # image's CLI already carries these upgrades; this one was rebuilt from the
-    # stock vendor.mod. Upgrade exactly those modules off the pinned tag and
-    # rebuild.
-    go get github.com/go-jose/go-jose/v4@v4.1.6 github.com/klauspost/compress@v1.20.2 golang.org/x/net@v0.62.0 && \
+    go get golang.org/x/net@v0.62.0 && \
+    go mod vendor && \
     mkdir -p /out && \
     # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
     # supersedes it, so build from the module set, not the vendored tree.
