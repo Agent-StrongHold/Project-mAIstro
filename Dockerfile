@@ -137,11 +137,24 @@ RUN python /tmp/prune-dependency-namespaces.py \
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+# The v29.9.1 vendor tree also embeds two dependency HIGHs the trivy scan of
+# this image reads straight out of the binary's buildinfo (#1450 CI repair,
+# 2026-11-16): github.com/go-jose/go-jose/v4 v4.1.5 (CVE-2026-116587, JWK RSA
+# DoS, fixed v4.1.6) and golang.org/x/net v0.60.0 (CVE-2026-78661, HTML DoS,
+# fixed v0.62.0). No upstream docker/cli tag ships both fixed — v29.9.3 still
+# pins x/net v0.60.0 — and the gate policy upgrades when a fix exists rather
+# than ignores, so patch the same immutable tag's vendored modules onto the
+# advisory fix versions and re-vendor: identical policy to the toolchain patch
+# above. `go get` edits only go.mod/go.sum; `go mod vendor` rewrites vendor/
+# from them, so the build below stays in vendor mode with content-hash-pinned
+# replacements. Module versions on the Go module proxy are immutable.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
