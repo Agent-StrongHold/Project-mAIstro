@@ -173,3 +173,76 @@ this head and its remaining children are the two jobs above.
 - Frontend typed-client gate: 40 raw fetch / 119 hand-typed, none new.
 - ruff check/format, mypy, vulture, ratchet-provenance, shipped-surface-truth,
   frontend-api-routes, suite-inventory: all green.
+
+## Verification + service-backed gate round, head `f4c1dedf4080`
+
+Named-gate reproduction against real services (no test additions; counts
+unchanged). All commands run with CI's exact arguments/env unless noted:
+
+- `tests/test_devskim_scan_scope.py` → 21 passed in 10.09s (the CI 30s
+  pytest-timeout kill is gone; the coverage `scripts` producer no longer
+  dies on it).
+- Full coverage `scripts` producer
+  (`pytest tests/ tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q`) → **5932 passed, 139 skipped** in 8m12s; no
+  `Event loop is closed` errors. (First attempt under concurrent docker
+  load showed one order-dependent failure in
+  `test_check_connection_credentials` that passed in isolation, passed
+  via `scripts/check-connection-credentials.py`, and did not recur in a
+  clean re-run; it is absent from CI's own log at this head. Not
+  branch-attributable; recorded as residual flake evidence.)
+- `uv run mypy` over the ten package src trees (CI's exact argument
+  list) → success, 1120 files.
+- Compliance registry: `python scripts/check-compliance.py` → exit 0.
+- `pytest tests/cross_product_parity` → 26 passed.
+- Postgres matrix (pgvector pg17 + pg18 via docker, CI step order:
+  chain test → alembic up/down/up → suites, `MAISTRO_REQUIRE_PG_LEGS=1`):
+  migration chain 18 passed on both majors; persistence 854 passed on
+  both; `test_container_postgres.py` 15 passed on both; workspaces 420,
+  personas 133, goals 184, canvas supported path 7, design supported
+  path 4, scheduler 327+32, workspace authority durable 24 — all
+  passed. (First container-test failure was local sequence drift — the
+  DB had not been `alembic upgrade head`-ed before the batch; CI order
+  re-run green.)
+- durable-events (plain postgres:17, `MAISTRO_REQUIRE_PG_LEGS=1`):
+  `packages/maistro-core/tests/events` → 513 passed, 5 skipped;
+  `tests/migrations/test_event_schema_agreement.py` → 5 passed.
+- object storage: MinIO built from the pinned Go pseudo-version
+  (`v0.0.0-20250422221226-0d7408fc9969`), archive conformance → 128
+  passed.
+- docker-build legs the branch touches: root `Dockerfile` (with the
+  docker-CLI 29.9.3 stage — tag verified via `git ls-remote`:
+  `v29.9.3^{}` = `5457199aa57c…`, matching the Dockerfile pin) → built
+  exit 0; `packages/hive-conductor/Dockerfile` (frontend npm ci + build
+  stage, locked venv) → built exit 0; shipped hive image carries
+  opentelemetry-api 1.45.2 (the branch's security floor).
+- hive-conductor-e2e: `docker compose --profile test up --build
+  --exit-code-from api-tests` against the branch-built image → exit 0
+  (10 passed, 13 env-conditional skips in PM mode, same class as CI).
+- hive-conductor-compose-durability:
+  `scripts/verify-compose-durability.sh` (isolated project, host port
+  remapped only) → 34/34 checks passed, full create → write → recreate
+  → read → backup → restore round trip holds.
+- lint-and-type-check script legs: verify-monorepo-layout,
+  check-merge-markers, check-cross-package-imports,
+  check-extension-imports, check-compose-resources,
+  check-durable-table-inventory, check-promotion-surface,
+  check-connection-credentials, check-owned-store-access,
+  check-public-routes, check-shell-execution, check-build-context,
+  check-api-route-contracts, check-secret-field-labels,
+  check-retired-guidance, check-compose-secrets → all exit 0.
+- `scripts/check-vulture-baseline.py` (CI-exact args) → 1238 reviewed
+  identities == 1238 findings, `unclassified: 0` (no ledger amendment
+  needed this round).
+- `npm run build` in the frontend → exit 0; typed-client ratchet → 40
+  raw fetch / 119 hand-typed, none new; frontend-api-routes → 217 call
+  sites resolve.
+
+Not re-executed locally this round: `hive-conductor-e2e-ui` (Playwright
+stack too heavy for this round's budget; the hive image serving the new
+bundle is proven by the api e2e + durability rounds above) and
+`docker-rebuild-compare` (two no-cache engine rebuilds; the build itself
+is proven green and the compared manifests are hash-pinned by
+`--require-hashes` lock install, so rebuild variance is bounded to
+base-image digest drift, which the branch does not change).
