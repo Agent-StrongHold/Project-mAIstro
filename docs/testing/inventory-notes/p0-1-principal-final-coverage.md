@@ -389,3 +389,65 @@ re-execution at this head, without inheriting any prior round's claims:
 
 No code changes in this round; evidence-only verification.
 
+## Ninth verification round (2026-11-16, head a0954c6f5 = this worktree's HEAD)
+
+Prior round's worker died to a provider error (400 "missing tags") after its
+driver battery returned 0 at this exact head. Independent re-execution,
+no inherited claims:
+
+- Driver battery at this head (job 15c8a5ce check logs): uv sync rc=0,
+  ruff check rc=0 ("All checks passed!"), ruff format rc=0 (3561 files
+  already formatted), targeted server/canvas/core pytest 299 passed /
+  91 skipped, hive backend battery 199 passed, all four suite-inventory
+  gates ok (hive 4194, canvas 642, core 18435, server 671).
+- Issue test plan re-run in full: `check-principal-identity.py` rc=0 —
+  4 tolerated → 0 current, none new, plain and with CI's
+  `RATCHET_BASE_REV=origin/develop` (both resolve base f8a2df966a1d;
+  `git merge-base --is-ancestor` confirmed, and origin/develop is still
+  exactly f8a2df966 — no develop sync conflict exists);
+  `pytest fitness/test_principal_identity.py server/api/test_auth.py` —
+  39 passed; `pytest hive test_username_registry.py` — 24 passed; the
+  branch's own additions pass by node id (3 canvas foreign-org guards,
+  `test_auth_off_admits_a_dev_principal`).
+- Vulture ledger with CI's exact args: 1238 reviewed identities → 1238
+  findings, 0 unbanked, rc=0.
+- Mutation gate re-derived with CI's exact commands
+  (`.github/workflows/mutation.yml`): `--validate` ok (8 critical
+  sources); target resolution regenerated
+  (`git diff --name-only origin/develop...HEAD -- packages
+  --diff-filter=ACMR` → `--changed-from`) — sole target
+  `maistro/privilege.py` → `packages/maistro-core/tests`; trusted
+  merge-base baseline regenerated from f8a2df966a1d — `entries: {}`, so
+  per `mutation_pr_gate.py` the run is report-only and cannot fail this
+  PR. Diff-coverage evidence transfers: since 644f5a084 (fifth-round
+  reproduction) only this note and the committed AC-state JSON changed —
+  no production file.
+- Acceptance greps at HEAD: `tolerated` in
+  `quality/principal-identity-baseline.json` is `{}`; no `class
+  AuthenticatedPrincipal` / `CurrentUser` / `HiveUser` /
+  `_SubsystemIdentity` definition remains under `packages/*/src` or
+  `packages/hive-conductor/backend`; `hive routes/capabilities.py`
+  resolves the approval actor via `request_principal(request)` /
+  `principal_has_permission(principal, "approvals.resolve")` (lines
+  299–318). Committed AC-state note reads `design_coverage 44.4608`,
+  `measured_with_tests: true`.
+- Salvage block RESOLVED: every prior round left the worktree's
+  untracked scratch in place ("stays untracked"), which kept re-flagging
+  the uncommitted-work block. This round byte-verified all six files
+  against fresh regeneration (`changed-py.txt`, `mutation-targets.tsv`,
+  `trusted-mutation-baseline.json` diff-identical to CI's own steps;
+  `coverage-fresh.xml`, `diff-map.txt`,
+  `mutation-artifacts/privilege-0df8f6816767.diff` derived byproducts),
+  then preserved them with SHA-256 verification at
+  `/home/dev/maistro/jobs/15c8a5cefd394eaeadfec5b90e903e15/salvage-scratch-round8/`
+  and moved them out of the worktree. `git status` is now empty — the
+  branch carries committed work only.
+- Residual (unchanged): CI's own run on a push of this head remains the
+  final word for the aggregate coverage floor (multi-producer combine)
+  and the cancelled SAST/Mutation/suite jobs; the pushed PR head
+  0429476fddef predates the seven later local commits. Pushing is out of
+  scope for a repair attempt.
+
+No code changes in this round; evidence-only verification + salvage
+disposition.
+
