@@ -156,6 +156,14 @@ FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97c
 #     stack below). The `--no-cache-filter production-apt` CI flag re-runs
 #     this stage on every candidate, so the mirror's current candidate —
 #     deb13u1 or newer — is what ships.
+#   - libatomic1 is installed explicitly, not left to dependency resolution:
+#     playwright 1.65.2 (the lock's browser-surface pin; 1.64 did not link it)
+#     bundles a Node driver whose ELF needs libatomic.so.1 at startup, and
+#     nothing else in this image's apt closure pulls the package in. Without
+#     it `python -m playwright install chromium` dies with "error while
+#     loading shared libraries: libatomic.so.1" before the browser ever
+#     downloads (CI: containers/docker-build at head 094944a81, job
+#     133267675340 / 133270207586, 2026-11-16).
 #   - docker.io (the whole engine) replaced by a static docker CLI (see COPY below).
 #   - curl + wget removed; the HEALTHCHECK now uses stdlib Python.
 #   - autoremove/clean drop orphaned deps and caches.
@@ -165,6 +173,7 @@ FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97c
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
     libbrotli1 \
+    libatomic1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \

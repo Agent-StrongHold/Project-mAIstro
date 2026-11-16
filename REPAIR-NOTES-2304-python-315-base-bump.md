@@ -568,3 +568,76 @@ grype `--only-fixed --fail-on high` → exit 0; built-image probes →
 This closes the loop the earlier rounds could not: the PR's own purpose
 (Debian/CPython freshness of the 3.15 OS layer) now ships in a state both
 scanners of the gate accept.
+
+### Round 8 (2026-11-16, head `094944a81` tree) — the last red: the research image
+### build dies at `playwright install chromium` (libatomic.so.1)
+
+CI at `094944a81` (check runs captured 2026-11-16 ~12:58) is down to exactly
+three red jobs, all one root cause: `Container scan + SBOM + cosign` (job
+133267675340) and `docker-build` (job 133270207586) both fail building
+`maistro-engine-research` — `Dockerfile.research:211`
+`RUN python -m playwright install chromium` exits 127 with
+`playwright/driver/node: error while loading shared libraries:
+libatomic.so.1` — and `integration-scope` (job 133267675417) is purely
+downstream (`docker-build is required by integration scope but concluded
+failure`). Everything else at that head is green (Coverage, Gate C, Image
+pins, all Quality pillars, e2e, e2e-ui, test, exact-debt-ledger).
+
+**Root cause:** round 7's advisory-minimum lock bumps moved playwright
+1.64.0 → 1.65.2. The 1.65.2 wheel's bundled Node driver (v26.13.1) links
+`libatomic.so.1`; the 1.64.0 driver does not (`ldd` on both wheels, run
+locally). `production-apt`'s Chromium-stack apt list names no package that
+pulls `libatomic1` transitively, and the slim base doesn't carry it — so the
+first execution of the driver dies before the browser downloads. This also
+corrects the round-6 reading quoted in earlier findings: the `npm audit fix`
+block in job 133128530798's log was informational stderr from a *succeeded*
+`npm ci` (`#29 … 7 moderate severity vulnerabilities` → the frontend build
+continued at `#47 RUN npm run build`); round 6's actual blocker was the
+trivy python-pkg reds on the research scan (oauthlib, pyasn1, pypdf,
+soupsieve), which round 7's bumps fix — the current lock reads oauthlib
+4.0.1, pyasn1 0.6.5, pypdf 6.21.4, soupsieve 4.0.
+
+**Repair executed:** `Dockerfile.research` names `libatomic1` explicitly in
+the `production-apt` install list — the same "installed explicitly, not left
+to dependency resolution" posture as the libbrotli1 entry above it — with the
+header comment documenting the playwright-driver linkage and the CI evidence.
+`tests/test_research_image_playwright_runtime.py` (new, +2 tests,
+`docs/testing/inventory-notes/2304-research-image-playwright-libatomic.md`)
+holds the package in the stage and the playwright-in-lock ⇒ libatomic1
+coupling closed; the regression test fails against the pre-fix Dockerfile
+(the exact state that shipped the exit-127 CI failures) and passes on the
+worktree.
+
+**Proof on rebuilt images (local `docker build`, 2026-11-16):**
+
+- `docker build -f Dockerfile.research` → exit 0; the previously failing step
+  downloads Chromium 159.0.8154.6 / FFmpeg / headless shell; image exports.
+- In-image probes: `libatomic.so.1 => /lib/x86_64-linux-gnu/libatomic.so.1`
+  in the driver's `ldd`; `node --version` → v26.13.1 (exit 0);
+  `playwright --version` → 1.65.2; `sys.version_info[:3] == (3, 12, 16)`;
+  `libatomic1 12.2.0-14+deb12u1` present via dpkg.
+- The gate's own reconcile step:
+  `check-image-lock-reconciliation.py` → OK (147 distributions = the locked
+  set) for research; same step for a locally rebuilt `hive-conductor` → OK
+  (73 distributions), with the build-time smoke `(3, 13, 18)` passing inside
+  its pybuild stage.
+- Trivy 0.73.0 (CI version; HIGH/CRITICAL, `--ignore-unfixed`, repo
+  `.trivyignore.yaml`) on the rebuilt research image → exit 0, zero
+  findings; same scan on the rebuilt hive-conductor image → exit 0, zero
+  rows (its `python:3.15.2-slim-bookworm` runtime base and CPython 3.13.18
+  venv had no completed CI scan at round 7 — the gate died at the research
+  build first).
+
+**Coverage of the other images:** `maistro-engine` and the observability
+variant built green in CI at `094944a81` in both red jobs before the research
+build failed; their round-7 deltas are scan-improving (vendored docker-cli CVE
+patches, patched-toolchain build). `Dockerfile.rsi-runner`'s only delta is the
+same `python:3.12.16-slim-bookworm` digest the research build exercises above,
+and it ships no playwright. `check-image-pins.py` stays exit 0 (no new base).
+
+**Residual:** grype was not re-run by this round on the rebuilt research
+image (trivy is green on the exact bytes; round 7 ran grype clean on the
+rebuilt hive image and refreshed both 3.12 bases to the registry-verified
+digest that fixes grype's CVE-2026-115557 Critical); engine/rsi-runner scans
+not re-run locally. The next CI run of the gate re-executes both scanners on
+all four images against these bytes.
