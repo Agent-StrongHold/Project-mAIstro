@@ -408,3 +408,55 @@ infrastructure, not a repo check):
 
 No test was added or removed this round, so the recorded inventory counts
 are unchanged; this note documents the container-gate repair and validation.
+
+## 2026-11-16 round 3 — research-image python advisories + the skipped scanner legs
+
+CI (run 43821935433, job 133146766062) got past the docker CLI repair and
+failed one step later: "Trivy scan maistro-engine-research" reported 13 HIGH
+python-pkg advisories (oauthlib 4.0.0, pyasn1 0.6.4, pypdf 6.21.2,
+soupsieve 3.0.3 — every one with a published fix). Steps 15-22
+(rsi-runner scan, grype, npm license surfaces, SBOMs, lock
+reconciliation) never ran at that head, so this round proved them
+locally too and repaired what they would have flagged:
+
+- Lock floors (constraint-dependencies + the direct temporalio floor):
+  oauthlib>=4.0.1, pyasn1>=0.6.5, pypdf>=6.21.4, soupsieve>=4.0,
+  patchright>=1.64.4, playwright>=1.65.2, temporalio>=1.36.1. The
+  node/zip evidence is wheel-level: patchright 1.64.4 bundles node
+  24.22.1, playwright 1.65.2 bundles 26.13.1, temporalio 1.36.1 bundles
+  zip 9.5.1 (each verified by unpacking the wheel and reading/running
+  the payload). uv 0.12.5 (CI's pinned toolchain) resolved exactly:
+  oauthlib 4.0.1, pyasn1 0.6.5, pypdf 7.1.0, soupsieve 4.1.1,
+  patchright 1.64.4, playwright 1.65.2, temporalio 1.36.1 (+ nexus-rpc
+  1.5.0, temporalio's own dep) — nothing else moved.
+- Base pin refreshes: python:3.12-slim a0f57064… → 5e2bdb1b… (3.12.16)
+  for research/rsi/e2e/sbx-tests, python:3.13.16-slim-bookworm
+  73aa5fae… → 3.13.18-slim-bookworm a5a7017e… for engine/hive — same
+  CVE-2026-115557 (CRITICAL) CPython binary advisory, proven locally on
+  both lines with grype 0.116.0 --only-fixed --fail-on high against the
+  2026-11-15 DB, plus the matching Dockerfile/security.yml version
+  asserts and the test_distribution_contract FROM-tag expectation.
+  Registry digests re-verified live (manifest-list digest + interpreter
+  version inside both bases) before the pins moved.
+- All four gated images rebuilt and scanned locally with CI-exact
+  arguments: trivy 0.73.0 (HIGH,CRITICAL, ignore-unfixed,
+  .trivyignore.yaml) and grype 0.116.0 (--only-fixed, fail-on high) —
+  both exit 0 on hive-conductor, maistro-engine, maistro-engine-research
+  and maistro-rsi-runner; the observability variant builds and its
+  import/identity smoke passes (3.13.18).
+- Engine/rsi/hive exports carry none of the seven moved packages
+  (verified per-image from the lock), so the lock change is scoped to
+  the research venv plus the rsi-runner's temporalio; the pip-audit
+  gate (uv sync --locked --all-extras, freeze, --strict,
+  pip_audit_gate.py) stays green with only the pre-existing triaged
+  ecdsa row.
+
+Driver-independent re-validation on this tree: ruff check + format
+clean; CI-exact vulture 1238/1238 banked (no ledger amendment);
+check-dependency-namespaces clean; both suite inventories ok (Hive
+4,199 / Core 18,500); M1-E2 focused battery 250 passed / 31 skipped;
+conductor DAG + registered-DAG recovery 28 passed;
+check-m1-convergence-freeze --base origin/develop,
+check-convergence-matrix, check-execution-lifecycles all exit 0;
+tests/ pin-and-distribution suites 100 passed (the one modified
+assertion documented in 1373-container-gate-base-pin-refresh.md).
