@@ -391,3 +391,148 @@ def test_main_succeeds_when_inventory_matches(gate, tmp_path, monkeypatch, capsy
 
     out = capsys.readouterr().out
     assert "Direct-effect inventory matches code" in out
+
+
+GRAPH_NODE_PATH = "packages/maistro-core/src/maistro/graph/nodes/evil_poll.py"
+
+
+def test_graph_node_dynamic_url_http_on_shared_client_is_a_site(gate) -> None:
+    """#1195: URL-literal matching alone must not gate graph-node egress."""
+
+    source = """
+from maistro.http import shared_client
+
+async def _execute(self, inputs, ctx):
+    url = inputs.url
+    client = shared_client()
+    return await client.get(url)
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("DIRECT_HTTP_EFFECT", "graph-node-http")]
+
+
+def test_graph_node_chained_shared_client_call_is_a_site(gate) -> None:
+    source = """
+from maistro.http import shared_client
+
+async def _execute(self, inputs, ctx):
+    return await shared_client().get(inputs.url)
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("DIRECT_HTTP_EFFECT", "graph-node-http")]
+
+
+def test_graph_node_async_with_shared_client_is_a_site(gate) -> None:
+    source = """
+from maistro.http import shared_client
+
+async def _execute(self, inputs, ctx):
+    async with shared_client() as client:
+        return await client.get(inputs.url)
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("DIRECT_HTTP_EFFECT", "graph-node-http")]
+
+
+def test_graph_node_literal_url_on_shared_client_is_a_site(gate) -> None:
+    source = """
+from maistro.http import shared_client
+
+async def _execute(self, inputs, ctx):
+    return await shared_client().get("https://api.internal-health.local/ping")
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("DIRECT_HTTP_EFFECT", "graph-node-http")]
+
+
+def test_graph_node_other_http_client_factories_are_sites(gate) -> None:
+    source = """
+import httpx
+
+async def _execute(self, inputs, ctx):
+    client = httpx.AsyncClient()
+    return await client.post(inputs.url)
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("DIRECT_HTTP_EFFECT", "graph-node-http")]
+
+
+def test_graph_node_pm_literal_url_stays_pm_polling_effect(gate) -> None:
+    source = """
+async def _execute(self, inputs, ctx):
+    return await shared_client().get("https://x.atlassian.net/rest/api/2/search")
+"""
+    assert [
+        (site.category, site.entry_point) for site in gate.analyze_source(source, GRAPH_NODE_PATH)
+    ] == [("PM_POLLING_EFFECT", "pm-polling-http")]
+
+
+def test_graph_node_dict_get_is_not_a_direct_http_site(gate) -> None:
+    source = """
+async def _execute(self, inputs, ctx):
+    data = ctx.metadata or {}
+    return data.get("records", [])
+"""
+    assert gate.analyze_source(source, GRAPH_NODE_PATH) == []
+
+
+def test_dynamic_url_http_outside_graph_nodes_stays_uncurated(gate) -> None:
+    """The fail-closed rule is scoped to graph nodes (#1195 AC7)."""
+
+    source = """
+from maistro.http import shared_client
+
+async def fetch():
+    return await shared_client().get(build_url())
+"""
+    assert gate.analyze_source(source) == []
+
+
+def test_a_newly_introduced_raw_hive_tool_call_is_rejected_by_the_audit(gate) -> None:
+    """#57 criterion 11: a direct/raw tool path must not slip past the gate.
+
+    A caller that bypasses ``services.governed_tools`` and calls the shipped
+    hive tool implementation directly -- the exact shape the #57 migration
+    removed from the chat surface -- surfaces as a ``TOOL_EFFECT`` site the
+    ledger has no disposition for, and the audit refuses it.
+    """
+    source = """
+from services.tool_executor import web_search
+
+async def shortcut(query):
+    return await web_search(query, max_results=3)
+"""
+    sites = gate.analyze_source(source, "packages/hive-conductor/backend/routes/shortcut.py")
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("TOOL_EFFECT", "hive.web_search"),
+    ]
+    raw_site = sites[0]
+    failures = gate.audit({}, {raw_site.id: raw_site})
+    assert any(message.startswith("NEW ") for message in failures), failures
+
+
+def test_a_newly_introduced_raw_browser_client_call_is_rejected_by_the_audit(gate) -> None:
+    """#57 criterion 11, backend side: driving BrowserClient directly -- around
+    both the governed tool seam and the shipped provider backends -- is a new
+    TOOL_EFFECT site the audit refuses until it carries a reviewed disposition."""
+    source = """
+from maistro.tools.browser import BrowserClient
+
+async def scrape(url):
+    client = BrowserClient()
+    try:
+        return await client.browse(url, "extract")
+    finally:
+        await client.aclose()
+"""
+    sites = gate.analyze_source(source, "packages/hive-conductor/backend/routes/scrape.py")
+    assert [(site.category, site.entry_point) for site in sites] == [
+        ("TOOL_EFFECT", "browser.browse"),
+    ]
+    failures = gate.audit({}, {site.id: site for site in sites})
+    assert any(message.startswith("NEW ") for message in failures), failures

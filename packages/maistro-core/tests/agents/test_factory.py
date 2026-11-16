@@ -728,3 +728,88 @@ class TestTheBuiltinRow:
         identity alone would persist an empty soul."""
         row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "rendered", "rules")
         assert row["soul"] == "rendered"
+
+
+class TestGovernedLlmClientComposition:
+    def test_any_absent_authority_means_no_wrapping(self) -> None:
+        """Fail-closed composition (#718): the factory wraps nothing when any
+        of the four effect/model authorities is missing -- a half-wrapped
+        client would silently route some strategies around the canonical
+        Invocation path."""
+        from maistro.agents.factory import _governed_llm_client
+
+        authorities = (object(), object(), object(), object())
+        for missing in range(4):
+            args = list(authorities)
+            args[missing] = None
+            assert _governed_llm_client(args[0], args[1], args[2], args[3], "ws", "p") is None, (
+                f"authority #{missing} absent must refuse composition"
+            )
+
+    def test_full_authority_set_composes_a_governed_client(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        client = _governed_llm_client(object(), object(), object(), object(), "ws-1", "p-1")
+        assert isinstance(client, GovernedLLMClient)
+
+
+class TestCreateAgentsGovernedPath:
+    async def test_full_authority_set_wraps_every_agent(self, tmp_path: Path) -> None:
+        """create_agents replaces the injected client with the governed one (#718).
+
+        This is the composition line the hive-conductor bridge and the server
+        chat door rely on: supply all four effect/model authorities and every
+        built agent's LLM is the canonical Binding->Invocation client, not
+        the caller's bare ``llm``.
+        """
+        from maistro.capabilities.effect_context import new_in_memory_effect_context
+        from maistro.capabilities.model_chat import GovernedLLMClient
+        from maistro.providers.registry import InMemoryProviderRegistry
+        from maistro.providers.router import CostAwareRouter
+
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+        _write_agent_dir(tmp_path, "scribe")
+        registry = InMemoryProviderRegistry()
+        bare_llm = object()
+        kwargs = _create_agents_kwargs(
+            tmp_path,
+            llm=bare_llm,
+            capability_effects=new_in_memory_effect_context(),
+            provider_registry=registry,
+            llm_router=CostAwareRouter(registry),
+            model_endpoint=object(),
+        )
+
+        agents = await create_agents(**kwargs)
+
+        assert isinstance(agents["scribe"]._llm, GovernedLLMClient)
+
+
+class TestCreateAgentsAuditWiring:
+    """#847: the canonical audit trail reaches every constructed Agent."""
+
+    @pytest.fixture(autouse=True)
+    def _preamble(self, tmp_path: Path) -> None:
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+
+    async def test_audit_log_passed_to_every_agent(self, tmp_path: Path) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        audit_log = InMemoryAuditLog()
+        kwargs = _create_agents_kwargs(tmp_path, audit_log=audit_log)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is audit_log for agent in agents.values())
+
+    async def test_audit_log_defaults_to_none(self, tmp_path: Path) -> None:
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        kwargs = _create_agents_kwargs(tmp_path)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is None for agent in agents.values())

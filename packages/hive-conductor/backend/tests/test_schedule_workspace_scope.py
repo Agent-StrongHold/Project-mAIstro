@@ -342,7 +342,9 @@ def test_a_row_deleted_while_it_fires_is_a_404_not_a_500(
 
     sid = _create(principals, "alice")["id"]
 
-    async def fire_then_lose_the_row(schedule_id: str, *, fire_id: str | None = None) -> str:
+    async def fire_then_lose_the_row(
+        schedule_id: str, *, fire_id: str | None = None, requester_id: str | None = None
+    ) -> str:
         stores.schedules.pop(schedule_id, None)
         return "run-1"
 

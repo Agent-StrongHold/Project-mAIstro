@@ -5,6 +5,40 @@ Routes/dag_runs.py exposes list/get/SSE-stream over the resulting history.
 The historical ``pm_node_*`` event names remain part of that presentation
 contract, but the store no longer installs or owns a PM-specific executor bus.
 
+This is projection storage, not execution authority (#35): the free-text
+`status` on a run row is a display receipt of canonical Run state. What
+makes the projection safe is not writer uniformity -- the writers are a
+closed census, enumerated below, and they do not share one write contract
+-- but the read door: Run/NodeRun/Attempt on the canonical spine own
+whether work queued/ran/waited/completed/failed/cancelled, and
+`services.dag_run_inspection` reconciles a row's served status and finish
+time against the canonical Run whenever the row carries the correlation
+to ask for one, so no stamp any writer makes below can contradict spine
+truth at the read door. Nothing on the execution side (scheduler,
+recovery, admission) reads this store.
+
+The writer census (every production writer of a row's status):
+
+- `services.chat_completion` records the canonical outcomes it receives
+  through `record_outcome` -- the shared #1036 terminality contract: a
+  terminal canonical status finishes the row, a non-terminal one is
+  mirrored open with no invented `finished_at`, and a missing or
+  non-canonical status records nothing.
+- The DAG run route (`routes.dags._record_run_projection`) applies the
+  #1036 terminality contract inline (#1877): a terminal canonical outcome
+  calls `finish_run`; a non-terminal canonical state calls `record_status`
+  so the row mirrors the exact status with no invented `finished_at`
+  (never left stuck at the store's in-flight default).
+- `services.dag_run_live.LiveRunProjection.record_result` routes through
+  `record_outcome` (same terminality contract). Missing or unknown status
+  is logged and records nothing -- never coerced to `failed`.
+- The chat tool's witnessed-attempt branches stamp display facts, never
+  a copied or guessed canonical verdict: `_cancellation_answer`
+  finishes a row `cancelled` only after the spine's cancel fence was
+  observed, and the unknown-outcome branch finishes `failed` when the
+  chat attempt it launched died before any canonical verdict existed,
+  so a dead launch is not indistinguishable from a live one (#697).
+
 Runs are grouped by the run id supplied by the executing route. Each run has
 ordered node events; the frontend reconstructs the live DAG state from them.
 
@@ -39,6 +73,8 @@ from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+
 MAX_RUNS = 100
 MAX_EVENTS_PER_RUN = 200
 MAX_SSE_QUEUE = 200
@@ -53,6 +89,12 @@ MAX_RESULT_CHARS = 2000
 #: told a reader what happened, and the untruncated text of every node is in
 #: that run's events under their own cap.
 MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
+
+#: When this process came up. The in-memory run history starts here, so a
+#: KPI counting "runs today" from a non-durable store can say when its own
+#: coverage began instead of passing a partial count off as a whole day
+#: (#380).
+_PROCESS_BOOT_TS = time.time()
 
 
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -92,6 +134,13 @@ class DagRunEvent:
     capability: str  # e.g. "create_initiative", "poll_jira"
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
+    #: 1-based position of this event in its run's total event history.
+    #:
+    #: Assigned by `append_event` from the run's monotonic `event_seq` counter
+    #: -- NOT from `len(run.events)`, which the `MAX_EVENTS_PER_RUN` trim
+    #: shrinks -- so a consumer can tell "contiguous" from "I lost events"
+    #: even after the bounded buffer has dropped the oldest entries (#1183).
+    seq: int = 0
 
 
 @dataclass
@@ -118,6 +167,11 @@ class DagRun:
     #: neither, so a completed run never reported completion to the list
     #: endpoint (#697).
     status: str = "running"
+    #: Total events ever appended to this run. The `events` list is trimmed to
+    #: `MAX_EVENTS_PER_RUN`, so it cannot serve as a sequence identity; this
+    #: counter is what stream consumers compare against to detect a gap
+    #: (#1183). Persisted with the record.
+    event_seq: int = 0
     result: dict[str, Any] | None = None
     #: The canonical `Run` this execution is, when the caller has one.
     #:
@@ -143,6 +197,7 @@ class DagRun:
             canonical_run_id=raw.get("canonical_run_id", ""),
             workspace_id=raw.get("workspace_id", ""),
             project_id=raw.get("project_id", ""),
+            event_seq=raw.get("event_seq", 0),
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -165,6 +220,7 @@ class DagRun:
             "canonical_run_id": self.canonical_run_id,
             "workspace_id": self.workspace_id,
             "project_id": self.project_id,
+            "event_seq": self.event_seq,
             "events": [asdict(ev) for ev in self.events],
         }
 
@@ -202,10 +258,24 @@ class DagRun:
                     "capability": ev.capability,
                     "payload": ev.payload,
                     "timestamp": ev.timestamp,
+                    "seq": ev.seq,
                 }
                 for ev in self.events
             ],
         }
+
+
+def parse_canonical_status(value: str) -> RunStatus | None:
+    """The canonical `RunStatus` a projection writer was handed, if any.
+
+    `None` covers both a missing status and one outside the canonical
+    vocabulary: a writer that cannot name the spine's state must not guess
+    one (#1036).
+    """
+    try:
+        return RunStatus(value) if value else None
+    except ValueError:
+        return None
 
 
 class DagRunStore:
@@ -355,15 +425,88 @@ class DagRunStore:
         )
         run = self._runs.get(run_id)
         if run is not None:
+            # Sequence identity is assigned from the total-appended counter,
+            # never from the (trimmed) events list, so the seqs a consumer
+            # sees stay gap-detectable across `MAX_EVENTS_PER_RUN` trims
+            # (#1183).
+            run.event_seq += 1
+            ev.seq = run.event_seq
             run.events.append(ev)
             if len(run.events) > MAX_EVENTS_PER_RUN:
                 run.events = run.events[-MAX_EVENTS_PER_RUN:]
             self._persist(run)
-        # Fan out to SSE subscribers.
+        # Fan out to SSE subscribers. A bounded queue that is full drops the
+        # event -- a subscriber cannot be allowed to stall the producing run --
+        # but the drop is NOT silent: the event carries its `seq`, so the
+        # SSE route detects the discontinuity and emits an explicit resync
+        # marker instead of presenting a contiguous stream (#1183).
         for q in self._subscribers.get(run_id, []):
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(ev)
         return ev
+
+    async def record_status(self, run_id: str, *, status: str, canonical_run_id: str = "") -> None:
+        """Mirror a canonical Run's non-terminal status onto an open row.
+
+        Presentation data, not a transition (#1036): the projection writer
+        receives canonical results the spine has not finished -- a Run parked
+        WAITING or PAUSED, still QUEUED or RUNNING -- and mirrors that state
+        for display. No `finished_at` is invented, so the run the spine has
+        not finished can still be finished by the later terminal write:
+        `finish_run` once refused every update after its first stamp, which
+        is how a non-terminal outcome became an irreversible finish.
+        `canonical_run_id` records which canonical Run the mirrored state
+        came from, so read-side reconciliation applies to open rows too --
+        an un-correlated mirror could never be checked against the spine.
+
+        One-way by construction: a row that is already finished keeps the
+        terminal outcome it recorded -- a late non-terminal mirror (replay,
+        duplicate delivery) must not unfinish a receipt.
+        """
+        run = self._runs.get(run_id)
+        if run is not None and run.finished_at is None:
+            run.status = status
+            if canonical_run_id:
+                run.canonical_run_id = canonical_run_id
+            self._persist(run)
+
+    async def record_outcome(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        canonical_run_id: str = "",
+    ) -> None:
+        """Record a canonical-derived outcome under the #1036 terminality contract.
+
+        The contract a writer applies by routing the canonical outcome it
+        received through this method instead of stamping the row itself: a
+        terminal canonical status finishes the row with its outcome; a
+        non-terminal canonical status is mirrored open with no invented
+        `finished_at`; a missing or non-canonical status records no outcome
+        at all -- the row stays open, because inventing a terminal verdict
+        is exactly the locally-decided truth this projection gave up (#35).
+
+        Not every production writer routes through here (see the module
+        docstring's writer census): the run route's inline terminal-only
+        gate and the live projection's direct `finish_run` write
+        canonical-derived statuses outside this method, and the chat
+        tool's witnessed-attempt branches stamp display facts directly.
+        None of them outranks the read door -- `services.dag_run_inspection`
+        reconciles every row against the canonical Run its correlation
+        names (#35).
+        """
+        parsed = parse_canonical_status(status)
+        if parsed is not None and parsed in TERMINAL_RUN_STATUSES:
+            await self.finish_run(
+                run_id,
+                status=status,
+                result=result,
+                canonical_run_id=canonical_run_id,
+            )
+        elif parsed is not None:
+            await self.record_status(run_id, status=status, canonical_run_id=canonical_run_id)
 
     async def finish_run(
         self,
@@ -371,6 +514,7 @@ class DagRunStore:
         *,
         status: str = "completed",
         result: dict[str, Any] | None = None,
+        canonical_run_id: str = "",
     ) -> None:
         """Mark a run finished, with the outcome it finished with.
 
@@ -379,18 +523,96 @@ class DagRunStore:
         `run.status` and `run.result` on a dataclass declaring neither, so
         Python attached them, `to_summary` never read them, and a completed run
         reported nothing to the list endpoint (#697).
+
+        `status` is meant to be copied from the canonical Run's terminal state
+        by the caller; the projection never decides one itself (#35) -- the
+        module docstring's writer census records the callers, including the
+        live projection's `or "failed"` fallback for a status-less result,
+        open census debt that read-door reconciliation outranks.
+        `canonical_run_id`
+        records which canonical Run the outcome came from when the row's own
+        key is not already that id (the chat workflow tool's pre-opened rows),
+        so inspection can reconcile the row against canonical truth at read
+        time instead of trusting a locally stamped terminal status.
         """
         run = self._runs.get(run_id)
         if run and run.finished_at is None:
             run.finished_at = time.time()
             run.status = status
+            if canonical_run_id:
+                run.canonical_run_id = canonical_run_id
             if result is not None:
                 run.result = result
             self._persist(run)
 
+    async def record_canonical_run(self, run_id: str, *, canonical_run_id: str) -> bool:
+        """Attach the canonical Run identity to an already-open projection row.
+
+        The chat workflow tool opens its history row with a fresh execution id
+        before the canonical Run exists, so the projection -> canonical Run
+        correlation can only be written when the canonical executor admits the
+        Run -- which is exactly when `execute_dag` fires its admission seam
+        (#1332). Written at admission, the correlation is already durable
+        while the DAG is still in flight, so a live Recent Runs entry cancels
+        through the canonical spine instead of sending the projection id to a
+        canonical store that never saw it.
+
+        First link wins: a row that already names a canonical Run keeps it.
+        Re-pointing a row at a different Run would be a cross-link (corrupt
+        or duplicate admission), and the read overlay in
+        `services.dag_run_inspection` already treats such a row as its own
+        lifecycle truth rather than trusting the link. Re-recording the same
+        id is idempotent. An empty id is refused: "no canonical Run" is the
+        row's honest state and must never be overwritten with a stored claim.
+
+        Returns whether the row now carries `canonical_run_id`. A missing row
+        (evicted, or finished and dropped between the write and this call)
+        records nothing and says so.
+        """
+        if not canonical_run_id:
+            return False
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run.canonical_run_id == canonical_run_id:
+            return True
+        if run.canonical_run_id:
+            return False
+        run.canonical_run_id = canonical_run_id
+        self._persist(run)
+        return True
+
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
         return [self._runs[rid].to_summary() for rid in reversed(recent) if rid in self._runs]
+
+    def count_since(self, *, user_id: str = "", started_after: float = 0.0) -> dict[str, Any]:
+        """Count this principal's working-set runs started after `started_after`.
+
+        The dashboard's "runs today" KPI reads this rather than
+        `list_runs(limit=25)`: a default page limit would cap the KPI at 25
+        and pass that off as a day total (#380). The scan is O(working set),
+        which MAX_RUNS bounds, and the reply says what the count is a count
+        *of*: the bound, whether the store is durable, and the newest
+        matching start. A caller whose count lands on the bound knows the
+        number is a floor, not a total.
+        """
+        count = 0
+        newest: float | None = None
+        for run in self._runs.values():
+            if user_id and run.user_id != user_id:
+                continue
+            if run.started_at < started_after:
+                continue
+            count += 1
+            if newest is None or run.started_at > newest:
+                newest = run.started_at
+        return {
+            "count": count,
+            "last_started_at": newest,
+            "bound": self._order.maxlen or 0,
+            "is_durable": self._records is not None,
+        }
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         run = self._runs.get(run_id)

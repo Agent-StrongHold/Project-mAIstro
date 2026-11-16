@@ -32,6 +32,7 @@ from maistro.runs.model import (
     NodeRun,
     Run,
     RunStatus,
+    evidence_values_equal,
 )
 from maistro.runs.store import (
     DEFAULT_RECLAIM_BATCH,
@@ -44,6 +45,58 @@ from maistro.runs.store import (
 
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+
+def _supplies_new_evidence(
+    node_run: NodeRun,
+    *,
+    accepted_outcome: AcceptedNodeOutcome | None,
+) -> bool:
+    """Whether a same-status transition call carries evidence the row lacks (#1334).
+
+    A same-status call that carries nothing new must stay a no-op: the store's
+    own validator refuses a completed->completed transition outright, so
+    re-deriving an idempotent replay through it would turn every replay into a
+    failure. An accepted outcome the canonical row does not hold yet is the
+    one same-status call the store can still adjudicate -- the legacy
+    migration the reconciler performs on a pre-acceptance COMPLETED NodeRun
+    -- and skipping the store there silently dropped the accepted outcome
+    from both the canonical row and this record's projection. The store's
+    migration validator -- not this adapter -- decides whether the
+    attachment is a repair or a disagreement.
+
+    A differing ``result`` or ``error`` text is deliberately not evidence.
+    The lifecycle table has no same-status edges, so outside that one
+    migration the canonical store can never accept a same-status move: the
+    call could not repair anything, only convert the idempotent replay into
+    a guaranteed failure. The race every in-flight cancellation runs (#1332's
+    regression) is exactly that replay: `RunExecutionService.cancel_run`
+    fences the Run through the canonical store, whose cascade settles open
+    NodeRuns with the cascade's own error narrative; the walk's registered
+    executor then replays the cancellation through this adapter over a
+    projection that still reads running and a caller-supplied error text.
+    `RunStore._refuse_under_terminal_run` rightly freezes that closed history
+    -- so the adapter must not ask. The replay below converges the projection
+    to the canonical row instead of raising.
+    """
+    held = node_run.accepted_outcome
+    return accepted_outcome is not None and not _same_accepted_facts(held, accepted_outcome)
+
+
+def _same_accepted_facts(
+    held: AcceptedNodeOutcome | None,
+    supplied: AcceptedNodeOutcome,
+) -> bool:
+    """Compare accepted logical facts while ignoring acceptance wall-clock time."""
+    if held is None:
+        return False
+    return (
+        held.node_run_id == supplied.node_run_id
+        and held.attempt_result == supplied.attempt_result
+        and held.logical_status is supplied.logical_status
+        and evidence_values_equal(held.result, supplied.result)
+        and held.error == supplied.error
+    )
 
 
 def _require_same_creation_contract(
@@ -182,7 +235,10 @@ class DurableRunExecutionStore:
             canonical_node = await self._run_store.get_node_run(node_run_id)
             if canonical_node is None:
                 raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
-            if canonical_node.status is not target:
+            if canonical_node.status is not target or _supplies_new_evidence(
+                canonical_node,
+                accepted_outcome=accepted_outcome,
+            ):
                 canonical_node = await self._run_store.transition_node_run(
                     node_run_id,
                     target,

@@ -21,6 +21,13 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "enumerations"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated checker that owns the bundled AST property checks.
+ANALYZER_MANIFEST = (
+    "scripts/check-enumerations-provenance.py",
+    "scripts/check_enumerations.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -37,6 +44,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def main() -> int:
@@ -64,6 +79,7 @@ def main() -> int:
     candidate_stale = sorted(set(candidate) - set(current))
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.BASELINE_PATH, root=ROOT)
         trusted_payload = trusted_ref.loads(default={"tolerated": {}})
         trusted = (
@@ -92,6 +108,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="enumeration property checks",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} tolerated gaps",
             new_value=f"{len(current)} current gaps",

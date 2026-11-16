@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import { useAuthorization } from "../context/AuthorizationContext";
+import { AuthorizationNotice } from "./Authorization";
 import { fallbackMessage } from "../lib/api";
 import { SecretField } from "./shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :5); line shifted by the #2283 authorization import lines above.
 interface ProviderRow {
   name: string;
   label: string;
@@ -11,6 +14,7 @@ interface ProviderRow {
   activated: boolean;
 }
 
+// frontend-typed-client: allow pre-existing banked local type (was :14); line shifted by the #2283 authorization import lines above.
 interface ProvidersResponse {
   vault_available: boolean;
   providers: ProviderRow[];
@@ -26,8 +30,10 @@ export function LlmProviders() {
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { can } = useAuthorization();
 
   const load = () =>
+    // frontend-typed-client: allow pre-existing banked raw fetch (was :31); line shifted by the #2283 authorization import/hook lines above.
     fetch("/v1/providers", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then(setData)
@@ -43,6 +49,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
+      // frontend-typed-client: allow pre-existing banked raw fetch (was :46); line shifted by the #2283 authorization import/hook lines above.
       const r = await fetch(`/v1/providers/${name}/key`, {
         method: "PUT",
         credentials: "same-origin",
@@ -65,6 +72,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
+      // frontend-typed-client: allow pre-existing banked raw fetch (was :68); line shifted by the #2283 authorization import/hook lines above.
       const r = await fetch(`/v1/providers/${name}/activate`, {
         method: "POST",
         credentials: "same-origin",
@@ -82,7 +90,9 @@ export function LlmProviders() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
+    <>
+      <AuthorizationNotice permission="config.write" label="LLM provider changes" />
+      <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
@@ -121,14 +131,14 @@ export function LlmProviders() {
               onChange={(next) => setKeys((k) => ({ ...k, [p.name]: next }))}
               stored={p.has_key}
               storedNote={`A key for ${p.label} is already stored. Entering a new one replaces it.`}
-              disabled={!data.vault_available || busy === p.name}
+              disabled={!can("config.write") || !data.vault_available || busy === p.name}
               className=""
               style={{ flex: 1, minWidth: 200 }}
             />
             <button
               className="btn"
               onClick={() => saveKey(p.name)}
-              disabled={!data.vault_available || !keys[p.name] || busy === p.name}
+              disabled={!can("config.write") || !data.vault_available || !keys[p.name] || busy === p.name}
               style={{ fontSize: 12, padding: "3px 10px" }}
             >
               Save key
@@ -136,7 +146,7 @@ export function LlmProviders() {
             <button
               className="btn-primary"
               onClick={() => activate(p.name)}
-              disabled={!p.has_key || busy === p.name}
+              disabled={!can("config.write") || !p.has_key || busy === p.name}
               style={{ fontSize: 12, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}
@@ -147,6 +157,7 @@ export function LlmProviders() {
           </div>
         ))}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

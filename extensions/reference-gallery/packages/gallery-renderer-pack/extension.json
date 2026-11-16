@@ -1,0 +1,18 @@
+{
+  "id": "gallery.renderer-pack",
+  "publisher": "gallery",
+  "version": "1.0.0",
+  "title": "Gallery renderer pack",
+  "description": "Reference gallery renderer/UI pack extension: pure display renderers over read-only product projections.",
+  "contract": ">=1.0.0,<2.0.0",
+  "family": "renderer-plugin",
+  "capabilities": ["workspace.read"],
+  "effects": ["read-only"],
+  "data": {
+    "scopes": ["workspace"]
+  },
+  "entrypoint": {
+    "module": "gallery_renderer_pack.plugin",
+    "object": "PLUGIN"
+  }
+}

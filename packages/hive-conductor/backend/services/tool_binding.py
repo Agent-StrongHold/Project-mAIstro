@@ -1,4 +1,4 @@
-"""Sticky per-workspace tool/prompt binding resolution — Persona/Workspace system, Phase E.
+"""Sticky per-workspace tool/prompt binding resolution — Persona/Workspace system.
 
 Base case: an agent gets its declared `spawns[].tools` straight from the
 persona template -- zero extra config needed to "just use the persona as
@@ -8,10 +8,8 @@ for an agent, its `tools`/`prompt_fragment` win outright (including an
 explicit empty `tools` list, narrowing that agent to zero tools for this one
 workspace) -- never touching the shared persona template.
 
-Exposed as pure, dispatch-time-ready functions now, same as Phase D's
-`resolve_workspace_tone()`, ahead of `services/program_hyperagent.py` actually
-resolving a persona/workspace context to dispatch against (that's Phase H's
-dispatch wiring).
+Dispatch (#2276 / conductor-412) consults these resolvers at the agent gate
+(`agent_invocation`) and runtime materialization (`_build_runtime_agent`).
 """
 
 from __future__ import annotations
@@ -26,6 +24,42 @@ def _binding_for_agent(workspace: Workspace, agent_id: str) -> AgentToolBinding 
         if binding.agent_id == agent_id:
             return binding
     return None
+
+
+def binding_tools_override(workspace_id: str | None, agent_id: str) -> list[str] | None:
+    """Workspace binding tools for ``agent_id``, or ``None`` when unset.
+
+    ``None`` means "no sticky binding — use persona/materialized capabilities."
+    A list (including ``[]``) means the binding wins outright at dispatch.
+    Reads the Hive presentation store synchronously so the sync agent gate can
+    honor bindings without awaiting Workspace identity.
+    """
+    if not workspace_id:
+        return None
+    from services.workspace_authority import presentation_store
+
+    presentation = presentation_store().get(workspace_id)
+    if presentation is None:
+        return None
+    for binding in presentation.tool_bindings:
+        if binding.agent_id == agent_id:
+            return list(binding.tools)
+    return None
+
+
+def binding_prompt_fragment(workspace_id: str | None, agent_id: str) -> str:
+    """Sticky prompt fragment for ``agent_id`` in this Workspace, or ``\"\"``."""
+    if not workspace_id:
+        return ""
+    from services.workspace_authority import presentation_store
+
+    presentation = presentation_store().get(workspace_id)
+    if presentation is None:
+        return ""
+    for binding in presentation.tool_bindings:
+        if binding.agent_id == agent_id:
+            return binding.prompt_fragment
+    return ""
 
 
 def resolve_agent_tools(

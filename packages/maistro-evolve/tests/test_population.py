@@ -12,6 +12,24 @@ from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 
+def _evidence(
+    genome: PipelineGenome,
+    score: float = 0.8,
+    samples: int = 2,
+    cycle: int = 1,
+) -> PipelineGenome:
+    """Stamp a genome with minimal governed-promotion-eligible evidence (#854):
+    repeated independent samples, stable spread, objective-stamped and current."""
+    genome.eval_scores = {"proxy_ifeval": score}
+    genome.harness_params["eval_samples"] = {"proxy_ifeval": samples}
+    genome.harness_params["eval_history"] = {
+        "proxy_ifeval": [score - 0.01] * (samples - 1) + [score + 0.01]
+    }
+    genome.harness_params["objective_version"] = "objective-test"
+    genome.harness_params["evidence_cycle"] = cycle
+    return genome
+
+
 def _genome(
     genome_id: str,
     fitness_score: float | None = None,
@@ -84,12 +102,26 @@ def test_get_champion_returns_none_when_no_scored_genomes(store: PopulationStore
 
 
 def test_get_champion_returns_highest_scoring_genome(store: PopulationStore) -> None:
-    store.add(_genome("low", fitness_score=0.2))
-    store.add(_genome("high", fitness_score=0.9))
-    store.add(_genome("unscored", fitness_score=None))
+    low = _evidence(_genome("low", fitness_score=0.2), score=0.26)  # passes the 0.25 gate
+    high = _evidence(_genome("high", fitness_score=0.9), score=0.8)
+    store.add(low)
+    store.add(high)
+    store.add(_genome("unscored", fitness_score=None))  # unevaluated: never champion
     champion = store.get_champion()
     assert champion is not None
     assert champion.id == "high"
+
+
+def test_get_champion_skips_insufficient_evidence(store: PopulationStore) -> None:
+    """A genome with a score but only one (lucky) sample is not championable —
+    selection runs the same eligibility contract as promotion (#854)."""
+    lucky = _evidence(_genome("lucky", fitness_score=0.99), score=0.9, samples=1)
+    solid = _evidence(_genome("solid", fitness_score=0.5), score=0.6, samples=2)
+    store.add(lucky)
+    store.add(solid)
+    champion = store.get_champion()
+    assert champion is not None
+    assert champion.id == "solid"
 
 
 def test_get_lineage_walks_parent_a_chain(store: PopulationStore) -> None:

@@ -101,10 +101,13 @@ class ScheduleStore(Protocol):
         ...
 
     async def due(self, *, now: datetime) -> list[Schedule]:
-        """Enabled schedules whose next_due_at has arrived.
+        """Enabled schedules requiring recurrence evaluation or manual recovery.
 
         Schedules with no recorded next_due_at are returned too: an unknown
-        cursor must be evaluated, never silently treated as not-due.
+        cursor must be evaluated, never silently treated as not-due. Pending
+        manual-fire markers also require evaluation even with a future due
+        cursor; the admitter owns their lease check and settlement. Disabled
+        schedules remain excluded, including those with pending markers.
         """
         ...
 
@@ -384,7 +387,9 @@ def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
 
 
 def _is_due(schedule: Schedule, *, now: datetime) -> bool:
-    return schedule.enabled and (schedule.next_due_at is None or schedule.next_due_at <= now)
+    return schedule.enabled and (
+        bool(schedule.pending_fires) or schedule.next_due_at is None or schedule.next_due_at <= now
+    )
 
 
 class InMemoryScheduleStore:
@@ -630,7 +635,8 @@ class SqliteScheduleStore:
     async def due(self, *, now: datetime) -> list[Schedule]:
         async with self._conn.execute(
             "SELECT definition FROM schedules WHERE enabled = 1 "
-            "AND (next_due_at IS NULL OR next_due_at <= ?) ORDER BY schedule_id",
+            "AND (next_due_at IS NULL OR next_due_at <= ? "
+            "OR json_array_length(definition, '$.pending_fires') > 0) ORDER BY schedule_id",
             (now.timestamp(),),
         ) as cursor:
             rows = await cursor.fetchall()

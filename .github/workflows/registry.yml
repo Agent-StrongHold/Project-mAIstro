@@ -117,6 +117,13 @@ jobs:
         # (`Summary`, `Ver`, `Last Modified`) are never touched.
         run: python scripts/check-adr-index.py
 
+      - name: AC Defined spec index is current
+        # Registry CI is the entry point for the generator script so the
+        # reachability graph treats it as wired, not built-but-never-wired.
+        run: |
+          python scripts/generate-spec-ac-defined-index.py
+          git diff --exit-code docs/specs/README.md
+
       - name: Body status language agrees with front matter (#387)
         # ADR-046 carried `status: Superseded` in front matter, a "Superseded
         # by" banner, *and* a body paragraph asserting "The status therefore

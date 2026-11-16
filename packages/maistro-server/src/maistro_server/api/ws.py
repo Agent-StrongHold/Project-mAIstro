@@ -80,7 +80,7 @@ def _is_terminal(status: str) -> bool:
 
 def _ws_owner_id(token: str | None, settings: Settings) -> str | None:
     """Return user_id for WS stream, or None when auth fails."""
-    if not settings.api_keys:
+    if not settings.api_keys and not settings.admin_api_keys:
         return "dev"
     if not token:
         return None

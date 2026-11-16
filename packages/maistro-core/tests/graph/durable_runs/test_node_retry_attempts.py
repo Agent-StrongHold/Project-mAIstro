@@ -32,6 +32,7 @@ from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _In(BaseModel):
@@ -102,13 +103,16 @@ def _graph(
 
 
 async def _run(graph: Graph, node: BaseNode[Any, Any], run_store: InMemoryRunStore) -> Any:
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     return await run_durable_graph(
         graph,
         store=InMemoryDurableRunStore(),
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
 
@@ -236,7 +240,9 @@ async def test_the_other_walk_reaches_the_same_verdict(
     run_store, workspace_id, project_id = await _spine()
     node = _FlakyStep(failures=failures)
     graph = _graph(workspace_id, project_id, _FlakyStep.kind, policies={"max_attempts": 3})
-    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    admitted = await run_store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     record = await traversal.run_durable_graph(
         graph,
@@ -244,6 +250,7 @@ async def test_the_other_walk_reaches_the_same_verdict(
         node_resolver=lambda node_id, _graph: node,
         run_id=admitted.run_id,
         run_store=run_store,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert record.status is expected_status

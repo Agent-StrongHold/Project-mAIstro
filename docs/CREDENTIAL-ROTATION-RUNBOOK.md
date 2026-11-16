@@ -44,22 +44,41 @@ a substitute for revoking leaked upstream tokens.
    ```
 
 2. **Back up the data directory** (encrypted, off-box). Rotation is atomic and
-   verified, but a backup costs nothing:
+   verified, but a backup costs nothing. Prefer the atomic backup over a bare
+   `tar`: it captures the whole directory — the database, the vault, and both
+   halves of each coupled key pair — in one consistent, verified archive
+   (#331):
 
    ```bash
-   tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .
+   maistro security backup --data-dir "$CONDUCTOR_DATA_DIR" \
+     --out ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+   # or, from a Compose deployment (the data dir is /data/conductor, one
+   # level inside the volume Compose mounts at /data):
+   docker compose run --rm --entrypoint maistro -v "$HOME:/backup" hive-conductor \
+     security backup --data-dir /data/conductor --out "/backup/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
    ```
 
-   Treat that tarball as compromised material: it contains the *old* key. Delete
+   A bare tarball also works if you prefer (`tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .`),
+   but nothing verifies it, and a directory restored from a partial or
+   corrupt tar can boot while unable to decrypt itself.
+
+   Treat that archive as compromised material: it contains the *old* key. Delete
    it once rotation is confirmed.
 3. Know your data directory. It is `CONDUCTOR_DATA_DIR` from `backend/.env`
-   (default `~/.conductor`). It contains:
+   (default `~/.conductor`; `/data/conductor` under Compose). It contains:
 
    | File | What |
    |------|------|
    | `credential_master.key` | Fernet master key, mode `0600` |
    | `user_credentials.enc`  | Fernet-encrypted `{user: {provider: secret}}` |
-   | `state.db`              | SQLite: sessions, missions, DAGs, audit log |
+   | `state.db`              | SQLite: sessions, missions, DAGs, audit log, accounts, settings, registration policy |
+   | `secrets.age`           | age-encrypted vault entries (if the deployment uses the vault) |
+   | `admin.key`             | age identity that opens `secrets.age` |
+
+   These files are coupled — the vault needs `admin.key`, the store needs
+   `credential_master.key` — so back up and restore them as one unit.
+   `maistro security restore` enforces that atomicity; the full inventory,
+   migration, and deletion instructions live in the [Conductor README](../packages/hive-conductor/README.md).
 
 ---
 
@@ -288,6 +307,34 @@ signature in `users.toml` cannot replace the external trust root.
 The HMAC trust root is distinct from the admin/user identity keys managed by
 `PrivilegeGuard.rotate_admin_key`; rotate both independently if both were
 compromised.
+
+## Backup and escrow disposition
+
+The daily backup (`deploy/scripts/backup.sh`) captures this data directory —
+`state.db` (consistent SQLite snapshot), `secrets.age`, `user_credentials.enc` —
+but deliberately does **not** carry the decryption roots. `admin.key` (the age
+identity for `secrets.age`) and `credential_master.key` are escrowed by the same
+script into `ESCROW_ROOT` (default `/var/lib/maistro-escrow`), a dated snapshot
+outside the backup artifact; see
+[the deployment runbook §2.1](install/deployment-topology.md#21-conductor-durable-state-and-the-credential-escrow).
+
+Consequence, stated plainly: **if the escrow is lost and no off-host copy
+exists, the vault contents are gone permanently** — age/X25519 has no recovery
+path, and the Fernet-encrypted provider tokens in `user_credentials.enc` must be
+re-entered by hand. "Restore the data directory from backup" (above) recovers
+`state.db` and the ciphertext, never the keys.
+
+Before you rely on any escrow, prove it: run the weekly drill
+(`deploy/scripts/verify-restore.sh`), which decrypts the backed-up vault with the
+escrowed key, or by hand:
+
+```bash
+age --decrypt -i "${ESCROW_ROOT}/<date>/admin.key" \
+    "${BACKUP_ROOT}/<date>/conductor-data/secrets.age"
+```
+
+If that prints your secrets, the escrow is real. If it fails, treat the escrow
+as lost and re-escrow from the live data directory immediately.
 
 ## What this does not cover
 

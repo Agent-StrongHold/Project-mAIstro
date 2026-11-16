@@ -42,6 +42,7 @@ from maistro.graph.durable_runs.attempt_executor import run_durable_graph
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.interop.contract import INTEROP_ONTOLOGY_V1, InteropContractError
 from maistro.runs.model import Attempt, NodeRun
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro_design.packs import (
     DomainPack,
     ExecuteBackend,
@@ -55,6 +56,7 @@ from maistro_design.packs import (
     pack_graph_template,
     parse_manifest,
 )
+from maistro_design.packs import registry as packs_registry
 
 WORKSPACE_ID = "ws-793-packs"
 PROJECT_ID = "proj-793-packs"
@@ -147,6 +149,7 @@ async def _run_pack_graph(
         store=InMemoryDurableRunStore(),
         node_resolver=_stub_resolver,
         inputs={"text": f"brief for {pack.pack_id.value}"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         provenance={"goal_id": goal_id, "goal_revision": goal_revision},
         run_id=run_id,
     )
@@ -226,6 +229,34 @@ graph:
         packs = list(PackRegistry.builtin().list())
         with pytest.raises(PackRegistryError):
             PackRegistry((*packs, packs[0].model_copy(deep=True)))
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_a_member_without_a_manifest_is_a_loud_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The loader iterates the closed enum, so a member whose manifest file
+        # is missing fails the whole load with the member named — never a
+        # silently absent pack.
+        monkeypatch.setattr(packs_registry, "_MANIFESTS_DIR", "manifests-absent")
+        with pytest.raises(PackManifestError, match="no manifest shipped for pack"):
+            PackRegistry.builtin()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_manifest_text_that_is_not_yaml_is_a_loud_error(self) -> None:
+        with pytest.raises(PackManifestError, match="does not satisfy the pack contract"):
+            parse_manifest(PackId.PRODUCT, "pack_id: [never, closed")
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_a_registry_missing_a_member_reports_it_as_unknown(self) -> None:
+        # get() distinguishes "not shipped" from "not a pack": an enum member
+        # with no manifest in THIS registry is an UnknownPackError, exactly
+        # like a name outside the closed enum.
+        registry = PackRegistry(())
+        with pytest.raises(UnknownPackError, match="no pack registered under 'product'"):
+            registry.get(PackId.PRODUCT)
 
 
 # --- AC-2: rubric catalog onto a Goal, identity never pack-owned ------------
@@ -333,6 +364,9 @@ class TestCanonicalExecution:
                     }
                 else:
                     assert node.binding_ids == []
+            # The explore contract rides with the template, like every other
+            # pack field.
+            assert template.metadata["explore_focus"] == list(pack.explore_focus)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -413,6 +447,10 @@ class TestCanvasIsABinding:
     @pytest.mark.scope("unit")
     def test_no_pack_id_names_a_backend(self, registry: PackRegistry) -> None:
         backend_names = {backend.value for backend in ExecuteBackend}
+        # The invariant is typed, not policed: PackId and ExecuteBackend are
+        # two closed enums, and their members must stay disjoint — a future
+        # pack id equal to a backend name would break AC-5 at the type level.
+        assert {pack_id.value for pack_id in PackId}.isdisjoint(backend_names)
         for pack in registry.list():
             assert pack.pack_id.value not in backend_names
 
@@ -476,6 +514,7 @@ class TestContractEdges:
     def test_shape_missing_a_loop_phase_is_rejected(self) -> None:
         base: dict[str, Any] = {
             "pack_id": "product",
+            "version": "1.0.0",
             "name": "Broken",
             "explore_focus": ["x"],
             "execute_backends": ["builders"],
@@ -499,6 +538,7 @@ class TestContractEdges:
     def test_fenced_node_requires_its_declared_fence_point(self) -> None:
         base: dict[str, Any] = {
             "pack_id": "product",
+            "version": "1.0.0",
             "name": "Unfenced",
             "explore_focus": ["x"],
             "execute_backends": ["builders"],
@@ -557,3 +597,71 @@ class TestContractEdges:
                     "graph": graph,
                 }
             )
+
+    @staticmethod
+    def _valid_pack_dict() -> dict[str, Any]:
+        """A minimal contract-satisfying pack dict, for one-mutation boundaries."""
+        return {
+            "pack_id": "product",
+            "version": "1.0.0",
+            "name": "Boundary Pack",
+            "explore_focus": ["x"],
+            "execute_backends": ["builders"],
+            "artifact_kinds": ["a"],
+            "rubric_dimensions": [{"dimension_id": "d", "name": "D"}],
+            "graph": {
+                "name": "g",
+                "entry_node": "explore.a",
+                "nodes": [
+                    {"node_id": "explore.a", "kind": "pack.explore", "phase": "explore"},
+                    {"node_id": "execute.a", "kind": "pack.execute", "phase": "execute"},
+                    {"node_id": "evaluate.a", "kind": "pack.evaluate", "phase": "evaluate"},
+                    {"node_id": "refine.a", "kind": "pack.refine", "phase": "refine"},
+                ],
+                "edges": [
+                    ["explore.a", "execute.a"],
+                    ["execute.a", "evaluate.a"],
+                    ["evaluate.a", "refine.a"],
+                ],
+            },
+        }
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_duplicate_ids_within_a_pack_are_rejected(self) -> None:
+        pack = self._valid_pack_dict()
+        pack["artifact_kinds"] = ["a", "a"]
+        with pytest.raises(ValidationError, match="artifact_kinds must be unique"):
+            DomainPack.model_validate(pack)
+
+        pack = self._valid_pack_dict()
+        pack["rubric_dimensions"] = [
+            {"dimension_id": "d", "name": "D"},
+            {"dimension_id": "d", "name": "D again"},
+        ]
+        with pytest.raises(ValidationError, match="dimension_ids must be unique"):
+            DomainPack.model_validate(pack)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_shape_with_duplicate_node_ids_is_rejected(self) -> None:
+        pack = self._valid_pack_dict()
+        pack["graph"]["nodes"] = [*pack["graph"]["nodes"], dict(pack["graph"]["nodes"][0])]
+        with pytest.raises(ValidationError, match="node_ids must be unique"):
+            DomainPack.model_validate(pack)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_shape_edge_to_a_node_outside_the_shape_is_rejected(self) -> None:
+        pack = self._valid_pack_dict()
+        pack["graph"]["edges"] = [["explore.a", "ghost"]]
+        with pytest.raises(ValidationError, match="references a node outside the shape"):
+            DomainPack.model_validate(pack)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_shape_entry_outside_the_shape_is_rejected(self) -> None:
+        pack = self._valid_pack_dict()
+        pack["graph"]["entry_node"] = "ghost"
+        with pytest.raises(ValidationError, match="not a shape node"):
+            DomainPack.model_validate(pack)

@@ -9,9 +9,13 @@ from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.security.normalize import to_scan_string
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.warden.detector import WardenContext
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
+from maistro.types.tool import ToolCall
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
@@ -24,6 +28,104 @@ StatusCallback = Callable[[str], Coroutine[Any, Any, None]]
 
 async def _noop_status(msg: str) -> None:
     pass
+
+
+async def _audit_denial(
+    audit_log: Any,
+    *,
+    tool_name: str,
+    reason: str,
+    auth: Any,
+    agent_name: str,
+) -> None:
+    """Emit one scoped denial record when an audit log is wired (#847).
+
+    No-op without one: standalone callers keep the plain refusal string.
+    """
+    if audit_log is None:
+        return
+    await log_scoped_tool_denial(
+        audit_log, tool_name=tool_name, reason=reason, auth=auth, agent_name=agent_name
+    )
+
+
+def _raw_arguments_error(raw_args: str, tool_name: str) -> str | None:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return f"Error: malformed arguments for tool '{tool_name}'"
+    if not isinstance(parsed, dict):
+        return f"Error: arguments for tool '{tool_name}' must be an object"
+    return None
+
+
+async def _apply_sentinel(
+    sentinel: Any,
+    auth: Any,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_schema: dict[str, Any],
+) -> tuple[bool, str | None, dict[str, Any]]:
+    if sentinel is None or auth is None:
+        return False, None, tool_args
+    verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
+    if not verdict.allowed:
+        return True, f"Error: Permission denied for tool '{tool_name}'", tool_args
+    repaired = verdict.repaired_data or tool_args
+    if not tool_schema:
+        return False, None, repaired
+    try:
+        validate_tool_arguments(tool_schema, repaired)
+    except ToolArgumentError as exc:
+        return True, f"Error: repaired arguments are invalid: {exc}", repaired
+    return False, None, repaired
+
+
+def _validate_model_tool_call(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tools: list[dict[str, Any]] | None,
+    allowed_tools: frozenset[str] | None,
+) -> tuple[bool, str | None, dict[str, Any], str]:
+    """Return a refusal, if any, before Sentinel/provider dispatch.
+
+    The fourth element is the host-owned denial reason for the scoped audit
+    record (#847); it is empty when the call is admitted.
+    """
+    if allowed_tools is None:
+        return False, None, {}, ""
+    schema: dict[str, Any] = next(
+        (
+            item.get("function", {}).get("parameters", {})
+            for item in (tools or [])
+            if item.get("function", {}).get("name") == tool_name
+        ),
+        {},
+    )
+    if tool_name not in allowed_tools:
+        return (
+            True,
+            f"Error: tool '{tool_name}' is not in the Agent allowlist",
+            schema,
+            "tool not in agent allowlist",
+        )
+    if not schema:
+        return (
+            True,
+            f"Error: no schema is registered for tool '{tool_name}'",
+            schema,
+            "no schema registered for requested tool",
+        )
+    try:
+        validate_tool_arguments(schema, tool_args)
+    except ToolArgumentError as exc:
+        return (
+            True,
+            f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            schema,
+            "invalid tool arguments",
+        )
+    return False, None, schema, ""
 
 
 _MAX_ARG_BYTES = 32_768
@@ -70,6 +172,10 @@ class ArtificerStrategy:
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
         status = status_callback or _noop_status
         security_pipeline = bool(kwargs.get("security_pipeline", False))
+        # #847: scoped denial evidence for refusals that precede Sentinel.
+        audit_log = kwargs.get("audit_log")
+        identity = kwargs.get("identity")
+        agent_name = getattr(identity, "name", "") if identity is not None else ""
 
         await status("Planning...")
         if trace:
@@ -126,14 +232,21 @@ class ArtificerStrategy:
             for tc in tool_calls:
                 tool_args, result_str = await self._handle_tool_call(
                     tc,
+                    tools=tools,
                     tool_executor=tool_executor,
                     trace=trace,
                     status=status,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
                     warden=kwargs.get("warden"),
+                    allowed_tools=(
+                        frozenset(kwargs["allowed_tools"]) if "allowed_tools" in kwargs else None
+                    ),
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
+                    tool_round=round_num,
+                    audit_log=audit_log,
+                    agent_name=agent_name,
                 )
                 tool_context.append(WardenContext(result_str))
                 tool_history.append(
@@ -190,15 +303,19 @@ class ArtificerStrategy:
         tool_args: dict[str, Any],
         tool_executor: Any,
         trace: Trace | None,
+        *,
+        tool_call_id: str = "",
+        tool_round: int = 0,
     ) -> Any:
         """Invoke the tool executor, recording a trace span when tracing is on."""
         if not (tool_executor and callable(tool_executor)):
             return f"Tool '{tool_name}' not available"
+        call = ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args)
         if not trace:
-            return await tool_executor(tool_name, tool_args)
+            return await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
         with trace.span(f"tool.{tool_name}") as ts:
             ts.set_input(tool_args)
-            tool_result = await tool_executor(tool_name, tool_args)
+            tool_result = await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
             result_preview = str(tool_result)[:300]
             tool_success = (
                 '"passed": true' in result_preview
@@ -257,14 +374,19 @@ class ArtificerStrategy:
         self,
         tc: dict[str, Any],
         *,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Any,
         trace: Trace | None,
         status: Any,
         sentinel: Any,
         auth: Any,
         warden: Any,
+        allowed_tools: frozenset[str] | None = None,
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
+        tool_round: int = 0,
+        audit_log: Any = None,
+        agent_name: str = "",
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
         fn = tc.get("function", {})
@@ -274,18 +396,60 @@ class ArtificerStrategy:
         if self._args_exceed_limit(tool_name, raw_args):
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
-        tool_args, tool_result, tool_blocked = await self._authorize_tool_call(
-            tool_name,
-            tool_args,
-            sentinel=sentinel,
-            auth=auth,
-            security_pipeline=security_pipeline,
+        # M2 (#57): model-selected names cannot widen the Agent declaration.
+        # With an allowlist in force, malformed arguments and names or schemas
+        # outside the declaration are hard refusals before Sentinel dispatch;
+        # each refusal also leaves scoped denial evidence when an audit log is
+        # wired (#847).
+        parse_error = (
+            _raw_arguments_error(raw_args, tool_name) if allowed_tools is not None else None
         )
+        if parse_error is not None:
+            await _audit_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason="malformed tool arguments",
+                auth=auth,
+                agent_name=agent_name,
+            )
+            return tool_args, parse_error
+        tool_blocked, refusal, tool_schema, denial_reason = _validate_model_tool_call(
+            tool_name, tool_args, tools, allowed_tools
+        )
+        if tool_blocked:
+            await _audit_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason=denial_reason,
+                auth=auth,
+                agent_name=agent_name,
+            )
+        tool_result: Any = refusal
+        if not tool_blocked:
+            tool_args, sentinel_error, sentinel_blocked = await self._authorize_tool_call(
+                tool_name,
+                tool_args,
+                sentinel=sentinel,
+                auth=auth,
+                security_pipeline=security_pipeline,
+                tool_schema=tool_schema,
+            )
+            if sentinel_error is not None:
+                tool_result = sentinel_error
+            tool_blocked = tool_blocked or sentinel_blocked
+
         await status(f"Running {tool_name}...")
         logger.info("Tool call: %s(%s)", tool_name, list(tool_args.keys()))
 
         if not tool_blocked:
-            tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)
+            tool_result = await self._run_tool(
+                tool_name,
+                tool_args,
+                tool_executor,
+                trace,
+                tool_call_id=tc.get("id", ""),
+                tool_round=tool_round,
+            )
 
         result_str = self._truncate_result(tool_result)
         result_str = await self._sanitize_result(
@@ -325,6 +489,7 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         security_pipeline: bool,
+        tool_schema: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], Any, bool]:
         if security_pipeline:
             return tool_args, None, False
@@ -333,12 +498,12 @@ class ArtificerStrategy:
                 "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
             )
             return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
-        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
-        if not sentinel_verdict.allowed:
-            return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
-        if sentinel_verdict.repaired_data:
-            tool_args = sentinel_verdict.repaired_data
-        return tool_args, None, False
+        blocked, error, repaired = await _apply_sentinel(
+            sentinel, auth, tool_name, tool_args, tool_schema or {}
+        )
+        if blocked:
+            return tool_args, error, True
+        return repaired, None, False
 
     @staticmethod
     def _truncate_result(tool_result: Any) -> str:

@@ -36,7 +36,7 @@ log="{log}"
 count_file="{count_file}"
 count=$(cat "$count_file")
 count=$((count + 1))
-echo "$count" > "$count_file"
+printf '%s\n' "$count" > "${{count_file}}.tmp" && mv "${{count_file}}.tmp" "$count_file"
 echo "attempt $count: $*" >> "$log"
 if [[ "$1" == "buildx" && "$2" == "build" ]]; then
     if [[ $count -le {fail_count} ]]; then
@@ -55,7 +55,7 @@ set -euo pipefail
 count_file="{count_file}"
 count=$(cat "$count_file")
 count=$((count + 1))
-echo "$count" > "$count_file"
+printf '%s\n' "$count" > "${{count_file}}.tmp" && mv "${{count_file}}.tmp" "$count_file"
 if [[ "$1" == "buildx" && "$2" == "build" ]]; then
     exec /bin/sleep 60
 fi
@@ -262,7 +262,11 @@ def test_specialized_producer_and_aggregator_budgets_are_coherent() -> None:
     # #869: workflow-lint finished at 03:34:22 and the last required producer
     # did not start until 04:07:27, a >33 minute runner-scheduling gap. Round
     # conservatively to 35 minutes and add the producer's legitimate ceiling.
+    # The ceiling itself was re-measured when run 36831116132 showed the
+    # maistro-core cold-rebuild path (all four images' install layers
+    # invalidated) exceeding the old 25-minute bound before engine-research
+    # even finished; 45 is the repaired producer budget.
     observed_queue_lag_minutes = 35
-    assert docker_timeout_minutes == 25
+    assert docker_timeout_minutes == 45
     assert evidence_wait_minutes >= observed_queue_lag_minutes + docker_timeout_minutes
     assert integration_timeout_minutes > evidence_wait_minutes

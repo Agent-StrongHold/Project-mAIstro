@@ -312,7 +312,9 @@ class ScheduleAttemptExecutor:
             run_id=run.run_id,
             dag_id=run.graph.graph_id,
             node_id=spec.node_id,
-            user_id=run.actor_principal_id,
+            # Accounting uses the immutable acting fact resolved at admission;
+            # it never trusts a metadata/provenance user id.
+            user_id=run.accounting_principal_id,
             workspace_id=run.workspace_id,
             project_id=run.project_id,
             metadata=metadata,
@@ -541,6 +543,32 @@ def resumable_pause(
     return pause if pause.elapsed(now) else None
 
 
+@dataclass(frozen=True)
+class TickAccounting:
+    """What one operator-scheduled consumer tick did, distinguished (#849).
+
+    An all-failing batch used to present as a full executed batch because the
+    tick's only output was one number that counted caught failures. The
+    breakdown is the contract now:
+
+    - `attempted` — claimed and driven to a disposition by execution;
+    - `succeeded` — reached its intended successful terminal state;
+    - `failed` — attempted and the execution call raised; a caught failure is
+      never a success;
+    - `parked` — attempted and settled non-terminal (a failed Attempt's park
+      or a re-entry's re-yield): durable evidence, owned by recovery, and
+      deliberately not called a success;
+    - `skipped` — not attempted (a lost claim race, an ineligible or
+      unresolvable Run).
+    """
+
+    attempted: int
+    succeeded: int
+    failed: int
+    parked: int
+    skipped: int
+
+
 __all__ = [
     "CONSUMABLE_SOURCES",
     "PARKED_RUN_STATUSES",
@@ -549,6 +577,7 @@ __all__ = [
     "ParkedPause",
     "ScheduleAttemptExecutor",
     "ScheduleExecutionFailed",
+    "TickAccounting",
     "consumer_owns",
     "executable_by_consumer",
     "parked_by_consumer",

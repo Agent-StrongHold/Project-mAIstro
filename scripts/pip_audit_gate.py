@@ -18,6 +18,13 @@ Both ledgers are ratchets. A new advisory or unreviewed unused dependency fails;
 a dependency disposition also fails once the dependency disappears or becomes
 directly imported.
 
+Exit codes: 0 = both gates pass; 1 = real finding (advisory outside the
+allowlist, unjustified dependency, unreadable report path); 2 = usage error;
+3 = the audit produced no usable report (empty or unparseable JSON). That
+last case means the pip-audit *subprocess* crashed (e.g. a PyPI read timeout)
+and the shell redirect left an empty file behind for ``|| true`` to paper
+over — an infrastructure failure to retry, not a vulnerability verdict.
+
 Usage:  pip-audit --strict --format=json -r deps.txt > audit.json || true
         python scripts/pip_audit_gate.py audit.json
 """
@@ -67,13 +74,13 @@ _DISTRIBUTION_IMPORT_OVERRIDES: dict[str, frozenset[str]] = {
 # adds its ID here with reasoning specific enough to re-audit.
 ALLOWED: dict[tuple[str, str], str] = {
     ("ecdsa", "PYSEC-2026-1325"): (
-        "Minerva timing side channel on the P-256 curve via "
-        "SigningKey.sign_digest(). Upstream considers side-channel attacks out "
-        "of scope and has stated there is no planned fix, so there is no "
-        "version to upgrade to. Transitive via bip-utils (the `identity` "
-        "extra). maistro.identity derives on Ed25519 and secp256k1 only — it "
-        "never touches P-256 — and the attack additionally requires local "
-        "timing measurement of signing operations. Not reachable as used."
+        "Minerva timing side channel on secp256r1 via SigningKey.sign_digest(). "
+        "Upstream considers side-channel attacks out of scope and has stated "
+        "there is no planned fix, so there is no version to upgrade to. "
+        "Transitive via bip-utils (the `identity` extra). maistro.identity "
+        "derives on Ed25519 and secp256k1 only — it never touches secp256r1 — "
+        "and the attack additionally requires local timing measurement of "
+        "signing operations. Not reachable as used."
     ),
 }
 
@@ -364,9 +371,23 @@ def audit_direct_dependencies() -> int:
 
 
 def audit_pip_report(path: str) -> int:
-    """Gate one pip-audit JSON report against the advisory allowlist."""
-    with open(path) as fh:
-        data = json.load(fh)
+    """Gate one pip-audit JSON report against the advisory allowlist.
+
+    Returns 3 — never 0 — when the report is empty or unparseable: the audit
+    subprocess crashed before writing a report (e.g. a PyPI read timeout),
+    which is an infrastructure failure to retry, never a clean verdict.
+    """
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"::error::pip-audit report {path!r} is not usable ({exc}). The audit subprocess "
+            "crashed before writing a report — likely a transient registry/network outage. "
+            "This is an infrastructure failure (exit 3): retry the audit; do not treat the "
+            "dependency set as clean."
+        )
+        return 3
 
     vulnerable = [
         dependency for dependency in data.get("dependencies", []) if dependency.get("vulns")

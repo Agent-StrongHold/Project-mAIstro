@@ -2,20 +2,20 @@
 
 StubAgentPort  — explicit unavailable response when maistro-core is not configured.
 MaistroCoreBridge — embeds maistro-core in-process; chat routes through Container.route_request().
-HttpOpenAILLMClient — thin httpx wrapper implementing maistro.protocols.llm.LLMClient.
+The Agent roster receives the Container's canonical model client.
 """
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from maistro.http import shared_client
-
 if TYPE_CHECKING:
     from config import Settings
+
+#: The bundled compose stack's LiteLLM proxy: the documented default when a
+#: deployment configures no gateway, not debug code.
+_BUNDLED_GATEWAY_BASE = "http://localhost:4000/v1"  # DevSkim: ignore DS162092 until 2027-12-31
 
 
 class StubAgentPort:
@@ -38,66 +38,6 @@ class StubAgentPort:
         raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
-class _HttpOpenAILLMClient:
-    """Concrete LLMClient (maistro.protocols.llm.LLMClient) backed by an OpenAI-compatible endpoint."""
-
-    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
-        self._base = base_url.rstrip("/")
-        self._key = api_key
-        self._model = model
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        *,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
-        stream: bool = False,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": model or self._model,
-            "messages": messages,
-            "stream": False,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-
-        async with shared_client(timeout=120.0) as client:
-            r = await client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        # Minimal streaming: fall back to non-streaming and yield as single chunk
-        result = await self.complete(messages, model, **kwargs)
-        content = ""
-        with contextlib.suppress(KeyError, IndexError):
-            content = result["choices"][0]["message"]["content"]
-        yield content
-
-
 class EmbeddedRuntime(NamedTuple):
     """What composing an embedded runtime built and must keep holding.
 
@@ -107,13 +47,18 @@ class EmbeddedRuntime(NamedTuple):
     see the read in ``_construct_runtime``). Runtime materialization (#840
     Slice 4) reuses all three so a definition materialized later stands behind
     exactly the construction and safety context the boot roster was seeded
-    with.
+    with. ``governed_egress`` is the one canonical model-chat authority this
+    composition built over the Container (#718) -- the same authorities the
+    roster's clients cross -- so callers that run conductor work outside the
+    roster (the demo task backend) cross the same Invocation/quota boundary
+    instead of a second, unrecorded HTTP path.
     """
 
     container: Any
     agents: dict[str, Any]
     llm: Any
     preamble: str
+    governed_egress: Any
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -129,22 +74,33 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
-    from services.secrets import maistro_llm_api_key
-    from services.tool_executor import dispatch_tool
+    from services.governed_tools import HiveToolExposureRegistry
+    from services.secrets import effective_llm_gateway_key
+    from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.capabilities.model_chat import build_model_chat_client
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
     from maistro.types.config import AgentConfig, SecurityConfig
     from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
-    llm_key = maistro_llm_api_key(settings) or ""
-    model = settings.maistro_model
+    # The one effective gateway credential per the documented precedence
+    # matrix (#1824): vault -> MAISTRO_LLM_API_KEY -> LITELLM_API_KEY ->
+    # supported proxy aliases -> None. Empty is fail-closed: every governed
+    # door below (the Container's roster client, the admitted model calls and
+    # this runtime's governed egress) then dispatches under no credential at
+    # all -- there is no placeholder key to bear, and no adapter-local HTTP
+    # path left that could synthesize one (#1084).
+    llm_key = effective_llm_gateway_key(settings) or ""
 
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
-        litellm_url=llm_base or "http://localhost:4000",
+        litellm_url=llm_base
+        or "http://localhost:4000",  # DevSkim: ignore DS162092 until 2027-12-31
         litellm_key=llm_key,
         agents_dir=settings.maistro_agents_dir,
         # Stated, not inherited (#158). Core defaults this to "default" too,
@@ -183,10 +139,31 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
-    llm_client = _HttpOpenAILLMClient(
-        base_url=llm_base or "http://localhost:4000/v1",
-        api_key=llm_key or "sk-noop",
-        model=model,
+    # Agent calls and Hive chat share the Container-owned governed client;
+    # there is no adapter-local HTTP authority. The fallback only supports
+    # container-shaped test seams and still composes the same core boundary.
+    llm_client = container.model_chat_client
+    if llm_client is None:
+        llm_client = build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+            workspace_id=config.workspace_id,
+        )
+    # The deployment's gateway base, resolved once for the runtime's governed
+    # egress (#718) so the tool seam cannot drift onto different credentials
+    # or bases than the roster's clients.
+    model_endpoint = GatewayEndpoint(
+        base_url=config.litellm_url,
+        api_key=config.litellm_key,
+        base_url_is_api_base=True,
+    )
+    admitted_calls = AdmittedModelCalls(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=model_endpoint,
+        run_store=container.run_store,
+        binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
+        adapters=getattr(container, "provider_adapter_catalog", None),
     )
     prompt_manager = container.prompt_manager
 
@@ -202,6 +179,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         context_builder=container.context_builder,
         warden=container.warden,
         sentinel=container.sentinel,
+        # #847: pre-Sentinel tool denials (strategy allowlist gate and the
+        # Agent's own undeclared-tool boundary) audit through the same
+        # canonical trail as Sentinel decisions.
+        audit_log=container.audit_log,
         learning_store=container.learning_store,
         # ADR-091's Layer 0-4 assembly. The container has always built this
         # and nothing read it back, so the episodic memories the Conductor
@@ -212,6 +193,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
+        capability_effects=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+        model_endpoint=model_endpoint,
+        workspace_id=config.workspace_id,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -220,7 +206,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=dispatch_tool,
+        tool_executor=admitted_tool_executor(admitted_calls, container=container),
+        # Tool declarations do not supply schemas. Project the same host-owned
+        # contracts the Invocation adapter enforces into Agent/model exposure.
+        tool_registry=HiveToolExposureRegistry(),
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).
@@ -238,11 +227,25 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         preamble = _load_preamble(Path(agents_dir))
     except ConfigError:
         preamble = ""
+    # The one governed model-chat boundary this runtime exposes beyond the
+    # roster (#718): the same container authorities and the same deployment
+    # gateway endpoint the agents' clients got, so conductor work started
+    # outside the roster (demo task execution) records Invocation/quota
+    # evidence through the one canonical path instead of a private HTTP call.
+    from maistro.capabilities.model_chat import ModelChatEgress
+
+    governed_egress = ModelChatEgress(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=model_endpoint,
+    )
     return EmbeddedRuntime(
         container=container,
         agents=agents,
         llm=llm_client,
         preamble=preamble,
+        governed_egress=governed_egress,
     )
 
 
@@ -267,15 +270,28 @@ class MaistroCoreBridge:
 
     def __init__(self) -> None:
         self._container: Any = None
+        self._governed_egress: Any = None
 
     @property
     def container(self) -> Any:
         """The wired maistro-core Container (holds the CapabilityRegistry), or None."""
         return self._container
 
+    @property
+    def governed_egress(self) -> Any:
+        """The runtime's canonical model-chat authority, or None before start.
+
+        The engine's demo task backend runs conductor work outside the agent
+        roster; this is the seam that keeps that work on the same Invocation
+        and quota ledger the roster's clients record on (#718), rather than a
+        second unrecorded HTTP path.
+        """
+        return self._governed_egress
+
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
+        self._governed_egress = runtime.governed_egress
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves

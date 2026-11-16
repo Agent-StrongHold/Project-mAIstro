@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.security._types import WardenVerdict
+from maistro_turing.sync_runner import DEFAULT_SYNC_TIMEOUT_SECONDS, SyncLoopRunner
+from maistro_turing.tiers import clamp_weight
+from maistro_turing.types import MemoryTier as TierBoundsTier
 
 if TYPE_CHECKING:
     # maistro-core does not ship a py.typed marker yet, so these imports are
@@ -154,21 +157,51 @@ class TuringMemoryBridge:
         weight: float = 0.3,
         intent: str = "",
         context: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
     ) -> str:
+        """The single validated write seam for Turing episodic memories.
+
+        Every Turing memory write (actor self-writes, chat capture, producers)
+        passes through here, so the documented tier-weight safeguard is
+        enforced exactly once, before persistence (#859): the tier name must
+        resolve to a canonical ``MemoryTier``, the weight must be a finite
+        real number, and it is clamped into the tier's declared bounds by
+        ``clamp_weight``. Out-of-range proposals are clamped; malformed ones
+        (wrong type, non-finite, unknown tier) fail the write.
+
+        ``user_id``/``project_id`` carry the caller's canonical provenance
+        onto the persisted row; when supplied, scoped readers can filter this
+        episode to its own principal, and blank rows never masquerade as
+        another principal's memory.
+        """
         if self._episodic is None:
             logger.warning("no episodic store configured; memory write dropped")
             return ""
         from maistro.types.memory import (
             EpisodicMemory,
-            MemoryTier,
         )
+        from maistro.types.memory import (
+            MemoryTier as CoreMemoryTier,
+        )
+
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TypeError(f"weight must be a real number, got {type(weight).__name__}")
+        # Turing's tier enum carries the declared weight bounds (tiers.py);
+        # the core enum is what the episodic store persists. Same values,
+        # deliberately distinct types — each name is converted once, and an
+        # unknown tier fails the write here.
+        canonical_tier = TierBoundsTier(tier)
+        clamped = clamp_weight(canonical_tier, weight)
 
         mem = EpisodicMemory(
             content=content,
-            tier=MemoryTier(tier),
+            tier=CoreMemoryTier(canonical_tier.value),
             source=source,
-            weight=weight,
+            weight=clamped,
             context=context or {},
+            user_id=user_id,
+            project_id=project_id or "",
         )
         return str(await self._episodic.store(mem))
 
@@ -177,10 +210,20 @@ class TuringMemoryBridge:
         query: str,
         *,
         limit: int = 5,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Retrieve episodic memories, optionally scoped to one principal.
+
+        ``user_id`` maps to the episodic store's scope filter, so a scoped
+        caller only ever sees episodes written for their own principal;
+        unscoped callers keep the previous unfiltered behavior.
+        """
         if self._episodic is None:
             return []
-        results = await self._episodic.retrieve(query, limit=limit)
+        if user_id is None:
+            results = await self._episodic.retrieve(query, limit=limit)
+        else:
+            results = await self._episodic.retrieve(query, user_id=user_id, limit=limit)
         return [
             {
                 "memory_id": m.memory_id,
@@ -289,6 +332,8 @@ class TuringProviderBridge:
         self,
         llm_client: LLMClient | None = None,
         pools: list[PoolConfig] | None = None,
+        *,
+        sync_timeout_seconds: float = DEFAULT_SYNC_TIMEOUT_SECONDS,
     ) -> None:
         self._client = llm_client
         self._pools: dict[str, PoolConfig] = {}
@@ -296,6 +341,13 @@ class TuringProviderBridge:
             for p in pools:
                 self._pools[p.pool_name] = p
         self._default_pool = pools[0] if pools else None
+        # Dedicated thread/loop boundary for sync callers (#397): bounded
+        # wait, cancellation propagation, reentrancy rejection. Async callers
+        # must use `acomplete` so they never occupy their loop waiting.
+        self._sync_runner = SyncLoopRunner(
+            timeout=sync_timeout_seconds,
+            name="turing-provider-sync",
+        )
 
     def register_pool(self, pool: PoolConfig) -> None:
         self._pools[pool.pool_name] = pool
@@ -303,26 +355,24 @@ class TuringProviderBridge:
             self._default_pool = pool
 
     def complete(self, prompt: str, *, max_tokens: int | None = None, pool: str = "") -> str:
+        """Synchronous completion through the dedicated sync-loop boundary.
+
+        The coroutine runs on the bridge's own loop thread (never the
+        caller's), the wait is bounded by ``sync_timeout_seconds``, and a
+        timed-out call cancels the underlying work (#397). A reentrant call
+        from the runner's own loop raises immediately instead of deadlocking.
+        """
         if self._client is None:
             raise RuntimeError("no LLM client configured")
         pool_cfg = self._pools.get(pool) if pool else self._default_pool
         model = pool_cfg.model if pool_cfg else ""
-        import asyncio
 
         coro = self._client.complete(
             messages=[{"role": "user", "content": prompt}],
             model=model,
             max_tokens=max_tokens,
         )
-        try:
-            asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                result = future.result()
-        except RuntimeError:
-            result = asyncio.run(coro)
+        result = self._sync_runner.run(coro)
         choices = result.get("choices", [])
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
@@ -342,6 +392,10 @@ class TuringProviderBridge:
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
         return ""
+
+    def close(self) -> None:
+        """Cancel outstanding sync-bridge work and stop the dedicated loop."""
+        self._sync_runner.close()
 
     def pool_names(self) -> list[str]:
         return list(self._pools.keys())

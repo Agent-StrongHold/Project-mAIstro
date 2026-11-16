@@ -23,6 +23,7 @@ the namespace.
 from __future__ import annotations
 
 import asyncio
+import os
 import resource
 from pathlib import Path
 
@@ -138,6 +139,33 @@ async def test_a_busy_loop_is_killed_by_the_cpu_budget(sandbox) -> None:
 
     assert result.timed_out is False
     assert result.exit_code != 0
+
+
+@requires_bwrap
+async def test_unbounded_output_cannot_exhaust_the_host(sandbox) -> None:
+    """Output exhaustion against the production backend (#1197, #80 conformance).
+
+    The sandbox's CPU/address-space/file budgets do not bound bytes flowing
+    into host-owned pipes, so capture itself must: a `yes`-style workload
+    flooding both streams at once is terminated at the host-selected limit,
+    the retained prefix stays within the per-stream policy, and the result
+    reports truncation and the stable overflow exit code instead of pretending
+    the strings are the complete output.
+    """
+    from maistro.sandbox import DEFAULT_OUTPUT_CAPTURE_BYTES
+
+    result = await run(
+        sandbox,
+        "while :; do printf 'o%.0s' $(seq 1 4096); printf 'e%.0s' $(seq 1 4096) >&2; done",
+        timeout_s=10,
+    )
+
+    assert result.exit_code == 125  # OUTPUT_LIMIT_EXIT_CODE: host policy, not the workload's
+    assert result.output_limit_exceeded is True
+    assert result.timed_out is False
+    assert result.stdout_truncated or result.stderr_truncated
+    assert result.stdout_bytes_retained <= DEFAULT_OUTPUT_CAPTURE_BYTES
+    assert result.stderr_bytes_retained <= DEFAULT_OUTPUT_CAPTURE_BYTES
 
 
 @requires_bwrap
@@ -354,6 +382,32 @@ async def test_setuid_binaries_are_visible_but_cannot_escalate(sandbox) -> None:
     assert text.split()[-1] == "1"
 
 
+# --- host-side file boundary -------------------------------------------------
+
+
+async def test_host_side_file_transfer_keeps_symlinked_results_beneath_workdir(
+    tmp_path: Path,
+) -> None:
+    """The real backend's transfer API must not reopen a host escape seam."""
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    outside = tmp_path / "host-secret"
+    outside.write_bytes(b"secret")
+    workdir = workdir_of(tmp_path, instance)
+    assert workdir is not None
+    (workdir / "result").symlink_to(outside)
+
+    try:
+        with pytest.raises(OSError):
+            await backend.write_file(instance, "result", b"overwrite")
+        with pytest.raises(OSError):
+            await backend.read_file(instance, "result")
+    finally:
+        await backend.destroy(instance)
+
+    assert outside.read_bytes() == b"secret"
+
+
 # --- timeout, kill and cleanup ------------------------------------------------
 
 
@@ -373,6 +427,63 @@ async def test_a_timeout_leaves_nothing_running(tmp_path: Path) -> None:
 
     assert result.timed_out is True
     assert workdir_of(tmp_path, instance) is None
+
+
+def _host_processes_carrying(marker: bytes) -> list[int]:
+    """Every live host process whose argv mentions `marker`, regardless of lineage.
+
+    A detached grandchild is re-parented away from us, so a PPID-scoped scan
+    is exactly the scan that cannot see it; the only honest probe matches the
+    whole process table. Zombies carry no cmdline, so they never match.
+    """
+    found: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as cmdline:
+                argv = cmdline.read()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue  # raced with exit, or not ours to read
+        if marker in argv:
+            found.append(int(entry))
+    return found
+
+
+@requires_bwrap
+async def test_a_setsid_grandchild_cannot_outlive_the_timeout(tmp_path: Path) -> None:
+    """A workload that forks and calls `setsid()` leaves the process group, so
+    the group kill cannot signal it directly. What contains it is the PID
+    namespace: `--unshare-all` makes `bwrap` the namespace's init, no syscall
+    can leave a PID namespace, and when init dies the kernel SIGKILLs every
+    process still inside it. The probe below scans the whole host table for a
+    detached grandchild's marker — the scan a session escape would have to beat.
+    """
+    marker = b"maistro-setsid-probe"
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(config=SandboxConfig(timeout_s=1))
+    script = "/work/maistro-setsid-probe"  # literal argv, visible from the host
+    await backend.write_file(instance, script, b"#!/bin/sh\nsleep 30\n")
+    # `--fork` is the setsid(1) shape of fork+setsid: the grandchild holds the
+    # output pipes from its own new session. The outer shell must NOT exec
+    # setsid and must then stay alive: bwrap is the PID namespace's init, so
+    # the moment its direct child exits the kernel tears the namespace down
+    # and SIGKILLs the grandchild -- an `exec setsid ...` shape "completes"
+    # in tens of milliseconds and never reaches the timeout at all. The
+    # foreground `sleep` keeps the direct child (and its group, and the
+    # pipes) alive so the clock timeout is what terminates the sandbox.
+    result = await backend.exec(
+        instance,
+        ["sh", "-c", f"chmod +x {script} && setsid --fork {script}; sleep 30"],
+        timeout_s=1,
+    )
+    await backend.destroy(instance)
+
+    assert result.timed_out is True
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while _host_processes_carrying(marker) and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    assert _host_processes_carrying(marker) == [], "detached grandchild survived the kill"
 
 
 @requires_bwrap

@@ -34,11 +34,32 @@ def _clear_memory_entries():
 # --------------------------------------------------------------------------- #
 
 
-def test_list_namespaces_returns_seeded_values(authed_client: Any) -> None:
+def test_list_namespaces_empty_is_valid(authed_client: Any) -> None:
+    """No entries means no namespaces — empty-valid, not a seeded stub (#389)."""
     r = authed_client.get("/v1/memory/namespaces")
     assert r.status_code == 200
-    names = [n["name"] for n in r.json()]
-    assert names == list(stores.memory_namespaces.keys())
+    assert r.json() == []
+
+
+def test_list_namespaces_derived_from_owned_entries(authed_client: Any) -> None:
+    """Namespaces are computed from the caller's durable entries (#389).
+
+    The route used to return a hard-coded seed (`default`, one entry, 1024
+    bytes) that no write could ever change. Now: create entries, see real
+    counts and real byte sizes; another owner's entries do not appear.
+    """
+    authed_client.post("/v1/memory/entries", json={"key": "k1", "value": "abcd", "namespace": "a"})
+    authed_client.post("/v1/memory/entries", json={"key": "k2", "value": "de", "namespace": "a"})
+    authed_client.post("/v1/memory/entries", json={"key": "k3", "value": "fghij", "namespace": "b"})
+    r = authed_client.get("/v1/memory/namespaces")
+    assert r.status_code == 200
+    by_name = {n["name"]: n for n in r.json()}
+    # The hard-coded seed is gone: no namespace exists without a real entry.
+    assert set(by_name) == {"a", "b"}
+    assert by_name["a"]["entry_count"] == 2
+    assert by_name["a"]["size_bytes"] == len(b"abcd") + len(b"de")
+    assert by_name["b"]["entry_count"] == 1
+    assert by_name["b"]["size_bytes"] == len(b"fghij")
 
 
 # --------------------------------------------------------------------------- #
@@ -224,11 +245,24 @@ def test_decay_entry_missing_404(authed_client: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_contradict_entry_found(authed_client: Any) -> None:
+def test_contradict_entry_changes_durable_state(authed_client: Any) -> None:
+    """A contradiction is a stored state change, not an acknowledgment (#389).
+
+    The route used to check the entry existed and return
+    `{"status": "contradiction_registered"}` without writing anything. Now
+    the count lands on the durable entry and survives re-reads.
+    """
     eid = authed_client.post("/v1/memory/entries", json={"key": "k", "value": "v"}).json()["id"]
     r = authed_client.post(f"/v1/memory/entries/{eid}/contradict")
     assert r.status_code == 200
-    assert r.json() == {"status": "contradiction_registered"}
+    body = r.json()
+    assert body["contradictions"] == 1
+    # The stored entry carries the state change, not just the response.
+    assert stores.memory_entries[eid].contradictions == 1
+    r2 = authed_client.post(f"/v1/memory/entries/{eid}/contradict")
+    assert r2.status_code == 200
+    assert r2.json()["contradictions"] == 2
+    assert authed_client.get(f"/v1/memory/entries/{eid}").json()["contradictions"] == 2
 
 
 def test_contradict_entry_missing_404(authed_client: Any) -> None:

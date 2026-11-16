@@ -139,8 +139,11 @@ def _reproduce(payload: dict[str, Any]) -> ArchivedGraphRun:
     would also hide the failure that matters most here -- a model change that
     makes old records unloadable -- behind a dict that still parses.
     """
+    run_payload = dict(payload["run"])
+    if not run_payload.get("actor_principal_id"):
+        run_payload["actor_principal_id"] = "legacy-unknown-actor"
     return ArchivedGraphRun(
-        run=Run.model_validate(payload["run"]),
+        run=Run.model_validate(run_payload),
         node_runs=tuple(NodeRun.model_validate(item) for item in _seq(payload, "node_runs")),
         attempts=tuple(Attempt.model_validate(item) for item in _seq(payload, "attempts")),
         graph_state=dict(payload.get("graph_state") or {}),

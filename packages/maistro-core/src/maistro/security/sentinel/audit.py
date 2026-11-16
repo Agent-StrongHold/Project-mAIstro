@@ -2,20 +2,151 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from bisect import bisect_left, insort
+from dataclasses import asdict
+from itertools import product
+from threading import Lock
+from typing import Any
 
-if TYPE_CHECKING:
-    from maistro.security._types import AuditEntry
+from maistro.persistence.audit_pages import MAX_PAGE_SIZE, AuditPage, decode_cursor, make_page
+from maistro.security.sentinel.signing import AuditSigner
+from maistro.types.security import AuditEntry
+
+TOOL_ALLOWLIST_BOUNDARY = "tool_allowlist"
+"""Boundary for declaration-gate denials that happen before Sentinel pre_call.
+
+The Sentinel's own pre_call audit records its decisions; a tool refused by
+the Agent allowlist/schema gate never reaches Sentinel, so without this
+boundary the denial decision leaves no durable evidence (#847).
+"""
+
+
+def scoped_tool_denial_entry(
+    *,
+    tool_name: str,
+    reason: str,
+    user_id: str = "",
+    org_id: str = "",
+    agent_id: str = "",
+) -> AuditEntry:
+    """Compose the authorization-denied record for a pre-Sentinel refusal.
+
+    ``reason`` is a host-owned canned phrase, never model-controlled text:
+    the requested name already rides the canonical ``tool_name`` field, the
+    same exposure Sentinel's own denials carry.
+    """
+    return AuditEntry(
+        boundary=TOOL_ALLOWLIST_BOUNDARY,
+        user_id=user_id,
+        org_id=org_id,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        verdict="denied",
+        action="tool_dispatch",
+        detail=reason,
+    )
+
+
+async def log_scoped_tool_denial(
+    audit_log: Any,
+    *,
+    tool_name: str,
+    reason: str,
+    auth: Any = None,
+    agent_name: str = "",
+) -> None:
+    """Write one scoped authorization-denied event (#847).
+
+    A pre-Sentinel refusal never reaches the Sentinel's own audit path, so
+    without this the denial decision exists only as an error string handed
+    back to the model. A failing audit sink must not turn a denial into an
+    exception path, hence the guarded write.
+    """
+    try:
+        await audit_log.log(
+            scoped_tool_denial_entry(
+                tool_name=tool_name,
+                reason=reason,
+                user_id=getattr(auth, "user_id", "") if auth is not None else "",
+                org_id=getattr(auth, "org_id", "") if auth is not None else "",
+                agent_id=agent_name,
+            )
+        )
+    except Exception:  # pragma: no cover - defensive: audit outage != denial failure
+        logging.getLogger("maistro.security.audit").warning(
+            "audit write failed for tool denial '%s'", tool_name, exc_info=True
+        )
 
 
 class InMemoryAuditLog:
-    """In-memory audit log for testing."""
+    """Ephemeral audit adapter with write-maintained pagination indexes.
 
-    def __init__(self) -> None:
+    Immutable entries and a single append seam make the indexes authoritative
+    projections of `_entries`, not a second audit store. Every optional filter
+    shape has an ordered index, so sparse filters cannot turn a page into a
+    corpus scan. Writes retain eight keys per record; out-of-order inserts may
+    shift an index, while page reads cost O(log n + limit).
+
+    Entries are signed with the store's signer before retention (ADR-073
+    decision proofs). The default generated key is intentionally process-local:
+    a deployment using this store for anything beyond tests must pass the same
+    externally managed signer key it uses for its durable audit store.
+    """
+
+    def __init__(self, *, signer: AuditSigner | None = None) -> None:
+        self._lock = Lock()
         self._entries: list[AuditEntry] = []
+        self.signer = signer or AuditSigner()
+        self._page_indexes: dict[
+            tuple[str, str | None, str | None, bool | None], list[tuple[str, int]]
+        ] = {}
 
     async def log(self, entry: AuditEntry) -> None:
-        self._entries.append(entry)
+        self.log_sync(entry)
+
+    def log_sync(self, entry: AuditEntry) -> None:
+        """Shared append seam for async callers and synchronous bridge threads."""
+        signed = self.signer.sign(entry)
+        with self._lock:
+            key = (signed.timestamp.isoformat(), len(self._entries) + 1)
+            self._entries.append(signed)
+            for user, boundary, denied in product(
+                (None, signed.user_id), (None, signed.boundary), (None, signed.verdict == "denied")
+            ):
+                index = self._page_indexes.setdefault((signed.org_id, user, boundary, denied), [])
+                insort(index, key)
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        """Seek the scope/filter index and materialize at most limit + 1 rows."""
+        if org_id is None:
+            raise ValueError("org_id cannot be None; pass '' for an unscoped read")
+        before = decode_cursor(cursor) if cursor is not None else None
+        size = max(1, min(limit, MAX_PAGE_SIZE))
+        # The sync Hive bridge may append from worker threads. Hold the same
+        # lock while seeking/copying keys so no partial index update is visible.
+        with self._lock:
+            index = self._page_indexes.get((org_id, user_id, boundary, denied), [])
+            end = len(index) if before is None else bisect_left(index, before)
+            keys = index[max(0, end - size - 1) : end]
+            rows = [
+                dict(asdict(self._entries[row_id - 1]), id=row_id, timestamp=timestamp)
+                for timestamp, row_id in reversed(keys)
+            ]
+        return make_page(rows, size)
+
+    def verify(self, entry: Any) -> bool:
+        """Verify an entry with this store's public verification key."""
+        return self.signer.verify(entry)
 
     async def get_entries(
         self,

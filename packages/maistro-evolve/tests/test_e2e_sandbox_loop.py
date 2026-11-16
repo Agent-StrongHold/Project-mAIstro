@@ -28,6 +28,7 @@ the real production class.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -51,9 +52,24 @@ class _FakeProc:
     def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
         self._stdout = stdout
         self.returncode = returncode
+        # exec drains these streams bounded (capture, #1197) and reaps the
+        # child afterwards; destroy/create still go through communicate().
+        self.stdout = _reader_with(stdout)
+        self.stderr = _reader_with(b"")
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return self._stdout, b""
+
+    async def wait(self) -> int | None:
+        return self.returncode
+
+
+def _reader_with(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    if data:
+        reader.feed_data(data)
+    reader.feed_eof()
+    return reader
 
 
 def _make_genome(

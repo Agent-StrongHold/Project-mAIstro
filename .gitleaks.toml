@@ -124,6 +124,25 @@ regexes = [
 ]
 
 [[allowlists]]
+# PR #331's Compose durability harness (scripts/verify-compose-durability.sh)
+# assigns a deterministic throwaway probe secret consumed only by that same
+# script's in-container backup/restore round trip; it authenticates to
+# nothing outside the one CI-only deployment it creates. gitleaks sees only
+# its secret-like shape in the commit that introduced the harness
+# (1e4058c3c); the literal has since been split in the working tree (the
+# config-header fix this file documents), but `gitleaks git` scans each
+# commit's own patch, so the introducing commit keeps the finding until the
+# branch history stops being scanned -- the same situation as the de04b449
+# entry above. Scoped to that one commit, one path, and the generic-api-key
+# rule so any other credential-shaped value still fails closed.
+description = "Deterministic CI-only probe secret in the PR #331 Compose durability harness."
+targetRules = ["generic-api-key"]
+commits = ["1e4058c3c2cb5148e1b9c2f9b11ac35776e00465"]
+paths = [
+  '''packages/hive-conductor/scripts/verify-compose-durability\.sh$'''
+]
+
+[[allowlists]]
 # PR #444's container smoke test deliberately injects a deterministic throwaway
 # router key into an isolated CI-only network. The literal is not deployable
 # configuration and cannot authenticate to any external service; gitleaks sees

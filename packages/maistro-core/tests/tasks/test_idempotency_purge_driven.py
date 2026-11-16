@@ -91,10 +91,14 @@ async def _seed_expired(store: Any, count: int) -> list[str]:
     """
     scopes = [_scope(f"old-{index}") for index in range(count)]
     for scope in scopes:
-        assert isinstance(
-            await store.claim(scope, fingerprint="fp", request="{}", now=_NOW), Claimed
+        claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+        assert isinstance(claimed, Claimed)
+        # Completing is claimant-fenced (#1176): the outcome lands only with
+        # the token the claim itself minted.
+        assert (
+            await store.complete(scope, token=claimed.token, task_id=f"t-{scope}", run_id=None)
+            is True
         )
-        assert await store.complete(scope, task_id=f"t-{scope}", run_id=None) is True
     return scopes
 
 
@@ -139,8 +143,9 @@ async def test_a_claim_inside_the_interval_does_not_purge_again(store: Any, cloc
 
     # Expired by the next claim's clock, but the throttle has not reopened.
     newer = [_scope("newer")]
-    await store.claim(newer[0], fingerprint="fp", request="{}", now=_EXPIRED)
-    await store.complete(newer[0], task_id="t-newer", run_id=None)
+    newer_claim = await store.claim(newer[0], fingerprint="fp", request="{}", now=_EXPIRED)
+    assert isinstance(newer_claim, Claimed)
+    await store.complete(newer[0], token=newer_claim.token, task_id="t-newer", run_id=None)
     clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS - 1
     later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
     await store.claim(_scope("second"), fingerprint="fp", request="{}", now=later)
@@ -237,12 +242,13 @@ async def test_a_full_batch_keeps_purging_until_the_backlog_drains(
     assert len(await _surviving(store, old)) == 3
     await store.claim(_scope("b"), fingerprint="fp", request="{}", now=_EXPIRED)
     assert len(await _surviving(store, old)) == 1
-    await store.claim(_scope("c"), fingerprint="fp", request="{}", now=_EXPIRED)
+    claim_c = await store.claim(_scope("c"), fingerprint="fp", request="{}", now=_EXPIRED)
+    assert isinstance(claim_c, Claimed)
     assert await _surviving(store, old) == []
 
     # The last batch came up short, so the throttle is back in force.
     newer = _scope("newer")
-    await store.complete(_scope("c"), task_id="t-c", run_id=None)
+    await store.complete(_scope("c"), token=claim_c.token, task_id="t-c", run_id=None)
     later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
     await store.claim(newer, fingerprint="fp", request="{}", now=later)
     assert await store.get(_scope("c")) is not None
@@ -306,3 +312,49 @@ async def test_pg_purge_spares_a_claim_renewed_under_it(pg_pool: Any, clock: _Cl
     record = await store.get(scope)
     assert record is not None
     assert record.expires_at_us == renewed_until
+
+
+async def test_a_purge_publishes_the_claim_tables_stored_volume(store: Any, clock: _Clock) -> None:
+    """A stalled sweeper here is invisible in delete counts — claims stop,
+    deletes stop, and the rate looks healthy. The stored level is what still
+    shows the table holding every claim ever made, so the purge publishes it
+    (throttled per store) alongside the delete it just committed (#325)."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    if isinstance(store, InMemoryTaskIdempotencyStore):
+        pytest.skip("the in-memory tier is not a durable table with a health probe")
+    backend = "postgres" if isinstance(store, PgTaskIdempotencyStore) else "sqlite"
+    retention_health._LAST_PROBE.clear()
+
+    old = await _seed_expired(store, 3)
+    fresh = _scope("fresh")
+    assert isinstance(
+        await store.claim(fresh, fingerprint="fp", request="{}", now=_EXPIRED), Claimed
+    )
+    clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+    # Driven directly, not through a claim: the claim path purges before it
+    # inserts, so a gauge read through it would race the fresh row. The direct
+    # purge's snapshot is the deterministic point: three expired claims go,
+    # the unexpired one is the table's whole content.
+    assert await store.purge_expired(now=_EXPIRED) == 3
+
+    samples = [
+        float(s["value"])
+        for s in retention_table_rows.collect()
+        if s.get("labels", {}) == {"table": "task_idempotency", "backend": backend}
+    ]
+    assert samples == [1.0]  # the one unexpired claim; the three expired are gone
+    oldest = [
+        float(s["value"])
+        for s in retention_oldest_record_timestamp.collect()
+        if s.get("labels", {}) == {"table": "task_idempotency", "backend": backend}
+    ]
+    assert len(oldest) == 1
+    surviving = await store.get(fresh)
+    assert surviving is not None
+    assert oldest[0] == pytest.approx(surviving.created_at_us / 1_000_000)
+    assert await _surviving(store, old) == []

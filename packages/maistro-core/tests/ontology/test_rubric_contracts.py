@@ -185,13 +185,23 @@ def test_brief_cannot_swap_the_registered_kind_model() -> None:
 def test_store_rejects_rubric_missing_contract_fields() -> None:
     """What a brief supplies (guidance, no gate/provenance) cannot construct a
     Rubric: the store requires the contract fields, and the kind model does too."""
-    from maistro.projects.rubric_store import (
-        GoalRevisionSnapshot,
-        InMemoryGoalRevisionCatalog,
-        RubricStore,
-    )
+    from maistro.projects.rubric_store import GoalRevisionSnapshot, RubricStore
 
-    catalog = InMemoryGoalRevisionCatalog()
+    class _TestGoalCatalog:
+        """Minimal test double of the store's ``GoalRevisionCatalog`` seam."""
+
+        def __init__(self) -> None:
+            self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
+
+        def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
+            self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
+            return snapshot
+
+        def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
+            snap = self._goals.get((goal_id, goal_revision))
+            return snap.model_copy(deep=True) if snap is not None else None
+
+    catalog = _TestGoalCatalog()
     catalog.register_goal(
         GoalRevisionSnapshot(
             goal_id="goal-1", goal_revision=1, workspace_id="ws-1", project_id="proj-1"

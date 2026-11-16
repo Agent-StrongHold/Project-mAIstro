@@ -237,7 +237,8 @@ maistro/credentials/
 
 ## Source references
 
-- `docs/analysis/COMPETITIVE-IMPROVEMENTS.md` — IMP-011, IMP-012
+- Historical competitive-improvements inventory (removed `docs/analysis/COMPETITIVE-IMPROVEMENTS.md`;
+  IMP-011/012 absorbed into this ADR)
 - Hermes credential pool — strategy-based selection
 - OpenClaw credential pool — automatic cycling
 - `packages/maistro-core/src/maistro/resilience/classifier.py` — IMP-001 error classification

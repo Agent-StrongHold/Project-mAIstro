@@ -36,6 +36,13 @@ _DETAIL_LIMIT = 20
 RATCHET = "vulture"
 METRIC_DEFINITION_VERSION = "1"
 
+#: The analyzer this gate executes is an installed distribution, not bundled
+#: source: `_run_vulture` invokes `sys.executable -m vulture`, so the version
+#: that matters is the one installed in THIS interpreter, observed through
+#: importlib.metadata in this process -- never the lockfile's declared version
+#: (#319).
+ANALYZER_DISTRIBUTION = "vulture"
+
 
 def _provenance() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
@@ -94,6 +101,12 @@ class RuleDelta:
     added: list[Finding]
     removed: list[str]
     unbanked: bool
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Installed analyzer identity observed in this gate's interpreter (#319)."""
+    version: str = prov.installed_distribution_version(ANALYZER_DISTRIBUTION)
+    return version
 
 
 def _load_baseline(path: Path = BASELINE) -> dict[str, Any]:
@@ -285,12 +298,14 @@ def _report_trusted_result(
     findings: list[Finding],
     trusted_deltas: list[RuleDelta],
     candidate_deltas: list[RuleDelta],
+    tool_version: str,
 ) -> None:
     print(
         prov.Provenance(
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="vulture",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{_finding_count(trusted_rules)} reviewed identities",
             new_value=f"{len(findings)} findings",
@@ -315,6 +330,7 @@ def _enforce_trusted(
 ) -> int:
     prov = _provenance()
     try:
+        tool_version = _tool_version(prov)
         trusted_ref, trusted_rules, authorized = _trusted_state(findings, prov)
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
@@ -347,6 +363,7 @@ def _enforce_trusted(
         findings=findings,
         trusted_deltas=trusted_deltas,
         candidate_deltas=candidate_deltas,
+        tool_version=tool_version,
     )
 
     if unauthorized:

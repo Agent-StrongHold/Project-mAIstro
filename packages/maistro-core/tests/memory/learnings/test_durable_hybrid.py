@@ -16,13 +16,17 @@ got back. The similarity path itself runs against a real PostgreSQL in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from maistro.memory.exposure import Actor
 from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
+from maistro.memory.learnings.lifecycle import StageTransition
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS
-from maistro.types.memory import Learning
+from maistro.types.memory import Learning, LearningStage
 
 
 def _learning(learning_id: int, text: str = "do not do X") -> Learning:
@@ -35,6 +39,7 @@ class _Store:
     def __init__(self, *, similar: list[Learning] | None = None) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self._similar = similar or []
+        self.promoted: Learning | None = None
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -67,10 +72,39 @@ class _Store:
         self._record("mark_outcome", learning_ids, success, org_id=org_id)
 
     async def check_auto_promotions(
-        self, threshold: int = 5, *, org_id: str = ""
+        self,
+        threshold: int = 5,
+        *,
+        org_id: str = "",
+        min_confidence: float = 0.5,
     ) -> list[Learning]:
-        self._record("check_auto_promotions", threshold, org_id=org_id)
+        self._record(
+            "check_auto_promotions", threshold, org_id=org_id, min_confidence=min_confidence
+        )
         return [_learning(11)]
+
+    async def promote_learning(
+        self,
+        learning_id: int,
+        *,
+        org_id: str = "",
+        validated_by: str = "",
+        evaluator_version: str = "",
+        validated_at: datetime | None = None,
+        validation_run_ids: Sequence[str] = (),
+        validation_content_hash: str = "",
+    ) -> Learning | None:
+        self._record(
+            "promote_learning",
+            learning_id,
+            org_id=org_id,
+            validated_by=validated_by,
+            evaluator_version=evaluator_version,
+            validated_at=validated_at,
+            validation_run_ids=validation_run_ids,
+            validation_content_hash=validation_content_hash,
+        )
+        return self.promoted
 
     async def get_promoted(
         self,
@@ -94,6 +128,49 @@ class _Store:
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         self._record("list_all", org_id, limit)
         return [_learning(13)]
+
+    async def list_ineffective(self, min_uses: int) -> list[Learning]:
+        self._record("list_ineffective", min_uses)
+        return [_learning(14)]
+
+    async def mark_anti_pattern(
+        self, learning_id: int, confidence_floor: float, *, org_id: str = ""
+    ) -> bool:
+        self._record("mark_anti_pattern", learning_id, confidence_floor, org_id=org_id)
+        return True
+
+    async def advance_stage(
+        self,
+        learning_id: int,
+        *,
+        to_stage: LearningStage,
+        actor: str,
+        reason: str = "",
+        org_id: str = "",
+        authority: Actor = Actor.AGENT,
+    ) -> Learning:
+        self._record(
+            "advance_stage",
+            learning_id,
+            to_stage=to_stage,
+            actor=actor,
+            reason=reason,
+            org_id=org_id,
+            authority=authority,
+        )
+        return _learning(14)
+
+    async def stage_history(self, learning_id: int, *, org_id: str = "") -> list[StageTransition]:
+        self._record("stage_history", learning_id, org_id=org_id)
+        return [
+            StageTransition(
+                learning_id=learning_id,
+                org_id=org_id,
+                from_stage=LearningStage.VALIDATED,
+                to_stage=LearningStage.REPERTOIRE,
+                actor="curator",
+            )
+        ]
 
 
 class _Embeddings:
@@ -136,10 +213,52 @@ async def test_mark_outcome_forwards_the_org_it_was_scoped_to(wrapped) -> None:
 async def test_check_auto_promotions_forwards_and_returns(wrapped) -> None:
     hybrid, store = wrapped
 
-    promoted = await hybrid.check_auto_promotions(3, org_id="org-1")
+    promoted = await hybrid.check_auto_promotions(3, org_id="org-1", min_confidence=0.9)
 
-    assert store.calls == [("check_auto_promotions", (3,), {"org_id": "org-1"})]
+    assert store.calls == [
+        ("check_auto_promotions", (3,), {"org_id": "org-1", "min_confidence": 0.9})
+    ]
     assert [item.id for item in promoted] == [11]
+
+
+async def test_promote_learning_forwards_the_whole_validation_verdict(wrapped) -> None:
+    """The Gauntlet's promotion seam (M4-B2): every verdict field arrives intact.
+
+    A hand-written delegation that dropped or reordered a keyword would write a
+    promoted learning whose provenance says nothing about the trials that earned
+    it — exactly the failure the acceptance criteria forbid — so the wrapper is
+    held to forwarding all seven arguments verbatim and returning what it got.
+    """
+    hybrid, store = wrapped
+    validated_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    store.promoted = _learning(11)
+
+    promoted = await hybrid.promote_learning(
+        11,
+        org_id="org-1",
+        validated_by="independent-trials",
+        evaluator_version="1.4.2",
+        validated_at=validated_at,
+        validation_run_ids=("run-eval-1", "run-eval-2"),
+        validation_content_hash="deadbeef",
+    )
+
+    assert promoted is not None
+    assert promoted.id == 11
+    assert store.calls == [
+        (
+            "promote_learning",
+            (11,),
+            {
+                "org_id": "org-1",
+                "validated_by": "independent-trials",
+                "evaluator_version": "1.4.2",
+                "validated_at": validated_at,
+                "validation_run_ids": ("run-eval-1", "run-eval-2"),
+                "validation_content_hash": "deadbeef",
+            },
+        )
+    ]
 
 
 async def test_get_promoted_forwards_and_returns(wrapped) -> None:
@@ -166,6 +285,71 @@ async def test_list_all_forwards_positionally_and_returns(wrapped) -> None:
 
     assert store.calls == [("list_all", ("org-1", 5), {})]
     assert [item.id for item in listed] == [13]
+
+
+async def test_list_ineffective_forwards_the_threshold_and_returns(wrapped) -> None:
+    """The #121 capture sweep's read goes to the durable twin it was handed,
+    not to some in-memory side channel -- the twin is the store that survives
+    the process, so it is the one whose ineffective rows answer."""
+    hybrid, store = wrapped
+
+    ineffective = await hybrid.list_ineffective(3)
+
+    assert store.calls == [("list_ineffective", (3,), {})]
+    assert [item.id for item in ineffective] == [14]
+
+
+async def test_mark_anti_pattern_forwards_id_floor_and_org(wrapped) -> None:
+    """`org_id` binds the reclassification: dropping it on the way through
+    would let a guessed id from another scope be reclassified."""
+    hybrid, store = wrapped
+
+    assert await hybrid.mark_anti_pattern(9, 0.6, org_id="org-9") is True
+
+    assert store.calls == [("mark_anti_pattern", (9, 0.6), {"org_id": "org-9"})]
+
+
+async def test_advance_stage_forwards_the_whole_ladder_call(wrapped) -> None:
+    """The ladder call is keyword-only downstream; dropping one of the six
+    arguments here would silently move the wrong rung, lose the actor the
+    audit ledger exists to record, or flatten the ADR-057 principal to the
+    default instead of the caller's authority (#390)."""
+    hybrid, store = wrapped
+
+    advanced = await hybrid.advance_stage(
+        9,
+        to_stage=LearningStage.VALIDATED,
+        actor="gauntlet-7",
+        reason="passed",
+        org_id="org-1",
+        authority=Actor.SYSTEM,
+    )
+
+    assert store.calls == [
+        (
+            "advance_stage",
+            (9,),
+            {
+                "to_stage": LearningStage.VALIDATED,
+                "actor": "gauntlet-7",
+                "reason": "passed",
+                "org_id": "org-1",
+                "authority": Actor.SYSTEM,
+            },
+        )
+    ]
+    assert advanced.id == 14
+
+
+async def test_stage_history_forwards_the_org_it_was_scoped_to(wrapped) -> None:
+    """The audit read scopes exactly like every other read (#117); a dropped
+    org_id would let one tenant read another tenant's provenance."""
+    hybrid, store = wrapped
+
+    history = await hybrid.stage_history(9, org_id="org-1")
+
+    assert store.calls == [("stage_history", (9,), {"org_id": "org-1"})]
+    assert [row.to_stage for row in history] == [LearningStage.REPERTOIRE]
 
 
 # --- the merge bound -------------------------------------------------------

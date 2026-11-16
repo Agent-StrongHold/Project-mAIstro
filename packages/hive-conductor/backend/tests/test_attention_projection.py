@@ -25,6 +25,7 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 _NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 
@@ -51,6 +52,7 @@ def _paused_record(
         workspace_id=workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if created_at is not None:
         run = run.model_copy(update={"created_at": created_at})
@@ -93,18 +95,43 @@ async def _workspace(owner: str, name: str) -> str:
 
 
 @pytest.fixture
-def run_store():
-    from services.dag_agents import get_run_store
+def run_store(monkeypatch):
+    """Document-shaped historical records are explicit read-only test input."""
+    from services import dag_agents
 
-    store = get_run_store()
-    before = set(store._rows)
-    yield store
-    for run_id in set(store._rows) - before:
-        store._rows.pop(run_id, None)
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
+    return store
 
 
 def _ids(body: dict[str, Any]) -> list[str]:
     return [item["source_id"] for item in body["items"]]
+
+
+async def test_attention_answers_when_the_hitl_spine_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone / e2e Conductor has no graph spine — Attention must still 200.
+
+    HITL pauses are unavailable (honest flag); failed-Run projections may still
+    populate. A missing spine must not turn the Attention door into a 500.
+    """
+    from services import dag_agents
+    from services.dag_agents import CanonicalGraphUnavailable
+
+    def _refuse() -> None:
+        raise CanonicalGraphUnavailable("canonical graph execution spine is unavailable")
+
+    monkeypatch.setattr(dag_agents, "get_run_store", _refuse)
+    ws = await _workspace("admin", "Attention standalone")
+    body = await list_attention("admin", ws, now=_NOW)
+    assert body is not None
+    assert body["workspace_id"] == ws
+    assert body["items"] == []
+    assert body["summary"]["hitl_unavailable"] is True
+    assert body["summary"]["truncated"] is False
 
 
 async def test_each_member_sees_only_their_own_workspace(run_store) -> None:
@@ -120,6 +147,7 @@ async def test_each_member_sees_only_their_own_workspace(run_store) -> None:
     assert _ids(admin_view) == ["att-admin/ask"]
     assert _ids(user_view) == ["att-user/ask"]
     assert admin_view["items"][0]["workspace_id"] == ws_admin
+    assert admin_view["summary"]["hitl_unavailable"] is False
     # A non-member gets exactly what a Workspace that does not exist gets.
     assert await list_attention("user", ws_admin, now=_NOW) is None
     assert await list_attention("user", "ws-does-not-exist", now=_NOW) is None
@@ -161,6 +189,8 @@ async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> 
         "highest_class": "time_sensitive",
         "rising": ["att-due/ask"],
         "truncated": False,
+        "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
 
     # The horizon is configurable, and widening it is the only thing that
@@ -221,6 +251,8 @@ async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> 
         "highest_class": "time_sensitive",
         "rising": ["att-urgent/ask"],
         "truncated": True,
+        "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
 
 
@@ -296,7 +328,107 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
         "highest_class": None,
         "rising": [],
         "truncated": False,
+        "hitl_unavailable": False,
+        "dismissed_count": 0,
     }
+
+
+async def test_attention_finds_the_workspace_pause_behind_a_full_page_of_foreign_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #1109 repair's Attention regression: Workspace-wide, behind one
+    full walk page of other tenants' human pauses, this Workspace's pause is
+    still found and `truncated` stays False. Driven against the canonical
+    store, where Workspace scope filters the assembled page — the shape that
+    read as an empty projection page and a false "ran out" before the
+    repair. `MAX_PENDING_SCAN_RECORDS` is pulled down to the page size so the
+    foreign prefix is a full page at Attention's own limit; without the
+    repair the walk answered empty here and called it complete."""
+    from services import attention as attention_module
+    from services import dag_agents
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.graph.durable_runs.continuation import InMemoryGraphContinuationStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    spine = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(spine, continuations)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    monkeypatch.setattr(attention_module, "MAX_PENDING_SCAN_RECORDS", 100)
+
+    ws = await _workspace("admin", "Attention behind foreign page")
+    foreign_ws = await _workspace("someone-else", "Attention foreign page")
+    own_project = (await projects.create_root(ws)).project_id
+    foreign_project = (await projects.create_root(foreign_ws)).project_id
+
+    async def _plant_canonical_pause(run_id: str, *, workspace_id: str, project_id: str) -> str:
+        """One human-paused Run on the canonical spine, projected beside it."""
+        from maistro.graph.durable_runs.continuation import GraphContinuation
+
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="attention",
+            nodes=[Node(node_id="ask", node_type="human.ask_question")],
+        )
+        admitted = await spine.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await spine.transition_run(admitted.run_id, RunStatus.RUNNING)
+        await spine.transition_run(admitted.run_id, RunStatus.PAUSED)
+        node_run = await spine.create_node_run(admitted.run_id, node_id="ask")
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        await spine.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+        run = await spine.get_run(admitted.run_id)
+        assert run is not None
+        node_runs = tuple(await spine.list_node_runs(admitted.run_id))
+        state = GraphExecutionState(
+            run_id=admitted.run_id,
+            active_node_ids=("ask",),
+            blackboard_snapshot={},
+            metadata={
+                "initial_inputs": {},
+                "hitl_answers": {},
+                "pauses": {
+                    "ask": {
+                        "kind": "hitl",
+                        "metadata": {
+                            "paused_reason": PAUSE_AWAITING_HUMAN_ANSWER,
+                            "question": f"{run_id}?",
+                        },
+                        "resume_at": None,
+                    }
+                },
+            },
+        )
+        await continuations.create(
+            GraphContinuation.of(
+                DurableRunRecord(run=run, graph_state=state, node_runs=node_runs, version=1)
+            )
+        )
+        return admitted.run_id
+
+    for index in range(100):
+        await _plant_canonical_pause(
+            f"att-foreign-{index:03d}",
+            workspace_id=foreign_ws,
+            project_id=foreign_project,
+        )
+    mine_run_id = await _plant_canonical_pause(
+        "att-behind", workspace_id=ws, project_id=own_project
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert _ids(body) == [f"{mine_run_id}/ask"]
+    assert body["summary"]["truncated"] is False
 
 
 async def test_listing_attention_writes_nothing(run_store) -> None:
@@ -333,7 +465,9 @@ async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyP
         name="failing",
         nodes=[Node(node_id="only", node_type="transform.alias_keys")],
     )
-    run = await container.run_store.create_run(graph)
+    run = await container.run_store.create_run(
+        graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await container.run_store.transition_run(run.run_id, status)
     await container.run_store.transition_run(
@@ -393,3 +527,178 @@ async def test_route_scopes_attention_to_members(admin_client, authed_client, ru
     # which Workspaces exist.
     unscoped_missing = authed_client.get("/v1/workspaces/ws-no-such-thing/attention")
     assert unscoped_missing.status_code == 403
+
+
+async def test_dismiss_hides_item_and_counts_preference(run_store) -> None:
+    """#1049: defer/dismiss is preference evidence — GET filters the source id
+    and reports dismissed_count; another Workspace is unaffected."""
+    from services.attention import clear_dismissal, list_attention, record_dismissal
+
+    ws = await _workspace("admin", "Attention dismiss")
+    other = await _workspace("admin", "Attention dismiss other")
+    await run_store.create(_paused_record("att-keep", workspace_id=ws))
+    await run_store.create(_paused_record("att-hide", workspace_id=ws))
+    await run_store.create(_paused_record("att-other-ws", workspace_id=other))
+
+    record_dismissal(ws, "hitl_node_run", "att-hide/ask", actor="admin", action="dismiss")
+
+    body = await list_attention("admin", ws, now=_NOW)
+    assert body is not None
+    assert _ids(body) == ["att-keep/ask"]
+    assert body["summary"]["dismissed_count"] == 1
+
+    # Same source id in another Workspace is not filtered by this preference.
+    other_body = await list_attention("admin", other, now=_NOW)
+    assert other_body is not None
+    assert _ids(other_body) == ["att-other-ws/ask"]
+    assert other_body["summary"]["dismissed_count"] == 0
+
+    clear_dismissal(ws, "hitl_node_run", "att-hide/ask")
+    restored = await list_attention("admin", ws, now=_NOW)
+    assert restored is not None
+    assert set(_ids(restored)) == {"att-keep/ask", "att-hide/ask"}
+    assert restored["summary"]["dismissed_count"] == 0
+
+
+async def test_defer_and_dismiss_routes_are_member_scoped(
+    admin_client, authed_client, run_store
+) -> None:
+    """POST/DELETE dismiss require membership + dags.write like GET."""
+    from services.attention import dismissal_store
+
+    ws_admin = await _workspace("admin", "Attention dismiss route")
+    ws_user = await _workspace("user", "Attention dismiss route user")
+    await run_store.create(_paused_record("att-dismiss-route", workspace_id=ws_admin))
+
+    ok = admin_client.post(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        json={
+            "sourceKind": "hitl_node_run",
+            "sourceId": "att-dismiss-route/ask",
+            "action": "defer",
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["ok"] is True
+    assert ok.json()["action"] == "defer"
+
+    filtered = admin_client.get(f"/v1/workspaces/{ws_admin}/attention")
+    assert filtered.status_code == 200
+    assert "att-dismiss-route/ask" not in _ids(filtered.json())
+    assert filtered.json()["summary"]["dismissed_count"] == 1
+
+    foreign = admin_client.post(
+        f"/v1/workspaces/{ws_user}/attention/dismiss",
+        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+    )
+    missing = admin_client.post(
+        "/v1/workspaces/ws-no-such-thing/attention/dismiss",
+        json={"sourceKind": "hitl", "sourceId": "x", "action": "dismiss"},
+    )
+    assert foreign.status_code == missing.status_code == 404
+
+    unscoped = authed_client.post(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        json={"sourceKind": "hitl_node_run", "sourceId": "x", "action": "dismiss"},
+    )
+    assert unscoped.status_code == 403
+    assert "dags.write" in unscoped.json()["detail"]
+
+    cleared = admin_client.delete(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "att-dismiss-route/ask"},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["cleared"] is True
+    # Preference row gone from the JsonStore.
+    leftover = f"{ws_admin}:hitl_node_run:att-dismiss-route/ask"
+    assert leftover not in dismissal_store
+
+    # DELETE carries the same dags.write + membership gates as POST (not the
+    # middleware workspaces.write gate — Attention dismiss is preference
+    # evidence, exempted like Home adaptive dismiss).
+    unscoped_del = authed_client.delete(
+        f"/v1/workspaces/{ws_admin}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    assert unscoped_del.status_code == 403
+    assert "dags.write" in unscoped_del.json()["detail"]
+    foreign_del = admin_client.delete(
+        f"/v1/workspaces/{ws_user}/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    missing_del = admin_client.delete(
+        "/v1/workspaces/ws-no-such-thing/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    assert foreign_del.status_code == missing_del.status_code == 404
+
+
+async def test_dismiss_route_maps_value_error_to_400(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pydantic usually blocks blank ids; a service ValueError still becomes 400."""
+    from routes import attention as attention_routes
+
+    ws = await _workspace("admin", "Attention dismiss value-error")
+
+    def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise ValueError("action must be dismiss or defer")
+
+    # Route binds the symbol at import time — patch the routes module.
+    monkeypatch.setattr(attention_routes, "record_dismissal", _boom)
+    refused = admin_client.post(
+        f"/v1/workspaces/{ws}/attention/dismiss",
+        json={
+            "sourceKind": "hitl_node_run",
+            "sourceId": "att-ve/ask",
+            "action": "dismiss",
+        },
+    )
+    assert refused.status_code == 400
+    assert "dismiss or defer" in refused.json()["detail"]
+
+
+def test_dismissal_helpers_reject_blank_ids_and_unknown_actions() -> None:
+    from services.attention import (
+        clear_dismissal,
+        dismissal_store,
+        dismissed_source_ids,
+        record_dismissal,
+    )
+
+    with pytest.raises(ValueError, match="source_kind and source_id"):
+        record_dismissal("ws-blank", "", "sid", actor="admin")
+    with pytest.raises(ValueError, match="source_kind and source_id"):
+        record_dismissal("ws-blank", "kind", "", actor="admin")
+    with pytest.raises(ValueError, match="dismiss or defer"):
+        record_dismissal("ws-blank", "kind", "sid", actor="admin", action="snooze")
+
+    assert clear_dismissal("ws-absent", "kind", "sid") is False
+
+    # Incomplete store rows are ignored — they never mint a filter key.
+    dismissal_store["ws-skip:hitl_node_run:broken"] = {
+        "source_kind": "",
+        "source_id": "broken",
+    }
+    dismissal_store["ws-skip:not-a-dict"] = "noise"
+    try:
+        assert dismissed_source_ids("ws-skip") == set()
+    finally:
+        dismissal_store.pop("ws-skip:hitl_node_run:broken", None)
+        dismissal_store.pop("ws-skip:not-a-dict", None)
+
+
+async def test_include_dismissed_keeps_items_and_counts(run_store) -> None:
+    """``include_dismissed=True`` leaves items visible but still counts them."""
+    from services.attention import list_attention, record_dismissal
+
+    ws = await _workspace("admin", "Attention include dismissed")
+    await run_store.create(_paused_record("att-keep-inc", workspace_id=ws))
+    await run_store.create(_paused_record("att-hide-inc", workspace_id=ws))
+    record_dismissal(ws, "hitl_node_run", "att-hide-inc/ask", actor="admin")
+
+    body = await list_attention("admin", ws, now=_NOW, include_dismissed=True)
+    assert body is not None
+    assert set(_ids(body)) == {"att-keep-inc/ask", "att-hide-inc/ask"}
+    assert body["summary"]["dismissed_count"] == 1

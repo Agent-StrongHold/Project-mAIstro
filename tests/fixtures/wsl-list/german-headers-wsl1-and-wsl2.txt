@@ -1,0 +1,3 @@
+  NAME            STATUS          VERSION
+* Ubuntu          Läuft           2
+  Debian          Gestoppt        1
