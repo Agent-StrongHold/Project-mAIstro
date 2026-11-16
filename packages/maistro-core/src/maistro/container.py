@@ -1442,14 +1442,16 @@ class Container:
     async def _latest_reconcilable_completed_attempt(
         self, node_run_id: str, *, moment: datetime
     ) -> Attempt | None:
-        """The latest COMPLETED Attempt of this NodeRun, if recovery may settle it.
+        """The latest recoverable terminal Attempt, if the sweep may replay it.
 
         A terminal Attempt a crash interrupted is recoverable only when no
         sibling Attempt still executes the NodeRun under an unexpired lease --
         otherwise this sweep would overwrite an outcome a live walker is about
-        to write itself.
+        to write itself. Completed Attempts carry accepted physical evidence;
+        reclaimed Attempts carry the recovery marker and need their logical
+        park replayed if a process died between the two durable writes.
         """
-        from maistro.runs.lifecycle import has_live_execution_lease
+        from maistro.runs.lifecycle import has_live_execution_lease, is_reclaimed_attempt
 
         attempts = await self.run_store.list_attempts(node_run_id)
         if has_live_execution_lease(attempts, moment):
@@ -1458,7 +1460,7 @@ class Container:
             (
                 attempt
                 for attempt in reversed(attempts)
-                if attempt.status is AttemptStatus.COMPLETED
+                if attempt.status is AttemptStatus.COMPLETED or is_reclaimed_attempt(attempt)
             ),
             None,
         )
@@ -1558,12 +1560,13 @@ class Container:
         reconciled = await reconciler.reconcile(attempt)
         after_run = await self.run_store.get_run(before_node.run_id)
         accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
+        node_disposition = before_node.status is not reconciled.status
         settled = (
             before_run.status not in TERMINAL_RUN_STATUSES
             and after_run is not None
             and after_run.status in TERMINAL_RUN_STATUSES
         )
-        return accepted or settled
+        return accepted or node_disposition or settled
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100

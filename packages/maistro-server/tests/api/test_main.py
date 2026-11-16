@@ -201,6 +201,38 @@ class TestLifespan:
         assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
 
     @pytest.mark.contract("behavioral")
+    async def test_lifespan_starts_and_stops_abandoned_attempt_recovery(self) -> None:
+        """The process that creates leased task Attempts also runs their sweep."""
+        from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL
+
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        mock_runner = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner) as task_runner,
+            patch("maistro_server.main.start_abandoned_attempt_recovery") as start_recovery,
+            patch(
+                "maistro_server.main.stop_abandoned_attempt_recovery",
+                new_callable=AsyncMock,
+            ) as stop_recovery,
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                container = test_app.state.container
+                start_recovery.assert_called_once_with(container)
+                executor = task_runner.call_args.kwargs["attempts"]
+                assert executor._lease_ttl == DEFAULT_TASK_LEASE_TTL
+
+        stop_recovery.assert_awaited_once()
+
+    @pytest.mark.contract("behavioral")
     async def test_shutdown_survives_a_missing_sandbox_extra(self) -> None:
         """A deployment without maistro-core's `[llm]` extra still shuts down.
 
