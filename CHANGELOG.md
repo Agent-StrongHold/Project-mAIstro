@@ -619,6 +619,12 @@ or placeholder-only section.
 
 ### Changed
 
+- **Supply-chain floors raised above four new advisories (#2059).** The frozen
+  lock now resolves dnspython ≥ 2.9.2 (CVE-2026-128089), graphql-core ≥ 3.3.1
+  (CVE-2026-119286), joserfc ≥ 1.7.6 (CVE-2026-119284) and opentelemetry-api
+  ≥ 1.45.2 (CVE-2026-126360); every advisory has a released fix, so none is
+  allowlist-triaged. The pip-audit gate verdict is unchanged.
+
 - **Vulture scans have one owner per existing event profile (#1357).** The
   required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
   Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,

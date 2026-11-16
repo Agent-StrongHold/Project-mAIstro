@@ -12,7 +12,8 @@ dependencies = [
     # Tool Protocol
     "fastmcp>=3.2.0",
     # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
-    "opentelemetry-api>=1.30",
+    # Floor follows the pip-audit gate: CVE-2026-126360 is fixed in 1.45.2.
+    "opentelemetry-api>=1.45.2",
     # Database
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",
@@ -261,7 +262,13 @@ constraint-dependencies = [
     # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
     # direct production pin — floors keep the frozen dev env above the advisories.
     "authlib>=1.9.1",
-    "dnspython>=2.9.0",
+    # Same shape again (pip-audit gate, 2026-11-16, #2059 CI-repair round):
+    # dnspython CVE-2026-128089 is fixed in 2.9.2; graphql-core CVE-2026-119286
+    # (still via moto[server]) in 3.3.1; joserfc CVE-2026-119284 (transitive via
+    # authlib / fastmcp-slim) in 1.7.6. None is a new direct production pin.
+    "dnspython>=2.9.2",
+    "graphql-core>=3.3.1",
+    "joserfc>=1.7.6",
 ]
 
 [tool.ruff]
