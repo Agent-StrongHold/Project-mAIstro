@@ -2041,6 +2041,22 @@ or placeholder-only section.
 
 ### Dependencies
 
+- **Trivy-advisory refresh in the research image venv (#2303 CI repair).**
+  The maistro-engine-research Trivy scan (merge-queue job 133112186114 at
+  58cc1eb) flagged 13 HIGH advisories with fixed releases available that the
+  trivy DB gained after develop's own 2026-11-08 run passed the same scan:
+  `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1` 0.6.4 → 0.6.5
+  (CVE-2026-119194/-119195/-119196/-119197), `pypdf` 6.21.2 → 7.1.0
+  (CVE-2026-119203 … CVE-2026-119209, eight findings fixed in 6.21.3/6.21.4)
+  and `soupsieve` 3.0.3 → 4.1.1 (CVE-2026-126190, fixed in 4.0.0). All four
+  are transitive dependencies (browser-use, beautifulsoup4, pyasn1-modules,
+  requests-oauthlib) with no manifest constraint to raise — pure `uv.lock`
+  moves under existing resolution constraints. Proven with CI's exact trivy
+  invocation (`--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+  --ignorefile .trivyignore.yaml`, trivy 0.73.0) on a rebuilt research image:
+  exit 0, zero findings. The pip-audit gate (its DB lags trivy on these four)
+  still passes with only the triaged ecdsa advisory.
+
 - **Pip-audit-advisory refresh across the lock and the engine docker CLI
   (#2303 CI repair).** The supply-chain gate and the maistro-engine Trivy scan
   both failed on advisories with fixed releases available. `uv.lock` moves
