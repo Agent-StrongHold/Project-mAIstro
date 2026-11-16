@@ -327,3 +327,65 @@ runner measures the same corpus with the same pg18 service; a flaky
 `ac`-marked test would show as a regression against the just-banked floor).
 Pushing is out of scope for a repair attempt.
 
+## Eighth verification round (2026-11-16, head c82361149bcb = current HEAD)
+
+Prior round's worker died to the wall-clock deadline AFTER its full driver
+battery returned 0 at this exact head (nine check logs: uv sync rc=0,
+ruff check rc=0, ruff format rc=0, targeted server/canvas/core pytest
+299 passed / 91 skipped, hive battery 199 passed, four suite-inventory
+gates ok). It left only the documented untracked scratch. Independent
+re-execution at this head, without inheriting any prior round's claims:
+
+- Issue test plan, re-run in full at HEAD: `scripts/check-principal-identity.py`
+  ok — 4 tolerated → 0 current, none new (baseline resolves to base
+  f8a2df966a1d); `pytest fitness/test_principal_identity.py` +
+  `server/api/test_auth.py` — 39 passed; `pytest
+  hive/backend/tests/test_username_registry.py` — 24 passed; the branch's
+  own additions pass by node id (3 canvas foreign-org guards;
+  `test_auth_off_admits_a_dev_principal`).
+- Vulture ledger with CI's exact args: 1238 reviewed identities → 1238
+  findings, 0 unbanked, rc=0.
+- Mutation gate re-derived from source, not transferred:
+  `mutation_critical.py --validate` ok (8 critical sources); CI's exact
+  target resolution regenerated (`git diff --name-only
+  origin/develop...HEAD -- packages --diff-filter=ACMR` →
+  `--changed-from`) and is byte-identical to the untracked
+  `changed-py.txt` / `mutation-targets.tsv` — sole target
+  `maistro/privilege.py` → `packages/maistro-core/tests`; the trusted
+  merge-base baseline (`git show f8a2df966a1d:quality/mutation-baseline.json`)
+  has `entries: {}`, and `scripts/mutation_pr_gate.py` (lines 303–324)
+  makes an unbaselined source "report-only" — the gate cannot fail this
+  PR. `git merge-base --is-ancestor origin/develop HEAD` confirmed.
+- Acceptance-claim greps at HEAD: no `class AuthenticatedPrincipal` /
+  `CurrentUser` / `HiveUser` / `_SubsystemIdentity` definition remains
+  under `packages/*/src` or `packages/hive-conductor/backend`;
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`;
+  `hive routes/capabilities.py` resolves the approval actor via
+  `request_principal(request)` / `principal_has_permission(principal,
+  "approvals.resolve")` (lines 299–318).
+- The last commit's AC-state note is committed and readable
+  (`quality/ac-state-notes/feat-cutover-p0-1-principal-final.json`:
+  design_coverage 44.4608, measured_with_tests true); only that JSON and
+  this note changed since 644f5a084, so the fifth round's local
+  diff-coverage reproduction (17 changed measured files ≥90% lines /
+  ≥80% branch arcs) still describes HEAD's changed source set.
+- Stale-CI reconciliation (dispatch evidence for pushed head 0429476fddef,
+  all runs 2026-10-26): the named RED gates' most recent recorded results
+  are success — Coverage gate ×2, Quality gate (Pillars) at 11:50:17,
+  Quality / Ruff ×2, Quality / Principal identity ×2; the 11:32/11:51
+  failures completed in ≤6 s (aggregator re-run against cancelled
+  siblings — infra, not findings). SAST: Bandit + Gitleaks succeeded;
+  Semgrep was twice *cancelled* by concurrency, which alone fails the
+  combined "SAST (bandit + semgrep + gitleaks)" require-step; local
+  semgrep with the repo's `tools/semgrep/maistro-rules.yaml` over the
+  branch's changed trees (privilege, server, canvas, hive backend):
+  245 files, 0 findings. Mutation gate: report-only as derived above.
+  No CI run exists yet on content containing develop f8a2df966 + the
+  seven later commits; that push is the integration reviewer's act.
+- Salvage resolution re-confirmed: the untracked scratch is a byte
+  replica of the workflow's own steps (`changed-py.txt` regenerated this
+  round, diff-identical; `trusted-mutation-baseline.json` content
+  identical to the merge-base baseline); it stays untracked.
+
+No code changes in this round; evidence-only verification.
+
