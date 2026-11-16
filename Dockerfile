@@ -23,7 +23,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -127,16 +127,29 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
 # the exact same immutable release tag ourselves on the patched toolchain --
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
-# tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
+# tag resolves to 5457199; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+# Tag moved to v29.10.0-rc.2 (2026-11-16 containers-gate repair, PR #2264).
+# Measured against the freshly built v29.9.1 binary with trivy 0.73.0 and this
+# job's exact flags, the vendored tree carried two HIGH findings with fixes
+# available: github.com/go-jose/go-jose/v4 v4.1.5 (CVE-2026-116587, DoS via
+# crafted JOSE payloads, fixed v4.1.6) and golang.org/x/net v0.60.0
+# (CVE-2026-78661, DoS via crafted HTML input, fixed v0.62.0). The latest
+# patch release v29.9.3 vendors go-jose v4.1.7 but STILL x/net v0.60.0 —
+# re-scanned locally, the x/net HIGH survives it — so no stable tag vendors
+# both fixes. v29.10.0-rc.2 is the earliest upstream tag whose vendor tree
+# has go-jose v4.1.7 AND x/net v0.62.0, and building an exact upstream tag
+# beats patching one dependency into v29.9.3's vendored tree (the commit
+# assertion below exists precisely to guarantee no divergence from the
+# pinned ref). Revise to the v29.10.0 final when it ships.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG DOCKER_CLI_VERSION=29.10.0-rc.2
+ARG DOCKER_CLI_COMMIT_SHORT=eaae503
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
@@ -169,7 +182,7 @@ RUN apk add --no-cache git && \
 # mirror; release.yml builds cold and needs no flag. The 2026-10-22
 # base-digest bump (#1152) additionally invalidated the previously cached
 # apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
