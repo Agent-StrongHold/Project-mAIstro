@@ -93,7 +93,7 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
     """The retirement itself, asserted against the real corpus.
 
-    ADR-092126-a28a removed the line from all 91 documents that had one. This
+    ADR-092126-a28a removed the line from all 93 documents that had one. This
     is the test that fails if any comes back — including via a merge that
     reinstates an old revision, which no per-document test would notice.
     """
