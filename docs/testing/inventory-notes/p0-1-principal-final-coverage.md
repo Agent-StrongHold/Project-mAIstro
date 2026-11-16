@@ -159,3 +159,67 @@ returned 0. Independent re-execution on the same head:
 - `git merge-base --is-ancestor origin/develop HEAD`: confirmed
 
 No code changes in this round; evidence-only verification.
+
+## Fifth verification round (2026-11-16, head 644f5a084ef2, this worktree's HEAD)
+
+Prior round's worker died to a provider error after its full driver battery
+returned 0 on this exact head (its nine check logs: uv sync, ruff check,
+ruff format, targeted server/canvas/core pytest 299 passed / 91 skipped,
+hive battery 199 passed, four suite-inventory gates ok). Independent
+re-execution, all on this head:
+
+- Issue test plan, re-run in full: `scripts/check-principal-identity.py`
+  ok — 4 tolerated → 0 current, none new, base f8a2df966a1d (plain and with
+  CI's `RATCHET_BASE_REV=origin/develop`, identical result);
+  `pytest packages/maistro-core/tests/fitness/test_principal_identity.py
+  packages/maistro-server/tests/api/test_auth.py` — 39 passed;
+  `pytest packages/hive-conductor/backend/tests/test_username_registry.py
+  packages/hive-conductor/backend/tests/test_registration_policy.py` —
+  81 passed (the throttle-decoupled race included, no 429s observed).
+- Acceptance-claim greps on reachable production code:
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`; no
+  `AuthenticatedPrincipal` / `CurrentUser` / `HiveUser` /
+  `_SubsystemIdentity` class definitions remain under `packages/*/src` or
+  `packages/hive-conductor/backend` (one historical comment mention in
+  `maistro/container.py`); `hive routes/capabilities.py` resolves the
+  approval actor via `request_principal(request)` /
+  `principal_has_permission(principal, "approvals.resolve")` — the nested
+  `state.user` read is gone (documented in-file at lines 297–302).
+- Diff-coverage gate reproduced at THIS head, not transferred: branch
+  coverage runs of the four producers that cover the 17 changed measured
+  source files — server suite (1 timing-flake failure in
+  `test_sigterm_shutdown.py::...test_stop_destroys_seeded_sandbox_and_restart_is_clean`,
+  passes in isolation without coverage; file last touched by develop
+  #2143, not this branch; 660 passed otherwise), canvas suite 587 passed,
+  full hive suite 4165 passed, privilege/fitness/escape core selections
+  29 passed; combined, then `scripts/check-diff-coverage.py coverage.xml
+  --base f8a2df966a1d`: ok — every measured file ≥90% lines / ≥80% branch
+  arcs, exit 0. The publish-set 87% floor still requires CI's
+  multi-producer combine (PostgreSQL/MinIO producers included).
+- Mutation gate re-proven with CI's exact commands:
+  `mutation_critical.py --validate` ok (8 critical sources);
+  `git diff --name-only origin/develop...HEAD -- packages
+  --diff-filter=ACMR` + `mutation_critical.py --changed-from` resolves the
+  sole target `maistro/privilege.py` → `packages/maistro-core/tests`,
+  byte-identical to the worktree's untracked `mutation-targets.tsv`; the
+  trusted merge-base baseline (`git show
+  f8a2df966a1d:quality/mutation-baseline.json`) has `entries: {}`, and
+  `scripts/mutation_pr_gate.py` marks an unbaselined source report-only
+  (lines 303–324: it "can neither pass nor fail"), so the gate cannot fail
+  this PR. The scratch artifacts are confirmed byte-identical replicas of
+  this workflow's own steps and stay untracked.
+- Vulture ledger with CI's exact args: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — exit 0,
+  1238 reviewed identities → 1238 findings, 0 unbanked.
+- `uv run ruff check .`: All checks passed! · `uv run ruff format --check
+  .`: 3561 files already formatted.
+- CI state on the pushed PR head 0429476fddef (dispatch evidence): every
+  quality.yml check success including "Quality / Principal identity",
+  "Coverage gate (publish-set floor + diff coverage)", "Quality gate
+  (Pillars 1–4, 7, 8)", and the second SAST run (Bandit/Gitleaks success);
+  that head merged develop up to 78133c093, while this worktree's HEAD
+  merges the newer develop tip f8a2df966 — CI has not yet run on content
+  containing f8a2df966, which the next push will cover. Pushing remains
+  out of scope for a repair attempt.
+
+No code changes in this round; evidence-only verification.
