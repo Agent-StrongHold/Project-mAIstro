@@ -183,3 +183,62 @@ at this exact head" fails on the base-inherited pip-audit advisories and dozens 
 still pending. Declared limits unchanged: real Windows PowerShell 5.1/7 policy enforcement, UAC
 elevation and reboot RunOnce resume remain unverified (no Windows host; release-installer
 workflow runs on tags/manual dispatch, not PRs).
+
+## Deep-review round 3 re-validation at f906f8519 (job be02a9fb2ba4)
+
+Head delta vs round-2's 34b24e8ca is docs-only (this file, +71 lines); worktree clean at the
+assigned head f906f8519327eb9157fed8a8c567b4091baae14f; base f8a2df966a1d unchanged. All round-2
+evidence re-executed independently at this head and holds:
+
+1. `uv sync --locked --extra dev` ok; `uv run pytest tests/test_get_ps1_wsl_detection.py -v`
+   -> 28 passed, 0 skipped (pwsh 7.4.6 present; test_relaunch_argument_construction really ran
+   the harness, stdout ends "RESULT relaunch-policy ok").
+2. `pwsh -NoProfile -NonInteractive -File tests/installer/run-wsl-detection-e2e.ps1 -PowerShell pwsh`
+   -> "all 23 cases passed" + "RESULT relaunch-policy ok", exit 0.
+3. Regression bite re-proven at this head: harness vs `git show f8a2df966a1d:get.ps1`
+   (Bypass at base lines 377/390) exits 1 "Unexpected elevation arguments"
+   (relaunch_policy_harness.ps1:42); the two static regressions
+   (test_relaunch_functions_do_not_override_execution_policy,
+   test_relaunch_argument_construction) also FAIL against that base file, then the tree was
+   restored (git status clean). Tests bite, not pinned vacuous.
+4. `uv run ruff check .` / `uv run ruff format --check .` exit 0 (3561 files);
+   `uv run python scripts/check-suite-inventory.py` exit 0 — 21 suites match; inventory note
+   (+3) still consistent, no update needed.
+5. gitleaks 8.30.1 (pin verified security.yml:117-118), CI-exact PR form
+   `gitleaks git --redact --log-opts=f8a2df966a1d..f906f8519 .` -> 29 commits, "no leaks
+   found", exit 0. .gitleaksignore #2110 rows (fb322ab x3, de8266eff) are scoped to
+   introducing commit:path:rule:line.
+6. Closure keywords: strict grep over all commit messages in
+   f8a2df966a1d..f906f8519 -> no matches. Range changes no dependency files
+   (`git diff --stat f8a2df966a1d..f906f8519 -- uv.lock '**/pyproject.toml'
+   '**/requirements*.txt'` empty); full changed set is get.ps1, three test files,
+   .gitleaksignore, inventory note, this record.
+7. get.ps1 at head: only the two `-ExecutionPolicy Bypass` tokens removed (elevation +
+   RunOnce); RunAs verb, quoting, passthrough, HKCU RunOnce/MaistroInstallResume destination
+   all asserted unchanged by the harness; .NOTES/.EXAMPLE add fail-closed guidance incl.
+   Get-ExecutionPolicy -List, "session-only ... not sufficient", "do not weaken the policy".
+
+NEW local reproduction of the round-2 live CI failure, CI-exact (security.yml:160-190):
+`uv pip freeze --exclude-editable` -> 223 rows; `uv run pip-audit --strict --format=json`
+attempt 1 produced a usable report (audit exit 1);
+`uv run python scripts/pip_audit_gate.py pip-audit.json` -> exit 1 with 4 advisories outside
+the allowlist: dnspython==2.9.0 CVE-2026-128089 -> 2.9.2; graphql-core==3.3.0 CVE-2026-119286
+-> 3.3.1; joserfc==1.7.5 CVE-2026-119284 -> 1.7.6; opentelemetry-api==1.45.1 CVE-2026-126360
+-> 1.45.2. Because the range changes no dependency files, this is inherited from the develop
+base lockfile, not introduced by this PR. Repair (bump the four deps or justified triage in
+scripts/pip_audit_gate.py) belongs to the PR owner; a verify lane must not rewrite
+dependencies or weaken gates. The historical merge-queue RED list (Compliance registry,
+Container scan, Coverage, Gate C, Quality x4) had SUCCESS runs at 34b24e8ca and those jobs'
+inputs are byte-identical at f906f8519 (docs-only delta).
+
+Live read-only `gh pr view 2110 --json statusCheckRollup` at f906f8519: headRefOid matches the
+assigned head; 18 checks, 0 success / 0 failure / 18 QUEUED (incl. Supply chain, Compliance
+registry, Gate C, Coverage family, Quality family, CI test). Everything queued remains
+UNVERIFIED; never inferred green. isDraft=false — the PR body's "remains draft" line is stale
+claim drift, non-blocking.
+
+Verdict for this round: NEEDS-REPAIR — all issue acceptance criteria are locally proven at the
+assigned head, but the CI-exact Supply chain (pip-audit) gate demonstrably fails on
+base-inherited advisories and the full rollup is queued. Declared limits unchanged: real
+Windows PowerShell 5.1/7 enforcement, UAC elevation, reboot RunOnce resume unverified (no
+Windows host).
