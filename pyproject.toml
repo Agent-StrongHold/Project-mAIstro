@@ -292,6 +292,19 @@ constraint-dependencies = [
     "pyasn1>=0.6.5",
     "pypdf>=6.21.4",
     "soupsieve>=4.0.0",
+    # Two more, grype-only (container gate's Grype cross-check, 2026-11-16,
+    # #2110 CI-repair round): playwright and patchright bundle each library's
+    # browser-driver Node runtime (playwright/driver/node,
+    # patchright/driver/node), and at 1.64.0 / 1.64.1 both bundle Node
+    # 24.21.0, HIGH CVE-2026-106069 and CVE-2026-105483 — grype
+    # `--fail-on high --only-fixed` exits 2 on the research image where
+    # trivy reports nothing for the same node binaries. Playwright 1.65.2
+    # bundles Node 26.13.1; patchright 1.64.4 (its ceiling) bundles Node
+    # 24.22.1 (both verified in-image by the #2251 round-4 build).
+    # browser-use declares neither library version-bounded, so the floors
+    # are constraints here rather than manifest edits.
+    "playwright>=1.65.2",
+    "patchright>=1.64.4",
 ]
 
 [tool.ruff]

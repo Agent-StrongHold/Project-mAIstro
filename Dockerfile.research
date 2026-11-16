@@ -53,7 +53,7 @@
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS builder
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
 
@@ -105,21 +105,23 @@ RUN uv export --locked --package maistro-server \
 # flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
-# Same vendored-module patch as the root Dockerfile's identical stage
-# (#2110 CI-repair round): no released docker/cli tag vendors a patched
-# golang.org/x/net or go-jose (v29.9.3 still ships x/net v0.60.0, checked
-# 2026-11-16), and the trivy gate fails HIGH on CVE-2026-78661 (x/net,
-# fixed v0.62.0) and CVE-2026-116587 (go-jose, fixed v4.1.6) embedded in the
-# docker binary. Patch the modules on the pinned release, re-vendor, compile.
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# Same docker/cli pin as the root Dockerfile's identical stage (#2110
+# CI-repair round): v29.9.1 vendored go-jose v4.1.5, x/net v0.60.0 and
+# klauspost/compress v1.20.1 — CVE-2026-78661 (x/net, fixed v0.62.0) and
+# CVE-2026-116587 (go-jose, fixed v4.1.6) fail the trivy leg while
+# GO-2026-6865 (klauspost/compress, fixed v1.20.2) fails the grype leg.
+# v29.9.3 vendors go-jose v4.1.7 and klauspost/compress v1.20.2; no tag
+# ships x/net ≥ v0.62.0 yet, so the build upgrades that one module in place
+# and re-vendors, then compiles.
+ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get golang.org/x/net@v0.62.0 github.com/go-jose/go-jose/v4@v4.1.6 && \
-    go mod vendor && \
+    go get "${X_NET_MODULE_UPGRADE}" && go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
@@ -134,7 +136,7 @@ RUN apk add --no-cache git && \
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS production-apt
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.

@@ -433,3 +433,81 @@ ruff check ., ruff format --check . — all exit 0 at the exact starting head.
    browser-tool behavior on pypdf 7 stays a hosted e2e concern (the image's
    builder smoke passes: import maistro_server.main + browser-use/playwright
    versions). No closure keywords; no issue-closure action.
+
+## Round 6 (2026-11-16, repair at 884daa62a + pin/lock repair commit): the last red gate
+
+Head d3c793ae074e's only failing required check was `Container scan + SBOM +
+cosign` (run 43845270217, job 133223751128). Fetched the job log (read-only
+API): steps 1–14 all success; **step 15 `Trivy scan maistro-rsi-runner
+(HIGH/CRITICAL only)` failed** — not the npm-audit noise the truncated
+prior-findings excerpt suggested — on
+`workspace/.venv/lib/python3.12/site-packages/temporalio/bridge/Cargo.lock
+(cargo)`: crate `zip` 8.6.0, CVE-2026-115905 CRITICAL (fixed 9.0.5) +
+CVE-2026-115907/115908/115909 HIGH (fixed 9.0.0). temporalio is a root
+dependency (#2143) imported nowhere in-repo; the rsi-runner image is the only
+sync selection that installs it (matches #2251's per-image export greps).
+
+Evidence, all local, CI-exact forms (this worktree):
+
+1. Wheel inspection (PyPI, hash-pinned downloads unpacked): temporalio
+   1.34.0's vendored `temporalio/bridge/Cargo.lock` pins zip **8.6.0**
+   (reproduces the CI finding exactly); 1.35.0 pins 9.1.2, 1.36.1 pins 9.5.1.
+2. Lock repair (bounded): `uv lock --upgrade-package temporalio==1.36.1` —
+   four rows move (temporalio 1.34.0→1.36.1, nexus-rpc 1.4.0→1.5.0 per
+   temporalio's == pin, playwright 1.64.0→1.65.2, patchright 1.64.1→1.64.4);
+   temporalio/nexus-rpc/playwright/patchright rows are **byte-identical** to
+   CI-proven PR #2251 head 6e11a8b50 (conflict-free convergence). OSV: no
+   advisories for temporalio 1.36.1, nexus-rpc 1.5.0, playwright 1.65.2,
+   patchright 1.64.4 (pip-audit surface unchanged-clean).
+3. Grype projection proven locally before CI would have hit it: grype v0.116.0
+   (CI version) on the post-temporalio-fix rsi-runner rebuild exits 2 on
+   CPython-binary CVE-2026-115557 (CRITICAL, fixed 3.12.16; docker run on the
+   pinned base a0f57064 = 3.12.15) — the same class #2251 closed by moving the
+   python bases. Also grype-only: playwright/patchright bundle Node 24.21.0
+   (CVE-2026-106069/105483) in the research image; docker/cli v29.9.1 vendors
+   klauspost/compress v1.20.1 (GO-2026-6865) that only the grype DB carries.
+4. Repairs (mirroring #2251's CI-proven green run 43849992035 today,
+   2026-11-16T10:33→10:53): python bases → `python:3.13.18-slim-bookworm@a5a7017e`
+   and `python:3.12-slim@5e2bdb1b` (docker run verifies 3.13.18 / 3.12.16) in
+   Dockerfile, Dockerfile.research, Dockerfile.rsi-runner,
+   packages/hive-conductor/Dockerfile (+ its identity assert (3,13,16)→(3,13,18)),
+   packages/hive-conductor/tests/Dockerfile, deploy/sbx/template/Dockerfile.tests,
+   scripts/smoke-engine-canvas.sh; docker/cli stage v29.9.1+two-patches →
+   #2251's v29.9.3 (5457199) + single x/net@v0.62.0 upgrade (v29.9.3 vendors
+   go-jose v4.1.7 and klauspost/compress v1.20.2, vendor.sum verified upstream);
+   `constraint-dependencies` floors playwright>=1.65.2 / patchright>=1.64.4
+   (in-image: drivers bundle Node v26.13.1 / v24.22.1); both
+   quality/image-pins.json entries re-recorded with #2251's exact text;
+   CHANGELOG Unreleased Security entries added (container round + the PR's own
+   execution-policy change, previously missing).
+5. Gate-level proof — all four images rebuilt locally and scanned with the
+   workflow's exact arguments (`trivy image --severity HIGH,CRITICAL
+   --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml`, trivy
+   v0.73.0/DB 2026-11-16; `grype --fail-on high --only-fixed`, grype
+   v0.116.0/DB same day as CI's green run):
+   hive-conductor trivy 0 grype 0; maistro-engine trivy 0 grype 0
+   (docker --version in-image = v29.9.3 build 5457199);
+   maistro-engine-research trivy 0 grype 0 (playwright 1.65.2, patchright
+   1.64.4 in-image; temporalio absent as expected);
+   maistro-rsi-runner trivy 0 grype 0 (temporalio 1.36.1 + nexus-rpc 1.5.0
+   in-image; vendored zip 9.5.1). Engine grype was exit 2 (GO-2026-6865)
+   before the v29.9.3 switch — the negative control for the docker/cli change;
+   rsi-runner grype was exit 2 (CVE-2026-115557) before the base bump — the
+   negative control for the pins.
+6. Gates re-run green at this tree: uv lock --check; uv sync --locked --extra
+   dev; ruff check . / format --check .; check-image-pins.py (9 pins / 10
+   Dockerfiles registered); check-release-consistency.py;
+   check-suite-inventory.py (21 suites, unchanged counts — no test files
+   touched); check-vulture-baseline.py CI-exact (1238 = 1238);
+   pytest tests/test_pinned_digest_references.py tests/test_check_image_pins.py
+   tests/test_image_lock_contract.py tests/test_get_ps1_wsl_detection.py —
+   104 passed (the issue's 28 Windows-policy tests among them, harness
+   included; no drift in get.ps1/tests since the 330feb778 verification).
+7. Residuals: the hosted containers run on the new head is UNVERIFIED until
+   CI executes (this round proves the same scanner versions on the same DB
+   day pass on locally rebuilt images; hosted gha-cache/apt-state variance
+   remains hosted). #2059/#2251 carry overlapping floors with different
+   pyproject floor styles (mine: constraint floors only; theirs: manifest
+   floors) — whichever merges last owns the final wording; lock rows are
+   identical so no lock conflict is possible. No closure keywords; no
+   issue-closure action.
