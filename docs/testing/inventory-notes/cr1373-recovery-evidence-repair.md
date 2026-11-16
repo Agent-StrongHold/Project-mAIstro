@@ -290,3 +290,49 @@ diff is unchanged for the files validated in the prior round).
 
 No test was added or removed this round, so the recorded inventory counts
 are unchanged; this note documents validation only.
+
+## Round: independent verification (`0264e6e2`, develop `f8a2df966` merged at `fb9a8d5cf`)
+
+Verifier/writer round; no source or test change. The prior round's merge
+resolution and validation were re-checked from scratch rather than assumed:
+
+- Branch state: HEAD `0264e6e2` is clean; develop tip `f8a2df966` is an
+  ancestor (`git merge-base --is-ancestor` OK), so the merge-queue conflict
+  is resolved; `fb9a8d5cf..HEAD` is docs-only (this note + the
+  `quality/ac-state-notes/auto-62.json` design_coverage re-bank).
+- Driver checks re-read: ruff check, ruff format (3,562 files), targeted
+  recovery pytest (250 passed/31 skipped), conductor DAG/registered-DAG
+  recovery (28 passed), both suite inventories (Hive 4,199; Core 18,500) —
+  all exit 0.
+- Re-run independently at HEAD: full `durable_runs` 795 passed / 76 skipped /
+  4 xfailed; conductor recovery 28 passed; waker-mapping + crash
+  reconciliation set (pause-reason wakers, cross-store reconciliation, A2A
+  receipt wakers) 101 passed / 31 PG-leg skips; vulture CI-exact 1,238/1,238
+  banked; doc links 3,197 files / 0 broken (covers the note committed after
+  the previous gate pass); IFEval provenance (5 artifacts), BFCL provenance
+  (13 artifacts + shim), agent store writes, model egress (16 callers) +
+  design model egress, all 13 interrogate docstring floors (venv-only
+  `uv pip install interrogate` per the workflow's own setup), Hypothesis
+  `formal/` 666 passed / 4 skipped (`uv pip install -e packages/maistro-evolve`
+  per the workflow's own setup), integration-scope classifier
+  `node --test tests/ci/integration-scope.test.cjs` 12/12 — all exit 0.
+- durable-events re-proven on a fresh postgres:17 database inside the
+  retained scratch container, CI-exact env (`MAISTRO_REQUIRE_PG_LEGS=1`):
+  events suite 513 passed / 5 skipped; event-schema agreement 5 passed.
+- strike-ladder re-proven on a fresh `strike_test` database, CI-exact env:
+  40 passed with the PostgreSQL leg required.
+- acceptance-state re-proven CI-shaped (`--run-tests --ratchet --mandate
+  f8a2df966`) over the migrated retained pg18 scratch database: exit 0; the
+  committed re-bank (44.4608) is exactly the measured value; 10 debt
+  counters on ceilings, 1 progress counter on its floor, 0 unproven
+  criteria, 0 chain violations.
+
+Still not locally executable (unchanged from prior rounds, documented above):
+docker-build and hive-conductor e2e image builds (local buildkit DNS), the
+full postgres matrix and wheel-imports (not in the failing set; source diff
+unchanged since they last passed), OS-kill durability and full admission
+matrices for parent #62 rows (CI-only producers), and diff coverage (needs
+CI's coverage producer).
+
+No test was added or removed this round, so the recorded inventory counts
+are unchanged; this note documents validation only.
