@@ -499,6 +499,67 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
     _await(scenario())
 
 
+def test_a_stale_tracking_entry_frees_its_window_slot():
+    """A tracked Run the store already deleted (a retention sweep at the end
+    of an earlier admission, say) occupies no window: the sweep drops the
+    stale entry and frees its slot, instead of spending it on a terminal Run
+    that fits the window beside the new admission (Codex, #325 review).
+    With `max_retained=2`, a stale entry, one terminal Run and the new
+    admission leave the terminal Run and the admission as the two live
+    entries — a stale entry that consumed its slot evicted the terminal Run
+    instead."""
+    from maistro.graph import Graph, Node
+
+    async def scenario() -> None:
+        plane = _new_execution_plane(max_retained=2)
+        workspace_id, project_id = await plane._scope_for("user")
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="terminal chat admission",
+            nodes=[Node(node_id="n", node_type="test", name="n")],
+        )
+        admitter = plane._admitter_for(workspace_id)
+
+        # A: tracked, already gone from the store. Inserted first, so the
+        # eviction loop reaches it before the terminal Run.
+        stale = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
+        )
+        await admitter.track(stale.run_id)
+        await plane.run_store.transition_run(stale.run_id, RunStatus.CANCELLED)
+        await plane.run_store.delete_run(stale.run_id)
+
+        terminal = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
+        )
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.RUNNING)
+        await plane.run_store.transition_run(terminal.run_id, RunStatus.COMPLETED)
+        await admitter.track(terminal.run_id)
+
+        # The window overflows with the new admission; the stale entry must
+        # free its slot so the terminal Run survives beside the admission.
+        newest = await plane.run_store.create_run(
+            graph,
+            actor_principal_id="user",
+            initial_status=RunStatus.QUEUED,
+            provenance={ADMISSION_SOURCE: CHAT_SOURCE},
+        )
+        await plane._track_admission(newest.run_id, workspace_id=workspace_id)
+
+        assert await plane.run_store.get_run(terminal.run_id) is not None
+        assert admitter.retained == 2
+        assert list(admitter._window) == [terminal.run_id, newest.run_id]
+
+    _await(scenario())
+
+
 def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypatch, caplog):
 
     async def fail(*_args: Any, **_kwargs: Any) -> Any:
