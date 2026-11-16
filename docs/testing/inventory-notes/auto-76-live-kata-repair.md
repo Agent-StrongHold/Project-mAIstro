@@ -191,3 +191,60 @@ this round rather than inherited:
   `SANDBOX-SUPPORT-MATRIX.md` names the shipped backend, tier, host
   requirements and the fail-closed refusal per rung.
 - No test counts changed: evidence re-execution only, not an inventory delta.
+
+## Re-proven at `69ac54f67` (2026-11-16, repair round, base `f8a2df966`)
+
+The two commits above this section's parent merge (`f2133735b1`) are docs
+notes only, so the executed surface is identical to `835712c5e`; every claim
+below was re-executed in this round rather than inherited. Host: `/dev/kvm`
+still accessible (0660 after WSL restart, pre-chmod by the lane), kata-runtime
+3.32.0, docker daemon answering with the `kata` runtime, bwrap 0.11.1
+present (its namespace tier still skips on this kernel).
+
+- **Named CI gate — Coverage gate (publish-set floor + diff coverage), the
+  gate that failed the last merge-queue evaluation — replayed with
+  quality.yml's exact `coverage-unit` producer invocations and env
+  (`PYTHONPATH` byte-for-byte as the folded YAML resolves it,
+  `REQUIRE_AUTH=false`, `MAISTRO_DRY_RUN=1`, `coverage erase` then the five
+  per-package `coverage run --append --branch` legs): core **17256 passed /
+  1236 skipped / 7 xfailed** (750s), canvas 584 passed / 75 skipped, evolve
+  1000 passed / 6 skipped, rsi **1795 passed / 1 skipped / 1 failed**,
+  bootstrap 276 passed / 1 skipped. The rsi failure is the same recorded
+  operator-image defect (`test_contained_fitness.py::
+  test_real_evaluation_scores_every_signal_inside_one_container`; the local
+  `maistro-builders:latest` lacks `git`, failing signal tuple
+  `('git', 'rev-parse', 'HEAD~1')`); CI skips this test on runners
+  (test_contained_fitness.py:752), so it cannot colour CI's verdict, and the
+  rsi leg still recorded its coverage data. Floor leg
+  `coverage report --fail-under=87` → **exit 0, TOTAL 93% over 93,902
+  statements** (unit producers only; MinIO/PostgreSQL producers only append
+  hits, so this is the conservative bound). Diff leg `coverage xml` +
+  `scripts/check-diff-coverage.py coverage.xml --base f8a2df966...` →
+  **exit 0**: "every measured file this change touches is at or above 90%
+  lines / 80% branch arcs".
+- Vulture ledger gate with CI's exact argv
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+  exit 0 (1238 reviewed → 1236 findings, 0 unbanked, ratchet provenance read
+  from base `f8a2df966`); `check-suite-inventory.py` full → **21 suites
+  match**; `check-convergence-matrix.py` → exit 0 (52 subsystems classify all
+  1488 production modules); mypy (AGENTS-exact, 7 package trees) → Success,
+  955 files. ruff check / `ruff format --check` passed in this round's
+  driver checks, as did the #76 sandbox named-gate test union (465 passed /
+  8 skipped, incl. `test_single_authority.py`, `test_import_layering.py`).
+- Same-host, same-round live evidence: placement proof
+  (`build_selector().available_tiers == ['vm']` via `KataSandboxBackend`;
+  all four standard policies select it; `build_config(UNTRUSTED_CODE,
+  max_processes=256)` preserved; `SandboxConfig(network=True)` →
+  `ValueError`); `test_kata_live_conformance.py` → **10 passed / 0 skipped**
+  (24.37s); `test_sandbox_conformance.py` + `test_sigterm_shutdown.py` →
+  **13 passed / 0 skipped** (67.92s) incl. the in-guest
+  `nproc == profile.max_processes` readback and
+  `TestStopRestartLeavesNoOrphanedSandboxes` through the canonical
+  `create_sandbox`; `docker ps -a` filtered on `kata-` → **0 containers**
+  afterwards.
+- Static spot checks re-run: `preexec_fn` appears in no executable path
+  (only the `_rlimit_exec` helper's docstring and bubblewrap comments);
+  `build_config` preserves a requested `max_processes` and never copies a
+  `network` override into the config (selector.py, #76 clarification);
+  `SandboxConfig.network` raises `ValueError` from `__post_init__`.
+- No test counts changed: evidence re-execution only, not an inventory delta.
