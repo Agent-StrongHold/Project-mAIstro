@@ -68,7 +68,7 @@ PG_DB = "maistro"
 
 def _docker_reachable() -> bool:
     try:
-        subprocess.run(["docker", "info"], capture_output=True, timeout=30)
+        subprocess.run(["docker", "info"], capture_output=True, timeout=30, check=True)
     except (OSError, subprocess.SubprocessError):
         return False
     return True
