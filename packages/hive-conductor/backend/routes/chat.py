@@ -25,9 +25,11 @@ from services.chat_gate import (
     gate_untrusted,
     openai_refusal,
 )
-from services.chat_runs import admit_turn, cancel_unstarted, execute_turn
+from services.chat_runs import AdmittedTurn, admit_turn, cancel_unstarted, execute_turn
 from services.program_hyperagent import user_id_from_request
 from services.request_principal import require_actor_id
+
+from maistro.capabilities.model_chat import model_execution_context
 
 router = APIRouter(tags=["chat"])
 
@@ -242,10 +244,24 @@ async def _admit(req: ChatCompletionRequest, request: Request, messages: list[di
     )
 
 
-def _model_call(req: ChatCompletionRequest, messages: list[dict]):
+def _model_call(turn: AdmittedTurn, req: ChatCompletionRequest, messages: list[dict]):
+    run = turn.run
+
     async def call() -> dict:
         llm = build_llm_port()
-        return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
+        # The governed Invocation must carry the execution identities its
+        # admission already validated (#1084 acceptance: the request joins the
+        # authenticated actor, Run, NodeRun, Attempt and Invocation). They are
+        # read from the persisted Run — never from request text, which
+        # `conversation_only` drops at the trust boundary — and bound through
+        # the one seam the compatibility client reads. The Binding scope stays
+        # the deployment's configured model Binding: re-scoping it to the
+        # caller's Workspace is a credential-provisioning decision (#1824),
+        # not something a route may improvise.
+        with model_execution_context(actor_id=run.actor_principal_id or ""):
+            return await llm.complete(
+                _conversation_only(req.model_copy(update={"messages": messages}))
+            )
 
     return call
 
@@ -269,7 +285,7 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
         }
     messages = _conversation_messages(req)
     turn = await _admit(req, request, messages)
-    return await execute_turn(turn, messages, _model_call(req, messages))
+    return await execute_turn(turn, messages, _model_call(turn, req, messages))
 
 
 @router.post("/stream")
@@ -319,7 +335,7 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
         nonlocal started
         started = True
         try:
-            result = await execute_turn(turn, messages, _model_call(req, messages))
+            result = await execute_turn(turn, messages, _model_call(turn, req, messages))
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             yield f"data: {json.dumps({'type': 'done', 'content': content, 'run_id': run_id})}\n\n"
