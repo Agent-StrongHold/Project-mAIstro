@@ -105,15 +105,25 @@ RUN uv export --locked --package maistro-server \
 # flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
+# The v29.9.1 vendor tree pins go-jose v4.1.5 (CVE-2026-116587, fixed v4.1.6)
+# and golang.org/x/net v0.60.0 (CVE-2026-78661, fixed v0.62.0); both HIGH and
+# fixed, so the container-scan gate fails the release tag as-is. Same policy
+# as the engine Dockerfile's dockerclibuild stage (#2304): override the two
+# vulnerable vendored modules to their fixed versions and re-vendor before
+# building. Re-triage when a docker/cli release vendors both fixes.
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG GO_JOSE_FIXED_VERSION=v4.1.6
+ARG GO_X_NET_FIXED_VERSION=v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} && \
+    go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 

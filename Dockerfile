@@ -135,15 +135,28 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
+# The v29.9.1 vendor tree pins go-jose v4.1.5 (CVE-2026-116587, DoS via crafted
+# RSA JWK parameters, fixed v4.1.6) and golang.org/x/net v0.60.0
+# (CVE-2026-78661, DoS via crafted HTML input, fixed v0.62.0) — both HIGH and
+# both `fixed`, so the container-scan gate fails the release tag as-is (#2304).
+# Same policy as the age stage above: build the exact immutable release tag
+# with the vulnerable vendored modules overridden to their fixed versions;
+# `go mod vendor` re-syncs the vendor tree so the build reads the patched
+# modules instead of failing on inconsistent vendoring. Re-triage (drop the
+# overrides) when a docker/cli release vendors both fixes.
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG GO_JOSE_FIXED_VERSION=v4.1.6
+ARG GO_X_NET_FIXED_VERSION=v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} && \
+    go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 

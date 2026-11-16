@@ -25,6 +25,16 @@ or placeholder-only section.
 
 ### Dependencies
 
+- **Advisory patch refresh of the audited dependency set (#2304).** `uv.lock`
+  moves `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 →
+  3.3.1 (CVE-2026-119286), `joserfc` 1.7.5 → 1.7.6 (CVE-2026-119284), and the
+  OpenTelemetry family to api/sdk 1.45.2 + semantic-conventions 0.66b2
+  (CVE-2026-126360) — the pip-audit advisories the triage gate started
+  reporting once the 2026-11 DB revisions landed, each with an upstream-fixed
+  release, so the gate's upgrade-first policy applies rather than a triage
+  row. Same locked contract for the shipped images (both install via
+  `uv export --locked` + `--require-hashes` from this lock).
+
 - **Conductor image runtime OS layer builds on `python:3.15.0-slim-bookworm`
   (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
   moved to the CPython 3.15.0 base build (fresh Debian 12 security-patch
@@ -44,6 +54,17 @@ or placeholder-only section.
   another product commit.
 
 ### Security
+
+- **The shipped docker CLI no longer embeds the vulnerable vendored go-jose
+  and x/net modules (#2304).** docker/cli v29.9.1's vendor tree pins go-jose
+  v4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK parameters, fixed v4.1.6)
+  and golang.org/x/net v0.60.0 (CVE-2026-78661, DoS via crafted HTML input,
+  fixed v0.62.0); both are HIGH and have upstream fixes, so the container-scan
+  gate fails the release tag as-is. The `dockerclibuild` stages of the
+  maistro-engine and research images now override the two modules to their
+  fixed versions and re-vendor before building (the same patched-toolchain
+  policy the age stage already applies); the release tag, commit pin and
+  toolchain are unchanged.
 
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still

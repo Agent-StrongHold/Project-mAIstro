@@ -338,3 +338,92 @@ test_check_image_pins + test_hive_conductor_image_split 42 passed. The
 floor/diff legs of combine were already green in CI before the failing leg, and
 the PR diff touches no measured source root, so the diff gate has no changed
 lines to score on this head.
+
+## Round 6 (2026-11-16, head `9ce9f2c9cffd`) — the 5 remaining reds are advisory-staleness and one flake; 3 repaired, 2 documented
+
+CI at the current head (runs 43782841158 CI / 43782840833 security / 43782840830
+Integration Scope, 2026-11-16) is green on 73 of 78 check runs — every gate the
+rounds 4–5 repairs targeted is green (docker-build, hive-conductor-e2e, test,
+Coverage gate, Quality / Image pins, Gate C, Quality gate, exact-debt-ledger).
+Five jobs are red; logs fetched read-only via the jobs API and attributed:
+
+1. **`security` (job 133023728752) + `Supply chain (pip-audit)` (job
+   133023728001):** pip-audit reports 4 advisories outside the triaged
+   allowlist — `dnspython==2.9.0` CVE-2026-128089 → 2.9.2, `graphql-core==3.3.0`
+   CVE-2026-119286 → 3.3.1, `joserfc==1.7.5` CVE-2026-119284 → 1.7.6,
+   `opentelemetry-api==1.45.1` CVE-2026-126360 → 1.45.2. Time-based, not
+   branch-caused: the gate audits the `uv sync --locked` environment and this
+   branch changes no dependency; `security.yml` fails with the same class on
+   unrelated branches merged from the same develop state on the same day. Every
+   advisory has an upstream-fixed release, so the gate's own instruction ("fix
+   by upgrading the dependency") applies — adding allowlist rows is explicitly
+   refused by the gate text when a fixed version exists.
+   **Repair executed:** `uv.lock` moved to exactly those versions (uv also
+   pairs sdk 1.45.2 + semantic-conventions 0.66b2, forced by the sdk's own
+   api pin). graphql-core/joserfc pinned to the advisory minimums rather than
+   the newest resolvable, matching the fix set another campaign branch
+   (`72671203f5`) already carries, minimizing conflict surface.
+   **Evidence:** `uv sync --locked --extra dev` green; re-run of the gate's
+   exact commands on the synced env (`uv pip freeze --exclude-editable` →
+   `pip-audit --strict --format=json -r` → `pip_audit_gate.py`) → exit 0
+   ("pip-audit OK"; the 4 advisories gone, only the triaged
+   `ecdsa==0.19.2 PYSEC-2026-1325` remains); `check-dependency-namespaces.py`
+   clean; root suite in CI shape (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1
+   pytest tests/ --ignore=tests/tools/registry`) → **5825 passed / 140
+   skipped / 0 failed in 7m36s**.
+2. **`Container scan + SBOM + cosign` (job 133023727927):** the failing scan is
+   the *maistro-engine* image (the hive-conductor scan in the same job reported
+   0 findings, debian 12.15 clean): dnspython CVE-2026-128089 (same root as
+   above — the engine venv installs from the same lock) plus two HIGH gobinary
+   findings in `usr/local/bin/docker`: go-jose CVE-2026-116587 v4.1.5 → v4.1.6
+   and golang.org/x/net CVE-2026-78661 v0.60.0 → v0.62.0. The docker CLI is
+   built from the pinned docker/cli v29.9.1 release tag whose vendor tree
+   carries exactly those vulnerable versions; x/net v0.62.0 was published
+   2026-10-27, a day after the last green scan — time-based again. **Repair
+   executed:** both `dockerclibuild` stages (root `Dockerfile`,
+   `Dockerfile.research`) override the two modules to the fixed versions via
+   pinned ARGs, `go mod vendor` re-syncs the tree, and the build now passes
+   `-mod=vendor` explicitly — the same patched-toolchain policy the age stage
+   already applies. Release tag, commit pin and go1.27.3 toolchain unchanged.
+   **Evidence:** both stages built locally (`docker build --target
+   dockerclibuild`, exit 0); `go version -m` on the extracted binaries reads
+   `github.com/go-jose/go-jose/v4 v4.1.6` and `golang.org/x/net v0.62.0` in
+   both. New `tests/test_dockercli_vendored_cve_patch.py` (4 tests, note
+   `2304-dockercli-vendored-cve-patch`, `tests/: +4`) holds the repair closed:
+   override present in both stages, ARG values pinned to the trivy-reported
+   fixes, revendor + vendor-mode build, and engine/research stage bodies in
+   sync — each assertion demonstrated to fail against the pre-repair shape
+   (synthetic pre-repair stage / wrong ARG values / diverging stages).
+3. **`hive-conductor-e2e-ui` (job 133029963854):** exactly one Playwright test
+   failed, `rsi-polling-resilience.spec.ts:459` ("a prolonged outage backs off
+   exponentially"), failing twice (initial + its single retry) on
+   virtual-clock deadline assertions with 10 ms slop: first run `Expected <= 10,
+   Received: 1000`, retry `Expected <= 45010, Received: 45015` — a 5 ms
+   overshoot on a 45 s bound. The code under test (`frontend/src/pages/RSI.tsx`)
+   is byte-identical across the last green run of this branch (f311345), the
+   develop base and this head (`git diff f311345b2..HEAD -- …/RSI.tsx` empty);
+   240 of 246 tests passed. The repo's own doctrine applies: latency-bound UI
+   tests fail on runners that cannot have caused them. **Not repaired in-lane:**
+   re-running the job is a GitHub mutation this lane is barred from, and
+   loosening the 10 ms slop is a maintainer decision on a test this branch
+   cannot have broken.
+4. **`integration-scope` (job 133023727509):** purely downstream — its log is
+   one line, "hive-conductor-e2e-ui is required by integration scope but
+   concluded failure". Follows item 3.
+
+### Round-6 disposition
+
+The three security-class gates are repaired with the gates' own sanctioned fix
+paths and proven locally at every level the lane can reach (lock → synced env →
+pip-audit/gate → namespaces → root suite; Dockerfile stage → built binary →
+embedded module versions). The e2e-ui flake and its downstream integration-scope
+red remain the only open items and are outside this lane's authority (CI re-run
+prohibited; test-tolerance edits refused as maintainer scope). Branch delta vs
+develop base `f8a2df966`: `packages/hive-conductor/Dockerfile`,
+`quality/image-pins.json`, root `Dockerfile`, `Dockerfile.research`, `uv.lock`,
+`CHANGELOG.md`, repair/inventory notes, and two test files — none touches a
+ratchet ledger, grant, or execution-model surface. Exact-debt-ledger (vulture,
+CI's exact args) re-run this round: exit 0, 1238 = 1238; `check-image-pins.py`
+exit 0 (10 images registered); `check-release-consistency.py` ok;
+`check-suite-inventory.py` ok with the recorded `tests/: +4` delta; ruff
+check/format clean.
