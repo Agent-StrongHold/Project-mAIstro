@@ -737,6 +737,33 @@ Re-verified first-hand at this tree, image
   the temporary build-network override was untracked and deleted; the tree
   carries only this note.
 
+## Independent verification round at `b2a9a97e3` (2026-11-16)
+
+Rebuilt and exercised the actual shipped Conductor image from this worktree,
+not the pre-existing local `hive-conductor-hive:latest` (which was a different
+image and had no `tzdata` wheel). With a throwaway `MAISTRO_ROUTER_API_KEY`
+required by compose interpolation:
+
+- CI compose command:
+  `MAISTRO_ROUTER_API_KEY=dev-stub docker compose -f packages/hive-conductor/docker-compose.test.yml --profile test up --build --abort-on-container-exit --exit-code-from api-tests api-tests`
+  exited 0: **14 passed, 14 skipped in 121.75s**. The UTC persistence/natural
+  fire, Berlin wall-time/season-offset, invalid-zone refusal, and health tests
+  each passed. The restart-marked case was correctly skipped in this phase.
+- The built image's local immutable ID/digest was
+  `sha256:92fc097c814863a45fb1bdb40a30851947c63fcb4a206956c6c7325323e547fe`.
+  Its build-time tz smoke resolved UTC, New York, and Berlin from
+  `/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`; Berlin winter/summer
+  offsets were +1/+2 hours. The deterministic cron smoke passed: spring gap
+  skipped and fall fold fired once.
+- Restart phase: started `hive`, restarted that container, then ran
+  `MAISTRO_ROUTER_API_KEY=dev-stub docker compose -f packages/hive-conductor/docker-compose.test.yml --profile test run --rm -e SCHED_TZ_AFTER_RESTART=1 api-tests pytest -q -k restart_recovery tests/e2e/test_scheduler_timezone_container.py`:
+  **1 passed, 4 deselected in 231.08s**. This proves persistence and next-run
+  recomputation after an actual container restart.
+- The initial direct local `pytest` invocation outside compose was all skipped,
+  as designed; it is not counted as acceptance evidence. The full compose
+  phases above provide that evidence. The compose stack was stopped and removed
+  with `down -v`.
+
 ## Repair round: develop sync to `f8a2df966` + CI-exact container re-run at the
 ## merged head (2026-11-16, merge commit `9fb194f80`)
 
