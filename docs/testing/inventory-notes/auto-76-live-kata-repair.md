@@ -142,3 +142,52 @@ four standard policies select it.
   fail-closed consumption suites.
 - No test counts changed in this round: this is re-executed evidence at a
   new head, not an inventory delta.
+
+## Re-proven at `835712c5e` (2026-11-16, verification round, base `f8a2df966`)
+
+The only commit above this section's parent (`f2133735b1`) is the docs note
+itself, so the executed surface is identical; every claim below was re-run in
+this round rather than inherited:
+
+- Named CI gate replayed with quality.yml's exact `coverage-unit` producer
+  invocations and env (`REQUIRE_AUTH=false`, `MAISTRO_DRY_RUN=1`, the
+  workflow's `PYTHONPATH`, `coverage erase` then five
+  `coverage run --append --branch` legs): core 17256 passed / 1236 skipped /
+  7 xfailed (840s), canvas 584 passed / 75 skipped, evolve 1000 passed /
+  6 skipped, rsi 1795 passed / 1 skipped / 1 failed, bootstrap 276 passed /
+  1 skipped. The rsi failure is the recorded operator-image defect,
+  reproduced and re-confirmed: `test_contained_fitness.py::
+  test_real_evaluation_scores_every_signal_inside_one_container` fails
+  because the local `maistro-builders:latest` lacks `git`
+  (`docker run ... command -v git` → empty; the failing signal tuple is
+  `('git', 'rev-parse', 'HEAD~1')`), while CI skips the test outright
+  (no image on runners, `test_contained_fitness.py:752`). The rsi leg still
+  recorded its `.coverage`. Floor leg `coverage report --fail-under=87` →
+  exit 0, TOTAL 93% over 93,902 statements (unit producers only — the MinIO
+  and PostgreSQL producers only append hits, so this is the conservative
+  bound). Diff leg `scripts/check-diff-coverage.py coverage.xml --base
+  f8a2df966...` → exit 0: 29 changed production files measured (the deleted
+  `tools/sandbox/docker.py` yields no diff hunks and nothing to score), 26
+  changed test files exempt by declaration, no "unmeasured" section, and the
+  gate's own audit turns a measured file absent from the report into a
+  failure, so nothing escaped silently.
+- Vulture ledger gate with CI's exact argv → exit 0 (1238 reviewed →
+  1236 findings, ratchet provenance read from base `f8a2df966`);
+  `check-convergence-matrix.py` → exit 0 (52 subsystems classify all 1488
+  production modules).
+- Same-host, same-round live evidence: placement proof
+  (`build_selector().available_tiers == ['vm']` via `KataSandboxBackend`, all
+  four standard policies select it, `build_config(..., max_processes=256)`
+  preserved, `SandboxConfig(network=True)` → `ValueError`);
+  `test_kata_live_conformance.py` → 10 passed / 0 skipped (26.37s);
+  `test_sandbox_conformance.py` + `test_sigterm_shutdown.py` → 13 passed /
+  0 skipped (63.08s), including the in-guest readback
+  `nproc == int(profile.max_processes)` (test_sandbox_conformance.py:178)
+  and `TestStopRestartLeavesNoOrphanedSandboxes`; `docker ps -a` filtered on
+  `kata-` → 0 containers afterwards.
+- Static spot checks re-run: no `preexec_fn` call in any backend (only the
+  execing helper's docstring); Kata forwards the config budget
+  (`--pids-limit`/`--ulimit=nproc` from `max_processes`, kata.py:164,167);
+  `SANDBOX-SUPPORT-MATRIX.md` names the shipped backend, tier, host
+  requirements and the fail-closed refusal per rung.
+- No test counts changed: evidence re-execution only, not an inventory delta.
