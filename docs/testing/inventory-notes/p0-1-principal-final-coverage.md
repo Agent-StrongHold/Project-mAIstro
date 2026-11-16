@@ -117,6 +117,63 @@ Residual: a CI run on the pushed head remains the only direct proof of the
 aggregate coverage floor; the branch has not been pushed from this
 worktree, and pushing is out of scope for a repair attempt.
 
+## Tenth verification round (2026-11-16, head e24cb85cfe2d = current HEAD)
+
+Prior block was `launch/preflight: git exited 1` (recovery budget
+exhausted before any check ran). Resolved by state inspection, not
+assumption: `git fetch origin` succeeded; `origin/develop` is still
+exactly f8a2df966a1d, which `git merge-base --is-ancestor origin/develop
+HEAD` confirms is an ancestor of this head — no develop sync conflict
+does or can exist on this branch. The prior verify job at this same head
+(2366944d) had returned all nine driver checks rc=0 before dying to a
+provider 404 (model not found) — an environment failure, not a tree
+failure. Independent re-execution at HEAD, no inherited claims:
+
+- Driver battery of this round's own job (check-0..8): uv sync rc=0,
+  ruff check rc=0 ("All checks passed!"), ruff format rc=0 (3561 files
+  already formatted), targeted server/canvas/core pytest 299 passed /
+  91 skipped, hive backend battery 199 passed, all four suite-inventory
+  gates ok (hive 4194, canvas 642, core 18435, server 671).
+- Issue test plan, re-run in full: `check-principal-identity.py` with
+  CI's exact env (`RATCHET_BASE_REV=origin/develop`) rc=0 — 4 tolerated
+  → 0 current, none new, base f8a2df966a1d, candidate e24cb85cfe2d;
+  `pytest fitness/test_principal_identity.py server/api/test_auth.py`
+  — 39 passed; `pytest hive test_username_registry.py
+  test_registration_policy.py` — 81 passed (throttle-decoupled race
+  included); the branch's own additions pass by node id (3 canvas
+  foreign-org guards; `test_auth_off_admits_a_dev_principal`).
+- Acceptance-claim greps at HEAD: no `class AuthenticatedPrincipal` /
+  `CurrentUser` / `HiveUser` / `_SubsystemIdentity` definition remains
+  under `packages/*/src` or `packages/hive-conductor/backend`;
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`;
+  `hive routes/capabilities.py` resolves the approval actor via
+  `request_principal(request)` (line 302) /
+  `principal_has_permission(principal, "approvals.resolve")` (line 318).
+- Vulture ledger with CI's exact args (`check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  rc=0, 1238 reviewed identities → 1238 findings, 0 unclassified, 0
+  never_allowlist.
+- Mutation gate re-derived with CI's exact inputs, not transferred:
+  `mutation_critical.py --validate` ok (8 critical sources);
+  `git diff --name-only origin/develop...HEAD -- packages
+  --diff-filter=ACMR` (46 paths) → `mutation_critical.py --changed-from`
+  resolves the sole target `maistro/privilege.py` →
+  `packages/maistro-core/tests`; the trusted merge-base baseline
+  (`git show f8a2df966a1d:quality/mutation-baseline.json`) has
+  `entries: {}`, and `scripts/mutation_pr_gate.py` (lines 308–320) makes
+  an unbaselined source report-only — the gate cannot fail this PR.
+- Evidence transfer re-validated by diff: `git diff --name-only
+  644f5a084..HEAD` and `28ef6871e..HEAD` each contain only this note and
+  the committed AC-state note, so round five's local diff-coverage
+  reproduction (17 changed measured files ≥90% lines / ≥80% branch
+  arcs) and round seven's `check-ac-state.py --run-tests --ratchet
+  --mandate` rc=0 both still describe HEAD's inputs; the committed note
+  (`quality/ac-state-notes/feat-cutover-p0-1-principal-final.json`:
+  design_coverage 44.4608, measured_with_tests true) is exactly the
+  value round seven banked and re-proved.
+- Worktree left clean; no code changes in this round, evidence-only
+  verification recorded here.
+
 ## Fourth verification round (2026-11-16, head 3e70a3cf72fb = unchanged)
 
 Prior round's worker died to provider auth expiry after all driver checks
