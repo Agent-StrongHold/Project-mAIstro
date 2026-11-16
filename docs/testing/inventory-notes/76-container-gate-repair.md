@@ -101,3 +101,52 @@ change that moved no count (see the directory README and the precedent in
   --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml`) on all four
   gate images, all exit 0; maistro-engine's `usr/local/bin/docker` gobinary
   reports 0 findings.
+
+## Independent verification round (2026-11-16, head f27177c38e45b8be946f3d554a2b978f24dea1af)
+
+Re-executed at the head SHA by the verifier lane; all commands run locally with
+CI's exact arguments unless noted. No test counts moved; still no inventory delta.
+
+- Base-pin resolution (decisive): `docker run --entrypoint python` on the two
+  digest-pinned bases — `python:3.13.18-slim-bookworm@sha256:a5a7017efc59…`
+  reports **Python 3.13.18**, `python:3.12-slim@sha256:5e2bdb1b0d5425…` reports
+  **Python 3.12.16**. The Dockerfile in Docker wins over the tag, so this
+  proves the branch's pins resolve to the fixed CPython builds, matching the
+  `(3, 13, 18)` interpreter assertion in `security.yml` (lines 325, 331).
+- Trivy v0.73.0, CI flags (`--severity HIGH,CRITICAL --exit-code 1
+  --ignore-unfixed --ignorefile .trivyignore.yaml`): exit 0 on
+  `maistro-engine:pr-2241` (the CI-named artifact; `usr/local/bin/docker`
+  gobinary: 0 findings — the CVE-2026-116587 go-jose / CVE-2026-78661 x/net
+  findings that failed run 43822789023 are gone) and on
+  `maistro-engine:pr-localrepair`, `hive-conductor:pr-localrepair`,
+  `maistro-engine-research:pr-localrepair`, `maistro-rsi-runner:pr-localrepair`.
+- Image-lock reconciliation, CI's exact export (`uv export --locked --package
+  maistro-server --extra image --no-dev --no-emit-workspace`): exit 0 —
+  `maistro-engine:pr-2241` ships exactly the locked set (126 distributions,
+  3 workspace members).
+- `uv lock --check` consistent; `pip_audit_gate.py` over
+  `pip-audit --strict` exit 0 (only triaged `ecdsa==0.19.2
+  PYSEC-2026-1325`); `check-dependency-namespaces.py` exit 0.
+- Vulture gate, CI arguments (`vulture packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` + `check-vulture-baseline.py`): both exit 0.
+- Full `scripts/check-suite-inventory.py`: 21 suites match, 35,389 unique node
+  IDs; targeted 26-file sandbox/harness pytest: 465 passed, 8 skipped (the 8
+  skips are all bubblewrap host-capability skips; the server SIGTERM suite
+  runs 3 passed / 0 skipped, including the orphan-cleanup stop/restart test).
+- `ruff check .` / `ruff format --check .`: clean.
+
+### Attribution caveat — stale local `pr-localrepair` images
+
+The shared daemon's `hive-conductor:pr-localrepair`
+(`maistro-engine-research:pr-localrepair`,
+`maistro-rsi-runner:pr-localrepair`) images created 2026-11-16 08:29–08:44
+local contain **CPython 3.13.16 / 3.12.15** (grype
+`--only-fixed --fail-on high` flags Critical CVE-2026-115557 in them; trivy
+does not detect the CPython binary version and passes). They predate the
+base-pin refresh and were not built from this head — the digest resolution
+above proves this head's Dockerfiles produce 3.13.18 / 3.12.16. Do not read
+those local images as evidence about this branch; CI builds fresh images from
+the branch Dockerfiles. Grype on freshly built research/hive/rsi images was
+not re-executed locally (no correctly built images available on this daemon);
+it remains corroborated by the pin resolution plus the earlier round's local
+passes, and by GitHub CI as the final authority.
