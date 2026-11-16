@@ -48,13 +48,20 @@ hive-conductor frontend build, not the failure.)
 - `docker build -f Dockerfile -t maistro-engine:pr-2241` — exit 0; runtime
   python reports 3.13.18.
 - trivy v0.73.0, fresh DB (2026-11-16), CI flags `--severity HIGH,CRITICAL
-  --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml`:
-  **maistro-engine exit 0** (`usr/local/bin/docker  gobinary  0` findings).
-- grype v0.116.0 (checksum-verified), `--fail-on high --only-fixed`:
-  **maistro-engine exit 0**; **hive-conductor exit 0** (image built exit 0
+  --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml` — all four
+  gate images, all exit 0: **maistro-engine** (`usr/local/bin/docker
+  gobinary  0` findings), **hive-conductor**,
+  **maistro-engine-research**, **maistro-rsi-runner**.
+- grype v0.116.0 (checksum-verified), `--fail-on high --only-fixed` — all
+  four gate images, all exit 0: maistro-engine, hive-conductor (built exit 0
   with the in-image `(3, 13, 18)` identity assert; the workflow's
   identity-contract step was re-run verbatim and printed
-  `identity=operational python=3.13.18 ...`).
+  `identity=operational python=3.13.18 ...`), maistro-engine-research,
+  maistro-rsi-runner.
+- `scripts/check-image-lock-reconciliation.py` re-run verbatim against the
+  locally built maistro-engine (new uv.lock export vs image contents):
+  `OK: maistro-engine:pr-2241 ships exactly the locked set (126
+  distributions, incl. 3 workspace member(s))`, exit 0.
 - Old python:3.12-slim digest vs new: grype flags CPython 3.12.15
   CVE-2026-115557 **Critical** (fixed *3.12.16); the new digest resolves
   Python 3.12.16 and no longer carries it. zlib1g Highs (CVE-2026-76844 /
