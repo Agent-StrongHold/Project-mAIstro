@@ -158,6 +158,20 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # half -- it decides which credential a Binding's effect actually uses.
     "maistro/capabilities/effect_context.py",
     "maistro/capabilities/credential_routing.py",
+    # The model-facing tool gate (#57). contracts.py admits every
+    # GovernedToolExecutor call -- Agent allowlist, host-owned schema,
+    # Binding re-resolution in the canonical store -- before the canonical
+    # Invocation; expected_effect.py defines the persisted prediction
+    # evidence and the canonical digest a later reviewer recomputes the
+    # comparison from; and the reversibility modules are the host-owned
+    # policy registry every tool's tier is resolved from as an admission
+    # fact. A candidate able to edit them can widen its own tool
+    # authorization, restate evidence, or downgrade an approval tier
+    # without touching any protected path above.
+    "maistro/capabilities/expected_effect.py",
+    "maistro/tools/contracts.py",
+    "maistro/tools/reversibility.py",
+    "maistro/tools/reversibility_registry.py",
     # The credential pool, store, router and the providers that fill them.
     # A directory pattern rather than five file patterns, for the reason this
     # file already gives for `maistro_rsi/`: a pattern cannot fall behind a

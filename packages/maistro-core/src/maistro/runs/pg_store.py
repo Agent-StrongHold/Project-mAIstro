@@ -42,6 +42,13 @@ if TYPE_CHECKING:
 from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
+from maistro.observability.metrics import (
+    OldestUnit,
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
@@ -188,6 +195,20 @@ _PURGE_CANDIDATES_SQL_SCOPED = f"""SELECT run_id
     ORDER BY r.retention_expires_at
     LIMIT $3
     FOR UPDATE SKIP LOCKED"""  # nosec B608
+
+#: The spine tables this store's purge governs, with each table's
+#: oldest-record expression and unit, for the post-purge health probe (#325).
+#: The Run, NodeRun and Attempt models serialize `created_at` inside the
+#: payload and the eval scores carry a real `scored_at` TEXT column, all
+#: ISO-8601; the graph continuation denormalizes `created_at` as TIMESTAMPTZ
+#: (migration 021), which asyncpg hands back as a datetime.
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("canonical_runs", "payload->>'created_at'", "iso"),
+    ("canonical_node_runs", "payload->>'created_at'", "iso"),
+    ("canonical_attempts", "payload->>'created_at'", "iso"),
+    ("canonical_run_eval_scores", "scored_at", "iso"),
+    ("graph_continuations", "created_at", "datetime"),
+)
 
 #: Archive candidate selection (migration 017): the mirror population of the
 #: retention sweep, kept off the same partial-index proof problem — literal
@@ -625,45 +646,78 @@ class PgRunStore:
             backlog_remaining = len(rows) > limit
             selected = rows[:limit]
             run_ids = [row["run_id"] for row in selected]
+            # An empty sweep takes the same exit as a deleting one: the
+            # post-transaction probe below must run when nothing was deleted
+            # too — zero deletions is exactly when the stored level is the
+            # only health signal there is (as in the SQLite store).
+            outcome: PurgeOutcome
             if not run_ids:
-                return PurgeOutcome(scope=scope)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await conn.execute(
-                "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
-                run_ids,
-            )
-            deleted_attempts = await conn.fetch(
-                """DELETE FROM canonical_attempts a
-                   USING canonical_node_runs n
-                   WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])
-                   RETURNING a.attempt_id""",
-                run_ids,
-            )
-            deleted_node_runs = await conn.fetch(
-                "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
-                run_ids,
-            )
-            deleted_runs = await conn.fetch(
-                "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
-                run_ids,
-            )
-            continuations = 0
-            if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
-                deleted_continuations = await conn.fetch(
-                    "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                outcome = PurgeOutcome(scope=scope)
+            else:
+                # Eval evidence is spine-attached (FK on run_id), so it dies with
+                # the Run tree, in the same transaction and before the rows it
+                # names (M7-A3).
+                await conn.execute(
+                    "DELETE FROM canonical_run_eval_scores WHERE run_id = ANY($1::text[])",
                     run_ids,
                 )
-                continuations = len(deleted_continuations)
-        return PurgeOutcome(
-            scope=scope,
-            runs=len(deleted_runs),
-            node_runs=len(deleted_node_runs),
-            attempts=len(deleted_attempts),
-            continuations=continuations,
-            backlog_remaining=backlog_remaining,
-        )
+                deleted_attempts = await conn.fetch(
+                    """DELETE FROM canonical_attempts a
+                       USING canonical_node_runs n
+                       WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])
+                       RETURNING a.attempt_id""",
+                    run_ids,
+                )
+                deleted_node_runs = await conn.fetch(
+                    "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
+                    run_ids,
+                )
+                deleted_runs = await conn.fetch(
+                    "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                    run_ids,
+                )
+                continuations = 0
+                if await conn.fetchval(
+                    "SELECT to_regclass('public.graph_continuations') IS NOT NULL"
+                ):
+                    deleted_continuations = await conn.fetch(
+                        "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                        run_ids,
+                    )
+                    continuations = len(deleted_continuations)
+                outcome = PurgeOutcome(
+                    scope=scope,
+                    runs=len(deleted_runs),
+                    node_runs=len(deleted_node_runs),
+                    attempts=len(deleted_attempts),
+                    continuations=continuations,
+                    backlog_remaining=backlog_remaining,
+                )
+        # Outside the transaction: the probe is read-only housekeeping and
+        # must not extend the transaction's lock hold. A quiet scope publishes
+        # too — zero deletions is exactly when the stored level is the only
+        # health signal there is. Throttled per store by the publisher, so a
+        # per-admission sweep costs at most one probe per interval (#325).
+        await self._publish_table_health()
+        return outcome
+
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the spine this store owns (#325).
+
+        The same series the SQLite store publishes: rows, bytes and the
+        oldest retained record per run_purge table, plus the per-table size
+        only PostgreSQL can measure honestly (`pg_total_relation_size`).
+        """
+        if not retention_health_probe_due("runs:postgres"):
+            return
+        samples = []
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+                sample = await postgres_table_sample(fetchrow, table, oldest_expr, oldest_unit=unit)
+                if sample is not None:
+                    samples.append(sample)
+        publish_retention_table_health("runs:postgres", "postgres", samples, min_interval_s=0.0)
 
     async def archive_cold_runs(
         self,
