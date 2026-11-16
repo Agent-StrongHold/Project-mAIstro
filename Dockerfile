@@ -135,8 +135,8 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # flags the 1.27.2 stdlib inside the built binary.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
