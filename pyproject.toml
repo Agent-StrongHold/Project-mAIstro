@@ -255,6 +255,13 @@ constraint-dependencies = [
     # which tracks this floor.
     "fastmcp>=4.1.2",
     "setuptools>=84.1.0",
+    # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
+    # authlib arrives via fastmcp / browser-use; dnspython via email-validator
+    # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
+    # direct production pin — floors keep the frozen dev env above the advisories.
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0",
 ]
 
 [tool.ruff]
