@@ -1,5 +1,44 @@
 # #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8)
 
+## Repair round 2026-11-16 (head 262edeceb; base f8a2df966): Trivy scan of maistro-engine-research
+
+At head 262edeceb the only RED check is "Container scan + SBOM + cosign" (run 43843632088, job 133218221240;
+all other 77 checks green, including the previously-RED Coverage, Quality and test contexts). The failing step
+is `Trivy scan maistro-engine-research (HIGH/CRITICAL only)` — 15 HIGH findings, two surfaces:
+
+- `usr/local/bin/docker` (gobinary): CVE-2026-116587 (go-jose/v4 4.1.5, fixed 4.1.6) and CVE-2026-78661
+  (golang.org/x/net 0.60.0, fixed 0.62.0). Root cause: commit 8b5884567 added the `go get` module upgrades to
+  the ROOT Dockerfile's dockerclibuild stage only — Dockerfile.research rebuilt the same pinned tag (v29.9.1,
+  dfc520d) from the stock vendor.mod, so its CLI kept the vulnerable module set.
+- python-pkg in the locked venv: oauthlib 4.0.0 (CVE-2026-49272), pyasn1 0.6.4 (CVE-2026-119194…119197),
+  pypdf 6.21.2 (CVE-2026-119203…119209), soupsieve 3.0.3 (CVE-2026-126190) — all with published fixes
+  (4.0.1 / 0.6.5 / 6.21.4 / 4.0.0), so per the gate's own policy (upgrade first, allowlist only when no fix
+  exists) the lock moved, exactly and only, to the fix versions (`uv lock -P <pkg>==<fix>`), the same doctrine
+  as 375232984. The four ship ONLY in the research image's dependency contract
+  (`maistro-server --extra observability --extra browser`); the engine/rsi/hive-conductor exports are
+  unchanged, matching CI's green scans of those images at the same head.
+
+Fixes: Dockerfile.research dockerclibuild mirrors the root Dockerfile's `go get go-jose@v4.1.6
+klauspost@v1.20.2 x/net@v0.62.0` + `-mod=mod` build (tag/commit assertion unchanged); uv.lock carries the four
+version bumps. Local proof at the new head:
+
+- `scripts/buildx-build-retry.sh -- -f Dockerfile.research -t maistro-engine-research:pr-2120
+  --no-cache-filter production-apt --load .` → rc=0; in-image: oauthlib 4.0.1, pyasn1 0.6.5, pypdf 6.21.4,
+  soupsieve 4.0, `docker --version` = v29.9.1, build dfc520d.
+- `trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml
+  maistro-engine-research:pr-2120` (trivy v0.73.0, DB 2026-11-16) → **rc=0, 0 findings on every target**
+  (debian 13.7: 0; usr/local/bin/docker gobinary: 0; all python-pkg: 0).
+- `uv run python scripts/check-image-pins.py` / `check-image-inventory.py` / `--base-digests Dockerfile
+  packages/hive-conductor/Dockerfile` → all rc=0; `check-suite-inventory.py` → 21 suites match; ruff
+  check/format green; scoped pytest (image pins, pinned digests, distribution contract, inventory, lock
+  reconciliation, image lock contract, prepull) → 238 passed.
+- Supply chain (pip-audit): CI-exact freeze (`uv sync --locked --all-extras`) → `pip-audit --strict` report →
+  `scripts/pip_audit_gate.py` → "pip-audit OK (1 known, all triaged in ALLOWED)" (ecdsa only; the four bumped
+  packages are not in the workspace env — CI's pip-audit never covered them; they are image-scanned).
+- Vulture ledger (CI-repair round check): `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1238 reviewed identities = 1238 findings; no amendment needed (no Python
+  source changed).
+
 Status of the dependabot bump branch `dependabot/docker/packages/hive-conductor/node-25-alpine`
 at exact head `26ad95ed8aceafa7195e29b03f46b8b2d034ade9` (base `78133c093`), verified
 2026-10-26 by an independent round (job `22c97181d0764991a9f7155fee7ff678`).

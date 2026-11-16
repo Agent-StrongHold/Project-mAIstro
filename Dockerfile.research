@@ -112,8 +112,19 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    # Same doctrine as the root Dockerfile's dockerclibuild stage (#2120 repair
+    # round): the release tag is immutable, its vendored dependency set is not
+    # the CVE state. Trivy v0.73.0 flags CVE-2026-116587 (go-jose/v4 4.1.5,
+    # HIGH, fixed 4.1.6) and CVE-2026-78661 (golang.org/x/net 0.60.0, HIGH,
+    # fixed 0.62.0) in the research image's /usr/local/bin/docker — the root
+    # image's CLI already carries these upgrades; this one was rebuilt from the
+    # stock vendor.mod. Upgrade exactly those modules off the pinned tag and
+    # rebuild.
+    go get github.com/go-jose/go-jose/v4@v4.1.6 github.com/klauspost/compress@v1.20.2 golang.org/x/net@v0.62.0 && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
