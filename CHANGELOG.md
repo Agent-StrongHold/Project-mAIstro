@@ -96,6 +96,7 @@ or placeholder-only section.
   gallery adapter package proves the chain end to end: its manifest id,
   version, publisher and the digests of the manifest and the wheel it
   publishes travel with one governed call into the terminal audit event.
+
 - **Workspace Approvals projection over the existing capability + HITL APIs
   (#2278, Parity P-1).** New `/approvals` page lists
   `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts

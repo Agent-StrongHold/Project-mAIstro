@@ -172,6 +172,16 @@ def reservations(snapshot: dict[str, Any], tasks: dict[str, Any]) -> list[dict[s
         text(row.get("reference"), "reservation.reference")
         require(bool(SHA.fullmatch(str(row.get("head_sha", "")))), "reservation needs head SHA")
         validate_scope(row)
+        # A reservation protects everything its named tasks declare. Its own
+        # paths/resources may be a narrower spot-check of the owner's actual
+        # work, so the protected surface also includes each named task's full
+        # declared scope; otherwise a higher-ranked unowned task can land
+        # inside the reserved task while that owner's slice goes unselected
+        # with its reservation still active (Codex P2 review of #1640).
+        for task_id in row["tasks"]:
+            named = tasks[task_id]
+            row["paths"] = sorted(set(row["paths"]) | set(named["paths"]))
+            row["resources"] = sorted(set(row["resources"]) | set(named["resources"]))
         result.append(row)
     return result
 

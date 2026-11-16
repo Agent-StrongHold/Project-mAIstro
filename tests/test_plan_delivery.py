@@ -284,6 +284,35 @@ def test_one_owner_cannot_receive_two_simultaneous_tasks():
     assert sum(t["selected"] for t in run(value)["frontier"]) == 1
 
 
+def test_reservation_protects_its_named_tasks_declared_scope():
+    """A narrow reservation row still shields its named task's full scope."""
+    owned = task("core", milestone=2, paths=["packages/core"])
+    higher = task("next", issue=1049, paths=["packages/core/next.py"])
+    value = snapshot(owned, higher)
+    value["reservations"] = [reservation(tasks=["core"], paths=["packages/core/current.py"])]
+    report = run(value)
+    selected = [t["id"] for t in report["frontier"] if t["selected"]]
+    assert selected == ["core"]
+    blocked = {t["id"]: t["blockers"] for t in report["blocked"]}
+    assert any("reserved scope: PR #1575" in b for b in blocked["next"])
+
+
+def test_reservation_with_multiple_named_tasks_protects_each_declared_scope():
+    """Every named task's scope joins the protected surface, not just the first."""
+    value = snapshot(
+        task("core"),
+        task("child", issue=1048, paths=["packages/other/mod.py"]),
+        task("probe_a", issue=1049, paths=["packages/core/probe.py"]),
+        task("probe_b", issue=1050, paths=["packages/other/mod.py/util.py"]),
+    )
+    value["reservations"] = [reservation(tasks=["core", "child"], paths=["packages/elsewhere"])]
+    report = run(value)
+    blocked = {t["id"]: t["blockers"] for t in report["blocked"]}
+    assert any("reserved scope: PR #1575" in b for b in blocked["probe_a"])
+    assert any("reserved scope: PR #1575" in b for b in blocked["probe_b"])
+    assert not [t for t in report["frontier"] if t["id"].startswith("probe_")]
+
+
 def test_critical_chain_prioritizes_dependency_work_over_isolated_cleanup():
     report = run(
         snapshot(task("cleanup", build_points=0), task(), task("child", depends_on=["core"]))
