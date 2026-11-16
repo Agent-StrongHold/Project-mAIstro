@@ -34,6 +34,15 @@ or placeholder-only section.
 
 ### Security
 
+- **docker CLI vendored klauspost/compress raised to v1.20.2 for the Grype
+  High (#2059).** The Grype cross-check (`--fail-on high --only-fixed`) in
+  "Container scan + SBOM + cosign" failed on `maistro-engine:pr-2059`
+  (security.yml run 43878205511, job 133336745388): GO-2026-6865 (High,
+  fixed in 1.20.2) in the vendored module set of the source-built
+  `/usr/local/bin/docker`. Both Dockerfiles that build that CLI add
+  `github.com/klauspost/compress@v1.20.2` to the stage's `go get`;
+  `tests/test_docker_cli_vendored_advisory_floors.py` holds the pin closed.
+
 - **Container-gate images move to CPython 3.13.18 / 3.12.16 for the grype
   CPython-binary CRITICAL (#2059).** The Grype cross-check
   (`--fail-on high --only-fixed`) failed on `hive-conductor:pr-2059`
