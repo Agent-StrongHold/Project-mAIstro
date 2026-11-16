@@ -80,9 +80,15 @@ jobs:
       # 36 `.github` findings while that glob was already listed. The
       # allowlist does not have that footgun for roots we do not ship.
       #
-      # Nested noise *inside* shipped trees still uses deny-globs; every
-      # directory deny MUST start with `**/` (enforced by
-      # `test_directory_globs_are_absolute_path_safe`).
+      # `packages/hive-conductor/eval/**` — immutable department eval fixtures
+      # (SPEC/cage-guard). Not a shipped runtime surface; DS176209 flags
+      # scenario prose. Do not edit those trees to silence scanners.
+      #
+      # `quality/**` — ratchet ledgers / baselines (JSON). Placeholder
+      # comments and identity strings are not executable product code.
+      #
+      # Setting this input REPLACES the action's default, so `**/.git/**` and
+      # `**/bin/**` are repeated rather than inherited.
       #
       # `**/hive-conductor/eval/**` — immutable department eval fixtures
       # (SPEC/cage-guard), under packages/ so inside the allowlist; deny it.
@@ -95,13 +101,7 @@ jobs:
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          # `**/deploy/scripts/**` is required because `**/scripts/**` in the
-          # allowlist also matches ops scripts under deploy/; product compose
-          # templates live under `templates/**/deploy/` (not `deploy/scripts/`)
-          # and must stay scanned.
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,**/hive-conductor/eval/**,**/deploy/scripts/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
-          # AllowFilters also see absolute runner paths — prefix every root with **/.
-          extra-options: --include-globs **/packages/**,**/scripts/**,**/templates/**,**/extensions/**
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,packages/hive-conductor/eval/**,quality/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
