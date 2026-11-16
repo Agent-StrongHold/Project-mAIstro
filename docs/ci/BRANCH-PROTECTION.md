@@ -50,7 +50,7 @@ is also required live on both branches; because it is produced by
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
-| `Mutation gate (changed critical lines)` | ○ | ○ |
+| `Mutation gate (changed critical lines)` | adv | adv |
 | `Quality / Acceptance state` | adv | adv |
 | `Quality / Agent store writes` | adv | adv |
 | `Quality / Architecture fitness` | adv | adv |
