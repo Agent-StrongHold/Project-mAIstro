@@ -38,3 +38,34 @@ inventory-delta:
 The aggregate 87% publish-set floor itself needs CI's full multi-producer
 combine and was not reproduced locally; the branch deletes ~11k lines net, so
 the risk direction is downward in denominator, not coverage.
+
+## Second verification round (2026-11-16, head 03a40f495fa9 = develop f8a2df966 merged)
+
+Issue test plan re-executed against the merged head:
+
+- `scripts/check-principal-identity.py`: ok — 4 tolerated → 0 current, none new.
+- `pytest packages/maistro-core/tests/fitness/test_principal_identity.py`
+  `packages/maistro-server/tests/api/test_auth.py`: 39 passed.
+- `pytest packages/hive-conductor/backend/tests/test_username_registry.py`:
+  24 passed.
+
+Driver check battery found one intermittent failure:
+`test_concurrent_open_registration_claims_username_once`
+(`test_registration_policy.py`) asserted 7×409 but observed 2×429 among the
+eight simultaneous registrations. Diagnosis: the test's fresh
+`AuthThrottle(_STRICTER.register)` kept production budgets
+(per_client=5, per_account=3) that are *below* the contender count, and every
+409 loser records a throttle failure (`routes/auth.py`); under machine load the
+eight `check()` calls stagger, a late arrival reads a filled budget, and the
+route lawfully answers 429. The test body was byte-identical on the develop
+base, and the suite passed on re-run and in isolation — a pre-existing timing
+flake, not a regression of this branch.
+
+Repair (no collected count moved): the fresh throttle is now built with
+`AuthLimits(per_client=8, per_account=8, global_failures=8)` — at most seven
+failures can be recorded, so no scope can refuse, and the outcome depends on
+the username-claim critical section alone. The route's real check/record path
+stays exercised; the assertion set (1×200 / 7×409 / one row / one username) is
+unchanged. Verified 5/5 passes under a 12-process CPU load on 20 cores, where
+request runtimes stretched 2.1s → 5.8s — the staggered-arrival shape that
+produced the 429s. Full hive battery re-run: 199 passed; suite inventory: ok.

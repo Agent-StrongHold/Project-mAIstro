@@ -517,11 +517,24 @@ class TestInvitations:
         from routes import auth as auth_routes
         from services import registration_policy as rp
 
-        from maistro.security.auth_throttle import AuthThrottle
+        from maistro.security.auth_throttle import AuthLimits, AuthThrottle
 
         rp.set_mode("open", actor="admin:test")
+        # A fresh throttle isolates this test from the process-global budget,
+        # but the production registration budgets (per_client=5,
+        # per_account=3) are *below* the eight contenders here, and every 409
+        # loser records a failure (`_REGISTER_THROTTLE.record_failure` in
+        # routes/auth.py). When machine load staggers the eight `check()`
+        # calls, a late arrival reads a filled budget and the route lawfully
+        # answers 429 — the assertion then fails on scheduler timing, not on
+        # the username claim under test (#1248). Budgets at the contender
+        # count keep the route's real check/record path exercised while
+        # making the outcome depend on the critical section alone: at most
+        # seven failures can be recorded, so no scope can refuse.
         monkeypatch.setattr(
-            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+            auth_routes,
+            "_REGISTER_THROTTLE",
+            AuthThrottle(AuthLimits(per_client=8, per_account=8, global_failures=8)),
         )
 
         def slow_hash(_password: str) -> str:
