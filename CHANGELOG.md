@@ -2041,6 +2041,22 @@ or placeholder-only section.
 
 ### Dependencies
 
+- **Pip-audit-advisory refresh across the lock and the engine docker CLI
+  (#2303 CI repair).** The supply-chain gate and the maistro-engine Trivy scan
+  both failed on advisories with fixed releases available. `uv.lock` moves
+  `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 → 3.3.2
+  (CVE-2026-119286, fixed in 3.3.1), `joserfc` 1.7.5 → 1.8.0 (CVE-2026-119284,
+  fixed in 1.7.6), and `opentelemetry-api` 1.45.1 → 1.45.2 (CVE-2026-126360;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move to their
+  matching releases). The engine and research images' source-built docker CLI
+  moves v29.9.1 → v29.10.0-rc.2 (eaae503, commit-verified in stage): the first
+  docker/cli build vendoring go-jose v4.1.7 (CVE-2026-116587, fixed in v4.1.6)
+  and golang.org/x/net v0.62.0 (CVE-2026-78661) — the stable v29.9.2/v29.9.3
+  tags re-vendor the vulnerable pair, so the rc is the smallest real fix;
+  re-bump when stable v29.10.0 ships. All four Python upgrades are floor moves
+  under existing constraints (no manifest change), and the image venvs that
+  install from the lock clear the Trivy `dnspython` HIGH in the same change.
+
 - **Pillow and certifi move past their open advisories (#363).** The
   installed `pillow` 12.3.0 carried eight advisories with fixes only in
   13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its

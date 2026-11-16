@@ -17,6 +17,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 from __future__ import annotations
 
 import re
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,13 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
+# Memoized: the sweep below asks `_is_scanned` about every shipped source
+# file, and each call used to re-read and re-parse devskim.yml twice (once per
+# glob list) and recompile every glob regex — ~3300 redundant YAML parses per
+# sweep, ~8.5s locally and past the coverage gate's 30s per-test cap on a
+# loaded runner (#2303). The values are constants of the workflow file; the
+# assertions are unchanged.
+@cache
 def _scanner_step() -> dict[str, object]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
@@ -47,6 +55,7 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
+@cache
 def _ignore_globs() -> list[str]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
@@ -54,6 +63,7 @@ def _ignore_globs() -> list[str]:
     return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
 
 
+@cache
 def _include_globs() -> list[str]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
@@ -62,6 +72,7 @@ def _include_globs() -> list[str]:
     return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
 
 
+@cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
 
