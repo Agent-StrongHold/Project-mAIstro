@@ -714,6 +714,7 @@ class RunStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def create_attempt(
@@ -1678,9 +1679,17 @@ class InMemoryRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         node_run = self._require_node_run(node_run_id)
         self._refuse_under_terminal_run(node_run)
+        if expected_current_attempt_id is not None:
+            attempts = [a for a in self._attempts.values() if a.node_run_id == node_run_id]
+            current = max(attempts, key=lambda a: a.ordinal, default=None)
+            if current is not None and current.attempt_id != expected_current_attempt_id:
+                raise RunIntegrityError(
+                    f"Attempt {expected_current_attempt_id!r} was superseded by {current.attempt_id!r}"
+                )
         if accepted_outcome is not None:
             if accepted_outcome.node_run_id != node_run_id:
                 raise RunIntegrityError("accepted outcome belongs to a different NodeRun")

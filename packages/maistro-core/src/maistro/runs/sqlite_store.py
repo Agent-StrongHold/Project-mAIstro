@@ -1417,10 +1417,27 @@ class SqliteRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         async with self._write_lock:
             node_run = await self._require_node_run(node_run_id)
             await self._refuse_under_terminal_run(node_run)
+            if expected_current_attempt_id is not None:
+                cursor = await self._conn.execute(
+                    """SELECT attempt_id FROM canonical_attempts
+                       WHERE node_run_id = ? ORDER BY ordinal DESC LIMIT 1""",
+                    (node_run_id,),
+                )
+                row = await cursor.fetchone()
+                current_attempt_id = row[0] if row is not None else None
+                if (
+                    current_attempt_id is not None
+                    and current_attempt_id != expected_current_attempt_id
+                ):
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current_attempt_id!r}"
+                    )
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")

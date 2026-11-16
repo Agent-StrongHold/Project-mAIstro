@@ -1460,6 +1460,7 @@ class PgRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
             node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
@@ -1470,6 +1471,20 @@ class PgRunStore:
             node_run = NodeRun.model_validate(
                 await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
             )
+            if expected_current_attempt_id is not None:
+                current_attempt_id = await conn.fetchval(
+                    """SELECT attempt_id FROM canonical_attempts
+                       WHERE node_run_id = $1 ORDER BY ordinal DESC LIMIT 1""",
+                    node_run_id,
+                )
+                if (
+                    current_attempt_id is not None
+                    and current_attempt_id != expected_current_attempt_id
+                ):
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current_attempt_id!r}"
+                    )
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")

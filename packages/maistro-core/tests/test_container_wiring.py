@@ -1334,6 +1334,281 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
     assert "could not be reconciled" in caplog.text
 
 
+async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() -> None:
+    """A crash between the sweep's two halves is repaired by the next tick (#1621).
+
+    The reclaim commits first — the Attempt settles ``CANCELLED`` with the
+    recovery marker — and the RECOVERED park is a second, separate write. A
+    process that died between them stranded CANCELLED Attempt / RUNNING
+    NodeRun / RUNNING Run forever: the reclaim never returns a settled
+    Attempt again, and the terminal replay only scanned COMPLETED Attempts.
+    The replay now includes reclaimed Attempts, so the next tick lands the
+    same park the interrupted tick would have — the healing the tick's own
+    contract promises.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-heal")).project_id
+    graph = Graph(
+        workspace_id="recovery-heal",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-D", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after_lapse = lease.expires_at + timedelta(seconds=1)
+
+    # The tick dies at the exact seam: the reclaim commits, then the process
+    # is gone before the park. The exception propagates out of the tick — the
+    # server cadence logs it and retries; what it retries on is asserted next.
+    original = store.reclaim_expired_attempts
+
+    async def reclaim_then_die(**kwargs: Any) -> list[Any]:
+        reclaimed = await original(**kwargs)
+        assert reclaimed, "the lease has lapsed; the reclaim must settle it"
+        raise RuntimeError("process died between the two halves")
+
+    store.reclaim_expired_attempts = reclaim_then_die  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="between the two halves"):
+            await container.recover_abandoned_attempts(now=after_lapse)
+    finally:
+        store.reclaim_expired_attempts = original  # type: ignore[method-assign]
+
+    # The crash's signature: the physical record settled, the logical records
+    # still claim the work is in flight.
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert "worker-D" in (settled.error or "")
+    stranded_node = await store.get_node_run(node_run.node_run_id)
+    assert stranded_node is not None and stranded_node.status is RunStatus.RUNNING
+    stranded_run = await store.get_run(run.run_id)
+    assert stranded_run is not None and stranded_run.status is RunStatus.RUNNING
+
+    # The next tick heals it — and counts the recovery it completed.
+    healed = await container.recover_abandoned_attempts(now=after_lapse)
+    assert healed == 1
+    parked_node = await store.get_node_run(node_run.node_run_id)
+    assert parked_node is not None and parked_node.status is RunStatus.WAITING
+    parked_run = await store.get_run(run.run_id)
+    assert parked_run is not None and parked_run.status is RunStatus.WAITING
+
+    # Idempotent: nothing is left to replay.
+    assert await container.recover_abandoned_attempts(now=after_lapse) == 0
+
+
+async def test_the_replay_does_not_park_a_requested_cancellation() -> None:
+    """`is_reclaimed_attempt` keeps the replay inside recovery's lane (#1621).
+
+    CANCELLED is also what a person's cancellation records, and that
+    disposition belongs to the path that took it: replaying it as a RECOVERED
+    park would rewrite a record the request produced. Only the sweep's own
+    error marker qualifies a CANCELLED Attempt for the terminal replay.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-asked")).project_id
+    graph = Graph(
+        workspace_id="recovery-asked",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-E", lease_ttl=timedelta(seconds=30)
+    )
+    await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        fencing_token=attempt.execution_lease.fencing_token if attempt.execution_lease else None,
+        error="cancelled at the caller's request",
+    )
+    from maistro.runs.lifecycle import is_reclaimed_attempt, reclaimed_attempt_error
+
+    forged_without_lease = attempt.model_copy(
+        update={
+            "status": AttemptStatus.CANCELLED,
+            "error": reclaimed_attempt_error("worker-E"),
+            "execution_lease": None,
+        }
+    )
+    assert not is_reclaimed_attempt(forged_without_lease)
+    after_lapse = (
+        attempt.execution_lease.expires_at + timedelta(seconds=1)
+        if attempt.execution_lease and attempt.execution_lease.expires_at
+        else None
+    )
+    assert after_lapse is not None
+
+    swept = await container.recover_abandoned_attempts(now=after_lapse)
+
+    assert swept == 0
+    left_node = await store.get_node_run(node_run.node_run_id)
+    assert left_node is not None and left_node.status is RunStatus.RUNNING
+    left_run = await store.get_run(run.run_id)
+    assert left_run is not None and left_run.status is RunStatus.RUNNING
+
+
+async def test_the_replay_does_not_park_under_a_live_retry() -> None:
+    """A reclaimed Attempt never overwrites a live retry's NodeRun (#1621).
+
+    The newest Attempt after a reclaim is often the retry it triggered: a
+    worker that noticed the park and claimed the node again. That Attempt's
+    unexpired lease is exactly what ``has_live_execution_lease`` guards with —
+    the replay must leave the node to its live holder, reclaimed predecessor
+    or not.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-retry")).project_id
+    graph = Graph(
+        workspace_id="recovery-retry",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+
+    # First holder dies: its lease lapses and the sweep reclaims it, parking
+    # the logical records exactly as shipped.
+    first = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-F1", lease_ttl=timedelta(seconds=30)
+    )
+    assert first.execution_lease is not None and first.execution_lease.expires_at is not None
+    lapsed = first.execution_lease.expires_at + timedelta(seconds=1)
+    assert await container.recover_abandoned_attempts(now=lapsed) >= 1
+    parked = await store.get_node_run(node_run.node_run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+
+    # A retry claims the node again with a live lease before the next tick.
+    retry = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-F2", lease_ttl=timedelta(seconds=30)
+    )
+    assert retry.execution_lease is not None and retry.execution_lease.expires_at is not None
+    while_retry_live = retry.execution_lease.expires_at - timedelta(seconds=1)
+
+    swept = await container.recover_abandoned_attempts(now=while_retry_live)
+
+    assert swept == 0
+    held = await store.get_node_run(node_run.node_run_id)
+    assert held is not None and held.status is RunStatus.WAITING
+
+
+async def test_replay_does_not_park_over_a_retry_committed_after_selection() -> None:
+    """A retry appearing after recovery's snapshot supersedes its stale decision."""
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-race")).project_id
+    graph = Graph(
+        workspace_id="recovery-race",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    abandoned = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-race-old", lease_ttl=timedelta(seconds=30)
+    )
+    assert (
+        abandoned.execution_lease is not None and abandoned.execution_lease.expires_at is not None
+    )
+    after_lapse = abandoned.execution_lease.expires_at + timedelta(seconds=1)
+
+    original_reclaim = store.reclaim_expired_attempts
+
+    async def reclaim_then_die(**kwargs: Any) -> list[Any]:
+        reclaimed = await original_reclaim(**kwargs)
+        assert reclaimed
+        raise RuntimeError("interrupted after reclaim")
+
+    store.reclaim_expired_attempts = reclaim_then_die  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="after reclaim"):
+            await container.recover_abandoned_attempts(now=after_lapse)
+    finally:
+        store.reclaim_expired_attempts = original_reclaim  # type: ignore[method-assign]
+
+    original_transition = store.transition_node_run
+    inserted = False
+
+    async def transition_after_retry(node_run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal inserted
+        if kwargs.get("expected_current_attempt_id") == abandoned.attempt_id and not inserted:
+            inserted = True
+            retry = await store.create_attempt(
+                node_run_id, lease_holder="worker-race-new", lease_ttl=timedelta(seconds=30)
+            )
+            await store.transition_attempt(
+                retry.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=(
+                    retry.execution_lease.fencing_token
+                    if retry.execution_lease is not None
+                    else None
+                ),
+            )
+        return await original_transition(node_run_id, target, **kwargs)
+
+    store.transition_node_run = transition_after_retry  # type: ignore[method-assign]
+    try:
+        await container.recover_abandoned_attempts(now=after_lapse)
+    finally:
+        store.transition_node_run = original_transition  # type: ignore[method-assign]
+
+    attempts = await store.list_attempts(node_run.node_run_id)
+    assert inserted and attempts[-1].status is AttemptStatus.RUNNING
+    current_node = await store.get_node_run(node_run.node_run_id)
+    assert current_node is not None and current_node.status is RunStatus.RUNNING
+    current_run = await store.get_run(run.run_id)
+    assert current_run is not None and current_run.status is RunStatus.RUNNING
+
+
 # --- #231: the schedule admitter is wired, not left for callers to build ----
 
 
