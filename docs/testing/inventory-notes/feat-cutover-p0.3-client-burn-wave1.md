@@ -90,3 +90,75 @@ lives under `lib/profile.ts` (detector-exempt, per its own comment
 about the 30s shared-client body budget). Live-stack smoke
 (Settings load/save, Skills list, Profile stream, `hctl status`)
 remains UNVERIFIED.
+
+## Verification + supply-chain repair round, head `42d433c2c3c2`
+
+Branch merged `origin/develop` (`f8a2df966a1d`, the then-tip) so the
+merge base measures the tree the queue integrates into; `origin/develop`
+still resolved to `f8a2df966a1d` at repair time (no newer sync needed).
+All branch-content gates re-run green at the merge head:
+
+- `uv run python scripts/check-frontend-typed-client.py` → exit 0:
+  base `f8a2df966a1d` → candidate `42d433c2c3c2`, **42 → 40 raw fetch,
+  120 → 119 hand-typed, none new**.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0: 1238
+  identities, exact ledger match, `never_allowlist: 0` (no candidate
+  ledger amendment needed).
+- `uv run python scripts/check-shipped-surface-truth.py`,
+  `check-ratchet-provenance.py`, `check-suite-inventory.py` (21
+  suites), `check-doc-links.py`, `check-release-consistency.py` → all
+  exit 0.
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `npm run build` in `packages/hive-conductor/frontend` → exit 0
+  (tsc ×2 + vite, ~4s).
+
+### Supply chain (pip-audit) — reproduced and repaired
+
+The hosted failure was reproduced locally against the frozen env:
+four advisories outside the triaged allowlist — dnspython 2.9.0
+CVE-2026-128089 (fix 2.9.2), graphql-core 3.3.0 CVE-2026-119286 (fix
+3.3.1), joserfc 1.7.5 CVE-2026-119284 (fix 1.7.6), opentelemetry-api
+1.45.1 CVE-2026-126360 (fix 1.45.2). The branch's diff touches no
+Python dependency input (no `uv.lock`, no `pyproject.toml`), so the
+advisories fail identically on the develop base — trunk drift, not a
+regression — but they are concretely fixable, so this round fixed them
+per the gate's own instruction ("Fix by upgrading the dependency") and
+the documented `constraint-dependencies` precedent (#891/#2238, #1084,
+CONNECT tip #2327 rounds):
+
+- Dev transitive floors raised in `[tool.uv] constraint-dependencies`:
+  `dnspython>=2.9.2` (was 2.9.0), `graphql-core>=3.3.1` (was 3.3.0),
+  new `joserfc>=1.7.6` — each annotated with the advisory and round.
+- Production floor raised where the package actually ships:
+  `opentelemetry-api>=1.45.2` in the root `dependencies` and
+  `>=1.45.2,<2` in `maistro-core`'s `observability` extra.
+- `uv lock` moved exactly the 6-package security closure (the four
+  targets plus opentelemetry-sdk and opentelemetry-semantic-conventions
+  pulled by the sdk); `uv sync --locked` clean.
+- CI-exact re-run (`uv sync --locked --all-extras` → freeze →
+  `pip-audit --strict` → `scripts/pip_audit_gate.py`) → exit 0:
+  "pip-audit OK (1 known, all triaged in ALLOWED)"; direct-dependency
+  usage OK.
+- The hive-conductor runtime export (`uv export --locked --package
+  hive-conductor --no-dev`) contains exactly one of the four packages —
+  opentelemetry-api, now 1.45.2 — so the image's Python closure clears
+  the advisory set too. `maistro-core[observability]` (the image's
+  second dependency contract) imports cleanly at 1.45.2 with the
+  tracer resolvable.
+
+### Container scan + SBOM + cosign — not branch-attributable, partially addressed
+
+The hosted log excerpt carries no step-level finding (bare exit 1).
+This branch cannot introduce HIGH/CRITICAL image findings: it changes
+no Dockerfile, no npm dependency, and its only image-relevant input is
+frontend TS source. The single image-visible Python advisory
+(opentelemetry-api) is fixed by the lock bump above; an OS-package or
+infrastructure verdict (the workflow documents the libexpat/cache
+classes) would fail identically on develop and needs a hosted re-run —
+UNVERIFIED locally by design (a 4-image Trivy/Grype pipeline does not
+fit this repair round's budget).
+
+`security` is the workflow-level aggregate: its SAST legs passed on
+this head and its remaining children are the two jobs above.
+

@@ -12,7 +12,10 @@ dependencies = [
     # Tool Protocol
     "fastmcp>=3.2.0",
     # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
-    "opentelemetry-api>=1.30",
+    # Floor is the pip-audit gate's security floor: CVE-2026-126360 is fixed in
+    # 1.45.2 (2026-11 CI-repair round, #1995); opentelemetry-api ships in the
+    # runtime images, so the declared floor (not just the lock) must clear it.
+    "opentelemetry-api>=1.45.2",
     # Database
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",
@@ -244,7 +247,9 @@ constraint-dependencies = [
     # the advisory text still names the 3.3.0rc1 fix line). Both packages
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
-    "graphql-core>=3.3.0",
+    # CVE-2026-119286 (pip-audit gate, 2026-11-15, #1995 CI-repair round) moved
+    # the fix line to 3.3.1; still moto[server]-only test infrastructure.
+    "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
     # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
@@ -261,7 +266,12 @@ constraint-dependencies = [
     # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
     # direct production pin — floors keep the frozen dev env above the advisories.
     "authlib>=1.9.1",
-    "dnspython>=2.9.0",
+    # Same shape again (pip-audit gate, 2026-11-15, #1995 CI-repair round):
+    # joserfc arrives via authlib / fastmcp-slim / moto and dnspython still via
+    # email-validator. CVE-2026-119284 is fixed in joserfc 1.7.6;
+    # CVE-2026-128089 in dnspython 2.9.2. None is a direct production pin.
+    "joserfc>=1.7.6",
+    "dnspython>=2.9.2",
 ]
 
 [tool.ruff]
