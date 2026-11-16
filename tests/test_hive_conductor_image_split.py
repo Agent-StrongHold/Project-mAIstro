@@ -1,7 +1,7 @@
 """The Conductor image's builder/runtime base split is a pinned contract.
 
 #2304 moved the Conductor image's runtime OS layer to
-`python:3.15.0-slim-bookworm` while the app keeps running on the registered
+`python:3.15.2-slim-bookworm` while the app keeps running on the registered
 CPython 3.13.18 build: the `pybuild` stage keeps the 3.13.18 pin (coincurve
 21.0.0 publishes `cp313` wheels only, and the build smoke asserts the exact
 interpreter version), and the final stage grafts pybuild's CPython
@@ -61,8 +61,8 @@ def test_pybuild_stays_on_the_registered_contract_pin() -> None:
 def test_runtime_os_layer_is_registered_and_not_the_builder_base() -> None:
     """The OS layer carries dependabot's bump, registered in its own row."""
     refs = _stage_refs()
-    row = _registry_row("python:3.15.0-slim-bookworm")
-    assert refs["runtime-apt"] == f"python:3.15.0-slim-bookworm@{row['digest']}"
+    row = _registry_row("python:3.15.2-slim-bookworm")
+    assert refs["runtime-apt"] == f"python:3.15.2-slim-bookworm@{row['digest']}"
     assert "packages/hive-conductor/Dockerfile" in row["used_by"]
     # The split is the point: OS layer and contract interpreter are two
     # different registered builds, on purpose (see the stage comments).

@@ -533,3 +533,38 @@ pybuild change is `FROM` + smoke-assert constant only, with the venv build,
 identity ARG pins and graft steps untouched, and the trivy/grype proofs above
 run at scanner level); the e2e-ui rsi-polling-resilience flake documented in
 round 6 remains maintainer scope.
+
+### Round-7 addendum — the build-cycle gap this round *did* catch: the
+### runtime-apt base itself
+
+The salvage had refreshed the 3.13 and 3.12 pins but left the Conductor's
+`runtime-apt` on the original `python:3.15.0-slim-bookworm@0e019bbd`. The
+round-7 local build cycle caught it: grype v0.116.0 on the freshly built
+hive-conductor image flags **CVE-2026-115557, Critical, python 3.15.0
+binary, fixed 3.15.2** — the OS python of the 3.15 base stays in the final
+image (only its pip is pruned), so the binary is scanned even though the app
+runs on the grafted 3.13.18 build. The same build also showed apt
+CVE-2026-109518 HIGH — a local stale-`apt`-layer artifact: the rebuild's fresh
+`apt-get upgrade` installs 2.6.2 and the rescan is clean (CI's 06:33 scan of
+the old image already showed debian 0).
+
+**Repair executed:** `runtime-apt` moved to the registry-verified
+`python:3.15.2-slim-bookworm@sha256:96599df8…` (manifest list inspected;
+CPython 3.15.2, still Debian 12.15 bookworm so the graft's glibc assumption
+holds; grype `--only-fixed --fail-on high` on the base itself: exit 0). The
+ledger row, the Dockerfile stage comments, the split test and the CHANGELOG
+moved with it. **Proof on the rebuilt image** (`docker build -f
+packages/hive-conductor/Dockerfile --build-arg VITE_POC_MODE=pm
+--build-arg VITE_BASE_PATH=/pm/ -t hive-conductor:round7 .`, exit 0 — the
+build-time smoke `(3, 13, 18)` + identity pins + seed derivation pass inside
+the build): trivy `--severity HIGH,CRITICAL --ignore-unfixed` → 0 findings;
+grype `--only-fixed --fail-on high` → exit 0; built-image probes →
+`sys.version_info[:3] == (3, 13, 18)` with `sys.executable` realpath
+`/usr/local/bin/python3.13`, identity pins 2.12.2/21.0.0/1.6.2 +
+`ConductorSeed` derivation + native coincurve import, base OS python reads
+3.15.2 with apt installed 2.6.2; boot: `GET /health/ready` → 200
+`{"ready":true,…}` with `CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1`.
+
+This closes the loop the earlier rounds could not: the PR's own purpose
+(Debian/CPython freshness of the 3.15 OS layer) now ships in a state both
+scanners of the gate accept.

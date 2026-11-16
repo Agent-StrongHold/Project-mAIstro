@@ -40,10 +40,14 @@ or placeholder-only section.
   applies again. Same locked contract for the shipped images (they install
   via `uv export --locked` + `--require-hashes` from this lock).
 
-- **Conductor image runtime OS layer builds on `python:3.15.0-slim-bookworm`
+- **Conductor image runtime OS layer builds on `python:3.15.2-slim-bookworm`
   (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
-  moved to the CPython 3.15.0 base build (fresh Debian 12 security-patch
-  state). The app keeps running on the registered CPython 3.13.18 contract
+  moved to the CPython 3.15 line (fresh Debian 12 security-patch state),
+  landing on the 3.15.2 base build: the grype cross-check flags
+  CVE-2026-115557 (Critical, fixed 3.15.2) on the 3.15.0 CPython binary the
+  original dependabot pin shipped — the OS python stays in the final image
+  even though the app runs on the grafted contract build, so the binary is
+  scanned. The app keeps running on the registered CPython 3.13.18 contract
   interpreter: the builder stage keeps the 3.13.18 pin and the runtime grafts
   its exact installation (binary, libpython, stdlib), so the shipped venv
   needs no managed download. Identity pins, the uv.lock install and the

@@ -14,7 +14,7 @@
 # gate's grype leg flags CVE-2026-115557, Critical, fixed in 3.13.18 — the
 # same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363),
 # runtime-apt is only the Debian OS/security-patch layer and
-# moved to python:3.15.0-slim-bookworm, and the final stage grafts the
+# moved to python:3.15.2-slim-bookworm, and the final stage grafts the
 # builder's exact CPython installation so the copied venv runs on the contract
 # interpreter without any managed download. See the stage comments below.
 # ---- frontend build ----
@@ -74,7 +74,7 @@ RUN apk add --no-cache git && \
 # container-gate round: grype flags CVE-2026-115557, Critical, fixed in
 # 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152). #2304
 # moved the runtime OS layer to
-# python:3.15.0-slim-bookworm (see runtime-apt); bumping this stage to match
+# python:3.15.2-slim-bookworm (see runtime-apt); bumping this stage to match
 # would leave no interpreter satisfying the contract on the base -- uv's
 # managed-download fallback resolves an unregistered 3.13.15, which is
 # exactly the silent interpreter change the header forbids.
@@ -209,11 +209,17 @@ RUN mkdir -p /app/state_seed
 # cached apt layer.
 #
 # #2304: this stage is the OS/security-patch layer only and carries no
-# interpreter contract, so it builds on python:3.15.0-slim-bookworm (digest
+# interpreter contract, so it builds on python:3.15.2-slim-bookworm (digest
 # registered in quality/image-pins.json). The interpreter the app runs on is
 # NOT this stage's: the final stage grafts pybuild's registered CPython
 # 3.13.18 build so the shipped venv resolves.
-FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime-apt
+# Digest-pinned (#349). Moved 3.15.0 -> 3.15.2 in the #2304 container-gate
+# round: the gate's grype leg flags CVE-2026-115557 (Critical, fixed 3.15.2)
+# on the 3.15.0 CPython binary this base ships (the OS python stays in the
+# final image even though the app runs on the grafted 3.13.18 build, so the
+# binary is scanned). 3.15.2 is still Debian 12 (bookworm), so the grafted
+# binary runs against the glibc it was built against.
+FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
