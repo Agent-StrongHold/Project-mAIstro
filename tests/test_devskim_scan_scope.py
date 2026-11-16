@@ -16,6 +16,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
@@ -39,7 +40,18 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
+@functools.lru_cache(maxsize=1)
 def _scanner_step() -> dict[str, object]:
+    # The sweep in `test_no_shipped_source_file_is_excluded_from_the_scan`
+    # classifies every shipped source file through `_is_scanned`, which calls
+    # the glob getters below once per file. Without this cache that re-reads
+    # and re-parses the workflow YAML thousands of times per run (~7s of pure
+    # parse work on this tree); inside the coverage gate's root-suite producer
+    # (invoked with `pytest --timeout=30`) the test has been observed blowing
+    # that 30s per-test budget on loaded runners, failing the producer and
+    # with it the whole gate (#1896). The cache changes nothing about what is
+    # asserted: the workflow is read exactly once per session and its content
+    # is still what every test below pins.
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
     scanner = [s for s in steps if str(s.get("uses", "")).startswith("microsoft/DevSkim-Action")]
@@ -62,11 +74,17 @@ def _include_globs() -> list[str]:
     return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
 
 
+@functools.cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
+
+    Compiled patterns are memoized: the sweep matches every shipped source
+    file against every glob, and recompiling ~40k identical regexes per run
+    is what pushed this module past the coverage producer's 30s per-test
+    budget (#1896). Same patterns, compiled once.
     """
     out = ""
     i = 0
