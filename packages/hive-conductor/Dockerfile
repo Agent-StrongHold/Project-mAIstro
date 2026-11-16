@@ -5,6 +5,9 @@
 # The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
 # publishes the required Linux wheels for cp313, but not cp314. Keep the exact
 # patch version here so a moving base tag cannot silently change that contract.
+# 3.13.16 -> 3.13.18 (#2303 CI repair): grype's fresh DB flags CVE-2026-115557
+# (CRITICAL) in the 3.13.16 interpreter binary; the fix landed in 3.13.18, and
+# the in-image assertion below moves with the pin so the contract stays exact.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
@@ -59,7 +62,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -169,7 +172,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
-RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
     if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
     fi
@@ -188,7 +191,7 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in

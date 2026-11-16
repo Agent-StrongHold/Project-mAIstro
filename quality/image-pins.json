@@ -3,11 +3,11 @@
   "pins": [
     {
       "image": "python",
-      "tag": "3.13.16-slim-bookworm",
-      "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
-      "recorded": "2026-10-22",
-      "recorded_in": "#1152",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
+      "tag": "3.13.18-slim-bookworm",
+      "digest": "sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72",
+      "recorded": "2026-11-16",
+      "recorded_in": "#2303",
+      "note": "CPython 3.13.18 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.16 (#1152 lineage, this #2303 CI repair): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs whose fixes landed in the next point release -- this refresh moves for CVE-2026-115557 (CRITICAL in the 3.13.16 binary, fixed 3.13.18), the same mechanism as #363's CVE-2026-19445/19553/82049 move to 3.13.16. The in-image and security.yml identity smokes assert (3, 13, 18) so the exact-patch contract moves with the pin; scripts/smoke-engine-canvas.sh's canvas-less CONTROL_IMAGE shares this exact pin (held closed by tests/test_pinned_digest_references.py); digest re-resolved by pulling the tag on 2026-11-16 and reading the interpreter version from the image itself.",
       "used_by": [
         "Dockerfile",
         "packages/hive-conductor/Dockerfile"
@@ -16,10 +16,10 @@
     {
       "image": "python",
       "tag": "3.12-slim",
-      "digest": "sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
-      "recorded": "2026-10-24",
-      "recorded_in": "#93",
-      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.15); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh).",
+      "digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+      "recorded": "2026-11-16",
+      "recorded_in": "#2303",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.16); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in the next point release -- this refresh moves the tag from the 3.12.15 digest to the 3.12.16 one for CVE-2026-115557 (CRITICAL, grype --only-fixed), same advisory that drove the 3.13.18-slim-bookworm row. Digest refreshed 2026-10-24 (#93) for the libbrotli1 cache-chain repair: security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 -- buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.x refreshes).",
       "used_by": [
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
