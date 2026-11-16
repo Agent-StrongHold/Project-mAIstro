@@ -137,11 +137,23 @@ RUN python /tmp/prune-dependency-namespaces.py \
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+# No released docker/cli tag vendors a patched golang.org/x/net (v29.9.3 still
+# ships v0.60.0 in vendor.sum, checked 2026-11-16), and this build already
+# compiles the vendored tree in module mode (vendor.mod -> go.mod above). The
+# trivy gate (security.yml `Container scan + SBOM + cosign`, HIGH/CRITICAL,
+# exit 1) fails the image on CVE-2026-78661 (x/net/html DoS via crafted HTML
+# input, HIGH, fixed in v0.62.0) and CVE-2026-116587 (go-jose DoS via crafted
+# RSA parameters in JWKs, HIGH, fixed in v4.1.6) embedded in the docker
+# binary. Patch both modules on the pinned release, re-vendor so vendor/ and
+# go.sum stay consistent with the bumped module graph, then compile — same
+# patch-the-pinned-source policy as the stdlib toolchain choice above.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get golang.org/x/net@v0.62.0 github.com/go-jose/go-jose/v4@v4.1.6 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
