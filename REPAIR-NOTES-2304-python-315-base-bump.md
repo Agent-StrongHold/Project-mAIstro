@@ -301,3 +301,40 @@ Quality gate's only remaining dependency (workflow-inventory) was already green 
 3); integration-scope only requires hive-conductor-e2e. Residual: the full compose e2e
 stacks were not re-run locally (20-min jobs with their own DB/Playwright services); the
 image they build is proven green here.
+
+## Round 5 (this branch, f311345) — the last red gate was not the bump
+
+CI at the current head (quality run 40400392135, branch tip f311345) is green
+everywhere except one job: `Coverage gate (publish-set floor + diff coverage)`,
+step `combine`, whose root-suite producer leg died on
+`tests/test_devskim_scan_scope.py::test_no_shipped_source_file_is_excluded_from_the_scan`
+— `Failed: Timeout (>30.0s) from pytest-timeout`, inside `yaml.safe_load`.
+The identical job and step fail on the develop tip's own quality run
+(42452944839, job 128649305503) with the identical summary line, and the three
+files involved (devskim.yml, the test module) are byte-identical across this
+branch, its merge base 407b181, and develop tip f8a2df9 — develop-inherited,
+not bump-caused, but it reds this PR's merge queue all the same.
+
+Mechanism (measured on this tree, not guessed): the sweep evaluates
+`_is_scanned` once per shipped source file (1,647 files); the glob getters
+re-read and re-parsed the 5.5KB devskim.yml on every call (~3.3k parses ≈ 7.5s
+of a 9.4s local test), and coverage tracing plus 2 CI cores push that past the
+30s per-test budget. Repair: `lru_cache` the two getters and `_as_regex`
+(assertions untouched); sweep duration 9.43s → 0.11s local, 0.11s under the
+coverage producer shape; new structural test pins parse-once with no wall-clock
+bound and demonstrably fails with the caching stripped. Note:
+docs/testing/inventory-notes/2304-devskim-scan-scope-parse-once.md (`tests/:
++1`).
+
+Evidence (this tree, gate-faithful `uv sync --locked --all-extras` env): the
+combine root-suite leg with CI's exact arguments (`coverage run --append
+--branch --source=scripts -m pytest tests/
+tests/test_model_check_consumer_claim.py
+packages/maistro-core/tests/extensions/test_lifecycle_proof.py --timeout=30 -q`)
+→ **5928 passed, 139 skipped, 0 failed** (CI: 5926 passed + 1 failed = +1 now
+passing, +1 new test); suite inventory ok with the delta note; vulture ledger
+(CI's exact args) exit 0 at 1248 = 1248; ruff check/format clean;
+test_check_image_pins + test_hive_conductor_image_split 42 passed. The
+floor/diff legs of combine were already green in CI before the failing leg, and
+the PR diff touches no measured source root, so the diff gate has no changed
+lines to score on this head.
