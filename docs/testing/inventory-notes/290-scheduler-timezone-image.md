@@ -736,3 +736,69 @@ Re-verified first-hand at this tree, image
   `packages/hive-conductor/tests/e2e` (28). Stack torn down with `down -v`;
   the temporary build-network override was untracked and deleted; the tree
   carries only this note.
+
+## Repair round: develop sync to `f8a2df966` + CI-exact container re-run at the
+## merged head (2026-11-16, merge commit `9fb194f80`)
+
+The lane's last merge-queue evaluation reported `integration-scope: failure`
+while the PR sat `mergeable_state: behind` (develop had moved nine commits:
+`f8a2df966` nltk bump, `d4642454c` durable-event retention, `981a804a5`
+provider/bin convergence, `1fc3d230d` walker-resume, and four connect/subscribe
+commits). Resolution per the lane brief: `git fetch origin`, `git merge
+origin/develop` — **zero conflicts** (the four overlapping paths —
+`.github/workflows/security.yml`, `packages/hive-conductor/backend/tests/
+test_api.py`, `packages/hive-conductor/frontend/src/api/types.gen.ts`,
+`uv.lock` — auto-resolved), merge commit `9fb194f80`, `origin/develop` now an
+ancestor. The stale red is gone by construction: the aggregator's required set
+comes from the classifier over the same changed paths, and the specialized legs
+it requires ran green against this branch's code at `f1a9615d7` (hosted runs:
+postgres pg17/pg18, object storage MinIO, durable-events, strike-ladder,
+hive-conductor-e2e/-e2e-ui, wheel-imports, docker-build all success;
+`integration-scope` run 121704469332 success; the only failure at that head was
+the `test` job's tests/ inventory drift, fixed by `c5be51272`).
+
+Local proof at the merged head, with CI's own tooling:
+
+- `uv sync --locked --extra dev` ok; `uv run ruff check .` /
+  `ruff format --check .` clean (3563 files).
+- Classifier + aggregator, CI's exact arguments over
+  `git diff --no-renames --name-only f8a2df966...HEAD` (28 paths):
+  `ci_merge_group_scope.py --json` requires all seven scopes;
+  `check-integration-scope.py --event-name merge_group` with the nine
+  required checks all `success` prints
+  `ok: integration scope satisfied for merge_group`.
+- Suite inventory: `tests/` **ok 6053** (develop's nine new identities carry
+  their own delta notes; no branch-side edit needed),
+  `packages/hive-conductor/backend/tests` **ok 4208**,
+  `packages/hive-conductor/tests/e2e` **ok 28**.
+- `tests/test_check_image_pins.py` + `tests/test_prepull_base_images.py`
+  **69 passed**; backend tz/api/admission/degraded suites **76 passed**
+  (bare python, per the inventory trap).
+- CI-exact compose harness at the merged head —
+  `docker compose -f docker-compose.test.yml --profile test up --build
+  --abort-on-container-exit --exit-code-from api-tests api-tests` built the
+  image from this tree **without any DNS workaround this time** and ran:
+  **14 passed / 14 skipped in 358.31s, exit 0**. The #290 selection:
+  `test_utc_schedule_persists_and_computes_next_run` PASSED (floor derived
+  from the server's own 422 diagnostic, in-window `next_run`, natural tick
+  fire), `test_berlin_schedule_keeps_wall_time_and_season_offset` PASSED,
+  `test_invalid_timezone_is_refused_at_the_boundary` PASSED (422 naming
+  `unknown timezone`, cron floor-controlled),
+  `test_health_reports_tz_database_and_scheduler` PASSED
+  (`tz_database.status == available`, source recorded,
+  `scheduler.running is True`); restart-marked test skipped pre-restart.
+- Restart phase (CI verbatim): `restart hive` flipped `StartedAt`
+  (`00:24:45Z` → `00:31:15Z`), health poll reached `healthy`,
+  `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery` → **1 passed in 232.61s**.
+- Image-level facts at image
+  `sha256:16b10853a8dd365796ac579c6f53d7fc4b8bddf152c9aa93a748f5a4cb00b733`
+  (`hive-conductor-hive:latest`, built by the harness above): `PYTHONTZPATH`
+  pinned at `/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+  `tzdata` wheel **2026.3**, Berlin DST-correct offsets (+1 Jan / +2 Jul);
+  the Dockerfile's tz cron smoke command re-run in-image prints
+  `tz cron smoke ok: spring gap skipped; fall fold fires once`. Negative
+  proofs re-confirmed: `PYTHONTZPATH=/nonexistent` alone still resolves
+  (importable-wheel fallback), but moving the wheel's `zoneinfo/` dir away
+  makes `ZoneInfo("UTC")` raise `ZoneInfoNotFoundError` — the dependency
+  cannot be removed without a failing smoke test. Stack torn down with
+  `down -v`; worktree carries only this note.
