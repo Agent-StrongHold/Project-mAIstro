@@ -86,3 +86,59 @@ kata-runtime on PATH, docker daemon answering with the `kata` runtime):
   the probe's own reason ("bwrap: Creating new namespace failed: Resource
   temporarily unavailable") — explicit unsupported-host skips, not counted
   as proof; the selected backend carries the executed evidence.
+
+## Re-proven at the merged head `f2133735b1` (2026-11-16, base `f8a2df966`)
+
+Two develop merges (`981a804a`, `f8a2df966`) landed after the round above,
+so every claim was re-executed on the current tree against the current base
+(`f8a2df966a1d0db82be5fc08a571ed4750902c88` == `origin/develop`, verified by
+`git rev-parse`). Host note: the profile needed restoring — `/dev/kvm` was
+`root:kvm 0660` after a WSL restart and this process lost access
+(`chmod 666 /dev/kvm`, resets at reboot; kata-runtime 3.32.0 and the docker
+`kata` runtime were still in place). Placement proof re-run:
+`build_selector().available_tiers == ['vm']` via `KataSandboxBackend`, all
+four standard policies select it.
+
+- Combined live rerun, same two suites on the same host in one round:
+  `test_kata_live_conformance.py` → **10 passed / 0 skipped** (26.3s);
+  `test_sigterm_shutdown.py` → **3 passed / 0 skipped** (23.5s) including
+  `TestStopRestartLeavesNoOrphanedSandboxes` through the canonical
+  `maistro.tools.sandbox.canonical.create_sandbox`.
+- Real-backend conformance on the selected production backend
+  (`test_sandbox_conformance.py`, fixture wires `build_selector()`): first
+  run 9 passed / 1 failed — `TestFilesystemBoundary::
+  test_writes_land_in_the_sandboxes_own_workspace` died at Kata guest startup
+  ("failed to start Kata sandbox: unknown error", kata.py:127). It passed
+  alone, and the full file re-ran **10 passed / 0 skipped** (184.9s, rlimits
+  readback inside the guest: `nproc == profile.max_processes`), so the first
+  result is recorded as transient guest-startup contention, matching the
+  2026-10-23 transient above. `docker ps -a --filter name=kata-` → 0
+  containers after the run (no orphans).
+- Named CI gate (Coverage gate, publish-set floor + diff coverage) replayed
+  with CI's exact producer invocations (REQUIRE_AUTH=false, MAISTRO_DRY_RUN=1,
+  five per-package `coverage run --append --branch` legs; python:3.12-slim
+  pre-pulled as the workflow does): core 17256 passed / 1236 skipped /
+  7 xfailed (884s), canvas 584 passed / 75 skipped, evolve 1000 passed /
+  6 skipped, bootstrap 276 passed / 1 skipped, rsi 1795 passed / 1 skipped /
+  1 failed — the failure is the recorded operator-image finding
+  (`maistro-builders:latest` lacks `git`, so the in-container
+  `git rev-parse` rerun in the contained-fitness probe fails; CI skips this
+  test because runners have no such image). `.coverage` still recorded the
+  rsi leg. `coverage report --fail-under=87` → exit 0, TOTAL 93% over 93,902
+  statements (conservative: unit producer data only — MinIO/PostgreSQL
+  producers append hits). `coverage xml` + `scripts/check-diff-coverage.py
+  coverage.xml --base f8a2df966...` → exit 0: all 29 changed source files ≥90%
+  lines / ≥80% branch arcs, measured locally even with the bubblewrap-tier
+  skips CI's producer does not have (its job installs bwrap and flips the
+  userns sysctl).
+- Ledger and repo gates on the merged head: vulture CI-exact argv → exit 0
+  (1238 reviewed → 1236 findings, 0 unbanked, no amendment);
+  `check-suite-inventory.py` full → 21 suites match (35,389 unique IDs);
+  mypy (AGENTS-exact, 7 package trees) → Success, 955 files; ruff check and
+  `ruff format --check` → pass (3568 files). The #76 sandbox named-gate test
+  union ran green in this round's driver checks: 445 passed / 28 skipped
+  (bwrap-tier and Kata-mock environment skips), including
+  `test_single_authority.py`, `test_import_layering.py`, and the evolve/RSI
+  fail-closed consumption suites.
+- No test counts changed in this round: this is re-executed evidence at a
+  new head, not an inventory delta.
