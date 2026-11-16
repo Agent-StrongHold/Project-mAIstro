@@ -150,3 +150,59 @@ the branch Dockerfiles. Grype on freshly built research/hive/rsi images was
 not re-executed locally (no correctly built images available on this daemon);
 it remains corroborated by the pin resolution plus the earlier round's local
 passes, and by GitHub CI as the final authority.
+
+## Repair round: rebuild regression and recovery merge (2026-11-16, this round)
+
+**Root cause of the renewed "Container scan + SBOM + cosign" failure at the
+merge-queue evaluation of the rebuilt head `d1ce53600c`:** that rebuild commit
+claimed to "re-apply orphaned lane history onto develop" but carried only the
+final 152-line inventory note — the 89-file implementation diff (Kata backend,
+`tools/sandbox/docker.py` retirement, the Dockerfile digest-pin refreshes, the
+dockerclibuild go-jose/x/net patches, `quality/image-pins.json` rows) was
+dropped. The gate then failed because the tree no longer contained the repair
+it had previously passed with.
+
+**Fix:** recovery merge `6c59a926aa` merging the orphaned chain tip
+`a4ef00a066` into the rebuilt branch. Pre-verified with `git merge-tree
+--write-tree` (`59052a9320…`, no conflicts) and confirmed post-merge:
+`HEAD^{tree} == a4ef00a066^{tree} == 59052a9320…` — i.e. the working tree is
+byte-identical to the state the prior verification battery passed on. No
+history rewrite; `d1ce53600c` remains an ancestor.
+
+**Re-executed evidence at merge head `6c59a926aa` (this host, this round):**
+
+- `ruff check .` / `ruff format --check .`: clean (3568 files formatted).
+- Targeted 26-file sandbox/harness/pytest battery: **465 passed, 8 skipped**
+  (same 8 bubblewrap host-capability skips).
+- `test_kata_live_conformance.py`: **10/10 PASSED live** (4 supported-policy
+  real-workload launches; deny host-files/sockets/network/privilege; transfer,
+  budget, overflow, timeout, cancellation).
+- Suite inventory: bootstrap/core/evolve/rsi/server suites all `ok`.
+- Vulture ledger gate, CI exact arguments
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): exit 0 (1238 reviewed identities → 1236 findings,
+  base f8a2df966a1d).
+- pip-audit gate per security.yml recipe (`uv sync --locked --all-extras`,
+  `uv pip freeze --exclude-editable`, `pip-audit --strict`,
+  `scripts/pip_audit_gate.py`): gate exit 0 (`ecdsa==0.19.2
+  PYSEC-2026-1325` triaged).
+- `scripts/check-image-pins.py`: exit 0 (9 pins / 10 Dockerfiles registered).
+- **maistro-engine rebuilt locally from this tree** (`docker build -f
+  Dockerfile -t maistro-engine:pr-2241 .`, warm-cache 4.6 s — layer cache from
+  the prior round's build of the byte-identical tree):
+  - Trivy 0.73.0, CI flags (`--severity HIGH,CRITICAL --exit-code 1
+    --ignore-unfixed --ignorefile .trivyignore.yaml`): **exit 0**
+    (docker gobinary: 0 findings — both CVE-2026-116587/CVE-2026-78661 gone).
+  - Grype 0.116.0, CI flags (`--fail-on high --only-fixed`): **exit 0**
+    (6 only-fixed matches, all Medium/Low/Unknown; the CPython Critical
+    CVE-2026-115557 is gone at 3.13.18).
+  - Lock reconciliation, CI exact args (`uv export --locked --package
+    maistro-server --extra image --no-dev --no-emit-workspace` +
+    `check-image-lock-reconciliation.py`): exit 0 — "ships exactly the locked
+    set (126 distributions)".
+  - In-image assertion: runtime python is **3.13.18**; base digest
+    `sha256:a5a7017…` resolves to docker-library python
+    `3.13/slim-bookworm`.
+
+No inventory delta: no test counts moved in this round (merge only restores
+previously counted tests; the battery total matches the recorded baseline).
