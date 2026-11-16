@@ -280,6 +280,54 @@ constraint-dependencies = [
     # TraceContextTextMapPropagator.extract() on a crafted traceparent).
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
+    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
+    # round): all four arrive transitively and ship in the
+    # maistro-engine-research runtime venv, whose 2026-11-16 05:47 trivy
+    # scan flagged them (CI job 133112186114, python-pkg section) — unlike
+    # the dev-only floors above, these are shipped-image packages. oauthlib
+    # via requests-oauthlib: CVE-2026-49272 (auth bypass via missing device
+    # code validation), fixed in 4.0.1. pyasn1 via pyasn1-modules:
+    # CVE-2026-119194/119195/119196/119197 (DoS in schemaless/fragmented/
+    # bitstring decoding), fixed in 0.6.5. pypdf via browser-use:
+    # CVE-2026-119203/119204/119205/119207/119208/119209 (DoS on crafted
+    # PDFs), fixed in 6.21.4 (CVE-2026-119206 alone in 6.21.3). soupsieve
+    # via beautifulsoup4: CVE-2026-126190, fixed in 4.0.0. All four are
+    # "fixed"-status findings, so the trivy gate's --ignore-unfixed cannot
+    # cover them; the floors keep future re-locks above the advisories.
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
+    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
+    # round): temporalio ships in the maistro-rsi-runner image
+    # (root `[rsi-fitness]` extra), and its wheel vendors the Rust bridge's
+    # Cargo.lock — trivy scans that lockfile in place
+    # (workspace/.venv/.../temporalio/bridge/Cargo.lock) and 1.34.0's lock
+    # pinned the `zip` crate 8.6.0: CVE-2026-115905 (CRITICAL, parser
+    # differential / security control bypass via dual headers, fixed in
+    # 9.0.5) and CVE-2026-115907/115908/115909 (HIGH, DoS + arbitrary file
+    # overwrite via symlink handling, fixed in 9.0.0). temporalio 1.36.1's
+    # vendored lock pins zip 9.5.1; the compiled bridge .so is built from
+    # that same lock upstream, so the upgrade replaces the vulnerable code,
+    # not just the metadata. No member source imports temporalio; the
+    # rsi-fitness harness does.
+    "temporalio>=1.36.1",
+    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
+    # round): the playwright wheel ships its own Node driver binary
+    # (playwright/driver/node) inside the research image, and grype's binary
+    # cataloging flags the vendored node 24.21.0: CVE-2026-111497
+    # (Critical, kev-listed) plus CVE-2026-105482/105483/106069 (High), all
+    # fixed in node 24.22.1+. playwright 1.65.2 bundles node v26.13.1
+    # (verified by unpacking the wheel), so the upgrade replaces the actual
+    # binary, not just metadata. Trivy does not flag this artifact — this
+    # floor exists for the grype cross-check (--fail-on high --only-fixed).
+    "playwright>=1.65.2",
+    # Same wheel-embedded-driver surface, same round: browser-use also pulls
+    # patchright (the stealth playwright fork), whose 1.64.1 wheel vendors
+    # the same node 24.21.0 driver binary. patchright 1.64.4's driver is
+    # node v24.22.1 (verified by unpacking the wheel) — the first release
+    # carrying every fix the grype findings name.
+    "patchright>=1.64.4",
 ]
 
 [tool.ruff]

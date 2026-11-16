@@ -23,7 +23,11 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
+# Refreshed 2026-11-16 (#1896 CI-repair round): the grype leg of the
+# container gate flags CPython binary HIGH/CRITICAL CVEs — CVE-2026-115557
+# (Critical, fixed in 3.13.18) among them — in python 3.13.16; the pin
+# moves 3.13.16-slim-bookworm -> 3.13.18-slim-bookworm.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -133,15 +137,34 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+# 2026-11-16: the trivy gate started flagging the built binary itself — the
+# pinned tag's vendored modules carry gobinary advisories whose entries
+# landed in the scanner DBs after the 2026-11-16 05:47 run scanned the same
+# binary clean (CI job 133112186114) but failed the 07:55 run (job
+# 133159928643): trivy — CVE-2026-116587 (go-jose/v4 v4.1.5, fixed v4.1.6)
+# and CVE-2026-78661 (golang.org/x/net v0.60.0, fixed v0.62.0); grype —
+# GO-2026-6865 (github.com/klauspost/compress v1.20.1, fixed v1.20.2, HIGH).
+# All are "fixed"-status, so ignore-unfixed cannot cover them. Same policy
+# as the age stage in packages/hive-conductor/Dockerfile: keep the
+# immutable upstream release tag and upgrade only the named vulnerable
+# modules (their go directives stay under the 1.27.3 builder; docker/cli
+# v29.9.1 has no replace directives to conflict), then re-vendor so the
+# vendor-mode build embeds the patched versions — go.mod alone does not
+# change what -mod=vendor compiles.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG GO_JOSE_FIXED_VERSION=v4.1.6
+ARG GO_KLAUSPOST_FIXED_VERSION=v1.20.2
+ARG GO_X_NET_FIXED_VERSION=v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} github.com/klauspost/compress@${GO_KLAUSPOST_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
@@ -169,7 +192,7 @@ RUN apk add --no-cache git && \
 # mirror; release.yml builds cold and needs no flag. The 2026-10-22
 # base-digest bump (#1152) additionally invalidated the previously cached
 # apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
