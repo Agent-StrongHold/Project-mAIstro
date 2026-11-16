@@ -109,16 +109,20 @@ ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 # Same vendored-module patch as the root Dockerfile's dockerclibuild (#1450 CI
 # repair, 2026-11-16): this stage builds the identical /out/docker binary that
-# is COPYed into this image, so the go-jose v4.1.5 (CVE-2026-116587) and
-# x/net v0.60.0 (CVE-2026-78661) HIGHs would fail this image's trivy scan the
-# same way they failed maistro-engine. Patched onto the advisory fix versions
-# (v4.1.6 / v0.62.0) on the same immutable v29.9.1 tag.
+# is COPYed into this image, so the go-jose v4.1.5 (CVE-2026-116587),
+# x/net v0.60.0 (CVE-2026-78661) and klauspost/compress v1.20.1
+# (GO-2026-6865) HIGHs would fail this image's trivy/grype scans the same
+# way they failed maistro-engine — the grype leg flagged the unpatched
+# klauspost v1.20.1 on this very image (round 6, 2026-11-16, local
+# CI-exact scan of maistro-engine-research:pr-1450-round6). Patched onto
+# the advisory fix versions (v4.1.6 / v0.62.0 / v1.20.2) on the same
+# immutable v29.9.1 tag.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 && \
+    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \

@@ -38,6 +38,18 @@ quality.yml run 43812084099, 2026-11-16). Of the 80 check runs at that head,
    twice per call (~5k files → ~10k YAML parses). Locally that is 7.3s; on a
    loaded 2-core runner inside the serial combine step it crossed 30s.
 
+3. **Found during this round's local CI-exact verification (not a CI
+   report): `maistro-engine-research` also fails the same grype leg.** The
+   loop in run 43812084107 died at hive-conductor before reaching this
+   image; a local build + scan of `Dockerfile.research` at head 654b773
+   exits 2 on four HIGHs: node 24.21.0 (CVE-2026-105482/105483/106069,
+   fixed 24.22.1/26.12.1) and `github.com/klauspost/compress v1.20.1`
+   (GO-2026-6865, fixed v1.20.2) inside the image's own docker/cli binary —
+   `Dockerfile.research`'s dockerclibuild stage had the same vendored-module
+   gap the root Dockerfile had. The node binaries ship inside the
+   playwright (1.64.0 → driver node 24.21.0) and patchright (1.64.1 →
+   driver node 24.21.0) wheels, so the fix is a lock upgrade, not a triage.
+
 ## Fix
 
 - **Base pin bump (#93/#1152 doctrine):** `python:3.13.16-slim-bookworm`
@@ -55,9 +67,20 @@ quality.yml run 43812084099, 2026-11-16). Of the 80 check runs at that head,
   49ae45c72`; the cp313 coincurve identity contract is unchanged (still
   3.13.x).
 - **docker/cli vendored patch:** `go get github.com/klauspost/compress@v1.20.2`
-  added to the `dockerclibuild` stage in `Dockerfile` (same
-  patch-the-immutable-tag-and-re-vendor policy as the go-jose/x/net patches
-  from round 3).
+  added to the `dockerclibuild` stage in `Dockerfile` **and to the identical
+  stage in `Dockerfile.research`** (same patch-the-immutable-tag-and-re-vendor
+  policy as the go-jose/x/net patches from round 3; both stages build the
+  /out/docker binary their image COPYs).
+- **Research-image node binaries:** `uv lock --upgrade-package playwright`
+  (1.64.0 → **1.65.2**, driver node 24.21.0 → 26.13.1, past all three fix
+  lines) and `uv lock --upgrade-package patchright` (1.64.1 → **1.64.4**,
+  driver node 24.21.0 → 24.22.1, the starred fix for every flagged advisory
+  including Critical kev CVE-2026-111497). Neither bump moves a pyproject
+  constraint (`playwright>=1.49` untouched); browser-use stays 0.5.9. No
+  other image installs playwright/patchright (verified: the engine image's
+  venv has no playwright/patchright/browser-use distributions), so the
+  lock-reconciliation surface moves only for the research image, which was
+  rebuilt.
 - **Coverage-gate timeout flake:** `tests/test_devskim_scan_scope.py`
   memoizes `_scanner_step` / `_ignore_globs` / `_include_globs`
   (`functools.lru_cache(maxsize=1)`, tuple returns) so the workflow is
@@ -68,12 +91,25 @@ quality.yml run 43812084099, 2026-11-16). Of the 80 check runs at that head,
 
 ## Evidence (all executed locally at the repaired tree)
 
+- **CI-exact scanner legs, all four images, both scanners, from this
+  tree's Dockerfiles:** trivy 0.73.0 (`--severity HIGH,CRITICAL --exit-code
+  1 --ignore-unfixed --ignorefile .trivyignore.yaml`) → exit 0 for
+  hive-conductor, maistro-engine, maistro-engine-research,
+  maistro-rsi-runner; grype 0.116.0 (`--fail-on high --only-fixed`, sha256
+  40aff724… verified) → exit 0, zero ERROR lines, for all four. The
+  research image was rebuilt after each fix (`round6b` proved the
+  playwright bump alone insufficient because patchright bundles its own
+  node; `round6c` carries both lock bumps and scans clean). The
+  hive-conductor grype failure that killed CI is gone: the CPython 3.13.16
+  Critical/high findings no longer appear at 3.13.18; remaining rows are
+  Medium/Low with no stable fix (3.15.0a6/3.16.0), below the
+  `--fail-on high` threshold.
 - `uv sync --locked --all-extras` → clean; `uv pip freeze` →
   CI-exact `pip-audit --strict --format=json` →
   `pip-audit OK (1 known, all triaged in ALLOWED)`, gate exit 0 (sole
-  advisory the reviewed `ecdsa PYSEC-2026-1325` ALLOWED entry) — the
-  pip-audit leg is green at this tree, matching the SUCCESS check run at
-  head 654b773.
+  advisory the reviewed `ecdsa PYSEC-2026-1325` ALLOWED entry) — re-proven
+  after the playwright/patchright lock bumps, matching the SUCCESS check
+  run at head 654b773.
 - `docker buildx imagetools inspect python:3.13.18-slim-bookworm` → digest
   matches the new pin row byte-for-byte.
 - `scripts/check-image-pins.py` → "9 pinned base/tool image(s) across 11
@@ -82,6 +118,8 @@ quality.yml run 43812084099, 2026-11-16). Of the 80 check runs at that head,
   0.18s (was 7.29s before memoization, measured at the same tree).
 - `tests/test_distribution_contract.py` + `tests/test_pinned_digest_references.py`
   + `tests/test_check_image_lock_reconciliation.py` → 97 passed.
+- `packages/maistro-core/tests/tools/browser` (the playwright/patchright
+  consumers) → 125 passed, 4 skipped.
 - Rootless conformance lane, CI-exact: image rebuilt from this tree's
   `Dockerfile.sandbox`, loaded into the rootless daemon
   (`unix:///run/user/1000/docker.sock`), memory.max enforcement proof
@@ -100,9 +138,10 @@ quality.yml run 43812084099, 2026-11-16). Of the 80 check runs at that head,
 ## Residual risk
 
 The full `Container scan + SBOM + cosign` job needs GHA buildx cache and
-cosign keys; locally the hive-conductor image was rebuilt from this tree and
-the grype cross-check re-run against it (see the round-6 result record).
+cosign keys; locally every image was rebuilt from this tree and both scanner
+legs re-run against them (exit 0 across the board, per the evidence list).
 trivy's OS-layer triages in `.trivyignore.yaml` are untouched by this round;
-CVE-2025-15367 / CVE-2026-116566 / CVE-2026-103995 (CPython binary, Medium/Low,
-fixed only in 3.15.0a6/3.16.0) stay below the grype `--fail-on high`
-threshold until upstream ships a stable fix.
+CVE-2025-15367 / CVE-2026-116566 / CVE-2026-103995 (CPython binary,
+Medium/Low, fixed only in 3.15.0a6/3.16.0) and the remaining Medium/Low
+node/pip/rustls/otel rows stay below the grype `--fail-on high` threshold
+until upstream ships stable fixes.
