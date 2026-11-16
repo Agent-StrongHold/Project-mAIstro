@@ -242,3 +242,54 @@ assigned head, but the CI-exact Supply chain (pip-audit) gate demonstrably fails
 base-inherited advisories and the full rollup is queued. Declared limits unchanged: real
 Windows PowerShell 5.1/7 enforcement, UAC elevation, reboot RunOnce resume unverified (no
 Windows host).
+
+## Round 4 (job f03149df55984a05a169b2da0346ed61) — manual CI-gate inspection at eeffb0b92
+
+"CI response truncated; manual inspection required" resolved by running every named gate
+locally, CI-exact, at head eeffb0b92d0d8357fa8f4728c5b070af9357c8ce (worktree clean; delta vs
+f906f8519 is this record only):
+
+1. Lane tests: `uv run pytest tests/test_get_ps1_wsl_detection.py -v` -> 28 passed, 0 skipped
+   (pwsh present; harness really ran). `pwsh -NoProfile -File tests/installer/run-wsl-detection-e2e.ps1
+   -PowerShell pwsh` -> 23/23 cases + "RESULT relaunch-policy ok", exit 0.
+2. Regression bite re-proven for the RIGHT reason: base get.ps1 (git show
+   f8a2df966a1d:get.ps1) + this PR's tests + tests/installer/ copied to /tmp/bite-repo ->
+   all 3 new tests fail; harness fails with 'Unexpected elevation arguments'
+   (relaunch_policy_harness.ps1:42) because base Invoke-Elevated carries -ExecutionPolicy Bypass.
+3. ruff check . / ruff format --check . -> exit 0 (driver check-1/check-2 logs agree);
+   scripts/check-suite-inventory.py -> exit 0, 21 suites, 35317 ids; PR inventory note (+3)
+   consistent -> no inventory-note update needed this round.
+4. Named gates from the historical merge-queue RED list, run locally CI-exact
+   (RATCHET_BASE_REV=origin/develop = f8a2df966a1d, exactly CI's PR form):
+   - Compliance registry: `uv run --with 'PyYAML>=6,<7' python scripts/check-compliance.py`
+     -> "compliance registry and COMPLIANCE.md are valid", exit 0.
+   - Quality / Agent store writes: scripts/check-agent-store-writes.py -> exit 0.
+   - Quality / BFCL provenance: scripts/vendor_bfcl.py --check -> exit 0 (13 artifacts + shim).
+   - Quality / Architecture fitness: PYTHONPATH=packages/maistro-core/src pytest
+     packages/maistro-core/tests/fitness -q --timeout=30 -> 39 passed, exit 0.
+   - Quality / Acceptance state: disposable pgvector/pgvector:pg18 container
+     (cr2110-ac-pg18, port 15439, removed afterwards; no other lane's container touched),
+     alembic upgrade head (065->068), then scripts/check-ac-state.py --run-tests --ratchet
+     --mandate f8a2df966a1d -> acceptance mandate 0/0, chain mandate 0/0, "OK: every
+     criterion this change declares is proven", exit 0.
+5. Supply chain (pip-audit) — REQUIRED per .github/branch-protection.json — re-reproduced
+   CI-exact at this head: uv sync --locked --all-extras; uv pip freeze --exclude-editable
+   (234 rows); pip-audit --strict attempt 1 report complete (audit exit 1);
+   scripts/pip_audit_gate.py -> exit 1: dnspython 2.9.0 CVE-2026-128089, graphql-core 3.3.0
+   CVE-2026-119286, joserfc 1.7.5 CVE-2026-119284, opentelemetry-api 1.45.1 CVE-2026-126360,
+   fixed versions exist (2.9.2/3.3.1/1.7.6/1.5.2-class bumps named by the gate).
+   `git diff f8a2df966..HEAD -- uv.lock pyproject.toml requirements*.txt` is empty ->
+   base-inherited; the repair (bump the four deps) belongs to the PR owner.
+6. SAST / Gitleaks: gitleaks 8.30.1 CI-exact PR form
+   `--log-opts=f8a2df966a1d..eeffb0b92` -> 30 commits, "no leaks found", exit 0.
+7. Closure keywords: strict grep over `git log --format='%s %b' f8a2df966..HEAD` -> none
+   (grep exit 1). Supplied PR body likewise carries no closure keyword.
+8. Live `gh pr view 2110` at this head: state OPEN, isDraft=false (body's "remains draft"
+   remains stale drift, non-blocking), statusCheckRollup 22 QUEUED + 1 SKIPPED (Container
+   scan + SBOM + cosign, service-gated). Everything queued stays UNVERIFIED — never inferred
+   green.
+
+Round-4 verdict: NEEDS-REPAIR (unchanged driver: all issue acceptance criteria locally
+proven; the required Supply chain gate demonstrably fails base-inherited, and the hosted
+rollup at this exact head is fully queued). Declared limits unchanged: real PowerShell 5.1/7
+enforcement, UAC elevation, reboot RunOnce resume remain unverified (no Windows host).
