@@ -31,3 +31,11 @@ that reclaim left cause unknown with a generic-CANCELLED unknown assertion
 refusals in the independent reference model and advances ordinary/M9 reclaim
 fixtures past `LEASE_TTL` so differential agreement holds under the tightened
 contract.
+
+Repair round: the spine sweep conformance
+(`test_spine_conformance.py::_assert_a_lapsed_lease_is_reclaimed`) now pins
+acceptance criterion 4 — the sweep returns the durable `RECOVERED` cause with
+`finished_at`, and `get_attempt` persists the cause on the settled Attempt
+(memory + SQLite backends; a regression probe reinstating the bare-CANCELLED
+P1a writer fails these assertions). No new collected node IDs, so the +8 delta
+is unchanged.
