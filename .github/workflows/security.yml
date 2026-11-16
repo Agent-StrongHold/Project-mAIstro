@@ -199,7 +199,16 @@ jobs:
   containers:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 -> 45 on 2026-10-24, capacity not scope. At #2298's merge-queue
+    # evaluation (run 40119239790) the job died at the 30-minute cap mid
+    # "Reconcile installed packages to uv.lock" after 29.5 minutes: four
+    # image builds (the research image alone 16 minutes on a cold cache),
+    # four Trivy scans, a Grype cross-check and two SBOMs consumed the
+    # budget before signing started. Recent healthy runs take 18-20 minutes,
+    # so 30 left no headroom for one cold buildx cache. Same precedent as
+    # the coverage gate's 15 -> 30: a cancelled scan never reports, so it
+    # blocks the merge group without measuring anything.
+    timeout-minutes: 45
     # License and container evidence is required before code reaches either
     # protected development or release branch. Release tags are checked again
     # against their pushed digest in release.yml.
