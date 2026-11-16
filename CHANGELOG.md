@@ -32,17 +32,23 @@ or placeholder-only section.
   (CVE-2026-126360) — the pip-audit advisories the triage gate started
   reporting once the 2026-11 DB revisions landed, each with an upstream-fixed
   release, so the gate's upgrade-first policy applies rather than a triage
-  row. Same locked contract for the shipped images (both install via
-  `uv export --locked` + `--require-hashes` from this lock).
+  row. A second pass moves the research image's trivy findings to their
+  fixed versions: `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1`
+  0.6.4 → 0.6.5 (CVE-2026-119194…119197), `pypdf` 6.21.2 → 6.21.4
+  (CVE-2026-119203…119209), `soupsieve` 3.0.3 → 4.0 (CVE-2026-126190) —
+  13 HIGH findings, all with upstream fixes, so the upgrade-first policy
+  applies again. Same locked contract for the shipped images (they install
+  via `uv export --locked` + `--require-hashes` from this lock).
 
 - **Conductor image runtime OS layer builds on `python:3.15.0-slim-bookworm`
   (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
   moved to the CPython 3.15.0 base build (fresh Debian 12 security-patch
-  state). The app keeps running on the registered CPython 3.13.16 contract
-  interpreter: the builder stage keeps the 3.13.16 pin and the runtime grafts
+  state). The app keeps running on the registered CPython 3.13.18 contract
+  interpreter: the builder stage keeps the 3.13.18 pin and the runtime grafts
   its exact installation (binary, libpython, stdlib), so the shipped venv
   needs no managed download. Identity pins, the uv.lock install and the
-  build-time smoke are unchanged.
+  build-time smoke are unchanged (the 3.13.18 refresh is a grype-driven
+  patch refresh within the 3.13 line, see the Security section).
 
 ### Fixed
 
@@ -55,16 +61,30 @@ or placeholder-only section.
 
 ### Security
 
-- **The shipped docker CLI no longer embeds the vulnerable vendored go-jose
-  and x/net modules (#2304).** docker/cli v29.9.1's vendor tree pins go-jose
-  v4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK parameters, fixed v4.1.6)
-  and golang.org/x/net v0.60.0 (CVE-2026-78661, DoS via crafted HTML input,
-  fixed v0.62.0); both are HIGH and have upstream fixes, so the container-scan
-  gate fails the release tag as-is. The `dockerclibuild` stages of the
-  maistro-engine and research images now override the two modules to their
-  fixed versions and re-vendor before building (the same patched-toolchain
-  policy the age stage already applies); the release tag, commit pin and
-  toolchain are unchanged.
+- **The shipped docker CLI no longer embeds the vulnerable vendored go-jose,
+  x/net and klauspost/compress modules (#2304).** docker/cli v29.9.1's vendor
+  tree pins go-jose v4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK
+  parameters, fixed v4.1.6), golang.org/x/net v0.60.0 (CVE-2026-78661, DoS
+  via crafted HTML input, fixed v0.62.0) and klauspost/compress v1.20.1
+  (GO-2026-6865, HIGH, fixed v1.20.2 — flagged by the gate's grype
+  cross-check, which trivy's DB does not carry yet); all have upstream
+  fixes, so the container-scan gate fails the release tag as-is. The
+  `dockerclibuild` stages of the maistro-engine and research images now
+  override the three modules to their fixed versions and re-vendor before
+  building (the same patched-toolchain policy the age stage already
+  applies); the release tag, commit pin and toolchain are unchanged.
+
+- **Image base refresh within the CPython patch lines (#2304).** The grype
+  cross-check flags CVE-2026-115557 (Critical, CPython binary, fixed in
+  3.13.18 / 3.12.16) in the `python:3.13.16-slim-bookworm` and
+  `python:3.12-slim` builds the previous digests carried, so the
+  engine/Conductor contract stages refresh to the registered
+  `3.13.18-slim-bookworm` digest and the research/RSI/e2e/sbx images move
+  from the floating `3.12-slim` tag (which had re-resolved to Debian
+  trixie) to the exact `3.12.16-slim-bookworm` patch tag — keeping the
+  bookworm-scoped apt triage notes true. Identity contract unchanged:
+  coincurve 21.0.0 cp313 wheels, same smoke assertions, same venv build.
+  `quality/image-pins.json` rows moved with the Dockerfiles.
 
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still

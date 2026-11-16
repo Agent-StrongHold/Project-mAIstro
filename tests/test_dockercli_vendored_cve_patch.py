@@ -1,13 +1,15 @@
-"""The shipped docker CLI is built with the trivy-fixed vendored modules (#2304).
+"""The shipped docker CLI is built with the scanner-fixed vendored modules (#2304).
 
 docker/cli v29.9.1's vendor tree pins go-jose v4.1.5 (CVE-2026-116587, HIGH,
-fixed v4.1.6) and golang.org/x/net v0.60.0 (CVE-2026-78661, HIGH, fixed
-v0.62.0). Both have upstream fixes, so the container-scan gate
+fixed v4.1.6), golang.org/x/net v0.60.0 (CVE-2026-78661, HIGH, fixed
+v0.62.0) and klauspost/compress v1.20.1 (GO-2026-6865, HIGH, fixed v1.20.2;
+flagged by the gate's grype cross-check, which trivy's DB does not carry
+yet). All have upstream fixes, so the container-scan gate
 ("Container scan + SBOM + cosign") fails on any image embedding the release
-tag's own vendor state. The `dockerclibuild` stages therefore override the two
-modules to their fixed versions and re-vendor before building — the same
-patched-toolchain policy the age stage in the Conductor Dockerfile already
-applies.
+tag's own vendor state. The `dockerclibuild` stages therefore override the
+three modules to their fixed versions and re-vendor before building — the
+same patched-toolchain policy the age stage in the Conductor Dockerfile
+already applies.
 
 These tests hold that repair closed structurally:
 
@@ -37,10 +39,12 @@ DOCKERFILES = (
     ROOT / "Dockerfile.research",
 )
 
-#: The fixed versions the trivy DB names for the two CVEs (see the stage
-#: comments): CVE-2026-116587 -> go-jose v4.1.6; CVE-2026-78661 -> x/net v0.62.0.
+#: The fixed versions the scanner DBs name for the three advisories (see the
+#: stage comments): CVE-2026-116587 -> go-jose v4.1.6; CVE-2026-78661 ->
+#: x/net v0.62.0; GO-2026-6865 -> klauspost/compress v1.20.2.
 FIXED_GO_JOSE = "v4.1.6"
 FIXED_X_NET = "v0.62.0"
+FIXED_KLAUSPOST = "v1.20.2"
 
 
 def _dockercli_run_body(dockerfile: Path) -> str:
@@ -68,6 +72,9 @@ def test_every_docker_cli_stage_overrides_both_vulnerable_modules() -> None:
         assert "golang.org/x/net@" in go_get.group(1), (
             f"{dockerfile.name}: golang.org/x/net is no longer overridden in dockerclibuild"
         )
+        assert "github.com/klauspost/compress@" in go_get.group(1), (
+            f"{dockerfile.name}: klauspost/compress is no longer overridden in dockerclibuild"
+        )
 
 
 def test_override_versions_are_the_trivy_reported_fixed_versions() -> None:
@@ -75,6 +82,7 @@ def test_override_versions_are_the_trivy_reported_fixed_versions() -> None:
         body = _dockercli_run_body(dockerfile)
         jose_arg = re.search(r"ARG GO_JOSE_FIXED_VERSION=(\S+)", body)
         net_arg = re.search(r"ARG GO_X_NET_FIXED_VERSION=(\S+)", body)
+        klauspost_arg = re.search(r"ARG KLAUSPOST_COMPRESS_FIXED_VERSION=(\S+)", body)
         assert jose_arg is not None and jose_arg.group(1) == FIXED_GO_JOSE, (
             f"{dockerfile.name}: GO_JOSE_FIXED_VERSION must stay {FIXED_GO_JOSE} "
             "(CVE-2026-116587's fix); bump only with a re-triage"
@@ -82,6 +90,10 @@ def test_override_versions_are_the_trivy_reported_fixed_versions() -> None:
         assert net_arg is not None and net_arg.group(1) == FIXED_X_NET, (
             f"{dockerfile.name}: GO_X_NET_FIXED_VERSION must stay {FIXED_X_NET} "
             "(CVE-2026-78661's fix); bump only with a re-triage"
+        )
+        assert klauspost_arg is not None and klauspost_arg.group(1) == FIXED_KLAUSPOST, (
+            f"{dockerfile.name}: KLAUSPOST_COMPRESS_FIXED_VERSION must stay {FIXED_KLAUSPOST} "
+            "(GO-2026-6865's fix); bump only with a re-triage"
         )
 
 

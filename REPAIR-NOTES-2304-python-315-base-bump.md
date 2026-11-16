@@ -427,3 +427,109 @@ CI's exact args) re-run this round: exit 0, 1238 = 1238; `check-image-pins.py`
 exit 0 (10 images registered); `check-release-consistency.py` ok;
 `check-suite-inventory.py` ok with the recorded `tests/: +4` delta; ruff
 check/format clean.
+
+## Round 7 (2026-11-16, head `76b145407` repair) — the one red gate is trivy
+## python-pkg staleness on maistro-engine-research; the grype cross-check's next
+## findings are pre-empted with registry-verified digest refreshes
+
+CI at head `76b145407` (check-run snapshot captured 2026-11-16 ~10:38 UTC, run
+started 06:21) is green on 77 of 78 checks — every gate rounds 4–6 targeted is
+green. The single red job is `Container scan + SBOM + cosign` (job
+133128530798). Full job log fetched read-only and re-read from scratch: the
+npm audit lines quoted in the earlier dispatch evidence are the tail of the
+frontend stage's *passing* `RUN npm ci` (`#29 DONE 37.8s`, "7 moderate severity
+vulnerabilities" is advisory noise, npm ci exits 0 on it); the actual failure
+is the third `trivy-action` step at 06:34:36:
+
+- **Failed scan: `maistro-engine-research:pr-2304` (debian 13.7), Python
+  (python-pkg): 13 HIGH, all `fixed`** — `oauthlib` 4.0.0 → 4.0.1
+  (CVE-2026-49272), `pyasn1` 0.6.4 → 0.6.5 (CVE-2026-119194/195/196/197),
+  `pypdf` 6.21.2 → 6.21.3/6.21.4 (CVE-2026-119203…119209), `soupsieve` 3.0.3
+  → 4.0.0 (CVE-2026-126190). The first two scans in the same job
+  (hive-conductor, maistro-engine) passed; the rsi-runner scan never ran (job
+  aborted at research). The research image installs `maistro-server --extra
+  observability --extra browser` from this `uv.lock`, so the lock is the
+  surface, and the gate's own policy (upgrade when a fixed release exists)
+  applies.
+- **Repair executed:** targeted `uv lock` bumps of exactly those four
+  packages, pinned to the advisory minimums (pypdf 6.21.4, soupsieve 4.0) per
+  the round-6 policy of minimal conflict surface. `playwright` 1.64.0 → 1.65.2
+  moves as uv's own resolution side effect of touching the graph (re-run
+  `uv lock --upgrade-package …` reproduces the same 1.65.2 landing; neither
+  pip-audit nor trivy flags 1.64.0).
+- **Proof (scanner-faithful):** trivy v0.73.0 (the gate's pinned version,
+  DB 2026-11-16 07:10 — *fresher* than the failing job's 06:33 DB) against
+  old/new version fixtures via `trivy rootfs --severity HIGH,CRITICAL
+  --ignore-unfixed`: old fixture → exactly the 13 CI findings, byte-for-byte
+  (same CVE IDs, same fixed versions); new fixture → 0 findings. pip-audit on
+  the `uv sync --locked --all-extras` env (the pip-audit gate's own shape)
+  → only the triaged `ecdsa==0.19.2 PYSEC-2026-1325`; `pip_audit_gate.py`
+  exit 0.
+
+### The grype cross-check's next reds, pre-empted with evidence
+
+The failing job died before its grype step ran, so the gate would have failed
+again on the next run even with the lock fixed. Verified with the gate's exact
+pinned tools (grype v0.116.0, sha256-checked, `--only-fixed --fail-on high`):
+
+1. **`python:3.13.16-slim-bookworm@sha256:73aa5fae…`** (the registered
+   contract digest powering both the engine image and the Conductor pybuild
+   stage): grype exit 2 — **CVE-2026-115557, Critical, python 3.13.16
+   binary, fixed 3.13.18** — plus libssl3/openssl/apt HIGHs
+   (CVE-2026-84782, CVE-2026-109518, fixed 3.0.22-1~deb12u2 / 2.6.2).
+   The refreshed **`python:3.13.18-slim-bookworm@sha256:a5a7017e…`**: grype
+   exit 0 (only Medium/Low python-binary advisories remain, below the gate's
+   high threshold). Digest verified against the registry manifest list before
+   use (`docker buildx imagetools inspect`: tag resolves to this exact
+   digest).
+2. **`python:3.12-slim@sha256:a0f57064…`** (research/RSI/e2e/sbx bases):
+   resolves to **CPython 3.12.15 on Debian 13.7 (trixie)**; grype exit 2 —
+   the same **CVE-2026-115557 Critical on the 3.12.15 binary (fixed
+   3.12.16)** plus trixie apt/zlib HIGHs. The refreshed
+   **`python:3.12.16-slim-bookworm@sha256:935c3c5b…`** (registry-verified):
+   grype exit 0. Moving the pin from the floating tag to the exact patch tag
+   also returns these images to bookworm, keeping the bookworm-scoped
+   `.trivyignore.yaml` triage prose (brotli CVE-2026-111497 entries) true.
+3. **docker CLI vendor tree (root `Dockerfile` and `Dockerfile.research`
+   `dockerclibuild` stages):** the round-6 overrides cover go-jose and
+   x/net, but grype flags a third module — **GO-2026-6865, High,
+   klauspost/compress v1.20.1, fixed v1.20.2** — in the stage built from
+   head `76b145407` (trivy's DB does not carry this advisory yet; the CI
+   log's own dockercli build downloads v1.20.1). Repair: add
+   `KLAUSPOST_COMPRESS_FIXED_VERSION=v1.20.2` to the `go get` override set in
+   both stages (release tag v29.9.1, commit pin dfc520d, go1.27.3 toolchain
+   unchanged). Proof: both stages built locally — old (2 overrides) grype
+   exit-flagged GO-2026-6865 High in the built binary; new (3 overrides)
+   klauspost finding gone.
+
+Every moved digest is registered as its own row update in
+`quality/image-pins.json` (`recorded_in: "#2304"`), and every consumer of the
+contract moved with it: the Dockerfile build smokes and security.yml probe
+asserts now read `(3, 13, 18)`, the support matrix documents CPython 3.13.18,
+`scripts/smoke-engine-canvas.sh`'s control image uses the new digest,
+`tests/test_distribution_contract.py` pins both root-image FROM tags to
+3.13.18, and `tests/test_hive_conductor_image_split.py` holds the pybuild row
+and smoke pin. `tests/test_dockercli_vendored_cve_patch.py` asserts the third
+override and its fixed version in both stages. No test counts changed
+(assertions moved inside existing tests; suite inventory re-run: `tests/:
+6058` unchanged, exit 0).
+
+Round-7 validation battery (this tree, `uv sync --locked` envs):
+`check-image-pins.py` exit 0; targeted suite `test_check_image_pins.py
+test_hive_conductor_image_split.py test_dockercli_vendored_cve_patch.py
+test_distribution_contract.py test_pinned_digest_references.py
+test_devskim_scan_scope.py` → 82 passed; ruff check + format clean; suite
+inventory ok (no delta); vulture ledger (CI's exact args) exit 0 at
+1238 = 1238; release consistency ok (CHANGELOG Dependencies/Security entries
+updated for this round's bumps and refresh); workflow inventory ok (32
+workflows dispositioned); pip-audit gate (`--all-extras` env, gate-faithful)
+exit 0; root suite in CI `test` job shape (`REQUIRE_AUTH=false
+MAISTRO_DRY_RUN=1 pytest tests/ --ignore=tests/tools/registry -q`) → **5825
+passed, 140 skipped, 0 failed in 7m50s**.
+
+Residual: the four image builds behind `docker-build`/e2e/Gate C were not
+taken through a full local `buildx` cycle this round (the contract-critical
+pybuild change is `FROM` + smoke-assert constant only, with the venv build,
+identity ARG pins and graft steps untouched, and the trivy/grype proofs above
+run at scanner level); the e2e-ui rsi-polling-resilience flake documented in
+round 6 remains maintainer scope.

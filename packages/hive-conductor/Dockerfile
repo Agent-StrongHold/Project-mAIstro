@@ -9,8 +9,11 @@
 # app sources.
 #
 # Since #2304 the builder and the runtime OS layer are deliberately different
-# bases: pybuild keeps the CPython 3.13.16 pin above (it IS the contract
-# interpreter), runtime-apt is only the Debian OS/security-patch layer and
+# bases: pybuild keeps the CPython 3.13.18 pin above (it IS the contract
+# interpreter, refreshed from 3.13.16 in the #2304 container-gate round: the
+# gate's grype leg flags CVE-2026-115557, Critical, fixed in 3.13.18 — the
+# same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363),
+# runtime-apt is only the Debian OS/security-patch layer and
 # moved to python:3.15.0-slim-bookworm, and the final stage grafts the
 # builder's exact CPython installation so the copied venv runs on the contract
 # interpreter without any managed download. See the stage comments below.
@@ -66,13 +69,16 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349). This stage IS the identity contract: the CPython that
 # builds the venv is the CPython the shipped app runs on, so it keeps the
-# exact registered 3.13.16 build that coincurve 21.0.0 ships cp313 wheels for
-# and that the build smoke below asserts. #2304 moved the runtime OS layer to
+# exact registered 3.13.18 build that coincurve 21.0.0 ships cp313 wheels for
+# and that the build smoke below asserts (refreshed from 3.13.16 in the #2304
+# container-gate round: grype flags CVE-2026-115557, Critical, fixed in
+# 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152). #2304
+# moved the runtime OS layer to
 # python:3.15.0-slim-bookworm (see runtime-apt); bumping this stage to match
 # would leave no interpreter satisfying the contract on the base -- uv's
 # managed-download fallback resolves an unregistered 3.13.15, which is
 # exactly the silent interpreter change the header forbids.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -182,7 +188,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
-RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
     if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
     fi
@@ -206,7 +212,7 @@ RUN mkdir -p /app/state_seed
 # interpreter contract, so it builds on python:3.15.0-slim-bookworm (digest
 # registered in quality/image-pins.json). The interpreter the app runs on is
 # NOT this stage's: the final stage grafts pybuild's registered CPython
-# 3.13.16 build so the shipped venv resolves.
+# 3.13.18 build so the shipped venv resolves.
 FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
@@ -233,7 +239,7 @@ ENV PATH="/app/venv/bin:$PATH" \
 # venv was built in, so the builder's exact CPython installation is grafted
 # in: the venv's interpreter symlinks point at /usr/local/bin/python3.13,
 # which the 3.15 base does not ship. All three paths come from the same
-# digest-pinned pybuild image (the registered 3.13.16 build), and both bases
+# digest-pinned pybuild image (the registered 3.13.18 build), and both bases
 # are Debian 12 (bookworm), so the grafted binary runs against the glibc it
 # was built against. No managed download exists anywhere in the shipped
 # image: every interpreter byte is fixed by a ledger row.

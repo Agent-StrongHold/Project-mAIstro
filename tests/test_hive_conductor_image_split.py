@@ -2,7 +2,7 @@
 
 #2304 moved the Conductor image's runtime OS layer to
 `python:3.15.0-slim-bookworm` while the app keeps running on the registered
-CPython 3.13.16 build: the `pybuild` stage keeps the 3.13.16 pin (coincurve
+CPython 3.13.18 build: the `pybuild` stage keeps the 3.13.18 pin (coincurve
 21.0.0 publishes `cp313` wheels only, and the build smoke asserts the exact
 interpreter version), and the final stage grafts pybuild's CPython
 installation (binary, libpython, stdlib) so the copied venv's interpreter
@@ -50,8 +50,8 @@ def _registry_row(name_tag: str) -> dict:
 
 def test_pybuild_stays_on_the_registered_contract_pin() -> None:
     """The builder stage IS the identity contract and must stay on its row."""
-    row = _registry_row("python:3.13.16-slim-bookworm")
-    assert _stage_refs()["pybuild"] == f"python:3.13.16-slim-bookworm@{row['digest']}"
+    row = _registry_row("python:3.13.18-slim-bookworm")
+    assert _stage_refs()["pybuild"] == f"python:3.13.18-slim-bookworm@{row['digest']}"
     assert "packages/hive-conductor/Dockerfile" in row["used_by"]
     # The contract venv is created from the builder's system interpreter, so
     # `uv venv --python 3.13` must keep resolving it (not a managed download):
@@ -92,7 +92,7 @@ def test_the_runtime_grafts_the_interpreter_the_venv_links() -> None:
 def test_the_build_smoke_still_pins_the_contract_version_and_identity() -> None:
     """The split must not drift the build-time identity assertions."""
     text = _dockerfile()
-    assert "assert sys.version_info[:3] == (3, 13, 16)" in text
+    assert "assert sys.version_info[:3] == (3, 13, 18)" in text
     for arg in (
         "ARG BIP_UTILS_VERSION=2.12.2",
         "ARG COINCURVE_VERSION=21.0.0",

@@ -1,5 +1,6 @@
-# Digest-pinned (#349): python:3.12-slim index digest resolved 2026-10-24.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+# Digest-pinned (#349): python:3.12.16-slim-bookworm index digest resolved 2026-11-16
+# (3.12.16 CPython-binary refresh, #2304 container-gate round).
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 WORKDIR /tests
 RUN pip install --no-cache-dir pytest==8.3.4 httpx==0.28.1
 COPY tests/e2e/ /tests/tests/e2e/

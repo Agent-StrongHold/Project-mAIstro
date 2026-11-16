@@ -51,9 +51,13 @@
 # it asserts.
 
 # ─── Build stage ───────────────────────────────────────
-# Digest-pinned (#349): python:3.12-slim resolved to this index digest on
-# 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS builder
+# Digest-pinned (#349): python:3.12.16-slim-bookworm resolved to this index
+# digest on 2026-11-16; refresh via Dependabot and update quality/image-pins.json.
+# The 3.12.16 refresh (#2304 container-gate round): grype flags CPython binary
+# CVE-2026-115557 (Critical, fixed 3.12.16) in the 3.12.15 build the previous
+# 3.12-slim digest carried; the floating 3.12-slim tag now resolves to Debian
+# trixie, so the pin moves to the exact patch tag and stays on bookworm.
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS builder
 
 WORKDIR /app
 
@@ -107,20 +111,24 @@ RUN uv export --locked --package maistro-server \
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 # The v29.9.1 vendor tree pins go-jose v4.1.5 (CVE-2026-116587, fixed v4.1.6)
 # and golang.org/x/net v0.60.0 (CVE-2026-78661, fixed v0.62.0); both HIGH and
-# fixed, so the container-scan gate fails the release tag as-is. Same policy
-# as the engine Dockerfile's dockerclibuild stage (#2304): override the two
-# vulnerable vendored modules to their fixed versions and re-vendor before
-# building. Re-triage when a docker/cli release vendors both fixes.
+# fixed, so the container-scan gate fails the release tag as-is. klauspost/
+# compress v1.20.1 (GO-2026-6865, HIGH, fixed v1.20.2) joined them: the grype
+# cross-check of the same gate flags it in the built CLI (trivy's DB does not
+# carry the advisory yet — the gates run both scanners, so both must be clean).
+# Same policy as the engine Dockerfile's dockerclibuild stage (#2304): override
+# the three vulnerable vendored modules to their fixed versions and re-vendor
+# before building. Re-triage when a docker/cli release vendors all three fixes.
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 ARG GO_JOSE_FIXED_VERSION=v4.1.6
 ARG GO_X_NET_FIXED_VERSION=v0.62.0
+ARG KLAUSPOST_COMPRESS_FIXED_VERSION=v1.20.2
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} && \
+    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} github.com/klauspost/compress@${KLAUSPOST_COMPRESS_FIXED_VERSION} && \
     go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
@@ -136,7 +144,7 @@ RUN apk add --no-cache git && \
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS production-apt
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.

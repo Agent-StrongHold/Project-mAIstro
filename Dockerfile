@@ -23,7 +23,7 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -139,21 +139,26 @@ FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e8835
 # RSA JWK parameters, fixed v4.1.6) and golang.org/x/net v0.60.0
 # (CVE-2026-78661, DoS via crafted HTML input, fixed v0.62.0) — both HIGH and
 # both `fixed`, so the container-scan gate fails the release tag as-is (#2304).
+# klauspost/compress v1.20.1 (GO-2026-6865, HIGH, fixed v1.20.2) joined them:
+# the grype cross-check of the same gate flags it in the built CLI (trivy's DB
+# does not carry the advisory yet — the gates run both scanners, so both must
+# be clean).
 # Same policy as the age stage above: build the exact immutable release tag
 # with the vulnerable vendored modules overridden to their fixed versions;
 # `go mod vendor` re-syncs the vendor tree so the build reads the patched
 # modules instead of failing on inconsistent vendoring. Re-triage (drop the
-# overrides) when a docker/cli release vendors both fixes.
+# overrides) when a docker/cli release vendors all three fixes.
 ARG DOCKER_CLI_VERSION=29.9.1
 ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
 ARG GO_JOSE_FIXED_VERSION=v4.1.6
 ARG GO_X_NET_FIXED_VERSION=v0.62.0
+ARG KLAUSPOST_COMPRESS_FIXED_VERSION=v1.20.2
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} && \
+    go get github.com/go-jose/go-jose/v4@${GO_JOSE_FIXED_VERSION} golang.org/x/net@${GO_X_NET_FIXED_VERSION} github.com/klauspost/compress@${KLAUSPOST_COMPRESS_FIXED_VERSION} && \
     go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
@@ -182,7 +187,7 @@ RUN apk add --no-cache git && \
 # mirror; release.yml builds cold and needs no flag. The 2026-10-22
 # base-digest bump (#1152) additionally invalidated the previously cached
 # apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
