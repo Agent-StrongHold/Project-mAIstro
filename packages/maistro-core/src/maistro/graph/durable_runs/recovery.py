@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
@@ -234,6 +234,19 @@ _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
 def _is_resume_due(record: DurableRunRecord, moment: datetime) -> bool:
     """Report whether `record` is in a resumable status with an elapsed wait."""
     if record.run.status not in _RESUME_ELIGIBLE_STATUSES:
+        return False
+    return record.resume_at is not None and record.resume_at <= moment
+
+
+def _is_timed_wait_due(record: DurableRunRecord, moment: datetime) -> bool:
+    """Report whether the timed resume, not the external seam, owns `record`.
+
+    A ``WAITING`` wait with an elapsed ``resume_at`` is settled by the walker's
+    fenced poll once ``resume_due_graph_runs`` resumes it. Polling it through
+    ``poll_external_results`` first would read the same provider twice in one
+    tick and discard the external result, so the seam defers to the timer.
+    """
+    if record.run.status is not RunStatus.WAITING:
         return False
     return record.resume_at is not None and record.resume_at <= moment
 
@@ -666,4 +679,349 @@ def _per_run_resolver(
     )
 
 
-__all__ = ["recover_queued_graph_runs", "resume_due_graph_runs"]
+__all__ = [
+    "poll_external_results",
+    "recover_queued_graph_runs",
+    "resume_due_graph_runs",
+]
+
+
+@runtime_checkable
+class StatusPageScanner(Protocol):
+    """Status projection reads that distinguish stale rows from exhaustion."""
+
+    async def scan_status_page(
+        self,
+        status: RunStatus,
+        *,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
+
+
+async def poll_external_results(
+    *,
+    store: DurableRunStore,
+    guest_peers: Any,
+    harness_adapters: Mapping[str, Any],
+    limit: int = 100,
+    eligible: QueuedRunPredicate | None = None,
+    now: datetime | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
+    max_inspected: int = DEFAULT_MAX_INSPECTED,
+    invocation_store: Any = None,
+    binding_store: Any = None,
+) -> int:
+    """Poll external pauses and write terminal results to the Graph store.
+
+    In-process A2A completions arrive through the delegator's completion
+    bridge (``Container.wake_external_graph_result``). Cross-instance peers
+    and harnesses have no shared receipt object, so this bounded recovery
+    tick is their production result ingress — the same operator-scheduled
+    shape as the module's other two halves. It only writes through
+    ``submit_external_result``; the canonical Graph resume path remains the
+    authority that consumes the queued result.
+
+    A ``WAITING`` wait whose own ``resume_at`` has already elapsed is left
+    to ``resume_due_graph_runs``: the walker settles that receipt with a
+    fresh provider poll, so polling it here first would read the same
+    provider twice in one tick. The external seam stays the ingress for a
+    completion that lands before the timer does.
+
+    A harness pause is polled only on behalf of its governed dispatch: the
+    pause must carry the dispatch Invocation id and Binding reference the
+    node persisted, the receipt must correlate with this Run, and the
+    Binding must still resolve against ``binding_store``. A revoked,
+    rescope-disabled, or evidence-less pause is left for the timed resume,
+    which settles it under the node's own governance. ``invocation_store``
+    and ``binding_store`` are the container's canonical effect authorities.
+
+    ``limit`` bounds eligible polls, not a fixed prefix of parked Runs.
+    Repeated consumers must retain ``scan`` across ticks, including both
+    status buckets, so a busy WAITING prefix cannot starve PAUSED work or
+    an eligible completion beyond ``max_inspected``. The position is only
+    a discovery cursor; it grants no execution or lifecycle authority.
+    """
+    if limit <= 0:
+        return 0
+
+    moment = now if now is not None else datetime.now(UTC)
+    delivered = 0
+    candidates = await fair_page_scan(
+        fetch_page=lambda cursor, size: _external_graph_page(store, cursor, size),
+        cursor_of=_external_cursor,
+        eligible=lambda record: (
+            not _is_timed_wait_due(record, moment)
+            and (eligible is None or eligible(record.run))
+            and _has_external_pause(record)
+        ),
+        limit=limit,
+        continuation=scan,
+        max_inspected=max_inspected,
+    )
+    for record in candidates:
+        try:
+            polled = await _poll_external_record(
+                record,
+                guest_peers,
+                harness_adapters,
+                invocation_store=invocation_store,
+                binding_store=binding_store,
+            )
+        except Exception:
+            logger.warning(
+                "external result poll failed for Run %s",
+                record.run_id,
+                exc_info=True,
+            )
+            continue
+        if polled is None:
+            continue
+        node_id, result = polled
+        if await _deliver_external_result(store, record, node_id, result):
+            delivered += 1
+    return delivered
+
+
+def _external_cursor(record: DurableRunRecord) -> tuple[str, str]:
+    created_at, run_id = run_cursor_key(record.run)
+    return (f"{record.run.status.value}:{created_at}", run_id)
+
+
+def _has_external_pause(record: DurableRunRecord) -> bool:
+    pauses = record.graph_state.metadata.get("pauses", {})
+    if not isinstance(pauses, Mapping):
+        return False
+    for node_id in record.graph_state.active_node_ids:
+        pause = pauses.get(node_id)
+        metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
+        if isinstance(metadata, Mapping) and metadata.get("paused_reason") in {
+            "awaiting_remote_delegation",
+            "awaiting_harness",
+        }:
+            return True
+    return False
+
+
+async def _external_graph_page(
+    store: DurableRunStore, cursor: tuple[str, str] | None, size: int
+) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+    """Walk WAITING then PAUSED, carrying progress even across stale projections."""
+    status_key, _, created_at = (
+        cursor[0].partition(":") if cursor is not None else ("waiting", "", "")
+    )
+    status = RunStatus(status_key)
+    after = (created_at, cursor[1]) if cursor is not None and created_at else None
+    if isinstance(store, StatusPageScanner):
+        page = await store.scan_status_page(status, limit=size, after=after)
+    else:
+        rows = await store.list_by_status(status, limit=size, after=after)
+        page = ScanPage(
+            items=rows,
+            resume_after=run_cursor_key(rows[-1].run) if rows else after,
+            inspected=len(rows),
+            exhausted=len(rows) < size,
+        )
+    position = (
+        (f"{status.value}:{page.resume_after[0]}", page.resume_after[1])
+        if page.resume_after is not None
+        else cursor
+    )
+    exhausted = page.exhausted
+    if exhausted and status is RunStatus.WAITING:
+        position = (f"{RunStatus.PAUSED.value}:", "")
+        exhausted = False
+    return ScanPage(
+        items=page.items, resume_after=position, inspected=page.inspected, exhausted=exhausted
+    )
+
+
+async def _deliver_external_result(
+    store: DurableRunStore, record: Any, node_id: str, result: dict[str, Any]
+) -> bool:
+    """Apply one polled result through the canonical external-result seam."""
+    try:
+        await store.submit_external_result(record.run_id, node_id, result)
+    except (KeyError, ValueError):
+        # At-least-once polling races with timeout, cancellation, or
+        # another replica. The canonical store keeps the winner.
+        logger.info(
+            "external result did not wake Run %s node %s",
+            record.run_id,
+            node_id,
+        )
+        return False
+    return True
+
+
+async def _poll_external_record(
+    record: Any,
+    guest_peers: Any,
+    harness_adapters: Mapping[str, Any],
+    *,
+    invocation_store: Any = None,
+    binding_store: Any = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Poll the first externally parked frontier node with a known waker."""
+    from maistro.graph.nodes.base import (
+        PAUSE_AWAITING_HARNESS,
+        PAUSE_AWAITING_REMOTE_DELEGATION,
+    )
+
+    pauses = record.graph_state.metadata.get("pauses", {})
+    if not isinstance(pauses, Mapping):
+        return None
+    for node_id in record.graph_state.active_node_ids:
+        pause = pauses.get(node_id)
+        if not isinstance(pause, Mapping):
+            continue
+        metadata = pause.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        reason = str(metadata.get("paused_reason") or "")
+        if reason == PAUSE_AWAITING_REMOTE_DELEGATION:
+            result = await _poll_guest_peer_result(guest_peers, dict(metadata))
+        elif reason == PAUSE_AWAITING_HARNESS:
+            result = await _poll_harness_result(
+                harness_adapters,
+                dict(metadata),
+                run_id=record.run_id,
+                invocation_store=invocation_store,
+                binding_store=binding_store,
+            )
+        else:
+            continue
+        if result is not None:
+            return str(node_id), result
+    return None
+
+
+async def _poll_guest_peer_result(
+    guest_peers: Any, metadata: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Translate a terminal peer receipt into the canonical result shape."""
+    peer_name = str(metadata.get("peer_name") or "")
+    task_id = str(metadata.get("task_id") or "")
+    if not peer_name or not task_id or guest_peers is None:
+        return None
+    result = await guest_peers.poll_result(peer_name, task_id)
+    if result is None:
+        return None
+    return {
+        "status": result.status,
+        "task_id": result.task_id,
+        "result": result.result,
+        "error": result.error,
+    }
+
+
+def _dispatch_receipt_matches(dispatch: Any, *, run_id: str, binding_id: str) -> bool:
+    """Whether a stored dispatch Invocation is this Run's COMPLETED dispatch."""
+    from maistro.capabilities.invocation import Invocation, InvocationStatus
+
+    return (
+        isinstance(dispatch, Invocation)
+        and dispatch.status is InvocationStatus.COMPLETED
+        and (not run_id or dispatch.run_id == run_id)
+        and dispatch.binding.binding_id == binding_id
+    )
+
+
+async def _binding_still_authorizes(binding_store: Any, binding: Any) -> bool:
+    """Re-resolve the dispatch's Binding; revocation or rescope fails here."""
+    from maistro.capabilities.binding_store import BindingResolutionError
+
+    try:
+        await binding_store.resolve(
+            binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=binding.capability,
+        )
+    except BindingResolutionError:
+        return False
+    return True
+
+
+async def _harness_poll_authorized(
+    metadata: dict[str, Any],
+    *,
+    run_id: str,
+    invocation_store: Any,
+    binding_store: Any,
+) -> bool:
+    """Report whether the pause still holds governed dispatch authority.
+
+    The canonical checks are the node's own poll-time ones: a COMPLETED
+    dispatch Invocation correlated with this Run and its Binding reference,
+    and a Binding that still resolves in the canonical authority. Revoked,
+    disabled, or rescoped Bindings fail here exactly as they would inside
+    the node.
+    """
+    dispatch_id = str(metadata.get("dispatch_invocation_id") or "")
+    binding_id = str(metadata.get("binding_id") or "")
+    if not dispatch_id or not binding_id:
+        return False
+    dispatch = await invocation_store.get(dispatch_id)
+    if not _dispatch_receipt_matches(dispatch, run_id=run_id, binding_id=binding_id):
+        return False
+    return await _binding_still_authorizes(binding_store, dispatch.binding)
+
+
+def _harness_adapter_for(harness_adapters: Mapping[str, Any], metadata: dict[str, Any]) -> Any:
+    """Resolve the registered adapter for a pause's harness type and handle."""
+    harness_type = str(metadata.get("harness_type") or "")
+    handle_id = str(metadata.get("handle_id") or "")
+    if not harness_type or not handle_id:
+        return None
+    return harness_adapters.get(harness_type)
+
+
+async def _read_harness_result(adapter: Any, metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Poll the adapter once and translate the terminal result shape."""
+    from maistro.graph.harness import HarnessHandle
+
+    handle_id = str(metadata.get("handle_id") or "")
+    harness_type = str(metadata.get("harness_type") or "")
+    result = await adapter.poll(HarnessHandle(handle_id=handle_id, harness_type=harness_type))
+    if result is None:
+        return None
+    return {
+        "status": "completed" if result.success else "failed",
+        "handle_id": result.handle_id,
+        "output": result.output,
+        "error": result.error,
+        "metadata": result.metadata,
+    }
+
+
+async def _poll_harness_result(
+    harness_adapters: Mapping[str, Any],
+    metadata: dict[str, Any],
+    *,
+    run_id: str = "",
+    invocation_store: Any = None,
+    binding_store: Any = None,
+) -> dict[str, Any] | None:
+    """Translate a completed harness poll into the result seam.
+
+    The provider is read only for a pause that still holds governed dispatch
+    evidence: the node-persisted dispatch Invocation, correlated with this
+    Run and its Binding reference, with the Binding still resolvable in the
+    canonical authority. Anything else -- revoked or disabled Binding,
+    missing receipt, foreign Run -- stays parked: the timed resume settles
+    it through the node's own governed poll, which fails truthfully instead
+    of persisting output the capability no longer authorizes.
+    """
+    adapter = _harness_adapter_for(harness_adapters, metadata)
+    if adapter is None or invocation_store is None or binding_store is None:
+        return None
+    if not await _harness_poll_authorized(
+        metadata,
+        run_id=run_id,
+        invocation_store=invocation_store,
+        binding_store=binding_store,
+    ):
+        return None
+    return await _read_harness_result(adapter, metadata)
