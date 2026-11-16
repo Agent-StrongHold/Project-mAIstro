@@ -21,3 +21,11 @@ the build-time identity smoke untouched (`(3, 13, 16)` plus the
 bip-utils/coincurve/pynacl ARG pins). The first and third tests fail against
 the pre-repair Dockerfile — the state that shipped the `AssertionError:
 3.13.15` CI failures — so they name the regression they prevent.
+
+Update (2026-11-16, #2304 container-gate round): the pins this note names are
+superseded by the grype-driven refresh recorded in
+`REPAIR-NOTES-2304-python-315-base-bump.md` round 7 — pybuild now on the
+registered `python:3.13.18-slim-bookworm` digest (smoke asserts `(3, 13,
+18)`), runtime-apt on `python:3.15.2-slim-bookworm`. The four tests above
+still hold, with their asserted constants moved to the refreshed values;
+test count unchanged.
