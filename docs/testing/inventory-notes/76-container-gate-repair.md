@@ -1,10 +1,6 @@
----
-inventory-delta: {}
----
-
 # Issue 76 container-gate repair (CI-repair round, 2026-11-16)
 
-No test counts changed: the only test edit updates the asserted interpreter
+No inventory delta: no test counts moved. The only test edit updates the asserted interpreter
 tag in `tests/test_distribution_contract.py` (3.13.16 -> 3.13.18) to match the
 refreshed base-image pin. This note records the CI-repair evidence for the
 "Container scan + SBOM + cosign" gate.
@@ -78,3 +74,30 @@ hive-conductor frontend build, not the failure.)
 - `uv run python scripts/check-vulture-baseline.py packages/*/src
   --min-confidence 60 --exclude '*/third_party/*'`: exit 0 (1238 reviewed
   identities -> 1236 findings, no unbanked rows).
+
+## Repair round re-validation (2026-11-16, head 005e98d58 + this fix)
+
+This note originally opened with an `inventory-delta: {}` front-matter block.
+`check-suite-inventory.py` rejects that shape (a value on the key's own line
+is unreadable, and an empty block would be "records nothing"), so the block
+is removed: no front matter records no delta, the documented convention for a
+change that moved no count (see the directory README and the precedent in
+`859-container-gate-base-pin-refresh.md`). Fresh re-execution at this head:
+
+- `scripts/check-suite-inventory.py`: full run exit 0 (21 suites match the
+  recorded inventory; 35,389 collected node IDs, 0 duplicate identities) and
+  all five `--suite` per-suite invocations exit 0.
+- targeted sandbox/harness pytest (the 26-file verifier battery): 465 passed,
+  8 skipped.
+- `ruff check` / `ruff format --check`: clean. `uv lock --check`: consistent.
+- vulture gate, CI arguments: exit 0 (1238 reviewed identities -> 1236
+  findings).
+- pip-audit gate (`pip_audit_gate.py` over `pip-audit --strict`): exit 0
+  (only the triaged `ecdsa==0.19.2 PYSEC-2026-1325`).
+- image-lock reconciliation (`check-image-lock-reconciliation.py` vs
+  `maistro-engine:pr-2241`, CI's exact export): exit 0 — ships exactly the
+  locked set (126 distributions, 3 workspace members).
+- Trivy v0.73.0 with the gate's flags (`--severity HIGH,CRITICAL
+  --ignore-unfixed --exit-code 1 --ignorefile .trivyignore.yaml`) on all four
+  gate images, all exit 0; maistro-engine's `usr/local/bin/docker` gobinary
+  reports 0 findings.
