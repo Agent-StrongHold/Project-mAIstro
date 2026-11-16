@@ -20,4 +20,44 @@ The limiter's implementation documents process-local enforcement at `packages/ma
 
 **Not promotion-ready.** The executed tests validate local promotion-gate behavior, not an exact-RC soak. Acceptance items requiring production workload coverage, long-duration soak, RC identity, complete fencing/recovery proof, external findings filing/reclassification, and evidence tied to the promoted RC remain unmet or unverified. No gate was weakened and no evidence was represented as promotion proof.
 
-At job start, the worktree already contained 332 tracked documentation deletions (including historical soak evidence and inventory notes) with no staged changes. They were not staged, restored, or discarded in this job; they remain preserved as an uncommitted diff and must be investigated by the owner before integration. This report is committed independently of those deletions.
+That earlier round recorded 332 tracked documentation deletions at its own start; this is historical context, not the state of the current assigned head. The current worktree started clean.
+
+## Current assigned-head revalidation
+
+Starting head: `1fddbce2312385656e14aac4348c94890e088875`; develop base:
+`157c3f615beee120f8088caf801ab3eb17b5fa12`. The prior driver result's server
+inventory check failed (`expected 670, collected 671`). The branch contains the
+added `test_tasks_concurrency_backpressure.py`; its missing +1 was not recorded
+in the existing inventory delta. Updated
+`docs/testing/inventory-notes/860-pg-learnings-schema-fence.md` to record +1 for
+both the core and server suites.
+
+Executed on this head:
+
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-server/tests` — PASS, 671/671.
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` — PASS, 18,501/18,501.
+- `uv run pytest packages/maistro-server/tests/api/test_tasks_concurrency_backpressure.py packages/maistro-core/tests/persistence/test_pg_learnings.py -x -q` — 38 passed, 6 skipped. The skips are not live-PG proof.
+- `uv run ruff check .` — PASS; `uv run ruff format --check .` — PASS.
+
+## Disposition and criterion audit
+
+**NEEDS-DEEP-REVIEW / not promotion-ready.** The real inventory drift was fixed
+as a missing inventory-note delta; no test or gate was weakened. The relevant
+acceptance criteria remain incomplete:
+
+| Issue criterion | Evidence at this head / disposition |
+|---|---|
+| Representative user/Workspace, Graph fan-out, schedule/task, model/tool, Design/Canvas, worker profile | `m3a-load-profile.md` explicitly says concurrent user/Workspace, Graph fan-out, successful tool/model, Design/Canvas, and sustained Goal/background reconciliation are missing. UNVERIFIED. |
+| At least two production replicas | Existing host-process preflight is not the production Compose artifact; no exact-RC multi-replica run established. UNVERIFIED. |
+| Sustained load with saturation, growth, reclaim, backoff and leak observations | Profile requires 14,400 seconds. Round-8 record was 1,200 seconds and failed duration/artifact gates; pool saturation, lease reclaim, and physical fencing remain gaps. UNVERIFIED. |
+| Exactly-once/fenced operations across replicas | Targeted regression tests passed, but do not prove all physical work across replicas; ADR-081626-f383 explicitly leaves lease-expiry takeover/reclaim undefined. PARTIAL; production proof UNVERIFIED. |
+| Security/rate limit cannot be bypassed by replica selection | Current limiter is process-local and the profile explicitly says aggregate allowance can scale with replica count. The acceptance's no-bypass assertion is not proven. UNVERIFIED. |
+| Required telemetry and thresholds | The preflight captures specified observations, but no four-hour exact-RC measurement set exists. PARTIAL; promotion evidence UNVERIFIED. |
+| Kill/restart with drain, fencing and recovery | Earlier drain probe recorded failure; no current exact-RC successful drain/fencing/recovery proof. UNVERIFIED. |
+| Exact RC/config soak; re-soak on code/config change | No promoted RC identity/config is available and host preflight always fails `exact_rc_artifact`. UNVERIFIED. |
+| Findings filed/reclassified to earliest invariant | No evidence in this job establishes complete disposition of findings discovered under qualifying load. UNVERIFIED. |
+| Machine/human evidence tied to exact hashes | Existing evidence is host preflight / historical and does not bind a promoted artifact. UNVERIFIED. |
+
+The targeted tests establish only their specific regression contracts. They are
+not equivalent to the requested release soak. No source behavior or promotion
+gate was changed, and no integration/promotion approval is implied.
