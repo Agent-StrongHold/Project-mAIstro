@@ -1264,6 +1264,18 @@ class SqliteRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
+            if target is RunStatus.COMPLETED:
+                children = await self._fetchone(
+                    "SELECT COUNT(*) FROM canonical_runs "
+                    "WHERE parent_run_id = ? AND status NOT IN "
+                    f"({_placeholders(len(_TERMINAL_STATUS_VALUES))})",
+                    (run_id, *_TERMINAL_STATUS_VALUES),
+                )
+                if children is not None and int(children[0]):
+                    raise RunIntegrityError(
+                        f"Run cannot complete while {int(children[0])} "
+                        "child Run(s) are non-terminal"
+                    )
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
             settled: list[NodeRun] = []

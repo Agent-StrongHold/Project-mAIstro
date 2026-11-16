@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +22
+  packages/maistro-core/tests: +31
   packages/maistro-server/tests: +10
 ---
 
@@ -102,6 +102,24 @@ Existing chat-admission, retention and forced-delete cases now settle their
 child Runs first, so they exercise deletion/purge of parents whose children
 reached a terminal state rather than relying on the previously unguarded
 sequence.
+
+## Current repair round at merge head 250cfe7097
+
+Review against the actual merged tree found that parent completion protection had
+been lost during the rebuild: unlike the earlier heads documented above,
+`transition_run` no longer checked child Runs before accepting `COMPLETED`.
+The canonical in-memory, SQLite, and PostgreSQL Run stores now reject that
+success claim while a child Run is non-terminal; failure remains legal. The
+shared spine test proves refusal without mutating the parent, continued failure
+legality, and successful completion after the child settles. The existing
+parent-retention test now settles its child before completing the parent, so it
+continues to test deletion rather than the new completion fence. These are
+re-established at the current head; older validation evidence above does not
+apply to the rebuilt head.
+
+Current test inventory delta: one new parametrized core conformance test adds
+six node IDs across the memory, SQLite and PostgreSQL spine backends; total note
+delta is `packages/maistro-core/tests: +31`, server tests unchanged.
 
 ## Bounded supply-chain repair at starting head 5edfca330
 

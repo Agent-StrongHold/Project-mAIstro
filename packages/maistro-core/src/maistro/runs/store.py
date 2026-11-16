@@ -1534,6 +1534,16 @@ class InMemoryRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
+        if target is RunStatus.COMPLETED:
+            open_children = [
+                child
+                for child in self._runs.values()
+                if child.parent_run_id == run_id and child.status not in TERMINAL_RUN_STATUSES
+            ]
+            if open_children:
+                raise RunIntegrityError(
+                    f"Run cannot complete while {len(open_children)} child Run(s) are non-terminal"
+                )
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
         settled = (
