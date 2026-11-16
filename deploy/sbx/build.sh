@@ -94,7 +94,7 @@ grype version | grep -F "$GRYPE_VERSION" >/dev/null || {
 for image in "$TEMPLATE_TAG" "$TESTS_TAG"; do
     info "trivy ${image} (HIGH/CRITICAL, ignore-unfixed)"
     trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed \
-        --ignore "$REPO_ROOT/.trivyignore.yaml" "$image"
+        --ignorefile "$REPO_ROOT/.trivyignore.yaml" "$image"
     info "grype ${image} (high with fix available)"
     grype "$image" --fail-on high --only-fixed --output table
 done
