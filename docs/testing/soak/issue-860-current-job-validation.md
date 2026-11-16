@@ -13,7 +13,7 @@ The limiter's implementation documents process-local enforcement at `packages/ma
 - `uv run pytest tests/test_soak_promotion_gates.py -x -q` — **143 passed**.
 - `uv run ruff check scripts/soak/run_soak.py tests/test_soak_promotion_gates.py` — **passed**.
 - `uv run ruff format --check scripts/soak/run_soak.py tests/test_soak_promotion_gates.py` — **passed**.
-- The assigned job directory contains no `check-*.log` files; no driver checks were available to inspect.
+- The assigned job directory contains no `check-*.log` files; no driver checks were available to inspect. The prior supplied job's `check-4.log` failed with package-suite drift (`expected 18435, collected 18436`). Independently reran `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests`; it reproduces the same +1. The added `test_ensure_schema_fences_ddl_behind_advisory_lock` is the collected node; `docs/testing/inventory-notes/860-pg-learnings-schema-fence.md` records the corresponding +1 delta. The first note draft used a trailing slash and the gate correctly rejected its unknown suite; after correcting the suite key, reran `uv run python scripts/check-suite-inventory.py --suite packages/maistro-core/tests` — passed at 18436/18436.
 - An initial incorrect package-scoped pytest path (`packages/maistro-server/tests/test_soak_promotion_gates.py`) failed because the test lives at repository-root `tests/test_soak_promotion_gates.py`; the correct command above passed.
 
 ## Disposition
