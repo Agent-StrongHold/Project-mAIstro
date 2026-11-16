@@ -69,3 +69,50 @@ stays exercised; the assertion set (1×200 / 7×409 / one row / one username) is
 unchanged. Verified 5/5 passes under a 12-process CPU load on 20 cores, where
 request runtimes stretched 2.1s → 5.8s — the staggered-arrival shape that
 produced the 429s. Full hive battery re-run: 199 passed; suite inventory: ok.
+
+## Third verification round (2026-11-16, head 9a08b7594b37 = throttle-decoupled test)
+
+Independent re-execution on the final head (prior round's worker died to a
+provider error after its driver battery, leaving scratch artifacts; all of
+that round's recorded checks returned 0):
+
+- Issue test plan, re-run in full:
+  `scripts/check-principal-identity.py` ok — 4 tolerated → 0 current, none
+  new (plain and with CI's `RATCHET_BASE_REV=origin/develop`, resolving base
+  f8a2df966a1d both ways; CI's invocation at `quality.yml` principal
+  identity is exactly this script);
+  `pytest packages/maistro-core/tests/fitness/test_principal_identity.py`
+  1 passed;
+  `pytest packages/maistro-server/tests/api/test_auth.py`
+  `packages/hive-conductor/backend/tests/test_username_registry.py`
+  62 passed.
+- Coverage additions pass by node id: the three canvas foreign-org guards
+  (`test_routes_org_paths.py -k foreign_org`, 3 passed) and
+  `test_auth.py::TestExplicitPrincipalContract::test_auth_off_admits_a_dev_principal`
+  (1 passed).
+- Driver battery on this exact head: `uv sync --locked --extra dev`,
+  `ruff check .`, `ruff format --check .`, targeted server/canvas/core
+  pytest (199 passed), hive backend selection (199 passed), and all four
+  suite-inventory gates (hive 4194, canvas 642, core 18435, server 671) —
+  every returncode 0.
+- Mutation gate re-validated without re-running mutants:
+  `mutation_critical.py --validate` ok (8 critical sources); the sole
+  changed critical target is still `maistro/privilege.py` →
+  `packages/maistro-core/tests`; the trusted merge-base baseline has no
+  entry for it, so per `mutation_pr_gate.py` the run is report-only and
+  cannot fail the PR. No production file changed since the head where the
+  diff-coverage gate was reproduced locally (17 changed measured files,
+  ≥90% lines / ≥80% branch arcs, round one), so that evidence transfers
+  unchanged; the aggregate publish-set floor still requires CI's
+  multi-producer combine.
+- Salvage resolution: the prior round's untracked scratch
+  (`changed-py.txt`, `diff-map.txt`, `mutation-targets.tsv`,
+  `trusted-mutation-baseline.json`, `mutation-artifacts/*.diff`) are
+  byte-verified replicas of the mutation workflow's own steps
+  (`git diff --name-only origin/develop...HEAD` and
+  `git show <base>:quality/mutation-baseline.json`); they carry no unique
+  repo content, are left untracked, and are safe to regenerate or delete.
+
+Residual: a CI run on the pushed head remains the only direct proof of the
+aggregate coverage floor; the branch has not been pushed from this
+worktree, and pushing is out of scope for a repair attempt.
