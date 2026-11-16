@@ -52,8 +52,8 @@
 
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
-# 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS builder
+# 2026-11-16; refresh via Dependabot and update quality/image-pins.json.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
 
@@ -103,6 +103,13 @@ RUN uv export --locked --package maistro-server \
 # independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+# Same patch policy for the release tag's vendored dependencies: v29.9.1 ships
+# go-jose v4.1.5 (CVE-2026-116587 HIGH, DoS via crafted RSA parameters in
+# JWKs, fixed in v4.1.6), golang.org/x/net v0.60.0 (CVE-2026-78661 HIGH,
+# DoS via crafted HTML input, fixed in v0.62.0) and klauspost/compress
+# v1.20.1 (GO-2026-6865 HIGH, fixed in v1.20.2), and no released docker:xx-cli
+# tag carries those fixes (#76 CI repair, 2026-11-16). `go get` rewrites
+# go.mod/go.sum, `go mod vendor` re-syncs the vendored tree the build consumes.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
@@ -112,6 +119,8 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
@@ -126,7 +135,7 @@ RUN apk add --no-cache git && \
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag.
-FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS production-apt
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.
