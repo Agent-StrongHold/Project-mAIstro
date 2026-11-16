@@ -98,19 +98,18 @@ RUN uv export --locked --package maistro-server \
 # go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; CVE-2026-111943 HIGH
 # in stdlib 1.27.2, fixed in go1.26.10/1.27.3) and no released
 # docker:xx-cli tag ships a newer toolchain, so build the exact immutable
-# release tag ourselves on the patched toolchain. Tag resolves to dfc520d; fail
+# release tag ourselves on the patched toolchain. Tag resolves to 5457199; fail
 # if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
 # independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
-# Pin moved to v29.9.3 (tag resolves to 5457199; fail if upstream ever
-# disagrees) by the #1532 trunk-CI repair: v29.9.1's vendored tree carried two
-# trivy HIGHs inside the built binary — CVE-2026-116587 (go-jose/v4 DoS via
-# crafted RSA JWK parameters, fixed in v4.1.6; v29.9.3 vendors v4.1.7) and
-# CVE-2026-78661 (golang.org/x/net/html DoS, fixed in v0.62.0; v29.9.2 and
-# v29.9.3 still vendor v0.60.0 and no released docker/cli tag ships the fix,
-# so the build re-vendors x/net at the fixed version below, on the same
-# pinned go 1.26.0 directive / 1.27.3 toolchain).
+#
+# 29.9.3 bump (CR1373 CI repair, 2026-11-16): v29.9.1 vendored go-jose/v4 4.1.5
+# (CVE-2026-116587 HIGH, fixed in 4.1.6) and golang.org/x/net 0.60.0
+# (CVE-2026-78661 HIGH, fixed in 0.62.0); trivy flagged both inside the built
+# usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but still pins
+# x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
+# root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
@@ -120,7 +119,8 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get golang.org/x/net@v0.62.0 && go mod vendor && \
+    go get golang.org/x/net@v0.62.0 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
