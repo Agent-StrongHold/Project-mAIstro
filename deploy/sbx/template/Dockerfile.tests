@@ -7,7 +7,7 @@
 #
 # Built host-side by deploy/sbx/build.sh (needs network once, at build time).
 # Digest-pinned (#349): python:3.12-slim index digest resolved 2026-10-24.
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # uv installer image digest-pinned to the 0.12.21 release (#349); the same
 # pinned uv generated the committed uv.lock this image warms its cache from
