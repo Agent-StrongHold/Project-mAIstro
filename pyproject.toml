@@ -280,6 +280,20 @@ constraint-dependencies = [
     "pyasn1>=0.6.5",
     "pypdf>=6.21.4",
     "soupsieve>=4.0.0",
+    # Same shape again, but a vendored Rust lock, not a python dist (#1532
+    # CI-repair round, 2026-11-16: security.yml `containers` job run
+    # 43862402157, trivy step "Trivy scan maistro-rsi-runner", 1 CRITICAL +
+    # 3 HIGH). temporalio is a root-project dependency imported nowhere yet,
+    # so its wheel rides into the rsi-runner venv with the workspace sync —
+    # and trivy scans the `temporalio/bridge/Cargo.lock` the wheel ships,
+    # which pins the Rust `zip` crate 8.6.0 (CVE-2026-115905 fixed in zip
+    # 9.0.5; CVE-2026-115907/115908/115909 in 9.0.0). temporalio 1.35.0 is
+    # the first release whose bridge lock carries zip >= 9.1.2; the floor
+    # makes the locked resolution (1.36.1) sit above every advisory. The
+    # pip-audit gate cannot see this one: the advisory names the Rust crate,
+    # not the temporalio distribution, so the supply-chain job stays green
+    # regardless — which is exactly why only the image scan went red.
+    "temporalio>=1.35.0",
 ]
 
 [tool.ruff]
