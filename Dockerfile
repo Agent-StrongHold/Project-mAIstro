@@ -132,7 +132,11 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
-# flags the 1.27.2 stdlib inside the built binary.
+# flags the 1.27.2 stdlib inside the built binary. The vendored module set also
+# pins go-jose/v4 v4.1.5 (CVE-2026-116587 DoS via crafted JWK RSA params, fixed
+# 4.1.6) and golang.org/x/net v0.60.0 (CVE-2026-78661 HTML DoS, fixed 0.62.0);
+# the `go get` below raises both to their fixed releases so the Container scan's
+# Trivy gate (HIGH, exit-code 1) does not fail on /usr/local/bin/docker.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.1
@@ -142,6 +146,8 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
