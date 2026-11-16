@@ -219,13 +219,17 @@ COPY pyproject.toml uv.lock README.md ./
 # so the non-root user can use it.
 RUN python -m playwright install chromium
 
-# Fixed Node runtime for the Playwright/patchright drivers (#2304): both
-# ship a bundled Node 24.21.0 whose binary carries HIGH/CRITICAL CVEs fixed
-# in 24.22.1 (grype: CVE-2026-111497 Critical + CVE-2026-105482/105483/
-# 106069 High). The driver is JavaScript launched through Node, so a clean
-# system Node plus PLAYWRIGHT_NODEJS_PATH lets us drop the bundled binaries
-# instead of shipping the vulnerable ones. Verified locally: Node 24.22.1
-# scans clean under grype --only-fixed --fail-on high.
+# Fixed Node runtime for the Playwright/patchright drivers (#2304): the
+# wheels bundle their own Node binaries (playwright 1.65.2 -> v26.13.1,
+# patchright 1.64.1 -> v24.21.0; both measured from the locked wheels), and
+# grype flags those shipped binaries — CVE-2026-111497 Critical +
+# CVE-2026-105482/105483/106069 High on the v24.21.0 build, fixed upstream
+# in 24.22.1 — inside the published image. Each driver is JavaScript
+# launched through Node and consults PLAYWRIGHT_NODEJS_PATH before its
+# bundled driver/node, so a checksum-pinned system Node lets us drop the
+# bundled binaries instead of shipping the vulnerable ones. Verified
+# locally: Node 24.22.1 scans clean under grype --only-fixed --fail-on
+# high, and the drivers launch Chromium through it.
 RUN python - <<'PYDL'
 import hashlib, io, tarfile, urllib.request
 url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz"

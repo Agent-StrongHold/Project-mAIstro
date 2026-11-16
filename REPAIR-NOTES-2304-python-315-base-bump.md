@@ -641,3 +641,80 @@ rebuilt hive image and refreshed both 3.12 bases to the registry-verified
 digest that fixes grype's CVE-2026-115557 Critical); engine/rsi-runner scans
 not re-run locally. The next CI run of the gate re-executes both scanners on
 all four images against these bytes.
+
+## Round 9 (2026-11-16, head `89534e50` tree) — the residual grype reds were
+## the drivers' bundled Node binaries; the image now ships a pinned system
+## Node instead
+
+The prior run committed the Node swap (`89534e50`) but died before emitting
+any result, leaving the commit unverified and undocumented. This round
+re-proved it end to end at the exact head, corrected its comment (it claimed
+"both ship a bundled Node 24.21.0"; measurement shows playwright 1.65.2
+bundles **v26.13.1** and patchright 1.64.1 bundles **v24.21.0**), and held
+the repair closed with tests.
+
+**Finding:** grype v0.116.0 flags the Node binaries the research image's
+venv ships *inside the wheels* — playwright 1.65.2's bundled Node v26.13.1
+and patchright 1.64.1's bundled Node v24.21.0 — including CVE-2026-111497
+(Critical) and CVE-2026-105482/105483/106069 (High) on the v24.21.0 build,
+all fixed upstream in Node 24.22.1. Both drivers are JavaScript launched
+through Node, and both playwright and patchright consult
+`PLAYWRIGHT_NODEJS_PATH` before their bundled `driver/node`
+(`playwright/_impl/_driver.py` / `patchright/_impl/_driver.py`, read from
+the locked wheels), so the vulnerable binaries can simply not ship.
+
+**Repair (from `89534e50`, comment corrected here):** `Dockerfile.research`
+downloads the Node 24.22.1 tarball over `urllib` with a sha256 literal
+verified against nodejs.org this round (match), extracts to `/usr/local`,
+sets `PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node`, deletes
+`{playwright,patchright}/driver/node`, and prunes npm's vendored tree
+(nothing in the image uses npm at runtime; its bundled dependencies are pure
+scan surface). corepack stays: the scans show no findings from it.
+
+**Proof (this round, scanners with the gate's exact pinned versions):**
+
+- Full build `docker build -f Dockerfile.research --no-cache-filter
+  production-apt --load .` → exit 0 (the previously-failing playwright
+  step downloads Chromium 159.0.8154.6; the node swap steps execute).
+- trivy 0.73.0, CI's exact shape (`--severity HIGH,CRITICAL --exit-code 1
+  --ignore-unfixed --ignorefile .trivyignore.yaml`) → **exit 0, zero
+  findings** on `maistro-engine-research:round9`.
+- grype 0.116.0, CI's exact shape (`--fail-on high --only-fixed`) →
+  **exit 0**; the node rows are gone (remaining rows are Medium/Low/
+  Unknown python-binary and otel-go-module advisories, below the high
+  threshold).
+- In-image probes as shipped (uid 10001, no extra env): `node --version`
+  → v24.22.1 at `/usr/local/bin/node`; `find / -name node -type f` → only
+  `/usr/local/bin/node` (no bundled driver binaries, no npm tree);
+  `playwright.sync_api` launches Chromium, navigates a data: URL and
+  returns the page title — the driver runs on the system Node.
+- Patchright's driver likewise *starts* on the system Node; its launch
+  error is a pre-existing browser-revision gap (it wants
+  `chromium_headless_shell-1248`; the Dockerfile has only ever run
+  `playwright install chromium`, which fetches 1255). No production code
+  imports patchright (`grep -rn patchright packages/ --include='*.py'` →
+  nothing outside tests), so nothing regressed.
+- Tarball integrity re-checked from this machine: sha256 of
+  `node-v24.22.1-linux-x64.tar.xz` matches the Dockerfile literal
+  (`6c172a9a…95e6`).
+
+**Held closed:** `tests/test_research_image_playwright_runtime.py` +3 tests
+(note `2304-research-image-driver-node-runtime`, `tests/: +3`): the direct
+regression (pinned URL + sha256 literal + `PLAYWRIGHT_NODEJS_PATH` + both
+driver-node removals + npm prune present), checksum verification (the
+downloader must assert the digest before extracting), and the coupling
+(playwright in the lock ⇒ the swap block exists). All three demonstrated to
+fail against the pre-round-9 Dockerfile by running the module against a
+copy with the swap block stripped.
+
+**Gate mapping:** this closes the grype leg of `Container scan + SBOM +
+cosign` for the research image — the gate's last red scanner finding class
+after rounds 6–8 cleared trivy python-pkg, gobinary, and the base CVEs.
+Round 8's residual (grype not re-run on the rebuilt research image) is now
+closed by execution: the rebuilt image scans clean under both scanners.
+
+**Residual:** CI has not yet run on this head; the other three images were
+green through the research build in the round-8 CI run and their bytes are
+unchanged by the Node swap except where noted (root `Dockerfile` untouched
+this round). The e2e-ui rsi-polling-resilience flake documented in round 6
+remains maintainer scope.

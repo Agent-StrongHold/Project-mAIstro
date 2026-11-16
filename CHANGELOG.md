@@ -90,6 +90,22 @@ or placeholder-only section.
   coincurve 21.0.0 cp313 wheels, same smoke assertions, same venv build.
   `quality/image-pins.json` rows moved with the Dockerfiles.
 
+- **The research image ships a pinned system Node instead of the drivers'
+  bundled Node binaries (#2304).** The playwright 1.65.2 and patchright
+  1.64.1 wheels bundle their own Node drivers (v26.13.1 / v24.21.0,
+  measured from the locked wheels), and the grype cross-check flags those
+  shipped binaries — CVE-2026-111497 (Critical) and
+  CVE-2026-105482/105483/106069 (High) on the v24.21.0 build, fixed
+  upstream in Node 24.22.1 — inside the published image. Both drivers are
+  JavaScript launched through Node and consult `PLAYWRIGHT_NODEJS_PATH`
+  first, so `Dockerfile.research` now installs a checksum-verified Node
+  24.22.1 into `/usr/local`, points the drivers at it, and deletes the
+  bundled binaries plus npm's vendored tree (nothing in the image uses
+  npm at runtime). Rebuild proof: trivy 0.73.0 HIGH/CRITICAL and grype
+  0.116.0 `--only-fixed --fail-on high` both exit 0 on the rebuilt image,
+  and Chromium launches through the system Node under the shipped
+  non-root user.
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in

@@ -15,6 +15,13 @@ These tests hold that structure closed: the apt stage must name libatomic1
 whenever the lock ships playwright into this image, so a playwright bump or
 re-introduction cannot silently red the image build (or worse, ship a
 browser tool whose driver cannot start at runtime) without a red test here.
+
+Round 9 extends the same surface: the drivers' *bundled* Node binaries
+(playwright 1.65.2 -> v26.13.1, patchright 1.64.1 -> v24.21.0, both measured
+from the locked wheels) carried the grype HIGH/CRITICAL findings that red
+the container-scan gate, so the image swaps them for a checksum-pinned
+system Node reached through ``PLAYWRIGHT_NODEJS_PATH`` and deletes the
+bundled binaries. Three further tests below hold that swap closed.
 """
 
 from __future__ import annotations
@@ -92,3 +99,71 @@ def test_playwright_in_lock_requires_libatomic1_in_the_image() -> None:
     """
     if _lock_playwright_version() is not None:
         assert "libatomic1" in _apt_install_packages()
+
+
+# --- round 9: the drivers' bundled Node binaries are replaced by a ---
+# --- checksum-pinned system Node reached through PLAYWRIGHT_NODEJS_PATH ---
+
+_NODE_TARBALL_URL = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz"
+_NODE_TARBALL_SHA256 = "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+
+
+def test_bundled_driver_node_binaries_are_dropped_for_a_pinned_system_node() -> None:
+    """The round-9 regression: the wheels' bundled Node must not ship.
+
+    playwright 1.65.2 bundles Node v26.13.1 and patchright 1.64.1 bundles
+    Node v24.21.0 (both measured from the locked wheels); those binaries
+    carried the grype HIGH/CRITICAL findings that red the container-scan
+    gate inside a *published* image. Both driver binaries must be deleted
+    and PLAYWRIGHT_NODEJS_PATH must point at the system Node that replaces
+    them (both packages consult that variable before driver/node). npm's
+    vendored tree goes with it: nothing in the image uses npm at runtime
+    and its bundled dependencies are pure scan surface.
+    """
+    text = _dockerfile()
+    assert _NODE_TARBALL_URL in text
+    assert f'expected = "{_NODE_TARBALL_SHA256}"' in text
+    assert "ENV PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node" in text
+    rm = re.search(
+        r"RUN rm -f (?P<paths>(?:[^\n]*driver/node[^\n]*\\\n)*[^\n]*driver/node[^\n]*)", text
+    )
+    assert rm, "the driver-node removal RUN must exist"
+    paths = rm.group("paths")
+    assert "playwright/driver/node" in paths
+    assert "patchright/driver/node" in paths
+    assert "/usr/local/lib/node_modules/npm" in text
+
+
+def test_system_node_tarball_fetch_verifies_the_checksum() -> None:
+    """The Node tarball fetch must be checksum-verified, not trusted.
+
+    The same hash-pinning posture as the venv install (``--require-hashes``)
+    and the patched age/dockercli builds: a dist URL alone is not an
+    integrity guarantee, so the downloader must assert the tarball's sha256
+    against a literal expected digest before extracting anything.
+    """
+    text = _dockerfile()
+    fetch = re.search(
+        r"import hashlib.*?assert hashlib\.sha256\(data\)\.hexdigest\(\) == expected",
+        text,
+        re.DOTALL,
+    )
+    assert fetch, "the node downloader must verify the tarball sha256"
+
+
+def test_playwright_in_lock_requires_the_node_runtime_swap() -> None:
+    """The coupling: playwright in the lock implies the node swap exists.
+
+    If playwright ships in this image, its bundled Node ships with it
+    unless the swap block removes it. Losing any leg of the swap (pinned
+    fetch, PLAYWRIGHT_NODEJS_PATH override, driver-binary removal, npm
+    pruning) re-exposes the grype findings without failing the build, so
+    it must red here instead. Vacuously satisfied if playwright leaves
+    the lock.
+    """
+    if _lock_playwright_version() is not None:
+        text = _dockerfile()
+        assert _NODE_TARBALL_URL in text
+        assert "ENV PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node" in text
+        assert "patchright/driver/node" in text
+        assert "/usr/local/lib/node_modules/npm" in text
