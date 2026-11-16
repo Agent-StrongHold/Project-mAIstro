@@ -33,10 +33,20 @@ constraints = [
     { name = "aiohttp", specifier = ">=3.14.4" },
     { name = "authlib", specifier = ">=1.9.1" },
     { name = "dnspython", specifier = ">=2.9.0" },
+    { name = "dnspython", specifier = ">=2.9.2" },
     { name = "fastmcp", specifier = ">=4.1.2" },
     { name = "gitpython", specifier = ">=3.2.1" },
     { name = "graphql-core", specifier = ">=3.3.0" },
+    { name = "graphql-core", specifier = ">=3.3.1" },
+    { name = "joserfc", specifier = ">=1.7.6" },
+    { name = "oauthlib", specifier = ">=4.0.1" },
+    { name = "opentelemetry-api", specifier = ">=1.45.2" },
+    { name = "patchright", specifier = ">=1.64.4" },
+    { name = "playwright", specifier = ">=1.65.2" },
+    { name = "pyasn1", specifier = ">=0.6.5" },
+    { name = "pypdf", specifier = ">=6.21.4" },
     { name = "setuptools", specifier = ">=84.1.0" },
+    { name = "soupsieve", specifier = ">=4.0" },
 ]
 
 [[package]]
@@ -3550,7 +3560,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "structlog", specifier = ">=24.4" },
-    { name = "temporalio", specifier = ">=1.27.0" },
+    { name = "temporalio", specifier = ">=1.36.1" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "types-regex", marker = "extra == 'dev'", specifier = ">=2024.5.15" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
@@ -4129,14 +4139,14 @@ wheels = [
 
 [[package]]
 name = "nexus-rpc"
-version = "1.4.0"
+version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/d5/cd1ffb202b76ebc1b33c1332a3416e55a39929006982adc2b1eb069aaa9b/nexus_rpc-1.4.0.tar.gz", hash = "sha256:3b8b373d4865671789cc43623e3dc0bcbf192562e40e13727e17f1c149050fba", size = 82367, upload-time = "2026-02-25T22:01:34.053Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/e5/25be948c92492cfc8ac24a524ad8828fe0cb9f71f46a974d7a37f0794a26/nexus_rpc-1.5.0.tar.gz", hash = "sha256:be2d6934414677bc9dd8e571fb5106c22b8769edc19562c3f49d9988edd24e1c", size = 97404, upload-time = "2026-10-28T17:12:21.82Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/52/6327a5f4fda01207205038a106a99848a41c83e933cd23ea2cab3d2ebc6c/nexus_rpc-1.4.0-py3-none-any.whl", hash = "sha256:14c953d3519113f8ccec533a9efdb6b10c28afef75d11cdd6d422640c40b3a49", size = 29645, upload-time = "2026-02-25T22:01:33.122Z" },
+    { url = "https://files.pythonhosted.org/packages/33/e2/00541e7997f3dfb294f7be3dafea3307ea09b9d3fd332054fe4d30627efc/nexus_rpc-1.5.0-py3-none-any.whl", hash = "sha256:5d6e856972be812573948df02da2257344c407a8eaa99977b5d38be54448305a", size = 30406, upload-time = "2026-10-28T17:12:20.245Z" },
 ]
 
 [[package]]
@@ -4425,21 +4435,21 @@ wheels = [
 
 [[package]]
 name = "patchright"
-version = "1.64.1"
+version = "1.64.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "greenlet" },
     { name = "pyee" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/a0/19b2d80eedc22fd8935ee3a7c0ee627eed6443a521f62d98e5b950f23694/patchright-1.64.1-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:cfbff95e926b1a1a61339dc59da2e8f0236c2bc13c508959432532bbabeafbbd", size = 44337731, upload-time = "2026-10-15T17:43:16.171Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/49/1ba8f64f2f4e1ad430af213ef3bbc3ac44d9e106f4ec20d3078a2f7e8b01/patchright-1.64.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:5cf5aa747646a2824cf4ca88a4f0a6c758865c4575c74cdef250d92b6fd76d44", size = 43004006, upload-time = "2026-10-15T17:43:20.641Z" },
-    { url = "https://files.pythonhosted.org/packages/ee/63/b0e9a748c3b4d5f5bf5a671406a618c79f8e174718443a22517364a59e3d/patchright-1.64.1-py3-none-macosx_11_0_universal2.whl", hash = "sha256:08a4ad197d3f2e3739206255e11b7bff5948190fe6540f54be5fb4629f2361ff", size = 44337732, upload-time = "2026-10-15T17:43:25.204Z" },
-    { url = "https://files.pythonhosted.org/packages/11/1a/2822f0f5a530d47161cc78fa35381023831e1068749378ecff3eb54a766d/patchright-1.64.1-py3-none-manylinux1_x86_64.whl", hash = "sha256:ff5f7e2f46b6cb26008e401a2c52d6ff09c1c09ba4b24e2c75bc501f62a3f084", size = 48276484, upload-time = "2026-10-15T17:43:29.858Z" },
-    { url = "https://files.pythonhosted.org/packages/df/10/f00d4eba7f3b944a77cfcf04ce25262123021c9b56dfb0e0234d6546c724/patchright-1.64.1-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2654f77810ad02980124bd8a7bc8d28658787b1583a94bcb2529faa612773992", size = 47962034, upload-time = "2026-10-15T17:43:34.585Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/8d/b098f1f4056f07e90a89a556e292fef48b345ed5bd52bb6eb112de1c96cc/patchright-1.64.1-py3-none-win32.whl", hash = "sha256:b630a5d8e80608d93d533ca278628a709d09bf5dc0b2a921c05b5a8baadbf503", size = 38665410, upload-time = "2026-10-15T17:43:38.584Z" },
-    { url = "https://files.pythonhosted.org/packages/82/a5/f0d454cecbaef15c35574268ce6a4327f370788bb8e2da3a216cf5f9908f/patchright-1.64.1-py3-none-win_amd64.whl", hash = "sha256:3cd3e7e1e94034e3f3a732ef7d6f87376dc7d27a9b598de51565051acabf3428", size = 38665415, upload-time = "2026-10-15T17:43:42.697Z" },
-    { url = "https://files.pythonhosted.org/packages/81/ee/b192304784a40ebe18c4a713a0027ab245063ec5b7137562806be7a413d0/patchright-1.64.1-py3-none-win_arm64.whl", hash = "sha256:2b7aa403c2b0223adf210753277aae53f489ebe4208d78192450fb01b67d0f53", size = 34582882, upload-time = "2026-10-15T17:43:46.719Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/20/4f17e66e063bef10f41f396edf26f96ff7a99bfe562b81da2fc8bfa40ba6/patchright-1.64.4-py3-none-macosx_10_13_x86_64.whl", hash = "sha256:623eef3f7f889e67b39dc2fee33c83efa8891d3fec41e6a3df1ee59dabc8fe9f", size = 44498639, upload-time = "2026-11-02T21:58:55.077Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/6f/d0b86e929c8ddcda7db8ff729e0001454bc471e7b6b19dc9ed330d13c2a7/patchright-1.64.4-py3-none-macosx_11_0_arm64.whl", hash = "sha256:e8656d523df868304ca25b77c2a94f17fe9e582085d46a1e2c2d25469d66f7a9", size = 43144905, upload-time = "2026-11-02T21:58:58.676Z" },
+    { url = "https://files.pythonhosted.org/packages/13/de/d217d9ff8a19a52506e510dcfa5b323b637c1ddd30b9792d0e5104e4d9cc/patchright-1.64.4-py3-none-macosx_11_0_universal2.whl", hash = "sha256:55be6d79e9db4f4a886375d14961238ae182ec43d1ef56157a017722f30ea3f7", size = 44498640, upload-time = "2026-11-02T21:59:01.746Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/66/7b5e5a2098dca0f10cfd5313c7bc6ecd95890661cdd1bd033a5186b2d42f/patchright-1.64.4-py3-none-manylinux1_x86_64.whl", hash = "sha256:a580aee16e89ef2552c67e8f388bbaf1b7d31b4b51211a1d4b584302b9feb69f", size = 48461604, upload-time = "2026-11-02T21:59:05.26Z" },
+    { url = "https://files.pythonhosted.org/packages/31/3b/2f5a7fea04047389c063f1a2b2a77db0d53acd2cf1d339d7b74dd4718f4f/patchright-1.64.4-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:93d719dd6a2921b553725611d56d53aee85f7c46d4d6eff220b71b8175ff9534", size = 48140667, upload-time = "2026-11-02T21:59:08.561Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/8f/7a00bbf88349bad7e036ff1986102ac66e4288a7a4c98237ef0a3c3d6c75/patchright-1.64.4-py3-none-win32.whl", hash = "sha256:03b61db0b05b539590db076af67ccde4199b10a8c765dcb03a7b5e653147354c", size = 38791504, upload-time = "2026-11-02T21:59:11.893Z" },
+    { url = "https://files.pythonhosted.org/packages/02/9d/afafea2ed5e504552cedad97573901493e8f336b1cdcf7680a5be3100f4c/patchright-1.64.4-py3-none-win_amd64.whl", hash = "sha256:91ede516076a12196def89ff89ee7eb30deea4ba074ca136f1022d59e98b0352", size = 38791507, upload-time = "2026-11-02T21:59:15.311Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/f9/3c57e324fc8151cdf1c33ed7efc2e35b5eb68b878c0f8d18cc4b85f74501/patchright-1.64.4-py3-none-win_arm64.whl", hash = "sha256:0d677dae50f11adf07aa984aa4b40393e647edb91de9ddd2d9f1e32096cefebc", size = 34683546, upload-time = "2026-11-02T21:59:19.864Z" },
 ]
 
 [[package]]
@@ -8940,7 +8950,7 @@ wheels = [
 
 [[package]]
 name = "temporalio"
-version = "1.34.0"
+version = "1.36.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nexus-rpc" },
@@ -8948,15 +8958,15 @@ dependencies = [
     { name = "types-protobuf" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/13/85/9ece6f400552ed21951c8c5c534056e7d015cb065e3384470ec23ac24f28/temporalio-1.34.0.tar.gz", hash = "sha256:6453cb20e18df485e16578b22c82a9c4bcb1cf7eedd94147dfd373551d80f5b6", size = 3163890, upload-time = "2026-09-30T20:22:56.056Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/7b/d425d26b4e6a525e7b87eadba201f0f72eedee91d65712e9cb772a51a586/temporalio-1.36.1.tar.gz", hash = "sha256:1342db50b6609718d5b222bb4f3070f7b8f17265ba027f3106d7b6a1ccf8af42", size = 2923760, upload-time = "2026-11-14T02:21:01.023Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/71/e55380e7820819357afada375d4e5c33d141bb94a08fda35aa0551b4369b/temporalio-1.34.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:87118447ad13e1062b79bfc8b44b1695e8328ac9c6be1776e426e87b501b135a", size = 14064102, upload-time = "2026-09-30T20:22:35.601Z" },
-    { url = "https://files.pythonhosted.org/packages/db/78/356c8e2f0ec1678b757d4c5e8a1b0b1c65b15b8afb2335ad2944c158ea10/temporalio-1.34.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:023fff9cd9dd21860061e003880dcf95250700f5afab96c030c9cb258504dab8", size = 13763219, upload-time = "2026-09-30T20:22:38.774Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/00/4a4b4e018c4c12b4691211aca1d97db8707ed4c9e31f40dcf09784c9913d/temporalio-1.34.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:cdb6e2fb525ea5635afa4a3f1ae4c992c16dbe29dc92939a85153baeb69d95a2", size = 14121901, upload-time = "2026-09-30T20:22:41.428Z" },
-    { url = "https://files.pythonhosted.org/packages/c1/20/b032d4a0df51d466fd929d8205e1288e83d97a890f021479f43af9bd6f9b/temporalio-1.34.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:540761f738bdfe5cb5bd7240b659e116a0b5094b94282aef09b8d8c2d66e9c52", size = 14457183, upload-time = "2026-09-30T20:22:44.215Z" },
-    { url = "https://files.pythonhosted.org/packages/b6/0d/b08ffeca93bbc29200a5bd85a45cca3c6be0a123de605ecd1798b617df4f/temporalio-1.34.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:87647f87f42ecd45efb675642e2ec8ca34aa42359f5968f31f5391f1db5ebcbe", size = 14179836, upload-time = "2026-09-30T20:22:47.474Z" },
-    { url = "https://files.pythonhosted.org/packages/81/55/acde4d1b7c9f23434e263752ef0a3ef58adeb3b95ef8472607414798dfaa/temporalio-1.34.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:71caa4b9061628b22a457c87c3b16da40f7ac6ac1a26ece9aa1ee6b4934404d7", size = 14570248, upload-time = "2026-09-30T20:22:50.569Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/c5/6bdc3b02ec483093a71e9f887e8a50ae20fcc79e0578ed7435a81d4271b1/temporalio-1.34.0-cp310-abi3-win_amd64.whl", hash = "sha256:03bd86561188c18d88425178bc690fe0791104b78566dcebd98f59cbdbce0952", size = 15415684, upload-time = "2026-09-30T20:22:53.342Z" },
+    { url = "https://files.pythonhosted.org/packages/55/79/5dfa2c09a0dffb856491eb4d6f28bdde4b0ff4229d9001d7bcc179f9c9d4/temporalio-1.36.1-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:55c0144c77182fa26a5172eab066a0661632f7ac2d8054d7d7fa9dd4ede93cc2", size = 14155700, upload-time = "2026-11-14T02:20:42.053Z" },
+    { url = "https://files.pythonhosted.org/packages/84/bc/d526ba83d13b09b53d70dae19d7417dcbb36ad951e79427c949b5c3cd166/temporalio-1.36.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:175a89e59ed9e7cc5795609d937c80111513ca9d70b0ed9da4ed7792163c863a", size = 13720267, upload-time = "2026-11-14T02:20:45.68Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/27/931e15f50e2965091d72732a960f1f5865dfcf2894cd5f693abf9bf38a3c/temporalio-1.36.1-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:72b3c4f700e48f3953192bb2d66700f74c1ff1ecf131e82c710761ae09fb4c0f", size = 14106450, upload-time = "2026-11-14T02:20:48.074Z" },
+    { url = "https://files.pythonhosted.org/packages/12/62/c9d8a9a6c10ddfdbfb4d18e9dabf9bb812d237f7df13bc1a5a5b1a266f47/temporalio-1.36.1-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5ce0ddfaf35316271eee632e1579890be6f3c0f1de7fddfd1f3086f3f83d6b78", size = 14529397, upload-time = "2026-11-14T02:20:50.604Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/50/b0572f6ac5863999f93500d12bbed476542df2fee4d39115dc5a9ba8805a/temporalio-1.36.1-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:cfa4f316cc23a7757e03650087cf471fffa4ca27ab40bba6c09d98fe4ab3d5e6", size = 14169959, upload-time = "2026-11-14T02:20:53.019Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/3e/241ae6f12139b94945b673e503b79f669305418f47216adb78e3a4b78b08/temporalio-1.36.1-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b22d93523b65f17e39970a341ad17de2100fdb5a8cd23c7499ffbd342ffb412a", size = 14633381, upload-time = "2026-11-14T02:20:55.636Z" },
+    { url = "https://files.pythonhosted.org/packages/83/0c/51e526f3926a29a442e703009c203fd301b30a41aeb963cd8be7617ac011/temporalio-1.36.1-cp311-abi3-win_amd64.whl", hash = "sha256:42675a52865cdd71c3a7a42f7415157af7574458788df419b723167be282e51d", size = 15509357, upload-time = "2026-11-14T02:20:58.109Z" },
 ]
 
 [[package]]

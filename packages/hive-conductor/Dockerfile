@@ -72,7 +72,8 @@ RUN apk add --no-cache git && \
 # exact registered 3.13.18 build that coincurve 21.0.0 ships cp313 wheels for
 # and that the build smoke below asserts (refreshed from 3.13.16 in the #2304
 # container-gate round: grype flags CVE-2026-115557, Critical, fixed in
-# 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152). #2304
+# 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152; develop
+# landed the identical refresh from the #1373 CI-repair lane). #2304
 # moved the runtime OS layer to
 # python:3.15.2-slim-bookworm (see runtime-apt); bumping this stage to match
 # would leave no interpreter satisfying the contract on the base -- uv's
