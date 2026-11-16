@@ -263,6 +263,23 @@ constraint-dependencies = [
     "authlib>=1.9.1",
     "dnspython>=2.9.2",
     "joserfc>=1.7.6",
+    # #1532 CI-repair round (2026-11-16, security.yml `containers` job: trivy
+    # python-pkg scan of the maistro-engine-research image, run 43824090707,
+    # 13 HIGH). These four arrive only through maistro-server's
+    # [browser]/[observability] extras, so neither pip-audit environment
+    # (root `--extra dev` / `--all-extras`) ever installs them — the research
+    # image's `uv export --package maistro-server --extra observability
+    # --extra browser` is the only shipped surface carrying them. pypdf via
+    # browser-use; soupsieve via browser-use -> markdownify -> beautifulsoup4;
+    # oauthlib via google-auth-oauthlib -> requests-oauthlib; pyasn1 via
+    # google-auth -> pyasn1-modules. CVE-2026-49272 is fixed in oauthlib 4.0.1;
+    # CVE-2026-119194/119195/119196/119197 in pyasn1 0.6.5; CVE-2026-119203
+    # through 119209 in pypdf 6.21.4 (119203-119205 name 6.21.4, the rest
+    # 6.21.3); CVE-2026-126190 in soupsieve 4.0.0.
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
 ]
 
 [tool.ruff]
