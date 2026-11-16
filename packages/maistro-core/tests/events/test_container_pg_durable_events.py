@@ -248,6 +248,43 @@ class TestTheAuditStoreComesUpToo:
         assert [(e.user_id, e.verdict) for e in entries] == [("u2", "denied")]
 
 
+class TestTheBindingStoreComesUpToo:
+    """The Binding authority is wired on the same pool, so it fails the same way.
+
+    Container boot registers the default model.chat Binding through
+    ``capability_effects.bindings.put``, and ``PgBindingStore.put`` reads the
+    revocation tombstone (#1133) before it inserts. On a database that has
+    never run the migrations that read raised ``UndefinedTableError`` on
+    ``capability_binding_revocations`` and killed the whole Container before
+    the durable event stores were even reached (durable-events CI leg, #1084
+    repair): wiring must create the schema the boot registration needs.
+    """
+
+    async def test_wiring_creates_the_binding_tables_it_needs(self, pg_pool, wire):
+        from maistro.capabilities.binding import Binding
+        from maistro.capabilities.binding_store import PgBindingStore
+
+        await pg_pool.execute(
+            "DROP TABLE IF EXISTS capability_bindings, capability_binding_revocations"
+        )
+        container = await wire(_config(), pg_pool=pg_pool)
+
+        assert isinstance(container.capability_effects.bindings, PgBindingStore)
+
+        # The boot model.chat Binding registration ran during wiring and its
+        # row landed in the table ensure_schema created — the exact put that
+        # used to die on the missing tombstone table.
+        rows = await pg_pool.fetch(
+            "SELECT payload_json FROM capability_bindings WHERE capability = 'model.chat'"
+        )
+        assert len(rows) == 1
+        assert Binding.model_validate_json(rows[0]["payload_json"]).capability == "model.chat"
+
+        # The tombstone table itself exists, so a later revoke() cannot be the
+        # next query to find its table missing.
+        assert await pg_pool.fetchval("SELECT count(*) FROM capability_binding_revocations") == 0
+
+
 class TestTheOtherTwoBackendsAreUnchanged:
     """#135 must not move the SQLite or in-memory selection it sits in front of."""
 

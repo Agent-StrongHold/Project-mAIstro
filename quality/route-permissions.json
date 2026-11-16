@@ -163,6 +163,12 @@
       "disposition": "permanent",
       "reason": "Onboarding coaching state for the caller; progress and dismissals stay within the member's own program record."
     },
+    "/v1/projects": {
+      "permission": "projects.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Project onboarding wizard mutates intake/scan/deploy state; POST/DELETE require projects.write. Distinct from Workspace/Project scope (maistro.projects)."
+    },
     "/v1/providers": {
       "permission": "config.write",
       "owner": "@BlakeMatthews-dev",
