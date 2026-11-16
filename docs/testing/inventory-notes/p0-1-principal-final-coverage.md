@@ -223,3 +223,62 @@ re-execution, all on this head:
   out of scope for a repair attempt.
 
 No code changes in this round; evidence-only verification.
+
+## Sixth verification round (2026-11-16, head 28ef6871e4f7 = current HEAD)
+
+Prior round's worker died to a provider 429 after its full driver battery
+returned 0 at this exact head (its nine check logs: uv sync, ruff check,
+ruff format, targeted server/canvas/core pytest 299 passed / 91 skipped,
+hive battery 199 passed, four suite-inventory gates ok). This round's
+driver re-ran the identical battery at the same head — all nine
+returncodes 0. Independent re-execution, all on this head:
+
+- Issue test plan, re-run in full: `scripts/check-principal-identity.py`
+  ok — 4 tolerated → 0 current, none new, base f8a2df966a1d, both plain
+  and with CI's `RATCHET_BASE_REV=origin/develop` (origin/develop
+  resolves to f8a2df966a1d and `git merge-base --is-ancestor` confirms it
+  is an ancestor of HEAD);
+  `pytest packages/maistro-core/tests/fitness/test_principal_identity.py
+  packages/maistro-server/tests/api/test_auth.py` — 39 passed;
+  `pytest packages/hive-conductor/backend/tests/test_username_registry.py`
+  — 24 passed.
+- Acceptance-claim greps re-run: no `class AuthenticatedPrincipal` /
+  `CurrentUser` / `HiveUser` / `_SubsystemIdentity` definition remains
+  under `packages/*/src` or `packages/hive-conductor/backend`;
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`;
+  `hive routes/capabilities.py` resolves the approval actor via
+  `request_principal(request)` /
+  `principal_has_permission(principal, "approvals.resolve")` (lines
+  299–318, the nested `state.user` read is gone).
+- The acceptance tests this branch added pass by node id: the three
+  canvas foreign-org guards (`test_routes_org_paths.py -k foreign_org`)
+  and
+  `test_auth.py::TestExplicitPrincipalContract::test_auth_off_admits_a_dev_principal`.
+- Vulture ledger with CI's exact args (`check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  exit 0, 1238 reviewed identities → 1238 findings, 0 unbanked.
+- `uv run ruff check .`: All checks passed! · `uv run ruff format --check
+  .`: 3561 files already formatted.
+- Mutation gate preflight: `mutation_critical.py --validate` ok (8
+  critical sources). CI's exact target resolution
+  (`git diff --name-only origin/develop...HEAD -- packages
+  --diff-filter=ACMR` → `mutation_critical.py --changed-from`) was
+  regenerated this round and is byte-identical to the worktree's
+  untracked `changed-py.txt` / `mutation-targets.tsv`: the sole target
+  stays `maistro/privilege.py` → `packages/maistro-core/tests`, and the
+  trusted merge-base baseline (`git show
+  f8a2df966a1d:quality/mutation-baseline.json`) has `entries: {}`, so
+  per `mutation_pr_gate.py` the run is report-only and cannot fail the
+  PR. The untracked scratch (`changed-py.txt`, `diff-map.txt`,
+  `mutation-targets.tsv`, `trusted-mutation-baseline.json`,
+  `mutation-artifacts/*.diff`) remains byte-verified replicas of the
+  workflow's own steps and stays untracked, as resolved in rounds three
+  and five.
+- Diff-coverage evidence transfers unchanged: `git diff --name-only
+  644f5a084..HEAD` contains only this inventory note, so the fifth
+  round's reproduction at 644f5a084 (17 changed measured files ≥90%
+  lines / ≥80% branch arcs) still describes HEAD's changed source set;
+  the aggregate publish-set floor still requires CI's multi-producer
+  combine.
+
+No code changes in this round; evidence-only verification.
