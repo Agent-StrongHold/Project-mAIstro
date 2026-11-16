@@ -224,7 +224,7 @@ re-execution, all on this head:
 
 No code changes in this round; evidence-only verification.
 
-## Sixth verification round (2026-11-16, head 28ef6871e4f7 = current HEAD)
+## Sixth verification round (2026-11-16, head 28ef6871e4f7 = then-HEAD)
 
 Prior round's worker died to a provider 429 after its full driver battery
 returned 0 at this exact head (its nine check logs: uv sync, ruff check,
@@ -282,3 +282,48 @@ returncodes 0. Independent re-execution, all on this head:
   combine.
 
 No code changes in this round; evidence-only verification.
+
+## Seventh verification round (2026-11-16, head 28ef6871e + this commit)
+
+Prior round's worker died to a provider 429 after its green driver battery
+at this head. This round re-proved the issue plan (ratchet 0 violations
+plain and with `RATCHET_BASE_REV=origin/develop`; 39 + 24 pytest passes;
+acceptance greps; vulture 1238→1238, 0 unbanked; ruff/format; mutation
+targets byte-identical, merge-base baseline empty) and then closed the one
+gap every prior round had left open: **Quality / Acceptance state was never
+reproduced locally** — it needs Postgres, the full extras, `age-keygen`, and
+the ~180 `ac`-marked tests.
+
+Reproduced CI's job faithfully (native pg18 on the CI DSN, alembic head,
+`uv sync --locked --all-extras` + editable `maistro-evolve` +
+`pytest-timeout`, `age-keygen` present) and ran CI's exact PR command:
+
+- First run FAILED — not on the bound but on **unbanked improvement**:
+  measured `design_coverage 44.4608` while the tree's own (untracked,
+  never-committed) note banked `39.8641` from an earlier degraded run. The
+  judged bound (base fold granted to 39.641 by
+  `ratchet-authorizations.json` `ac-state/design_coverage@39.641`) passed;
+  the acceptance and chain mandates both passed (11 criteria added or
+  newly claimed since the PR base 78133c093, 0 unproven; no new absent
+  links). Because `banked_bound()` folds the worktree, and CI checks out
+  only committed files, the next push would have failed this required gate
+  either way: without the note the committed fold (44.2377, granted to
+  39.641) still reads 44.4608 as unbanked slack on a PR run. The stale
+  note was a CI failure in waiting, not scratch.
+- Remedy per the gate's own instruction: `check-ac-state.py --run-tests
+  --ratchet --bank` re-banked the branch note at the honest measured
+  value (`design_coverage 44.4608`, ceilings unchanged at
+  31/0/0/0/137/2/0/76/7/0, `measured_with_tests: true`). Folded by `max`,
+  this tightens the floor future branches inherit — recording an
+  improvement, never weakening a gate.
+- Re-run of CI's exact PR invocation
+  (`--run-tests --ratchet --mandate 78133c093`, `RATCHET_BASE_REV=origin/develop`):
+  **rc=0** — ratchet OK (all counters on their bounds), acceptance mandate
+  OK, chain mandate OK. The committed note is the only tree change in this
+  round.
+
+Residual: CI's own run on the pushed head remains the final word (its
+runner measures the same corpus with the same pg18 service; a flaky
+`ac`-marked test would show as a regression against the just-banked floor).
+Pushing is out of scope for a repair attempt.
+
