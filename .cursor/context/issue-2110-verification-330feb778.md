@@ -511,3 +511,54 @@ Evidence, all local, CI-exact forms (this worktree):
    floors) — whichever merges last owns the final wording; lock rows are
    identical so no lock conflict is possible. No closure keywords; no
    issue-closure action.
+
+## Round 6 (verifier, head e422c25f7c53, 2026-11-16)
+
+1. Named-gate CI at this head (read-only rollup + logs): Compliance registry,
+   Gate C — canonical clean install, Quality / Acceptance state (review-time),
+   Quality / Agent store writes, Quality / Architecture fitness, Quality / BFCL
+   provenance = SUCCESS. Container scan + SBOM + cosign = FAILURE at
+   "Verify live Python packages and Conductor identity contract".
+2. Root cause of that FAILURE (reproduced locally before CI confirmed it):
+   the repair rounds bumped the hive-conductor base to
+   python:3.13.18-slim-bookworm@a5a7017e and updated the in-image assert
+   (packages/hive-conductor/Dockerfile:172 runs `(3, 13, 18)` at build time),
+   but the two security.yml docker-run smoke asserts stayed at `(3, 13, 16)`.
+   `docker run` on the pinned digest prints Python 3.13.18, so
+   `assert sys.version_info[:3] == (3, 13, 16)` deterministically fails —
+   CI run 43868252055 failed at exactly that step. Repair: both asserts moved
+   to `(3, 13, 18)`, matching image-pins.json and the Dockerfile's own build
+   assert. This is an assert/tree re-alignment, not a gate change.
+3. Quality / Acceptance state in merge-queue mode (the mode that went RED at
+   d3c793ae0): reproduced locally with GITHUB_EVENT_NAME=merge_group +
+   GITHUB_EVENT_PATH payload — FAIL "unbanked improvement — design_coverage:
+   44.4608, floor still says 39.641". Review-time (pull_request) mode passes
+   without a bank ("no bank is required", CI log 133302259572), but the merge
+   queue enforces banking. Repair: banked via the gate's own command
+   (check-ac-state.py --run-tests --ratchet --bank) →
+   quality/ac-state-notes/fix-windows-bootstrap-prerequisite.json
+   (design_coverage floor raised 39.641 → 44.4608, stricter). Re-ran the
+   CI-exact command under merge_group simulation: exit 0, actual-base guard
+   OK. Post-bank, review-time mode still exit 0.
+4. Issue-scoped re-verification at this tree: pytest
+   tests/test_get_ps1_wsl_detection.py = 28 passed with pwsh installed — the
+   mocked relaunch_policy_harness.ps1 EXECUTED (not skipped): real
+   Invoke-Elevated/Register-Resume bodies produce exactly
+   `-NoProfile -File "<path>" ...` with no -ExecutionPolicy, RunAs verb kept,
+   RunOnce destination/entry contract kept. The static regression was proven
+   to FAIL against the base f8a2df966 get.ps1 (both function bodies carry
+   -executionpolicy/bypass). Suite inventory gate green (21 suites).
+5. Local named-gate re-runs with CI's exact arguments: check-compliance.py OK;
+   vendor_bfcl.py --check OK (13 artifacts); check-agent-store-writes.py OK;
+   pytest packages/maistro-core/tests/fitness = 39 passed (one transient
+   fixture error on first run, clean on re-run, matching CI SUCCESS);
+   check-image-pins.py OK; git diff --check clean.
+6. Coverage gate: diff-coverage scope is packages/*/src +
+   hive-conductor/backend; the branch's only changed .py is a test file, so
+   the diff half is trivially satisfied and the publish-set floor rides the
+   unchanged source tree; hosted producers were still IN_PROGRESS at
+   review time — formal conclusion belongs to CI.
+7. Residuals: the repaired security.yml and the bank note are committed
+   locally; CI must re-run on the new head for Container scan + SBOM +
+   cosign to be formally green (hosted builds/cache variance UNVERIFIED
+   until then). No closure keywords; no issue-closure action.
