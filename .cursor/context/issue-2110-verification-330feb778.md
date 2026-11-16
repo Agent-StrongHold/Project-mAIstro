@@ -562,3 +562,14 @@ Evidence, all local, CI-exact forms (this worktree):
    locally; CI must re-run on the new head for Container scan + SBOM +
    cosign to be formally green (hosted builds/cache variance UNVERIFIED
    until then). No closure keywords; no issue-closure action.
+8. Round-6 addendum: the Coverage gate's hosted run (job 133310872052) failed
+   at tests/test_distribution_contract.py::test_image_pins_supported_python_
+   and_installs_identity — a FOURTH stale 3.13.16 consumer the prior rounds'
+   targeted test selection never executed (they ran pinned_digest/check_
+   image_pins/image_lock_contract but not distribution_contract). Repaired:
+   the FROM-python expectation now reads ["3.13.18", "3.13.18"], matching the
+   pins registry. Full root tests/ suite re-run locally: 5912 passed, 139
+   skipped, 0 failed (test_branch_independence's "unclassified quality state:
+   quality/ac-state.json" is a local-only artifact — ac-state.json is
+   gitignored and exists here only because the acceptance-gate run generated
+   it; CI checkouts never see it and its hosted run passes that test).
