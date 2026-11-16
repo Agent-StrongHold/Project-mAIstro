@@ -2323,6 +2323,59 @@ class Container:
             self.catalog_service = CatalogService(store)
         return self.catalog_service
 
+    async def wake_external_graph_result(self, task: Any) -> None:
+        """Write an A2A completion into its canonical parent Graph pause.
+
+        A2A task state is only a transport receipt. The metadata stamped at
+        dispatch identifies the canonical Run and NodeRun that own the pause;
+        this method is the reachable production waker for terminal receipts.
+        """
+        if self.graph_run_store is None:
+            return
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        run_id = str(metadata.get("parent_run_id") or "")
+        node_id = str(metadata.get("parent_node_id") or "")
+        status = getattr(getattr(task, "status", None), "value", None)
+        if not run_id or not node_id or status not in {"completed", "failed", "cancelled"}:
+            return
+        try:
+            await self.graph_run_store.submit_external_result(
+                run_id,
+                node_id,
+                {
+                    "status": status,
+                    "task_id": str(getattr(task, "id", "")),
+                    "result": getattr(task, "result", None),
+                    "error": getattr(task, "error", None),
+                },
+            )
+        except (KeyError, ValueError):
+            # The parent may have timed out, been answered, or been purged
+            # before an at-least-once receipt arrived. Its canonical outcome
+            # remains authoritative and must not be rewritten here.
+            logger.info(
+                "A2A completion did not wake parent Run %s node %s",
+                run_id,
+                node_id,
+            )
+
+    def _schedule_external_graph_result(self, task: Any) -> None:
+        """Schedule the async canonical wake from A2A's synchronous receipt API."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule A2A completion without a running event loop")
+            return
+        scheduled = loop.create_task(
+            self.wake_external_graph_result(task),
+            name=f"a2a-graph-wakeup-{getattr(task, 'id', 'unknown')}",
+        )
+        scheduled.add_done_callback(
+            lambda completed: None if completed.cancelled() else completed.exception()
+        )
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2924,6 +2977,9 @@ async def create_container(
         canonical_event_publisher = CanonicalEventPublisher(
             capability_effects.event_store, legacy_bus=event_bus
         )
+        from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+        recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -3009,7 +3065,11 @@ async def create_container(
             chat_admitter=chat_admitter,
             template_store=graph_template_store,
             node_template_store=node_template_store,
-            graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+            graph_run_store=CanonicalDurableRunStore(
+                run_store,
+                graph_continuations,
+                events=recovery_event_sink,
+            ),
             schedule_store=schedule_store,
             schedule_admitter=schedule_admitter,
             task_idempotency=task_idempotency,
@@ -3125,6 +3185,10 @@ async def create_container(
     # an end-to-end code-execution route is wired (see invoke_code).
     _ = container.code_registry
     _ = container.invoke_code
+    # A2A remains a receipt store; terminal receipts wake the canonical parent
+    # through this container-owned bridge rather than a second lifecycle.
+    a2a_delegator.set_completion_handler(container._schedule_external_graph_result)
+
     logger.info("Container wired (%s stores)", backend)
     return container
 
