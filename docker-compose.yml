@@ -264,9 +264,9 @@ services:
         # with its name in the message -- the diagnostic the interrupted-init
         # recovery path needs (server-ready versus application-ready).
         for db in litellm langfuse openwebui; do
-          psql -v ON_ERROR_STOP=1 -h postgres -U maistro -d "$db" \
+          psql -v ON_ERROR_STOP=1 -h postgres -U maistro -d "$$db" \
             -Atc 'SELECT 1' >/dev/null \
-            || { echo "postgres-init: required database '$db' does not answer" >&2; exit 1; }
+            || { echo "postgres-init: required database '$$db' does not answer" >&2; exit 1; }
         done
         echo "postgres-init: initialization complete; all required databases answer"
     volumes:
