@@ -116,3 +116,46 @@ that round's recorded checks returned 0):
 Residual: a CI run on the pushed head remains the only direct proof of the
 aggregate coverage floor; the branch has not been pushed from this
 worktree, and pushing is out of scope for a repair attempt.
+
+## Fourth verification round (2026-11-16, head 3e70a3cf72fb = unchanged)
+
+Prior round's worker died to provider auth expiry after all driver checks
+returned 0. Independent re-execution on the same head:
+
+- `uv run ruff check .`: All checks passed!
+- `uv run ruff format --check .`: 3561 files already formatted
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: 1238 reviewed
+  identities -> 1238 findings, 0 unbanked
+- `uv run python scripts/check-radon-baseline.py`: 126 C-or-worse blocks
+  match baseline, 0 new/regressed/stale
+- `uv run python scripts/check-principal-identity.py`: 4 tolerated -> 0
+  current, none new
+- `uv run python scripts/check-route-permissions.py`: 42 declared, 0
+  undeclared, none new
+- `uv run python scripts/check-reachability.py`: 88 unreachable, all
+  dispositioned
+- `uv run python scripts/check-reachability-dispositions.py`: OK, 30
+  groups cover all 88 unreachable modules
+- `uv run python scripts/check_direct_effects.py`: 49 sites, all
+  dispositioned
+- `uv run python scripts/check-durable-table-inventory.py`: 125 tables,
+  each with declared retention
+- `uv run python scripts/check-promotion-surface.py`: ok
+- `uv run python scripts/check-workspace-retirement.py`: 85 tolerated
+  importers match
+- `uv run python scripts/check-model-egress.py`: 16 physical callers, no
+  expansion
+- `uv run python scripts/check_enumerations.py`: 1 tolerated gap, no new
+- `uv run python scripts/check-contract-markers.py`: OK
+- `uv run python scripts/check-compliance.py`: valid
+- `python3 scripts/check-cross-package-imports.py`: 3548 files ok
+- `python3 scripts/check-api-route-contracts.py`: 306 handlers, 0 canned
+- `python3 scripts/check-merge-markers.py`: no conflict markers
+- Driver battery (exact manifest checks): check-0 (uv sync) rc=0,
+  check-1 (ruff check) rc=0, check-2 (ruff format) rc=0, check-3
+  (targeted pytest: 299 passed, 91 skipped), check-4 (hive battery:
+  199 passed), check-5..8 (suite inventory: all ok)
+- `git merge-base --is-ancestor origin/develop HEAD`: confirmed
+
+No code changes in this round; evidence-only verification.
