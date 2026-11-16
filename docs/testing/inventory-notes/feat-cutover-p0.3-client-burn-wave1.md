@@ -162,3 +162,14 @@ fit this repair round's budget).
 `security` is the workflow-level aggregate: its SAST legs passed on
 this head and its remaining children are the two jobs above.
 
+
+### Repair round (job 5bd9c302, head 2da5e0f35)
+
+- DevSkim scope test `tests/test_devskim_scan_scope.py` (the 30s timeout
+  failure) now completes in 8.7s after the os.walk pruning; 21 passed.
+- Container images built locally and scanned with Trivy 0.73.0 against
+  `.trivyignore.yaml`: `cr1995-engine:test` and `cr1995-hive:test` both
+  report 0 HIGH/CRITICAL (exit 0).
+- Frontend typed-client gate: 40 raw fetch / 119 hand-typed, none new.
+- ruff check/format, mypy, vulture, ratchet-provenance, shipped-surface-truth,
+  frontend-api-routes, suite-inventory: all green.
