@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 from maistro.persistence.audit_pages import (
     AUDIT_PAGE_INDEXES,
     AuditPage,
@@ -153,6 +160,64 @@ class PgAuditLog:
                 signed.signature,
                 signed.signing_key_id,
                 signed.proof_type,
+            )
+
+    async def purge_expired(
+        self,
+        *,
+        before: datetime,
+        limit: int = 1_000,
+        legal_hold_user_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded old batch while preserving held principals.
+
+        The mechanism for the audit log's bounded lifetime; the policy (the
+        horizon, and who is held) is the importing product's per the #325
+        owner decision. One transaction of at most ``limit`` oldest rows, so
+        a replica's lock hold is bounded and a crashed attempt commits
+        nothing — retries and concurrent replicas stay idempotent.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_user_ids else " AND user_id <> ALL($2::text[])"
+        params: tuple[Any, ...]
+        if legal_hold_user_ids:
+            params = (before.astimezone(UTC), list(legal_hold_user_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before.astimezone(UTC), limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "
+            "WHERE timestamp < $1" + hold + " ORDER BY timestamp, id LIMIT " + limit_mark + ")"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(query, *params)
+        await self._publish_table_health()
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def _publish_table_health(self) -> None:
+        """Publish the audit log's stored volume after a successful purge (#325).
+
+        Same contract as the SQLite store's probe: the horizon is the
+        importing product's policy; the engine makes the level observable.
+        PostgreSQL adds the one number SQLite cannot honestly produce —
+        `pg_total_relation_size` per table. Throttled per store by the
+        publisher, so a swept audit log costs one probe per interval.
+        """
+        if not retention_health_probe_due("audit:postgres"):
+            return
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "audit_log", "timestamp", oldest_unit="datetime"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "audit:postgres", "postgres", [sample], min_interval_s=0.0
             )
 
     async def get_page(
