@@ -3,11 +3,11 @@
   "pins": [
     {
       "image": "python",
-      "tag": "3.13.16-slim-bookworm",
-      "digest": "sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
-      "recorded": "2026-10-22",
-      "recorded_in": "#1152",
-      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
+      "tag": "3.13.18-slim-bookworm",
+      "digest": "sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72",
+      "recorded": "2026-11-16",
+      "recorded_in": "#1450",
+      "note": "CPython 3.13.16 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Tag+digest refreshed 2026-11-16 (#1450): the grype cross-check in security.yml run 43812084107 (job 133115778563) fails on hive-conductor with the CPython 3.13.16 binary itself flagged -- Critical CVE-2026-115557 (fixed 3.13.18, also 3.12.16/3.14.10) plus Medium CVE-2026-12345/114583 (fixed 3.13.18); trivy did not flag these at the same head, so only grype's DB carried them. Bumped 3.13.16-slim-bookworm -> 3.13.18-slim-bookworm (index digest a5a7017e..., resolved 2026-11-16 via docker buildx imagetools inspect; local `docker run ... python --version` -> Python 3.13.18) per the gate's upgrade-when-fix-exists policy; the cp313 coincurve identity contract is unchanged (still 3.13.x).",
       "used_by": [
         "Dockerfile",
         "packages/hive-conductor/Dockerfile"
