@@ -2108,11 +2108,11 @@ or placeholder-only section.
   fixed in 1.7.6), and `opentelemetry-api` 1.45.1 → 1.45.2 (CVE-2026-126360;
   `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move to their
   matching releases). The engine and research images' source-built docker CLI
-  moves v29.9.1 → v29.10.0-rc.2 (eaae503, commit-verified in stage): the first
-  docker/cli build vendoring go-jose v4.1.7 (CVE-2026-116587, fixed in v4.1.6)
-  and golang.org/x/net v0.62.0 (CVE-2026-78661) — the stable v29.9.2/v29.9.3
-  tags re-vendor the vulnerable pair, so the rc is the smallest real fix;
-  re-bump when stable v29.10.0 ships. All four Python upgrades are floor moves
+  moves v29.9.1 → v29.9.3 (5457199, commit-verified in stage): v29.9.3 vendors
+  go-jose v4.1.7 upstream (CVE-2026-116587, fixed in v4.1.6), and the still-
+  pinned golang.org/x/net 0.60.0 is patched to v0.62.0 on the pinned tag
+  (CVE-2026-78661) with `go mod vendor` re-syncing the vendored tree before the
+  build. All four Python upgrades are floor moves
   under existing constraints (no manifest change), and the image venvs that
   install from the lock clear the Trivy `dnspython` HIGH in the same change.
 
