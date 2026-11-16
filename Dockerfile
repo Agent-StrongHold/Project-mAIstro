@@ -133,15 +133,24 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+# Pin moved to v29.9.3 (tag resolves to 5457199; fail if upstream ever
+# disagrees) by the #1532 trunk-CI repair: v29.9.1's vendored tree carried two
+# trivy HIGHs inside the built binary — CVE-2026-116587 (go-jose/v4 DoS via
+# crafted RSA JWK parameters, fixed in v4.1.6; v29.9.3 vendors v4.1.7) and
+# CVE-2026-78661 (golang.org/x/net/html DoS, fixed in v0.62.0; v29.9.2 and
+# v29.9.3 still vendor v0.60.0 and no released docker/cli tag ships the fix,
+# so the build re-vendors x/net at the fixed version below, on the same
+# pinned go 1.26.0 directive / 1.27.3 toolchain).
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get golang.org/x/net@v0.62.0 && go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \

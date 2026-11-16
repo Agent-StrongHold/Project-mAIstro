@@ -244,7 +244,7 @@ constraint-dependencies = [
     # the advisory text still names the 3.3.0rc1 fix line). Both packages
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
-    "graphql-core>=3.3.0",
+    "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
     # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
@@ -261,7 +261,8 @@ constraint-dependencies = [
     # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
     # direct production pin — floors keep the frozen dev env above the advisories.
     "authlib>=1.9.1",
-    "dnspython>=2.9.0",
+    "dnspython>=2.9.2",
+    "joserfc>=1.7.6",
 ]
 
 [tool.ruff]
