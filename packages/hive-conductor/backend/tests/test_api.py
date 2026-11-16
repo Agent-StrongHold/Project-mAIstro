@@ -224,13 +224,32 @@ def test_admin_blocked_from_chat() -> None:
     assert "daily user" in r.json()["detail"].lower() or "admin" in r.json()["detail"].lower()
 
 
-def test_user_can_chat() -> None:
+def test_user_can_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chat door never fabricates an answer (#1084 gap 2).
+
+    Without gateway configuration the endpoint fails closed -- retryable
+    503, zero model effects. It used to return a success-shaped stub answer
+    for an already-admitted turn, which the #1084 admission contract
+    prohibits. The governed 200 path is pinned by
+    test_chat_complete_with_mock_llm_port and the admission suite.
+    """
+    from config import Settings
+    from services import chat_completion as chat_completion_service
+
+    for name in ("LITELLM_API_BASE", "LITELLM_PROXY_URL", "LITELLM_API_KEY", "LITELLM_PROXY_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        chat_completion_service,
+        "get_settings",
+        lambda: Settings(litellm_api_base=None, litellm_api_key=None),
+    )
     c = _login()
     r = c.post(
         "/v1/chat/complete",
         json={"messages": [{"role": "user", "content": "ping"}]},
     )
-    assert r.status_code == 200
+    assert r.status_code == 503
+    assert r.headers.get("retry-after") == "5"
 
 
 def test_list_missions() -> None:
@@ -297,16 +316,32 @@ def test_install_session_unknown_key_is_422_naming_the_key() -> None:
     assert r2.json()["answers"]["sandbox_profile"] == "developer"
 
 
-def test_chat_complete_stub() -> None:
+def test_chat_complete_without_gateway_config_has_no_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success-shaped stub answer is gone (#1084 gap 2).
+
+    An unconfigured model door answers 503 with no `choices` at all -- never
+    an assistant message fabricated by the old StubLLMPort fallback.
+    """
+    from config import Settings
+    from services import chat_completion as chat_completion_service
+
+    for name in ("LITELLM_API_BASE", "LITELLM_PROXY_URL", "LITELLM_API_KEY", "LITELLM_PROXY_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        chat_completion_service,
+        "get_settings",
+        lambda: Settings(litellm_api_base=None, litellm_api_key=None),
+    )
     c = _login()
     r = c.post(
         "/v1/chat/complete",
         json={"messages": [{"role": "user", "content": "ping"}], "model": "gpt-4"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 503
     body = r.json()
-    assert "choices" in body
-    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert "choices" not in body
 
 
 def test_chat_complete_with_mock_llm_port() -> None:

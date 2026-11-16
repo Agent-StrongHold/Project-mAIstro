@@ -17,6 +17,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import httpx
 import structlog
@@ -32,22 +33,26 @@ from maistro.agents.circuit_breaker import (
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
+from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.model_chat import (
+    ModelChatEgress,
+    ModelChatRequest,
+    build_model_chat_client,
+)
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    GatewayEndpoint,
 )
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
-from maistro.http import shared_client
+from maistro.observability.correlation import current_execution_context
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
 from maistro.providers.errors import ModelNotFoundError
-from maistro.quota.default_tracker import get_default_quota_tracker
-from maistro.quota.usage_log import get_default_usage_log
-from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
 
 if TYPE_CHECKING:
@@ -128,12 +133,14 @@ async def _governed_completion(
     Binding-scoped credential routing (#1091) refuses a Binding that names no
     credential, and acquire still fails closed unless that ref exists in
     exactly this Workspace/Project scope, so naming it widens nothing.
+
+    The identity tuple is the caller's canonical Run/NodeRun/Attempt when it
+    holds one; a caller that holds none derives one from the bound execution
+    context and, failing that, a correlation-scoped identity — unique per
+    call and recorded on the ledger, never the fabricated placeholder tuples
+    this path replaced.
     """
-    run_id, node_run_id, attempt_id = invocation_identity or (
-        f"conductor-run-{id(call)}",
-        "conductor-node",
-        "conductor-attempt",
-    )
+    run_id, node_run_id, attempt_id = invocation_identity or _derived_identity()
     result = await governed_egress.complete(
         binding=Binding(
             workspace_id=workspace_id,
@@ -166,56 +173,22 @@ async def _governed_completion(
     return content
 
 
-async def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
-    """Record one raw-gateway call's usage evidence on the process usage log.
+def _derived_identity() -> tuple[str, str, str]:
+    """The Run/NodeRun/Attempt identity for a caller that holds none.
 
-    #718: the canonical recording path is Invocation terminalization, and the
-    production server crosses it via ``governed_egress``. A composition that
-    crosses no canonical authority (e.g. a demo bridge with no egress) still
-    leaves evidence here — actual tokens when the gateway reported usage, an
-    explicit ``usage_reported=False`` marker when it did not. Never a silent
-    zero, and never a fabricated Invocation identity: the event carries
-    provider provenance only.
-
-    When the process registered a quota ledger (the Container composition
-    root sets the process default), the same evidence also reaches that
-    ledger — reported tokens as usage, a missing report as an unreported
-    marker — so a process that carries a ledger can never present complete
-    quota percentages while omitting this call class. The ledger write is
-    isolated: a failing ledger must not take down a call that already
-    succeeded.
-
-    Returns whether the gateway reported usage, for the caller's log line.
+    Mirrors the compatibility client's derivation: the bound execution
+    context's canonical ids when one is open, otherwise unique
+    correlation-scoped ids. Never empty — an all-blank tuple would be the
+    ``run_id:null`` best-effort path the owner decision forbids, and the
+    Invocation ledger refuses empty identities anyway.
     """
-    reported = reported_usage(data)
-    input_tokens, output_tokens = reported or (0, 0)
-    get_default_usage_log().record(
-        model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        provider=model,
-        usage_reported=reported is not None,
+    fields = current_execution_context().as_log_fields()
+    correlation = str(fields.get("correlation_id") or uuid4().hex)
+    return (
+        str(fields.get("run_id") or correlation),
+        str(fields.get("node_run_id") or f"llm:{correlation}"),
+        str(fields.get("attempt_id") or f"attempt:{correlation}"),
     )
-    tracker = get_default_quota_tracker()
-    if tracker is not None:
-        # Same billing-cycle default as CanonicalInvocationUsageRecorder, so
-        # ungoverned evidence lands in the provider/cycle rows the ledger's
-        # readers already reconcile. This call has no Invocation identity by
-        # construction (egress was None), so it never charges through
-        # ``record_invocation`` — usage tokens via the event-log path, a
-        # missing report via the unreported marker.
-        try:
-            if reported is not None:
-                await tracker.record_usage(model, "monthly", input_tokens, output_tokens)
-            else:
-                record_unreported = getattr(tracker, "record_unreported", None)
-                if record_unreported is not None:
-                    await record_unreported(model, "monthly")
-        except Exception:
-            await logger.awarning(
-                "conductor_ungoverned_quota_ledger_write_failed", model=model, exc_info=True
-            )
-    return reported is not None
 
 
 async def _call_gateway(
@@ -230,14 +203,18 @@ async def _call_gateway(
     workspace_id: str = "default",
     project_id: str = "agent-runtime",
 ) -> str:
-    """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
+    """POST one chat-completion to the gateway; return the message content.
 
-    The production server supplies ``governed_egress`` so this call crosses
-    canonical Binding -> Invocation. Without it, the raw HTTP fallback below
-    still records usage evidence on the process usage log (#718) — an
-    explicitly marked ungoverned call, never invisible usage. ``on_response``
-    is retained only for legacy callers that have not migrated to that
-    authority.
+    Every call crosses the canonical Invocation authority (#718). The
+    production server supplies ``governed_egress`` and — for a turn that
+    holds one — its canonical Run/NodeRun/Attempt ``invocation_identity``, so
+    the call goes out across Binding -> Invocation with the deployment's own
+    credential routing. A caller that supplies no egress composes a governed
+    client from the call's own endpoint: the physical call is unchanged, but
+    it is admitted to the Invocation ledger rather than crossing a raw
+    fallback, and it still fails closed when there is no base_url to cross
+    at all. ``on_response`` is retained only for legacy callers that have not
+    migrated to that authority.
     """
     if governed_egress is not None:
         return await _governed_completion(
@@ -255,35 +232,75 @@ async def _call_gateway(
         raise LLMProviderError(
             "conductor: no gateway base_url configured (set MAISTRO_LLM_BASE_URL)"
         )
-    url = call.base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": call.model,
-        "messages": [
-            {"role": "system", "content": call.system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": max_tokens,
-    }
-    headers = {"Authorization": f"Bearer {call.api_key}"}
-    async with shared_client(timeout=timeout) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-    # This physical call crossed no canonical Invocation authority, so the
-    # canonical recorder never sees it. Record its usage evidence on the
-    # process usage log and the process default quota ledger (when one is
-    # registered) and say so loudly: an ungoverned call class must stay
-    # visible instead of silently shrinking the quota ledger (#718).
-    usage_reported = await _record_ungoverned_fallback_usage(call.model, data)
-    await logger.awarning(
-        "conductor_ungoverned_llm_call",
-        model=call.model,
-        usage_reported=usage_reported,
+    # The caller supplied no egress, so this composes one from the call's own
+    # endpoint. It is still a governed client: the caller's own gateway secret
+    # is registered under the deployment's default reference in the process's
+    # canonical effect context, and the binding names that reference, so the
+    # call acquires its credential through the same credential authority every
+    # other governed call uses and lands on the canonical Invocation ledger.
+    # No second credential path, and no raw HTTP fallback.
+    from maistro.capabilities.effect_context import default_effect_context
+    from maistro.credentials.types import CredentialRecord
+
+    effects = default_effect_context()
+    effects.credentials.add(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key=call.api_key,
+        ),
+    )
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(
+            base_url=call.base_url,
+            timeout_s=timeout,
+            append_v1=False,
+        ),
+        workspace_id=workspace_id,
+        project_id=project_id,
+        effects=effects,
+        binding=Binding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+        protocol="chat_completions",
+    )
+    try:
+        data = await client.complete(
+            [
+                {"role": "system", "content": call.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            call.model,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        # Preserve the public retry/circuit contract while the canonical
+        # Invocation has already recorded the failed provider attempt.
+        if "status=" in str(exc):
+            try:
+                status = int(str(exc).split("status=", 1)[1].split()[0])
+            except (IndexError, ValueError):
+                status = 500
+            request = httpx.Request("POST", call.base_url)
+            response = httpx.Response(status, request=request)
+            raise httpx.HTTPStatusError(str(exc), request=request, response=response) from exc
+        raise
+    response_headers = data.pop("_provider_response_headers", {})
+    response = httpx.Response(
+        200,
+        headers=response_headers if isinstance(response_headers, dict) else {},
+        json=data,
+        request=httpx.Request("POST", call.base_url),
     )
     if on_response is not None:
         try:
-            on_response(data, resp)
+            on_response(data, response)
         except Exception:
             await logger.awarning("conductor_on_response_hook_failed", exc_info=True)
     return str(data["choices"][0]["message"]["content"])
@@ -293,8 +310,10 @@ def _is_retryable(exc: Exception) -> bool:
     """Check if an exception represents a transient failure worth retrying."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    # A connect timeout at the gateway is as transient as a refused one.
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+    # A connect timeout at the gateway is as transient as a refused one, and
+    # a refused Invocation admission (EffectNotApplied) is retryable too: the
+    # failed provider attempt is already recorded on the canonical ledger.
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, EffectNotApplied)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
@@ -441,8 +460,13 @@ async def _run_with_retry(
                 last_exc = exc
                 # Both connect failures are shared-endpoint evidence: the
                 # TCP/TLS handshake to the gateway never completed, so no
-                # routed upstream could be at fault.
-                shared_failure = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                # routed upstream could be at fault. The governed egress wraps
+                # them as EffectNotApplied (the Invocation records the failed
+                # attempt), so unwrap the cause to recover the shared signal.
+                shared_failure = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) or (
+                    isinstance(exc, EffectNotApplied)
+                    and isinstance(exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout))
+                )
                 await logger.awarning(
                     "llm_transient_error",
                     attempt=attempt + 1,
@@ -489,7 +513,10 @@ async def run_task(
     4. Returns structured output
 
     ``governed_egress`` is forwarded on every physical retry, and each retry
-    gets its own canonical Invocation effect key. ``on_response`` remains a
+    gets its own canonical Invocation effect key. A turn that holds one
+    passes its canonical Run/NodeRun/Attempt ``invocation_identity``; a
+    caller that holds none leaves it unset and the identity is derived from
+    the bound execution context, never fabricated. ``on_response`` remains a
     compatibility hook for legacy callers only.
 
     `router`, if given, lets a provider-scoped circuit block (#1203) fall

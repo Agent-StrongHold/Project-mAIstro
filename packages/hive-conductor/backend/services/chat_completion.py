@@ -15,7 +15,7 @@ import os
 from collections.abc import AsyncIterator, Collection
 from typing import Any
 
-from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
+from adapters.llm_http import HttpOpenAIProtocolLLM
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from fastapi import HTTPException
@@ -23,6 +23,7 @@ from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 from routes.audit import log_audit
 
+from maistro.capabilities.model_chat import GovernedModelChatClient
 from maistro.http import shared_client
 from services.agent_materialization import (
     AgentDefinitionRejected,
@@ -42,6 +43,7 @@ from services.chat_gate import (
     new_gate_id,
     refusal_content,
 )
+from services.chat_runs import RETRY_AFTER_SECONDS
 from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
@@ -83,8 +85,42 @@ def build_llm_port() -> LLMPort:
     if not base:
         base = os.environ.get("LITELLM_PROXY_URL")
     if not base or not key:
-        return StubLLMPort()
-    return HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant=s.llm_http_variant)
+        # Fail closed (#1084 gap 2): an unconfigured model door must never
+        # answer an admitted turn with a success-shaped stub. The 503 escapes
+        # through `execute_turn`, which closes the admitted Run as failed — a
+        # retryable refusal with zero model effects, the same contract the
+        # admission boundary already gives an inadmissible turn.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "model egress is not configured (set LITELLM_API_BASE and its "
+                "key); the turn was admitted but never dispatched to a model"
+            ),
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        )
+
+    # Prefer the real Container's registry, Binding store, and Invocation
+    # ledger. The no-engine fallback composes the same core seam for dev
+    # processes; it never restores adapter-owned HTTP dispatch.
+    client = None
+    try:
+        from services.engine import get_engine
+
+        container = getattr(get_engine().agent_port, "container", None)
+        if container is not None:
+            client = GovernedModelChatClient(
+                container.model_chat_egress,
+                container.model_chat_binding,
+                protocol=s.llm_http_variant,
+            )
+    except Exception:
+        client = None
+    return HttpOpenAIProtocolLLM(
+        base_url=base,
+        api_key=key,
+        variant=s.llm_http_variant,
+        client=client,
+    )
 
 
 def conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
@@ -1890,44 +1926,33 @@ async def _tool_analyze_dashboard(
 
     # Send to vision model
     try:
-        from config import get_settings
-
-        s = get_settings()
-        base = s.litellm_api_base or ""
-        key = _resolve_litellm_api_key(s) or ""
-        if not base or not key:
-            return {"error": "LLM not configured"}
-
         vision_model = args.get("model", "gpt-4o-mini")
         prompt = args.get(
             "prompt",
             "Analyze this dashboard screenshot. Identify: 1) Widgets that look broken or show useless data, 2) Poor sizing choices, 3) Bad chart type choices for the data shown, 4) Missing widgets that would add value, 5) Layout improvements for better visual flow. Be specific and actionable.",
         )
 
-        async with shared_client(timeout=60) as client:
-            resp = await client.post(
-                f"{base.rstrip('/')}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": vision_model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                                },
-                            ],
-                        }
-                    ],
-                    "max_tokens": 2000,
-                },
+        llm = build_llm_port()
+        response = await llm.complete(
+            ChatCompletionRequest(
+                model=vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=2000,
             )
-            resp.raise_for_status()
-            analysis = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            return {"analysis": analysis, "model": vision_model}
+        )
+        analysis = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return {"analysis": analysis, "model": vision_model}
     except Exception as e:
         return {"error": f"Vision analysis failed: {e}"}
 
