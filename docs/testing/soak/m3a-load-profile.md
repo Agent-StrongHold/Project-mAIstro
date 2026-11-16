@@ -71,11 +71,14 @@ a successful read or an invented task ID. These unseeded samples count under
 `thresholds.requests_not_sent`, not `requests_total` or HTTP latency samples.
 Actual response codes, including peer 404s, remain in
 `thresholds.kind_status_codes.run_get`; the driver does not add affinity or
-retry away missing receipts. The production task route currently reads its
-process-local queue, so these requests test receipt visibility, not direct
-PostgreSQL query latency. Historical runs using `task-soak-{seq % 500}` did not
-exercise admitted receipt reads and cannot establish that workload claim.
-This repair requires new live evidence; ASGI regression tests are not a soak.
+retry away missing receipts. The production task route now calls `TaskQueue.get_shared`, which resolves
+receipts through the canonical shared Run tier when a peer replica does not
+hold the task locally (`packages/maistro-server/src/maistro_server/api/tasks.py`).
+The historical soak runs predate that route change and cannot establish
+cross-replica receipt visibility or its PostgreSQL latency under load. Runs
+using `task-soak-{seq % 500}` did not exercise admitted receipt reads either.
+A new exact-RC soak must sample admitted receipts across both replicas; the
+cross-replica regression tests are not a substitute for live evidence.
 
 Model calls are **not** stubbed: task execution fails fast against the absent
 LiteLLM endpoint, which is itself a degraded-path load class (error accounting,
