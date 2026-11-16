@@ -121,3 +121,59 @@ merge-queue evaluation simply predated this head.
 
 No tree change was required this round either; the branch at d08ea3747 is
 proven against every gate the cancelled run would have evaluated.
+
+## Container scan + SBOM + cosign re-proven at head a79a689ae3 (2026-11-16, verified round)
+
+The named red gate for the a11908f33 merge-queue evaluation. Two commits are
+the repair of record: a11908f338 (npm audit-level=high in ci.yml/security.yml,
+the conductor Dockerfile frontend stage, and refreshed lockfiles) and
+a79a689ae3 (python 3.13.18-slim / refreshed 3.12-slim base-digest bumps with
+quality/image-pins.json rows, docker/cli v29.9.1 dockerclibuild stages
+upgrading go-jose/v4 v4.1.6 + klauspost/compress v1.20.2 + golang.org/x/net
+v0.62.0 and re-vendoring, pyproject floors oauthlib>=4.0.1 pyasn1>=0.6.5
+pypdf>=6.21.4 soupsieve>=4.0.0 temporalio>=1.36.1 playwright>=1.65.2
+patchright>=1.64.4 with uv.lock, project-level .npmrc audit pins, security.yml
+identity asserts moved to 3.13.18). Nothing weakens a gate: every fix upgrades
+a real shipped artifact; the scanners and their flags are unchanged.
+
+Re-proven locally against the shared daemon image set tagged `pr-local`, whose
+content was verified to match THIS tree before use as evidence (the stale
+`pr-verify2304`/`pr-repair` sets carry intermediate states — e.g. temporalio
+1.34.0, playwright 1.64.0 — and were discarded as evidence):
+
+- Image content == tree: engine python 3.13.18 and its /usr/local/bin/docker
+  embeds go-jose v4.1.6 / compress v1.20.2 / x/net v0.62.0 (`go version -m`);
+  research = oauthlib 4.0.1, pyasn1 0.6.5, pypdf 7.1.0, soupsieve 4.1.1,
+  playwright 1.65.2, patchright 1.64.4, python 3.12.16; rsi = temporalio
+  1.36.1 — all equal to uv.lock.
+- Trivy v0.73.0, CI parameters (HIGH,CRITICAL, exit-code 1, ignore-unfixed,
+  .trivyignore.yaml): all four images exit 0, zero findings.
+- Grype v0.116.0 `--fail-on high --only-fixed`: all four images exit 0
+  (remaining research findings are Medium: CPython 3.12.16 binary CVEs and
+  otel go-modules).
+- scripts/check-image-lock-reconciliation.py, CI-exact args/members: engine
+  126, hive 73, research 147, rsi 220 distributions — all OK.
+- Both conductor identity-contract `docker run` verifications (security.yml
+  argv, CPython 3.13.18) pass on the ordinary and observability images.
+- `npm audit --audit-level=high` exits 0 on both frontend lockfiles (hive
+  carries 7 moderate findings, below the configured threshold).
+- Everything else green at this head: uv lock --check; check-image-pins
+  (default + --base-digests); check-image-inventory; check-workflow-inventory;
+  check-build-context; check-suite-inventory (21 suites, tests/: 6226);
+  vulture ledger with CI argv (1238 reviewed = 1238 findings, base f8a2df966a);
+  ruff check/format (driver logs); pytest tests/pi_recovery 177 passed + 32
+  subtests; tests/test_devskim_scan_scope.py 21 passed; systemd-analyze --user
+  verify on the four unit templates; no .py/test delta exists between
+  a11908f338 and a79a689ae3, so the coverage gate's green evaluation at
+  a11908f33 carries over unchanged.
+
+Environment note for future rounds: the shared daemon host runs at 100% disk
+(a prior attempt died to ENOSPC mid-build). grype/syft extract image layers
+into $TMPDIR; /tmp is a 32G tmpfs that cannot hold the 4.6GB research image —
+export TMPDIR onto the large filesystem before scanning research/rsi, and
+expect a failed `no space left on device` grype leg to be an environment
+limitation, not a finding. The SBOM/license (syft) leg was not re-run locally
+for the same reason; every dependency this branch ships is Apache/MIT/BSD, so
+no policy-relevant license class changed. The "recovery budget exhausted:
+openrouter poolside/laguna-s-2.1:free 404" block in the lane brief is agent-
+orchestration infrastructure, not a repository defect.
