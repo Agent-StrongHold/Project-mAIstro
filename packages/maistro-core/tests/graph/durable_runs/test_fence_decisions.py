@@ -71,7 +71,6 @@ from maistro.ontology.rubric import (
 )
 from maistro.projects.rubric_store import (
     GoalRevisionSnapshot,
-    InMemoryGoalRevisionCatalog,
     RubricProvenance,
     RubricStore,
 )
@@ -157,7 +156,24 @@ def _revised_dimensions() -> list[RubricDimension]:
     ]
 
 
-class _GoalAuthority(InMemoryGoalRevisionCatalog):
+class _InMemoryGoalRevisionCatalog:
+    """Dict-backed :class:`~maistro.projects.rubric_store.GoalRevisionCatalog`
+    test double (the engine's dict-backed copy lives in maistro_design, which
+    core tests must not import — dependency direction)."""
+
+    def __init__(self) -> None:
+        self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
+
+    def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
+        self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
+        return snapshot
+
+    def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
+        snap = self._goals.get((goal_id, goal_revision))
+        return snap.model_copy(deep=True) if snap is not None else None
+
+
+class _GoalAuthority(_InMemoryGoalRevisionCatalog):
     """One Goal authority for the test world: the read seam RubricStore
     resolves liveness through, and the mint port the fence redirects through
     — exactly the single authority canonical Goal persistence (#458) will be."""
@@ -349,7 +365,10 @@ async def _run_to_fence(
 ) -> DurableRunRecord:
     graph = _loop_graph(world.project_id, timeout_seconds=timeout_seconds)
     admitted = await run_store.create_run(
-        graph, initial_status=RunStatus.QUEUED, provenance=world.binding()
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id="fence-operator",
+        provenance=world.binding(),
     )
     return await run_durable_graph(
         graph,

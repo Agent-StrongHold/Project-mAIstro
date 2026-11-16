@@ -12,16 +12,16 @@ from typing import Any, Literal, NoReturn
 from pydantic import ValidationError
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
+from maistro.graph.nodes.base import (
+    PAUSE_AWAITING_HARNESS,
+    PAUSE_AWAITING_REMOTE_DELEGATION,
+)
 from maistro.runs.fence import (
     FenceDecision,
     FenceDecisionKind,
     FenceError,
     FenceNotWaitingError,
     FenceRedirectTarget,
-)
-from maistro.graph.nodes.base import (
-    PAUSE_AWAITING_HARNESS,
-    PAUSE_AWAITING_REMOTE_DELEGATION,
 )
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, NodeRun, Run, RunStatus
