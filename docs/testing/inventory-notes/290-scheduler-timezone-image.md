@@ -665,3 +665,74 @@ bare-host driver command that failed in the verifier battery now exits 0
 (5 skipped) via the unreachable-server guard proven above. Nothing in this
 round changed scheduler, health, Dockerfile, compose, or test logic beyond
 that guard's skip path.
+
+## Repair round: the suite-inventory drift + first-hand container evidence at the
+## final develop-merge head (2026-10-26, head `c5be51272`)
+
+Hosted CI at PR head `f1a9615d7` (the develop `10f872fa7` merge) had exactly
+one red check: the required `test` job (run 40360545030), failing at
+"Suite inventory matches collected node IDs (C1/#286)" with
+`DRIFT  tests/: expected 6043, collected 6044`. Root cause is this branch's
+own bookkeeping: the develop sync merged in commit `65c5538d2`, which added
+`test_python_from_import_inside_run_heredoc_is_not_an_image` to
+`tests/test_prepull_base_images.py` (22 → 23 `def test`, 27 → 28 collected
+nodes) — the branch's fourth `tests/` identity, but
+`290-image-pins-heredoc.md` recorded only `tests/: +3`. Repair: the note now
+records `tests/: +4` and names the prepull test in its prose; no test, gate,
+or production code changed. Local proof with CI's own gate:
+`check-suite-inventory.py --suite tests/` → `ok tests/: 6044`, exit 0.
+
+`integration-scope` itself was **green** at that head (run 40360545256), as
+were all eight specialized legs it aggregates (postgres pg17/pg18,
+object-storage MinIO, durable-events, strike-ladder, hive-conductor-e2e,
+hive-conductor-e2e-ui, wheel-imports, docker-build) — the earlier
+"integration-scope: failure" lane report is stale relative to the current
+head and matches the legs this branch already repaired on 2026-10-24. The
+classifier run over this branch's changed paths
+(`ci_merge_group_scope.py --json $(git diff --no-renames --name-only
+10f872fa7...HEAD)`) requires all seven legs, and
+`check-integration-scope.py --event-name merge_group` with that scope and
+every leg `success` prints `ok: integration scope satisfied for merge_group`.
+
+The prior round's infra-blocked fresh container evidence is now recorded —
+the build succeeds when the hermetic `uv pip install --require-hashes` RUN
+step is insulated from the host's DNS degradation under concurrent load:
+`docker buildx build --allow=network.host --network=host --load --add-host
+files.pythonhosted.org:151.101.64.223 ...` (the fastly A-record pinned via
+`--add-host` bypasses only name resolution; TLS, content addressing, and the
+hash-pinned lock are untouched, and every other stage built unchanged).
+Re-verified first-hand at this tree, image
+`sha256:4219b735d633f4003b4631bfced0025f32a93924facb60bcd7ca7f0f58735f2f`
+(`hive-conductor-hive:latest`):
+
+- Build-time tz cron smoke green in-build: `tz cron smoke ok: spring gap
+  skipped; fall fold fires once`.
+- In-image timezone source (required verification #4):
+  `PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo`,
+  `tzdata` wheel **2026.3**; `Europe/Berlin` resolves with DST-correct
+  offsets (+1 January / +2 July).
+- CI-exact api phase (`up --abort-on-container-exit --exit-code-from
+  api-tests api-tests` against the pre-built image): **14 passed / 14
+  skipped in 121.69s, exit 0** — UTC schedule persisted with in-window
+  `next_run` and fired naturally by the tick, Berlin 04:30 manual fire with
+  wall time + season offset + exact instant, invalid-zone 422s, `/health`
+  tz/scheduler pins; restart-marked test skipped pre-restart as designed.
+- Restart phase (CI verbatim: `restart hive`, StartedAt changed, health poll
+  to `healthy`, `SCHED_TZ_AFTER_RESTART=1 -k restart_recovery`): **1 passed
+  in 231.78s** — schedules and cursors survived the real restart and the new
+  process recomputed and naturally fired the UTC schedule.
+- Negative proofs re-run on this image: `PYTHONTZPATH=/nonexistent` alone
+  still resolves (`zoneinfo` falls back to the importable wheel — removal
+  proofs must remove the wheel itself, as prior rounds noted); as root, with
+  the wheel's `zoneinfo/` dir moved away, `ZoneInfo("UTC")` raises
+  `ZoneInfoNotFoundError: 'No time zone found with key UTC'` — the tz
+  dependency cannot be removed without a failing smoke test.
+- Gates re-run at this head: `ruff check .` / `ruff format --check .` clean;
+  `tests/test_check_image_pins.py` + `tests/test_prepull_base_images.py`
+  **69 passed**; `check-image-pins.py` exit 0;
+  `scripts/prepull-base-images.sh` (CI's exact invocation) exit 0;
+  `packages/hive-conductor/backend/tests` **76 passed**; suite inventory ok
+  for `tests/` (6044), `packages/hive-conductor/backend/tests` (4190) and
+  `packages/hive-conductor/tests/e2e` (28). Stack torn down with `down -v`;
+  the temporary build-network override was untracked and deleted; the tree
+  carries only this note.
