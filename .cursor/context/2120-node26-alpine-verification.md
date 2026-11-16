@@ -1,4 +1,66 @@
-# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8)
+# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079 and the lock-scan round below)
+
+## Repair round 2026-11-16b (head 6a5a57079 + lock bumps; base f8a2df966): grype cross-check + rsi trivy surfaces
+
+The 6a5a57079 fix for the research trivy scan was committed but never validated by CI (the following job died on a
+provider 404 before running). This round re-validated it independently and, doing so, surfaced two scan surfaces
+CI's job had never reached (both steps sit AFTER `Trivy scan maistro-engine-research`, which failed first at
+262edeceb, so grype and the rsi trivy scan never executed on this branch):
+
+- **grype 0.116.0 `--fail-on high --only-fixed` on maistro-engine-research** (rc=2): 5 findings, all node
+  24.21.0 binaries — CVE-2026-111497 (Critical, kev), CVE-2026-105482/105483/106069 (High), fixed in
+  24.22.1/26.12.1. Source: the driver `node` executables bundled inside the playwright and patchright wheels
+  (`/app/venv/lib/python3.12/site-packages/{playwright,patchright}/driver/node`); trivy's node-pkg scan only reads
+  package.json, so it never saw them.
+- **`Trivy scan maistro-rsi-runner` at this head** (rc=1): 4 findings (1 Critical + 3 High), all in the `zip`
+  crate 8.6.0 vendored inside `temporalio 1.34.0`'s `bridge/Cargo.lock` (CVE-2026-115905 fixed 9.0.5,
+  CVE-2026-115907 fixed 9.0.0, +2). The wheel vendors the lock, so only a temporalio upgrade clears it.
+
+Fixes (exact-and-only doctrine, upgrade-first — every finding had a published fix): uv.lock targeted bumps
+playwright 1.64.0→1.65.2 (driver node v26.13.1), patchright 1.64.1→1.64.4 (driver node v24.22.1),
+temporalio 1.34.0→1.36.1 (vendored zip crate 9.5.1), plus the forced transitive nexus-rpc 1.4.0→1.5.0.
+Ship-surface isolation re-proven by CI-exact exports: playwright/patchright appear ONLY in the research contract
+(`maistro-server --extra observability --extra browser`); temporalio ONLY in `--extra rsi-fitness`; engine
+(`--extra image`), hive-conductor and rsi-python exports contain none of the browser packages, so those images'
+dependency sets are unchanged. No Python source imports temporalio anywhere under packages/ (grep), so its bump
+carries no call-site risk.
+
+Local proof at the new head (docker 29.1.3, trivy 0.73.0 = CI's version, grype 0.116.0 = CI's version,
+sha-verified): research image rebuilt via `scripts/buildx-build-retry.sh -- -f Dockerfile.research -t
+maistro-engine-research:pr-2120 --no-cache-filter production-apt --load .` → rc=0; rsi image rebuilt with the
+CI-exact `--no-cache-filter runtime-apt` → rc=0. Then, CI-exact arguments:
+
+- `trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml` → rc=0 on
+  BOTH maistro-engine-research:pr-2120 (was 15 HIGH) and maistro-rsi-runner:pr-2120 (was 4 HIGH/CRITICAL); 0
+  findings on every scanned target.
+- `grype <image> --fail-on high --only-fixed` → rc=0 on BOTH images (research was rc=2; only Unknown/Negligible
+  rows remain, below the threshold).
+- In-image proof: playwright driver node v26.13.1, patchright driver node v24.22.1, playwright 1.65.2,
+  patchright 1.64.4 in the research image; temporalio 1.36.1 + nexus-rpc 1.5.0 in the rsi image.
+- `check-image-lock-reconciliation.py` CI-exact per image (research: `--member maistro-core==0.9.0 --member
+  maistro-server==0.9.0`; rsi: `--python /workspace/.venv/bin/python` + 4 members) → rc=0 both ("ships exactly
+  the locked set").
+- pip-audit gate CI-exact (`uv pip freeze --exclude-editable` → strict audit → pip_audit_gate.py) → rc=0, "1
+  known, all triaged in ALLOWED" (ecdsa only; the bumped packages carry no advisories).
+- `check-image-pins.py` (9 pins / 10 Dockerfiles), `check-image-inventory.py`, `check-image-pins.py
+  --base-digests Dockerfile packages/hive-conductor/Dockerfile`, `check-suite-inventory.py` (21 suites) → all
+  rc=0.
+- Quality pillars CI-exact: vulture ledger 1238=1238, radon 126=126, reachability rc=0 (88 unreachable, all
+  dispositioned), reachability-dispositions rc=0, promotion-surface rc=0; ruff check + format rc=0.
+- Scoped pytest under `coverage run --branch --source=scripts`: tests/{test_check_image_pins,
+  test_pinned_digest_references,test_distribution_contract,test_check_image_inventory,
+  test_check_image_lock_reconciliation,test_image_lock_contract,test_prepull_base_images,
+  test_devskim_scan_scope}.py --timeout=120 -q → 259 passed in 32.21s (includes the devskim test that timed out
+  in the pre-sync CI run at 8b588456).
+- Diff-coverage gate CI-exact (`check-diff-coverage.py coverage.xml --base f8a2df966`) → rc=0: 0 measured files,
+  1 exempt — `tests/test_distribution_contract.py`, "test code is the evidence, not the thing evidenced"
+  (check-diff-coverage.py EXEMPT declaration); the sole .py change vs base is its 1-line python-tag assertion
+  update.
+
+Environment notes for reproducers: trivy's first run died with `no space left on device` writing to the /tmp
+tmpfs (32G, shared, near-full) while unpacking the chrome-headless-shell layer — not a scan finding; rerun with
+`TMPDIR` on a large disk. Grype CLI installed to ~/.local/bin from the CI-pinned v0.116.0 tarball (sha256
+40aff724… checked).
 
 ## Repair round 2026-11-16 (head 262edeceb; base f8a2df966): Trivy scan of maistro-engine-research
 
