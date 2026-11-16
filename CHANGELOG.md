@@ -34,6 +34,19 @@ or placeholder-only section.
 
 ### Security
 
+- **Container-gate images move to CPython 3.13.18 / 3.12.16 for the grype
+  CPython-binary CRITICAL (#2059).** The Grype cross-check
+  (`--fail-on high --only-fixed`) failed on `hive-conductor:pr-2059`
+  (security.yml run 43844074725): CVE-2026-115557 (CRITICAL, fixed in
+  3.13.18/3.12.16) in the CPython binary the pinned bases ship. The
+  `python:3.13.18-slim-bookworm` and refreshed `python:3.12-slim`
+  (3.12.16) digests are re-recorded in `quality/image-pins.json` and
+  referenced verbatim by every Dockerfile that builds from them (including
+  the canvas-smoke control image); security.yml's docker-run identity
+  asserts follow to `(3, 13, 18)`. New
+  `tests/test_cpython_base_grype_floor.py` holds the floor and the
+  assert-vs-pin equivalence closed.
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in
