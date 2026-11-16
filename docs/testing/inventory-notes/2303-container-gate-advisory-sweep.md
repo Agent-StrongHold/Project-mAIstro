@@ -50,3 +50,27 @@ The repair moves dependencies and base pins; no ignore entry was added:
 - `tests/test_pinned_digest_references.py` (14 cases incl.
   test_distribution_contract) all pass, holding the registry/smoke/Dockerfile
   pin closure closed across the refresh.
+
+## Independent re-verification at fb2872cbf2 (2026-11-16 repair round)
+
+CI at the branch head confirmed the repair landed: the check-runs captured for
+`fb2872cbf2` (run 43876470284, job 133330713930, started 2026-11-16T13:30Z)
+report **all** checks success — including "Container scan + SBOM + cosign",
+"Coverage gate", "Quality / Image pins", and "test" — so the d754936 failure
+(job 133166051159) is closed at this head. Locally re-run on this worktree,
+clean tree at `fb2872cbf2`, no edits:
+
+- `uv sync --locked --extra dev` OK (lock unchanged); `uv run ruff check .`
+  and `uv run ruff format --check .` clean.
+- `uv run python scripts/check-image-pins.py`: 9 pinned images across 10
+  Dockerfiles, all registered. `uv run python scripts/check-image-inventory.py`
+  and `uv run python scripts/check-suite-inventory.py` (21/21) pass.
+- `uv run pytest tests/test_distribution_contract.py
+  tests/test_devskim_scan_scope.py -q`: 27 passed.
+- `uv.lock` holds the moved versions (temporalio 1.36.1, playwright 1.65.2,
+  patchright 1.64.4); the bumped playwright test image digest
+  `sha256:47b510dd…` is present in
+  `packages/hive-conductor/tests/Dockerfile.playwright` and
+  `quality/image-pins.json`, and the retired `7852dc5` digest has no remaining
+  occurrence. Still zero suite-count delta from this round: no test was
+  added, removed, renamed or skipped.
