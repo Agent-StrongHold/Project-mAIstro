@@ -112,3 +112,74 @@ above was re-executed at this head by the repair lane:
 Declared limits unchanged: real Windows PowerShell 5.1/7 runtime policy enforcement, UAC and
 reboot resume remain unverified (no Windows host; release-installer workflow is tag/manual
 dispatch). No source, ledger, gate, or baseline file was modified by this round either.
+
+## Deep-review round 2 re-validation at 34b24e8ca (job 08b4dddf2aa749b59583a3c18262b36b)
+
+Prior round (NEEDS-DEEP-REVIEW verdict, job dc7fa9fa) findings adversarially re-examined at the
+assigned head 34b24e8ca3d7c3b530d329313a40bf30f1a6a516 (= 08841cd3b branch line + develop merge
+f8a2df966a1d). Worktree found clean at the assigned head. All prior local evidence re-executed
+and holds; one NEW CI failure discovered at this head.
+
+Re-executed and confirmed (all locally, read-only except this record):
+
+1. gitleaks 8.30.1 (same version+sha256 pin as .github/workflows/security.yml:117-118), CI-exact
+   PR form `gitleaks git --redact --log-opts=f8a2df966a1d..34b24e8ca3d .` -> 28 commits scanned,
+   "no leaks found", exit 0. Also confirmed with `gitleaks detect --log-opts=...` (exit 0).
+   Live GitHub statusCheckRollup at this head: SAST / Gitleaks SUCCESS (both runs). The prior
+   SAST RED is repaired; .gitleaksignore fingerprints (de8266eff + 3x fb322ab rows) are
+   load-bearing as documented.
+2. `uv run pytest tests/test_get_ps1_wsl_detection.py -v` -> 28 passed, 0 skipped (pwsh present;
+   test_relaunch_argument_construction executed the harness for real, "RESULT relaunch-policy ok").
+3. `pwsh -NoProfile -NonInteractive -File tests/installer/run-wsl-detection-e2e.ps1 -PowerShell pwsh`
+   -> "all 23 cases passed" + "RESULT relaunch-policy ok", exit 0.
+4. Regression bite re-proven at THIS head: `git show f8a2df966a1d:get.ps1` (old relaunch bodies
+   carry `-ExecutionPolicy Bypass` at base lines 377 and 390) -> this PR's harness exits 1 with
+   `throw 'Unexpected elevation arguments'` (relaunch_policy_harness.ps1:42). The tests bite;
+   they are not pinned to pass vacuously. Harness verifies it extracts exactly one production
+   FunctionDefinitionAst per name, so the mocked run exercises real function bodies.
+5. `uv run ruff check .` / `uv run ruff format --check .` exit 0 (3561 files formatted); driver
+   check-0/1/2.log agree (uv sync, ruff check, ruff format all green).
+6. `uv run python scripts/check-suite-inventory.py` exit 0 (21 suites match recorded inventory);
+   inventory note docs/testing/inventory-notes/security-windows-policy-prerequisite.md (+3)
+   remains consistent — no update needed this round.
+7. get.ps1 at head: zero `-ExecutionPolicy`/`Bypass` tokens in code; only read-only
+   `Get-ExecutionPolicy -List` documentation references (get.ps1:71, get.ps1:82). Invoke-Elevated
+   (get.ps1:391-398) and Register-Resume (get.ps1:403-412) keep RunAs, quoting, passthrough and
+   the HKCU RunOnce / MaistroInstallResume destination unchanged — matches the PR claims.
+8. Closure keywords: strict grep over PR body + all commit messages in
+   f8a2df966a1d..34b24e8ca3d -> no matches (exit 1). No premature issue closure.
+9. Range contains NO dependency files: `git diff --stat f8a2df966..34b24e8ca -- uv.lock
+   '**/pyproject.toml' '**/requirements*.txt'` is empty; full changed set is get.ps1,
+   tests/test_get_ps1_wsl_detection.py, tests/installer/relaunch_policy_harness.ps1,
+   tests/installer/run-wsl-detection-e2e.ps1, .gitleaksignore, the inventory note, this record.
+
+NEW finding at this head (live read-only `gh pr view 2110 --json statusCheckRollup`):
+
+- **Supply chain (pip-audit) FAILURE** twice (security workflow runs 43783735839 / 43783733310,
+  jobs 133026598831 / 133026591322). Gate log: "Found 6 known vulnerabilities in 5 packages";
+  4 advisories outside the triaged allowlist (scripts/pip_audit_gate.py): dnspython==2.9.0
+  CVE-2026-128089 -> 2.9.2; graphql-core==3.3.0 CVE-2026-119286 -> 3.3.1; joserfc==1.7.5
+  CVE-2026-119284 -> 1.7.6; opentelemetry-api==1.45.1 CVE-2026-126360 -> 1.45.2. Because the
+  range changes no dependency files (item 9), this failure is inherited from the develop base
+  lockfile + advisory DB, not introduced by this PR — but CI is therefore demonstrably NOT green
+  at the assigned head, which the prior rounds' "0 FAILED" snapshots predate (the merge of
+  f8a2df966 triggered fresh runs). Repair (dependency bumps or gate-allowlist triage) belongs to
+  the PR owner; a verify lane must not rewrite PR content.
+- Everything else at this head is SUCCESS or still QUEUED/IN_PROGRESS (Gate C, coverage x4,
+  the quality gate family, CI test/postgres/docker-build, Container scan + SBOM + cosign,
+  formal-conformance, integration-scope, CodeQL python). Pending checks remain UNVERIFIED;
+  never inferred green.
+- Prior previously-RED gates with SUCCESS runs at this head: Compliance registry, Quality /
+  Agent store writes, Quality / Reachability dispositions, exact-debt-ledger (Vulture Ratchet),
+  DevSkim, SAST / Bandit, Quality / Radon, Quality / Frontend typed client, Quality /
+  Credential authority, Quality / Workflow inventory, Quality / Backlog consistency,
+  Quality / Documentation links, workflow-lint, pr-base, block (Cage Guard).
+
+Stale claim drift (non-blocking, unchanged): PR body says "remains draft with automerge
+disabled" but live isDraft=false at this head.
+
+Verdict for this round: NEEDS-REPAIR — the six issue criteria are locally proven, but "CI green
+at this exact head" fails on the base-inherited pip-audit advisories and dozens of checks are
+still pending. Declared limits unchanged: real Windows PowerShell 5.1/7 policy enforcement, UAC
+elevation and reboot RunOnce resume remain unverified (no Windows host; release-installer
+workflow runs on tags/manual dispatch, not PRs).
