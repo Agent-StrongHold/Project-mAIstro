@@ -1,6 +1,6 @@
 {
   "metric_definition_version": "2",
-  "_comment": "ADR-092126-a28a metric v2 retires body status declarations regardless of value and scans ADR/spec records recursively, including normal Markdown indentation. The prior unversioned agreement ledger was empty; this deliberate transition retains exactly zero tolerated findings. Existing trusted-base grant requirements remain unchanged. Body status findings are per-identity; fixed entries must be pruned, and replacement-banner/status-assertion contradictions remain errors.",
+  "_comment": "Legacy body '**Status:**' lines written before front matter was canonical (#379). Metric v2 checks absence per identity: every body status line is a finding regardless of agreement with front matter. A new finding fails, and a fixed one must shrink this ledger in the same change. Banner and status-assertion contradictions are never baselined. Expanding this ledger requires prior trusted-base authorization; delete the retired body status line instead.",
   "known": [],
   "details": {}
 }
