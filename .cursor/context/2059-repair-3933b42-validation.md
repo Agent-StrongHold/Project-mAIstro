@@ -59,11 +59,13 @@ No code changes were required this round; this file is the evidence record.
 ## Hosted CI at the exact head (read-only API inspection, 08:29–08:32Z)
 
 - 122 check runs completed, 0 failures; formerly-RED set all `success`.
-- Pending at last poll: `Coverage gate (publish-set floor + diff coverage)`
-  ×2 (started 08:24/08:28Z) and `test` (started 08:09Z). Their content is
-  locally covered: candidate `packages/*/src` is byte-identical to develop's
-  green tree (branch overlay touches no src), and every root test the merge
-  touched passes locally.
+- FINAL (08:59:30Z): the last two pending runs completed — both
+  `Coverage gate (publish-set floor + diff coverage)` attempts and the `test`
+  job finished **conclusion: success**. Workflow-level at the exact head:
+  13/13 workflows completed success (quality ×2, CI, security ×2, Vulture
+  Ratchet, DevSkim, Gate C, Formal Conformance, CodeQL, Integration Scope,
+  Registry CI, Cage Guard). Zero failed check runs; the only non-success
+  conclusion is the expected `skipped` container-scan variant.
 - PR state: open, non-draft, `mergeable: true`, `mergeable_state: blocked`
-  (branch protection holding on the still-running checks / review — not a
-  gate failure).
+  (branch protection admission / review — process state, not a gate
+  failure).
