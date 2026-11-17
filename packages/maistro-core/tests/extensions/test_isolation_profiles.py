@@ -478,7 +478,10 @@ class TestConfigCompilation:
         assert config.max_processes == 16
         assert config.timeout_s == 45
         assert config.max_file_mb == 8
-        assert config.network is True
+        # `egress` is the single network authority (#76/#77): the legacy
+        # `network` boolean is retired and mechanically rejected when true, so
+        # a scoped grant is carried only by the grant itself.
+        assert config.network is False
         assert config.min_isolation == "bubblewrap"
         assert config.egress.mode is EgressMode.SCOPED
 
