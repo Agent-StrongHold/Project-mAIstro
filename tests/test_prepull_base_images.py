@@ -379,7 +379,7 @@ def test_a_plain_from_is_pulled(tmp_path: Path) -> None:
 
 
 def test_a_named_stage_is_pulled_by_its_image(tmp_path: Path) -> None:
-    assert _list(_write(tmp_path, "FROM node:22-alpine AS frontend\n")) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, "FROM node:26-alpine AS frontend\n")) == ["node:26-alpine"]
 
 
 def test_a_platform_flag_is_not_mistaken_for_the_image(tmp_path: Path) -> None:
@@ -422,11 +422,11 @@ def test_images_from_several_dockerfiles_are_merged(tmp_path: Path) -> None:
     two = tmp_path / "two"
     one.mkdir()
     two.mkdir()
-    (one / "Dockerfile").write_text("FROM node:22-alpine\n")
+    (one / "Dockerfile").write_text("FROM node:26-alpine\n")
     (two / "Dockerfile").write_text("FROM python:3.12-slim\n")
 
     assert _list(one / "Dockerfile", two / "Dockerfile") == [
-        "node:22-alpine",
+        "node:26-alpine",
         "python:3.12-slim",
     ]
 
@@ -436,15 +436,15 @@ def test_images_from_several_dockerfiles_are_merged(tmp_path: Path) -> None:
 
 def test_a_stage_reference_is_not_pulled(tmp_path: Path) -> None:
     """`FROM builder` names an earlier stage; pulling it would 404."""
-    body = "FROM node:22-alpine AS builder\nFROM builder\nRUN true\n"
+    body = "FROM node:26-alpine AS builder\nFROM builder\nRUN true\n"
 
-    assert _list(_write(tmp_path, body)) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, body)) == ["node:26-alpine"]
 
 
 def test_a_stage_reference_is_matched_case_insensitively(tmp_path: Path) -> None:
-    body = "FROM node:22-alpine AS Builder\nFROM builder\n"
+    body = "FROM node:26-alpine AS Builder\nFROM builder\n"
 
-    assert _list(_write(tmp_path, body)) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, body)) == ["node:26-alpine"]
 
 
 def test_scratch_is_not_pulled(tmp_path: Path) -> None:
@@ -468,7 +468,7 @@ def test_an_image_that_shares_a_name_with_a_later_stage_is_still_pulled(
 
 def test_an_unresolved_build_arg_is_reported_not_silently_dropped(tmp_path: Path) -> None:
     """It cannot be pulled without build args, so it must not vanish quietly."""
-    path = _write(tmp_path, "ARG BASE=python:3.12-slim\nFROM ${BASE}\nFROM node:22-alpine\n")
+    path = _write(tmp_path, "ARG BASE=python:3.12-slim\nFROM ${BASE}\nFROM node:26-alpine\n")
 
     result = subprocess.run(
         [str(SCRIPT), "--list", str(path)],
@@ -478,7 +478,7 @@ def test_an_unresolved_build_arg_is_reported_not_silently_dropped(tmp_path: Path
         check=True,
     )
 
-    assert result.stdout.splitlines() == ["node:22-alpine"]
+    assert result.stdout.splitlines() == ["node:26-alpine"]
     assert "cannot resolve" in result.stderr
 
 
