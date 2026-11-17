@@ -291,3 +291,27 @@ Round changes: the two `.npmrc` lines above + this note. No Python, gate, ledger
 lockfile, or test change; no test added, so no inventory-note delta. Battery:
 ruff check clean, ruff format --check clean (3584 files), semgrep CI-argv 0
 findings, failing-spec local repro 3/3 pass.
+
+## Free-router resolve narrowed to OpenRouter-owned picks (2026-11-17, salvage round)
+
+Salvaged the interrupted prior round's uncommitted fix (left at head 9d8a6baf24
+after a pre-worker `ruff format --check` failure) and completed it:
+
+- `resolve_concrete_free_model` now degrades to None for any served pick that
+  is not OpenRouter-owned (`openrouter/…`): a third-party `:free` pick 404s
+  once its provider un-free's the model (the longcat
+  `nous/meituan/longcat-2.5-preview:free` incident that exhausted a run's
+  recovery budget), so resolution must fall back to DEFAULT_FREE_MODEL.
+- New regression test pins the exact incident model → None (proven to fail
+  against the pre-fix code, which returned the dead model); happy-path fixture
+  updated to an OpenRouter-owned id. Inventory delta
+  `packages/maistro-rsi/tests: +1` recorded in
+  `docs/testing/inventory-notes/1896-free-router-openrouter-owned-resolve.md`.
+- Local proofs at the round head: `ruff check .` and `ruff format --check .`
+  pass (3584 files); `pytest packages/maistro-rsi/tests` 1795 passed / 2
+  skipped; suite inventory rsi suite ok (1798); vulture ledger with CI's exact
+  argv 1236 == 1236 (base f927334a2e). The one local-only failure,
+  `test_contained_fitness.py::test_real_container_runs_the_vector_…`, is the
+  docker-gated real-container case failing because the local builders image
+  lacks pytest inside (`No module named pytest`) — CI has no docker daemon so
+  that case skips there and cannot gate this branch.

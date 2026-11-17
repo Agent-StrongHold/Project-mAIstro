@@ -53,11 +53,13 @@ def test_resolve_reads_concrete_model(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_post(url, *, json, headers, timeout):  # type: ignore[no-untyped-def]
         captured["url"] = url
         captured["model"] = json["model"]
-        return _FakeResp(payload={"model": "cohere/north-mini-code:free", "provider": "Cohere"})
+        return _FakeResp(
+            payload={"model": "openrouter/google/gemini-2.5-flash", "provider": "OpenRouter"}
+        )
 
     monkeypatch.setattr(fr, "_post", fake_post)
     got = fr.resolve_concrete_free_model()
-    assert got == "cohere/north-mini-code:free"
+    assert got == "openrouter/google/gemini-2.5-flash"
     assert captured["url"] == fr._OPENROUTER_DIRECT
     assert captured["model"] == "openrouter/free"
 
@@ -67,6 +69,23 @@ def test_resolve_ignores_echoed_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(
         fr, "_post", lambda *a, **k: _FakeResp(payload={"model": "openrouter/free"})
+    )
+    assert fr.resolve_concrete_free_model() is None
+
+
+def test_resolve_rejects_third_party_free_picks(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A third-party ``:free`` pick dies the moment its provider un-free's the
+    # model — ``nous/meituan/longcat-2.5-preview:free`` 404'd mid-seed and
+    # exhausted a run's whole recovery budget. Only OpenRouter-owned ids
+    # (``openrouter/…``) resolve; anything else degrades to None so the caller
+    # pins DEFAULT_FREE_MODEL instead of a routable-but-dead model.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(
+        fr,
+        "_post",
+        lambda *a, **k: _FakeResp(
+            payload={"model": "nous/meituan/longcat-2.5-preview:free", "provider": "Nous"}
+        ),
     )
     assert fr.resolve_concrete_free_model() is None
 

@@ -105,6 +105,14 @@ def resolve_concrete_free_model(
         return None
     if not isinstance(served, str) or not served or served == preset:
         return None
+    # Only accept OpenRouter-OWNED ids (``openrouter/…``). A third-party pick
+    # (``vendor/model:free``) 404s the moment its provider un-free's the model —
+    # e.g. ``nous/meituan/longcat-2.5-preview:free`` died mid-seed and exhausted
+    # a run's whole recovery budget — and its alias would route through a
+    # non-OpenRouter credential seam. Degrade to None so the caller pins the
+    # known-good default instead.
+    if not served.startswith("openrouter/"):
+        return None
     return served
 
 
