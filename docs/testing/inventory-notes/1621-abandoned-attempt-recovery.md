@@ -111,11 +111,13 @@ been lost during the rebuild: unlike the earlier heads documented above,
 The canonical in-memory, SQLite, and PostgreSQL Run stores now reject that
 success claim while a child Run is non-terminal; failure remains legal. The
 shared spine test proves refusal without mutating the parent, continued failure
-legality, and successful completion after the child settles. The existing
-parent-retention test now settles its child before completing the parent, so it
-continues to test deletion rather than the new completion fence. These are
-re-established at the current head; older validation evidence above does not
-apply to the rebuilt head.
+legality, and successful completion after the child settles. The parent-retention
+test settles its child before completing the parent, so it tests retention rather
+than the completion fence. The chat-admission deletion test now likewise settles
+its child first; both had been attempting to complete over a CREATED child and
+failed against the fence. These test fixes add no test identities, so the
+inventory delta is unchanged. These behaviors are re-established at the current
+head; older validation evidence above does not apply to the rebuilt head.
 
 Current test inventory delta: one new parametrized core conformance test adds
 six node IDs across the memory, SQLite and PostgreSQL spine backends; total note
