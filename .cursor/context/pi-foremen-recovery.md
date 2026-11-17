@@ -177,3 +177,70 @@ for the same reason; every dependency this branch ships is Apache/MIT/BSD, so
 no policy-relevant license class changed. The "recovery budget exhausted:
 openrouter poolside/laguna-s-2.1:free 404" block in the lane brief is agent-
 orchestration infrastructure, not a repository defect.
+
+## Develop sync f927334a2 completed + all gates re-proven at merge f8aa5ad4f9 (2026-11-16, verified round)
+
+The lane's blocked state ("worker exited without result") was an interrupted
+develop sync: the prior round had ported origin/develop's content (M1-E2
+157c3f61 #1373 + M2-B1 f927334a2 #2241 and their CR1373 CI repairs) into the
+worktree staged but uncommitted, and died before the merge commit. This round
+completed it in two commits:
+
+1. `07b439b293` — the salvaged port committed verbatim. Every shared file was
+   sha256-verified byte-identical to origin/develop before committing, except
+   the three files carrying this branch's own repair state (hive Dockerfile
+   npm audit-level line, pyproject supply-chain floors, uv.lock re-lock).
+2. `f8aa5ad4f9` — `git merge origin/develop` (parents 07b439b293 + f927334a2e),
+   auto-resolved with zero conflicts because the port had pre-aligned the tree;
+   branch floors (temporalio>=1.36.1, graphql-core>=3.3.1, oauthlib, pyasn1,
+   pypdf, soupsieve, patchright, playwright, dnspython, joserfc,
+   opentelemetry-api) and npm audit-level lines all survived, `uv lock --check`
+   exit 0, locked versions at/above every fix version (temporalio 1.36.1,
+   graphql-core 3.3.2, dnspython 2.9.2, joserfc 1.8.0, otel-api 1.45.2,
+   oauthlib 4.0.1, pyasn1 0.6.5, pypdf 7.1.0, soupsieve 4.1.1, patchright
+   1.64.4, playwright 1.65.2). The merged uv.lock is byte-identical to
+   develop's, and packages/ Python is byte-identical to develop's — the only
+   branch-unique deltas vs develop are scripts/pi_recovery, tests/pi_recovery,
+   the npm audit-level lines/lockfiles, the four constraint floor blocks, and
+   inventory notes.
+
+Local proof at f8aa5ad4f9, CI's exact commands:
+
+- Coverage gate: root producer (`coverage run --branch --source=scripts -m
+  pytest tests/ tests/test_model_check_consumer_claim.py
+  packages/maistro-core/tests/extensions/test_lifecycle_proof.py
+  --timeout=30 -q`, RATCHET_BASE_REV=origin/develop) -> 6109 passed / 139
+  skipped / 0 failed in 14m33s; `coverage xml`;
+  `scripts/check-diff-coverage.py coverage.xml --base origin/develop` -> exit 0
+  (9 measured scripts/pi_recovery modules >=90% lines / >=80% branches, 7
+  exempt test files). Publish-set floor (87%) structurally unaffected:
+  `git diff HEAD origin/develop -- packages/maistro-{core,canvas,evolve,rsi,
+  bootstrap}` Python is empty (only canvas frontend lockfile/.npmrc differ —
+  not in any measured tree).
+- Vulture ledger, CI argv (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): 1236 reviewed identities == 1236 findings, base
+  resolved to f927334a2e (develop's M1-E2 removed 2 identities from the
+  ledger's scope; count moved 1238 -> 1236 with the sync, not with this round).
+- Suite inventory: ok, 21 suites match the recorded baseline; ruff check +
+  format --check clean; tests/pi_recovery + test_devskim_scan_scope +
+  test_check_diff_coverage: 216 passed + 32 subtests.
+- Image gates offline: check-image-pins (9 pins/10 Dockerfiles), 
+  check-image-inventory (2 PUBLISHED / 4 DISTRIBUTED / 3 INTERNAL), 
+  test_distribution_contract + test_pinned_digest_references (14 passed), and
+  all four CI `uv export --locked` reconciliations produce hash-pinned exports.
+- Container gate, bounded local evidence: build inputs for every scanned image
+  are byte-identical to develop tip f927334a2e (Dockerfiles, uv.lock,
+  image-pins.json), which landed through its own merge-queue evaluation of
+  this gate. Supplementary: the daemon's fresh `pr-1640` image set (built
+  minutes earlier by a concurrent lane from a develop-based tree, content
+  probes confirm CPython 3.13.18 in engine and temporalio 1.36.1 in
+  rsi-runner — exactly this branch's locked content) scanned clean with CI's
+  trivy argv (v0.73.0, HIGH/CRITICAL, ignore-unfixed, .trivyignore.yaml):
+  maistro-engine exit 0, maistro-rsi-runner exit 0. Provenance caveat: pr-1640
+  images were not built from this worktree; docker CLI rebuild (29.9.3 +
+  x/net 0.62.0 patch) and hive/research images rest on the byte-identity
+  argument plus the a79a689ae3-round 4-image proof. Full local rebuild was
+  skipped: / at 99% (15G free) and trivy's shared DB cache was held by the
+  concurrent lane — the same environment class a3f491e718 documented.
+- npm audit --audit-level=high exit 0 on both frontend lockfiles (canvas 0
+  findings; hive moderate-only, below threshold).
