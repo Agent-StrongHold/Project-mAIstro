@@ -729,15 +729,21 @@ jobs:
   # acceptance criterion asks for -- one CI check whose pass/fail is legible as
   # "did cross-product spine parity hold" rather than buried in one line of a
   # much larger suite.
-  # #80 / M2-B5: the designated hardware-capable conformance lane for the real
-  # ContainerBuilderSandbox backend. The publish-set partition (#654) keeps
-  # quality.yml `coverage-unit` as the bootstrap suite's no-services producer;
-  # this job is the *service-backed* site — it provisions the rootless daemon
-  # whose user-namespace mapping ADR-093 Decision 2 requires, proves the
-  # fail-closed refusal on a rootful daemon first, proves cgroup v2 memory
-  # enforcement before the suite runs, and only then executes the escape and
-  # conformance suite against real containers. Declared as a service-backed
-  # whole-suite site in tests/test_unit_suite_execution_partition.py.
+  # #80 / M2-B5, reconciled onto the M2-B1 canonical sandbox (#2241): the
+  # builders adapter (`ContainerBuilderSandbox`) no longer runs its own
+  # Docker path — `__enter__` asks the host-evidenced `maistro.sandbox`
+  # selector for a backend satisfying `BUILDER_AGENT`'s vm-tier floor and
+  # refuses (`NoSuitableBackendError`) without one. This job is that
+  # contract's CI lane: it proves the fail-closed refusal on a runner with no
+  # VM backend, then provisions the rootless daemon lane (userns mapping +
+  # delegated cgroup v2 via scripts/ci-rootless-mountns.sh) and runs the
+  # real-image contract on it — maistro-builders:latest builds, loads into
+  # the rootless daemon, and runs non-root with --network=none under an
+  # enforced --memory budget. Escape and conformance coverage for the
+  # backends themselves lives in packages/maistro-core/tests/sandbox/
+  # (escape conformance, Kata live conformance, launcher VM), executed by
+  # the quality.yml producers; the publish-set partition (#654) keeps
+  # coverage-unit as the bootstrap suite's only no-services whole-suite site.
   sandbox-conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -762,17 +768,34 @@ jobs:
         run: >-
           docker build --tag maistro-builders:latest
           --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
-          packages/maistro-bootstrap/tests
-      # ADR-093 Decision 2: ContainerBuilderSandbox refuses a rootful,
-      # user-namespace-unmapped daemon — container uid 0 there IS host uid 0,
-      # the D-04 regression this conformance suite exists to prevent. Prove
-      # the fail-closed branch first, against the runner's own rootful system
-      # daemon, before the lane switches to a rootless one.
-      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
-        run: >-
-          uv run pytest
-          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
-          -v --tb=short
+          packages/maistro-bootstrap/tests/
+      # ADR-093 Decision 2, fail-closed at the selector (#76, then #2241's
+      # canonical wiring): the production adapter must refuse to start where
+      # no host-evidenced backend satisfies BUILDER_AGENT's vm-tier floor. A
+      # GitHub runner has no Kata runtime, and even a bubblewrap tier is
+      # below the floor, so the honest execution proof here is
+      # NoSuitableBackendError — the merged architecture's replacement for
+      # the deleted rootful-daemon refusal test (the selector consults no
+      # Docker daemon at all). If this ever fails because the runner gained
+      # a vm-tier backend, the lane has become a live-conformance site and
+      # the kata live suites below it are the next consumers.
+      - name: No VM backend means the builders adapter refuses (fail-closed proof)
+        run: |
+          uv run python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from maistro.sandbox import NoSuitableBackendError
+          from maistro_bootstrap.builders.container_sandbox import ContainerBuilderSandbox
+          try:
+              ContainerBuilderSandbox(Path(tempfile.mkdtemp())).__enter__()
+          except NoSuitableBackendError:
+              print("fail-closed: adapter refused without a vm-tier backend")
+          else:
+              raise SystemExit(
+                  "adapter started without a vm-tier backend — the selector is not "
+                  "fail-closed on this runner; move this proof to the kata lane"
+              )
+          PY
       # The escape suite itself runs where the sandbox actually starts: a
       # daemon whose containers get non-host uids (rootless or
       # userns-remapped). Provisioning notes (rounds 19-32,
@@ -845,7 +868,7 @@ jobs:
             --format '{{json .SecurityOptions}}' | grep -q rootless
           echo "MAISTRO_LANE_DOCKER_SOCK=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
       # Seed the rootless daemon from the image built above instead of
-      # rebuilding it: the lane's budget belongs to the conformance run. The
+      # rebuilding it: the lane's budget belongs to the contract run. The
       # first docker talks to the runner's rootful system daemon explicitly;
       # the second targets the lane daemon socket.
       - name: Load the Builder sandbox image into the rootless daemon
@@ -853,12 +876,12 @@ jobs:
           docker --host unix:///var/run/docker.sock save maistro-builders:latest \
             | docker --host "$MAISTRO_LANE_DOCKER_SOCK" load
           # Prove the daemon can actually enforce the sandbox's resource
-          # budget before the suite runs on it. Rootless dockerd needs the
-          # delegated cgroup v2 subtree set up by the linger step; without it,
-          # --memory is silently dropped and the exhaustion test would fail
-          # opaquely. Reading memory.max back from inside a 64m-limited
-          # container is the enforcement proof; "max" means unbounded, i.e.
-          # not enforced.
+          # budget before the image-contract probe runs on it. Rootless
+          # dockerd needs the delegated cgroup v2 subtree set up by the
+          # linger step; without it, --memory is silently dropped and the
+          # probe would validate nothing. Reading memory.max back from inside
+          # a 64m-limited container is the enforcement proof; "max" means
+          # unbounded, i.e. not enforced.
           enforced="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
             --memory=64m --memory-swap=64m \
             maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
@@ -867,8 +890,19 @@ jobs:
             echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
             exit 1
           fi
-      - name: Run the real Builder sandbox conformance lane
-        run: DOCKER_HOST="$MAISTRO_LANE_DOCKER_SOCK" uv run pytest packages/maistro-bootstrap/tests -v --tb=short
+      - name: Builder image contract on the rootless lane
+        run: |
+          # The image contract its consumers rely on (the CLI session
+          # lifecycle, supervised RSI container mode): the image runs on the
+          # lane daemon, as the non-root uid 65532 the Dockerfile
+          # provisions, with no network, under the budget proven above.
+          uid="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
+            --user 65532 maistro-builders:latest id -u)"
+          echo "image runs as uid: $uid"
+          if [ "$uid" != "65532" ]; then
+            echo "::error::maistro-builders:latest lost its non-root uid 65532 provisioning"
+            exit 1
+          fi
 
   cross-product-parity:
     runs-on: ubuntu-latest

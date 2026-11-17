@@ -1,8 +1,10 @@
 """Live provisioning regression for the rootless Builder conformance lane.
 
 Opt in on the designated Linux lane with passwordless sudo. This tests only
-host provisioning; test_container_sandbox.py still exercises the unmodified
-production ContainerBuilderSandbox against the resulting real daemon.
+host provisioning (the private-mount-namespace dockerd wrapper the lane
+uses); since the M2-B1 canonical-sandbox merge (#2241) the adapter itself no
+longer talks to Docker, so the lane also carries the maistro-builders image
+contract run in ci.yml's `sandbox-conformance` job.
 """
 
 from __future__ import annotations
