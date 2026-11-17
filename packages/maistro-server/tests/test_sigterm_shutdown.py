@@ -199,14 +199,34 @@ def _docker_ready() -> bool:
 
 
 def _maistro_sandbox_containers() -> list[str]:
-    """Names of MAIstro-owned sandbox containers (created or exited)."""
+    """Names of MAIstro-owned sandbox containers (created or exited).
+
+    Two name prefixes are MAIstro-owned: the retired direct Docker adapter's
+    `maistro-sandbox-` (historical containers may still exist on a host) and
+    the canonical Kata backend's `kata-` (#76: the selector's vm tier names
+    its containers `kata-<hex>`).
+    """
     completed = subprocess.run(
-        ["docker", "ps", "-a", "--format", "{{.Names}}", "--filter", "name=maistro-sandbox-"],
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            "name=maistro-sandbox-",
+            "--filter",
+            "name=kata-",
+        ],
         capture_output=True,
         text=True,
         timeout=60,
     )
-    return [name for name in completed.stdout.splitlines() if name.strip()]
+    return [
+        name
+        for name in completed.stdout.splitlines()
+        if name.startswith(("maistro-sandbox-", "kata-"))
+    ]
 
 
 def _container_exists(container_id: str) -> bool:
@@ -361,7 +381,37 @@ class TestSigtermDrainsInflightTask:
         assert "maistro_engine_stopped" in output
 
 
-@pytest.mark.skipif(not _docker_ready(), reason=f"docker or {_SANDBOX_IMAGE} image unavailable")
+def _canonical_sandbox_placeable() -> bool:
+    """Can the canonical selector place a TRUSTED_TOOL workload here?
+
+    Since the #76 cutover the sandbox registry owns `CanonicalSandboxContainer`
+    instances created through the canonical selector — the retired direct
+    Docker adapter (`maistro.tools.sandbox.docker`) was removed with its
+    module, and no second sandbox API may be re-created for seeding (it is
+    exactly what `packages/maistro-core/tests/sandbox/test_single_authority.py`
+    forbids). On a host whose selector cannot evidence a backend at the
+    policy's tier, seeding fails closed — so this test skips rather than
+    reporting a false result against a host that correctly refused. Same host
+    measurement as the `requires_sandbox_backend` gate in
+    `packages/maistro-evolve/tests/benchmarks/test_sandbox_exec.py`.
+    """
+    try:
+        from maistro.sandbox import build_selector
+        from maistro.sandbox.policy import TRUSTED_TOOL
+
+        build_selector().select(TRUSTED_TOOL)
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not (_docker_ready() and _canonical_sandbox_placeable()),
+    reason=(
+        f"docker or {_SANDBOX_IMAGE} image unavailable, "
+        "or no canonical sandbox backend satisfies TRUSTED_TOOL on this host"
+    ),
+)
 class TestStopRestartLeavesNoOrphanedSandboxes:
     """AC-3 — graceful termination destroys MAIstro-owned sandbox containers."""
 
@@ -388,7 +438,7 @@ class TestStopRestartLeavesNoOrphanedSandboxes:
             from tempfile import gettempdir
 
             from maistro.tools.sandbox import server as sandbox_server
-            from maistro.tools.sandbox.docker import create_sandbox
+            from maistro.tools.sandbox.canonical import create_sandbox
             from maistro.tools.sandbox.workspace import ensure_workspace
 
             ws = ensure_workspace(
@@ -398,7 +448,9 @@ class TestStopRestartLeavesNoOrphanedSandboxes:
             async def _seed():
                 container = await create_sandbox(str(ws))
                 sandbox_server._containers[str(ws)] = container
-                Path({str(seed_marker)!r}).write_text(container.container_id)
+                Path({str(seed_marker)!r}).write_text(
+                    container._instance.metadata["container_id"]
+                )
 
             asyncio.run(_seed())
 
