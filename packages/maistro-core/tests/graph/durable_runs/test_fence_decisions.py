@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from maistro.graph import Graph, Node
 from maistro.graph.definitions import Edge
@@ -49,6 +49,7 @@ from maistro.graph.durable_runs import (
     run_durable_graph,
 )
 from maistro.graph.durable_runs.fence import (
+    InMemoryGoalRevisionRedirector,
     accept_fence,
     park_fence,
     redirect_fence,
@@ -60,7 +61,9 @@ from maistro.graph.durable_runs.stores import (
     fence_decisions_of,
 )
 from maistro.graph.durable_runs.types import DurableRunRecord
+from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, get_node
+from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_DECISION
 from maistro.interop.contract import INTEROP_ONTOLOGY_V1
 from maistro.ontology.registry import InMemoryOntology
 from maistro.ontology.rubric import (
@@ -80,11 +83,17 @@ from maistro.runs import InMemoryRunStore
 from maistro.runs.eval import eval_summary
 from maistro.runs.fence import (
     FenceAcceptRequiresRationale,
+    FenceDecision,
     FenceDecisionKind,
     FenceError,
     FenceNotWaitingError,
     FenceRedirectTarget,
+    FenceRedirectTargetRequired,
+    brief_version_at_least,
+    goal_revision_at_least,
+    normalize_decision_time,
 )
+from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import (
     EvalMethod,
     NodeRun,
@@ -93,6 +102,8 @@ from maistro.runs.model import (
 from maistro.runs.model import (
     RunStatus as RunStatusModel,
 )
+
+from .._canonical_helpers import durable_record
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -103,6 +114,7 @@ RUBRIC_ID = "rubric-794"
 DIMENSION_CLARITY = "clarity_of_offer"
 DIMENSION_EVIDENCE = "claim_evidence"
 NODE_FENCE = "fence.evaluate"
+NODE_FENCE_B = "fence.publish"
 NODE_AFTER = "refine.revise"
 
 
@@ -597,6 +609,87 @@ class TestParkKeepsStateAndResumes:
         assert settled.status is RunStatus.QUEUED
         assert len(fence_decisions_of(settled)) == 2
 
+    @pytest.mark.asyncio
+    async def test_park_keeps_the_run_waiting_while_another_fence_stands(
+        self, world: _World, store: InMemoryDurableRunStore
+    ) -> None:
+        """A frontier can hold several fences at once: parking one keeps the
+        Run waiting on the other, with the other fence's deadline still armed
+        and the redirect binding moving only where it was redirected."""
+        deadline = datetime.now(UTC) + timedelta(hours=1)
+        pause = {
+            "kind": "hitl",
+            "resume_at": deadline.isoformat(),
+            "metadata": {"paused_reason": PAUSE_AWAITING_HUMAN_DECISION},
+        }
+        dag = {
+            "id": "loop-794-two-fences",
+            "nodes": [{"id": NODE_FENCE}, {"id": NODE_FENCE_B}],
+            "edges": [],
+            "entry_node": NODE_FENCE,
+        }
+
+        def _fence_node_run(node_id: str, ordinal: int) -> NodeRun:
+            node_run = NodeRun(run_id="run-794-two-fences", node_id=node_id, ordinal=ordinal)
+            node_run = transition_node_run(node_run, RunStatusModel.QUEUED)
+            node_run = transition_node_run(node_run, RunStatusModel.RUNNING)
+            return transition_node_run(node_run, RunStatusModel.PAUSED)
+
+        record = durable_record(
+            dag,
+            run_id="run-794-two-fences",
+            status=RunStatus.PAUSED,
+            active_node_id=NODE_FENCE,
+            node_runs=(_fence_node_run(NODE_FENCE, 1), _fence_node_run(NODE_FENCE_B, 2)),
+            metadata={
+                "initial_inputs": {},
+                "hitl_answers": {},
+                "pauses": {NODE_FENCE: dict(pause), NODE_FENCE_B: dict(pause)},
+                "pause": dict(pause),
+            },
+            resume_at=deadline,
+            workspace_id=WORKSPACE_ID,
+        )
+        record = record.model_copy(
+            update={"run": record.run.model_copy(update={"provenance": world.binding()})}
+        )
+        state_values = record.graph_state.model_dump(mode="json")
+        state_values["active_node_ids"] = [NODE_FENCE, NODE_FENCE_B]
+        record = record.model_copy(
+            update={"graph_state": GraphExecutionState.model_validate(state_values)}
+        )
+        await store.create(record)
+
+        parked = await park_fence(
+            store,
+            "run-794-two-fences",
+            NODE_FENCE,
+            authorization=_authorization(),
+            note="hold the accept gate",
+        )
+        assert parked.status is RunStatus.PAUSED
+        other = next(node_run for node_run in parked.node_runs if node_run.node_id == NODE_FENCE_B)
+        assert other.status is RunStatusModel.PAUSED
+        assert hitl_deadline(parked, NODE_FENCE_B) == deadline
+
+        settled = await store.redirect_hitl(
+            "run-794-two-fences",
+            NODE_FENCE_B,
+            target=FenceRedirectTarget.BRIEF.value,
+            new_brief_version=2,
+            authorization=_authorization(),
+        )
+        # The first fence still stands, so the Run keeps waiting — and the
+        # other fence's deadline stays the armed waker.
+        assert settled.status is RunStatus.PAUSED
+        assert settled.resume_at is not None
+        assert fence_binding(settled)["brief_version"] == 2
+        decisions = fence_decisions_of(settled)
+        assert [d.decision for d in decisions] == [
+            FenceDecisionKind.PARK,
+            FenceDecisionKind.REDIRECT,
+        ]
+
 
 # --- AC-3: redirect-goal mints Goal + Rubric + brief revisions -----------------
 
@@ -901,6 +994,279 @@ class TestAcceptGate:
         assert decision.rationale == ""
 
 
+# --- every fence refusal is the durable rule, observable at its own seam ---
+
+
+def _decision_fields(**overrides: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "run_id": "run-794",
+        "node_id": NODE_FENCE,
+        "node_run_id": "nr-794",
+        "decision": FenceDecisionKind.PARK,
+        "goal_id": GOAL_ID,
+        "goal_revision": GOAL_REVISION,
+        "rubric_id": RUBRIC_ID,
+        "rubric_revision": 1,
+        "decided_by": "fence-operator",
+        "decided_at": datetime.now(UTC),
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _refused(fields: dict[str, Any]) -> FenceError:
+    """Build the decision and return the model's own fence error.
+
+    pydantic wraps model_validator refusals in ValidationError; the original
+    FenceError rides ``errors()[0]["ctx"]["error"]`` — the same structure the
+    durable store re-throws at its boundary.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        FenceDecision(**fields)
+    original = (excinfo.value.errors()[0].get("ctx") or {}).get("error")
+    assert isinstance(original, FenceError)
+    return original
+
+
+class TestFenceRefusalsAreObservable:
+    """Each invalid fence decision is refused by the decision model itself,
+    and each composition refusal names what was missing — so no caller (UI
+    included) can smuggle a decision the durable evidence does not show."""
+
+    def test_redirect_without_a_target_is_not_a_redirect(self) -> None:
+        refused = _refused(_decision_fields(decision=FenceDecisionKind.REDIRECT))
+        assert isinstance(refused, FenceRedirectTargetRequired)
+
+    def test_redirect_goal_must_name_every_revision_it_implies(self) -> None:
+        assert "must name" in str(
+            _refused(
+                _decision_fields(
+                    decision=FenceDecisionKind.REDIRECT,
+                    redirect_target=FenceRedirectTarget.GOAL,
+                    new_rubric_revision=2,
+                )
+            )
+        )
+
+    def test_redirect_brief_must_not_name_revisions_it_does_not_imply(self) -> None:
+        assert "must not name" in str(
+            _refused(
+                _decision_fields(
+                    decision=FenceDecisionKind.REDIRECT,
+                    redirect_target=FenceRedirectTarget.BRIEF,
+                    new_brief_version=2,
+                    new_goal_revision=GOAL_REVISION + 1,
+                )
+            )
+        )
+
+    def test_redirect_carries_no_gate_citation(self) -> None:
+        assert "no gate citation" in str(
+            _refused(
+                _decision_fields(
+                    decision=FenceDecisionKind.REDIRECT,
+                    redirect_target=FenceRedirectTarget.BRIEF,
+                    new_brief_version=2,
+                    gate_passed=True,
+                )
+            )
+        )
+
+    def test_redirect_carries_no_override_rationale(self) -> None:
+        assert "no override rationale" in str(
+            _refused(
+                _decision_fields(
+                    decision=FenceDecisionKind.REDIRECT,
+                    redirect_target=FenceRedirectTarget.BRIEF,
+                    new_brief_version=2,
+                    rationale="it looked fine",
+                )
+            )
+        )
+
+    def test_accept_must_cite_the_gate_result(self) -> None:
+        assert "must cite the Rubric gate result" in str(
+            _refused(_decision_fields(decision=FenceDecisionKind.ACCEPT))
+        )
+
+    def test_park_has_no_redirect_target_and_mints_no_revisions(self) -> None:
+        assert "has no redirect target" in str(
+            _refused(
+                _decision_fields(
+                    redirect_target=FenceRedirectTarget.BRIEF,
+                    new_brief_version=2,
+                )
+            )
+        )
+        assert "mints no revisions" in str(
+            _refused(_decision_fields(new_goal_revision=GOAL_REVISION + 1))
+        )
+
+    def test_revision_clocks_move_forward_and_decisions_are_aware(self) -> None:
+        with pytest.raises(ValueError, match="advance from 1"):
+            goal_revision_at_least(0)
+        with pytest.raises(ValueError, match="advance from 1"):
+            goal_revision_at_least(GOAL_REVISION, step=0)
+        with pytest.raises(ValueError, match="advance from 1"):
+            brief_version_at_least(0)
+        with pytest.raises(ValueError, match="advance from 1"):
+            brief_version_at_least(1, step=0)
+        with pytest.raises(ValueError, match="timezone"):
+            normalize_decision_time(datetime(2026, 1, 1))
+        assert normalize_decision_time(None).tzinfo is not None
+
+    def test_goal_lineage_stand_in_refuses_foreign_and_unborn_revisions(self) -> None:
+        redirector = InMemoryGoalRevisionRedirector()
+        with pytest.raises(ValueError, match="start at 1"):
+            redirector.register_goal(
+                GOAL_ID,
+                revision=0,
+                workspace_id=WORKSPACE_ID,
+                project_id="p-794",
+            )
+        with pytest.raises(FenceError, match="not live"):
+            redirector.mint_revision(
+                GOAL_ID,
+                prior_revision=GOAL_REVISION,
+                workspace_id=WORKSPACE_ID,
+                project_id="p-794",
+            )
+        redirector.register_goal(
+            GOAL_ID,
+            revision=GOAL_REVISION,
+            workspace_id=WORKSPACE_ID,
+            project_id="p-794",
+        )
+        assert (
+            redirector.mint_revision(
+                GOAL_ID,
+                prior_revision=GOAL_REVISION,
+                workspace_id=WORKSPACE_ID,
+                project_id="p-794",
+            )
+            == GOAL_REVISION + 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_composition_refusals_name_what_was_missing(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        paused = await _run_to_fence(store, run_store, world)
+        await _seed_eval_evidence(run_store, paused)
+
+        with pytest.raises(KeyError, match="no such run"):
+            await redirect_fence(
+                store,
+                "run-794-missing",
+                NODE_FENCE,
+                target=FenceRedirectTarget.BRIEF,
+                authorization=_authorization(),
+            )
+        with pytest.raises(KeyError, match="no such run"):
+            await accept_fence(
+                store,
+                "run-794-missing",
+                NODE_FENCE,
+                authorization=_authorization(),
+                rubrics=world.rubrics,
+                run_store=run_store,
+            )
+        with pytest.raises(FenceError, match="re-binds the Rubric"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.GOAL,
+                authorization=_authorization(),
+                goals=world.goal_redirector,
+            )
+        with pytest.raises(FenceError, match="requires a RubricReviser"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.RUBRIC,
+                authorization=_authorization(),
+            )
+        empty_rubrics = RubricStore(InMemoryOntology(), world.goals)
+        with pytest.raises(FenceError, match=r"no rubric .* to re-bind"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.GOAL,
+                authorization=_authorization(),
+                goals=world.goal_redirector,
+                rubrics=empty_rubrics,
+            )
+        with pytest.raises(FenceError, match=r"no rubric .* to revise"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.RUBRIC,
+                authorization=_authorization(),
+                rubrics=empty_rubrics,
+            )
+        with pytest.raises(FenceError, match=r"no rubric .* to cite on accept"):
+            await accept_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                authorization=_authorization(),
+                rubrics=empty_rubrics,
+                run_store=run_store,
+            )
+        # Every refusal above left the waiting fence exactly as it was.
+        untouched = await store.get(paused.run_id)
+        assert untouched is not None
+        assert untouched.status is RunStatus.PAUSED
+        assert fence_decisions_of(untouched) == ()
+
+    @pytest.mark.asyncio
+    async def test_malformed_loop_binding_is_refused_fail_closed(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """A redirect-written binding that lost its required keys is a durable
+        corruption signal, not a reason to fall back to launch provenance."""
+        from .._canonical_helpers import durable_record
+
+        record = durable_record(
+            {"id": "loop-794-binding", "entry_node": NODE_FENCE},
+            run_id="run-794-binding",
+            metadata={
+                "initial_inputs": {},
+                "hitl_answers": {},
+                "loop_binding": {"goal_id": GOAL_ID},
+            },
+        )
+        with pytest.raises(FenceNotWaitingError, match="malformed loop binding"):
+            fence_binding(record)
+
+    @pytest.mark.asyncio
+    async def test_generic_answer_leaves_the_fence_pending(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """The node fails closed: a resume payload that is not a recorded
+        fence decision (a plain answer, no `decision` key) re-arms the same
+        waiting NodeRun instead of being read as a verdict."""
+        paused = await _run_to_fence(store, run_store, world)
+        answered = await store.submit_hitl_answer(
+            paused.run_id,
+            NODE_FENCE,
+            {"note": "just checking in"},
+            authorization=_authorization(),
+        )
+        assert answered.status is RunStatus.QUEUED
+
+        resumed = await resume_durable_graph(
+            paused.run_id, store=store, node_resolver=_fence_resolver
+        )
+        assert resumed.status is RunStatus.PAUSED
+        _waiting_fence_node_run(resumed)
+        assert fence_decisions_of(resumed) == ()
+
+
 # --- AC-7: cancel stays cancel, park stays waiting -----------------------------
 
 
@@ -1122,3 +1488,39 @@ class TestCanonicalSpineParity:
         assert resumed.status is RunStatus.COMPLETED
         spine_done = await run_store.get_run(paused.run_id)
         assert spine_done is not None and spine_done.status is RunStatusModel.COMPLETED
+
+        # The redirect verb mirrors the same way: park holds, a brief redirect
+        # re-queues with the new version on the spine Run's provenance, and
+        # the resumed fence node consumed the recorded decision.
+        fence2 = await _run_to_fence(canonical, run_store, world)
+        parked2 = await canonical.park_hitl(
+            fence2.run_id, NODE_FENCE, authorization=_authorization()
+        )
+        assert parked2.status is RunStatus.PAUSED
+        redirected = await canonical.redirect_hitl(
+            fence2.run_id,
+            NODE_FENCE,
+            target=FenceRedirectTarget.BRIEF.value,
+            new_brief_version=2,
+            authorization=_authorization(),
+        )
+        assert redirected.status is RunStatus.QUEUED
+        # The durable binding moved (the loop consumes the new version); the
+        # spine Run's launch provenance stays as admitted (#1572) — the
+        # canonical record is re-projected from the spine, so the redirect
+        # authority lives in the graph state, not the spine row.
+        assert fence_binding(redirected)["brief_version"] == 2
+        assert redirected.run.provenance["brief_version"] == 1
+        resumed2 = await resume_durable_graph(
+            fence2.run_id, store=canonical, node_resolver=_fence_resolver, run_store=run_store
+        )
+        assert resumed2.status is RunStatus.COMPLETED
+        decisions = fence_decisions_of(resumed2)
+        assert [d.decision for d in decisions] == [
+            FenceDecisionKind.PARK,
+            FenceDecisionKind.REDIRECT,
+        ]
+        assert decisions[-1].redirect_target is FenceRedirectTarget.BRIEF
+        assert decisions[-1].new_brief_version == 2
+        spine_done2 = await run_store.get_run(fence2.run_id)
+        assert spine_done2 is not None and spine_done2.status is RunStatusModel.COMPLETED

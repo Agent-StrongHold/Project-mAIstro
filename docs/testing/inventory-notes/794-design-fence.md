@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +24
+  packages/maistro-core/tests: +37
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 794-design-fence
@@ -12,12 +12,15 @@ canonical waiting NodeRun (#48, #737), per ADR-092926-7a01 §8 — the
 was weakened.
 
 What the tests pin, mapped to the issue's acceptance list (delta arithmetic:
-19 tests in the new fence module + 1 idempotency test in
-`tests/projects/test_rubric_store.py` + 3 `test_node_composition.py` cases
-that parametrize over every registered node kind and therefore grew by the
-`human.fence_decision` registration + 1 `test_human_pause_reasons.py` case
-parametrized over `EXPECTED_HUMAN`, which now names
-`awaiting_human_decision`):
+32 tests in the new fence module — 19 fence-decision scenarios plus 13
+fail-closed refusal/edge tests (decision-model refusals, composition
+refusals, the Goal-lineage stand-in's own rules, the multi-fence frontier,
+the malformed-binding refusal, and the generic-answer re-arm) — + 1
+idempotency test in `tests/projects/test_rubric_store.py` + 3
+`test_node_composition.py` cases that parametrize over every registered node
+kind and therefore grew by the `human.fence_decision` registration + 1
+`test_human_pause_reasons.py` case parametrized over `EXPECTED_HUMAN`, which
+now names `awaiting_human_decision`):
 
 - **Durable fence wait (#737 invariant).** A loop Graph with the real
   `human.fence_decision` gate at a pack-declared `evaluate.accept` fence
@@ -61,7 +64,23 @@ parametrized over `EXPECTED_HUMAN`, which now names
   system pause, and on a HITL-paused Run that lacks the loop binding in its
   provenance; every refusal leaves the durable record untouched. The canonical
   backend mirrors fence settlements onto the spine Run (PAUSED → QUEUED →
-  COMPLETED) without a second lifecycle.
+  COMPLETED) without a second lifecycle, and a resume payload that is not a
+  recorded fence decision (a plain answer) re-arms the same waiting NodeRun
+  instead of being read as a verdict.
+
+Repair-round additions (this note's delta grew from 24 to 37): the redirect
+binding now lives in the durable graph state (`loop_binding`, written by
+`redirect_record`, read by `fence_binding`) because the canonical store
+re-projects `record.run` from the spine — whose launch provenance stays as
+admitted (#1572) — so a provenance-only rewrite silently reverted on the
+canonical backend; the spine-parity test now drives park → brief-redirect
+→ resume through `CanonicalDurableRunStore` and pins the durable binding
+against the untouched spine provenance. The composition layer gained
+`park_fence` (the hold verb's entry, making the three verbs symmetric and
+the module reachable through the package facade — it had no src import edge
+and read as new unreachable debt). The `human.fence_decision` node extracts
+its pause-answer lookup so the class sits under the complexity ceiling, and
+malformed metadata now fails closed pending instead of crashing.
 
 Salvage note: while this suite was being written, an uncommitted foreign edit
 to `maistro/projects/rubric_store.py` (+ its test) appeared in the worktree,

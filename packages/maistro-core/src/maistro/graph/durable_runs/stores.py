@@ -543,19 +543,37 @@ def fence_decisions_of(record: DurableRunRecord) -> tuple[FenceDecision, ...]:
     return tuple(decisions)
 
 
+_LOOP_BINDING_KEYS = ("goal_id", "goal_revision", "rubric_id", "rubric_revision", "brief_version")
+_LOOP_BINDING_REQUIRED_KEYS = ("goal_id", "goal_revision", "rubric_id", "rubric_revision")
+
+
+def _binding_missing_keys(binding: Mapping[str, Any], keys: tuple[str, ...]) -> list[str]:
+    return [key for key in keys if key not in binding]
+
+
 def fence_binding(record: DurableRunRecord) -> dict[str, Any]:
     """The Goal/Rubric/brief revisions this Run currently consumes.
 
-    They ride the Run's provenance (the same keys pack Graphs launch with).
-    A Run without the binding was not launched as a loop Run and cannot take
-    a fence decision that cites or mints revisions.
+    A redirect moves the binding, so the current revisions live in the
+    durable graph state (``loop_binding``, written by :func:`redirect_record`)
+    — the graph execution state survives canonical re-projection, while the
+    spine Run's launch provenance stays exactly as admitted (#1572: the Run
+    keeps the revisions it launched against). A Run with neither a redirect
+    binding nor launch provenance was not launched as a loop Run and cannot
+    take a fence decision that cites or mints revisions.
     """
+    metadata = record.graph_state.metadata
+    loop_binding = metadata.get("loop_binding") if isinstance(metadata, Mapping) else None
+    if isinstance(loop_binding, Mapping):
+        missing = _binding_missing_keys(loop_binding, _LOOP_BINDING_REQUIRED_KEYS)
+        if missing:
+            raise FenceNotWaitingError(
+                f"run {record.run_id!r} has a malformed loop binding (missing {missing}); "
+                "a fence decision requires the Goal/Rubric revisions the Run consumes"
+            )
+        return {key: loop_binding[key] for key in _LOOP_BINDING_KEYS if key in loop_binding}
     provenance = record.run.provenance
-    missing = [
-        key
-        for key in ("goal_id", "goal_revision", "rubric_id", "rubric_revision")
-        if key not in provenance
-    ]
+    missing = _binding_missing_keys(provenance, _LOOP_BINDING_REQUIRED_KEYS)
     if missing:
         raise FenceNotWaitingError(
             f"run {record.run_id!r} has no loop binding in provenance (missing {missing}); "
@@ -719,6 +737,21 @@ def redirect_record(
 
     metadata = dict(record.graph_state.metadata)
     _append_fence_decision(metadata, decision)
+    # The loop's current binding moves with the redirect, in the durable
+    # graph state — the surface that survives canonical re-projection (the
+    # spine Run keeps the revisions it launched against, #1572).
+    metadata["loop_binding"] = {
+        **{key: binding[key] for key in _LOOP_BINDING_KEYS if key in binding},
+        **{
+            key: value
+            for key, value in (
+                ("goal_revision", new_goal_revision),
+                ("rubric_revision", new_rubric_revision),
+                ("brief_version", new_brief_version),
+            )
+            if value is not None
+        },
+    }
     node_runs, run, graph_state = _consume_fence_pause(
         record,
         node_id,
