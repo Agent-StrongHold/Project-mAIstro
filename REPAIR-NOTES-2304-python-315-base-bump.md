@@ -780,3 +780,91 @@ the coverage producers (MinIO/Postgres service legs), Gate C clean install,
 the formal/ hypothesis suite, and the postgres/strike-ladder/wheel-imports/
 durable-events specialized legs. None of these consumes a file this round's
 commit touches.
+
+## Round 11 — develop-sync merge of origin/develop (a660bc2a9): resolve the
+## graft×tz-Dockerfile and devskim-glob conflicts in place
+
+origin/develop moved two commits past this branch's last sync
+(f927334a2): 202bcf3383 (M1-B2b #2355, reclaim-attempt RECOVERED cause —
+touches `tests/test_devskim_scan_scope.py`) and a660bc2a9 (M1 closeout #290,
+scheduler tz database in the shipped image — touches
+`packages/hive-conductor/Dockerfile`, `packages/hive-conductor/tests/Dockerfile`,
+`scripts/check-image-pins.py`, `tests/test_check_image_pins.py`,
+`docker-compose.test.yml`, `uv.lock`). Both overlap files this branch owns, so
+the sync was merged in place (the branch's established pattern) with two
+content conflicts:
+
+1. `packages/hive-conductor/Dockerfile` (final stage): develop's #290 adds
+   `PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo` to
+   the ENV block; this branch's base split grafts pybuild's CPython 3.13
+   (binary + libpython + stdlib) into the 3.15.2 runtime-apt base.
+   **Resolution keeps both**: the PYTHONTZPATH env points at the venv's
+   tzdata wheel — the venv is 3.13 in both designs (pybuild 3.13.18 keeps
+   being the contract interpreter), so develop's tz contract and this
+   branch's graft are complementary, not competing. The pybuild stage's
+   `tzdata==2026.3` pin and the build-time tz smoke auto-merged unchanged;
+   the tz smoke now runs on the grafted interpreter (PATH resolves
+   /app/venv/bin/python3.13 → grafted binary), which the compose build below
+   exercises for real.
+2. `tests/test_devskim_scan_scope.py`: the branch's ef46c0ad8d (parse-once
+   via `lru_cache(maxsize=1)` + `list`) and develop's #290-era rewrite
+   (parse-once via `@cache` + immutable `tuple`) are the same optimization;
+   **resolution takes develop's canonical form** (stronger: tuples enforce
+   the no-mutation rule the branch's docstring only asked for). The branch's
+   structural parse-once test merged unchanged and works against `@cache`
+   (`cache_clear` exists on both decorators).
+
+No new tests were added by this round, so no new inventory note is required:
+the merged tree's suite inventory (including develop's own 290-*/p2a-* notes
+for develop's tests) reconciles green, see below.
+
+**Local validation at the resolved merge tree (this machine):**
+- `uv sync --locked --extra dev` and `--all-extras` (+ maistro-evolve
+  editable, CI-exact): green — the auto-merged `uv.lock` resolves.
+- ruff check / ruff format --check: green.
+- Focused merged-seam tests (resolved devskim file, develop's expanded
+  `test_check_image_pins` + `test_prepull_base_images`, branch's
+  dockercli/image-split/playwright modules): **105 passed**.
+- `scripts/check-suite-inventory.py`: **21 suites match** (develop's new
+  tests arrive with develop's own notes; branch notes compose).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact args): 1236 = 1236 — green.
+- `scripts/check-image-pins.py`: 10 pinned images, all registered — green.
+- `scripts/check-compose-secrets.py`: 9 tracked compose files clean.
+- develop's core/backend seam tests: reclaim/lease + spine conformance
+  **316 passed**, scheduler-tz/degraded/canonical-admission **41 passed**.
+- Root suite, CI's exact scope (`pytest tests/ --ignore=tests/tools/registry`,
+  REQUIRE_AUTH=false MAISTRO_DRY_RUN=1): **5835 passed, 140 skipped**, 7m10s.
+- Backend + design + ext-harness + ext-sdk suites: **5266 passed, 30 skipped**.
+- `mypy --strict packages/maistro-core/src` (CI-exact env): **842 files,
+  no issues** — develop's core changes typecheck on the merged tree.
+- integration-scope classification (CI-exact base a660bc2a9): changed set is
+  exactly this branch's 20 PR files; required legs
+  {docker-build, durable-events, hive-conductor-e2e, hive-conductor-e2e-ui,
+  object storage, postgres ×2, strike-ladder, wheel-imports} — no drift.
+- **hive-conductor-e2e, CI-exact, on the merged image** (compose up --build
+  from the merged Dockerfile + merged docker-compose.test.yml): phase 1
+  **14 passed / 14 skipped** — including all of develop's #290 container
+  timezone proofs (UTC/Berlin persistence, wall-time & DST offsets,
+  invalid-zone 422, tz-database health) running against the base-split
+  graft image; restart phase: hive restarted → healthy →
+  `test_restart_recovery_preserves_schedules_and_recomputes_next_run`
+  **1 passed**. This is the direct proof that the graft×PYTHONTZPATH
+  conflict resolution builds and behaves: the tzdata wheel is present in
+  the grafted-3.13 venv, the tz smoke passed at build time, and the
+  scheduler reads zones through the deliberate wheel source in the 3.15.2
+  OS-layer image.
+- Trivy 0.73.0 (gate version), HIGH/CRITICAL, `--exit-code 1`,
+  `--ignore-unfixed`, `.trivyignore.yaml`, on the freshly built merged
+  conductor image (`hive-conductor-hive:latest`): **exit 0** — the new
+  `tzdata==2026.3` wheel introduces no finding.
+- Grype 0.116.0 (gate version), `--fail-on high --only-fixed` on the same
+  image: **exit 0** — only Medium/Low advisories whose fixes land in future
+  CPython releases (3.15.0a6/3.16.0), the posture rounds 7–9 recorded.
+
+**Residual (CI-proven at a8b50f0839, not locally re-run):** hive-conductor-
+e2e-ui (develop's pm-workflow spec changes against this branch's image —
+the compose+image seam it depends on is proven above), Gate C, the coverage
+service legs, and the specialized postgres/strike-ladder/wheel-imports/
+durable-events legs; the engine/research/rsi image scans (no file this round
+touches enters those images).
