@@ -1,4 +1,67 @@
-# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079; lock-scan round below; develop-syncs at e5ed12174 and 641d5422e8)
+# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079; lock-scan round below; develop-syncs at e5ed12174 and 641d5422e8; gates-ran repair below)
+
+## Gates-ran repair round 2026-11-17 (heads 641d5422e8/fc525a8d86 verified + repaired; base f927334a2e)
+
+CI DID run on fc525a8d86 (dispatch-context check-runs, captured 2026-11-17T06:01Z): **all 78 check-runs
+success** except two legitimately skipped service jobs (strike-ladder, object storage (MinIO);
+durable-events skipped) — including every previously-RED context: Coverage gate (publish-set floor +
+diff coverage), Quality gate (Pillars 1–4,7,8), Quality / Image pins, Container scan + SBOM + cosign,
+test, exact-debt-ledger, block. The only blocker: the `gates-ran` commit status stuck `pending` (created
+05:42:28Z, never updated) — the merge-queue admission's "commit status not successful".
+
+Root cause (CI-exact local evaluation with the live check-run payload and the measured PR changed-file
+envelope): `check-gates-ran.py --check-runs <live> --require-complete --base-branch develop
+--event-name pull_request --changed-files <envelope>` → PENDING, "not present yet (1): Mutation gate
+(changed critical lines)". develop commit af2e36e242 (#2270, 2026-10-25 — inside base f927334a2e) made
+mutation.yml a PR-triggered workflow with a `paths:` filter (packages/**/*.py + mutation governance
+files) while check-required-checks.collect() still derives its check name into the required-evidence
+set (72 required on PRs, verified locally). GitHub's paths filter does not create check-runs for
+out-of-scope PRs, and evaluate() can only excuse checks that are in PATH_SCOPED_CHECKS AND present as
+`skipped` — so every PR touching no `.py` file can never produce the run and gates-ran pends forever.
+PR #1775's gates-ran success (no mutation run in its 31 check-runs) predates #2270, which is why the
+class worked before.
+
+Repair (additive, never weakens — the gate gains scope): mutation.yml `on.pull_request.paths` now lists
+`quality/image-pins.json`, the recurring non-Python integrity surface this exact PR class changes (#93,
+#1152, #1373, #2120). For such PRs the job now runs and reports real zero-overlap evidence ("No
+mutation-critical file changed; nothing to mutate.") — all mutation-heavy steps are
+`overlap == 'critical'`-gated, and `scripts/mutation_critical.py --validate` passes locally (rc=0).
+For this PR the workflow also fires because the edit itself matches the existing
+`.github/workflows/mutation.yml` filter path.
+
+Repair validation at the edited tree: yaml parses; `check-required-checks.py` rc=0 ("77 PR checks match
+docs/ci/REQUIRED-CHECKS.md; develop queue is SQUASH..."); actionlint 1.7.7 clean on mutation.yml;
+tests/test_mutation_targets.py + tests/test_gates_ran_publisher_contract.py → 50 passed;
+tests/test_check_gates_ran.py + test_check_required_checks.py + test_check_workflow_inventory.py +
+test_check_workflow_write_safety.py + test_gates_ran_merge_group_scope.py → 211 passed. End-to-end
+verdict proof: appending a synthetic successful "Mutation gate (changed critical lines)" run to the live
+fc525a8d86 check-run set and re-running the evaluator CI-exact → `ok: all 72 required check(s) ran on
+this head` (rc=0) — i.e. the new head's mutation success flips gates-ran to success and unblocks the
+merge-queue admission.
+
+Local re-validation carried out this round at fc525a8d86 (before the repair commit): check-image-pins
+rc=0 (9 pins / 10 Dockerfiles), check-image-inventory rc=0, check-suite-inventory rc=0 (21 suites),
+ruff check + format --check clean (3569 files), vulture ledger 1236=1236 (no Python changed; no
+amendment), check-image-pins --base-digests Dockerfile packages/hive-conductor/Dockerfile rc=0 (lists
+node:26-alpine@sha256:40cd011b…), uv lock --check rc=0, scoped battery tests/{test_check_image_pins,
+test_pinned_digest_references,test_distribution_contract,test_check_image_inventory,
+test_check_image_lock_reconciliation,test_image_lock_contract,test_prepull_base_images,
+test_devskim_scan_scope}.py under coverage → 259 passed in 24.38s (incl. the devskim test that timed
+out at 8b588456), check-diff-coverage.py coverage.xml --base f927334a2e3b → rc=0 "0 changed file(s)
+measured". Docker proofs: `docker build --target frontend -f packages/hive-conductor/Dockerfile` rc=0;
+in-image node v26.12.1 / npm 11.20.0 and dist/index.html present; the pinned digest pulls and runs
+(v26.12.1); registry API confirms the pinned index manifest is live (200, amd64+arm64) — the mutable
+26-alpine tag has since moved (6bd9ab43…) which is harmless: builds consume the immutable digest. The
+develop-recipe × branch `-mod=mod` dockerclibuild combination (never CI-scanned at this shape) built
+rc=0: `docker --version` = v29.9.3 build 5457199 and `go version -m` shows go-jose/v4 4.1.7,
+klauspost/compress 1.20.2, golang.org/x/net 0.62.0 — the fixed module set the container scan requires.
+No stale 22-alpine/0a7108bf references remain outside historical prose.
+
+Residual (develop-side, out of this branch's scope): the merge-group required set (62 checks, verified
+locally) also includes the mutation check, and mutation.yml has no `merge_group` trigger, so a queue
+SHA's gates-ran evaluation would pend the same way; #2241 (post-#2270) nonetheless reached develop, so
+queue-leg behavior needs develop-side evidence before touching trigger semantics. The PR-head fix here
+is what the named admission failure requires.
 
 ## Develop-sync round 2026-11-17 (head 641d5422e8 = merge of origin/develop f927334a2e, M2-B1; PR-side head unchanged c4a49fb89f)
 
