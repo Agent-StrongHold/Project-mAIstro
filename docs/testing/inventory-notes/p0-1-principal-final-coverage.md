@@ -599,3 +599,81 @@ sync (M2-B1 does not touch maistro-design or the `ac` corpus, so the
 banked 44.4608 floor's inputs are unchanged by the merge). Pushing is out
 of scope for a repair attempt.
 
+## Twelfth verification round (2026-11-17, head 0b944b94225c = current HEAD)
+
+Prior block: `recovery budget exhausted: provider error 400 "missing tags"` —
+the c05fcebc job's nine driver checks all returned 0 at this exact head before
+the worker died, and this round's own driver re-ran the identical battery:
+check-0 uv sync rc=0, check-1 ruff check rc=0 ("All checks passed!"),
+check-2 ruff format rc=0 (3569 files already formatted), check-3 targeted
+server/canvas/core pytest 299 passed / 91 skipped, check-4 hive battery
+199 passed, check-5..8 all four suite-inventory gates ok (hive 4199, canvas
+642, core 18564, server 671). Environment failure, not a tree failure.
+Independent re-execution at HEAD, no inherited claims:
+
+- Issue test plan, re-run in full: `scripts/check-principal-identity.py`
+  with CI's exact env (`RATCHET_BASE_REV=origin/develop`) rc=0 — 4 tolerated
+  → 0 current, none new, base f927334a2e, candidate 0b944b94225c;
+  `pytest packages/maistro-core/tests/fitness/test_principal_identity.py`
+  — 1 passed; `pytest packages/maistro-server/tests/api/test_auth.py` —
+  38 passed; `.venv/bin/python -m pytest
+  packages/hive-conductor/backend/tests/test_username_registry.py` —
+  24 passed.
+- Acceptance greps at HEAD: no `class AuthenticatedPrincipal` /
+  `CurrentUser` / `HiveUser` / `_SubsystemIdentity` definition remains
+  under `packages/*/src` or `packages/hive-conductor/backend`;
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`;
+  `hive routes/capabilities.py` resolves the approval actor via
+  `request_principal(request)` (line 302) /
+  `principal_has_permission(principal, "approvals.resolve")` (line 318).
+- `git merge-base origin/develop HEAD` = f927334a2e = `origin/develop`
+  tip: the branch contains develop exactly; no sync conflict exists.
+- Vulture ledger with CI's exact args (`check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`): rc=0,
+  1236 reviewed identities → 1236 findings, 0 unclassified,
+  0 never_allowlist. `check-ratchet-provenance.py` (all ten ratchets OK,
+  55 quality JSON consumers with explicit provenance) and
+  `check-shipped-surface-truth.py` (matrix complete) both rc=0.
+- Mutation gate re-derived with CI's exact commands:
+  `mutation_critical.py --validate` ok (8 critical sources); CI's target
+  resolution (`git diff --name-only origin/develop...HEAD -- packages
+  --diff-filter=ACMR`, 46 paths → `--changed-from`) resolves the sole
+  target `maistro/privilege.py` → `packages/maistro-core/tests`; the
+  trusted merge-base baseline (`git show f927334a2e:quality/mutation-baseline.json`)
+  has `entries: {}`, and `scripts/mutation_pr_gate.py` (entry-None branch,
+  "Report-only until a reviewed candidate entry exists") makes the run
+  report-only — the gate cannot fail this PR.
+- Diff-coverage evidence transfers: `git diff --name-only a7b56e9e65..HEAD`
+  contains only this inventory note, so the eleventh round's local
+  reproduction against the NEW base f927334a2e (17 changed measured files,
+  ≥90% lines / ≥80% branch arcs) still describes HEAD's changed source
+  set. The aggregate publish-set 87% floor still requires CI's
+  multi-producer combine.
+- **Quality / Acceptance state REPRODUCED at this head** — closing the gap
+  every prior round deferred. CI's exact job prereqs assembled (pg18.6
+  native on the CI DSN `postgresql://maistro:maistro@127.0.0.1:5432/maistro_test`,
+  `alembic upgrade head`, age-keygen present, pytest-timeout installed,
+  `uv pip install -e packages/maistro-evolve`), then CI's exact PR command:
+  `check-ac-state.py --run-tests --ratchet --mandate f927334a2e` with
+  `RATCHET_BASE_REV=origin/develop` — **rc=0**. Measured
+  `design_coverage 44.4608%` over 166 taken decisions — exactly the banked
+  note's value, so no unbanked slack and no regression; 10 debt counters
+  exactly on their ceilings folded from 49 notes at the base; the judged
+  floor is the #166 authorization (39.641); criteria mandate 0 added /
+  0 unproven; chain mandate 0 absent links. This also RETIRES the
+  eleventh round's residual claim with evidence: M2-B1 did in fact add one
+  AC-marked test (`packages/maistro-rsi/tests/test_contained_validation.py`
+  +21 lines, a fourth AC-5 mark on the already-marked
+  `SPEC-082926-a6ab/AC-5`, whose three earlier marks live in the same
+  suite), so "the ac corpus is unchanged" was false in its strict form —
+  but the added mark lands on a criterion whose rung was already
+  `reachable`, so no rung flipped, and the post-merge measurement now
+  proves the banked value directly instead of by that claim.
+- CI state on this exact head (dispatch snapshot): check-runs exist for
+  0b944b94225c but every conclusion is still None (in flight at capture
+  time) and `gates-ran` reads pending — CI's own green tick on the pushed
+  head remains the integration reviewer's final word, as in every prior
+  round. Pushing is out of scope for a repair attempt.
+- Worktree left clean; the only tree change in this round is this note
+  (the gate's `quality/ac-state.json` output is gitignored).
+
