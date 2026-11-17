@@ -123,6 +123,8 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get golang.org/x/net@v0.62.0 && \
+    go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
