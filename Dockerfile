@@ -127,36 +127,43 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
 # the exact same immutable release tag ourselves on the patched toolchain --
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
-# tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
+# tag resolves to 5457199; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+#
+# 29.9.3 bump (CR1373 CI repair, 2026-11-16): trivy flagged the vendored
+# dependency set of v29.9.1 — go-jose/v4 4.1.5 (CVE-2026-116587, DoS via
+# crafted RSA JWK parameters, HIGH, fixed in 4.1.6) and golang.org/x/net
+# 0.60.0 (CVE-2026-78661, DoS via crafted HTML input, HIGH, fixed in 0.62.0)
+# inside usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but
+# still pins x/net 0.60.0 (v29.9.2 carries both unfixed), so the tag bump
+# alone cannot close the second advisory: x/net is patched onto the pinned
+# tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
+# re-syncs the vendored tree to the renamed go.mod before the build.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
-# The v29.9.1 vendor tree also embeds dependency HIGHs the trivy and grype
-# scans of this image read straight out of the binary's buildinfo (#1450 CI
-# repair, 2026-11-16): github.com/go-jose/go-jose/v4 v4.1.5 (CVE-2026-116587,
-# JWK RSA DoS, fixed v4.1.6) and golang.org/x/net v0.60.0 (CVE-2026-78661,
-# HTML DoS, fixed v0.62.0) from trivy; grype's DB later gained
-# GO-2026-6865 for github.com/klauspost/compress v1.20.1 (HIGH, fixed
-# v1.20.2, security.yml run 43812084107 job 133115778563). No upstream
-# docker/cli tag ships all of these fixed — v29.9.3 still pins x/net v0.60.0
-# — and the gate policy upgrades when a fix exists rather than ignores, so
-# patch the same immutable tag's vendored modules onto the advisory fix
-# versions and re-vendor: identical policy to the toolchain patch above.
-# `go get` edits only go.mod/go.sum; `go mod vendor` rewrites vendor/ from
-# them, so the build below stays in vendor mode with content-hash-pinned
-# replacements. Module versions on the Go module proxy are immutable.
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# The grype DB additionally flags the vendored github.com/klauspost/compress
+# v1.20.1 (GO-2026-6865 HIGH, fixed v1.20.2; security.yml run 43812084107 job
+# 133115778563, #1450 CI repair 2026-11-16). No upstream docker/cli tag ships
+# it fixed — the same scans read v29.9.3's vendored tree — and the gate
+# policy upgrades when a fix exists rather than ignores, so the tag bump
+# above (which already carries go-jose 4.1.7 upstream, closing trivy's
+# CVE-2026-116587 without a downgrade patch) is combined with patching that
+# vendored module onto the advisory fix version the same way x/net is
+# patched below. `go get` edits only go.mod/go.sum; `go mod vendor` rewrites
+# vendor/ from them, so the build stays in vendor mode with content-hash-
+# pinned replacements. Module versions on the Go module proxy are immutable.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get github.com/go-jose/go-jose/v4@v4.1.6 golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
+    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
     CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
