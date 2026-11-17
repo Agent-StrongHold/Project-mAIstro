@@ -1,4 +1,4 @@
-"""Sandbox MCP server — exposes Docker sandbox operations as MCP tools.
+"""Sandbox MCP server — exposes canonical isolated execution as MCP tools.
 
 This FastMCP server provides tools for:
 - exec: Run commands in the sandbox
@@ -21,18 +21,18 @@ from pydantic import Field
 from maistro.observability.metrics import sandbox_containers_active
 from maistro.security.dangerous_tools import is_blocked_path, is_dangerous_command
 from maistro.tools.result import fail, ok
-from maistro.tools.sandbox.docker import SandboxContainer, create_sandbox
+from maistro.tools.sandbox.canonical import CanonicalSandboxContainer, create_sandbox
 
 logger = structlog.get_logger()
 
-mcp = FastMCP("sandbox", instructions="Docker sandbox for isolated code execution")
+mcp = FastMCP("sandbox", instructions="Canonical sandbox for isolated code execution")
 
 # Active sandbox containers, keyed by workspace path
-_containers: dict[str, SandboxContainer] = {}
+_containers: dict[str, CanonicalSandboxContainer] = {}
 _container_lock = asyncio.Lock()
 
 
-async def _get_or_create(workspace: str) -> SandboxContainer:
+async def _get_or_create(workspace: str) -> CanonicalSandboxContainer:
     """Get an existing container for this workspace or create one."""
     async with _container_lock:
         existing = _containers.get(workspace)
@@ -77,7 +77,7 @@ def _check_path(path: str) -> dict[str, Any] | None:
     if is_blocked_path(path):
         return _blocked_path_result(path)
     try:
-        SandboxContainer._safe_path("/workspace", path)
+        CanonicalSandboxContainer._safe_path("/workspace", path)
     except ValueError:
         return _blocked_path_result(path)
     return None
@@ -181,7 +181,7 @@ async def sandbox_glob(workspace: str, pattern: str) -> dict[str, Any]:
     if err := _check_path(pattern):
         return err
     container = await _get_or_create(workspace)
-    safe_pattern = shlex.quote(SandboxContainer._safe_path("/workspace", pattern))
+    safe_pattern = shlex.quote(CanonicalSandboxContainer._safe_path("/workspace", pattern))
     _exit_code, output = await container.exec(
         f"find /workspace -path {safe_pattern} -type f 2>/dev/null | head -100"
     )
@@ -201,7 +201,7 @@ async def sandbox_grep(workspace: str, pattern: str, path: str = ".") -> dict[st
         return err
     container = await _get_or_create(workspace)
     safe_pattern = shlex.quote(pattern)
-    safe_path = shlex.quote(SandboxContainer._safe_path("/workspace", path))
+    safe_path = shlex.quote(CanonicalSandboxContainer._safe_path("/workspace", path))
     _exit_code, output = await container.exec(
         f"grep -rn -- {safe_pattern} {safe_path} 2>/dev/null | head -50"
     )

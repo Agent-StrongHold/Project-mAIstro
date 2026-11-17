@@ -16,6 +16,7 @@ every machine without bubblewrap installed — which is most of them.
 from __future__ import annotations
 
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from maistro.sandbox.backends.bubblewrap import (
     BubblewrapUnavailableError,
 )
 from maistro.sandbox.backends.fake import FakeSandboxBackend
+from maistro.sandbox.backends.kata import KataUnavailableError
 from maistro.sandbox.network import EgressGrant, EgressMode
 from maistro.sandbox.policy import IsolationTier, WorkloadPolicy
 
@@ -181,6 +183,124 @@ def test_detection_and_construction_can_disagree_without_crashing(
     assert selector.available_tiers == []
 
 
+def test_vm_detection_and_construction_can_disagree_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same contract as the bubblewrap half: the probe says Tier 1 is present,
+    the constructor finds the runtime gone, and the selector is assembled
+    without the vm tier instead of raising through detection."""
+    import logging
+
+    import maistro.sandbox.backends.kata as kata_module
+
+    def _refuse(*_args: object, **_kwargs: object) -> None:
+        raise KataUnavailableError("runtime vanished between probe and build")
+
+    monkeypatch.setattr(kata_module, "KataSandboxBackend", _refuse)
+
+    with caplog.at_level(logging.WARNING, logger="maistro.sandbox.wiring"):
+        selector = build_selector(capabilities=_caps("vm"))
+
+    assert "vm" not in selector.available_tiers
+    assert any("tier=vm" in record.message for record in caplog.records)
+
+
+# --- the Tier-1 probe's own failure reporting ---------------------------------
+
+
+def test_the_vm_probe_reports_a_docker_probe_failure_as_tier_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A docker that hangs or dies during the runtime probe is Tier 1 absent
+    with a reason — never an abort of detection (#1328 contract)."""
+    import subprocess
+
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(detect_module, "_which", lambda name: f"/usr/bin/{name}")
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=2)
+
+    monkeypatch.setattr(subprocess, "run", _explode)
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "Kata Docker runtime probe failed" in note
+
+
+def test_the_vm_probe_refuses_a_docker_without_kata_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Docker alone is not Tier 1: the daemon must actually list a Kata
+    runtime, or the probe names the gap instead of claiming hardware VMs."""
+    import subprocess
+
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(detect_module, "_which", lambda name: f"/usr/bin/{name}")
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=b'{"runtimes": {"runc": {}}}', stderr=b""
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "do not include Kata" in note
+
+
+def test_the_vm_probe_refuses_a_non_kata_vmm_without_the_supported_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KVM plus a VMM that is not the shipped Kata profile is still not Tier 1.
+    firecracker/cloud-hypervisor/qemu are detected only as operator
+    diagnostics; claiming hardware virtualization without the supported
+    kata-runtime + docker deployment profile would promise a boundary the
+    selector cannot actually launch (#76 support matrix) — so the probe fails
+    closed and names the missing pieces."""
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(
+        detect_module,
+        "_which",
+        lambda name: None if name == detect_module.KATA_RUNTIME_BINARY else f"/usr/bin/{name}",
+    )
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "kata-runtime and docker on PATH" in note
+
+
+def test_the_vm_probe_refuses_a_docker_daemon_that_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kata-runtime and docker on PATH is still not Tier 1 when the docker
+    daemon itself will not answer `docker info`: the probe reads the failed
+    runtime survey as absent-with-reason instead of claiming the tier."""
+    import subprocess
+
+    import maistro.sandbox.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "_kvm_usable", lambda: (True, ""))
+    monkeypatch.setattr(detect_module, "_which", lambda name: f"/usr/bin/{name}")
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout=b"", stderr=b"Cannot connect to the Docker daemon"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    ok, note = detect_module._probe_vm(SandboxConfig())
+
+    assert ok is False
+    assert "docker daemon is unavailable" in note
+
+
 # --- the backend's security content: its flags --------------------------------
 
 
@@ -218,11 +338,8 @@ def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
     """`network=True` used to be the whole story. It is not any more (#77):
     egress comes from an explicit `EgressGrant` carrying a reason, so a config
     that merely says "network" gets none."""
-    backend = _backend(tmp_path)
-
-    argv = backend.build_argv(SandboxConfig(network=True), tmp_path, ["true"])
-
-    assert "--share-net" not in argv
+    with pytest.raises(ValueError, match="network is unsupported"):
+        SandboxConfig(network=True)
 
 
 def test_an_explicit_host_grant_is_what_shares_the_network(tmp_path: Path) -> None:
@@ -476,53 +593,70 @@ def test_the_probe_runs_bwrap_under_the_spawn_budgets(
     import subprocess
 
     from maistro.sandbox import detect
-    from maistro.sandbox.backends import bubblewrap as bwrap_module
     from maistro.sandbox.backends.bubblewrap import resource_limits
 
-    applied: dict[int, tuple[int, int]] = {}
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[object, dict[str, object]]] = []
 
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
-
-    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        calls.append(kwargs)
-        preexec = kwargs.get("preexec_fn")
-        assert callable(preexec)
-        # Resolves through the monkeypatched setrlimit, so nothing real is
-        # applied to the test process -- only recorded.
-        preexec()
+    def _fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((args[0], kwargs))
+        assert "preexec_fn" not in kwargs
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
     monkeypatch.setattr(detect.subprocess, "run", _fake_run)
-    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
-
-    caps = detect.detect_host_capabilities()
-
-    assert caps.supports("bubblewrap")
-    assert len(calls) == 1
-    assert applied == resource_limits(SandboxConfig())
+    assert detect._bubblewrap_isolates("/usr/bin/bwrap", SandboxConfig())[0]
+    argv = calls[0][0]
+    assert isinstance(argv, list)
+    limits = resource_limits(SandboxConfig())
+    assert all(str(soft) in argv for soft, _hard in limits.values())
 
 
-def test_the_shared_preexec_hook_applies_exactly_the_limits_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One hook for `exec` and the probe, so the two cannot drift apart."""
+def test_limits_use_a_single_thread_safe_execing_helper() -> None:
+    """The async backend must not use Python's unsafe ``preexec_fn`` hook."""
     import resource
+    import sys
 
-    from maistro.sandbox.backends.bubblewrap import preexec_for
+    from maistro.sandbox.backends.bubblewrap import limited_argv
 
-    applied: dict[int, tuple[int, int]] = {}
+    argv = limited_argv({resource.RLIMIT_NOFILE: (64, 128)}, ["bwrap", "true"])
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-m", "maistro.sandbox.backends._rlimit_exec"]
+    assert argv[3:6] == [str(resource.RLIMIT_NOFILE), "64", "128"]
+    assert argv[-3:] == ["--", "bwrap", "true"]
 
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
 
-    monkeypatch.setattr(resource, "setrlimit", _record_setrlimit)
+def test_the_execing_helper_hands_default_signal_dispositions_to_the_sandbox() -> None:
+    """The helper ``execvp``s in place, so a signal CPython sets to ignore at
+    startup is inherited by ``bwrap`` and by every workload process inside the
+    sandbox. ``SIGXFSZ`` is the one that bites (#80): ignored, a write past
+    ``RLIMIT_FSIZE`` returns ``EFBIG`` instead of killing the process, so the
+    file-size ceiling's kernel-stop proof never arrives -- the process exits 1
+    on its own terms. The helper restores exactly the signals ``subprocess``
+    restores in a forked child (``restore_signals``)."""
+    import subprocess
 
-    preexec_for({resource.RLIMIT_NOFILE: (64, 128)})()
+    from maistro.sandbox.backends.bubblewrap import limited_argv
 
-    assert applied == {resource.RLIMIT_NOFILE: (64, 128)}
+    if not Path("/bin/sh").exists() or not Path("/proc/self/status").exists():
+        pytest.skip("no /bin/sh or /proc to read signal dispositions from")
+
+    completed = subprocess.run(
+        limited_argv({}, ["/bin/sh", "-c", 'grep -E "^SigIgn" /proc/self/status']),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    # `SigIgn:` is a hex bitmask; bit N-1 is signal N.
+    ignored_mask = int(completed.stdout.split()[1], 16)
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        signum = getattr(signal, name, None)
+        if signum is None:  # pragma: no cover - platform without the signal
+            continue
+        assert ignored_mask & (1 << (signum - 1)) == 0, (
+            f"{name} stayed ignored across the execing helper; the sandbox would "
+            "inherit a disposition the host interpreter set"
+        )
 
 
 def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
@@ -567,34 +701,20 @@ def test_the_probe_applies_the_configured_budgets_not_the_defaults(
     import subprocess
 
     from maistro.sandbox import detect
-    from maistro.sandbox.backends import bubblewrap as bwrap_module
     from maistro.sandbox.backends.bubblewrap import resource_limits
 
     tight = SandboxConfig(memory_mb=16, cpu_cores=0.1, max_processes=1)
-    applied: dict[int, tuple[int, int]] = {}
+    captured: list[list[str]] = []
 
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
-
-    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        preexec = kwargs.get("preexec_fn")
-        assert callable(preexec)
-        # Resolves through the monkeypatched setrlimit, so nothing real is
-        # applied to the test process -- only recorded.
-        preexec()
+    def _fake_run(*args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured.append(args[0])
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
     monkeypatch.setattr(detect.subprocess, "run", _fake_run)
-    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
-
-    caps = detect.detect_host_capabilities(tight)
-
-    assert caps.supports("bubblewrap")
-    assert applied == resource_limits(tight)
-    # The tight config's budgets, not the defaults -- the disagreement the
-    # review flagged is exactly `applied == resource_limits(SandboxConfig())`.
-    assert applied != resource_limits(SandboxConfig())
+    assert detect._bubblewrap_isolates("/usr/bin/bwrap", tight)[0]
+    argv = captured[0]
+    assert all(str(soft) in argv for soft, _hard in resource_limits(tight).values())
+    assert str(next(iter(resource_limits(SandboxConfig()).values()))[0]) not in argv
 
 
 def test_an_unsupported_preexec_hook_reads_as_absent_not_an_abort(
@@ -669,3 +789,86 @@ def test_the_report_says_why_a_tier_is_missing(monkeypatch: pytest.MonkeyPatch) 
 
     assert "RTM_NEWADDR refused" in output
     assert "No sandbox backend is available" in output
+
+
+# --- the execing helper's own contract, unitized in-process --------------------
+#
+# The helper runs as `python -m maistro.sandbox.backends._rlimit_exec` in the
+# sandbox child, so a subprocess-running suite never executes its body in the
+# measured process. These drive `main()` directly (with execvp stubbed at the
+# last moment) so its argument contract is pinned where CI can see it.
+
+
+def _rlimit_main(monkeypatch: pytest.MonkeyPatch, *argv: str) -> int:
+    import sys
+
+    from maistro.sandbox.backends import _rlimit_exec
+
+    monkeypatch.setattr(sys, "argv", ["_rlimit_exec", *argv])
+    return _rlimit_exec.main()
+
+
+def test_the_execing_helper_rejects_a_commandless_invocation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _rlimit_main(monkeypatch) == 2
+    assert "usage:" in capsys.readouterr().err
+
+
+def test_the_execing_helper_requires_the_triple_separator(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import resource
+
+    which = str(resource.RLIMIT_NOFILE)
+    assert _rlimit_main(monkeypatch, which, "64", "128") == 2
+    assert "missing command separator" in capsys.readouterr().err
+
+    assert _rlimit_main(monkeypatch, which, "64", "128", "--") == 2
+    assert "missing command" in capsys.readouterr().err
+
+    assert _rlimit_main(monkeypatch, which, "64", "128", "8", "--", "true") == 2
+    assert "must be triples" in capsys.readouterr().err
+
+
+def test_the_execing_helper_sets_limits_then_execs_the_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The happy path: every triple reaches `setrlimit`, signals are restored
+    to their defaults, and control transfers to the command — modelled by an
+    ``execvp`` stub that records its arguments and never returns."""
+    import resource
+    import signal
+
+    from maistro.sandbox.backends import _rlimit_exec
+
+    execed: list[tuple[str, list[str]]] = []
+
+    class _Execed(Exception):
+        pass
+
+    def _record_execvp(file: str, args: list[str]) -> None:
+        execed.append((file, list(args)))
+        raise _Execed
+
+    monkeypatch.setattr(_rlimit_exec.os, "execvp", _record_execvp)
+    before = resource.getrlimit(resource.RLIMIT_NOFILE)
+    disposition = signal.getsignal(signal.SIGPIPE)
+    try:
+        with pytest.raises(_Execed):
+            _rlimit_main(
+                monkeypatch,
+                str(resource.RLIMIT_NOFILE),
+                str(before[0]),
+                str(before[1]),
+                "--",
+                "/bin/echo",
+                "launched",
+            )
+    finally:
+        # The helper restores default dispositions in-process; undo that for
+        # the rest of the suite the way the interpreter had them.
+        signal.signal(signal.SIGPIPE, disposition if disposition else signal.SIG_DFL)
+
+    assert execed == [("/bin/echo", ["/bin/echo", "launched"])]
+    assert resource.getrlimit(resource.RLIMIT_NOFILE) == before
