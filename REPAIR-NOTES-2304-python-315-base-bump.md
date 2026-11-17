@@ -718,3 +718,65 @@ green through the research build in the round-8 CI run and their bytes are
 unchanged by the Node swap except where noted (root `Dockerfile` untouched
 this round). The e2e-ui rsi-polling-resilience flake documented in round 6
 remains maintainer scope.
+
+## Round 10 — develop-sync merge (8cd840ab) re-points the dockercli repair at CR1373's v29.9.3
+
+The in-place merge of origin/develop (157c3f61, M1-E2 + CR1373 base-pin
+refresh) replaced the `dockerclibuild` stages' three-module override recipe
+(docker/cli v29.9.1 + `go-jose@`/`x/net@`/`klauspost@` `go get` overrides)
+with the CR1373 refresh: docker/cli **v29.9.3** (commit `5457199`), whose
+upstream vendor tree already carries go-jose v4.1.7 (≥ the CVE-2026-116587
+fix) and klauspost/compress v1.20.2 (the GO-2026-6865 fix), leaving only the
+**x/net v0.62.0 override** load-bearing (v29.9.3 upstream still vendors the
+CVE-2026-78661-vulnerable v0.60.0 — verified against the stage comment and
+kept under test). The committed `tests/test_dockercli_vendored_cve_patch.py`
+still asserted the superseded recipe and **failed at the merged head**
+(demonstrated: `git show HEAD:…` run from the merged tree → 2 failed of 4:
+`test_every_docker_cli_stage_overrides_both_vulnerable_modules`,
+`test_override_versions_are_the_trivy_reported_fixed_versions` — exactly the
+two encoding the v29.9.1 mechanism).
+
+**Repair (this round's commit):** the test module was rewritten to assert the
+same CVE posture through the new mechanism — tag+commit pin (binds the
+vendor-tree facts to the exact release; a silent tag move fails), the x/net
+override at the CVE-2026-78661 fix, re-vendor + `-mod=vendor`, and the
+engine/research stage-sync. 5 tests, +1 node ID vs the old 4; inventory note
+`2304-dockercli-vendored-cve-patch.md` updated to `tests/: +5` and
+`scripts/check-suite-inventory.py` green (21 suites match).
+
+**Local validation at head 07887c3bec (this machine):**
+- ruff check / ruff format --check: green.
+- Branch test modules (`test_dockercli_vendored_cve_patch`,
+  `test_hive_conductor_image_split`, `test_research_image_playwright_runtime`,
+  `test_devskim_scan_scope`, `test_distribution_contract`): 42 passed.
+- `scripts/check-image-pins.py`: 10 pinned images, all registered — green.
+- `scripts/check-radon-baseline.py` (base 157c3f61): 126 = 126 — green.
+- `scripts/check-execution-lifecycles.py`: 19/19 classified — green.
+- `mypy --strict packages/maistro-core/src` (bootstrap installed editable to
+  match CI's `--all-extras`): 839 files, no issues — green.
+- Root suite, CI's exact scope (`pytest tests/ --ignore=tests/tools/registry`,
+  REQUIRE_AUTH=false MAISTRO_DRY_RUN=1): **5832 passed, 139 skipped**, 8m55s.
+- `hive-conductor-e2e` (CI's compose command, image built from this branch's
+  Dockerfile): exit 0, 10 passed / 13 skipped.
+- `hive-conductor-e2e-ui` (CI's compose command): exit 0, **243 passed** (7.1m).
+- Trivy 0.73.0 (gate version), HIGH/CRITICAL, `--exit-code 1`,
+  `--ignore-unfixed`, `.trivyignore.yaml`, on the freshly built conductor
+  image (`hive-conductor-hive:latest` from the compose build): **exit 0**.
+- In-image probe (gate's identity contract, venv interpreter of record):
+  python 3.13.18, bip-utils/coincurve/pynacl pins hold, ConductorSeed
+  did:key operational — exit 0.
+- Canvas frontend `npm audit --audit-level=high` (the round-6 red's shape):
+  3 moderate, exit 0 — below the high threshold.
+- integration-scope classification (`ci_merge_group_scope.py` +
+  `check-integration-scope.py` on this branch's changed paths): resolves to
+  {docker_build, durable_events, hive_e2e, object_storage, postgres,
+  strike_ladder, wheel_imports} → required set as expected, no drift.
+
+**Residual (not locally reproducible, unchanged by this round's salvage):**
+the full container-scan matrix (engine/research/rsi images' trivy+grype+SBOM
++cosign — the merged dockercli stage is develop's own CR1373 change, proven
+on develop's CI; rounds 8–9 hold the pre-merge local proofs for the rest),
+the coverage producers (MinIO/Postgres service legs), Gate C clean install,
+the formal/ hypothesis suite, and the postgres/strike-ladder/wheel-imports/
+durable-events specialized legs. None of these consumes a file this round's
+commit touches.
