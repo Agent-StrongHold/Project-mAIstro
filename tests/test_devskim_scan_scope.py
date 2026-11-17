@@ -78,6 +78,12 @@ def _as_regex(glob: str) -> re.Pattern[str]:
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
+
+    Compiled once per distinct glob: the sweep below matches every shipped
+    source file against every configured glob. The pattern itself is cheap —
+    the original timeout came from `_ignore_globs`/`_include_globs` re-reading
+    and re-parsing the workflow YAML twice per candidate path (~3.3k parses
+    per sweep); with those cached the match loop is microseconds per file.
     """
     out = ""
     i = 0

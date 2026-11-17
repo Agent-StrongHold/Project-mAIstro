@@ -73,18 +73,64 @@ base_images() {
 			}
 		}
 
+		# Dockerfile RUN/COPY bodies may open a heredoc (`<<PY` / `<<'\''PY'\''`).
+		# Lines inside that body are not Dockerfile instructions — a Python
+		# `from datetime import ...` must not be parsed as `FROM datetime`.
+		function close_heredoc_if_ended() {
+			if (heredoc == "") return 0
+			line = $0
+			if (heredoc_strip) sub(/^\t+/, "", line)
+			if (line == heredoc) {
+				heredoc = ""
+				heredoc_strip = 0
+				return 1
+			}
+			return 1
+		}
+
+		function open_heredoc_from_line(    i, token, delim) {
+			for (i = 1; i <= NF; i++) {
+				token = $i
+				if (token !~ /^<<-?/) continue
+				heredoc_strip = (token ~ /^<<-/)
+				sub(/^<<-?/, "", token)
+				gsub(/[\047\042]/, "", token)   # strip wrapping quotes
+				if (token != "") {
+					heredoc = token
+					return
+				}
+				# `<< PY` with a space is legal; take the next field.
+				if (i < NF) {
+					delim = $(i + 1)
+					gsub(/[\047\042]/, "", delim)
+					if (delim != "") heredoc = delim
+				}
+				return
+			}
+		}
+
+		{
+			if (close_heredoc_if_ended()) next
+			open_heredoc_from_line()
+		}
+
 		toupper($1) == "FROM" {
 			image = ""
 			alias = ""
+			python_import = 0
 			for (i = 2; i <= NF; i++) {
 				if ($i ~ /^--/) continue            # --platform=... and friends
 				if (image == "") { image = $i; continue }
+				# Python `from X import ...` inside a missed heredoc: not an image.
+				if (toupper($i) == "IMPORT") { python_import = 1; break }
 				if (toupper($i) == "AS" && i < NF) alias = tolower($(i + 1))
 			}
-			emit_external(image, "FROM")
-			# Registered after the image is judged, so `FROM x AS builder`
-			# followed by `FROM builder` resolves in that order.
-			if (alias != "") stage[alias] = 1
+			if (!python_import) {
+				emit_external(image, "FROM")
+				# Registered after the image is judged, so `FROM x AS builder`
+				# followed by `FROM builder` resolves in that order.
+				if (alias != "") stage[alias] = 1
+			}
 			next
 		}
 
