@@ -1,4 +1,43 @@
-# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079 and the lock-scan round below)
+# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079; lock-scan round below; develop-syncs at e5ed12174 and 641d5422e8)
+
+## Develop-sync round 2026-11-17 (head 641d5422e8 = merge of origin/develop f927334a2e, M2-B1; PR-side head unchanged c4a49fb89f)
+
+The PR went `mergeable_state: dirty` when develop advanced to f927334a2e (M2-B1, canonical Kata sandbox
+backend); the merge-queue admission therefore saw no successful `gates-ran` status ("commit status not
+successful"). Resolution: `git merge origin/develop` — zero conflicting files (branch touches 8 files vs
+develop, none overlapping M2-B1's tree), committed as 641d5422e8. Merge-content audit:
+
+- `git diff origin/develop HEAD -- '*.py'` is EMPTY and `git diff origin/develop HEAD -- uv.lock` is EMPTY:
+  every Python-dependent gate (test, coverage floor, mypy/pyright, Python-side pillars) at this head consumes
+  byte-identical inputs to develop's own CI-green run of f927334a2e. The branch's CVE lock bumps
+  (playwright 1.65.2, patchright 1.64.4, temporalio 1.36.1, nexus-rpc 1.5.0, oauthlib 4.0.1, pyasn1 0.6.5)
+  are all present in develop's lock (pypdf 7.1.0/soupsieve 4.1.1 moved further on develop); the merged lock
+  delta vs the CI-green branch head c4a49fb89f is exactly pypdf, soupsieve and the macOS-only
+  pyobjc-framework-pubsub row dropping out.
+- Dockerfile / Dockerfile.research differ from develop ONLY in the #2120 comment blocks plus the branch's
+  `-mod=mod` dockerclibuild flag (validated green in CI's container scan at c4a49fb89f); functional lines
+  (DOCKER_CLI_VERSION=29.9.3, x/net v0.62.0, commit 5457199) are identical to develop's.
+- packages/hive-conductor/Dockerfile is byte-identical to c4a49fb89f (node:26-alpine + digest pin — CI-green
+  78/78 there); frontend package-locks unchanged since that run.
+- quality/vulture-baseline.json multiset vs origin/develop: 12 identity rows, Counter-equal (AGENTS.md
+  merge-loses-rows check); quality/ delta vs develop is image-pins.json only (the intended #2120 pin move).
+
+Local re-validation at 641d5422e8 (uv.lock --check rc=0; uv sync --locked --all-extras OK; ruff check +
+format --check clean): vulture ledger 1236=1236, radon 126=126, reachability rc=0 (88 modules, all
+dispositioned), reachability-dispositions rc=0, promotion-surface ok, image-inventory rc=0,
+check-image-pins rc=0 (9 pins / 10 Dockerfiles) + `--base-digests Dockerfile
+packages/hive-conductor/Dockerfile` rc=0, workflow-inventory clean, backlog-consistency rc=0, pip-audit gate
+CI-exact rc=0 (1 known = ecdsa, all triaged in ALLOWED). Scoped gate battery under coverage:
+tests/{test_check_image_pins,test_pinned_digest_references,test_distribution_contract,
+test_check_image_inventory,test_check_image_lock_reconciliation,test_image_lock_contract,
+test_prepull_base_images,test_devskim_scan_scope}.py --timeout=120 -q → 259 passed in 31.61s (incl. the
+devskim test that timed out at 8b588456). check-diff-coverage.py coverage.xml --base origin/develop → rc=0,
+"0 changed file(s) measured". M2-B1 spot-check on merged state: test_single_authority.py +
+test_canonical_sandbox.py + evolve test_sandbox_exec.py → 65 passed in 86.52s. Container subject proof:
+`docker buildx build --target frontend` (node:26-alpine stage, CI build args) → npm ci + vite build rc=0,
+in-stage `node --version` = v26.12.1 / npm 11.20.0; pinned digest sha256:40cd011b… pulls and matches
+image-pins.json. Full-image build skipped deliberately: shared daemon at 18G free — every final-image input
+(instructions, lock, package-locks) is byte-identical to a CI-green state on one side.
 
 ## Repair round 2026-11-16b (head 6a5a57079 + lock bumps; base f8a2df966): grype cross-check + rsi trivy surfaces
 
@@ -171,3 +210,6 @@ commit registering the pin is `72509bb38`; the develop-sync merge is `26ad95ed8`
   Quality gate cascade, test) each trace to the single missing registry row fixed in
   `72509bb38`; the aggregator's other pillars (2, 3, 4, 7, 8) score Python the diff does
   not touch.
+- The develop-sync merge commits (e5ed12174, 641d5422e8) are local-only; CI has not run
+  on them. The merge-queue evaluation needs the pushed branch to re-run Gates Ran;
+  the head is conflict-free against develop f927334a2e as of 2026-11-17.
