@@ -58,10 +58,7 @@ RUN apk add --no-cache git && \
 
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
-# the same CPython build. Refreshed 2026-11-16 (#1896 CI-repair round): the
-# grype leg of the container gate flags CVE-2026-115557 (Critical) in the
-# CPython 3.13.16 binary; fixed in 3.13.18, so the pin moves
-# 3.13.16-slim-bookworm -> 3.13.18-slim-bookworm with the contract below intact.
+# the same CPython build.
 FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest

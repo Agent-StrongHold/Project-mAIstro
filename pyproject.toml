@@ -39,7 +39,15 @@ dependencies = [
     # dev extra is what let the identity ImportError hide (see the wheel-imports
     # CI job).
     "maistro-canvas",
-    "temporalio>=1.27.0",
+    # 1.36.1 floor (CR1373 CI-repair round, 2026-11-16, merge-queue run
+    # 43821935433): the trivy leg of the container gate scans the Cargo.lock
+    # the temporalio wheel ships (site-packages/temporalio/bridge/Cargo.lock)
+    # and flags zip 8.6.0 there — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
+    # CVE-2026-115907/115908/115909 (HIGH). temporalio 1.36.1 bundles zip
+    # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
+    # past all four; every fix version satisfies the pre-existing >= 1.27
+    # floor, so this only ever affects which temporalio the lock resolves.
+    "temporalio>=1.36.1",
 ]
 
 [project.optional-dependencies]
@@ -265,39 +273,60 @@ constraint-dependencies = [
     # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
     # direct production pin — floors keep the frozen dev env above the advisories.
     "authlib>=1.9.1",
-    # 2.9.0 -> 2.9.2 on 2026-11-16 (#1896 CI-repair round): CVE-2026-128089
-    # — `from_text()` accepted an out-of-range WKS service number and resized
-    # a bitmap to that offset, so a crafted zone file could exhaust memory
-    # (DoS). Fixed in 2.9.2.
+    "dnspython>=2.9.0",
+    # Same shape again (pip-audit gate, 2026-11-16, CR1373 CI-repair round,
+    # merge-queue run 43788520668 at 39d0d137): dnspython arrives via
+    # email-validator (pydantic[email]), graphql-core via moto[server],
+    # joserfc via authlib / fastmcp-slim / moto, and opentelemetry-api is
+    # maistro-core's direct telemetry dependency caught in the frozen dev
+    # env. CVE-2026-128089 (GHSA-vvf4-9x63-8xvv) is fixed in dnspython
+    # 2.9.2; CVE-2026-119286 (GHSA-mpqx-q82w-9x46) in graphql-core 3.3.1;
+    # CVE-2026-119284 (GHSA-9pg5-8c7x-5hfx) in joserfc 1.7.6; CVE-2026-126360
+    # (GHSA-mf5v-w3w3-f6cg) in opentelemetry-api 1.45.2. Every fix version
+    # satisfies the floors already declared here or in
+    # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
+    # lock moves; floors keep it above the advisories on the next resolve.
     "dnspython>=2.9.2",
-    # Same shape again (pip-audit gate, 2026-11-16, #1896 CI-repair round):
-    # joserfc arrives via authlib (fastmcp's client extra) and moto[server];
-    # opentelemetry-api is a direct production dependency (root project and
-    # maistro-core[observability]) that DOES ship in the runtime images.
-    # CVE-2026-119284 is fixed in joserfc 1.7.6 (compact-JWS limits validated
-    # only after `bytes.split()` copied the attacker-controlled payload);
-    # CVE-2026-126360 is fixed in opentelemetry-api 1.45.2 (ReDoS in
-    # TraceContextTextMapPropagator.extract() on a crafted traceparent).
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
-    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
-    # round): all four arrive transitively and ship in the
-    # maistro-engine-research runtime venv, whose 2026-11-16 05:47 trivy
-    # scan flagged them (CI job 133112186114, python-pkg section) — unlike
-    # the dev-only floors above, these are shipped-image packages. oauthlib
-    # via requests-oauthlib: CVE-2026-49272 (auth bypass via missing device
-    # code validation), fixed in 4.0.1. pyasn1 via pyasn1-modules:
-    # CVE-2026-119194/119195/119196/119197 (DoS in schemaless/fragmented/
-    # bitstring decoding), fixed in 0.6.5. pypdf via browser-use:
-    # CVE-2026-119203/119204/119205/119207/119208/119209 (DoS on crafted
-    # PDFs), fixed in 6.21.4 (CVE-2026-119206 alone in 6.21.3). soupsieve
-    # via beautifulsoup4: CVE-2026-126190, fixed in 4.0.0. All four are
-    # "fixed"-status findings, so the trivy gate's --ignore-unfixed cannot
-    # cover them; the floors keep future re-locks above the advisories.
+    # Same shape again (Container scan + SBOM + cosign gate, 2026-11-16,
+    # CR1373 CI-repair round, merge-queue run 43821935433 at 4295a40): four
+    # HIGH python-pkg advisories in the maistro-engine-research image
+    # (maistro-server + observability + browser via browser-use, each a
+    # single consumer, none a direct production pin):
+    #
+    # - oauthlib 4.0.0 (via requests-oauthlib via google-auth-oauthlib via
+    #   browser-use) — CVE-2026-49272, authentication bypass, fixed in 4.0.1;
+    # - pyasn1 0.6.4 (via pyasn1-modules via google-auth via browser-use) —
+    #   CVE-2026-119194/195/196/197, all fixed in 0.6.5;
+    # - pypdf 6.21.2 (browser-use direct) — CVE-2026-119203..119209, fixed by
+    #   6.21.4 (119206 in 6.21.3, the rest in 6.21.4);
+    # - soupsieve 3.0.3 (via beautifulsoup4 via markdownify via browser-use) —
+    #   CVE-2026-126190, fixed in 4.0.0. PyPI never published a 4.0.0: its
+    #   4.0 release is PEP 440-equal to the trivy-named fix (4.0 == 4.0.0),
+    #   so the floor is written as the real release the DB names.
+    #
+    # Every fix version satisfies the upstream ranges already in the tree
+    # (browser-use: pypdf>=5.7.0; beautifulsoup4 4.15: soupsieve>=1.6.1;
+    # requests-oauthlib 2.0: oauthlib>=3.0.0; pyasn1-modules 0.4.2:
+    # pyasn1>=0.6.1,<0.7.0), so only the lock moves; floors keep it above
+    # the advisories on the next resolve. Nothing in packages/ or tests/
+    # imports any of the four, so the exposure is the shipped image only.
     "oauthlib>=4.0.1",
     "pyasn1>=0.6.5",
     "pypdf>=6.21.4",
-    "soupsieve>=4.0.0",
+    "soupsieve>=4.0",
+    # Same gate, same round, the wheel-shipped binary half: the research
+    # image's grype leg (step 16, --only-fixed --fail-on high, fresh DB per
+    # run) also flags the Node binary that patchright/playwright wheels ship
+    # as their driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV,
+    # fixed 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright
+    # 1.64.4 bundles node 24.22.1 and playwright 1.65.2 bundles node
+    # 26.13.1 (both verified by unpacking the wheels and running the
+    # bundled driver); browser-use declares patchright>=1.52.5 /
+    # playwright>=1.52.0 uncapped, so the floors only move the lock.
+    "patchright>=1.64.4",
+    "playwright>=1.65.2",
     # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
     # round): temporalio ships in the maistro-rsi-runner image
     # (root `[rsi-fitness]` extra), and its wheel vendors the Rust bridge's
@@ -312,22 +341,6 @@ constraint-dependencies = [
     # not just the metadata. No member source imports temporalio; the
     # rsi-fitness harness does.
     "temporalio>=1.36.1",
-    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
-    # round): the playwright wheel ships its own Node driver binary
-    # (playwright/driver/node) inside the research image, and grype's binary
-    # cataloging flags the vendored node 24.21.0: CVE-2026-111497
-    # (Critical, kev-listed) plus CVE-2026-105482/105483/106069 (High), all
-    # fixed in node 24.22.1+. playwright 1.65.2 bundles node v26.13.1
-    # (verified by unpacking the wheel), so the upgrade replaces the actual
-    # binary, not just metadata. Trivy does not flag this artifact — this
-    # floor exists for the grype cross-check (--fail-on high --only-fixed).
-    "playwright>=1.65.2",
-    # Same wheel-embedded-driver surface, same round: browser-use also pulls
-    # patchright (the stealth playwright fork), whose 1.64.1 wheel vendors
-    # the same node 24.21.0 driver binary. patchright 1.64.4's driver is
-    # node v24.22.1 (verified by unpacking the wheel) — the first release
-    # carrying every fix the grype findings name.
-    "patchright>=1.64.4",
 ]
 
 [tool.ruff]

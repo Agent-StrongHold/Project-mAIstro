@@ -29,10 +29,6 @@
 # FROM down and the rebuilt image assembles the freshly executed layers.
 # Re-bump this pin whenever a DSA lands faster than this bump mechanism
 # can be exercised (recorded in quality/image-pins.json).
-# Digest refreshed 2026-11-16 (#1896 CI-repair round): the grype leg of the
-# container gate flags CVE-2026-115557 (Critical) in the CPython 3.12.15
-# binary; the refreshed python:3.12-slim digest resolves to 3.12.16, where
-# the fix landed (verified locally).
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime-apt
 
 # libbrotli1 ships here via git's libcurl; CVE-2026-111497 (Brotli decoder
