@@ -17,6 +17,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 from __future__ import annotations
 
 import re
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -47,19 +48,21 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
-def _ignore_globs() -> list[str]:
+@cache
+def _ignore_globs() -> tuple[str, ...]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
     assert raw, "the scanner step passes no ignore-globs — it would scan everything"
-    return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
+    return tuple(glob.strip() for glob in str(raw).split(",") if glob.strip())
 
 
-def _include_globs() -> list[str]:
+@cache
+def _include_globs() -> tuple[str, ...]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
     match = re.search(r"--include-globs\s+(\S+)", extra)
     assert match, "DevSkim must pass --include-globs so non-product roots are never scanned"
-    return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
+    return tuple(glob.strip() for glob in match.group(1).split(",") if glob.strip())
 
 
 def _as_regex(glob: str) -> re.Pattern[str]:
@@ -67,7 +70,18 @@ def _as_regex(glob: str) -> re.Pattern[str]:
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
+
+    Compiled once per distinct glob: the sweep below matches every shipped
+    source file against every configured glob. The pattern itself is cheap —
+    the original timeout came from `_ignore_globs`/`_include_globs` re-reading
+    and re-parsing the workflow YAML twice per candidate path (~3.3k parses
+    per sweep); with those cached the match loop is microseconds per file.
     """
+    return _compile_glob_regex(glob)
+
+
+@cache
+def _compile_glob_regex(glob: str) -> re.Pattern[str]:
     out = ""
     i = 0
     while i < len(glob):
