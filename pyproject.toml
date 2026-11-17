@@ -272,6 +272,23 @@ constraint-dependencies = [
     # CVE-2026-128089 in dnspython 2.9.2. None is a direct production pin.
     "joserfc>=1.7.6",
     "dnspython>=2.9.2",
+    # Same shape, container-scan side (security.yml `Container scan + SBOM +
+    # cosign`, 2026-11-16, #1995 CI-repair round): unlike the floors above,
+    # these four DO ship — the research image installs maistro-server's
+    # `browser` extra from the lock, and trivy's HIGH findings name the
+    # versions it carries. All arrive transitively through browser-use
+    # (pypdf, soupsieve via markdownify/beautifulsoup4) and the google-auth
+    # chain (oauthlib via requests-oauthlib, pyasn1 via pyasn1-modules);
+    # none is a direct production pin. CVE-2026-49272 is fixed in oauthlib
+    # 4.0.1; CVE-2026-119194..119197 in pyasn1 0.6.5; CVE-2026-119203..119209
+    # in pypdf 6.21.4 (119206 alone in 6.21.3); CVE-2026-126190 in
+    # soupsieve 4.0.0. The hive-conductor runtime export carries none of
+    # the four (its closure has no browser-use / google-auth chain), so its
+    # image is unchanged by these floors.
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0.0",
 ]
 
 [tool.ruff]
