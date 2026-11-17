@@ -295,3 +295,120 @@ uses), plus a first local trivy pass over the branch-touched images:
   (`git diff <base>..HEAD -- '**/package.json' '**/package-lock.json'`
   is empty), so the containers job's frontend license surface is
   unchanged by the branch.
+
+## Container-gate repair + develop sync round, heads `19d7c26e74` → `de535c9945`
+
+### Hosted evidence at `18c9263438` (the previously failing check)
+
+The merge-queue evaluation of `18c9263438` had exactly one failing check:
+`Container scan + SBOM + cosign` (run 43892977838, job 133388832382).
+Reading the fetched job log pinpoints the failing step — **`Trivy scan
+maistro-engine-research (HIGH/CRITICAL only)`** — every build and the
+hive/engine Trivy scans passed; the rsi-runner scan, Grype, SBOM and
+reconciliation legs never ran (skipped after the failure). The findings:
+13 HIGH python-pkg advisories (oauthlib 4.0.0 CVE-2026-49272; pyasn1
+0.6.4 CVE-2026-119194..119197; pypdf 6.21.2 CVE-2026-119203..119209;
+soupsieve 3.0.3 CVE-2026-126190) plus go-jose v4.1.5 CVE-2026-116587
+(HIGH) inside the image's `usr/local/bin/docker`. The `npm audit` excerpt
+in earlier handoff notes was stale — no npm step failed in this job.
+
+### Round one — branch-side fix (`19d7c26e74`, salvaged from the interrupted attempt)
+
+- Raise the four constraint floors (oauthlib>=4.0.1, pyasn1>=0.6.5,
+  pypdf>=6.21.4, soupsieve>=4.0.0) and pin `Dockerfile.research` to
+  docker CLI v29.9.3 = 5457199. Lock moves exactly the four packages
+  (oauthlib 4.0.1 / pyasn1 0.6.5 / pypdf 7.1.0 / soupsieve 4.1.1);
+  verified the four ship **only** in the research export (hive, engine
+  `--extra image` and rsi-runner exports carry none), so no other image
+  changes. Tag verified via `git ls-remote --dereference`:
+  `v29.9.3^{}` = `5457199aa57c…`, v29.9.3 vendors go-jose v4.1.7 ≥ the
+  4.1.6 fix (v29.9.1 = dfc520d vendored vulnerable v4.1.5), both checked
+  against upstream `vendor.mod`.
+- Local `docker build -f Dockerfile.research` → exit 0 (`uv pip check`,
+  browser-use/playwright assert, `maistro_server.main` import smoke ok;
+  in-image `docker version` = v29.9.3).
+- Trivy 0.73.0 (CI-pinned), CI-exact flags (`--severity HIGH,CRITICAL
+  --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml`) →
+  **exit 0**: debian 0, every python-pkg target 0, `usr/local/bin/docker`
+  gobinary 0.
+- `check-image-lock-reconciliation.py` (CI-exact) → exit 0: "ships
+  exactly the locked set (147 distributions)".
+- **Grype cross-check (local, fresh DB) → exit 2** on the r2 image:
+  5 HIGH+ matches — node 24.21.0 (the binary patchright/playwright
+  wheels bundle as their driver) CVE-2026-111497 (Critical, KEV) +
+  CVE-2026-105482/105483/106069 (High) and python 3.12.15
+  CVE-2026-115557 (Critical, CPE). This reproduced the gate's *next*
+  failing leg before CI could.
+
+### Round two — develop sync (`de535c9945`)
+
+`origin/develop` (tip `f927334a2e`, two commits ahead: `157c3f61`,
+`f927334a2e`) had landed a **superset repair of the same gate** (CR1373
+CI-repair round, merge-queue run 43821935433): the same four python
+floors, plus `patchright>=1.64.4` / `playwright>=1.65.2` for exactly the
+node-binary findings reproduced above, `temporalio>=1.36.1` for the
+wheel-shipped Cargo.lock zip CVEs, an x/net v0.62.0 patch onto the docker
+CLI tag (CVE-2026-78661, previously only suppressible), and refreshed
+base-image digests (python 3.12.16 / 3.13.18). Merged `origin/develop`
+and resolved the three conflicts in place:
+
+- `Dockerfile` / `Dockerfile.research`: develop's side taken wholesale
+  (superset of the branch's committed CLI bump; the branch's version is
+  recorded in `19d7c26e74` history).
+- `pyproject.toml`: develop's constraint block taken (its entries are a
+  superset of both the branch's `35c005ea4d` pip-audit floors and its
+  `19d7c26e74` container floors; superseded comment blocks noted
+  in-line). The branch keeps its two extras develop lacks: the root
+  `opentelemetry-api>=1.45.2` production floor and the
+  `maistro-core[observability]` `>=1.45.2,<2` floor.
+- `uv.lock`: develop's lock re-generated with the pinned uv 0.12.21
+  (`uvx uv@0.12.21 lock`; identical delta under 0.12.20, so not a
+  resolver-version artifact). Delta vs develop's lock = the two
+  opentelemetry floor specifiers above + completion of the darwin-only
+  `pyobjc-framework-pubsub` closure (marker-gated; no Linux image
+  surface).
+
+### Post-merge validation (all CI-exact args, head `de535c9945`)
+
+- `uvx uv@0.12.21 lock --check` → exit 0; `uv sync --locked --extra
+  dev` and `uv sync --locked --all-extras` → exit 0 (temporalio
+  1.34.0 → 1.36.1 in the dev env).
+- Research image rebuilt from the merged tree (r3) → exit 0, smoke ok;
+  in-image `docker version` = v29.9.3.
+- Trivy 0.73.0 CI-exact over r3 → **exit 0** (debian 0, docker gobinary
+  0).
+- **Grype 0.116.0 CI-exact (`--fail-on high --only-fixed`) over r3 →
+  exit 0** — the node-binary and python-3.12.15 Critical/High legs that
+  failed on r2 are gone (patchright 1.64.4 bundles node 24.22.1, base
+  python is 3.12.16); remaining rows are Medium/Low/Negligible or
+  `*`-marked not-affected, below the high threshold.
+- `check-image-lock-reconciliation.py` over r3 → exit 0 ("ships exactly
+  the locked set (147 distributions)").
+- `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → exit 0 (1236 identities, exact ledger
+  match; develop's −2 rows merged in, no candidate amendment needed).
+- `check-frontend-typed-client.py` → exit 0 (40 raw / 119 hand-typed,
+  none new). `check-shipped-surface-truth.py` → exit 0 (matrix
+  complete). `check-suite-inventory.py` → exit 0 (21 suites, 35459 node
+  IDs — develop's new suites merged into the recorded inventory).
+  `check-ratchet-provenance.py` → exit 0 (55 consumers, 0 expansions).
+- Supply chain CI-exact (`uv sync --locked --all-extras` → freeze →
+  `pip-audit --strict` → `pip_audit_gate.py`) → exit 0 ("1 known, all
+  triaged in ALLOWED; direct-dependency usage OK").
+- `uv run ruff check .` / `uv run ruff format --check .` → clean;
+  frontend `npm run build` → exit 0.
+
+### Residuals
+
+- The other three images are not rebuilt locally post-merge: their
+  Dockerfiles change only through develop's committed base-digest/CLI
+  updates (green on develop's own CI at `f927334a2e`), and this branch's
+  post-merge delta moves no package they ship except `temporalio`, whose
+  1.36.1 floor is develop's own green-landed change. Hosted re-run will
+  confirm.
+- The SBOM/license/cosign legs are hosted-OIDC-only (unchanged from the
+  previous round's note).
+- `.trivyignore.yaml`'s CVE-2026-78661 entry (x/net in the docker CLI)
+  is now arguably stale — both Dockerfiles patch x/net onto the tag —
+  but develop kept the entry and removing a suppression is a
+  maintainer-scoped re-scan decision, not this lane's.
