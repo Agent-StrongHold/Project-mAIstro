@@ -1,4 +1,63 @@
-# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079; lock-scan round below; develop-syncs at e5ed12174 and 641d5422e8; gates-ran repair below)
+# #2120 node 26-alpine bump — verification evidence (head 26ad95ed8; re-verified at a3d7830d8; repaired at 6a5a57079; lock-scan round below; develop-syncs at e5ed12174 and 641d5422e8; gates-ran repair below; e2e-ui flake + develop-sync round below)
+
+## E2E-ui flake repair round 2026-11-17 (head 4528a8c0a8 verified; develop-sync merge at 57100ee89d; base now a660bc2a9d = origin/develop)
+
+Dispatch check-runs/statuses at head 4528a8c0a8 (captured 2026-11-17T08:22Z): 74 success, 3 skipped,
+2 failures — `hive-conductor-e2e-ui` (job 133871265037) and its fail-closed downstream aggregator
+`integration-scope` (job 133871055130). `gates-ran` itself is **success** ("All required checks
+executed on this exact head", 07:25:39Z) — the b6dcf485bb mutation.yml repair landed as designed.
+
+Root cause of the remaining pair (from the job log, not guessed): the rsi-polling-resilience spec —
+`a success resets the cadence to base and the failure ladder to fresh` failed both attempts (gapFresh
+3762 < 6800: a wall-clock race where the post-failure poll rearmed at base before the failure
+registered), and the backoff-doubling spec flaked once then passed (7500±10ms bound, received 1000).
+240 passed / 1 failed / 1 flaky; the hive service itself was healthy throughout (compose ps: "Up 3
+minutes (healthy)"). Corroboration that this is trunk-level, not candidate-level: (a) the spec is
+byte-identical between this branch and origin/develop; (b) develop's own CI passed
+hive-conductor-e2e-ui at a660bc2a9d (07:11:39Z, AFTER our failing run); (c) every input of this
+branch's e2e stack was CI-green elsewhere (e2e-ui green at c4a49fb89f on the branch's own
+node-26+lock content; f927334a2e green with the merged spec set); (d) sibling branch cr-2355 hit the
+identical failing pair and reproduced the producer green locally CI-exact with 1 flaky
+(.cursor/context/cr-2355-e2e-ui-integration-scope-evidence.md).
+
+Additional blocker found this round: develop advanced past the branch's sync point (f927334a2e) by
+202bcf3383 + a660bc2a9d (#2271), leaving the PR stale/unmergeable. Repaired by `git merge
+origin/develop` → commit 57100ee89d, **zero conflicting files** (develop's Dockerfile tzdata hunks
+disjoint from the branch's frontend FROM hunk; ci.yml/compose/uv.lock changes don't overlap the
+branch's diff). Changed-file envelope at the merged head (CI-exact `ci_base_revision.py` +
+`git diff --no-renames --name-only origin/develop...HEAD`) is the same 13 files incl. mutation.yml
+and quality/image-pins.json, so the Mutation gate still fires and gates-ran can complete;
+integration-scope's required set resolves to exactly [docker-build, hive-conductor-e2e,
+hive-conductor-e2e-ui, wheel-imports] (reproduced CI-exact).
+
+Full gate re-validation at 57100ee89d (all rc=0): uv lock --check + uv sync --locked --all-extras;
+ruff check (all passed) + ruff format --check (3572 files); check-image-pins (9 pins / 10
+Dockerfiles) + --base-digests (node:26-alpine@sha256:40cd011b… listed) + check-image-inventory +
+check-suite-inventory; vulture ledger CI-exact 1236=1236; radon 126=126; promotion surface ok;
+reachability (1488 modules, 88 unreachable) + dispositions; backlog-consistency;
+mutation_critical --validate; check-required-checks ("77 PR checks match docs/ci/REQUIRED-CHECKS.md");
+workflow-inventory; pip-audit gate CI-exact (all-extras freeze → strict audit → gate: "1 known, all
+triaged in ALLOWED", ecdsa PYSEC-2026-1325 no-fix). Scoped pytest under `coverage run --branch
+--source=scripts`: tests/{test_check_image_pins, test_pinned_digest_references,
+test_distribution_contract, test_check_image_inventory, test_check_image_lock_reconciliation,
+test_image_lock_contract, test_prepull_base_images, test_devskim_scan_scope, test_mutation_targets,
+test_gates_ran_publisher_contract, test_check_gates_ran, test_check_required_checks}.py
+--timeout=120 -q → **449 passed in 30.20s**; diff-coverage gate CI-exact (`check-diff-coverage.py
+coverage.xml --base origin/develop`) → rc=0, sole .py delta is the declared-exempt
+tests/test_prepull_base_images.py.
+
+**Producer proof at the merged head** — CI-exact hive-conductor-e2e-ui: prepull-base-images.sh
+(pinned digests pulled, rc=0) then `docker compose -f docker-compose.test.yml --profile test up
+--build --abort-on-container-exit --exit-code-from e2e-tests e2e-tests` (CI=true,
+MAISTRO_ROUTER_API_KEY=test-harness-not-a-real-key per merged ci.yml) → **exit 0, 246 passed
+(4.0m), zero failures, zero flakes**; stack torn down (down -v). With docker-build / hive-conductor-e2e /
+wheel-imports already success on CI at the parent head, this proves the whole required set green at
+the merged head; integration-scope (fail-closed aggregate) follows its producers.
+
+Residual: the repair is local-only (worker may not push); the merge queue's admission runs on the
+pushed head. If the wall-clock rsi race recurs on CI, the durable fix is develop-side test
+robustness (the 7500±10ms bound and the fresh-ladder stamp sampling), out of this lane's file
+boundary.
 
 ## Gates-ran repair round 2026-11-17 (heads 641d5422e8/fc525a8d86 verified + repaired; base f927334a2e)
 
