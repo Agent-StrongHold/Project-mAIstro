@@ -573,3 +573,76 @@ Evidence, all local, CI-exact forms (this worktree):
    quality/ac-state.json" is a local-only artifact — ac-state.json is
    gitignored and exists here only because the acceptance-gate run generated
    it; CI checkouts never see it and its hosted run passes that test).
+
+## Round 7 (repair, jobs c5bf45678d2c / 091fd9dab5) — the 39.8641 bank correction refuted and reverted; develop synced to a660bc2a
+
+Both prior rounds died on driver provider errors (404/400 model errors) before any work;
+the tree was found clean at the assigned head 7eb8290812 (nothing to salvage). This round's
+adversarial target: head commit 7eb8290812 "correct banked AC-state design_coverage to
+measured 39.8641" — a one-line edit of
+quality/ac-state-notes/fix-windows-bootstrap-prerequisite.json that lowered the branch's
+banked design_coverage 44.4608 → 39.8641, acting on the deep-review-1 finding
+"design_coverage 40.3661 < floor 44.4608 at head" + "base f8a2df96 measures 39.8641".
+
+1. **The 39.8641 premise is refuted by reachable behavior.** 39.8641 (and 40.3661) come from
+   the unmigrated-DB environment round 2 already refuted. CI-faithful measurement at this
+   round's merged head (fresh pgvector/pgvector:pg18 container cr2110b-ac-pg18 on
+   127.0.0.1:15501, MAISTRO_TEST_PG_DSN/DATABASE_URL pointed at it, alembic upgrade head
+   through 068, uv sync --locked --all-extras + maistro-evolve -e + pytest-timeout, CI's
+   exact job steps quality.yml:2330-2443) measures **design coverage 44.4608%**,
+   "passing rung measured: yes" — in BOTH CI modes, twice. The note therefore recorded
+   `measured_with_tests: true` for a value that was never the with-tests measurement:
+   false banked evidence.
+2. **Gate mechanics (scripts/check_ac_state_impl.py:_exact_target + _lowered +
+   _fresh_note_bound).** The exact target = base fold lowered by the authorized grant
+   (design_coverage@39.641, quality/ratchet-authorizations.json:10) then RAISED by fresh
+   notes (a note the base lacks, i.e. this branch's own). With the note at 39.8641 the
+   target is 39.8641 and every measurement (44.4608) is an unbanked improvement finding.
+   Canonical CI still passed only because merge_group waives the improvement half
+   unconditionally (#620, impl:1428-1443 — proven live: /tmp/acstate-mg-398641.log exit 0
+   printing "not enforcing the unbanked-improvement half … design_coverage: 44.4608,
+   floor still says 39.8641") and canonical develop-PR review prints "no bank is required".
+   Conservative callers (local/fork/synthetic — the policy's own words, check-ac-state.py:62-69)
+   fail on that improvement; and the worktree fold itself is unaffected either way because
+   auto-62.json already holds 44.4608 (fold = max). So 7eb8290812 was outcome-neutral for
+   canonical CI but made the banked evidence false and every non-canonical run red.
+3. **Repair: restored design_coverage 44.4608** (the exact pre-7eb8290812 value, i.e. the
+   honest measured number). Re-proven CI-exact at the final tree:
+   - pull_request mode (GITHUB_EVENT_NAME=pull_request, GITHUB_REPOSITORY canonical,
+     GITHUB_BASE_REF=develop, payload base.sha=a660bc2a, RATCHET_BASE_REV=origin/develop):
+     /tmp/acstate-pr-restored.log **exit 0**, design coverage 44.4608%, "10 debt counters
+     satisfy their ceilings and 1 progress counter satisfies its floor", no improvement
+     finding, acceptance mandate 0/0, chain mandate 0/0.
+   - merge_group mode (payload merge_group.base_sha=a660bc2a, RATCHET_BASE_REV=base):
+     /tmp/acstate-mg-restored.log **exit 0**, same OK line, NO #620 waiver needed (no
+     improvement exists), actual-base guard "candidate preserves the actual measured
+     AC-state of base a660bc2a".
+4. **Develop sync.** Declared base a660bc2a ([M1 closeout] #2271) + 202bcf33 (M1-B2b #2355)
+   were ahead of the branch's f927334a merge point. Overlap analysis: only uv.lock, in
+   disjoint regions (constraints header vs hive-conductor metadata) → merge commit
+   **69b36d568c** conflict-free; `git diff --numstat origin/develop -- quality/` shows only
+   the branch's intended files (ac-state note +17, image-pins 4/4); `uv lock --check` +
+   `uv sync --locked` coherent; `uv sync --locked --all-extras` for the gate env.
+5. **Full battery re-run green at 69b36d568c + note restore**: ruff check . ("All checks
+   passed!") / ruff format --check . (3572 files); tests/test_get_ps1_wsl_detection.py
+   **28 passed** (pwsh 7.4.6, relaunch harness executed); run-wsl-detection-e2e.ps1 23/23 +
+   "RESULT relaunch-policy ok" exit 0; get.ps1 + its tests byte-identical to f2789b09b5
+   where the regression bite was last proven (`git diff f2789b09b5..HEAD -- get.ps1
+   tests/test_get_ps1_wsl_detection.py tests/installer/` empty), so the bite evidence
+   carries; check-vulture-baseline.py CI-exact args → 1236 = 1236 exit 0;
+   check-suite-inventory.py → 21 suites match exit 0 (no test count change; the merge's new
+   inventory notes are develop's own); check-compliance.py OK; check-agent-store-writes.py
+   OK; vendor_bfcl.py --check OK (13 artifacts + shim); check-image-pins.py OK (9 pins / 10
+   Dockerfiles); check-backlog-consistency.py OK; packages/maistro-core/tests/fitness
+   (PYTHONPATH=packages/maistro-core/src, --timeout=30) 39 passed; gitleaks 8.30.1 CI-exact
+   `--log-opts=a660bc2a9d0b..69b36d568c` → "no leaks found"; Supply chain CI-exact
+   (freeze 218 rows → pip-audit --strict → scripts/pip_audit_gate.py) → **exit 0** (only the
+   pre-triaged ecdsa PYSEC-2026-1325; direct-dependency dispositions OK) on the merged
+   lock (develop's aiosqlite row included).
+6. No closure keywords in any commit message of this round; no issue-closure action; no
+   gate, floor, or ceiling weakened — the note edit restores the stricter, honest fold
+   contribution (max(39.641 grant, 44.4608 fresh note) target = 44.4608, measured exactly).
+
+Residuals unchanged: real Windows PowerShell 5.1/7 policy enforcement, UAC elevation,
+reboot RunOnce resume remain Windows-host-only; hosted CI at the pushed head remains the
+campaign driver's action. Local merge base for the next round: this round's head.
