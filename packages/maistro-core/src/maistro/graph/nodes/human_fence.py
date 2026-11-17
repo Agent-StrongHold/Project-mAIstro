@@ -21,6 +21,7 @@ verdict.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -59,6 +60,17 @@ class FenceDecisionOut(BaseModel):
     rationale: str = ""
 
 
+def _hitl_answers(ctx: NodeContext) -> Mapping[str, Any]:
+    """The recorded human answers this run carries, or none.
+
+    A malformed metadata payload is treated as "no answer yet" rather than a
+    crash: the fence must fail closed pending, never fail open on whatever a
+    resume payload happens to carry.
+    """
+    answers = (ctx.metadata or {}).get("hitl_answers") or {}
+    return answers if isinstance(answers, Mapping) else {}
+
+
 @register_node
 class HumanFenceDecisionNode(BaseNode[FenceDecisionIn, FenceDecisionOut]):
     kind: ClassVar[str] = "human.fence_decision"
@@ -76,8 +88,7 @@ class HumanFenceDecisionNode(BaseNode[FenceDecisionIn, FenceDecisionOut]):
     )
 
     async def _execute(self, inputs: FenceDecisionIn, ctx: NodeContext) -> FenceDecisionOut:
-        answers = (ctx.metadata or {}).get("hitl_answers") or {}
-        resumed = answers.get(ctx.node_id)
+        resumed = _hitl_answers(ctx).get(ctx.node_id)
         if resumed is not None:
             decision = resumed.get("decision")
             # Fail closed: a resume payload that is not a recorded fence

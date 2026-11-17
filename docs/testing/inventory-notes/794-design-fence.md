@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +23
+  packages/maistro-core/tests: +24
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 794-design-fence
@@ -12,7 +12,7 @@ canonical waiting NodeRun (#48, #737), per ADR-092926-7a01 §8 — the
 was weakened.
 
 What the tests pin, mapped to the issue's acceptance list (delta arithmetic:
-18 tests in the new fence module + 1 idempotency test in
+19 tests in the new fence module + 1 idempotency test in
 `tests/projects/test_rubric_store.py` + 3 `test_node_composition.py` cases
 that parametrize over every registered node kind and therefore grew by the
 `human.fence_decision` registration + 1 `test_human_pause_reasons.py` case
@@ -33,7 +33,10 @@ parametrized over `EXPECTED_HUMAN`, which now names
   stays PAUSED on the same waiting NodeRun, the Goal/Rubric binding, the
   persisted deadline (`park` neither extends it nor defuses the expiry tick),
   and the Run's eval records are byte-identical; an accept afterwards resumes
-  the same Run.
+  the same Run. The composition layer exposes all three verbs symmetrically —
+  `park_fence` routes the hold through the same canonical store rules the
+  store-level tests pin, records the decision under the authorization's
+  principal, and leaves the fence answerable by a later decision.
 - **Redirect is target-explicit and history-preserving.** Redirect-goal mints
   Goal revision N+1 through a Goal-lineage port that is the *same* authority
   the Rubric store resolves liveness through (#458 seam — no second Goal

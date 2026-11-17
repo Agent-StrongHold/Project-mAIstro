@@ -229,6 +229,38 @@ async def redirect_fence(
     return settled
 
 
+async def park_fence(
+    store: Any,
+    run_id: str,
+    node_id: str,
+    *,
+    authorization: HitlAuthorization,
+    note: str = "",
+    at: datetime | None = None,
+    workspace_id: str | None = None,
+) -> DurableRunRecord:
+    """Record a park — the hold verb — through the canonical store.
+
+    Park mints no revisions and derives no gate evidence, so unlike
+    :func:`redirect_fence` and :func:`accept_fence` there is nothing to
+    compose: this is the shared entry callers use so all three fence verbs
+    go through one surface. Everything that makes park safe is the durable
+    write's own rule — the waiting NodeRun evidence, the loop binding, and
+    the #737 deadline (which park neither extends nor defuses). The Run
+    stays waiting on the same NodeRun; resuming it remains a later decision
+    on the same Run, never a new explore.
+    """
+    parked: DurableRunRecord = await store.park_hitl(
+        run_id,
+        node_id,
+        authorization=authorization,
+        note=note,
+        at=at,
+        workspace_id=workspace_id,
+    )
+    return parked
+
+
 async def accept_fence(
     store: Any,
     run_id: str,
@@ -286,5 +318,6 @@ __all__ = [
     "InMemoryGoalRevisionRedirector",
     "RubricReviser",
     "accept_fence",
+    "park_fence",
     "redirect_fence",
 ]

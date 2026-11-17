@@ -50,6 +50,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.durable_runs.fence import (
     accept_fence,
+    park_fence,
     redirect_fence,
 )
 from maistro.graph.durable_runs.hitl import HitlDeadlineElapsed, hitl_deadline, hitl_pause
@@ -551,6 +552,50 @@ class TestParkKeepsStateAndResumes:
         )
         assert resumed.status is RunStatus.COMPLETED
         assert len(fence_decisions_of(resumed)) == 2
+
+    @pytest.mark.asyncio
+    async def test_park_fence_composes_the_hold_through_the_store(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """park_fence is the hold verb's composition entry: the durable write
+        (waiting NodeRun evidence, binding, deadline) stays the store's rule,
+        the decision is recorded under the authorization's principal, and the
+        fence still accepts a later decision on the same Run."""
+        paused = await _run_to_fence(store, run_store, world)
+        await _seed_eval_evidence(run_store, paused)
+        before_deadline = hitl_deadline(paused, NODE_FENCE)
+
+        parked = await park_fence(
+            store,
+            paused.run_id,
+            NODE_FENCE,
+            authorization=_authorization(),
+            note="stepping away",
+        )
+
+        assert parked.run_id == paused.run_id
+        assert parked.status is RunStatus.PAUSED
+        _waiting_fence_node_run(parked)
+        assert fence_binding(parked) == fence_binding(paused)
+        assert hitl_deadline(parked, NODE_FENCE) == before_deadline
+        decision = fence_decisions_of(parked)[-1]
+        assert decision.decision is FenceDecisionKind.PARK
+        assert decision.decided_by == "fence-operator"
+        assert decision.rationale == "stepping away"
+
+        # Park did not consume the pause: the same fence accepts a decision —
+        # here an override, since the seeded gate evidence is failing.
+        settled = await accept_fence(
+            store,
+            parked.run_id,
+            NODE_FENCE,
+            authorization=_authorization(),
+            rubrics=world.rubrics,
+            run_store=run_store,
+            rationale="back from the hold; shipping the earlier evidence",
+        )
+        assert settled.status is RunStatus.QUEUED
+        assert len(fence_decisions_of(settled)) == 2
 
 
 # --- AC-3: redirect-goal mints Goal + Rubric + brief revisions -----------------
