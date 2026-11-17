@@ -244,3 +244,50 @@ Local proof at f8aa5ad4f9, CI's exact commands:
   concurrent lane — the same environment class a3f491e718 documented.
 - npm audit --audit-level=high exit 0 on both frontend lockfiles (canvas 0
   findings; hive moderate-only, below threshold).
+
+## Round 2026-11-17 (head 0a5e94f0ba): semgrep .npmrc repair + e2e-ui flake triage
+
+Lane brief named "Container scan + SBOM + cosign: failure" from board accounting at
+a11908f33 — stale: the check-runs snapshot for head 0a5e94f0ba (captured
+2026-11-17T05:42Z) shows that check **success** (completed 05:34:12Z), as re-proven
+by the a79a689ae3 round. The actually red checks at this head were:
+
+1. `SAST / Semgrep` (job 133836349621) — reproduced locally with CI's exact argv
+   (`uvx semgrep --metrics off --config tools/semgrep/maistro-rules.yaml --config
+   p/security-audit --config p/owasp-top-ten --config p/secrets --exclude
+   'packages/hive-conductor/eval' --exclude 'packages/hive-conductor/cage' --error
+   packages/ tests/`): 2 blocking findings, rule
+   `npm-missing-minimum-release-age`, on the two `.npmrc` files the a11908f33
+   audit-level fix created (`packages/hive-conductor/frontend/.npmrc`,
+   `packages/maistro-canvas/frontend/.npmrc`). Fix (this round): add
+   `min-release-age = 7` to both, exactly what the rule's message requires.
+   Re-run of the same argv after the edit: **0 findings, exit 0** (366 rules,
+   2272 files). `SAST (bandit + semgrep + gitleaks)` is the aggregate job and
+   clears with Semgrep; Bandit and Gitleaks were already success at this head.
+   npm-compat: CI installs run node 22 (npm 10.x), which ignores the unknown
+   key (`npm config get min-release-age` -> 7, parses clean; Dockerfile `npm ci`
+   runs before the .npmrc is copied, so image builds are untouched).
+2. `hive-conductor-e2e-ui` (job 133837655112) — failed in
+   `tests/e2e/rsi-polling-resilience.spec.ts:459` ("a prolonged outage backs off
+   exponentially"), identically on attempt AND retry: `Expected <= 10, Received:
+   1000`. Triage: the branch's delta vs develop touches no frontend source and no
+   spec — only build-tool patch bumps in the frontend lockfiles (@babel/*,
+   esbuild 0.28.x) — and develop CI at the same frontend code is green
+   (run 43939149467, job 133551910963, 2026-11-16T19:25Z), as is a concurrent
+   merge-queue run for a different PR (run 44022926558, 2026-11-17T05:16Z, minutes
+   before ours). The test itself documents the race class: it assumes a 200ms
+   real-time settle always lands the aborted fetch before the next fake-clock
+   chunk arms the backoff timer; a mid-chunk settle re-anchors the deadline and
+   yields exactly this off-by-thousands signature. playwright.config.ts already
+   records ("the failures it throws are environmental, not product regressions").
+   Local proof on THIS branch's built compose stack: full rsi spec 8/8 passed
+   (1.1m), then the exact failing test 2 more times (9.5s, 9.7s) — 3/3 green with
+   the branch lockfile content.
+3. `integration-scope` (job 133836349046) — log line: `hive-conductor-e2e-ui is
+   required by integration scope but concluded failure`; pure downstream
+   aggregator of (2), no independent defect.
+
+Round changes: the two `.npmrc` lines above + this note. No Python, gate, ledger,
+lockfile, or test change; no test added, so no inventory-note delta. Battery:
+ruff check clean, ruff format --check clean (3584 files), semgrep CI-argv 0
+findings, failing-spec local repro 3/3 pass.
