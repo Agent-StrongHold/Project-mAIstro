@@ -779,9 +779,15 @@ jobs:
       # Docker daemon at all). If this ever fails because the runner gained
       # a vm-tier backend, the lane has become a live-conformance site and
       # the kata live suites below it are the next consumers.
+      #
+      # The bootstrap workspace member ships in the root `bootstrap` extra,
+      # not the default dependency set — a bare `uv run` here syncs without
+      # it and the proof dies on ModuleNotFoundError before reaching the
+      # selector (observed on CI: run 44029080504, jobs 133856475787 and
+      # 133845373917). `--extra bootstrap` pins the env this step needs.
       - name: No VM backend means the builders adapter refuses (fail-closed proof)
         run: |
-          uv run python - <<'PY'
+          uv run --extra bootstrap python - <<'PY'
           import tempfile
           from pathlib import Path
           from maistro.sandbox import NoSuitableBackendError
