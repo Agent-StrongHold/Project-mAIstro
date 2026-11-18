@@ -95,3 +95,56 @@ HEAD's file); `tests/test_check_gates_ran.py`
 in `docs/testing/inventory-notes/cr-2372-mutation-gate-nightly-path.md`) all
 exit 0; `ruff check .` and `ruff format --check .` pass. Inventory delta:
 `tests/` +1 (4117 → 4118 expected).
+
+## Round 3 (2026-11-18, head `bf5d4664e5b8`): repair confirmed on hosted CI; the two remaining reds reproduced and attributed
+
+Re-validated every prior claim from scratch instead of trusting it.
+
+**The round-2 repair works on real CI.** At this head the dispatch context
+captures 79 check-runs (71 success, 6 skipped, 2 failure) and 11 `gates-ran`
+commit statuses: the ten pendings end at 2026-11-18T02:21:38Z, then at
+02:36:24Z the status flips to **success — "All required checks executed on
+this exact head"**, and `Mutation gate (changed critical lines)` itself is a
+**success** check-run on the head. CI-exact local replay with the captured
+79-run payload plus the measured 5-file envelope (`check-gates-ran.py
+--require-complete --base-branch develop --event-name pull_request`) exits 0:
+"ok: all 72 required check(s) ran on this head".
+
+**Regression test demonstrated against the actual defect.** Feeding
+develop's `mutation.yml` (`git show d0e8e235a8:...`) through the same parsed
+assertion the new pin uses fails — develop's `pull_request.paths` lacks
+`.github/workflows/mutation-nightly.yml`; HEAD's file passes. Gate suites
+re-run: `tests/test_mutation_targets.py` 36 passed;
+`tests/test_check_gates_ran.py` + `test_gates_ran_publisher_contract.py` +
+`test_gates_ran_merge_group_scope.py` + `test_mutation_pr_gate.py` +
+`test_check_required_checks.py` 182 passed; `check-required-checks.py`
+("77 PR checks match"), `check-workflow-inventory.py` ("clean, 32
+workflows"), `check-suite-inventory.py` ("ok: 21 suite(s) match") all exit 0;
+driver checks `uv sync --locked --extra dev`, `ruff check .`,
+`ruff format --check .` exit 0 (job logs check-0/1/2). Both changed workflows
+parse as YAML with intact triggers.
+
+**Remaining hosted red 1 — `Supply chain (pip-audit)`: registry outage, not a
+finding.** Reproduced the job CI-exact locally (`uv sync --locked
+--all-extras`, `uv pip freeze --exclude-editable`, `pip-audit --strict
+--format=json`): report completed on attempt 1, and
+`scripts/pip_audit_gate.py` exits 0 — "pip-audit OK (1 known, all triaged in
+ALLOWED)". So this branch's dependency set has no untriaged vulnerability;
+the hosted failure is the workflow's own documented third mode ("pip-audit
+produced no usable report after 3 attempts — registry/network outage; retry
+the job", ci.yml/security.yml). Remedy is a hosted job re-run, which is a
+GitHub mutation outside this lane's authority. `uv.lock` is untouched by the
+PR diff (`git diff d0e8e235a8..HEAD -- uv.lock pyproject.toml` is empty), so
+the outage cannot be caused by this PR.
+
+**Remaining hosted red 2 — `test`: inherited from develop, out of this
+lane's scope.** The failing step is `npm audit --audit-level=high` in
+`packages/maistro-canvas/frontend`. Reproduced locally: exit 1, **6 high
+severity vulnerabilities** (picomatch via the vite/vitest/fdir/tinyglobby
+chain — matches the hosted log). `packages/maistro-canvas/frontend/package-lock.json`
+is byte-identical between develop `d0e8e235a8` and this head (empty diff), so
+the red exists on the base branch and is not a regression of the bump. The
+fix is a frontend dependency bump — a separate supply-chain concern with its
+own PR lane; doing it here would change a package this issue does not own.
+Recorded for the operator as the one item this PR inherits rather than
+introduces.
