@@ -18,8 +18,8 @@
 # builder's exact CPython installation so the copied venv runs on the contract
 # interpreter without any managed download. See the stage comments below.
 # ---- frontend build ----
-# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
+# Digest-pinned (#349); node:26-alpine resolved to this index digest 2026-10-25.
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
 RUN npm ci

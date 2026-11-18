@@ -7,7 +7,7 @@
       "digest": "sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72",
       "recorded": "2026-11-16",
       "recorded_in": "#2304",
-      "note": "CPython 3.13.18 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Since #2304 this pin is the Conductor image's pybuild (identity-contract) stage and the root engine image; the Conductor runtime OS layer moved to the 3.15-slim-bookworm row below (itself refreshed to 3.15.2 in the same round). Refreshed again 2026-11-16 (#2304 container-gate round): grype flags CVE-2026-115557 (Critical, fixed 3.13.18) in the 3.13.16 CPython binary of both images built from this digest — the same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363; patch refresh within the 3.13 line, contract identity pins unchanged (coincurve 21.0.0 cp313 wheels).",
+      "note": "CPython 3.13.18 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Since #2304 this pin is the Conductor image's pybuild (identity-contract) stage and the root engine image; the Conductor runtime OS layer moved to the 3.15-slim-bookworm row below (itself refreshed to 3.15.2 in the same round). Refreshed again 2026-11-16 (#2304 container-gate round): grype flags CVE-2026-115557 (Critical, fixed 3.13.18) in the 3.13.16 CPython binary of both images built from this digest — the same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363; patch refresh within the 3.13 line, contract identity pins unchanged (coincurve 21.0.0 cp313 wheels). The same 3.13.16 -> 3.13.18 refresh was re-derived independently in #2120's repair round (registry-API re-resolution of the tag to this OCI index, linux/amd64 present, and the interpreter verified in-container at 3.13.18), so the digest is doubly verified.",
       "used_by": [
         "Dockerfile",
         "packages/hive-conductor/Dockerfile"
@@ -62,11 +62,11 @@
     },
     {
       "image": "node",
-      "tag": "22-alpine",
-      "digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Node 22.x line as of the recording date; frontend build stage only.",
+      "tag": "26-alpine",
+      "digest": "sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797",
+      "recorded": "2026-10-25",
+      "recorded_in": "#2120",
+      "note": "Node 26.x line (dependabot bump from 22-alpine in #2120, superseding the closed 25-alpine bump #1775). Frontend build stage only. Dependabot index pin verified against Docker Hub on 2026-10-25: the tag resolves to this OCI image index (4 platform manifests, linux/amd64 present).",
       "used_by": [
         "packages/hive-conductor/Dockerfile"
       ]
