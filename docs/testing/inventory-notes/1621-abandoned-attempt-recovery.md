@@ -410,3 +410,41 @@ immediately before the guarded transition; the retry remains RUNNING and the
 parent Run remains RUNNING. This changes no test inventory count (the test is
 strengthened, not added). PostgreSQL transaction behavior has not yet been
 executed in this round and remains an explicit validation limitation.
+
+## Verification round at merge head 88da3f5c6d
+
+This round re-verified the repair heads above against the rebuilt merge with
+`origin/develop` and proved the previously missing PostgreSQL execution
+evidence. The settlement fixes from `e65be14577` (restore child settlement in
+`test_retention_conformance.py` and `test_chat_admission.py` before their
+parent transitions) survive the final develop merge verbatim —
+`git diff e65be14577..HEAD` is empty for both test files and for the three
+`transition_run` fence implementations.
+
+Executed at head `88da3f5c6d`, on an isolated pgvector:pg18 container
+migrated through revision 068 (`MAISTRO_TEST_PG_DSN` set):
+
+- The completion fence runs on the PostgreSQL store, not just in-memory and
+  SQLite: `test_a_parent_cannot_complete_while_a_child_run_is_open` passes all
+  nine parameters (`[memory|sqlite|postgres]` × `[failed|cancelled|timed_out]`),
+  including refusal over a `CREATED` child, parent unchanged, non-success
+  legality, and completion after the child settles.
+- The two repaired retention/admission tests pass their `[postgres]` legs.
+- The PR-declared six-file battery: **575 passed / 1 skipped** (422 passed /
+  154 skipped without a DSN — every skipped leg is a PostgreSQL one).
+- Broader changed-package battery, `packages/maistro-core/tests/runs` plus all
+  `packages/maistro-server/tests`: **2573 passed / 4 skipped**.
+- `test_container_wiring.py`: 63 passed. Ruff check and format check pass.
+  `scripts/check-suite-inventory.py`: 21 suites match the recorded inventory.
+  Exact CI vulture invocation (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): 1235 findings against 1236 reviewed identities, pass.
+  mypy reports only the pre-existing missing-stub errors for
+  `maistro_bootstrap`/`maistro_canvas` that also reproduce on unmodified
+  develop with the dev-only venv; no branch-introduced typing errors.
+
+Still outstanding, unchanged in kind from the rounds above: the
+read-then-write guard around recovered parking is exercised on the sqlite
+container (`test_chat_attempt_recovery.py`), so its PostgreSQL transaction
+path remains unexecuted here; PostgreSQL worker kill/restart acceptance for
+#232 stays outside this PR's proof; and the captured PR body still carries
+negated closure wording that only an owner can correct.
