@@ -515,6 +515,12 @@ class PgRunStore:
         the same connection commits Run and binding together or not at all
         (#1845). The statements are ``create_run``'s, unchanged.
         """
+        if run.parent_run_id is not None:
+            parent = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", run.parent_run_id)
+            )
+            if parent.status in TERMINAL_RUN_STATUSES:
+                raise RunIntegrityError("cannot create child Run under a terminal Run")
         await self._lock_root_admission(conn, run)
         await conn.execute(
             """INSERT INTO canonical_runs

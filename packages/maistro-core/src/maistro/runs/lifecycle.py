@@ -327,14 +327,12 @@ def is_reclaimed_attempt(attempt: Attempt) -> bool:
     """Whether crash recovery, not an outcome or a person, settled this Attempt.
 
     The status alone cannot say: CANCELLED is also what a requested
-    cancellation records. The sweep's own error text is the evidence, which is
-    why `reclaimed_attempt_error` and this predicate compare the exact holder marker.
+    cancellation records. The persisted cancellation cause is authoritative;
+    error text is descriptive evidence for operators, never a recovery branch.
     """
-    lease = attempt.execution_lease
     return (
         attempt.status is RECLAIMED_ATTEMPT_STATUS
-        and lease is not None
-        and attempt.error == reclaimed_attempt_error(lease.holder)
+        and attempt.cancellation_cause is CancellationCause.RECOVERED
     )
 
 

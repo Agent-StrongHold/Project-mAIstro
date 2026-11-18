@@ -980,6 +980,8 @@ class InMemoryRunStore:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is not None:
             parent = self._require_run(parent_run_id)
+            if parent.status in TERMINAL_RUN_STATUSES:
+                raise RunIntegrityError("cannot create child Run under a terminal Run")
             validate_child_scope(
                 parent,
                 workspace_id=graph.workspace_id,

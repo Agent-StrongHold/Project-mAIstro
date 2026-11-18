@@ -1561,12 +1561,8 @@ class Container:
         after_run = await self.run_store.get_run(before_node.run_id)
         accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
         node_disposition = before_node.status is not reconciled.status
-        settled = (
-            before_run.status not in TERMINAL_RUN_STATUSES
-            and after_run is not None
-            and after_run.status in TERMINAL_RUN_STATUSES
-        )
-        return accepted or node_disposition or settled
+        run_disposition = after_run is not None and before_run.status is not after_run.status
+        return accepted or node_disposition or run_disposition
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100

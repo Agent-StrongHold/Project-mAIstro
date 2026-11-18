@@ -2596,6 +2596,21 @@ async def test_a_parent_cannot_complete_while_a_child_run_is_open(
     ).status is RunStatus.COMPLETED
 
 
+async def test_a_terminal_parent_rejects_late_child_admission(spine: Any) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+
 async def test_a_parent_cannot_complete_while_a_human_node_run_is_paused(spine: Any) -> None:
     await _assert_completion_over_a_paused_human_node_refused(spine)
 
@@ -2766,6 +2781,21 @@ async def test_a_live_lease_is_not_reclaimed(spine: Any) -> None:
 
 async def test_renewal_pushes_the_expiry_out(spine: Any) -> None:
     await _assert_renewal_pushes_the_expiry_out(spine)
+
+
+async def test_recovery_classification_uses_cause_not_matching_error_text(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    _node_run, active = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    assert active.execution_lease is not None and active.execution_lease.expires_at is not None
+    reclaimed = await store.reclaim_expired_attempts(
+        now=active.execution_lease.expires_at + timedelta(seconds=1)
+    )
+    persisted = reclaimed[0].model_copy(update={"cancellation_cause": None})
+
+    from maistro.runs.lifecycle import is_reclaimed_attempt
+
+    assert persisted.error == reclaimed[0].error
+    assert not is_reclaimed_attempt(persisted)
 
 
 async def test_a_lapsed_lease_is_reclaimed(spine: Any) -> None:

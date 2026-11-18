@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +31
+  packages/maistro-core/tests: +38
   packages/maistro-server/tests: +10
 ---
 
@@ -94,7 +94,9 @@ maistro-core (+8): `refuse_completion_while_children_open` makes a parent Run's
 cancellation and timeout stay legal. The spine conformance suite gains the
 refusal and the eventual-completion case on every backend (2 tests × 3
 backends = +6), and the delegation suite proves a delegate_remote child keeps
-its delegating parent un-completable while the child is in flight (+1). The recovery
+its delegating parent un-completable while the child is in flight (+1). The added regressions cover late-child admission rejection across the stores,
+recovery classification by persisted cancellation cause rather than error text,
+and repair-budget accounting when only the parent Run moves to WAITING. The recovery
 replay also revalidates that a reclaimed Attempt is still current immediately
 before parking; a regression test inserts a leased retry after the replay's
 selection snapshot and confirms the active NodeRun and Run remain `RUNNING` (+1).

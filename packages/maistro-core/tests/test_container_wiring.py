@@ -1284,6 +1284,44 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
     assert open_runs_sample["value"] >= 1
 
 
+async def test_parent_only_recovery_progress_consumes_budget() -> None:
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-budget")).project_id
+    graph = Graph(
+        workspace_id="recovery-budget",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id,
+        lease_holder="worker-budget",
+        lease_ttl=timedelta(seconds=30),
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after_lapse = lease.expires_at + timedelta(seconds=1)
+    assert await store.reclaim_expired_attempts(now=after_lapse)
+
+    assert await container.recover_abandoned_attempts(now=after_lapse, limit=1) == 1
+    settled_node = await store.get_node_run(node_run.node_run_id)
+    settled_run = await store.get_run(run.run_id)
+    assert settled_node is not None and settled_node.status is RunStatus.WAITING
+    assert settled_run is not None and settled_run.status is RunStatus.WAITING
+
+
 async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
