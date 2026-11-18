@@ -15,6 +15,15 @@ PYSEC-2026-1325 ("upstream states there is no planned fix"), which
 ``scripts/pip_audit_gate.py`` already solved with a triaged allowlist. This
 module mirrors that design for npm: one list, one verdict.
 
+Waiver ledger: that advisory was waived here from 2026-10-19 (#1450, round 9).
+On 2026-11-18 npm's advisory database stopped reporting it — ``npm audit
+--json`` returned **zero** advisories against the identical lock (picomatch
+still pinned at 4.0.7, no new release) — and the two-way ratchet below
+consumed the waiver (#2375): a waiver whose advisory stops being reported must
+go with it. ALLOWED is empty again; the gate stays so the next unpatchable
+advisory gets the same triaged treatment, and if the advisory resurfaces it
+blocks again until it is re-triaged on its own merits.
+
 Contract
 --------
 The workflow step writes the JSON report and this gate owns the verdict::
@@ -62,23 +71,11 @@ BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 # advisory on it too. Each entry must name an advisory with no available fix
 # and say why the tree is acceptable anyway, specifically enough to re-audit.
 # An entry whose advisory stops being reported fails as stale — delete it.
-ALLOWED: dict[str, str] = {
-    "GHSA-fc5q-39xc-vjpf": (
-        "picomatch ReDoS through single-branch repeated extglobs. The "
-        "advisory lists every published picomatch as vulnerable (range "
-        "<=4.0.7 and 4.0.7 is the newest release) with no patched version, "
-        "and picomatch is a hard dependency of the frontend's dev toolchain: "
-        "vite@8 depends on picomatch ^4.0.7 directly and tinyglobby 0.2.x "
-        "depends on it. No lock refresh, override, or upgrade can produce a "
-        "report without it; `npm audit fix --force` was executed and still "
-        "exited 1, downgrading into an older vite tree carrying additional "
-        "launch-editor and vite advisories. Build/test-time exposure only: "
-        "picomatch reaches the tree through devDependencies (vite, vitest, "
-        "@vitejs/plugin-react) and is never shipped in the built bundle. "
-        "Delete this waiver the moment the audit report stops listing the "
-        "advisory."
-    ),
-}
+# (Empty since 2026-11-18 (#2375): the picomatch waiver GHSA-fc5q-39xc-vjpf
+# was consumed by the two-way ratchet — npm's advisory database stopped
+# reporting the advisory against the unchanged lock. History in the module
+# docstring and REPAIR-NOTES-1450-round9-picomatch-audit-gate.md.)
+ALLOWED: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -255,7 +252,8 @@ def audit_report(path: str) -> int:
         print(
             "\nFix by upgrading the affected dependency. Only add an advisory ID "
             "to ALLOWED in scripts/npm_audit_gate.py when no fixed version exists, "
-            "and say why — the way GHSA-fc5q-39xc-vjpf is documented there."
+            "and say why, specifically enough to re-audit — the comment block "
+            "above ALLOWED spells out the bar."
         )
         return 1
 

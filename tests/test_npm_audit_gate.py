@@ -5,6 +5,12 @@ The report fixtures mirror the real shape of ``npm audit --json`` captured on
 GHSA-fc5q-39xc-vjpf cascading through fdir/tinyglobby/vite/vitest/
 @vitejs/plugin-react): ``via`` mixes real advisory objects (with a GHSA URL)
 with bare strings naming the package that carries the advisory.
+
+That advisory stopped being reported by npm's advisory database the same day
+(zero advisories against the identical lock, picomatch still 4.0.7), and the
+gate's two-way ratchet retired the production waiver (#2375). So every test
+here injects its waivers explicitly via ``_run(allowed=...)`` — none depends
+on the production ALLOWED ledger except the one that pins the retirement.
 """
 
 from __future__ import annotations
@@ -133,9 +139,14 @@ def _run(
     return rc
 
 
-def test_the_real_picomatch_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """The live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report())
+def test_a_triaged_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
+    """A triaged waiver covers the advisory AND every package it cascades into."""
+    rc = _run(
+        gate,
+        tmp_path,
+        _picomatch_report(),
+        allowed={"GHSA-fc5q-39xc-vjpf": "triaged 2026-10-19: no patched picomatch release"},
+    )
     out = capsys.readouterr().out
     assert rc == 0
     assert "allowed: GHSA-fc5q-39xc-vjpf" in out
@@ -174,11 +185,19 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={"GHSA-fc5q-39xc-vjpf": "triaged 2026-10-19: no patched picomatch release"},
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
     assert "outside the triaged allowlist" in out
+    # the verdict fails fast on the blocker: the gate names the new ID and
+    # never reaches the allowed-entries printout (waivers are acknowledged
+    # only once nothing blocks)
 
 
 def test_the_cascade_direction_is_two_sided(gate, tmp_path, capsys) -> None:
@@ -236,7 +255,7 @@ def test_a_malformed_vulnerabilities_object_is_an_infrastructure_failure(gate, t
 
 
 def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path, capsys) -> None:
-    """A clean report with a live waiver must fail until the waiver is deleted."""
+    """A waiver for an advisory the report no longer lists must fail until deleted."""
     report = {
         "auditReportVersion": 2,
         "vulnerabilities": {
@@ -261,11 +280,50 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report)
+    rc = _run(gate, tmp_path, report, allowed={"GHSA-gone": "waived last quarter"})
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
-    assert "GHSA-fc5q-39xc-vjpf" in out
+    assert "GHSA-gone" in out
+    assert "delete it from ALLOWED" in out
+
+
+def test_a_fully_clean_report_passes(gate, tmp_path, capsys) -> None:
+    """The post-retirement shape: zero advisories, empty allowlist, exit 0.
+
+    This is the live production situation since npm's advisory database
+    stopped reporting GHSA-fc5q-39xc-vjpf on 2026-11-18 (#2375).
+    """
+    report = {
+        "auditReportVersion": 2,
+        "vulnerabilities": {},
+        "metadata": {
+            "vulnerabilities": {
+                "info": 0,
+                "low": 0,
+                "moderate": 0,
+                "high": 0,
+                "critical": 0,
+                "total": 0,
+            }
+        },
+    }
+    rc = _run(gate, tmp_path, report, allowed={})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "npm audit OK (0 advisories reported, all triaged in ALLOWED)" in out
+
+
+def test_the_retired_picomatch_waiver_is_gone_from_the_production_allowlist(gate) -> None:
+    """The production ledger carries no waiver npm no longer justifies (#2375).
+
+    Regression pin for the 2026-11-18 CI red: npm stopped reporting
+    GHSA-fc5q-39xc-vjpf while the lock still carried picomatch 4.0.7, so the
+    stale waiver failed every run until it was deleted. Re-adding it without
+    an actively reported advisory re-breaks the same way — triage belongs in
+    ALLOWED only while the advisory is real.
+    """
+    assert "GHSA-fc5q-39xc-vjpf" not in gate.ALLOWED
 
 
 def test_usage_error(gate) -> None:
