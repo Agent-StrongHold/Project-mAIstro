@@ -28,6 +28,11 @@ test("Capabilities happy path: list slots and re-discover over the public API", 
   // POST /v1/capabilities/discover requires config.write (authorization.py).
   // loginAsPM only seeds dags.write; admin holds config.write without elevation
   // (same pattern as settings / credentials / workspace-lifecycle e2e).
+  // beforeEach logged this context in as PM, and App.tsx's AuthGuard renders
+  // the authenticated shell for ANY path once a session cookie exists (there
+  // is no /login route) -- so the PM cookie must go before admin can reach
+  // the login form, which otherwise never mounts.
+  await page.context().clearCookies();
   await loginAsAdmin(page);
 
   const listPromise = page.waitForResponse(

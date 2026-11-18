@@ -69,6 +69,10 @@ test.describe("RUM schema redaction rules", () => {
   test("page route templates are the single SPA segment", () => {
     expect(normalizePageRoute("/dashboard")).toBe("/dashboard");
     expect(normalizePageRoute(`/dashboard/${RAW_AGENT_ID}`)).toBe("/dashboard/*");
+    // #2273: Capabilities is the unified surface's own SPA root. Missing it
+    // here normalized every live-collection event on /capabilities to
+    // "unknown", which fails the page-load test's /^\// route assertions.
+    expect(normalizePageRoute("/capabilities")).toBe("/capabilities");
     // A direct navigation can be arbitrary too; only literal SPA roots may
     // become route dimensions.
     expect(normalizePageRoute(`/${RAW_AGENT_ID}`)).toBe("unknown");
