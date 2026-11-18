@@ -478,3 +478,59 @@ whether the external npm-audit block moved. **It has not.**
     branch diff vs develop = 38 files, frontends differ only by `.npmrc`.
 - No tree change this round beyond this documentation record; no
   inventory-note delta (no tests added or moved).
+
+## Round: unsatisfiability proof at `99d07cccf5` (2026-11-18, job 8dfe5a743)
+
+Dispatched to fix the named red gate. Fresh dispatch context (37 API calls,
+captured 2026-11-18T05:38Z) first corrects the brief: at the pushed head
+`a7da3a4917` **"Container scan + SBOM + cosign" is green** — the check-run
+census is 79 runs, 78 success, exactly 1 failure: `test` (job 134502090130,
+run 44214877097), whose red step is `npm audit --audit-level=high`
+(ci.yml:702, `packages/maistro-canvas/frontend`'s standalone audit). The
+brief's named failure is stale board accounting from head `a11908f33`.
+
+**New decisive evidence this round — the audit is unsatisfiable with ANY
+released dependency set** (prior rounds asserted this; now proven empirically):
+
+- Registry re-check fresh: picomatch latest is still 4.0.7 (2026-08-24).
+  GHSA-fc5q-39xc-vjpf range is `<=4.0.7` — i.e. **every released picomatch
+  version is in the vulnerable range**; tinyglobby is flagged `*` (all
+  versions, via fdir `>=5.2.1` + picomatch); vite `>=6.3.0-beta.0` (all of
+  6.3+/7.x/8.x) uses tinyglobby → picomatch. Any tree containing vite >=6.3
+  or any picomatch fails the audit.
+- Downgrade experiment (npm's own `fixAvailable` suggestions: vite 6.2.7,
+  vitest 3.1.4, @vitejs/plugin-react 5.2.0), run in an isolated scratch copy
+  with a fresh lockfile: the audit gets **worse**, not better — 7
+  vulnerabilities (1 moderate, 4 high, 2 **critical**: tinypool `<=2.1.1`
+  GHSA-5gmw-xhrv-c9v3 / GHSA-85c8-ppgw-ccpr; plus the vite `<=6.4.3`
+  advisory pile, fix 6.4.6 — which re-enters the picomatch chain). Exit 1.
+- Version-lattice conclusion: vite `<6.3.0-beta.0` → covered by the
+  `<=6.4.3` advisories; vite `>=6.3.0-beta.0` → picomatch chain. vitest
+  `>=3.1.2` → picomatch chain; vitest `~3.1.4` → critical tinypool. No
+  clean vite and no clean vitest exist today. `npm audit
+  --audit-level=high` for this package therefore cannot pass until upstream
+  ships patched picomatch/tinyglobby (and the vite/tinypool lines for any
+  hypothetical downgrade path). Removing vite/vitest or `--omit=dev` would
+  be a gate weakening or a toolchain rewrite — out of scope.
+- Block not branch-introduced: `origin/develop` canvas frontend pins are
+  byte-identical (`vite ^8.1.6`, `vitest ^5.0.0`, `@vitejs/plugin-react
+  ^6.0.1`) — develop fails this step identically. Local reproduction at
+  this head: exit 1, metadata 0 info / 0 low / 0 moderate / **6 high** /
+  0 critical (picomatch chain only: fdir 6.5.0, tinyglobby 0.2.17,
+  picomatch 4.0.7 — dev tooling).
+- Driver ran no deterministic checks this round (manifest `checks: []`, no
+  `check-*.log` in the job dir); all validation below self-executed.
+
+Acceptance battery re-proven at `99d07cccf5` (all deterministic, all green):
+`uv run pytest tests/pi_recovery -q` → 177 passed + 32 subtests;
+`uv run pytest packages/maistro-rsi/tests/test_free_router.py -q` → 22
+passed; `uv run python scripts/check-suite-inventory.py --suite tests/` →
+ok (matches recorded baseline); `uv run python
+scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` → 1236 identities match; `uv run ruff check .`
+→ pass; `uv run ruff format --check .` → pass (3587 files). No tree change
+beyond this record; no tests added or moved, so no inventory-note delta.
+
+**Required next action is outside this lane:** upstream patched releases
+(picomatch/tinyglobby lockfile bump) or a policy-owner re-scope of the
+standalone audit step (ci.yml:702). Escalated as NEEDS-DEEP-REVIEW.
