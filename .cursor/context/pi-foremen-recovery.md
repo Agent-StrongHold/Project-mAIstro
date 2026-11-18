@@ -383,3 +383,62 @@ Gate proofs at the merged head c2a3025142:
   repair, and no in-tree exception mechanism exists for the plain
   `npm audit --audit-level=high` step (ci.yml:702) short of weakening the gate.
   Left red pending an upstream picomatch patch; flagged for the next round.
+
+## Round 2026-11-18 (head a7da3a4917): verification round — brief-named gate
+resolved, npm-audit block re-proven external and still unpatched
+
+Lane brief named "Container scan + SBOM + cosign: failure" (board accounting at
+a11908f33) and "Previous block: recovery budget exhausted (provider 404)".
+Both are stale/resolved at this head:
+
+- Check-runs snapshot for a7da3a4917 (fresh API read 2026-11-18, plus the
+  capture in jobs/a2bf0b80091f…/dispatch-context.json): `Container scan +
+  SBOM + cosign` completed **success** (security workflow run 44214879080,
+  job 134502096573), `Coverage gate (publish-set floor + diff coverage)`
+  completed **success** (run 44214877091, job 134509189354 — the PRIOR
+  ATTEMPT HISTORY's red gate), `security`,
+  `exact-debt-ledger`, `Quality / Vulture`, `workflow-lint` and every Quality
+ /* job success. The provider-404 run-block was repo-side fixed by c4ae258ae0
+  (OpenRouter-owned resolve) — driver checks at this head: uv sync ok, ruff
+  check ok, ruff format --check ok (3587 files), pytest
+  packages/maistro-rsi/tests/test_free_router.py 22 passed, suite inventory
+  packages/maistro-rsi/tests ok (1798).
+- The actually red check at this head is **`test` (conclusion failure, job
+  134502090130, run 44214877097, completed 2026-11-18T01:31:14Z)**. Full job
+  log read: every Python suite green (server 659 passed / 11 skipped, turing
+  225, turing-backend 138, design 662, ext-harness 273, ext-sdk 147, root
+  tests/ 5997 passed / 140 skipped / 32 subtests, conductor backend + both
+  frontend lint/build/test:ci green); the job fails in its LAST step,
+  `npm audit --audit-level=high` (ci.yml:702, working-directory
+  packages/maistro-canvas/frontend): picomatch GHSA-fc5q-39xc-vjpf, 6 high.
+  The two "Event loop is closed" annotations are aiosqlite thread warnings
+  (PytestUnhandledThreadExceptionWarning) under test_webhooks.py — warnings,
+  not failures.
+- Fresh upstream state verified 2026-11-18 (do not re-litigate without a new
+  fact): registry `npm view picomatch` latest = **4.0.7** (published
+  2026-08-24, predates the advisory); advisory GHSA-fc5q-39xc-vjpf
+  `patched_versions: None`, vulnerable range `<= 4.0.7` (= every released
+  version), updated 2026-11-17T15:56:44Z; fdir 6.5.0 depends on
+  `picomatch ^4.0.4`, so every resolvable tree member is vulnerable. npm's
+  "fix available: vitest@3.1.4 (breaking)" is contradictory output — no
+  picomatch version escapes the range, so the only audit-clean trees contain
+  no picomatch at all.
+- Not introduced by this branch, proven: `git diff origin/develop..HEAD --
+  packages/maistro-canvas/frontend/ packages/hive-conductor/frontend/package-lock.json`
+  = `.npmrc` +2 lines only (the 0a5e94f0ba semgrep fix); both lockfiles and
+  package.json byte-identical to develop, and the six vulnerable-path
+  versions (picomatch 4.0.7, fdir 6.5.0, tinyglobby 0.2.17, vitest 5.1.0,
+  vite 8.3.8, @vitejs/plugin-react 6.3.0) match develop exactly. Local
+  `npm audit --audit-level=high` at this head reproduces CI's report
+  verbatim (6 high). Develop's last GREEN merge-group run of ci.yml
+  (d0e8e235a8, 2026-11-17T09:31Z) predates the advisory-DB refresh
+  (15:56Z) — develop tip now fails the same step identically. The branch
+  cannot enqueue until upstream patches picomatch or policy re-scopes the
+  audit step; both are outside this lane's authority (no gate weakening).
+- Issue acceptance re-proven at this head: `tests/pi_recovery` 177 passed +
+  32 subtests (85 issue-sanctioned cases from pi-foremen-recovery.md + 92
+  coverage-repair cases from pi-foremen-recovery-coverage.md, both notes
+  carry `inventory-delta:` front-matter); root suite inventory ok (6230
+  identities, matches recorded baseline); driver checks above. No source,
+  gate, ledger, lockfile or test change this round; documentation only, so
+  no inventory-note delta.
