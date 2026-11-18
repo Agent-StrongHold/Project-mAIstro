@@ -554,8 +554,13 @@ def _register_layer_routes(
         updated = await store.update_layer(layer, org_id=auth.org_id)
         return JSONResponse(content=updated.to_dict())
 
+    # Named after the store operation it delegates to, like the sibling
+    # handlers above (`update_layer` → ``store.update_layer``,
+    # `reorder_layers` → ``store.reorder_layers``): the legacy DELETE route
+    # stays live on the transitional surface, and the handler carries the
+    # store method's name rather than a second spelling of the HTTP verb.
     @router.delete("/{canvas_id}/layers/{layer_id}")
-    async def delete_layer(
+    async def remove_layer(
         canvas_id: str,
         layer_id: str,
         auth: CurrentUser = Depends(get_current_user),

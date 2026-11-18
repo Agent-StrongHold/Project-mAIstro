@@ -331,8 +331,23 @@ async def _start_canvas_job_runner(
     in-process spine cannot see admitted Runs, and the worker service refuses
     the same situation for the same reason.
 
+    An explicit opt-out precedes all of that: a deployment running the
+    supported ``maistro-canvas-worker`` service sets
+    ``CANVAS_SERVER_CONSUMER_ENABLED=false`` so this process never competes
+    for the shared ``generation_jobs`` queue. The server's governed image
+    egress cannot execute ``refine``, so a claim it wins against the external
+    worker would burn the job's attempts and terminalize it as failed —
+    supplying the external adapter alone does not prevent that race.
+
     Returns the runner handle for the lifespan's shutdown, or None.
     """
+    if not settings.canvas_server_consumer_enabled:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="disabled by configuration (CANVAS_SERVER_CONSUMER_ENABLED=false); "
+            "an externally managed maistro-canvas-worker owns the queue",
+        )
+        return None
     store = getattr(app.state, "canvas_store", None)
     if spine_pool is None:
         await logger.ainfo(

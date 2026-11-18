@@ -13,7 +13,6 @@
       "findings": [
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'composite_canvas'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_canvas'",
-        "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_layer'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'list_layer_jobs'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'start_generate'",
         "packages/maistro-server/src/maistro_server/api/health.py::unused function 'health_check'",
@@ -70,7 +69,6 @@
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'foreground'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'ground_plane'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'horizon_y'",
-        "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'perspective'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'sky'",
         "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'vanishing_x'",
         "packages/maistro-canvas/src/maistro_canvas/types.py::unused variable 'COMPOSITE'",

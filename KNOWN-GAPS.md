@@ -50,7 +50,13 @@ fenced writes, lease reaping). Since #2311 the default composition also
 starts a runner inside the maistro-server process itself: when a Canvas
 store is wired and the spine is durable, the server lifespan builds the
 runtime through `build_canvas_runtime` and runs the claim/lease/reap loop
-with the app's lifecycle, with a truthful logged skip otherwise.
+with the app's lifecycle, with a truthful logged skip otherwise. A
+deployment that runs the `maistro-canvas-worker` service instead sets
+`CANVAS_SERVER_CONSUMER_ENABLED=false` so the server never starts that
+in-process consumer: claiming is not capability-filtered, and the server's
+governed egress cannot execute `refine`, so an unfiltered server claim
+could burn a `refine` (or `reference` side/back-stage) job's attempts and
+terminalize it as failed before the external worker ever saw it.
 
 The server-composed runner's image provider is the governed egress
 (`maistro_server.canvas_runtime`): every generation crosses the Binding →
@@ -59,7 +65,9 @@ replacing the retired `canvas/tool.py` direct LiteLLM POST (the unowned
 image-generation bypass under the #56 umbrella). Two truthful gaps remain
 by design: `refine` is unsupported (the governed gateway exposes no
 image-edits endpoint — deployments that need it supply an adapter through
-`maistro-canvas-worker`), and `seed` / `negative_prompt` / conditioning
+`maistro-canvas-worker`, and must also set
+`CANVAS_SERVER_CONSUMER_ENABLED=false`, since the server-consumer race
+described above would otherwise claim those jobs first), and `seed` / `negative_prompt` / conditioning
 args are not yet part of the governed image request contract, so the
 server-composed client ignores them rather than smuggling them around the
 boundary. The default draft model comes from

@@ -788,3 +788,49 @@ class TestLifespanCanvasRunnerStart:
             async with lifespan(test_app):
                 pass
         assert composed.await_count == 0
+
+    @pytest.mark.contract("behavioral")
+    async def test_disabled_by_configuration_skips_the_start(self) -> None:
+        """The external-worker opt-out (#2311 review): a deployment running the
+        supported ``maistro-canvas-worker`` service sets
+        ``CANVAS_SERVER_CONSUMER_ENABLED=false``, and the server then never
+        competes for the shared queue — even with a durable spine and a wired
+        store. ``tick_once`` claims without capability filtering and the
+        server's governed egress cannot execute ``refine``, so an unfiltered
+        server claim would burn a refine job's attempts into a terminal
+        failure; supplying the external adapter alone does not prevent that
+        race, so the off switch must gate the start itself."""
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        test_app.state.canvas_store = object()
+        settings = Settings(api_keys=[], require_auth=True, canvas_server_consumer_enabled=False)
+
+        composed = AsyncMock(return_value=None)
+        mock_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())
+        with (
+            patch("maistro_server.main.logger", mock_logger),
+            patch("maistro_server.canvas_runtime.start_canvas_job_runner", composed),
+        ):
+            handle = await main_module._start_canvas_job_runner(
+                test_app, settings, MagicMock(), object()
+            )
+
+        assert handle is None
+        assert composed.await_count == 0
+        skipped = [
+            call
+            for call in mock_logger.ainfo.await_args_list + mock_logger.awarning.await_args_list
+            if call.args and call.args[0] == "canvas_runner_not_started"
+        ]
+        assert skipped, "the configuration skip must be logged truthfully"
+        assert any(
+            "CANVAS_SERVER_CONSUMER_ENABLED" in str(call.kwargs.get("detail", ""))
+            for call in skipped
+        )
+
+    @pytest.mark.contract("behavioral")
+    async def test_the_opt_out_defaults_off_so_default_composition_is_unchanged(self) -> None:
+        """Default Settings keep the built-in consumer on: the default
+        composition still owns a reachable consumer (#2311), and the flag only
+        ever removes one."""
+        assert Settings(api_keys=[], require_auth=True).canvas_server_consumer_enabled is True
