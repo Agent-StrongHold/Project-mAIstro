@@ -29,6 +29,18 @@ on:
       - 'packages/**/*.py'
       - 'quality/mutation-critical-files.json'
       - 'quality/mutation-baseline.json'
+      # The image-pin registry is a recurring non-Python integrity surface
+      # (#93, #1152, #1373, #2120): with no matching path such a PR never
+      # triggers this workflow, so the required-set row that
+      # scripts/check-required-checks.py derives from it has no check-run on
+      # the candidate head and gates-ran stays pending forever. Measured on
+      # #2120's head fc525a8d86 with the CI-exact check-gates-ran evaluator:
+      # 71/72 required checks present, "Mutation gate (changed critical
+      # lines)" absent -> PENDING. Listing the registry here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence; the job itself fails closed whenever a critical
+      # file does change.
+      - 'quality/image-pins.json'
       - '.github/workflows/mutation.yml'
   workflow_dispatch:
 

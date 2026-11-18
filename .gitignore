@@ -21,6 +21,8 @@ wheels/
 
 # Test/Coverage
 .pytest_cache/
+.cache/
+/actionlint
 htmlcov/
 .coverage
 # Parallel-mode data files: `.coverage.<host>.<pid>.<random>`, which the bare
