@@ -32,11 +32,14 @@ export function LandingSuggestionBanner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Interval/storage refresh closes over a stable callback; read live busy/error
-  // so a failed dismiss is not wiped by the next poll.
+  // so a failed dismiss is not wiped by the next poll. Refs sync after commit —
+  // react-hooks/refs forbids ref writes during render.
   const busyRef = useRef(busy);
   const errorRef = useRef(error);
-  busyRef.current = busy;
-  errorRef.current = error;
+  useEffect(() => {
+    busyRef.current = busy;
+    errorRef.current = error;
+  }, [busy, error]);
 
   const refresh = async () => {
     // Keep a failed dismiss/accept visible — do not let the poll clear the

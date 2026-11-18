@@ -234,6 +234,29 @@ def test_patch_workspace_preference_is_audited(authed_client) -> None:
     assert audited[0]["detail"]["value"] == "brief"
 
 
+def test_settings_audit_view_serves_preference_changes(admin_client) -> None:
+    """The settings audit trail surfaces Workspace preference writes (#1050).
+
+    `GET /v1/settings/audit` serves `profile_preference_set` rows from the one
+    durable audit log, so a user can see Agent/API preference changes where
+    settings changes are shown — without a second log.
+    """
+    stores.audit_log.clear()
+    response = admin_client.patch(
+        "/v1/profile",
+        json={"field": LANDING_KEY, "value": "/goals"},
+    )
+    assert response.status_code == 200
+    trail = admin_client.get("/v1/settings/audit")
+    assert trail.status_code == 200
+    preference_rows = [e for e in trail.json() if e["action"] == "profile_preference_set"]
+    assert preference_rows, "settings audit view must surface preference writes"
+    row = preference_rows[0]
+    assert row["target"] == LANDING_KEY
+    assert row["detail"]["source"] == "api"
+    assert row["detail"]["value"] == "/goals"
+
+
 def test_suggestion_cooldown_round_trips_on_profile() -> None:
     """Dismiss cooldown is a durable profile preference, not browser-only."""
     until = 1_800_000_000_000
