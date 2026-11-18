@@ -4,7 +4,11 @@ The report fixtures mirror the real shape of ``npm audit --json`` captured on
 2026-11-18 against packages/maistro-canvas/frontend (picomatch
 GHSA-fc5q-39xc-vjpf cascading through fdir/tinyglobby/vite/vitest/
 @vitejs/plugin-react): ``via`` mixes real advisory objects (with a GHSA URL)
-with bare strings naming the package that carries the advisory.
+with bare strings naming the package that carries the advisory. That
+advisory was withdrawn later the same day, so the gate's live ``ALLOWED``
+list is empty again and every test here injects its waiver explicitly —
+including the stale-waiver ratchet that fired on CI when the withdrawal
+landed while the waiver still lingered.
 """
 
 from __future__ import annotations
@@ -20,9 +24,14 @@ import pytest
 PatchedFix = {"name": "vitest", "version": "3.1.4", "isSemVerMajor": True}
 
 
-def _picomatch_report(
-    advisory_id: str = "GHSA-fc5q-39xc-vjpf", severity: str = "high"
-) -> dict[str, Any]:
+PICO_ID = "GHSA-fc5q-39xc-vjpf"
+PICO_WAIVER = (
+    "withdrawn 2026-11-18 as not a security issue; kept here only as the "
+    "triage-shape example the fixtures exercise"
+)
+
+
+def _picomatch_report(advisory_id: str = PICO_ID, severity: str = "high") -> dict[str, Any]:
     """The real cascade shape: one root advisory object, five cascade strings."""
     return {
         "auditReportVersion": 2,
@@ -133,12 +142,12 @@ def _run(
     return rc
 
 
-def test_the_real_picomatch_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """The live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report())
+def test_a_triaged_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
+    """A live waiver covers the advisory AND every package it cascades into."""
+    rc = _run(gate, tmp_path, _picomatch_report(), allowed={PICO_ID: PICO_WAIVER})
     out = capsys.readouterr().out
     assert rc == 0
-    assert "allowed: GHSA-fc5q-39xc-vjpf" in out
+    assert "allowed: " + PICO_ID in out
     # every cascaded package is attributed to the one root advisory
     assert "fdir" in out and "tinyglobby" in out and "vitest" in out
     assert "npm audit OK" in out
@@ -150,7 +159,7 @@ def test_an_unwaived_advisory_fails_naming_the_id_and_affecting_packages(
     rc = _run(gate, tmp_path, _picomatch_report(), allowed={})
     out = capsys.readouterr().out
     assert rc == 1
-    assert "GHSA-fc5q-39xc-vjpf" in out
+    assert PICO_ID in out
     # npm's fixAvailable is quoted verbatim as the hint (its forced fix is a
     # lie here — vitest 3.1.4 still depends on vulnerable picomatch — so the
     # gate surfaces it rather than asserting unavailability it cannot know).
@@ -174,7 +183,7 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report)
+    rc = _run(gate, tmp_path, report, allowed={PICO_ID: PICO_WAIVER})
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
@@ -236,7 +245,12 @@ def test_a_malformed_vulnerabilities_object_is_an_infrastructure_failure(gate, t
 
 
 def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path, capsys) -> None:
-    """A clean report with a live waiver must fail until the waiver is deleted."""
+    """A clean report with a lingering waiver must fail until the waiver is deleted.
+
+    This is exactly what CI hit on 2026-11-18: GitHub withdrew
+    GHSA-fc5q-39xc-vjpf, the audit went clean, and the waiver that remained
+    in ALLOWED failed the job as stale.
+    """
     report = {
         "auditReportVersion": 2,
         "vulnerabilities": {
@@ -261,11 +275,11 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report)
+    rc = _run(gate, tmp_path, report, allowed={PICO_ID: PICO_WAIVER})
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
-    assert "GHSA-fc5q-39xc-vjpf" in out
+    assert PICO_ID in out
 
 
 def test_usage_error(gate) -> None:

@@ -699,13 +699,15 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: npm run build
         working-directory: packages/maistro-canvas/frontend
-      # GHSA-fc5q-39xc-vjpf (picomatch ReDoS) lists every published picomatch
-      # as vulnerable with no patched release, and vite@8 depends on picomatch
-      # ^4.0.7 directly, so bare `npm audit` cannot exit 0 on any lock this
-      # frontend can produce until upstream ships a patch. Same shape as the
-      # Python supply chain (PYSEC-2026-1325), same answer: the step writes the
-      # JSON report and scripts/npm_audit_gate.py owns the verdict. Any
-      # high/critical advisory outside the gate's triaged ALLOWED list still
+      # The step writes the JSON report and scripts/npm_audit_gate.py owns the
+      # verdict — bare `npm audit` cannot be trusted after GHSA-fc5q-39xc-vjpf
+      # (picomatch ReDoS, every published picomatch listed as vulnerable with no
+      # patched release) made the raw step unsatisfiable for weeks. That
+      # advisory was withdrawn by GitHub on 2026-11-18 as not a security issue,
+      # and its waiver was deleted from the gate's ALLOWED list per the same
+      # gate's two-way ratchet. Same shape as the Python supply chain
+      # (PYSEC-2026-1325): the gate is the standing verdict owner. Any
+      # high/critical advisory outside the triaged ALLOWED list still
       # fails the job — including future advisories on the same packages — and
       # a waiver whose advisory stops being reported fails as stale.
       - run: npm audit --json > /tmp/npm-audit.json || true

@@ -19,6 +19,7 @@ from maistro.runs import (
 )
 from maistro.runs.execution import ExecutionYielded
 from maistro.runs.lifecycle import InvalidLifecycleTransition
+from maistro.runs.model import CancellationCause
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -934,6 +935,37 @@ class _PrelaunchRaceStore(InMemoryRunStore):
         if self._refused and self._vanish_after_refusal:
             return None
         return await super().get_attempt(attempt_id, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_requested_cancelled_prelaunch_settle_never_routes_through_the_seam() -> None:
+    """A requested stop (CancelledError) on a CREATED Attempt stays REQUESTED (#2369).
+
+    The executor feeds `_failure_disposition(CancelledError)` — status CANCELLED
+    — into `_terminalize_if_open`. The prelaunch seam must fire only for a
+    non-requested failure (status is not CANCELLED); a requested stop of
+    never-launched work takes the ordinary terminalize path: CANCELLED with no
+    RECOVERED stamp, still CREATED-unstarted, and this caller owns the
+    settle. Routing it through `compensate_unlaunched_attempt` would turn an
+    operator's decision into a crash-recovery artefact and park the node for
+    a retry nobody asked for.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+
+    settled, owned = await service._terminalize_if_open(
+        attempt.attempt_id, AttemptStatus.CANCELLED, fencing_token=token
+    )
+
+    assert owned is True
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is not CancellationCause.RECOVERED
+    assert settled.started_at is None
+    assert settled.finished_at is not None
+    reopened = await store.get_attempt(attempt.attempt_id)
+    assert reopened is not None
+    assert reopened.cancellation_cause is None
+    # The overridden store marks every seam call: zero means the guard held.
+    assert store._refused is False
 
 
 async def _prelaunch_rig() -> tuple[_PrelaunchRaceStore, AttemptExecutionService, Attempt, str]:

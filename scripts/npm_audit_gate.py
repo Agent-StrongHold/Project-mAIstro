@@ -4,11 +4,16 @@
 The ci.yml ``test`` job used to run bare ``npm audit --audit-level=high`` over
 ``packages/maistro-canvas/frontend``. That step became unsatisfiable on every
 tree when GHSA-fc5q-39xc-vjpf (picomatch ReDoS, published 2026-10-19) landed:
-the advisory lists *every published picomatch* as vulnerable (range
+the advisory listed *every published picomatch* as vulnerable (range
 ``<=4.0.7``; 4.0.7 is the newest release) with **no patched version**, and
 picomatch is a hard dependency of the frontend's dev toolchain — vite@8.3.8
 depends on ``picomatch ^4.0.7`` directly and tinyglobby 0.2.17 depends on it —
-so no lock refresh, override, or upgrade can produce a report without it.
+so no lock refresh, override, or upgrade could produce a report without it.
+That advisory was **withdrawn by GitHub on 2026-11-18** (determined not to be
+a security issue), so the audit is clean again and its waiver was deleted
+here per the two-way ratchet below. The gate itself stays: it is what makes
+the next untriaged high/critical advisory fail this job instead of sailing
+through a bare ``|| true``.
 
 This is the same shape the Python supply chain hit with ``ecdsa`` /
 PYSEC-2026-1325 ("upstream states there is no planned fix"), which
@@ -62,23 +67,13 @@ BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 # advisory on it too. Each entry must name an advisory with no available fix
 # and say why the tree is acceptable anyway, specifically enough to re-audit.
 # An entry whose advisory stops being reported fails as stale — delete it.
-ALLOWED: dict[str, str] = {
-    "GHSA-fc5q-39xc-vjpf": (
-        "picomatch ReDoS through single-branch repeated extglobs. The "
-        "advisory lists every published picomatch as vulnerable (range "
-        "<=4.0.7 and 4.0.7 is the newest release) with no patched version, "
-        "and picomatch is a hard dependency of the frontend's dev toolchain: "
-        "vite@8 depends on picomatch ^4.0.7 directly and tinyglobby 0.2.x "
-        "depends on it. No lock refresh, override, or upgrade can produce a "
-        "report without it; `npm audit fix --force` was executed and still "
-        "exited 1, downgrading into an older vite tree carrying additional "
-        "launch-editor and vite advisories. Build/test-time exposure only: "
-        "picomatch reaches the tree through devDependencies (vite, vitest, "
-        "@vitejs/plugin-react) and is never shipped in the built bundle. "
-        "Delete this waiver the moment the audit report stops listing the "
-        "advisory."
-    ),
-}
+#
+# Currently empty: the one waiver this gate ever carried (GHSA-fc5q-39xc-vjpf,
+# picomatch ReDoS) was withdrawn by GitHub on 2026-11-18 as not a security
+# issue, so the audit reports nothing and the ratchet required its deletion.
+# Re-add an entry only for an advisory that keeps failing with no fix
+# available, with a rationale specific enough to re-audit.
+ALLOWED: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -255,7 +250,7 @@ def audit_report(path: str) -> int:
         print(
             "\nFix by upgrading the affected dependency. Only add an advisory ID "
             "to ALLOWED in scripts/npm_audit_gate.py when no fixed version exists, "
-            "and say why — the way GHSA-fc5q-39xc-vjpf is documented there."
+            "with a rationale specific enough to re-audit."
         )
         return 1
 
