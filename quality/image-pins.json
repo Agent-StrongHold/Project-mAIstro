@@ -40,11 +40,11 @@
     },
     {
       "image": "python",
-      "tag": "3.14.8-slim-bookworm",
-      "digest": "sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83",
-      "recorded": "2026-10-23",
-      "recorded_in": "#2117",
-      "note": "Autonoetic Copier template base. Dependabot index pin verified against Docker Hub on 2026-10-23; its linux/amd64 image config reports PYTHON_VERSION=3.14.8. The mutable tag has since advanced to a newer index; this row preserves the reviewed immutable Dependabot pin. The single-tenant template retains its separate 3.12.12 pin.",
+      "tag": "3.15.0-slim-bookworm",
+      "digest": "sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d",
+      "recorded": "2026-11-18",
+      "recorded_in": "#2375",
+      "note": "Autonoetic Copier template base. Dependabot index pin (semver-minor 3.14.8 -> 3.15.0, #2375) re-verified against Docker Hub on 2026-11-18: `docker buildx imagetools inspect python:3.15.0-slim-bookworm` resolves the tag to exactly this index digest, and the linux/amd64 manifest annotates org.opencontainers.image.version 3.15.0-slim-bookworm with its image config reporting PYTHON_VERSION=3.15.0. Supersedes the #2117 3.14.8 row, whose mutable tag had already advanced past the old pin. The single-tenant template retains its separate 3.12.12 pin.",
       "used_by": [
         "templates/autonoetic/Dockerfile.jinja"
       ]
