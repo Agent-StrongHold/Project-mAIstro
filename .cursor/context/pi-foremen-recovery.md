@@ -442,3 +442,39 @@ Both are stale/resolved at this head:
   identities, matches recorded baseline); driver checks above. No source,
   gate, ledger, lockfile or test change this round; documentation only, so
   no inventory-note delta.
+
+## Round: re-verification at `06fa24df46` (2026-11-18, job 6a0df02ecb)
+
+Dispatched after the BLOCKED round above to re-verify acceptance and check
+whether the external npm-audit block moved. **It has not.**
+
+- Upstream re-checked fresh: registry latest picomatch = 4.0.7 (unchanged,
+  2026-08-24); advisory GHSA-fc5q-39xc-vjpf still `vulnerable <= 4.0.7` with
+  **no patched version listed**, not withdrawn. origin/develop tip unchanged
+  (`d0e8e235a8`), so no sync is possible or needed.
+- CI at the pushed head `a7da3a4917` unchanged: every workflow success except
+  `CI` run 44214877097, whose only red step is `npm audit --audit-level=high`
+  (ci.yml:702). Local reproduction: exit 1, 6 high (picomatch chain via
+  fdir/tinyglobby/vite — dev tooling only). No non-weakening in-tree fix
+  exists (no fixed version to pin; `audit fix --force` is a breaking vitest
+  downgrade). Blocked on upstream or a policy-owner re-scope, as before.
+- Acceptance re-proven at this head (all deterministic, all green):
+  - `uv run pytest tests/pi_recovery -q` → 177 passed + 32 subtests.
+  - `uv run python scripts/check-suite-inventory.py --suite tests/` → ok,
+    6230 identities match the recorded baseline; both inventory notes carry
+    `inventory-delta:` front-matter (+85 / +92).
+  - `uv run ruff check .` → pass; `uv run ruff format --check .` → pass
+    (3587 files).
+  - `uv run python scripts/check-vulture-baseline.py packages/*/src
+    --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1236
+    identities match the reviewed ledger).
+  - `systemd-analyze --user verify` on all four systemd templates → OK.
+  - `uv run pytest packages/maistro-rsi/tests/test_free_router.py -q` →
+    22 passed (provider-404 resolve fix).
+  - Authority/privacy scan: no credential-shaped strings in tracked
+    `scripts/pi_recovery/` sources (all matches are policy text such as
+    "never credentials"); no 32+ hex session-id lookalikes; no absolute
+    host paths outside `__pycache__` (untracked, 0 pycache in the diff);
+    branch diff vs develop = 38 files, frontends differ only by `.npmrc`.
+- No tree change this round beyond this documentation record; no
+  inventory-note delta (no tests added or moved).
