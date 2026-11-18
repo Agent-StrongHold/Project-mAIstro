@@ -6,8 +6,8 @@
       "tag": "3.13.18-slim-bookworm",
       "digest": "sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72",
       "recorded": "2026-11-16",
-      "recorded_in": "#2251",
-      "note": "CPython 3.13.18 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Refreshed again 2026-11-16 (#2251 CI-repair round): the grype leg fails the 3.13.16 binary on CVE-2026-115557 (CRITICAL, fixed 3.13.18; also clears CVE-2026-12345 / CVE-2026-114583, fixed 3.13.18), a finding the failed 2026-11-16 run never reached because its Trivy step failed first. Locally verified: docker run on the pinned digest reports Python 3.13.18, and the rebuilt maistro-engine image scans clean (trivy HIGH/CRITICAL exit-code 1 + grype --fail-on high --only-fixed).",
+      "recorded_in": "#2120",
+      "note": "CPython 3.13.18 on Debian bookworm-slim; the interpreter pin that keeps coincurve building from source only on purpose. Refreshed from 3.13.15 (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs (CVE-2026-19445/19553/82049) whose fixes landed in 3.13.16. Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale). Refreshed again 2026-11-16 (#2120 repair round): grype v0.116.0 flags CVE-2026-115557 CRITICAL in the CPython 3.13.16 binary (fixed *3.13.18) on every scanned image; digest re-resolved via the Docker Hub registry API (tag 3.13.18-slim-bookworm -> OCI index sha256:a5a7017e…, linux/amd64 present) and the interpreter verified in-container (python --version = 3.13.18). Digest refreshed 2026-10-22 (#1152): security.yml run 39823108438 flags libexpat1 2.5.0-1+deb12u4 (CVE-2025-59375 / CVE-2026-77214, HIGH, fixed 2.5.0-1+deb12u5) in maistro-engine because the buildx gha cache still serves the pre-upgrade `apt-get upgrade` layer; the base-digest bump invalidates that cached layer so the rebuilt image upgrades to deb12u5 (locally verified: fresh builds already resolved deb12u5, so only the cached-CI layer was stale).",
       "used_by": [
         "Dockerfile",
         "packages/hive-conductor/Dockerfile"
@@ -18,8 +18,8 @@
       "tag": "3.12-slim",
       "digest": "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
       "recorded": "2026-11-16",
-      "recorded_in": "#2251",
-      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.16); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh). Refreshed again 2026-11-16 (#2251 CI-repair round): re-resolved the floating tag, which now carries 3.12.16 — the fix release for the same CPython-binary advisories the 3.13.18 refresh clears (CVE-2026-115557 CRITICAL, CVE-2026-114583, CVE-2026-12345, all fixed 3.12.16) that the grype leg would flag on the research and RSI-runner images; docker run on the pinned digest reports Python 3.12.16.",
+      "recorded_in": "#2120",
+      "note": "CPython 3.12.x line as of the recording date (resolves to 3.12.16); research, RSI runner, e2e and sbx-tests images. Refreshed (#363): the grype leg of the container gate flags CPython binary HIGH/CRITICAL CVEs fixed in 3.12.15. Digest refreshed 2026-10-24 (#93): security.yml runs 40081082641/40088232144/40091186336 flag libbrotli1 1.1.0-2+b7 (CVE-2026-111497, HIGH, fixed 1.1.0-2+deb13u1 / DSA-6582-1) in maistro-rsi-runner even though the same runs' build logs show the re-executed apt stage installing 1.1.0-2+deb13u1 — buildx cache keys are computed pre-execution from the instruction string and parent key chain, never from a RUN's fresh bytes, so `--no-cache-filter runtime-apt` re-executes the stage but cannot stop the downstream stages from reusing pre-advisory cache chains (and mode=max cached manifests) that carry the old OS layer into the loaded image. The base-digest bump changes the key chain from the FROM down, so the rebuilt image assembles the freshly executed layers (same doctrine as the 3.13.16-slim-bookworm #1152 refresh). Refreshed again 2026-11-16 (#2120 repair round): grype v0.116.0 flags CVE-2026-115557 CRITICAL in the CPython 3.12.15 binary (fixed 3.12.16); the moving tag re-resolved via the Docker Hub registry API (tag 3.12-slim -> OCI index sha256:5e2bdb1b…, linux/amd64 present) and the interpreter verified in-container (python --version = 3.12.16).",
       "used_by": [
         "Dockerfile.research",
         "Dockerfile.rsi-runner",
@@ -51,11 +51,11 @@
     },
     {
       "image": "node",
-      "tag": "22-alpine",
-      "digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Node 22.x line as of the recording date; frontend build stage only.",
+      "tag": "26-alpine",
+      "digest": "sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797",
+      "recorded": "2026-10-25",
+      "recorded_in": "#2120",
+      "note": "Node 26.x line (dependabot bump from 22-alpine in #2120, superseding the closed 25-alpine bump #1775). Frontend build stage only. Dependabot index pin verified against Docker Hub on 2026-10-25: the tag resolves to this OCI image index (4 platform manifests, linux/amd64 present).",
       "used_by": [
         "packages/hive-conductor/Dockerfile"
       ]
