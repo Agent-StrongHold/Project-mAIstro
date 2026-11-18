@@ -173,6 +173,13 @@ VULNERABILITY_EXCEPTIONS: dict[tuple[str, str], Exception] = {
 #: measured false-positive shape on a first-party toolchain package, triaged
 #: against the locked version recorded in ``versions``; the same rule on a
 #: new version re-fails until re-read.
+# Version provenance: several tuples were extended on 2026-11-18 in the
+# #2399 develop merge — develop's lockfile bumps re-triggered the identical
+# rule IDs on the new locked versions, measured by re-running the full
+# GuardDog scan set against the merged tree and reading the fired
+# (package, rule, version) triples out of the fresh reports. Each added
+# version is one the rule measurably fired on; the shape rationale is
+# unchanged (same package, same rule, patch/minor drift).
 GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
     ("@types/react", "threat-npm-http-dependency"): Exception(
         reason=(
@@ -182,7 +189,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "installable source. No dependency is fetched from it."
         ),
         expires="2027-11-04",
-        versions=("19.2.14",),
+        versions=("19.2.14", "19.3.0"),
     ),
     ("@types/react-dom", "threat-npm-http-dependency"): Exception(
         reason=(
@@ -190,7 +197,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "URL is the types repository, not a fetched dependency."
         ),
         expires="2027-11-04",
-        versions=("19.2.3",),
+        versions=("19.2.3", "19.3.0"),
     ),
     ("react-dom", "metadata_mismatch"): Exception(
         reason=(
@@ -201,7 +208,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "not a tampering signal on its own."
         ),
         expires="2027-11-04",
-        versions=("19.2.0", "19.2.5", "19.2.6"),
+        versions=("19.2.0", "19.2.5", "19.2.6", "19.3.1"),
     ),
     ("pg", "metadata_mismatch"): Exception(
         reason=(
@@ -210,7 +217,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "maintainer artifact, not a tampering signal."
         ),
         expires="2027-11-04",
-        versions=("8.20.0",),
+        versions=("8.20.0", "8.23.1"),
     ),
     ("esbuild", "threat-process-hooks"): Exception(
         reason=(
@@ -231,7 +238,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "Dev-only tool, never shipped."
         ),
         expires="2027-11-04",
-        versions=("9.39.4",),
+        versions=("9.39.4", "9.39.5"),
     ),
     ("vitest", "threat-filesystem-read"): Exception(
         reason=(
@@ -240,7 +247,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "dependency, never shipped."
         ),
         expires="2027-11-04",
-        versions=("5.0.5",),
+        versions=("5.0.5", "5.1.0"),
     ),
     ("vite", "threat-filesystem-read"): Exception(
         reason=(
@@ -249,7 +256,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "Dev-only build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "7.3.8", "8.3.4", "8.3.8"),
     ),
     ("vite", "threat-runtime-enumeration"): Exception(
         reason=(
@@ -258,7 +265,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "7.3.8", "8.3.4", "8.3.8"),
     ),
     ("vite", "threat-runtime-environment-read"): Exception(
         reason=(
@@ -266,7 +273,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "decisions. Dev-only build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "7.3.8", "8.3.4", "8.3.8"),
     ),
     ("vite", "threat-runtime-obfuscation-base64exec"): Exception(
         reason=(
@@ -275,7 +282,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "the transform pipeline. Dev-only build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "7.3.8", "8.3.4", "8.3.8"),
     ),
     ("vite", "threat-runtime-obfuscation-steganography"): Exception(
         reason=(
@@ -284,7 +291,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "7.3.8", "8.3.4", "8.3.8"),
     ),
     ("vite", "threat-runtime-obfuscation-unicode"): Exception(
         reason=(
@@ -292,7 +299,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "heuristic flags. Dev-only build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7",),
+        versions=("7.3.7", "7.3.8", "8.3.8"),
     ),
     ("vite", "threat-runtime-system-info"): Exception(
         reason=(
@@ -300,7 +307,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "targeting and debugging output. Dev-only build tool."
         ),
         expires="2027-11-04",
-        versions=("7.3.7", "8.3.4"),
+        versions=("7.3.7", "8.3.4", "8.3.8"),
     ),
     ("vite", "risky_new_dependency"): Exception(
         reason=(
@@ -309,7 +316,7 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "the flagged deps are its own first-party rollout. Dev-only."
         ),
         expires="2027-11-04",
-        versions=("7.3.7",),
+        versions=("7.3.7", "7.3.8"),
     ),
 }
 
