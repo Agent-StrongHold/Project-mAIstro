@@ -1042,9 +1042,14 @@ def list_proposals(
     dag_id: str = "",
     *,
     decision: str = "",
+    workspace_id: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """List proposals, newest-first. Filter by dag_id and/or decision."""
+    """List proposals, newest-first. Filter by dag_id, decision, and/or Workspace.
+
+    Workspace filtering happens **before** the limit so one Workspace's newer
+    pending rows cannot push another Workspace's proposals out of the page.
+    """
     import stores
 
     items = list(stores.optimizer_proposals.values())
@@ -1052,5 +1057,7 @@ def list_proposals(
         items = [p for p in items if p.get("dag_id") == dag_id]
     if decision:
         items = [p for p in items if p.get("decision") == decision]
+    if workspace_id:
+        items = [p for p in items if p.get("workspace_id") == workspace_id]
     items.sort(key=lambda p: p.get("created_at", ""), reverse=True)
     return items[: max(1, min(limit, 200))]
