@@ -5,10 +5,12 @@ open-source personal agent gateway) as a *foreign harness*: maistro hosts it as
 one governed graph node — wrap, don't clone. Each turn is one outbound task
 through the OpenClaw gateway agent, executed as a non-interactive
 ``openclaw agent`` CLI turn inside the injected sandbox at the caller's
-workspace. In production the sandbox is a
-:class:`~maistro.tools.sandbox.microvm.MicroVMSandbox` (own kernel, default-deny
-network, capped mem/vCPU); tests inject a fake :class:`SandboxExec`, so the far
-side can be faked while the near side stays the real provider seam.
+workspace. In production the sandbox comes from the canonical
+``maistro.sandbox`` selector (#76): the factory registers the injected VMM
+launcher seam as a vm-tier backend *behind* the selector, so policy admission,
+egress and budgets are the selector's decision, never the caller's; tests
+inject a fake launcher (the substrate seam), so the far side can be faked
+while the near side stays the real provider seam.
 
 Layering (SPEC-208 §2): this provider owns *process isolation* — OpenClaw runs
 inside the VM, contained by the sandbox; its filesystem/network access is what
@@ -34,10 +36,12 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from maistro.capabilities.providers.subprocess_harness import (
     SandboxExec,
     SandboxFactory,
+    SelectorSandboxExec,
     SubprocessHarnessRunner,
     _message_text,
     _Session,
@@ -45,9 +49,13 @@ from maistro.capabilities.providers.subprocess_harness import (
 from maistro.tools.sandbox.microvm import (
     LauncherFn,
     MicroVMConfig,
-    MicroVMSandbox,
     VMMLauncher,
 )
+
+if TYPE_CHECKING:
+    # Behind ``maistro.sandbox``'s package init (which imports the runs/graph
+    # chain back into ``maistro.capabilities``): type-checker-only here (#76).
+    from maistro.sandbox.policy import WorkloadPolicy
 
 _OPENCLAW_BINARY = "openclaw"
 
@@ -103,17 +111,35 @@ def openclaw_microvm_factory(
     *,
     config: MicroVMConfig | None = None,
     env: dict[str, str] | None = None,
+    policy: WorkloadPolicy | None = None,
 ) -> SandboxFactory:
-    """A ``SandboxFactory`` that boots a :class:`MicroVMSandbox` at each workdir.
+    """A ``SandboxFactory`` whose sandbox comes from the canonical selector.
 
     The ``workdir`` passed to ``start_session`` becomes the VM's workspace —
-    the checkout OpenClaw's gateway agent acts on. ``env`` carries OpenClaw's
-    gateway credentials into the VM (operator-wired Binding policy).
+    the checkout OpenClaw's gateway agent acts on. ``launcher`` is the VMM
+    *substrate* seam (real in prod, fake in tests); it is registered behind a
+    ``SandboxSelector`` as the vm-tier backend, and the policy — not the
+    caller — decides whether the workload may run (``UNTRUSTED_CODE`` by
+    default: a foreign harness executes model-generated code, unattended).
+    ``env`` carries OpenClaw's gateway credentials into the VM as
+    operator-trusted env (see ``MicroVMSandbox`` for that channel's contract).
     """
     shared_env = dict(env or {})
+    # The canonical authority imports live here (see the TYPE_CHECKING note):
+    # at module load they would be circular; at factory-call time every
+    # package is initialized.
+    from maistro.sandbox.policy import UNTRUSTED_CODE
+    from maistro.sandbox.wiring import build_launcher_selector
+
+    effective_policy = policy if policy is not None else UNTRUSTED_CODE
 
     async def factory(workdir: str) -> SandboxExec:
-        return MicroVMSandbox(launcher, config=config, workspace=workdir, trusted_env=shared_env)
+        selector = build_launcher_selector(
+            launcher, config=config, workspace=workdir, trusted_env=shared_env
+        )
+        _tier, backend = selector.select(effective_policy)
+        instance = await backend.spawn(config=selector.build_config(effective_policy))
+        return SelectorSandboxExec(backend, instance)
 
     return factory
 
@@ -126,10 +152,11 @@ def openclaw_microvm_runner(
     config: MicroVMConfig | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 300,
+    policy: WorkloadPolicy | None = None,
 ) -> OpenClawHarnessRunner:
-    """Convenience: an :class:`OpenClawHarnessRunner` backed by a microVM sandbox."""
+    """Convenience: an :class:`OpenClawHarnessRunner` backed by a selector-chosen microVM."""
     return OpenClawHarnessRunner(
-        sandbox_factory=openclaw_microvm_factory(launcher, config=config, env=env),
+        sandbox_factory=openclaw_microvm_factory(launcher, config=config, env=env, policy=policy),
         agent=agent,
         session=session,
         timeout=timeout,
