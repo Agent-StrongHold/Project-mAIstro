@@ -161,7 +161,11 @@ VULNERABILITY_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "bumps land. Re-triage on expiry."
         ),
         expires="2027-02-04",
-        versions=("3.1.5", "5.1.9", "10.2.5"),
+        # 10.2.6 re-reviewed in the #2399 develop merge: the audit on the
+        # merged tree still reports this advisory at that locked version
+        # (range >=7.0.0 <11.0.1, fixAvailable null in-range) — patch drift
+        # within the same unfixed advisory, rationale unchanged.
+        versions=("3.1.5", "5.1.9", "10.2.5", "10.2.6"),
     ),
 }
 
@@ -689,7 +693,11 @@ def check_lock_drift(
 
 
 def check_provenance(surface_name: str, lock: dict[str, Any]) -> list[str]:
-    """Every resolved entry: sha512 integrity and an https registry URL."""
+    """Every non-link package entry: an https resolved URL and sha512 integrity.
+
+    Missing fields are findings too — absence of both `resolved` and
+    `integrity` must not silently pass the gate (#344).
+    """
     findings: list[str] = []
     for key, entry in (lock.get("packages") or {}).items():
         if not key or not isinstance(entry, dict):
@@ -698,18 +706,23 @@ def check_provenance(surface_name: str, lock: dict[str, Any]) -> list[str]:
             continue
         name = _entry_name(key)
         resolved = entry.get("resolved")
-        if resolved is not None and not str(resolved).startswith("https://"):
+        if resolved is None:
+            findings.append(
+                f"{surface_name}: {name!r} has no resolved URL — registry https "
+                "and a pinned digest are required"
+            )
+        elif not str(resolved).startswith("https://"):
             findings.append(
                 f"{surface_name}: {name!r} resolves from a non-https source "
                 f"({resolved!r}) — registry https and a pinned digest are required"
             )
         integrity = entry.get("integrity")
-        if resolved is not None and not integrity:
+        if not integrity:
             findings.append(
                 f"{surface_name}: {name!r} has no integrity hash — npm ci cannot "
                 "verify what it installs"
             )
-        elif integrity is not None and not str(integrity).startswith("sha512-"):
+        elif not str(integrity).startswith("sha512-"):
             findings.append(f"{surface_name}: {name!r} integrity is not sha512 ({integrity!r})")
     return findings
 

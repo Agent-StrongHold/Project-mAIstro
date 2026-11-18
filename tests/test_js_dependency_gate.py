@@ -92,15 +92,22 @@ class TestLocalPolicies:
             "packages": {
                 "": {},
                 "node_modules/good": _lock_entry(),
+                "node_modules/no-resolved": _lock_entry(resolved=None),
                 "node_modules/no-integrity": {"version": "1", "resolved": "https://r/x"},
+                "node_modules/neither": {"version": "1"},
                 "node_modules/http": _lock_entry(resolved="http://r/x"),
                 "node_modules/weak-hash": _lock_entry(integrity="sha1-abc"),
                 "node_modules/link": {"link": True},
             }
         }
         findings = gate.check_provenance("s", lock)
-        assert len(findings) == 3
-        assert all("no-integrity" in f or "http" in f or "weak-hash" in f for f in findings)
+        # "neither" is flagged twice: once for the missing URL, once for the hash
+        assert len(findings) == 6
+        assert any("no-resolved" in f for f in findings)
+        assert any("no-integrity" in f for f in findings)
+        assert sum("neither" in f for f in findings) == 2
+        assert any("http" in f for f in findings)
+        assert any("weak-hash" in f for f in findings)
 
     def test_license_policy(self, gate: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         lock = {
