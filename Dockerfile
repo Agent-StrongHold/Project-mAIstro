@@ -143,7 +143,9 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # alone cannot close the second advisory: x/net is patched onto the pinned
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# Digest-pinned (#349); re-pinned 2026-11-18 (#2414) to the 2026-11-05
+# re-serialized index of golang:1.27.3-alpine (upstream rebuild on Alpine
+# minirootfs 3.24.4; the amd64 config still carries GOLANG_VERSION=1.27.3).
 # #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
 # klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
 # upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
