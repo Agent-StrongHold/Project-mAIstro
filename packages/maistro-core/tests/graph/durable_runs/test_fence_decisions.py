@@ -914,6 +914,46 @@ class TestAcceptGate:
         assert resumed.status is RunStatus.COMPLETED
 
     @pytest.mark.asyncio
+    async def test_accept_evaluates_the_bound_revision_not_the_latest(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """A Rubric revised after binding cannot rewrite the gate.
+
+        Revision 2 drops the dimension that failed at revision 1; the Run is
+        still bound to revision 1, so the failing dimension must still block
+        a rationale-less accept instead of silently vanishing from the
+        summary.
+        """
+        paused = await _run_to_fence(store, run_store, world)
+        await _seed_eval_evidence(run_store, paused, failing=(DIMENSION_EVIDENCE,))
+        await world.rubrics.update_dimensions(
+            RUBRIC_ID,
+            dimensions=[d for d in _dimensions() if d.id != DIMENSION_EVIDENCE],
+        )
+
+        with pytest.raises(FenceAcceptRequiresRationale):
+            await accept_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                authorization=_authorization(),
+                rubrics=world.rubrics,
+                run_store=run_store,
+            )
+        accepted = await accept_fence(
+            store,
+            paused.run_id,
+            NODE_FENCE,
+            authorization=_authorization(),
+            rubrics=world.rubrics,
+            run_store=run_store,
+            rationale="bound revision still fails evidence",
+        )
+        decision = fence_decisions_of(accepted)[-1]
+        assert decision.gate_passed is False
+        assert decision.failing_dimensions == (DIMENSION_EVIDENCE,)
+
+    @pytest.mark.asyncio
     async def test_unscored_run_cannot_pass_itself_and_overrides_need_rationale(
         self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
     ) -> None:

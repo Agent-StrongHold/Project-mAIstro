@@ -106,6 +106,10 @@ class RubricReviser(Protocol):
         """Latest revision of a Rubric, or ``None``."""
         ...
 
+    async def get_revision(self, rubric_id: str, revision: int) -> Any | None:
+        """One exact revision, or ``None``. Historical revisions stay readable."""
+        ...
+
     async def update_dimensions(
         self,
         rubric_id: str,
@@ -286,15 +290,22 @@ async def accept_fence(
     binding = fence_binding(record)
     rubric_id = str(binding["rubric_id"])
     rubric_revision = int(binding["rubric_revision"])
-    current = await rubrics.get(rubric_id)
-    if current is None:
-        raise FenceError(f"no rubric {rubric_id!r} to cite on accept")
+    # Derive the dimension set from the bound snapshot, not the latest
+    # revision: a Rubric revised since the Run was bound must neither hide a
+    # failing dimension (accept-without-rationale hole) nor block on
+    # dimensions the Run was never scored against.
+    bound = await rubrics.get_revision(rubric_id, rubric_revision)
+    if bound is None:
+        raise FenceError(
+            f"no rubric revision {rubric_revision!r} of {rubric_id!r} "
+            "to cite on accept"
+        )
     summary = await eval_summary(
         run_store,
         run_id,
         rubric_id=rubric_id,
         rubric_revision=rubric_revision,
-        dimension_ids=[dimension.id for dimension in current.dimensions],
+        dimension_ids=[dimension.id for dimension in bound.dimensions],
     )
     # A dimension with no passing record — failed OR unscored — did not pass.
     # "Complete and green" is the only thing that accepts without a cited
