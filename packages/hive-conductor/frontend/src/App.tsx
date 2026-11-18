@@ -37,9 +37,7 @@ const Goals = lazy(() => import("./pages/Goals"));
 const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
 const Memory = lazy(() => import("./pages/Memory"));
-const MessageBoard = lazy(() => import("./pages/MessageBoard"));
 const Missions = lazy(() => import("./pages/Missions"));
-const OptimizationInbox = lazy(() => import("./pages/OptimizationInbox"));
 const Quotas = lazy(() => import("./pages/Quotas"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -222,14 +220,12 @@ function AppRoutes() {
                       render sink, so the keyboard-complete Deck editor (#769)
                       is reachable at /decks and from Design Studio. */}
                   <Route path="decks" element={<DeckBuilder />} />
-                  <Route path="optimizer" element={<OptimizationInbox />} />
-                  {/* #1417: /optimization-inbox is an alias, not a second
-                      surface -- it redirects to the canonical /optimizer so
-                      a direct hit lands on the one nav-linked destination
-                      instead of rendering the same page with no active nav
-                      entry. */}
-                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
-                  <Route path="messages" element={<MessageBoard />} />
+                  {/* #1049 MERGE: MessageBoard + OptimizationInbox fold into
+                      Attention. Old URLs redirect so bookmarks do not revive
+                      the deleted modules. */}
+                  <Route path="optimizer" element={<Navigate to="/attention" replace />} />
+                  <Route path="optimization-inbox" element={<Navigate to="/attention" replace />} />
+                  <Route path="messages" element={<Navigate to="/attention" replace />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
