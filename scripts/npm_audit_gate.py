@@ -15,6 +15,14 @@ PYSEC-2026-1325 ("upstream states there is no planned fix"), which
 ``scripts/pip_audit_gate.py`` already solved with a triaged allowlist. This
 module mirrors that design for npm: one list, one verdict.
 
+Resolution (2026-11-18): GitHub withdrew GHSA-fc5q-39xc-vjpf ("withdrawn
+because it is a security issue", i.e. retracted as a false report; see the
+advisory's ``withdrawn_at: 2026-11-18T15:38:56Z``). ``npm audit`` stopped
+listing it the same day while the lock still pins picomatch 4.0.7, so the
+two-way ratchet below fired on exactly its own terms and the waiver was
+deleted: ``ALLOWED`` is empty again until the next no-fix advisory arrives
+and is triaged on its own merits.
+
 Contract
 --------
 The workflow step writes the JSON report and this gate owns the verdict::
@@ -62,23 +70,12 @@ BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 # advisory on it too. Each entry must name an advisory with no available fix
 # and say why the tree is acceptable anyway, specifically enough to re-audit.
 # An entry whose advisory stops being reported fails as stale — delete it.
-ALLOWED: dict[str, str] = {
-    "GHSA-fc5q-39xc-vjpf": (
-        "picomatch ReDoS through single-branch repeated extglobs. The "
-        "advisory lists every published picomatch as vulnerable (range "
-        "<=4.0.7 and 4.0.7 is the newest release) with no patched version, "
-        "and picomatch is a hard dependency of the frontend's dev toolchain: "
-        "vite@8 depends on picomatch ^4.0.7 directly and tinyglobby 0.2.x "
-        "depends on it. No lock refresh, override, or upgrade can produce a "
-        "report without it; `npm audit fix --force` was executed and still "
-        "exited 1, downgrading into an older vite tree carrying additional "
-        "launch-editor and vite advisories. Build/test-time exposure only: "
-        "picomatch reaches the tree through devDependencies (vite, vitest, "
-        "@vitejs/plugin-react) and is never shipped in the built bundle. "
-        "Delete this waiver the moment the audit report stops listing the "
-        "advisory."
-    ),
-}
+# Currently empty: the one entry this gate ever carried (GHSA-fc5q-39xc-vjpf,
+# the picomatch ReDoS report) was withdrawn upstream on 2026-11-18 and npm
+# audit stopped reporting it, so the stale-waiver ratchet required deleting
+# it. The withdrawn rationale is preserved in git history and in
+# docs/testing/inventory-notes/l80-npm-audit-picomatch-waiver.md.
+ALLOWED: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -255,7 +252,7 @@ def audit_report(path: str) -> int:
         print(
             "\nFix by upgrading the affected dependency. Only add an advisory ID "
             "to ALLOWED in scripts/npm_audit_gate.py when no fixed version exists, "
-            "and say why — the way GHSA-fc5q-39xc-vjpf is documented there."
+            "and say why, with a rationale specific enough to re-audit."
         )
         return 1
 

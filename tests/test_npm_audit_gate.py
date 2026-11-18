@@ -5,6 +5,11 @@ The report fixtures mirror the real shape of ``npm audit --json`` captured on
 GHSA-fc5q-39xc-vjpf cascading through fdir/tinyglobby/vite/vitest/
 @vitejs/plugin-react): ``via`` mixes real advisory objects (with a GHSA URL)
 with bare strings naming the package that carries the advisory.
+
+Waivers are always injected through ``_run(allowed=...)`` rather than read
+from the live ``ALLOWED`` dict: the waiver set legitimately churns (the
+picomatch waiver itself was deleted when GitHub withdrew the advisory on
+2026-11-18), and the gate's verdict logic must not be coupled to it.
 """
 
 from __future__ import annotations
@@ -133,15 +138,44 @@ def _run(
     return rc
 
 
-def test_the_real_picomatch_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """The live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report())
+def test_a_triaged_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
+    """One triaged waiver covers the advisory AND every package it cascades into."""
+    rc = _run(
+        gate,
+        tmp_path,
+        _picomatch_report(),
+        allowed={
+            "GHSA-fc5q-39xc-vjpf": (
+                "test rationale: every published picomatch is listed as "
+                "vulnerable with no patched release"
+            )
+        },
+    )
     out = capsys.readouterr().out
     assert rc == 0
     assert "allowed: GHSA-fc5q-39xc-vjpf" in out
     # every cascaded package is attributed to the one root advisory
     assert "fdir" in out and "tinyglobby" in out and "vitest" in out
     assert "npm audit OK" in out
+
+
+def test_a_clean_report_passes_with_no_waivers_at_all(gate, tmp_path, capsys) -> None:
+    """The degenerate production state: nothing reported, nothing waived.
+
+    GHSA-fc5q-39xc-vjpf was withdrawn on 2026-11-18 and npm audit stopped
+    reporting it, so this is the real ``test`` job input now — an empty
+    ``vulnerabilities`` object against an empty ``ALLOWED`` must exit 0,
+    not read the empty waiver list as drift.
+    """
+    report = {
+        "auditReportVersion": 2,
+        "vulnerabilities": {},
+        "metadata": {"vulnerabilities": {"high": 0, "critical": 0, "total": 0}},
+    }
+    rc = _run(gate, tmp_path, report)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "npm audit OK (0 advisories reported, all triaged in ALLOWED)" in out
 
 
 def test_an_unwaived_advisory_fails_naming_the_id_and_affecting_packages(
@@ -174,7 +208,16 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={
+            "GHSA-fc5q-39xc-vjpf": (
+                "test rationale: the withdrawn ReDoS report this fixture mirrors"
+            )
+        },
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
@@ -236,7 +279,7 @@ def test_a_malformed_vulnerabilities_object_is_an_infrastructure_failure(gate, t
 
 
 def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path, capsys) -> None:
-    """A clean report with a live waiver must fail until the waiver is deleted."""
+    """A waiver with no matching advisory in the report must fail until deleted."""
     report = {
         "auditReportVersion": 2,
         "vulnerabilities": {
@@ -261,11 +304,16 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={"GHSA-gone-from-report": "waived once, no longer reported"},
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
-    assert "GHSA-fc5q-39xc-vjpf" in out
+    assert "GHSA-gone-from-report" in out
 
 
 def test_usage_error(gate) -> None:
