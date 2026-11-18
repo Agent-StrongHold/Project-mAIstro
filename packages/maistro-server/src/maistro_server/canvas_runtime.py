@@ -46,8 +46,8 @@ import asyncio
 import hashlib
 import os
 import socket
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
