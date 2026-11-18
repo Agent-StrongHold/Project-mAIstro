@@ -43,7 +43,8 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# Digest-pinned (#349); golang:1.27.3-alpine index digest resolved 2026-11-17 (#2413),
+# registered in quality/image-pins.json with the same coordinates.
 FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad

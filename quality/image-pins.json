@@ -68,9 +68,19 @@
       "recorded_in": "#1152",
       "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries.",
       "used_by": [
-        "packages/hive-conductor/Dockerfile",
         "Dockerfile",
         "Dockerfile.research"
+      ]
+    },
+    {
+      "image": "golang",
+      "tag": "1.27.3-alpine",
+      "digest": "sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18",
+      "recorded": "2026-11-17",
+      "recorded_in": "#2413",
+      "note": "Builds the age static binaries in packages/hive-conductor/Dockerfile from their pinned upstream release tags (#363, then #1152). Dependabot re-resolved the same 1.27.3-alpine tag on 2026-11-17 (#2413): upstream re-serialized the tag's index again since the 2026-10-22 recording — the same tag-move pattern that recording already absorbed once — so the age-build stage pins the fresh digest, registered here in the same change per the registry-and-tree-hold-each-other-closed rule above (the mutable tag moves; the digest pin cannot). Root Dockerfile and Dockerfile.research still build their dockerclibuild stage from the 2026-10-22 digest, so both index digests of this shared tag stay registered: the row above retains them until those Dockerfiles take their own refresh. Index digest verified via `docker buildx imagetools inspect golang:1.27.3-alpine` (OCI index sha256:fa3d596…818, linux/amd64 present).",
+      "used_by": [
+        "packages/hive-conductor/Dockerfile"
       ]
     },
     {
