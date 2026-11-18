@@ -71,7 +71,7 @@ def _hitl_answers(ctx: NodeContext) -> Mapping[str, Any]:
     return answers if isinstance(answers, Mapping) else {}
 
 
-@register_node
+@register_node  # noqa: V102 — instantiated by kind dispatch ("human.fence_decision"), not by name
 class HumanFenceDecisionNode(BaseNode[FenceDecisionIn, FenceDecisionOut]):
     kind: ClassVar[str] = "human.fence_decision"
     kind_category: ClassVar = "hitl"

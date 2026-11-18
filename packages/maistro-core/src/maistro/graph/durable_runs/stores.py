@@ -7,9 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, NoReturn
-
-from pydantic import ValidationError
+from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
 from maistro.graph.nodes.base import (
@@ -19,9 +17,9 @@ from maistro.graph.nodes.base import (
 from maistro.runs.fence import (
     FenceDecision,
     FenceDecisionKind,
-    FenceError,
     FenceNotWaitingError,
     FenceRedirectTarget,
+    build_fence_decision,
 )
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, NodeRun, Run, RunStatus
@@ -528,7 +526,7 @@ def _fence_decision_metadata(record: DurableRunRecord) -> list[Mapping[str, Any]
     return []
 
 
-def fence_decisions_of(record: DurableRunRecord) -> tuple[FenceDecision, ...]:
+def fence_decisions_of(record: DurableRunRecord) -> tuple[FenceDecision, ...]:  # noqa: V103 — read-side projection of the decision ledger; test-consumed now, decision surfaces consume it downstream (#774/#775)
     """Every fence decision recorded on the Run, oldest first.
 
     Decisions are immutable-by-history: this is a projection of durable
@@ -635,28 +633,6 @@ def _consume_fence_pause(
     return node_runs, run, graph_state
 
 
-def _rethrow_fence_validation(exc: ValidationError) -> NoReturn:
-    """Surface the model's own fence error instead of pydantic's wrapper.
-
-    :class:`FenceDecision` is the single place the fence rules live; this
-    keeps its precise refusals (missing redirect target, missing override
-    rationale) observable to callers and HTTP translation instead of hiding
-    them inside a generic validation error.
-    """
-    for error in exc.errors():
-        original = (error.get("ctx") or {}).get("error")
-        if isinstance(original, FenceError):
-            raise original
-    raise exc
-
-
-def _build_fence_decision(**fields: Any) -> FenceDecision:
-    try:
-        return FenceDecision(**fields)
-    except ValidationError as exc:
-        _rethrow_fence_validation(exc)
-
-
 def park_record(
     record: DurableRunRecord,
     node_id: str,
@@ -676,7 +652,7 @@ def park_record(
     moment = _answerable_moment(record, node_id, at)
     paused_index = _paused_node_run_index(record, node_id)
     binding = fence_binding(record)
-    decision = _build_fence_decision(
+    decision = build_fence_decision(
         run_id=record.run_id,
         node_id=node_id,
         node_run_id=record.node_runs[paused_index].node_run_id,
@@ -718,7 +694,7 @@ def redirect_record(
     moment = _answerable_moment(record, node_id, at)
     paused_index = _paused_node_run_index(record, node_id)
     binding = fence_binding(record)
-    decision = _build_fence_decision(
+    decision = build_fence_decision(
         run_id=record.run_id,
         node_id=node_id,
         node_run_id=record.node_runs[paused_index].node_run_id,
@@ -808,7 +784,7 @@ def accept_record(
     moment = _answerable_moment(record, node_id, at)
     paused_index = _paused_node_run_index(record, node_id)
     binding = fence_binding(record)
-    decision = _build_fence_decision(
+    decision = build_fence_decision(
         run_id=record.run_id,
         node_id=node_id,
         node_run_id=record.node_runs[paused_index].node_run_id,

@@ -40,9 +40,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any, NoReturn
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class FenceDecisionKind(StrEnum):
@@ -129,7 +130,12 @@ class FenceDecision(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    fence_decision_id: str = Field(default_factory=lambda: uuid4().hex)
+    #: The ADR-092926-7a01 identity of this decision record (§ontology table:
+    #: canonical owner ``maistro.runs``, identity ``fence_decision_id``). The
+    #: record is content-addressed by its position in the append-only
+    #: ``fence_decisions`` list today; the field is the stable identity the
+    #: downstream decision surfaces (#774/#775, #777) will cite.
+    fence_decision_id: str = Field(default_factory=lambda: uuid4().hex)  # noqa: V107
     run_id: str
     node_id: str
     node_run_id: str
@@ -160,7 +166,7 @@ class FenceDecision(BaseModel):
     decided_by: str
     decided_at: datetime
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # noqa: V105 — pydantic-dispatched validator, not a dead method
     def _validate_decision(self) -> FenceDecision:
         if self.decision is FenceDecisionKind.REDIRECT:
             _validate_redirect_coherence(self)
@@ -180,6 +186,34 @@ class FenceDecision(BaseModel):
         if self.decision is FenceDecisionKind.ACCEPT:
             _validate_accept(self)
         return self
+
+
+def _rethrow_fence_validation(exc: ValidationError) -> NoReturn:
+    """Surface the model's own fence error instead of pydantic's wrapper.
+
+    :class:`FenceDecision` is the single place the fence rules live; this
+    keeps its precise refusals (missing redirect target, missing override
+    rationale) observable to callers and HTTP translation instead of hiding
+    them inside a generic validation error.
+    """
+    for error in exc.errors():
+        original = (error.get("ctx") or {}).get("error")
+        if isinstance(original, FenceError):
+            raise original
+    raise exc
+
+
+def build_fence_decision(**fields: Any) -> FenceDecision:
+    """Construct a :class:`FenceDecision`, re-raising fence rule refusals.
+
+    Shared construction point for the durable store writers: a violation of
+    the fence contract surfaces as this module's :class:`FenceError` family —
+    never as a bare pydantic ``ValidationError``.
+    """
+    try:
+        return FenceDecision(**fields)
+    except ValidationError as exc:
+        _rethrow_fence_validation(exc)
 
 
 def goal_revision_at_least(current: int, *, step: int = 1) -> int:
@@ -213,6 +247,7 @@ __all__ = [
     "FenceRedirectTarget",
     "FenceRedirectTargetRequired",
     "brief_version_at_least",
+    "build_fence_decision",
     "goal_revision_at_least",
     "normalize_decision_time",
 ]
