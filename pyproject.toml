@@ -39,7 +39,17 @@ dependencies = [
     # dev extra is what let the identity ImportError hide (see the wheel-imports
     # CI job).
     "maistro-canvas",
-    "temporalio>=1.27.0",
+    # 1.36.1 floor (CR1373 CI-repair round, 2026-11-16, merge-queue run
+    # 43821935433; hit on this branch too — local trivy 0.73.0 of the
+    # rebuilt maistro-rsi-runner image, 2026-11-18): the trivy leg of the
+    # container gate scans the Cargo.lock the temporalio wheel ships
+    # (site-packages/temporalio/bridge/Cargo.lock) and flags zip 8.6.0 there
+    # — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
+    # CVE-2026-115907/115908/115909 (HIGH). temporalio 1.36.1 bundles zip
+    # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
+    # past all four; every fix version satisfies the pre-existing >= 1.27
+    # floor, so this only ever affects which temporalio the lock resolves.
+    "temporalio>=1.36.1",
 ]
 
 [project.optional-dependencies]
