@@ -39,8 +39,8 @@ from maistro.runs.fence import (
     brief_version_at_least,
 )
 
-from .hitl import HitlAuthorization
-from .stores import fence_binding
+from .hitl import HitlAuthorization, require_hitl_authorization
+from .stores import fence_binding, require_answerable_fence
 from .types import DurableRunRecord
 
 
@@ -171,8 +171,10 @@ async def _plan_redirect(
         revised = await rubrics.update_dimensions(
             str(binding["rubric_id"]),
             dimensions=list(dimensions) if dimensions is not None else list(current.dimensions),
-            # Default: the same Goal revision. Scoring changed, not the outcome.
-            goal_revision=None,
+            # Pin to THIS Run's Goal revision. Scoring changed, not the outcome;
+            # inheriting the Rubric's latest binding could pick up a newer Goal
+            # revision minted by another Run's redirect on a shared Rubric.
+            goal_revision=int(binding["goal_revision"]),
         )
         return _RedirectPlan(
             new_goal_revision=None,
@@ -210,6 +212,17 @@ async def redirect_fence(
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")
+    # Authorize and validate the fence BEFORE minting anything. _plan_redirect
+    # publishes live Goal/Rubric revisions through their canonical owners, so
+    # a denied caller, an elapsed deadline, or a node that is not a waiting
+    # HITL fence must be refused first — a redirect that later fails at the
+    # durable write must not have already moved canonical state. The durable
+    # write re-checks both under its own lock (the authoritative pass, with
+    # one-use evidence consumed there, not here); this is the pre-mint gate.
+    require_hitl_authorization(authorization)
+    if not await authorization.permits(record.run.workspace_id, consume_evidence=False):
+        raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
+    require_answerable_fence(record, node_id, at=at)
     binding = fence_binding(record)
     plan = await _plan_redirect(
         record,
@@ -297,8 +310,7 @@ async def accept_fence(
     bound = await rubrics.get_revision(rubric_id, rubric_revision)
     if bound is None:
         raise FenceError(
-            f"no rubric revision {rubric_revision!r} of {rubric_id!r} "
-            "to cite on accept"
+            f"no rubric revision {rubric_revision!r} of {rubric_id!r} to cite on accept"
         )
     summary = await eval_summary(
         run_store,

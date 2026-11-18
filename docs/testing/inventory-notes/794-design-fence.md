@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +37
+  packages/maistro-core/tests: +42
 ---
 <!-- Measured by scripts/check-suite-inventory.py --update; see README.md. -->
 # 794-design-fence
@@ -81,6 +81,40 @@ the module reachable through the package facade — it had no src import edge
 and read as new unreachable debt). The `human.fence_decision` node extracts
 its pause-answer lookup so the class sits under the complexity ceiling, and
 malformed metadata now fails closed pending instead of crashing.
+
+Later repair rounds (delta 37 → 42; five tests in `test_fence_decisions.py`
+that earlier rounds landed without recording: the bound-revision accept
+test, the pre-mint redirect-refusal test, and three from this round):
+
+- Redirect authorizes and validates *before* minting — `redirect_fence`
+  runs `require_hitl_authorization`, a non-consuming Workspace `permits`
+  check, and the new `require_answerable_fence` before `_plan_redirect`
+  publishes any Goal/Rubric revision, so a denied caller, an elapsed
+  deadline, or a node that is not the waiting fence can no longer move
+  canonical state it could never bind (the durable write re-checks both
+  under its own lock and consumes the evidence there). A rubric-only
+  redirect pins `update_dimensions` to *this Run's* Goal revision instead of
+  inheriting the Rubric's latest binding, which a concurrent redirect on a
+  shared Rubric could have moved.
+- The plain answer path is no longer a fence door. `submit_hitl_answer`
+  previously consumed the fence pause for *any* answer and the node re-armed
+  on resume — which also let a caller-supplied `{"decision": "accept",
+  "gate_passed": true}` ride the verbatim-copy answer writer into the
+  readable answer slot. `answer_record` now persists such submissions for
+  audit without consuming the pause (the malformed-verdict rule, extended to
+  the fence node), and the node additionally reads a verdict only from an
+  answer the settlement methods stamped `fence_decision: True`. Tests pin
+  the store refusal, the forged-payload refusal through the #737 expiry
+  tick, and the node's stamp rule at its own seam; the earlier
+  "plain answer re-arms the fence" wording above described the pre-fix
+  behavior and is superseded by this one.
+- The accept rationale rule keys on the gate result itself: a store-level
+  `accept_hitl(gate_passed=False)` with the default empty
+  `failing_dimensions` is still an override and refuses without recorded
+  rationale, and a citation naming failing dimensions while asserting the
+  gate passed is refused as contradictory evidence. `accept_fence`'s derived
+  summary already satisfies both (a failed or missing dimension is exactly
+  a non-passing gate), so no composition-path behavior changed.
 
 Salvage note: while this suite was being written, an uncommitted foreign edit
 to `maistro/projects/rubric_store.py` (+ its test) appeared in the worktree,

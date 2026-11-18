@@ -50,6 +50,8 @@ _VERDICT_NODE_TYPES = frozenset(
     }
 )
 
+_FENCE_NODE_TYPE = "human.fence_decision"
+
 
 def _in_scope(
     record: DurableRunRecord,
@@ -101,6 +103,18 @@ def _clone(record: DurableRunRecord) -> DurableRunRecord:
     return DurableRunRecord.model_validate_json(record.model_dump_json())
 
 
+def _graph_node(record: DurableRunRecord, node_id: str) -> Any:
+    """The graph snapshot's node for ``node_id``, or ``None`` if absent."""
+    return next(
+        (
+            candidate
+            for candidate in record.run.graph.materialize().nodes
+            if candidate.node_id == node_id
+        ),
+        None,
+    )
+
+
 def _is_malformed_verdict_answer(
     record: DurableRunRecord,
     node_id: str,
@@ -113,18 +127,25 @@ def _is_malformed_verdict_answer(
     remains the authority for interpreting the answer; this only prevents an
     invalid submission from making a paused Run runnable.
     """
-    node = next(
-        (
-            candidate
-            for candidate in record.run.graph.materialize().nodes
-            if candidate.node_id == node_id
-        ),
-        None,
-    )
+    node = _graph_node(record, node_id)
     if node is None or node.node_type not in _VERDICT_NODE_TYPES:
         return False
     verdict = answer.get("verdict")
     return not isinstance(verdict, str) or not verdict.strip()
+
+
+def _is_unsettled_fence_answer(record: DurableRunRecord, node_id: str) -> bool:
+    """A plain answer arrived for a waiting fence NodeRun.
+
+    The fence's three verbs settle through ``park_hitl`` / ``redirect_hitl``
+    / ``accept_hitl`` — the store, not the answerer, says what was decided.
+    ``submit_hitl_answer`` copies caller-supplied keys verbatim, so an answer
+    that names its own ``decision`` is a forged verdict claim, not recorded
+    evidence: consuming the fence on it would bypass the eval-derived gate,
+    the override rationale, and the append-only decision ledger.
+    """
+    node = _graph_node(record, node_id)
+    return node is not None and node.node_type == _FENCE_NODE_TYPE
 
 
 def _replace_state(
@@ -233,6 +254,25 @@ def _answerable_moment(
     return moment
 
 
+def require_answerable_fence(
+    record: DurableRunRecord,
+    node_id: str,
+    at: datetime | None = None,
+) -> None:
+    """Apply every durable fence-eligibility rule without settling.
+
+    Redirects mint revisions through their canonical owners *before* the
+    durable write, so the composition layer calls this first: a denied
+    caller, an elapsed deadline, or a node that is not a waiting HITL fence
+    must not be able to publish Goal/Rubric revisions it could never bind.
+    The canonical mutation re-runs the identical checks under the store lock;
+    this is the pre-mint pass that keeps a rejected redirect from having
+    already mutated canonical state.
+    """
+    _answerable_moment(record, node_id, at)
+    _paused_node_run_index(record, node_id)
+
+
 def answer_record(
     record: DurableRunRecord,
     node_id: str,
@@ -261,10 +301,14 @@ def answer_record(
     answers = dict(record.hitl_answers)
     answers[node_id] = answered
     metadata["hitl_answers"] = answers
-    if _is_malformed_verdict_answer(record, node_id, answer):
+    if _is_malformed_verdict_answer(record, node_id, answer) or _is_unsettled_fence_answer(
+        record, node_id
+    ):
         # Persist the malformed submission for audit, but do not consume the
         # pause or queue the Run. A later expiry tick must still see PAUSED and
-        # the original absolute deadline.
+        # the original absolute deadline. A fence submission rides the same
+        # rule: whatever keys it carries, only the settlement methods may
+        # write a verdict, and the node re-checks their stamp on resume.
         graph_state = _replace_state(record.graph_state, metadata=metadata)
         return _replace_record(
             record,

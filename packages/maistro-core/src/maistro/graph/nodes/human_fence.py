@@ -13,10 +13,12 @@ park keeps the pause (the node simply never resumes), and a redirect/accept
 arrives exactly like any other human answer, stamped with the decision
 written by the store.
 
-Fail closed (#329 / ADR-090726-9a4e): a resume without an explicit
-`decision` key — e.g. a generic answer submitted through the plain answer
-path — leaves the fence pending rather than interpreting silence as a
-verdict.
+Fail closed (#329 / ADR-090726-9a4e): only an answer the store *stamped* as
+a recorded fence decision (`fence_decision: True`, written by the settlement
+methods) may be read as a verdict. The plain answer path copies
+caller-supplied keys verbatim — a resume payload naming its own `decision`
+is a claim, not evidence, and leaves the fence pending rather than
+interpreting the claim as a verdict.
 """
 
 from __future__ import annotations
@@ -89,12 +91,20 @@ class HumanFenceDecisionNode(BaseNode[FenceDecisionIn, FenceDecisionOut]):
 
     async def _execute(self, inputs: FenceDecisionIn, ctx: NodeContext) -> FenceDecisionOut:
         resumed = _hitl_answers(ctx).get(ctx.node_id)
-        if resumed is not None:
+        if isinstance(resumed, Mapping):
             decision = resumed.get("decision")
-            # Fail closed: a resume payload that is not a recorded fence
-            # decision (no decision key) leaves the fence pending. The store,
-            # not the answerer, says what was decided.
-            if isinstance(decision, str) and decision.strip():
+            # Fail closed: only an answer stamped by the store's settlement
+            # methods (`fence_decision: True`) is a recorded decision. The
+            # plain answer path copies caller keys verbatim, so a bare
+            # `decision` key is the answerer's claim — the store refuses it
+            # at the pause, and this guard keeps the node honest even if such
+            # a payload reaches durable state another way (e.g. persisted for
+            # audit beside an expiry tick).
+            if (
+                resumed.get("fence_decision") is True
+                and isinstance(decision, str)
+                and decision.strip()
+            ):
                 redirect_target = resumed.get("redirect_target")
                 return FenceDecisionOut(
                     decision=decision,

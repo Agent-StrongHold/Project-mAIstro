@@ -109,10 +109,18 @@ def _validate_redirect_coherence(self: FenceDecision) -> None:
 
 
 def _validate_accept(self: FenceDecision) -> None:
-    """An accept cites the gate, and a failing gate carries a rationale."""
+    """An accept cites the gate, and a failing gate carries a rationale.
+
+    The gate result itself is the trigger, not the dimension list: a
+    ``gate_passed=False`` accept with an empty ``failing_dimensions`` tuple
+    is still an override and still needs recorded rationale. A passing gate
+    may not name failing dimensions — the citation must be coherent.
+    """
     if self.gate_passed is None:
         raise FenceError("an accept decision must cite the Rubric gate result")
-    if self.failing_dimensions and not self.rationale.strip():
+    if self.gate_passed and self.failing_dimensions:
+        raise FenceError("a passing gate cannot name failing dimensions")
+    if not self.gate_passed and not self.rationale.strip():
         raise FenceAcceptRequiresRationale(
             "accepting over a failing Rubric gate requires recorded human rationale"
         )

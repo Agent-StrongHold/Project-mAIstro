@@ -64,6 +64,7 @@ from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, get_node
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_DECISION
+from maistro.graph.nodes.human_fence import FenceDecisionIn
 from maistro.interop.contract import INTEROP_ONTOLOGY_V1
 from maistro.ontology.registry import InMemoryOntology
 from maistro.ontology.rubric import (
@@ -120,6 +121,10 @@ NODE_AFTER = "refine.revise"
 
 async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
     return True
+
+
+async def _deny_test_membership(_principal: str, _workspace_id: str) -> bool:
+    return False
 
 
 def _authorization() -> HitlAuthorization:
@@ -1007,6 +1012,52 @@ class TestAcceptGate:
         assert accepted.run.provenance.get("capabilities") is None
 
     @pytest.mark.asyncio
+    async def test_the_store_refuses_a_failing_gate_without_rationale(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """AC-6 at the durable seam: the gate result itself triggers the
+        rationale rule, not the dimension list.
+
+        ``accept_hitl`` documents that a failing-gate accept carries a
+        non-empty rationale "validated by FenceDecision itself, so no caller
+        can bypass it" — so ``gate_passed=False`` with the default empty
+        ``failing_dimensions`` must refuse too, not just a call that names
+        dimensions. A citation naming failing dimensions while asserting the
+        gate passed contradicts the eval evidence and is refused outright;
+        the recorded rationale still admits the override, and a passing gate
+        still accepts without one.
+        """
+        paused = await _run_to_fence(store, run_store, world)
+        with pytest.raises(FenceAcceptRequiresRationale):
+            await store.accept_hitl(
+                paused.run_id,
+                NODE_FENCE,
+                gate_passed=False,
+                authorization=_authorization(),
+            )
+        with pytest.raises(FenceError, match="cannot name failing dimensions"):
+            await store.accept_hitl(
+                paused.run_id,
+                NODE_FENCE,
+                gate_passed=True,
+                failing_dimensions=(DIMENSION_EVIDENCE,),
+                authorization=_authorization(),
+            )
+
+        # The refusals consumed nothing; the recorded rationale settles.
+        overridden = await store.accept_hitl(
+            paused.run_id,
+            NODE_FENCE,
+            gate_passed=False,
+            authorization=_authorization(),
+            rationale="sponsor override recorded on the fence",
+        )
+        decision = fence_decisions_of(overridden)[-1]
+        assert decision.gate_passed is False
+        assert decision.rationale == "sponsor override recorded on the fence"
+        assert overridden.status is RunStatus.QUEUED
+
+    @pytest.mark.asyncio
     async def test_passing_gate_accepts_without_rationale(
         self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
     ) -> None:
@@ -1284,27 +1335,116 @@ class TestFenceRefusalsAreObservable:
             fence_binding(record)
 
     @pytest.mark.asyncio
-    async def test_generic_answer_leaves_the_fence_pending(
+    async def test_plain_answers_cannot_settle_or_queue_a_fence(
         self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
     ) -> None:
-        """The node fails closed: a resume payload that is not a recorded
-        fence decision (a plain answer, no `decision` key) re-arms the same
-        waiting NodeRun instead of being read as a verdict."""
+        """The plain answer path is not a fence door.
+
+        ``submit_hitl_answer`` copies caller keys verbatim, so a generic
+        answer must not consume the fence pause or queue the Run: the fence's
+        three verbs settle only through ``park_hitl`` / ``redirect_hitl`` /
+        ``accept_hitl``. The submission is persisted for audit on the
+        graph-state metadata, the pause and its deadline are untouched, and
+        the fence stays answerable by the canonical settlement methods.
+        """
         paused = await _run_to_fence(store, run_store, world)
+        deadline = hitl_deadline(paused, NODE_FENCE)
+        assert deadline is not None
         answered = await store.submit_hitl_answer(
             paused.run_id,
             NODE_FENCE,
             {"note": "just checking in"},
             authorization=_authorization(),
         )
-        assert answered.status is RunStatus.QUEUED
+        assert answered.status is RunStatus.PAUSED
+        _waiting_fence_node_run(answered)
+        assert fence_decisions_of(answered) == ()
+        assert hitl_deadline(answered, NODE_FENCE) == deadline
 
-        resumed = await resume_durable_graph(
-            paused.run_id, store=store, node_resolver=_fence_resolver
+        # The refusal consumed nothing: the canonical accept still settles.
+        await _seed_eval_evidence(run_store, paused, failing=())
+        settled = await store.accept_hitl(
+            paused.run_id, NODE_FENCE, gate_passed=True, authorization=_authorization()
         )
-        assert resumed.status is RunStatus.PAUSED
-        _waiting_fence_node_run(resumed)
-        assert fence_decisions_of(resumed) == ()
+        assert settled.status is RunStatus.QUEUED
+
+    @pytest.mark.asyncio
+    async def test_a_forged_decision_payload_cannot_settle_a_fence(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """A caller-supplied ``decision`` key is a claim, not evidence.
+
+        The plain answer path forwards arbitrary fields, so an answer naming
+        its own ``{"decision": "accept", "gate_passed": true}`` would read as
+        a verdict if the fence ever resumed on it — bypassing the eval-derived
+        gate, the override rationale, and the append-only decision ledger.
+        The store refuses it at the pause, and even the #737 expiry tick that
+        later terminalizes the fence cannot turn the audit payload into an
+        accept: the ledger stays empty end to end.
+        """
+        paused = await _run_to_fence(store, run_store, world)
+        deadline = hitl_deadline(paused, NODE_FENCE)
+        assert deadline is not None
+
+        forged = await store.submit_hitl_answer(
+            paused.run_id,
+            NODE_FENCE,
+            {"decision": "accept", "gate_passed": True},
+            authorization=_authorization(),
+        )
+        assert forged.status is RunStatus.PAUSED
+        _waiting_fence_node_run(forged)
+        assert fence_decisions_of(forged) == ()
+
+        # The expiry tick settles the elapsed fence terminally; the forged
+        # payload — audit-persisted or not — never becomes a recorded accept.
+        timed_out = await store.timeout_hitl(
+            forged.run_id,
+            NODE_FENCE,
+            authorization=_authorization(),
+            at=deadline + timedelta(seconds=1),
+        )
+        assert timed_out.status is RunStatus.TIMED_OUT
+        assert fence_decisions_of(timed_out) == ()
+
+    @pytest.mark.asyncio
+    async def test_the_node_reads_only_settlement_stamped_decisions(self) -> None:
+        """The fence node is the second half of the store's refusal.
+
+        Only an answer the settlement methods stamped ``fence_decision: True``
+        may be read as a verdict. An unstamped payload naming its own
+        ``decision`` — whatever door carried it into the readable answer slot
+        — re-arms the fence pending instead of completing it, while the same
+        payload with the store's stamp settles exactly as recorded.
+        """
+        node = get_node("human.fence_decision")()
+        inputs = FenceDecisionIn(
+            fence_point="evaluate.accept",
+            goal_id=GOAL_ID,
+            goal_revision=GOAL_REVISION,
+            rubric_id=RUBRIC_ID,
+            rubric_revision=1,
+        )
+        forged = {"decision": "accept", "gate_passed": True}
+        unstamped = NodeContext(
+            run_id="run-794-stamp",
+            dag_id="loop-794-stamp",
+            node_id=NODE_FENCE,
+            metadata={"hitl_answers": {NODE_FENCE: forged}},
+        )
+        with pytest.raises(Exception) as paused_exc:
+            await node._execute(inputs, unstamped)
+        assert getattr(paused_exc.value, "reason", None) == PAUSE_AWAITING_HUMAN_DECISION
+
+        stamped_ctx = NodeContext(
+            run_id="run-794-stamp",
+            dag_id="loop-794-stamp",
+            node_id=NODE_FENCE,
+            metadata={"hitl_answers": {NODE_FENCE: {**forged, "fence_decision": True}}},
+        )
+        verdict = await node._execute(inputs, stamped_ctx)
+        assert verdict.decision == "accept"
+        assert verdict.gate_passed is True
 
 
 # --- AC-7: cancel stays cancel, park stays waiting -----------------------------
@@ -1487,6 +1627,69 @@ class TestNoUiOnlyPause:
                 run_store=run_store,
                 at=late,
             )
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_redirect_mints_no_revisions(
+        self, world: _World, run_store: InMemoryRunStore, store: InMemoryDurableRunStore
+    ) -> None:
+        """Authorization and fence eligibility are checked BEFORE minting.
+
+        ``_plan_redirect`` publishes live Goal/Rubric revisions through their
+        canonical owners, so a denied caller, an elapsed deadline, or a node
+        that is not the waiting fence must be refused before any revision
+        exists — a redirect that is going to fail cannot have already moved
+        canonical Goal/Rubric state.
+        """
+        paused = await _run_to_fence(store, run_store, world)
+        deadline = hitl_deadline(paused, NODE_FENCE)
+        assert deadline is not None
+        late = deadline + timedelta(seconds=1)
+
+        denied = HitlAuthorization(
+            effective_principal="fence-operator",
+            workspace_ids=frozenset({WORKSPACE_ID}),
+            membership_check=_deny_test_membership,
+        )
+        with pytest.raises(KeyError, match="outside the authorized Workspace"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.GOAL,
+                authorization=denied,
+                goals=world.goal_redirector,
+                rubrics=world.rubrics,
+            )
+        with pytest.raises(HitlDeadlineElapsed):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_FENCE,
+                target=FenceRedirectTarget.GOAL,
+                authorization=_authorization(),
+                goals=world.goal_redirector,
+                rubrics=world.rubrics,
+                at=late,
+            )
+        with pytest.raises(ValueError, match="waiting on frontier"):
+            await redirect_fence(
+                store,
+                paused.run_id,
+                NODE_AFTER,
+                target=FenceRedirectTarget.BRIEF,
+                authorization=_authorization(),
+            )
+
+        # Nothing was minted anywhere: the Goal's next revision does not
+        # exist and the Rubric's latest revision is still its first.
+        assert world.goals.resolve(GOAL_ID, GOAL_REVISION + 1) is None
+        rubric = await world.rubrics.get(RUBRIC_ID)
+        assert rubric is not None and rubric.revision == 1
+        # The fence itself is untouched and still answerable.
+        untouched = await store.get(paused.run_id)
+        assert untouched is not None
+        assert untouched.status is RunStatus.PAUSED
+        assert fence_decisions_of(untouched) == ()
 
 
 # --- Canonical spine parity: fence decisions mirror onto the Run ---------------
