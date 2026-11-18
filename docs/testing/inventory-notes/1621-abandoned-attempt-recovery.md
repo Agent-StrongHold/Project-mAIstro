@@ -502,3 +502,20 @@ transaction path remains unexecuted. PostgreSQL worker kill/restart acceptance
 for #232 stays outside this PR's proof. The captured PR body still carries
 negated closure wording (`Does not close #42 or #232`) that only an owner can
 correct before merge — GitHub's closure parser does not honor the negation.
+
+## Independent repair check at dc6d42eefb07
+
+Re-ran the exact six PR-declared test paths against the repaired worktree. With
+no database they pass **422 / skip 154**; with
+`MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:15501/maistro_test`
+they pass **575 / skip 1**, exercising the parent-completion fence and the
+recovery integration on PostgreSQL as well as memory/SQLite. The one skip is
+the in-memory backend's durable-only effect lookup. `ruff check .` and
+`ruff format --check .` pass in the driver checks; the CI-exact vulture gate
+passes locally (base `d0e8e235a896`, 1236 reviewed identities to 1235 findings,
+unclassified 0). The previously failing retention and chat-admission paths
+now settle their child before completing the parent, so those tests continue
+to verify their intended retention/admission behavior while the shared spine
+conformance test owns the refusal assertion. `e65be14577` records that focused
+repair. The PR-body closure wording remains an owner-only correction and is
+not changed here.
