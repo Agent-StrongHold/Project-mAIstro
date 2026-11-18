@@ -412,3 +412,59 @@ and resolved the three conflicts in place:
   is now arguably stale — both Dockerfiles patch x/net onto the tag —
   but develop kept the entry and removing a suppression is a
   maintainer-scoped re-scan decision, not this lane's.
+
+## Verification (queue-evaluation audit round, head `bdd229822a18`)
+
+Two more develop merges landed on top of `de535c9945` (lizard 1.25.0
+via `3d10c5831e`, develop tip `d0e8e235a896` — node 22→26-alpine base
+bump + refreshed image pins/package-locks — via `bdd229822a`); both
+merges resolved conflict-free. This round audited the branch against
+the merge queue's own evaluation of this exact head rather than the
+stale "gates red" claims, which attach to older heads (`18c9263438`
+and earlier).
+
+Hosted evaluation at `bdd229822a18` (captured 2026-11-18T01:09Z):
+**125 of 126 check runs `success`, 1 `skipped`** — the skip is the
+duplicate `Container scan + SBOM + cosign` leg of the redundant SAST
+workflow run (`44118631184`); the primary run (`44118647009`) ran the
+same job to `success`. Every gate named in earlier block notes
+(Compliance registry, cross-product-parity, docker-build,
+docker-rebuild-compare, durable-events, compose-durability, e2e,
+e2e-ui, lint-and-type-check, MinIO, pg17/pg18, Coverage, Quality,
+exact-debt-ledger, `block`) is `success` at this head. The eight
+`gates-ran` commit statuses stuck at `pending` are board-accounting
+artifacts, not gate results.
+
+Local re-validation at this head (writer round, 2026-11-18):
+
+- `uv run python scripts/check-frontend-typed-client.py` → exit 0:
+  base `d0e8e235a896` → candidate `bdd229822a18`, **42 → 40 raw
+  fetch, 120 → 119 hand-typed, none new** (the PR body's 60 → 43 /
+  142 → 131 figures describe the original pre-rebase base; the note's
+  "Ratchet" section above is the current authority).
+- `uv run python scripts/check-shipped-surface-truth.py` → exit 0
+  ("matrix is complete"; the 4 stale `mutating-api-call` rows stay
+  dropped).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1236
+  identities, exact ledger match, `unclassified: 0`); no ledger
+  amendment needed this round.
+- `uv run python scripts/check-suite-inventory.py` → exit 0 (21
+  suites, 35490 unique node IDs, 0 duplicates).
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- `uv run pytest tests/test_devskim_scan_scope.py -q` → 21 passed.
+- `uv run pytest tests/test_prepull_base_images.py -q` → 28 passed
+  (develop's node-bump pin/lock refreshes).
+- `uv lock --check` → consistent (468 packages).
+- `npm run build` in `packages/hive-conductor/frontend` → exit 0
+  (tsc --noEmit on both configs + vite, ~3s).
+- `npm run lint` → exit 0, 0 errors, 94 warnings against the 96
+  budget.
+- Zero raw `fetch(` remaining in the four migrated frontend files
+  (AccountBanner, LlmProviders, Settings, TemplatePicker); the SSE
+  waiver still lives under `lib/` (`lib/profile.ts`, `lib/chatSessions.ts`).
+
+Residuals unchanged: live-stack smoke (Settings load/save, Skills
+list, Profile stream, `hctl status`) remains UNVERIFIED locally — it
+is covered by the hosted `hive-conductor-e2e` / `hive-conductor-e2e-ui`
+jobs, both `success` at this head.
