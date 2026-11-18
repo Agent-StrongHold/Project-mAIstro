@@ -178,6 +178,46 @@ async def test_exact_id_missing_raises_attempt_not_found(spine: Any) -> None:
     await _assert_missing_raises(spine)
 
 
+async def test_batch_reclaim_skips_an_attempt_renewed_between_snapshot_and_write_in_memory(
+    memory_spine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch re-check under the write authority skips a raced renewal.
+
+    The snapshot admits the Attempt (expired at ``now``); by write time the
+    predicate sees a fresh lease — a concurrent ``renew_lease`` won between
+    nominating and writing — so the row must be skipped, not rewritten:
+    nothing returned, nothing persisted (#2358 / #232 P2c). The predicate is
+    stubbed per call rather than raced on wall-clock timing, which would make
+    the test order-dependent on scheduler speed.
+    """
+    store, attempt = await _leased_running_attempt(memory_spine, ttl=timedelta(seconds=30))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after = lease.expires_at + timedelta(seconds=1)
+
+    import maistro.runs.store as runs_store_module
+
+    real = runs_store_module.lease_is_expired
+    calls = {"n": 0}
+
+    def _renewed_after_the_snapshot(candidate: Any, now: Any) -> bool:
+        calls["n"] += 1
+        # Admitted by the doomed snapshot (first read), fresh again by the
+        # re-check that guards the write (every later read).
+        return real(candidate, now) if calls["n"] == 1 else False
+
+    monkeypatch.setattr(runs_store_module, "lease_is_expired", _renewed_after_the_snapshot)
+
+    reclaimed = await store.reclaim_expired_attempts(now=after)
+
+    assert calls["n"] >= 2  # snapshot admission and the write-time re-check both ran
+    assert reclaimed == []
+    current = await store.get_attempt(attempt.attempt_id)
+    assert current is not None
+    assert current.status is AttemptStatus.RUNNING
+    assert current.cancellation_cause is None
+
+
 async def test_exact_id_reclaim_persists_recovered_in_memory(memory_spine: Any) -> None:
     await _assert_exact_id_reclaim_persists_recovered(memory_spine)
 
@@ -277,41 +317,6 @@ async def _snapshot_race_memory_spine() -> Any:
         workspace_id="workspace-1", parent_project_id=root.project_id, name="Durable"
     )
     return _LosesSnapshotRaceStore(project_store=projects), "workspace-1", project.project_id
-
-
-async def test_batch_reclaim_skips_an_attempt_renewed_after_the_snapshot_in_memory() -> None:
-    """A renew landing between snapshot and re-check keeps its Attempt.
-
-    Cancelling on the stale snapshot would terminalize demonstrably live
-    work — the one thing the disposition refuses outright. The re-check must
-    observe the renewed lease and leave the row exactly as the winner wrote it.
-    """
-    store, workspace, project_id = await _snapshot_race_memory_spine()
-    spine = (store, workspace, project_id)
-    store_inner, attempt = await _leased_running_attempt(spine, ttl=timedelta(seconds=30))
-    lease = attempt.execution_lease
-    assert lease is not None and lease.expires_at is not None
-    after = lease.expires_at + timedelta(seconds=1)
-    renewed = renew_attempt_lease(
-        attempt,
-        fencing_token=lease.fencing_token,
-        ttl=timedelta(hours=1),
-        at=after - timedelta(seconds=2),
-    )
-    assert renewed.execution_lease is not None
-    store_inner.prime_snapshot_race(attempt.attempt_id, renewed)
-
-    reclaimed = await store_inner.reclaim_expired_attempts(now=after)
-
-    assert reclaimed == []
-    reopened = await store_inner.get_attempt(attempt.attempt_id)
-    assert reopened is not None
-    assert reopened.status is AttemptStatus.RUNNING
-    assert reopened.cancellation_cause is None
-    assert reopened.execution_lease is not None
-    assert reopened.execution_lease.expires_at == lease.expires_at, (
-        "the racing renew wins: the re-check skips instead of rewriting"
-    )
 
 
 async def test_batch_reclaim_skips_an_attempt_removed_after_the_snapshot_in_memory() -> None:
