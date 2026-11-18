@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities.providers.opencode import (
     OpencodeHarnessRunner,
@@ -10,7 +12,7 @@ from maistro.capabilities.providers.opencode import (
 )
 from maistro.capabilities.providers.subprocess_harness import _Session
 from maistro.capabilities.slots.harness_runner import SLOT_NAME
-from maistro.tools.sandbox.microvm import MicroVMRunSpec, MicroVMSandbox
+from maistro.tools.sandbox.microvm import MicroVMRunSpec
 
 
 def _spec() -> AgentSpec:
@@ -128,16 +130,39 @@ class _FakeLauncher:
 
 
 class TestMicroVMWiring:
-    async def test_factory_boots_microvm_at_workdir(self) -> None:
+    """The launcher seam registers behind the canonical selector (#76).
+
+    The factory must not construct a provider-private sandbox: policy
+    admission (UNTRUSTED_CODE by default) and egress come from the selector,
+    and the launcher is only the substrate the selector chose.
+    """
+
+    async def test_factory_boots_through_the_selector_at_the_workdir(self) -> None:
         launcher = _FakeLauncher()
         factory = opencode_microvm_factory(launcher, env={"OPENCODE_API_KEY": "k"})
         sandbox = await factory("/repos/target")
-        assert isinstance(sandbox, MicroVMSandbox)
         code, out = await sandbox.exec("opencode run --auto 'hi'")
         assert code == 0 and out == "vm-ran"
-        # the VM's workspace is the repo we pointed it at; env is threaded in
+        # the VM's workspace is the repo we pointed it at; env is threaded in;
+        # the command line reaches the launcher verbatim
         assert launcher.specs[0].workspace == "/repos/target"
         assert launcher.specs[0].env == {"OPENCODE_API_KEY": "k"}
+        assert launcher.specs[0].command == "opencode run --auto 'hi'"
+        assert launcher.specs[0].config.network == "none"  # the policy's deny, not the substrate's
+
+    async def test_a_policy_the_substrate_cannot_honour_refuses(self) -> None:
+        from maistro.sandbox import EgressGrant, EgressMode, WorkloadPolicy
+        from maistro.sandbox.backends.launcher_vm import LauncherVMUnavailableError
+
+        networked = WorkloadPolicy(
+            min_tier="vm",
+            egress=EgressGrant(mode=EgressMode.HOST, reason="test"),
+            reason="test policy",
+        )
+        factory = opencode_microvm_factory(_FakeLauncher(), policy=networked)
+
+        with pytest.raises(LauncherVMUnavailableError, match="deny-only"):
+            await factory("/repos/target")
 
     async def test_runner_convenience_end_to_end(self) -> None:
         launcher = _FakeLauncher()
