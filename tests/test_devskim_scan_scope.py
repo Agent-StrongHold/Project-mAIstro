@@ -17,6 +17,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,14 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
+# The sweep test below asks these once per shipped source file (~1600 files,
+# and growing). Re-reading and re-parsing devskim.yml per call made the test
+# wall-clock-bound on slow CI runners: the 2026-11-04 coverage-gate run killed
+# it inside yaml.safe_load (>30s pytest-timeout) after a ~17-minute serial
+# suite, a failure of parsing redundancy, not of the invariant. The workflow
+# cannot change mid-test, so each helper parses/matches once and caches; the
+# assertions below are unchanged. Callers must not mutate the cached results.
+@lru_cache(maxsize=1)
 def _scanner_step() -> dict[str, object]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
@@ -47,19 +56,21 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
-def _ignore_globs() -> list[str]:
+@lru_cache(maxsize=1)
+def _ignore_globs() -> tuple[str, ...]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
     assert raw, "the scanner step passes no ignore-globs — it would scan everything"
-    return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
+    return tuple(glob.strip() for glob in str(raw).split(",") if glob.strip())
 
 
-def _include_globs() -> list[str]:
+@lru_cache(maxsize=1)
+def _include_globs() -> tuple[str, ...]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
     match = re.search(r"--include-globs\s+(\S+)", extra)
     assert match, "DevSkim must pass --include-globs so non-product roots are never scanned"
-    return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
+    return tuple(glob.strip() for glob in match.group(1).split(",") if glob.strip())
 
 
 def _as_regex(glob: str) -> re.Pattern[str]:
