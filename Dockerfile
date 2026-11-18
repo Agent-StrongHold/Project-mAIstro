@@ -147,6 +147,10 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # assertion below exists precisely to guarantee no divergence from the
 # pinned ref). Revise to the v29.10.0 final when it ships.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
+# klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
+# upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
+# only the x/net patch below remains.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.10.0-rc.2
 ARG DOCKER_CLI_COMMIT_SHORT=eaae503
@@ -158,7 +162,9 @@ RUN apk add --no-cache git && \
     go get golang.org/x/net@v0.62.0 && \
     go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
