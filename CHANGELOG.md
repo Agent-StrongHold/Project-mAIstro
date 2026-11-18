@@ -44,6 +44,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
 - **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches

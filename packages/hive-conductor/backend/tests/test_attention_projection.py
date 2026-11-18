@@ -996,3 +996,152 @@ async def test_optimizer_workspace_filter_runs_before_list_cap(run_store) -> Non
             stores.optimizer_proposals.pop(key)
         for key, row in prior_props.items():
             stores.optimizer_proposals[key] = row
+
+
+async def test_without_the_wired_provider_messages_stay_out_of_attention(
+    run_store,
+) -> None:
+    """The message door is wired from ``main`` (#1046 retirement rule).
+
+    Until an app factory installs the provider, the projection must read no
+    message rows at all — Attention never grows its own importer edge on the
+    retiring messages store, and an unwired process answers with the other
+    sources instead of crashing or reaching into ``stores.messages``.
+    """
+    import stores
+    from services import attention as attention_mod
+
+    ws = await _workspace("admin", "Attention provider absent")
+    # An unread critical message sits in the canonical store — only the
+    # missing provider keeps it off the projection.
+    stores.messages["msg-unwired"] = {
+        "id": "msg-unwired",
+        "from_agent": "Warden",
+        "subject": "Critical finding",
+        "priority": "critical",
+        "read": False,
+    }
+    prior = attention_mod._message_rows_provider
+    try:
+        attention_mod.set_message_rows_provider(None)
+        body = await list_attention("admin", ws, now=_NOW)
+    finally:
+        attention_mod.set_message_rows_provider(prior)
+        stores.messages.pop("msg-unwired", None)
+
+    assert body is not None
+    assert not [i for i in body["items"] if i["source_kind"] == "agent_message"]
+
+
+async def test_malformed_message_rows_never_become_attention_items(run_store) -> None:
+    """A provider row that is not a dict — or carries no id — is skipped.
+
+    The messages list door hands back store rows; a row shaped wrong must
+    degrade to "message not projected", never to a crashed read or an item
+    whose source id cannot be dismissed.
+    """
+    from services import attention as attention_mod
+
+    ws = await _workspace("admin", "Attention malformed messages")
+    rows: list[Any] = [
+        "not-a-dict",
+        {
+            "from_agent": "Ghost",
+            "subject": "no id",
+            "priority": "critical",
+            "read": False,
+        },
+        {
+            "id": "msg-ok",
+            "from_agent": "Warden",
+            "subject": "Fine",
+            "priority": "critical",
+            "read": False,
+        },
+    ]
+    prior = attention_mod._message_rows_provider
+    try:
+        attention_mod.set_message_rows_provider(lambda: rows)
+        body = await list_attention("admin", ws, now=_NOW)
+    finally:
+        attention_mod.set_message_rows_provider(prior)
+
+    assert body is not None
+    msgs = [i for i in body["items"] if i["source_kind"] == "agent_message"]
+    assert [m["source_id"] for m in msgs] == ["msg-ok"]
+    assert msgs[0]["attention_class"] == "severity"
+
+
+async def test_optimizer_projection_rechecks_decision_workspace_id_and_shape(
+    monkeypatch: pytest.MonkeyPatch, run_store
+) -> None:
+    """The store query is the first gate; the projection re-checks each row.
+
+    ``_optimizer_items`` asks ``list_proposals`` for pending rows scoped to
+    the Workspace, but the guards in ``_optimizer_item`` are the projection's
+    own last line: if the store query ever regresses (a filter dropped, a
+    decision flip missed mid-scan), another Workspace's suggestions and
+    already-settled proposals still must not surface on this Workspace's
+    Attention, and a shapeless row must not crash the read.
+    """
+    from services import attention as attention_mod
+
+    ws = await _workspace("admin", "Attention optimizer recheck")
+    planted: list[Any] = [
+        "not-a-dict",
+        {"id": "prop-decided", "decision": "accepted", "workspace_id": ws},
+        {"id": "prop-foreign", "decision": "pending", "workspace_id": "ws-elsewhere"},
+        {"decision": "pending", "workspace_id": ws},
+        {
+            "id": "prop-here",
+            "decision": "pending",
+            "workspace_id": ws,
+            "priority_score": 0.4,
+        },
+    ]
+    monkeypatch.setattr(attention_mod, "list_proposals", lambda **_k: planted)
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    props = [i for i in body["items"] if i["source_kind"] == "optimizer_proposal"]
+    assert [p["source_id"] for p in props] == ["prop-here"]
+    assert props[0]["attention_class"] == "proactive"
+
+
+def test_waiting_quality_names_follow_up_items_as_valuable() -> None:
+    """A follow_up item is Waiting evidence worth surfacing by id (#1049).
+
+    Optimizer proposals earn the badge by score; every other waiting class
+    but follow_up is either HITL noise or an unread info message. follow_up
+    is the ladder's reserved slot for review-style work, and the Waiting
+    indicator must count it as valuable rather than dropping it from the
+    ids it names.
+    """
+    from services.attention import _Item, _waiting_quality
+
+    items = [
+        _Item("review", "rev-1", "ws", "follow_up", "review requested"),
+        _Item(
+            "optimizer_proposal",
+            "prop-low",
+            "ws",
+            "proactive",
+            "below the valuable bar",
+            evidence={"priority_score": 0.2},
+        ),
+        _Item(
+            "optimizer_proposal",
+            "prop-high",
+            "ws",
+            "proactive",
+            "above the valuable bar",
+            evidence={"priority_score": 0.8},
+        ),
+        _Item("hitl_node_run", "ask/1", "ws", "queued", "not waiting"),
+    ]
+
+    quality = _waiting_quality(items)
+
+    assert quality["count"] == 3
+    assert set(quality["valuable_source_ids"]) == {"rev-1", "prop-high"}

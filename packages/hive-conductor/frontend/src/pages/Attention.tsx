@@ -406,7 +406,12 @@ export default function Attention() {
   // Drop in-flight loads (incl. post-answer/dismiss refresh) after Workspace switch.
   const loadGenerationRef = useRef(0);
   const activeWorkspaceIdRef = useRef(activeWorkspaceId);
-  activeWorkspaceIdRef.current = activeWorkspaceId;
+  // Mirror the latest Workspace id into the ref from an effect, not render:
+  // refs are not render values (react-hooks/refs), and `load` only ever runs
+  // from effects/handlers, which see the committed value.
+  useEffect(() => {
+    activeWorkspaceIdRef.current = activeWorkspaceId;
+  }, [activeWorkspaceId]);
 
   const load = useCallback(async () => {
     const workspaceId = activeWorkspaceIdRef.current;
