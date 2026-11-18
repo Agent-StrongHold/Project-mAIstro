@@ -949,3 +949,102 @@ on these bytes. Disk pressure on the host (root fs ~100% during the grype DB
 download; worked around by redirecting grype's cache to `/tmp`) is an
 environment constraint, not a tree defect. The e2e-ui rsi-polling-resilience
 wall-clock flake documented in round 6 remains develop-side maintainer scope.
+
+## Round 13 (2026-11-18, head `9ec3ae070eed`) — the merge-queue `test` red is an unpatchable upstream npm advisory
+
+CI evaluated this head twice. Run `44223564932` (2026-11-18T02:29Z, triggered
+by the round-12 push): **18 of 19 jobs green** — docker-build,
+hive-conductor-e2e, hive-conductor-e2e-ui, postgres pg17/pg18, security,
+lint-and-type-check, cross-product-parity all pass — with exactly one red:
+the `test` job, step 20 `npm audit --audit-level=high` in
+`packages/maistro-canvas/frontend` (jobs API for check-run 134531137582:
+steps 7–19 success, step 20 failure, steps 21–25 skipped by fail-fast).
+This supersedes the stale prior-attempt gate list (Container scan, coverage,
+Gate C, quality, docker-build, e2e, integration-scope were all red rounds
+ago; the round-12 note recorded 78/78 green at `9672a1fb65df`).
+
+### The "Event loop is closed" CI annotations are not the failure
+
+The failed-job log excerpt carries two `##[error]` annotations reading
+`RuntimeError('Event loop is closed')`. They are log-scan noise, not the
+failing step: steps 7–19 exited 0. Reproduced locally in the round-13
+one-process run — the exact source is a `PytestUnhandledThreadExceptionWarning`
+from aiosqlite's `_connection_worker_thread`
+(`packages/hive-conductor/backend/tests/test_canvas_model_egress.py::
+test_shipped_canvas_route_records_correlated_invocation`), raised after the
+test's loop closed; pytest records it as a warning and exits 0. The suite
+total is green with the warning present, locally and (steps 7–13) in CI.
+No code change is warranted for it.
+
+### The npm audit red: GHSA-fc5q-39xc-vjpf (CVE-2026-112366) is unpatchable today
+
+Evidence chain, each link executed this round:
+
+1. **Advisory shape.** npm bulk advisory DB (POST
+   `registry.npmjs.org/-/npm/v1/security/advisories/bulk`, queried for
+   picomatch 4.0.7/4.0.8/5.0.0): one advisory, id 1247710, severity high,
+   CVSS 7.5, `vulnerable_versions: "<=4.0.7"`. GitHub advisory DB: `patched:
+   null`. The registry's dist-tags agree: `latest: 4.0.7` (published
+   2026-08-24) and no later version exists — **every picomatch ever published
+   is in scope; no fixed release exists.**
+2. **The audited tree cannot avoid the package.** Lockfile (`packages/
+   maistro-canvas/frontend/package-lock.json`): picomatch 4.0.7, tinyglobby
+   0.2.17, fdir 6.5.0, vite 8.3.8, vitest 5.1.0, @vitejs/plugin-react 6.3.0.
+   Registry check: vite 8.3.8 and vitest 5.1.0 are the **latest** majors and
+   each declares `picomatch: "^4.0.7"` as a direct dependency; tinyglobby
+   0.2.17 declares `picomatch: "^4.0.4"`. There is no vite/vitest/tinyglobby
+   version whose tree excludes picomatch, and because the advisory covers
+   `<=4.0.7` (i.e. all versions), downgrading cannot clear it either. A
+   dependency-side fix does not exist today.
+3. **The branch did not cause it.** `git diff origin/develop...HEAD --
+   packages/maistro-canvas/` is empty — the audited subtree is byte-identical
+   to the develop base `d0e8e235a8`. develop's own CI on that same tree (run
+   `44062413023`, 2026-11-17T10:10Z) was green; this PR's run ~16 h later was
+   red. The advisory row entered npm's DB inside that window; develop's next
+   CI run inherits the same red. This is the advisory-staleness class from
+   rounds 6–8, npm flavor.
+4. **Exit paths.** (a) Upstream ships picomatch > 4.0.7 (the advisory's own
+   boundary implies 4.0.8 is the patched release); vite/vitest's `^4.0.7`
+   ranges already admit it, so a lockfile-only refresh (`npm update
+   picomatch` in the canvas frontend) turns the gate green with no
+   package.json change. (b) A maintainer sanctions an npm-audit waiver
+   mechanism mirroring `.trivyignore.yaml` (named, expiry-dated,
+   triage-statement rows) and wires the audit step to it. Both are outside
+   worker authority: (a) depends on an upstream release that does not exist
+   yet; (b) edits the `test` gate, which lane rules prohibit — and the repo
+   has no npm analog of the trivy waiver file to extend.
+
+### Round-13 validation battery (this machine, head `9ec3ae070eed`)
+
+Every `test`-job step CI skipped behind the failing audit step was executed
+locally in CI's shape:
+
+| CI step | local command (CI shape) | result |
+|---|---|---|
+| 7–19 (already green in run 44223564932) | — | CI evidence carries |
+| 22 backend suite | `uv run pytest packages/hive-conductor/backend/tests -q` | **4184 passed, 29 skipped** (4m51s) |
+| 23 one-process anti-leak | `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ packages/hive-conductor/backend/tests packages/maistro-design/tests -q --timeout=60` | **10775 passed, 169 skipped** (12m18s); the two aiosqlite thread warnings appear, suite exits 0 |
+| 24 suite inventory | `uv run python scripts/check-suite-inventory.py` | ok — 21 suites match, rc 0 |
+| 25 test duplicates | `uv run python scripts/check-test-duplicates.py` | ok — 0 byte-identical groups, rc 0 |
+| vulture ledger (lane brief, CI-exact args) | `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | rc 0 — 1236 = 1236, base d0e8e235a8, candidate 9ec3ae070eed |
+| driver checks 0–2 | `uv sync --locked --extra dev`, `ruff check .`, `ruff format --check .` | green (job `f05e55c1…` logs; 3575 files formatted) |
+
+No production file changed this round; no test changed, so the suite
+inventory needs no delta note (check 24 confirms zero delta).
+
+### Round-13 disposition
+
+**NEEDS-DEEP-REVIEW.** The branch's own content is proven: the PR's image
+changes carry CI-green scans (round 12, run at `9672a1fb65df`), and every
+`test`-job step except the audit step is now green at this head, locally in
+CI's exact shapes. The single red is `npm audit --audit-level=high` failing
+on GHSA-fc5q-39xc-vjpf, a high-severity advisory that (i) covers every
+picomatch release in existence, (ii) sits behind vite/vitest at their latest
+majors as a direct dependency, and (iii) appeared in npm's DB after develop
+itself last ran green on identical bytes. It cannot be cleared by any
+package.json/lockfile change available today, and clearing it by editing the
+gate is outside worker authority. The maintainers' own convention for this
+class (`.trivyignore.yaml`) shows the sanctioned shape a waiver would take;
+its npm equivalent is a one-line policy decision away. If picomatch publishes
+4.0.8 first, `npm update picomatch` in `packages/maistro-canvas/frontend`
+plus commit is the whole fix.
