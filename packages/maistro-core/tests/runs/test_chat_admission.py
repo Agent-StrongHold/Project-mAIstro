@@ -8,6 +8,7 @@ bound that is enforced by the admitter rather than hoped for from the store.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -642,3 +643,142 @@ class TestFailureCategory:
         secret = "https://provider.internal/v1 key=sk-secret"
         for exc in (TimeoutError(secret), LLMProviderError(secret), ValueError(secret)):
             assert "sk-secret" not in failure_category(exc)
+
+
+@pytest.mark.parametrize("mismatch", ["store", "budget"])
+async def test_shared_chat_window_requires_one_store_and_budget(spine, mismatch) -> None:
+    projects, runs, root = spine
+    first = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    with pytest.raises(ValueError, match="same store and max_retained"):
+        ChatRunAdmitter(
+            InMemoryRunStore(project_store=projects) if mismatch == "store" else runs,
+            workspace_id="w1",
+            project_id=root.project_id,
+            max_retained=1 if mismatch == "budget" else 2,
+            share_window_with=first,
+        )
+
+
+@pytest.mark.parametrize("changed_field", ["workspace_id", "provenance"])
+async def test_window_rechecks_scope_and_source_before_deletion(
+    spine, monkeypatch, changed_field
+) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
+    first = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await runs.transition_run(first.run_id, RunStatus.QUEUED)
+    await runs.transition_run(first.run_id, RunStatus.CANCELLED)
+    original_get = runs.get_run
+
+    async def changed_scope(run_id):
+        run = await original_get(run_id)
+        if run_id == first.run_id:
+            return run.model_copy(
+                update={
+                    changed_field: "foreign"
+                    if changed_field == "workspace_id"
+                    else {ADMISSION_SOURCE: "task_queue"}
+                }
+            )
+        return run
+
+    monkeypatch.setattr(runs, "get_run", changed_scope)
+    with pytest.raises(ValueError, match=r"outside|only chat"):
+        await admitter.admit(_turn("later"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    assert await original_get(first.run_id) is not None
+
+
+@pytest.mark.parametrize("failure", [OSError, asyncio.CancelledError])
+async def test_fresh_admission_tracks_without_a_fallible_second_read(
+    spine, monkeypatch, failure
+) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+    original_get = runs.get_run
+
+    async def interrupted_read(_run_id):
+        raise failure("read interrupted after Run creation")
+
+    monkeypatch.setattr(runs, "get_run", interrupted_read)
+    admitted = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    assert admitter.retained == 1
+    assert await original_get(admitted.run_id) is not None
+
+
+@pytest.mark.parametrize("kind", ["foreign", "task"])
+async def test_a_forged_snapshot_cannot_authorize_window_deletion(spine, kind) -> None:
+    from maistro.runs.admission import admit_direct_work
+
+    projects, runs, root = spine
+    foreign_root = await projects.create_root("w2")
+    protected = await admit_direct_work(
+        runs,
+        workspace_id="w2" if kind == "foreign" else "w1",
+        project_id=foreign_root.project_id if kind == "foreign" else root.project_id,
+        node_type=DELEGATE_NODE_KIND,
+        name="protected work",
+        source=CHAT_SOURCE if kind == "foreign" else "task_queue",
+        parameters={"from_agent": "", "task": "work", "to_agent": "coder"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await runs.transition_run(protected.run_id, RunStatus.QUEUED)
+    await runs.transition_run(protected.run_id, RunStatus.CANCELLED)
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
+    forged = protected.model_copy(
+        update={"workspace_id": "w1", "provenance": {ADMISSION_SOURCE: CHAT_SOURCE}}
+    )
+    await admitter.track(forged)
+    with pytest.raises(ValueError, match=r"outside|only chat"):
+        await admitter.admit(_turn("later"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    assert await runs.get_run(protected.run_id) is not None
+
+
+async def test_workspace_admitters_share_one_window_for_external_run_ids(spine) -> None:
+    from maistro.runs.admission import admit_direct_work
+
+    projects, runs, root = spine
+    other_root = await projects.create_root("w2")
+    first = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    second = ChatRunAdmitter(
+        runs,
+        workspace_id="w2",
+        project_id=other_root.project_id,
+        max_retained=2,
+        share_window_with=first,
+    )
+    oldest = await first.admit(_turn("oldest"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await runs.transition_run(oldest.run_id, RunStatus.QUEUED)
+    await runs.transition_run(oldest.run_id, RunStatus.CANCELLED)
+    middle = await second.admit(_turn("middle"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await runs.transition_run(middle.run_id, RunStatus.QUEUED)
+    await runs.transition_run(middle.run_id, RunStatus.CANCELLED)
+    newest = await admit_direct_work(
+        runs,
+        workspace_id="w2",
+        project_id=other_root.project_id,
+        node_type=DELEGATE_NODE_KIND,
+        name="externally composed chat",
+        source=CHAT_SOURCE,
+        parameters={"from_agent": "", "task": "chat", "to_agent": "coder"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert await second.track(newest.run_id) == 1
+    assert first.retained == second.retained == 2
+    assert await runs.get_run(oldest.run_id) is None
+    assert await runs.get_run(middle.run_id) is not None
+    assert await runs.get_run(newest.run_id) is not None
+    assert await second.track(newest.run_id) == 0
+    assert first.retained == 2
+
+
+async def test_tracking_a_missing_id_preserves_the_existing_window(spine) -> None:
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+    admitted = await admitter.admit(_turn(), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+
+    with pytest.raises(RunIntegrityError, match="missing chat Run"):
+        await admitter.track("missing")
+
+    assert admitter.retained == 1
+    assert await runs.get_run(admitted.run_id) is not None
