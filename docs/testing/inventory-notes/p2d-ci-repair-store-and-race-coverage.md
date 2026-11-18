@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +22
+  packages/maistro-core/tests: +20
 ---
 
 # P2d CI repair: backend + race coverage the first draft missed (#2369 / #232)
@@ -23,19 +23,22 @@ guards both reclaim loops carry. Same failure shape as the P2b repair
   stale fence refuses and writes nothing; RUNNING winner is refused; missing
   id raises `AttemptNotFound`
 
-`packages/maistro-core/tests/runs/test_reclaim_expired_attempt_exact_id.py` (+3):
+`packages/maistro-core/tests/runs/test_reclaim_expired_attempt_exact_id.py` (+2):
 
-- batch re-check skips an attempt renewed after the sort snapshot (in-memory
-  map seam; SQLite via its awaited re-read): no rewrite of live work
-- batch re-check skips an attempt removed after the snapshot (in-memory):
-  `current is None` is a skip, not a crash or a rewrite
+- batch re-check skips an attempt removed after the snapshot (in-memory
+  map seam): `current is None` is a skip, not a crash or a rewrite
+- batch re-check skips an attempt renewed underneath it (SQLite awaited
+  re-read): no rewrite of live work — the in-memory renew leg is develop's
+  predicate-stub test, merged from #2358's CI repair; this branch dropped
+  its duplicate
 
-`packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py` (+4):
+`packages/maistro-core/tests/graph/durable_runs/test_canonical_execution_store.py` (+3):
 
 - local-only compensation (no canonical RunStore wired) commits
   CANCELLED+RECOVERED, refuses a stale fence, raises `AttemptNotFound`
-- canonical exact-ID reclaim reporting `AttemptNotFound` (row vanished) is a
-  `RunIntegrityError`, never a silently empty reclaim
+  (the canonical-reclaim vanish translation itself is develop's
+  `_VanishingAttemptRunStore` test, merged from #2367's CI repair — this
+  branch dropped its duplicate in favor of develop's)
 
 `packages/maistro-core/tests/runs/test_execution.py` (+3):
 
