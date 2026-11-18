@@ -315,3 +315,71 @@ after a pre-worker `ruff format --check` failure) and completed it:
   docker-gated real-container case failing because the local builders image
   lacks pytest inside (`No module named pytest`) — CI has no docker daemon so
   that case skips there and cannot gate this branch.
+
+## Round 2026-11-17 (merge c2a3025142): develop sync d0e8e235a8 (node 26-alpine #2120)
+
+Salvaged the interrupted develop-sync merge left in the worktree at starting head
+df1e4ef6 (MERGE_HEAD d0e8e235a8, 11 files already staged as resolutions, two
+package-lock.json conflicts unresolved). Completed it:
+
+- Lockfile conflict resolution took develop's side for both
+  `packages/hive-conductor/frontend/package-lock.json` and
+  `packages/maistro-canvas/frontend/package-lock.json`, proven non-regressive by
+  package-by-package version comparison: same dependency set (package.json
+  byte-identical on both sides vs merge base 809f84c8a6), HEAD-newer count = 0,
+  develop-newer counts 27 (hive) / 93 (canvas); the a11908f338 audit fixes
+  (canvas minimatch 11.0.8) are present on both sides. Conflicted worktree state
+  backed up to `../cr1896-unmerged-snapshot.patch` before resolving.
+- `packages/hive-conductor/Dockerfile` is a true content merge: develop's
+  `FROM node:26-alpine@sha256:40cd011b…` (pin registered in its
+  quality/image-pins.json row, merged verbatim) plus the branch's
+  `npm config set audit-level=high &&` prefix retained.
+- All other develop-side files verified byte-identical to d0e8e235a8 after the
+  merge (empty diff); quality/ row counts unchanged vs develop
+  (`git diff --numstat d0e8e235a8 -- quality/` empty).
+- Previous-round "recovery budget exhausted: provider error
+  (nous/stepfun/step-3.7-flash:free): 400 missing tags" block was model-provider
+  infrastructure, not repo state: all 5 checks that ran at df1e4ef6
+  (uv sync, ruff check, ruff format, pytest test_free_router.py, suite inventory)
+  passed (jobs/435bb3b1…/result.json).
+
+Gate proofs at the merged head c2a3025142:
+
+- vulture ledger, CI's exact argv (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): 1236 reviewed == 1236 findings, candidate c2a3025142
+  against base d0e8e235a8, 0 unclassified.
+- `scripts/check-image-pins.py`: 9 pinned images across 10 Dockerfiles, all
+  registered — validates the node:26-alpine row merged from develop.
+- `scripts/check-image-inventory.py`: OK, 9 Dockerfiles inventoried.
+- ruff check + ruff format --check: clean (3587 files).
+- pytest tests/test_prepull_base_images.py tests/test_check_image_pins.py
+  tests/test_pinned_digest_references.py packages/maistro-rsi/tests/test_free_router.py:
+  99 passed. Suite inventories ok with no delta needed:
+  packages/maistro-rsi/tests 1798, tests/ 6230 — no inventory note required
+  (no test added or removed).
+- Docker proof of the merged lockfile in CI's exact context:
+  `docker build -f packages/hive-conductor/Dockerfile --target frontend` on
+  node:26-alpine@sha256:40cd011b… runs `npm config set audit-level=high &&
+  npm ci` + vite build green (image exported, then removed).
+- Container-scan gate analysis: the job (security.yml) is image-level only —
+  4 buildx builds, trivy HIGH/CRITICAL with ignore-unfixed, grype --only-fixed,
+  syft, cosign. No npm audit step exists in it or in any current Dockerfile
+  (the a11908f33-era `npm audit` build step was removed by a79a689ae; current
+  hive Dockerfile line 15 only sets audit-level for npm ci, which does not
+  audit). The merged picomatch/tinyglobby/fdir dev toolchain never ships in a
+  final image (final stages copy dist/ + backend venv), and the advisory is
+  unfixed anyway, so both trivy (ignore-unfixed) and grype (--only-fixed)
+  structurally cannot fail on it.
+- NEW upstream environmental finding, documented not repaired:
+  `npm audit --audit-level=high` now exits 1 on BOTH frontends (canvas 6 high,
+  hive 5 high + 6 moderate) — picomatch ReDoS GHSA-fc5q-39xc-vjpf /
+  CVE-2026-112366, vulnerable range `<= 4.0.7` with `patched_versions: None`
+  (latest release 4.0.7 predates the advisory), advisory DB updated
+  2026-11-17T15:56Z. Verified identical failure at the PRE-merge head df1e4ef6
+  (audit against its canvas lock: same rc=1), so this round did not introduce
+  it — every branch and develop itself (identical locks) now fails this step.
+  npm's suggested fix is a breaking multi-major downgrade (canvas vitest
+  ^5.0.0 → 3.1.4, hive vite 6.3.x → 6.2.7); not actionable as a minimal CI
+  repair, and no in-tree exception mechanism exists for the plain
+  `npm audit --audit-level=high` step (ci.yml:702) short of weakening the gate.
+  Left red pending an upstream picomatch patch; flagged for the next round.
