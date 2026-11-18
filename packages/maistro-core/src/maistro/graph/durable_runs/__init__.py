@@ -29,6 +29,13 @@ from .continuation import (
 )
 from .execution_store import DurableRunExecutionStore
 from .fair_scan import ScanContinuation, cursor_time
+from .fence import (
+    GoalRevisionRedirector,
+    RubricReviser,
+    accept_fence,
+    park_fence,
+    redirect_fence,
+)
 from .hitl import (
     MAX_PENDING_SCAN_RECORDS,
     HitlAuthorization,
@@ -49,7 +56,7 @@ from .legacy_archive import (
     LegacyRunNotResumable,
 )
 from .protocol import DurableRunStore, RecoveryInfrastructureError
-from .recovery import recover_queued_graph_runs, resume_due_graph_runs
+from .recovery import poll_external_results, recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .time_travel import (
     GraphStateEpoch,
@@ -68,6 +75,7 @@ __all__ = [
     "DurableRunExecutionStore",
     "DurableRunRecord",
     "DurableRunStore",
+    "GoalRevisionRedirector",
     "GraphContinuation",
     "GraphContinuationStore",
     "GraphStateEpoch",
@@ -85,6 +93,7 @@ __all__ = [
     "NodeResolver",
     "PendingHitlScan",
     "RecoveryInfrastructureError",
+    "RubricReviser",
     "RunStatus",
     "ScanContinuation",
     "SequenceOutOfRangeError",
@@ -92,12 +101,16 @@ __all__ = [
     "SqliteGraphContinuationStore",
     "StateHistoryIntegrityError",
     "UnknownGraphRunError",
+    "accept_fence",
     "cursor_time",
     "durable_graph_launch_provenance",
     "expire_hitl_pauses",
+    "park_fence",
     "pending_hitl_node_ids",
     "pending_hitl_records",
+    "poll_external_results",
     "recover_queued_graph_runs",
+    "redirect_fence",
     "resume_due_graph_runs",
     "resume_durable_graph",
     "run_durable_graph",

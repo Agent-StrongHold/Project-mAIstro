@@ -215,7 +215,10 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
             "from the LOLBAS heuristic's side."
         ),
         expires="2027-11-04",
-        versions=("0.28.1",),
+        # 0.28.2 re-reviewed in the #2399 develop merge: the published
+        # package.json carries the identical `node install.js` postinstall
+        # and the lockfile integrity matches the registry digest.
+        versions=("0.28.1", "0.28.2"),
     ),
     ("eslint", "threat-filesystem-read"): Exception(
         reason=(
@@ -319,7 +322,10 @@ INSTALL_SCRIPT_EXCEPTIONS: dict[str, Exception] = {
             "the binary is the package's entire purpose."
         ),
         expires="2027-11-04",
-        versions=("0.28.1",),
+        # 0.28.2 re-reviewed in the #2399 develop merge: npm's published
+        # manifest keeps the exact reviewed `node install.js` postinstall,
+        # and the lockfile's sha512 equals the registry digest for 0.28.2.
+        versions=("0.28.1", "0.28.2"),
     ),
     "fsevents": Exception(
         reason=(

@@ -699,11 +699,28 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: npm run build
         working-directory: packages/maistro-canvas/frontend
-      # Vulnerability auditing for BOTH frontends moved to security.yml's
-      # js-supply-chain job (#344): scripts/js_dependency_gate.py is the single
-      # verdict, with owned/expiring exceptions, so this bare step (which
-      # passed moderate findings the gate triages, and would have kept failing
-      # on a triaged high one) can no longer disagree with it.
+      # The canvas frontend's audit is judged by a triaged gate, not a bare
+      # `npm audit --audit-level=high`: GHSA-fc5q-39xc-vjpf (picomatch ReDoS)
+      # listed every published picomatch as vulnerable with no patched release
+      # while vite@8 depends on picomatch ^4.0.7 directly, so no lock this
+      # frontend can produce audited clean. The advisory was withdrawn
+      # 2026-11-18T15:38:56Z and the gate's two-way ratchet deleted the waiver,
+      # so ALLOWED ships empty. The step still writes the JSON report and
+      # scripts/npm_audit_gate.py owns the verdict: any high/critical advisory
+      # outside its ALLOWED list fails the job — including future advisories on
+      # the same packages — and a waiver whose advisory stops being reported
+      # fails as stale.
+      #
+      # Reconciliation with #344's merge over this exact step: the surface is
+      # now judged twice, deliberately. security.yml's js-supply-chain job
+      # audits every tracked npm surface (any severity, expiring
+      # version-pinned exceptions plus GuardDog/license/typosquat/provenance)
+      # while this step keeps the in-tree high/critical verdict behind its
+      # no-fix-only waiver ratchet. Both fail closed, so their verdicts can
+      # only ever disagree by one of them going red — never a silent pass.
+      - run: npm audit --json > /tmp/npm-audit.json || true
+        working-directory: packages/maistro-canvas/frontend
+      - run: python scripts/npm_audit_gate.py /tmp/npm-audit.json
       - run: uv pip install --system -r packages/hive-conductor/backend/requirements.txt
       - run: python -m pytest packages/hive-conductor/backend/tests -v --tb=short
       # Every step above runs one tree in its own process, which is what let a
@@ -732,6 +749,187 @@ jobs:
   # acceptance criterion asks for -- one CI check whose pass/fail is legible as
   # "did cross-product spine parity hold" rather than buried in one line of a
   # much larger suite.
+  # #80 / M2-B5, reconciled onto the M2-B1 canonical sandbox (#2241): the
+  # builders adapter (`ContainerBuilderSandbox`) no longer runs its own
+  # Docker path — `__enter__` asks the host-evidenced `maistro.sandbox`
+  # selector for a backend satisfying `BUILDER_AGENT`'s vm-tier floor and
+  # refuses (`NoSuitableBackendError`) without one. This job is that
+  # contract's CI lane: it proves the fail-closed refusal on a runner with no
+  # VM backend, then provisions the rootless daemon lane (userns mapping +
+  # delegated cgroup v2 via scripts/ci-rootless-mountns.sh) and runs the
+  # real-image contract on it — maistro-builders:latest builds, loads into
+  # the rootless daemon, and runs non-root with --network=none under an
+  # enforced --memory budget. Escape and conformance coverage for the
+  # backends themselves lives in packages/maistro-core/tests/sandbox/
+  # (escape conformance, Kata live conformance, launcher VM), executed by
+  # the quality.yml producers; the publish-set partition (#654) keeps
+  # coverage-unit as the bootstrap suite's only no-services whole-suite site.
+  sandbox-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      # Rootlesskit needs the AppArmor unprivileged-userns relaxation the same
+      # way bubblewrap does (Ubuntu 24.04 ships it =1); set it explicitly so
+      # the lane does not depend on another job's step ordering.
+      - name: Relax AppArmor unprivileged user-namespace restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # The Builder conformance module targets the production
+      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
+      # from the test directory so the repository (and any ambient secrets) is
+      # never sent as a Docker build context.
+      - name: Build the real Builder sandbox image
+        run: >-
+          docker build --tag maistro-builders:latest
+          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
+          packages/maistro-bootstrap/tests/
+      # ADR-093 Decision 2, fail-closed at the selector (#76, then #2241's
+      # canonical wiring): the production adapter must refuse to start where
+      # no host-evidenced backend satisfies BUILDER_AGENT's vm-tier floor. A
+      # GitHub runner has no Kata runtime, and even a bubblewrap tier is
+      # below the floor, so the honest execution proof here is
+      # NoSuitableBackendError — the merged architecture's replacement for
+      # the deleted rootful-daemon refusal test (the selector consults no
+      # Docker daemon at all). If this ever fails because the runner gained
+      # a vm-tier backend, the lane has become a live-conformance site and
+      # the kata live suites below it are the next consumers.
+      #
+      # The bootstrap workspace member ships in the root `bootstrap` extra,
+      # not the default dependency set — a bare `uv run` here syncs without
+      # it and the proof dies on ModuleNotFoundError before reaching the
+      # selector (observed on CI: run 44029080504, jobs 133856475787 and
+      # 133845373917). `--extra bootstrap` pins the env this step needs.
+      - name: No VM backend means the builders adapter refuses (fail-closed proof)
+        run: |
+          uv run --extra bootstrap python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from maistro.sandbox import NoSuitableBackendError
+          from maistro_bootstrap.builders.container_sandbox import ContainerBuilderSandbox
+          try:
+              ContainerBuilderSandbox(Path(tempfile.mkdtemp())).__enter__()
+          except NoSuitableBackendError:
+              print("fail-closed: adapter refused without a vm-tier backend")
+          else:
+              raise SystemExit(
+                  "adapter started without a vm-tier backend — the selector is not "
+                  "fail-closed on this runner; move this proof to the kata lane"
+              )
+          PY
+      # The escape suite itself runs where the sandbox actually starts: a
+      # daemon whose containers get non-host uids (rootless or
+      # userns-remapped). Provisioning notes (rounds 19-32,
+      # docs/testing/inventory-notes/l80-*-repair.md): uidmap/slirp4netns come
+      # from Ubuntu's own repos; the rootless toolchain comes from Docker's
+      # pinned static bundle; the runner user needs XDG_RUNTIME_DIR and a
+      # logind session (linger) for delegated cgroup v2, which is what makes
+      # --memory enforceable; the firewall/bridge/port-publish plane is off
+      # because the rootless netns cannot authorize NAT chains (the network
+      # default-deny is per-container, --network=none) and securityfs is
+      # masked only inside the daemon's private mount namespace via
+      # scripts/ci-rootless-mountns.sh (host AppArmor policy untouched).
+      - name: Start a rootless Docker daemon for the conformance lane
+        env:
+          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
+        run: |
+          set -euxo pipefail
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          # enable-linger can fail when logind already tracks a session for
+          # this uid; the delegated-cgroup proof below (reading memory.max
+          # back under a 64m limit) still fails the lane hard if linger was
+          # actually load-bearing.
+          sudo loginctl enable-linger "$uid" || true
+          # A failed or partial apt is tolerated only because the `command -v`
+          # probe immediately below re-proves uidmap/slirp4netns exist before
+          # the daemon start depends on them (same posture as the age install).
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          command -v newuidmap slirp4netns
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
+            | tar xz -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
+          lane_dir="$RUNNER_TEMP/docker-l80"
+          mkdir -p "$lane_dir"
+          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
+            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
+          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
+            --iptables=false \
+            --ip6tables=false \
+            --userland-proxy=false \
+            --bridge=none \
+            --storage-driver=vfs \
+            --data-root="$lane_dir/data" \
+            --exec-root="$lane_dir/exec" \
+            --pidfile="$lane_dir/docker.pid" \
+            --host="unix://$lane_dir/docker.sock" \
+            > "$lane_dir/dockerd.log" 2>&1 &
+          daemon_ready=0
+          for _ in $(seq 1 60); do
+            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              daemon_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$daemon_ready" -ne 1 ]; then
+            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            # Diagnostic tail on an already-failing path: the `exit 1` below
+            # still fails the step, and a vanished log must not mask the
+            # not-ready error that is the actual finding.
+            tail -n 200 "$lane_dir/dockerd.log" || true
+            exit 1
+          fi
+          docker --host "unix://$lane_dir/docker.sock" info \
+            --format '{{json .SecurityOptions}}' | grep -q rootless
+          echo "MAISTRO_LANE_DOCKER_SOCK=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
+      # Seed the rootless daemon from the image built above instead of
+      # rebuilding it: the lane's budget belongs to the contract run. The
+      # first docker talks to the runner's rootful system daemon explicitly;
+      # the second targets the lane daemon socket.
+      - name: Load the Builder sandbox image into the rootless daemon
+        run: |
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest \
+            | docker --host "$MAISTRO_LANE_DOCKER_SOCK" load
+          # Prove the daemon can actually enforce the sandbox's resource
+          # budget before the image-contract probe runs on it. Rootless
+          # dockerd needs the delegated cgroup v2 subtree set up by the
+          # linger step; without it, --memory is silently dropped and the
+          # probe would validate nothing. Reading memory.max back from inside
+          # a 64m-limited container is the enforcement proof; "max" means
+          # unbounded, i.e. not enforced.
+          enforced="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
+            --memory=64m --memory-swap=64m \
+            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
+          echo "memory.max under a 64m limit: $enforced"
+          if [ "$enforced" != "67108864" ]; then
+            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
+            exit 1
+          fi
+      - name: Builder image contract on the rootless lane
+        run: |
+          # The image contract its consumers rely on (the CLI session
+          # lifecycle, supervised RSI container mode): the image runs on the
+          # lane daemon, as the non-root uid 65532 the Dockerfile
+          # provisions, with no network, under the budget proven above.
+          uid="$(docker --host "$MAISTRO_LANE_DOCKER_SOCK" run --rm --network=none \
+            --user 65532 maistro-builders:latest id -u)"
+          echo "image runs as uid: $uid"
+          if [ "$uid" != "65532" ]; then
+            echo "::error::maistro-builders:latest lost its non-root uid 65532 provisioning"
+            exit 1
+          fi
+
   cross-product-parity:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -858,6 +1056,17 @@ jobs:
 
   hive-conductor-e2e-ui:
     needs: workflow-lint
+    env:
+      # Throwaway harness key, not a credential (#367): docker-compose.test.yml
+      # requires MAISTRO_ROUTER_API_KEY in the caller's environment —
+      # check-compose-secrets holds every tracked profile to the
+      # refuse-to-start ${VAR:?message} shape, so the key can no longer live
+      # in the file. The harness has no gateway; the stub unblocks roster
+      # construction while model calls keep failing at call time (the F3
+      # degraded mode this harness runs in). Set at the job level so every
+      # compose command below (up, ps, logs, probe, down) interpolates;
+      # without it compose fails interpolation before any container starts.
+      MAISTRO_ROUTER_API_KEY: test-harness-not-a-real-key
     if: >-
       needs.workflow-lint.outputs.hive_e2e == 'true' ||
       (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
@@ -922,6 +1131,16 @@ jobs:
 
   hive-conductor-e2e:
     needs: workflow-lint
+    env:
+      # Throwaway harness key, not a credential (#367): docker-compose.test.yml
+      # requires MAISTRO_ROUTER_API_KEY in the caller's environment —
+      # check-compose-secrets holds every tracked profile to the
+      # refuse-to-start ${VAR:?message} shape, so the key can no longer live
+      # in the file. The harness has no gateway; the stub unblocks roster
+      # construction while model calls keep failing at call time (the F3
+      # degraded mode this harness runs in). Set at the job level so every
+      # compose command below (up, start, ps, run, logs, down) interpolates.
+      MAISTRO_ROUTER_API_KEY: test-harness-not-a-real-key
     if: >-
       needs.workflow-lint.outputs.hive_e2e == 'true' ||
       (github.event_name != 'merge_group' && github.event_name != 'pull_request') ||
@@ -948,6 +1167,40 @@ jobs:
         run: |
           docker compose -f docker-compose.test.yml --profile test up --build \
             --abort-on-container-exit --exit-code-from api-tests api-tests
+      # Scheduler timezone recovery across a real container restart (#290).
+      # Explicitly restart hive: Compose can leave dependencies running after
+      # `up --abort-on-container-exit ... api-tests`, making `start hive` a
+      # no-op. Restart preserves the writable layer and its schedule stores;
+      # the recovery selection must observe a natural fire in the new process.
+      - name: Restart hive and verify scheduler timezone recovery (#290)
+        if: success()
+        working-directory: packages/hive-conductor
+        # Recovery observes a natural fire, not just a persisted cursor:
+        # 300s harness recurrence + 150s tick/jitter budget + 120s boot poll.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          cid=$(docker compose -f docker-compose.test.yml ps -aq hive)
+          before=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+          docker compose -f docker-compose.test.yml restart hive
+          after=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+          [ "$before" != "$after" ] \
+            || { echo "hive did not restart: StartedAt is unchanged"; exit 1; }
+          # The poll tolerates `docker inspect` failing: a container that is
+          # still starting has no health state to read yet, and "starting" is
+          # the truthful status for it. The post-loop assertion below still
+          # fails the step if hive never reaches healthy.
+          for i in $(seq 1 40); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo starting)
+            [ "$status" = "healthy" ] && break
+            echo "waiting for hive health: $status ($i)"; sleep 3
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ] \
+            || { echo "hive never became healthy after restart"; exit 1; }
+          docker compose -f docker-compose.test.yml run --rm --no-deps -T \
+            -e SCHED_TZ_AFTER_RESTART=1 \
+            api-tests pytest tests/e2e/test_scheduler_timezone_container.py \
+            -k restart_recovery -v --tb=short
       - name: Dump hive logs
         if: always()
         working-directory: packages/hive-conductor
