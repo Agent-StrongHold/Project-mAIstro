@@ -868,3 +868,84 @@ the compose+image seam it depends on is proven above), Gate C, the coverage
 service legs, and the specialized postgres/strike-ladder/wheel-imports/
 durable-events legs; the engine/research/rsi image scans (no file this round
 touches enters those images).
+
+## Round 12 — the dispatch's last red was stale: CI is all-green at PR head
+## 9672a1fb65df; this round validates the post-CI develop-sync merge
+## 58c2ea6616 (node 26-alpine + lizard) that the previous worker died before
+## checking
+
+Two facts reframe the lane brief's "fix Container scan + SBOM + cosign":
+
+1. **The named gate is already green on CI's latest evaluation.** The
+   dispatch-context check-run payload for PR head `9672a1fb65df` (the round-11
+   merge, run started 2026-11-17T07:54Z, completed through 08:36Z) lists **78
+   check runs, every one `success`** — including `Container scan + SBOM +
+   cosign`, `docker-build`, `hive-conductor-e2e`, `hive-conductor-e2e-ui`,
+   `integration-scope`, `test`, `Coverage gate`, `Gate C — canonical clean
+   install`, `Quality / Image pins` and `exact-debt-ledger`. The red-gate list
+   in the round's dispatch text quotes an older evaluation; the captured
+   payload is the newer evidence and it is uniformly green. Nothing remains to
+   repair at that head.
+2. **The only unvalidated delta is one merge commit past that head.** Local
+   HEAD `58c2ea6616` merges `origin/develop` tip `d0e8e235a8` (branch was 0
+   behind nothing else; the two develop commits are #2387 lizard ≥1.25.0 and
+   #2120 node 22-alpine → 26-alpine). The worker that produced the merge died
+   of a provider error after the driver's ruff checks only (prior result
+   artifact `ae8fbc961b`: `agent_exit 0`, `failure_kind provider_error`, no
+   work past check-2). This round validates that merge seam end to end.
+
+### The merge seam, resolved in place (committed at 58c2ea6616)
+
+- `packages/hive-conductor/Dockerfile` frontend stage: `node:26-alpine@sha256:40cd011b…`
+  (develop's #2120 row, registered in `quality/image-pins.json` as `recorded_in:
+  "#2120"`); the branch's base-split stages (pybuild 3.13.18 / runtime-apt 3.15.2)
+  are untouched by the merge.
+- Root `Dockerfile` + `Dockerfile.research` `dockerclibuild` stages: the merge
+  took develop's #2120 comment block but **kept the branch's `-mod=vendor` build
+  line** over develop's `-mod=mod` variant — the round-10 tested mechanism that
+  `tests/test_dockercli_vendored_cve_patch.py` pins (re-vendor + explicit vendor
+  mode). The added comment records the deliberate divergence. Build-line bytes
+  are otherwise identical to the CI-green head (comments only).
+- `tests/test_prepull_base_images.py`: develop's node-26 string updates.
+- `requirements-dev-tools.txt`: lizard >=1.25.0 (dev tool; no runtime or image
+  surface). Frontend package-locks updated by #2120.
+
+### Round-12 validation battery (this machine, head 58c2ea6616)
+
+| check | result |
+|---|---|
+| `uv sync --locked --extra dev` | green (468 packages) |
+| `uv lock --check` | rc 0 |
+| `ruff check .` / `ruff format --check .` (driver checks 0–2) | pass (3575 files) |
+| `check-image-pins.py` | rc 0 — 10 pinned images across 10 Dockerfiles, all registered (node 26 row + branch's 3.13.18/3.15.2 rows coexist) |
+| `check-image-pins.py --base-digests` (all 6 Dockerfiles) | lists all six registered digests incl. `node:26-alpine@sha256:40cd011b…` |
+| `check-suite-inventory.py` | rc 0 — 21 suites match, zero delta (no test changed this round) |
+| `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI-exact) | rc 0 — 1236 = 1236, base d0e8e235a8, candidate 58c2ea6616 |
+| seam test modules (`test_prepull_base_images`, `test_check_image_pins`, `test_hive_conductor_image_split`, `test_dockercli_vendored_cve_patch`, `test_research_image_playwright_runtime`, `test_distribution_contract`, `test_devskim_scan_scope`) | **111 passed** |
+| root suite, CI `test`-job shape (`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/ --ignore=tests/tools/registry -q`) | **5836 passed, 139 skipped, 0 failed** (7m38s) |
+| **hive-conductor image build**, CI security.yml shape (`-f packages/hive-conductor/Dockerfile --build-arg VITE_POC_MODE=pm --build-arg VITE_BASE_PATH=/pm/ --no-cache-filter runtime-apt --load`) | **exit 0** — the frontend stage executed `npm ci` + `npm run build` under the new node 26 base and its dist ships (`/app/frontend/dist/{assets,index.html}`); pybuild identity smoke + tz smokes pass on the grafted interpreter |
+| pinned frontend base resolved | `docker run node:26-alpine@sha256:40cd011b… node --version` → **v26.12.1** |
+| identity probe (security.yml's exact command) on `hive-conductor:pr-2304-r12` | `identity=operational python=3.13.18 bip-utils=2.12.2 coincurve=21.0.0 pynacl=1.6.2`; base OS Debian 12 bookworm, OS-layer python reads **3.15.2** |
+| trivy 0.73.0 (gate version), CI shape (`--severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed --ignorefile .trivyignore.yaml`) | **exit 0, zero findings** |
+| grype 0.116.0 (gate version), CI shape (`--fail-on high --only-fixed`) | **exit 0** — only Medium/Low python-binary advisories fixed in future CPython releases (3.15.0a6/3.16.0), the recorded rounds-7–11 posture |
+| `check-image-lock-reconciliation.py` (CI's exact hive-conductor invocation) | OK — ships exactly the locked set (74 distributions incl. 7 members, setuptools==84.2.1 + tzdata==2026.3 asserted) |
+
+### Round-12 disposition
+
+**MERGE-READY as a handoff.** CI's own latest evaluation of this branch is
+all-green at `9672a1fb65df`, and the single commit CI has not seen — the
+node-26/lizard develop-sync merge — is validated above at every surface it
+touches: the only image whose bytes changed (hive-conductor) is built and
+scanned clean by the gate's own pinned tools in the gate's own shapes, and the
+dockercli stages that the merge's conflict resolution touched differ from the
+CI-scanned bytes only in comments. Engine/research/rsi image bytes are
+unchanged from the CI-green head, so CI's green scans there carry over.
+
+Residual (unchanged classes): the observability image variant was not rebuilt
+locally this round — its venv inputs are unchanged from the CI-green head (no
+`uv.lock` delta in the merge; `INSTALL_OBSERVABILITY=1` extras identical) and
+only its shared, now-proven frontend stage differs; CI's next run re-proves it
+on these bytes. Disk pressure on the host (root fs ~100% during the grype DB
+download; worked around by redirecting grype's cache to `/tmp`) is an
+environment constraint, not a tree defect. The e2e-ui rsi-polling-resilience
+wall-clock flake documented in round 6 remains develop-side maintainer scope.
