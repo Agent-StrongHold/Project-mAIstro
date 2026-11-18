@@ -2,11 +2,19 @@
 
 Service key auth handled by ServiceKeyClient (set via handlers.set_service_client).
 Import and register what you need, or use as templates.
+
+Process entry points subscribe the catalog via :func:`install_builtin_recipes`
+(#2313): triggers land on the legacy bus **disabled** until ops enable them,
+so Cross-service localhost defaults cannot fire against an unconfigured fleet.
 """
 
 from __future__ import annotations
 
-from maistro.events.bus import Trigger, TriggerCondition
+from collections.abc import Callable, Sequence
+
+from maistro.events.bus import EventBus, Trigger, TriggerCondition
+
+RecipeBuilder = Callable[..., Trigger]
 
 
 def coinswarm_fitness_alert(
@@ -132,3 +140,37 @@ def security_event_escalation(
             ),
         },
     )
+
+
+#: Catalog of ADR-086 recipe builders a process may arm on the legacy bus.
+BUILTIN_RECIPE_BUILDERS: tuple[RecipeBuilder, ...] = (
+    coinswarm_fitness_alert,
+    coinswarm_drawdown_alert,
+    coinswarm_evolution_complete,
+    ha_device_triggers_conductor,
+    turing_reflection_trigger,
+    security_event_escalation,
+)
+
+
+def install_builtin_recipes(
+    bus: EventBus,
+    *,
+    builders: Sequence[RecipeBuilder] | None = None,
+    enabled: bool = False,
+) -> list[Trigger]:
+    """Build and subscribe recipe triggers onto ``bus`` (#2313).
+
+    Defaults to the full :data:`BUILTIN_RECIPE_BUILDERS` catalog with
+    ``enabled=False`` so the process owns the subscription without arming
+    cross-service side effects against recipe default endpoints. Callers that
+    have configured real endpoints pass ``enabled=True`` and/or a narrower
+    ``builders`` set (built with their own kwargs before enable).
+    """
+    installed: list[Trigger] = []
+    for builder in builders if builders is not None else BUILTIN_RECIPE_BUILDERS:
+        trigger = builder()
+        trigger.enabled = enabled
+        bus.add_trigger(trigger)
+        installed.append(trigger)
+    return installed
