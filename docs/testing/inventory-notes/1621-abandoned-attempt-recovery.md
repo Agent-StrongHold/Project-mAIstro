@@ -448,3 +448,57 @@ container (`test_chat_attempt_recovery.py`), so its PostgreSQL transaction
 path remains unexecuted here; PostgreSQL worker kill/restart acceptance for
 #232 stays outside this PR's proof; and the captured PR body still carries
 negated closure wording that only an owner can correct.
+
+## Independent verification round at assigned head 3263fd56dc0
+
+Reproduced at the exact assigned head (`3263fd56dc00b4d485520f32fcf2097d1b92e5af`,
+base `d0e8e235a8`), not taken on trust from any section above. The diff from the
+last validated head `88da3f5c6d` to this one touches only non-Python files
+(hive-conductor Dockerfile, frontend lockfiles, image pins, docs), and the
+settlement fix `e65be14577` survives it verbatim.
+
+Executed first-hand this round:
+
+- PR-declared six-file battery without a DSN: **422 passed / 154 skipped**
+  (conformance trio + server cadence + server lifespan 400/154; delegation
+  child 22 passed) — the two tests that were red against the fence at earlier
+  heads (`test_retention_conformance.py` retention test, `test_chat_admission.py`
+  deletion test) pass because they settle their child before completing the
+  parent.
+- With `MAISTRO_TEST_PG_DSN` on the lane's pgvector:pg18 container
+  (`cr1621-fence-pg`, `127.0.0.1:5499/maistro_test`): the conformance trio
+  **517 passed / 1 skipped** and the delegation + server cadence + server
+  lifespan files **58 passed** — 575/1 in total, matching the recorded
+  Postgres-leg counts. The PostgreSQL fence leg of
+  `test_a_parent_cannot_complete_while_a_child_run_is_open` executed on
+  `PgRunStore.transition_run` (guard at `pg_store.py:1359`), as did the
+  spine refusal, terminal-parent refusal, fork-exemption and settlement tests.
+  The lone skip is the memory backend's durable-only effect lookup. One
+  transient `DiskFullError` aborted the first PG attempt — the host disk was
+  at 100%; the errored test passed on immediate re-run for all three params
+  and the full trio then passed 517/1, so the incident was environmental.
+- Driver deterministic checks at this head: ruff check + format --check clean,
+  battery **463 passed / 154 skipped** (`manifest.json` argv now includes both
+  previously omitted conformance files), both affected-suite inventory gates ok
+  (core 18585, server 680).
+- CI-exact vulture gate re-run: exit 0, ratchet base `d0e8e235a896` vs candidate
+  `3263fd56dc00`, **1236 reviewed identities -> 1235 findings**, unclassified 0.
+  `git diff --numstat <base> -- quality/` is exactly `0 1` on
+  `quality/vulture-baseline.json` — the single intended removal, no merge-lost
+  rows. No branch commit message contains an issue-closure keyword.
+
+The two headline acceptance criteria of #1621 are proven at this head with
+PostgreSQL execution: the process-lifetime recovery cadence on maistro-server
+(`abandoned_attempt_recovery.py`, wired at `main.py:659`/`:678`,
+`TaskAttemptExecutor` built with `DEFAULT_TASK_LEASE_TTL` at `main.py:656`;
+nine cadence tests plus the lifespan start/stop test pass), and the
+completion fence refusing a parent `COMPLETED` over a non-terminal child on
+all three backends while `FAILED`/`CANCELLED`/`TIMED_OUT` stay legal.
+
+Still outstanding, unchanged in kind: the atomic reclaimed-Attempt park guard's
+expected-current-token check is exercised on the sqlite container
+(`test_container_wiring.py` race tests, 63 passed here); its PostgreSQL
+transaction path remains unexecuted. PostgreSQL worker kill/restart acceptance
+for #232 stays outside this PR's proof. The captured PR body still carries
+negated closure wording (`Does not close #42 or #232`) that only an owner can
+correct before merge — GitHub's closure parser does not honor the negation.
