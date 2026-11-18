@@ -33,7 +33,11 @@ from maistro.runs import (
 from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run
 from maistro.runs.model import CancellationCause
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError
+from maistro.runs.store import (
+    ActiveAttemptExists,
+    AttemptNotFound,
+    RunIntegrityError,
+)
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
@@ -316,6 +320,42 @@ class _FenceRaceRunStore(InMemoryRunStore):
             await super().reclaim_expired_attempt(attempt_id, now=now)
             return None
         return await super().reclaim_expired_attempt(attempt_id, now=now)
+
+
+class _VanishingAttemptRunStore(InMemoryRunStore):
+    """Reports the canonical row gone at reclaim time, like a hard delete would.
+
+    The exact-ID seam's documented contract is that a missing id raises
+    `AttemptNotFound` — never a silent `None`. The Graph adapter must translate
+    that into `RunIntegrityError`: a projection referencing an identity the
+    canonical store cannot settle is corruption, not an ordinary race where a
+    concurrent writer won.
+    """
+
+    async def reclaim_expired_attempt(self, attempt_id: str, *, now: Any = None) -> Any:
+        raise AttemptNotFound(attempt_id)
+
+
+async def test_a_canonical_attempt_missing_at_reclaim_is_an_integrity_error() -> None:
+    """`AttemptNotFound` from the exact-ID seam becomes `RunIntegrityError`.
+
+    The projection's doomed list is derived from the canonical record, so the
+    only way the seam can report the row missing mid-reclaim is a concurrent
+    hard delete — a state the recovery sweep must surface, not absorb into an
+    empty reclaim result.
+    """
+    store, _run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=1)
+    )
+    assert attempt.execution_lease is not None
+    after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+
+    vanishing = _VanishingAttemptRunStore(project_store=InMemoryProjectScopeStore())
+    rewired = DurableRunExecutionStore(store, run_id=record.run_id, run_store=vanishing)
+
+    with pytest.raises(RunIntegrityError, match="disappeared during reclaim"):
+        await rewired.reclaim_expired_attempts(now=after)
 
 
 async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -> None:

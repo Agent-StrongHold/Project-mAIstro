@@ -174,6 +174,46 @@ async def test_exact_id_missing_raises_attempt_not_found(spine: Any) -> None:
     await _assert_missing_raises(spine)
 
 
+async def test_batch_reclaim_skips_an_attempt_renewed_between_snapshot_and_write_in_memory(
+    memory_spine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch re-check under the write authority skips a raced renewal.
+
+    The snapshot admits the Attempt (expired at ``now``); by write time the
+    predicate sees a fresh lease — a concurrent ``renew_lease`` won between
+    nominating and writing — so the row must be skipped, not rewritten:
+    nothing returned, nothing persisted (#2358 / #232 P2c). The predicate is
+    stubbed per call rather than raced on wall-clock timing, which would make
+    the test order-dependent on scheduler speed.
+    """
+    store, attempt = await _leased_running_attempt(memory_spine, ttl=timedelta(seconds=30))
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after = lease.expires_at + timedelta(seconds=1)
+
+    import maistro.runs.store as runs_store_module
+
+    real = runs_store_module.lease_is_expired
+    calls = {"n": 0}
+
+    def _renewed_after_the_snapshot(candidate: Any, now: Any) -> bool:
+        calls["n"] += 1
+        # Admitted by the doomed snapshot (first read), fresh again by the
+        # re-check that guards the write (every later read).
+        return real(candidate, now) if calls["n"] == 1 else False
+
+    monkeypatch.setattr(runs_store_module, "lease_is_expired", _renewed_after_the_snapshot)
+
+    reclaimed = await store.reclaim_expired_attempts(now=after)
+
+    assert calls["n"] >= 2  # snapshot admission and the write-time re-check both ran
+    assert reclaimed == []
+    current = await store.get_attempt(attempt.attempt_id)
+    assert current is not None
+    assert current.status is AttemptStatus.RUNNING
+    assert current.cancellation_cause is None
+
+
 async def test_exact_id_reclaim_persists_recovered_in_memory(memory_spine: Any) -> None:
     await _assert_exact_id_reclaim_persists_recovered(memory_spine)
 
