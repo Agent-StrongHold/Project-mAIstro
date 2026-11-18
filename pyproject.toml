@@ -39,7 +39,15 @@ dependencies = [
     # dev extra is what let the identity ImportError hide (see the wheel-imports
     # CI job).
     "maistro-canvas",
-    "temporalio>=1.27.0",
+    # 1.36.1 floor (CR1373 CI-repair round, 2026-11-16, merge-queue run
+    # 43821935433): the trivy leg of the container gate scans the Cargo.lock
+    # the temporalio wheel ships (site-packages/temporalio/bridge/Cargo.lock)
+    # and flags zip 8.6.0 there — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
+    # CVE-2026-115907/115908/115909 (HIGH). temporalio 1.36.1 bundles zip
+    # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
+    # past all four; every fix version satisfies the pre-existing >= 1.27
+    # floor, so this only ever affects which temporalio the lock resolves.
+    "temporalio>=1.36.1",
 ]
 
 [project.optional-dependencies]
@@ -245,6 +253,77 @@ constraint-dependencies = [
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
     "graphql-core>=3.3.0",
+    # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
+    # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
+    # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
+    # fastmcp 4.1.2; GHSA-xmj3-9gf7-h52w in setuptools 84.1.0 (which still
+    # satisfies the >= 78.1.1 floor the shipped image pins). fastmcp ships in
+    # no runtime image (the `[llm]` extra is not part of any image install)
+    # and setuptools enters the images only as the Dockerfile's explicit pin,
+    # which tracks this floor.
+    "fastmcp>=4.1.2",
+    "setuptools>=84.1.0",
+    # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
+    # authlib arrives via fastmcp / browser-use; dnspython via email-validator
+    # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
+    # direct production pin — floors keep the frozen dev env above the advisories.
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0",
+    # Same shape again (pip-audit gate, 2026-11-16, CR1373 CI-repair round,
+    # merge-queue run 43788520668 at 39d0d137): dnspython arrives via
+    # email-validator (pydantic[email]), graphql-core via moto[server],
+    # joserfc via authlib / fastmcp-slim / moto, and opentelemetry-api is
+    # maistro-core's direct telemetry dependency caught in the frozen dev
+    # env. CVE-2026-128089 (GHSA-vvf4-9x63-8xvv) is fixed in dnspython
+    # 2.9.2; CVE-2026-119286 (GHSA-mpqx-q82w-9x46) in graphql-core 3.3.1;
+    # CVE-2026-119284 (GHSA-9pg5-8c7x-5hfx) in joserfc 1.7.6; CVE-2026-126360
+    # (GHSA-mf5v-w3w3-f6cg) in opentelemetry-api 1.45.2. Every fix version
+    # satisfies the floors already declared here or in
+    # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
+    # lock moves; floors keep it above the advisories on the next resolve.
+    "dnspython>=2.9.2",
+    "graphql-core>=3.3.1",
+    "joserfc>=1.7.6",
+    "opentelemetry-api>=1.45.2",
+    # Same shape again (Container scan + SBOM + cosign gate, 2026-11-16,
+    # CR1373 CI-repair round, merge-queue run 43821935433 at 4295a40): four
+    # HIGH python-pkg advisories in the maistro-engine-research image
+    # (maistro-server + observability + browser via browser-use, each a
+    # single consumer, none a direct production pin):
+    #
+    # - oauthlib 4.0.0 (via requests-oauthlib via google-auth-oauthlib via
+    #   browser-use) — CVE-2026-49272, authentication bypass, fixed in 4.0.1;
+    # - pyasn1 0.6.4 (via pyasn1-modules via google-auth via browser-use) —
+    #   CVE-2026-119194/195/196/197, all fixed in 0.6.5;
+    # - pypdf 6.21.2 (browser-use direct) — CVE-2026-119203..119209, fixed by
+    #   6.21.4 (119206 in 6.21.3, the rest in 6.21.4);
+    # - soupsieve 3.0.3 (via beautifulsoup4 via markdownify via browser-use) —
+    #   CVE-2026-126190, fixed in 4.0.0. PyPI never published a 4.0.0: its
+    #   4.0 release is PEP 440-equal to the trivy-named fix (4.0 == 4.0.0),
+    #   so the floor is written as the real release the DB names.
+    #
+    # Every fix version satisfies the upstream ranges already in the tree
+    # (browser-use: pypdf>=5.7.0; beautifulsoup4 4.15: soupsieve>=1.6.1;
+    # requests-oauthlib 2.0: oauthlib>=3.0.0; pyasn1-modules 0.4.2:
+    # pyasn1>=0.6.1,<0.7.0), so only the lock moves; floors keep it above
+    # the advisories on the next resolve. Nothing in packages/ or tests/
+    # imports any of the four, so the exposure is the shipped image only.
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0",
+    # Same gate, same round, the wheel-shipped binary half: the research
+    # image's grype leg (step 16, --only-fixed --fail-on high, fresh DB per
+    # run) also flags the Node binary that patchright/playwright wheels ship
+    # as their driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV,
+    # fixed 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright
+    # 1.64.4 bundles node 24.22.1 and playwright 1.65.2 bundles node
+    # 26.13.1 (both verified by unpacking the wheels and running the
+    # bundled driver); browser-use declares patchright>=1.52.5 /
+    # playwright>=1.52.0 uncapped, so the floors only move the lock.
+    "patchright>=1.64.4",
+    "playwright>=1.65.2",
 ]
 
 [tool.ruff]
@@ -293,8 +372,10 @@ ignore = ["E501", "UP046", "UP047"]
 # maistro_design/consistency.py; the round-4 merge resolution dropped it
 # believing only the removed creative_brief.py used it. It also covers
 # #773's CreativeBrief contract API: retained, test-consumed now,
-# production consumers arrive with #774/#775.
-external = ["V102", "V105", "V106", "V107"]
+# production consumers arrive with #774/#775. V103 (unused function) backs
+# the FastAPI route-handler markers in maistro_server/api/backlog.py (#98):
+# the decorator registers the handler, which name-level scanning cannot see.
+external = ["V102", "V103", "V105", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

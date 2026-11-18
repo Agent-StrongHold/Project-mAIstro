@@ -194,6 +194,52 @@ def test_run_argv_blocks_absolute_path_escape(shell: SandboxedShell) -> None:
         shell.run_argv(["cat", "/etc/passwd"])
 
 
+def test_run_argv_blocks_outside_root_executable(shell: SandboxedShell, tmp_root: Path) -> None:
+    """argv[0] is a path token like any other (#57).
+
+    run_argv once validated argv[1:] only, on the theory its caller always
+    constructed the executable itself. The run_command tool forwards
+    model-authored argv to this method, so argv[0]="/bin/..." executed a
+    binary outside the root where the same command as a string always raised
+    SandboxEscapeError. The check is lexical: the path need not exist.
+    """
+    outside_exec = str(tmp_root.parent / "elsewhere" / "tool")
+    with pytest.raises(SandboxEscapeError):
+        shell.run_argv([outside_exec])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="/bin/touch path is POSIX-specific")
+def test_run_argv_outside_root_executable_never_runs(shell: SandboxedShell, tmp_root: Path) -> None:
+    """Side-effect proof, not just exception shape.
+
+    The reported escape (#57) *ran* the outside-root binary. All arguments
+    here are safely relative to the root, so argv[1:] validation passes them:
+    the only defect is the executable token itself. The block must happen
+    before the subprocess boundary — the file /bin/touch would create inside
+    the root must never appear.
+    """
+    with pytest.raises(SandboxEscapeError):
+        shell.run_argv(["/bin/touch", "escaped.txt"])
+    assert not (tmp_root / "escaped.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bare echo and shebang scripts are POSIX-specific")
+def test_run_argv_still_runs_bare_and_in_root_executables(
+    shell: SandboxedShell, tmp_root: Path
+) -> None:
+    """The hardening must not over-block.
+
+    Bare PATH-resolved names — the shape run_tests/run_lint/git_status
+    dispatch — and an executable that really lives inside the root keep
+    working; only outside-root paths are refused.
+    """
+    assert "safe" in shell.run_argv(["echo", "safe"])
+    tool = tmp_root / "tool.sh"
+    tool.write_text("#!/bin/sh\necho in-root-ok\n", encoding="utf-8")
+    tool.chmod(0o755)
+    assert "in-root-ok" in shell.run_argv([str(tool)])
+
+
 def test_run_argv_blocks_dotdot_path_escape(tmp_root: Path) -> None:
     sub = tmp_root / "sub"
     sub.mkdir()

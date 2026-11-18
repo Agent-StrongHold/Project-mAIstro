@@ -256,6 +256,40 @@ async def ask(client: httpx.AsyncClient) -> None:
     assert site.category == "MODEL_EFFECT"
 
 
+def test_a_new_module_calling_the_model_backed_clarify_wrapper_counts(gate) -> None:
+    """The curated wrapper triple stays load-bearing: ``tool_executor.clarify``
+    is a model-backed product wrapper, so any module that calls it becomes a
+    direct model-egress caller of the kind this ratchet freezes against the
+    trusted base (#57). A future governed wiring must delegate its provider
+    backend to the shipped dispatcher instead of re-listing the raw
+    implementations, or the census -- not a reviewer -- flags the new caller."""
+    source = """
+from services import tool_executor
+
+
+async def backend(name, arguments, *, model_call=None):
+    return await tool_executor.clarify(
+        arguments["questions"], arguments.get("context", {}), model_call=model_call
+    )
+"""
+    (site,) = gate.find_egress_sites(source, path="synthetic.py")
+    assert site.category == "MODEL_EFFECT"
+    assert site.entry_point == "hive.clarify"
+    assert site.callee == "tool_executor.clarify"
+
+
+def test_the_shipped_governed_tool_seam_performs_no_census_model_egress(gate) -> None:
+    """``services.governed_tools`` admits tool effects (contracts, allowlist,
+    tier, Invocation); its provider backend delegates to the shipped
+    ``dispatch_tool`` rather than calling the raw implementations itself, so
+    the module must stay out of this census. Calling ``tool_executor.clarify``
+    here directly would make it a NEW direct model caller needing a separately
+    landed authorization (the failure this delegation repaired)."""
+    source = (ROOT / "packages/hive-conductor/backend/services/governed_tools.py").read_text()
+    assert gate.find_egress_sites(source, path="governed_tools.py") == ()
+    assert not gate.performs_egress(source)
+
+
 def test_image_model_http_is_not_this_ledger_s_population(gate) -> None:
     """The census curates image-model rows separately; the trusted base here
     never recorded them. Dropping them from the population is scoping, not
@@ -431,14 +465,21 @@ def test_discover_sites_surfaces_reachability_classes_from_the_shipped_tree(
 
     gateway = findings["maistro.capabilities.providers.llm_gateway"]
     assert gate.classify(gateway, unreachable=unreachable) == gate.PROVIDER_BOUNDARY
-    # Public seam stays execute_model_chat; the physical POST is factored into
-    # _post_chat_completion so the direct-effect census can name one site.
-    assert any(site.qualname == "_post_chat_completion" for site in gateway.sites)
+    # SPEC-285 renamed the physical dispatch inside the boundary: the
+    # gateway POST lives in `_post_model_chat`, adapter-backed dispatch in
+    # `_dispatch_adapter_model_chat`. The boundary quals — not a historical
+    # name — are what "no caller is invisible" pins.
+    gateway_quals = {site.qualname for site in gateway.sites}
+    assert {"_post_model_chat", "_dispatch_adapter_model_chat"} <= gateway_quals
 
     corpus = findings["services.canonical_corpus"]
     assert gate.classify(corpus, unreachable=unreachable) == gate.UNREACHABLE_LIBRARY
 
-    chat = findings["services.chat_completion"]
+    # The #1084 convergence removed `services.chat_completion`'s physical
+    # calls entirely — its census entry disappears exactly when the raw calls
+    # do. The shipped escape the tree still carries is the legacy DAG node's
+    # governed model egress.
+    chat = findings["services.legacy_dag_node"]
     assert gate.classify(chat, unreachable=unreachable) == gate.REACHABLE_ESCAPE
 
 
