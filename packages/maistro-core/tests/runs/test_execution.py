@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -893,6 +894,128 @@ async def test_terminalizing_an_attempt_that_disappeared_mid_execution_is_an_int
     with pytest.raises(RunIntegrityError, match="disappeared during execution"):
         await service._terminalize_if_open(
             "attempt-ghost", AttemptStatus.FAILED, fencing_token="token-1"
+        )
+
+
+class _PrelaunchRaceStore(InMemoryRunStore):
+    """Another authority wins between the openness check and the compensate call.
+
+    The winner's transition lands inside `compensate_unlaunched_attempt` — the
+    exact interleaving the CREATED prelaunch refusal handler exists for. A
+    ``vanish`` prime instead models the row disappearing after the refusal,
+    which the handler must report as torn state rather than dereference.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.winner: AttemptStatus | None = None
+        self._vanish_after_refusal = False
+        self._refused = False
+
+    def prime_vanish_after_refusal(self) -> None:
+        self._vanish_after_refusal = True
+
+    async def compensate_unlaunched_attempt(
+        self, attempt_id: str, *, fencing_token: str, **kwargs: object
+    ) -> Attempt:
+        self._refused = True
+        if self.winner is not None:
+            await super().transition_attempt(attempt_id, self.winner, fencing_token=fencing_token)
+        if self._vanish_after_refusal:
+            raise InvalidLifecycleTransition("the prelaunch row was pulled underneath us")
+        return await super().compensate_unlaunched_attempt(
+            attempt_id, fencing_token=fencing_token, **kwargs
+        )
+
+    async def get_attempt(self, attempt_id: str, **kwargs: object) -> Any:
+        # After the refusal, a vanished row stays vanished: whatever looks the
+        # Attempt up now finds nothing, the way a concurrent terminalizer's
+        # delete would leave it.
+        if self._refused and self._vanish_after_refusal:
+            return None
+        return await super().get_attempt(attempt_id, **kwargs)
+
+
+async def _prelaunch_rig() -> tuple[_PrelaunchRaceStore, AttemptExecutionService, Attempt, str]:
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("ws-1")
+    project = await project_store.create(
+        workspace_id="ws-1", parent_project_id=root.project_id, name="Execution"
+    )
+    store = _PrelaunchRaceStore(project_store=project_store)
+    graph = Graph(
+        workspace_id="ws-1",
+        project_id=project.project_id,
+        name="One node",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = await store.create_attempt(
+        node_run.node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    assert attempt.execution_lease is not None
+    return store, service, attempt, attempt.execution_lease.fencing_token
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_losing_to_a_running_winner_reraises() -> None:
+    """A launch that lands mid-failure owns the Attempt.
+
+    Its RUNNING write must not be rewritten into CANCELLED+RECOVERED by this
+    caller's late error: the refusal propagates and the row stays RUNNING with
+    no cause stamped.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+    store.winner = AttemptStatus.RUNNING
+
+    with pytest.raises(InvalidLifecycleTransition):
+        await service._terminalize_if_open(
+            attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
+        )
+
+    reopened = await store.get_attempt(attempt.attempt_id)
+    assert reopened is not None
+    assert reopened.status is AttemptStatus.RUNNING
+    assert reopened.cancellation_cause is None
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_losing_to_a_terminal_winner_reports_it() -> None:
+    """A concurrent canceller won: report its Attempt instead of raising.
+
+    `False` — this caller did not settle the row, so it must not reconcile
+    the row either (ADR-082526-b36a); the requested winner keeps its cause.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+    store.winner = AttemptStatus.CANCELLED
+
+    settled, owned = await service._terminalize_if_open(
+        attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
+    )
+
+    assert owned is False
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is None
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_on_a_vanished_attempt_is_an_integrity_error() -> None:
+    """Refused, and then the row is gone: torn state, not a clean outcome."""
+    store, service, attempt, token = await _prelaunch_rig()
+    store.prime_vanish_after_refusal()
+
+    with pytest.raises(RunIntegrityError, match="disappeared during prelaunch compensation"):
+        await service._terminalize_if_open(
+            attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
         )
 
 

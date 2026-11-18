@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     transition_attempt,
 )
-from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, ExecutionLease
+from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, ExecutionLease, RunStatus
 from maistro.runs.store import AttemptNotFound, InMemoryRunStore, StaleExecutionFence
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -151,5 +152,100 @@ class TestCompensateStore:
 
     async def test_missing_raises(self) -> None:
         store, _node_run_id = await _spine_store()
+        with pytest.raises(AttemptNotFound):
+            await store.compensate_unlaunched_attempt("missing", fencing_token="tok", error="x")
+
+
+async def _leased_created_attempt(spine: Any, *, ttl: timedelta) -> tuple[Any, Attempt]:
+    """A CREATED Attempt holding a live lease, on whichever backend `spine` is."""
+    store, workspace, project_id = spine
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="spine compensate",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(
+        node_run.node_run_id,
+        lease_holder="worker-1",
+        lease_ttl=ttl,
+    )
+    assert attempt.execution_lease is not None
+    return store, attempt
+
+
+class TestCompensateSpine:
+    """The same CREATED prelaunch leaf on every shipped backend (#2369 / #232 P2d).
+
+    The PR text promises "in-memory / SQLite / PG"; the first draft of this
+    suite proved the leaf on the in-memory store only, so the SQLite and
+    PostgreSQL `compensate_unlaunched_attempt` bodies never ran. The spine
+    parametrization is the same three-backend harness the P2b exact-ID
+    reclaim suite uses, so all three stores are asked exactly the same
+    questions — including under the coverage-postgres producer, where the
+    PostgreSQL leg runs for real instead of skipping.
+    """
+
+    async def test_persists_recovered_under_matching_fence(self, spine: Any) -> None:
+        store, attempt = await _leased_created_attempt(spine, ttl=timedelta(seconds=30))
+
+        settled = await store.compensate_unlaunched_attempt(
+            attempt.attempt_id,
+            fencing_token=attempt.execution_lease.fencing_token,
+            error="launch boom",
+        )
+
+        assert settled.status is AttemptStatus.CANCELLED
+        assert settled.cancellation_cause is CancellationCause.RECOVERED
+        assert settled.error == "launch boom"
+        assert settled.started_at is None
+        reopened = await store.get_attempt(attempt.attempt_id)
+        assert reopened is not None
+        assert reopened.status is AttemptStatus.CANCELLED
+        assert reopened.cancellation_cause is CancellationCause.RECOVERED
+
+    async def test_stale_fence_refuses_and_writes_nothing(self, spine: Any) -> None:
+        store, attempt = await _leased_created_attempt(spine, ttl=timedelta(seconds=30))
+
+        with pytest.raises(StaleExecutionFence):
+            await store.compensate_unlaunched_attempt(
+                attempt.attempt_id, fencing_token="not-the-token", error="x"
+            )
+
+        reopened = await store.get_attempt(attempt.attempt_id)
+        assert reopened is not None
+        assert reopened.status is AttemptStatus.CREATED
+        assert reopened.cancellation_cause is None
+        assert reopened.finished_at is None
+
+    async def test_running_winner_is_refused(self, spine: Any) -> None:
+        store, attempt = await _leased_created_attempt(spine, ttl=timedelta(seconds=30))
+        assert attempt.execution_lease is not None
+        await store.transition_attempt(
+            attempt.attempt_id,
+            AttemptStatus.RUNNING,
+            fencing_token=attempt.execution_lease.fencing_token,
+        )
+
+        with pytest.raises(InvalidLifecycleTransition, match="CREATED"):
+            await store.compensate_unlaunched_attempt(
+                attempt.attempt_id,
+                fencing_token=attempt.execution_lease.fencing_token,
+                error="late",
+            )
+
+        reopened = await store.get_attempt(attempt.attempt_id)
+        assert reopened is not None
+        assert reopened.status is AttemptStatus.RUNNING
+        assert reopened.cancellation_cause is None
+
+    async def test_missing_attempt_raises_attempt_not_found(self, spine: Any) -> None:
+        store, _workspace, _project_id = spine
         with pytest.raises(AttemptNotFound):
             await store.compensate_unlaunched_attempt("missing", fencing_token="tok", error="x")

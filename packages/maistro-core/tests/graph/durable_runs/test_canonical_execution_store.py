@@ -30,14 +30,21 @@ from maistro.runs import (
     NodeRun,
     RunStatus,
 )
-from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run
-from maistro.runs.model import CancellationCause
+from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run, transition_run
+from maistro.runs.model import CancellationCause, GraphSnapshot, Run
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError
+from maistro.runs.store import (
+    ActiveAttemptExists,
+    AttemptNotFound,
+    RunIntegrityError,
+    StaleExecutionFence,
+)
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
-async def _bound_store() -> tuple[
+async def _bound_store(
+    run_store_cls: type[InMemoryRunStore] = InMemoryRunStore,
+) -> tuple[
     InMemoryDurableRunStore, InMemoryRunStore, DurableRunExecutionStore, DurableRunRecord, str
 ]:
     projects = InMemoryProjectScopeStore()
@@ -45,7 +52,7 @@ async def _bound_store() -> tuple[
     project = await projects.create(
         workspace_id="ws-exec", parent_project_id=root.project_id, name="Graphs"
     )
-    run_store = InMemoryRunStore(project_store=projects)
+    run_store = run_store_cls(project_store=projects)
     graph = Graph(
         workspace_id="ws-exec",
         project_id=project.project_id,
@@ -750,3 +757,134 @@ async def test_a_cancellation_replay_over_the_cascade_settled_row_converges() ->
     projected = next(item for item in persisted.node_runs if item.node_run_id == node_run_id)
     assert projected.status is RunStatus.CANCELLED
     assert projected.error == canonical.error
+
+
+# --- P2d CI repair: the compensation leaf's untested halves -----------------
+
+
+async def _local_only_store() -> tuple[
+    InMemoryDurableRunStore, DurableRunExecutionStore, DurableRunRecord, str
+]:
+    """The graph-store shape with no canonical RunStore wired.
+
+    Graph execution can run without a canonical store; `compensate_unlaunched_attempt`
+    must then apply the same lifecycle leaf under the record's own run lock,
+    or a prelaunch failure in that mode would strand a CREATED Attempt forever.
+    """
+    graph = Graph(
+        workspace_id="ws-local",
+        project_id="project-local",
+        name="Local compensate",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    run = transition_run(run, RunStatus.QUEUED)
+    run = transition_run(run, RunStatus.RUNNING)
+    node_run = NodeRun(run_id=run.run_id, node_id="node-1", ordinal=1)
+    node_run = transition_node_run(node_run, RunStatus.QUEUED)
+    node_run = transition_node_run(node_run, RunStatus.RUNNING)
+    record = DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(run_id=run.run_id, active_node_ids=("node-1",)),
+        node_runs=(node_run,),
+        version=1,
+    )
+    store = InMemoryDurableRunStore()
+    await store.create(record)
+    return (
+        store,
+        DurableRunExecutionStore(store, run_id=record.run_id),
+        record,
+        node_run.node_run_id,
+    )
+
+
+async def test_compensate_unlaunched_in_local_mode_commits_cancelled_recovered() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="local launch boom",
+    )
+
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "local launch boom"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "local launch boom"
+
+
+async def test_compensate_unlaunched_in_local_mode_refuses_a_stale_fence() -> None:
+    """The record's own lock does not excuse a stale fencing token."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    with pytest.raises(StaleExecutionFence):
+        await execution_store.compensate_unlaunched_attempt(
+            attempt.attempt_id, fencing_token="not-the-token", error="x"
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED
+    assert persisted.attempts[0].cancellation_cause is None
+    assert persisted.attempts[0].finished_at is None
+
+
+async def test_compensate_unlaunched_in_local_mode_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.compensate_unlaunched_attempt(
+            "missing", fencing_token="tok", error="x"
+        )
+
+
+class _VanishingReclaimRunStore(InMemoryRunStore):
+    """The canonical row disappears between projection and exact-ID reclaim."""
+
+    async def reclaim_expired_attempt(self, attempt_id: str, *, now: Any = None) -> Any:
+        raise AttemptNotFound(f"Attempt {attempt_id!r} vanished")
+
+
+async def test_a_canonical_attempt_that_vanishes_mid_reclaim_is_an_integrity_error() -> None:
+    """AttemptNotFound out of the canonical exact-ID reclaim is torn state.
+
+    The projection still lists the Attempt; the canonical row that should
+    repair it is gone. Reporting an empty reclaim would strand the projection
+    on a lie, so the disagreement surfaces as RunIntegrityError instead of a
+    silently empty result.
+    """
+    store, _run_store, execution_store, record, node_run_id = await _bound_store(
+        run_store_cls=_VanishingReclaimRunStore
+    )
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=1)
+    )
+    assert attempt.execution_lease is not None
+    after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+
+    with pytest.raises(RunIntegrityError, match="disappeared during reclaim"):
+        await execution_store.reclaim_expired_attempts(now=after)
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED, (
+        "nothing was settled on the projection either: the canonical write never landed"
+    )
