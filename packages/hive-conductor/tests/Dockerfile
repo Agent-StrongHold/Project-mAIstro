@@ -1,4 +1,5 @@
-# Digest-pinned (#349): python:3.12-slim index digest resolved 2026-10-24.
+# Digest-pinned (#349): python:3.15-slim index digest resolved 2026-11-18 (#2377),
+# registered in quality/image-pins.json with the same coordinates.
 FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 WORKDIR /tests
 # `tzdata` is deliberate (#290): the scheduler-timezone container tests
