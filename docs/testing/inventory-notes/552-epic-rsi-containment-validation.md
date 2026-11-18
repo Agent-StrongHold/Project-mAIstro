@@ -264,7 +264,7 @@ Fixed this round:
   package.json change; all fixes in-range, none allowlisted):
   `npm audit` now reports **0 vulnerabilities** in both trees, and
   `npm ci` + `npm run build` pass inside the digest-pinned
-  `node:22-alpine@sha256:0a71...` builder; the full hive-conductor image
+  `node:26-alpine@sha256:0a71...` builder; the full hive-conductor image
   builds locally (exit 0). `exact-debt-ledger`'s vulture component
   (CI-exact args) exits 0 — no ledger amendment required.
 
@@ -353,7 +353,7 @@ delta above is unchanged. Results:
 - Container gate: `npm audit` → **0 vulnerabilities** in both frontend
   trees (prod-only and full); the previously failing `frontend` stage of
   `packages/hive-conductor/Dockerfile` builds at the digest-pinned
-  `node:22-alpine@sha256:0a7108…` (**exit 0**), the **full
+  `node:26-alpine@sha256:0a7108…` (**exit 0**), the **full
   hive-conductor image builds (exit 0)**, and the canvas frontend
   `npm ci` + `npm run build` pass in a clean scratch copy (the worktree
   copy has a root-owned stale `node_modules` that EACCESes `npm ci` —

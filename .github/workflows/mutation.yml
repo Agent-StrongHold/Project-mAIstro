@@ -33,6 +33,14 @@ on:
   # "commit status not successful". The job below is self-scoping: it computes
   # critical ∩ changed and exits green when nothing mutation-critical changed,
   # so firing on every PR adds evidence, never a new failure mode.
+  #
+  # This subsumes develop's #2120 trigger row for 'quality/image-pins.json'
+  # (measured on #2120's head fc525a8d86 with the CI-exact check-gates-ran
+  # evaluator: 71/72 required checks present, "Mutation gate (changed critical
+  # lines)" absent -> PENDING). Instead of listing one registry path, firing on
+  # every PR yields that same zero-overlap evidence ("No mutation-critical file
+  # changed") for image-pins.json and every other non-listed path, while the
+  # job itself keeps failing closed whenever a critical file does change.
   pull_request:
   workflow_dispatch:
 
