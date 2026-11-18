@@ -188,7 +188,7 @@ class TestInMemoryQuotaTracker:
 
 class TestDefaultQuotaTrackerSingleton:
     async def test_registered_tracker_is_returned_until_cleared(self) -> None:
-        from maistro.quota.default_tracker import (
+        from maistro.quota.recorder import (
             get_default_quota_tracker,
             set_default_quota_tracker,
         )

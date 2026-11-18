@@ -179,6 +179,37 @@ def _validate_startup(settings: Settings) -> None:
         )
 
 
+def _wire_canvas_assetinstance(app: FastAPI) -> bool:
+    """Mount the ADR-044 AssetInstance surface on the process (#2311 CONNECT).
+
+    LayerRecord ``canvas_store`` stays the design/persistence path (#851). This
+    binds ``AssetTool`` plus the asset ``/v2/canvas`` router (definitions,
+    instances, sheets, plan) so ``asset_*`` modules are process-reachable from
+    ``maistro_server.main``. Idempotent: an already-mounted surface is kept.
+    """
+    if getattr(app.state, "canvas_asset_tool", None) is not None:
+        return True
+    try:
+        from maistro_canvas.canvas.composition import build_asset_instance_surface
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        logger.error(
+            "canvas_assetinstance_unavailable",
+            detail=f"maistro-canvas AssetInstance surface missing ({exc})",
+        )
+        return False
+    surface = build_asset_instance_surface()
+    app.state.canvas_asset_tool = surface.tool
+    if not getattr(app.state, "canvas_asset_router_mounted", False):
+        app.include_router(surface.router)
+        app.state.canvas_asset_router_mounted = True
+    logger.info(
+        "canvas_assetinstance_wired",
+        backend="in_memory",
+        postgres_store=surface.postgres_store_cls.__name__,
+    )
+    return True
+
+
 def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     """Bind the shipped Canvas store to ``app.state.canvas_store`` (#851).
 
@@ -198,9 +229,14 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     An already-injected store is never replaced — deployments and tests that
     compose their own keep theirs.
 
+    When a store is (or becomes) present, also CONNECT the ADR-044
+    AssetInstance surface (#2311) so asset modules are process-reachable
+    alongside the LayerRecord path without deleting it.
+
     Returns whether a store is (now) present.
     """
     if getattr(app.state, "canvas_store", None) is not None:
+        _wire_canvas_assetinstance(app)
         return True
     if engine is None:
         logger.info(
@@ -218,6 +254,7 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
         return False
     app.state.canvas_store = PgCanvasStore(engine)
     logger.info("canvas_store_wired", backend="postgresql")
+    _wire_canvas_assetinstance(app)
     return True
 
 

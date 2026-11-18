@@ -271,6 +271,66 @@ async def test_a_sweep_with_nothing_to_do_reports_nothing(spine: Any) -> None:
     assert (await store.purge_expired_runs(_scope(spine), now=NOW)).runs == 0
 
 
+# ── stored-volume health (#325) ──────────────────────────────
+
+
+def _table_gauge(metric: Any, table: str, backend: str) -> float | None:
+    values = [
+        float(sample["value"])
+        for sample in metric.collect()
+        if sample.get("labels", {}).get("table") == table
+        and sample.get("labels", {}).get("backend") == backend
+    ]
+    return sum(values) if values else None
+
+
+async def test_a_purge_publishes_the_spine_tables_stored_volume(spine: Any) -> None:
+    """The purge counters are rates and cannot show a policy that never runs.
+    After a committed purge the store's governed tables publish their level:
+    rows still stored, the oldest retained record, and (where the backend can
+    measure it) bytes. A quiet purge publishes too — zero deletions is when
+    the level is the only health signal there is."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_rows,
+    )
+
+    store, _workspace, _project_id = spine
+    backend = type(store).__module__.rsplit(".", 1)[-1].replace("_store", "")
+    if backend not in ("sqlite", "pg"):
+        pytest.skip("the in-memory store is not a durable table with a health probe")
+    retention_health._LAST_PROBE.clear()
+
+    await _terminal_run(spine, expires_at=EXPIRED)
+    live = await _run(spine, expires_at=FUTURE)
+    assert (await store.purge_expired_runs(_scope(spine), now=NOW)).runs == 1
+
+    backend_label = "postgres" if backend == "pg" else "sqlite"
+    rows = _table_gauge(retention_table_rows, "canonical_runs", backend_label)
+    assert rows is not None
+    assert rows == 1  # the live Run; the expired one is gone
+    oldest = _table_gauge(retention_oldest_record_timestamp, "canonical_runs", backend_label)
+    assert oldest is not None
+    # One Run remains, so the oldest retained record is exactly its creation.
+    assert oldest == pytest.approx(live.created_at.timestamp())
+    # The spine tables publish alongside the Run — the purge touches all of
+    # them in one transaction, and a level that silently stops refreshing on
+    # one of them is exactly the leak these series exist to surface.
+    for table in ("canonical_node_runs", "canonical_attempts"):
+        assert _table_gauge(retention_table_rows, table, backend_label) is not None
+
+    # Draining the scope publishes the drained level: the next purge deletes
+    # nothing, and the gauges still move to the truth.
+    await store.transition_run(live.run_id, RunStatus.QUEUED)
+    await store.transition_run(live.run_id, RunStatus.RUNNING)
+    await store.transition_run(live.run_id, RunStatus.COMPLETED)
+    retention_health._LAST_PROBE.clear()
+    await store.purge_expired_runs(_scope(spine), now=NOW + timedelta(days=30))
+    drained = _table_gauge(retention_table_rows, "canonical_runs", backend_label)
+    assert drained == 0
+
+
 async def test_the_sweep_defaults_to_now(spine: Any) -> None:
     """`now` exists for the tests; production passes nothing and must still
     sweep against the real clock."""
