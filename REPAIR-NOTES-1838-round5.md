@@ -33,7 +33,7 @@ and every Quality/* ratchet were already green at the starting head.
    failed with exit 1).
 3. **Container scan + SBOM + cosign** — failure excerpt is the hive-conductor
    image build's npm stage. `npm ci` provably does not fail on audit findings
-   (verified under the digest-pinned `node:22-alpine`, npm 10.9.9: exit 0 with the
+   (verified under the digest-pinned `node:26-alpine`, npm 10.9.9: exit 0 with the
    zod HIGH present), so the tree-side contributors were the hive frontend's zod
    HIGH in the npm tree plus whatever transient felled the build; both the build
    and the image-level scans were re-proven green after repair (below).
