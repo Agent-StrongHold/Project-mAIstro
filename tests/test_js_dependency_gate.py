@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 from typing import Any
@@ -514,3 +515,126 @@ class TestGuardDogScanDriver:
         )
         report = json.loads(written["packages/demo/frontend"].read_text(encoding="utf-8"))
         assert report == {"react": {"errors": {"scan": "boom"}}}
+
+    def test_timed_out_scan_is_recorded_never_dropped(
+        self, scanner: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scan that hangs past the timeout is an errors entry, not silence."""
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            raise scanner.subprocess.TimeoutExpired(cmd, 1.5)
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+        written = scanner.scan_direct_dependencies(
+            {"packages/demo/frontend": {"react": "19.0.0"}},
+            output_dir=tmp_path,
+            guarddog="guarddog",
+            timeout=1.5,
+        )
+        report = json.loads(written["packages/demo/frontend"].read_text(encoding="utf-8"))
+        assert report == {"react": {"errors": {"timeout": "scan exceeded 1.5s"}}}
+
+    def test_parseable_scan_report_is_merged_verbatim(
+        self, scanner: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit 0 with JSON stdout: the report lands in the merged file as-is."""
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            import subprocess as real_subprocess
+
+            return real_subprocess.CompletedProcess(
+                cmd, 0, stdout='{"results": {"typosquatting": []}}', stderr=""
+            )
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+        written = scanner.scan_direct_dependencies(
+            {"packages/demo/frontend": {"react": "19.0.0"}},
+            output_dir=tmp_path,
+            guarddog="guarddog",
+        )
+        report = json.loads(written["packages/demo/frontend"].read_text(encoding="utf-8"))
+        assert report == {"react": {"results": {"typosquatting": []}}}
+
+    def test_exit_zero_with_unparseable_stdout_is_an_unavailable_scanner(
+        self, scanner: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit 0 without a parseable report cannot read as a clean scan."""
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            import subprocess as real_subprocess
+
+            return real_subprocess.CompletedProcess(
+                cmd, 0, stdout="<html>login page</html>", stderr="   "
+            )
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+        written = scanner.scan_direct_dependencies(
+            {"packages/demo/frontend": {"react": "19.0.0"}},
+            output_dir=tmp_path,
+            guarddog="guarddog",
+        )
+        report = json.loads(written["packages/demo/frontend"].read_text(encoding="utf-8"))
+        assert report == {"react": {"errors": {"scan": "exit 0"}}}
+
+    def test_main_scans_exactly_the_gate_direct_deps_listing(
+        self,
+        scanner: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() consumes the gate's --direct-deps list: one source of truth."""
+
+        scan_cmds: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            import subprocess as real_subprocess
+
+            if cmd[-1] == "--direct-deps":
+                return real_subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="packages/demo/frontend react 19.0.0\n"
+                    "packages/demo/frontend zod 3.23.0\n",
+                    stderr="",
+                )
+            scan_cmds.append(list(cmd))
+            return real_subprocess.CompletedProcess(cmd, 0, stdout='{"results": {}}', stderr="")
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+        assert scanner.main(["--output-dir", str(tmp_path), "--guarddog", "fake-guarddog"]) == 0
+        # Every listed dependency was scanned at its LOCKED version, nothing else.
+        assert [(cmd[3], cmd[5]) for cmd in scan_cmds] == [
+            ("react", "19.0.0"),
+            ("zod", "3.23.0"),
+        ]
+        assert all(cmd[0] == "fake-guarddog" for cmd in scan_cmds)
+        report = json.loads((tmp_path / "packages_demo_frontend.json").read_text(encoding="utf-8"))
+        assert report == {"react": {"results": {}}, "zod": {"results": {}}}
+        assert capsys.readouterr().out == (
+            f"packages/demo/frontend -> {tmp_path / 'packages_demo_frontend.json'}\n"
+        )
+
+    def test_main_guard_invokes_the_cli(
+        self, scanner: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The __main__ guard sys.exits with main()'s code (runpy, in-process)."""
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            import subprocess as real_subprocess
+
+            if cmd[-1] == "--direct-deps":
+                return real_subprocess.CompletedProcess(
+                    cmd, 0, stdout="packages/demo/frontend react 19.0.0\n", stderr=""
+                )
+            return real_subprocess.CompletedProcess(cmd, 0, stdout='{"results": {}}', stderr="")
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [str(SCAN_SCRIPT), "--output-dir", str(tmp_path), "--guarddog", "fake-guarddog"],
+        )
+        with pytest.raises(SystemExit) as exited:
+            runpy.run_path(str(SCAN_SCRIPT), run_name="__main__")
+        assert exited.value.code == 0
