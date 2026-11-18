@@ -22,3 +22,24 @@ Adds two PostgreSQL-gated regressions to
 
 Both gate on `MAISTRO_TEST_PG_DSN` like the rest of the file and run for real
 in the `coverage (PostgreSQL)` quality job.
+
+## Real-PostgreSQL execution evidence (local, CI-identical image)
+
+Executed against a local `pgvector/pgvector:pg17` container (the same image,
+user/db, and DSN shape the `coverage (PostgreSQL)` job provisions):
+
+- Both new tests pass: `uv run pytest
+  packages/maistro-core/tests/quota/test_pg_invocation_quota_boundary.py -k
+  "concurrent_distinct_admissions or concurrent_duplicate_settlement"` —
+  2 passed.
+- Whole boundary file passes on the real server: 27 passed, 0 skipped.
+- Full quota battery with the DSN set: `packages/maistro-core/tests/quota
+  packages/maistro-core/tests/test_container_quota_admission.py` — 287 passed,
+  0 skipped (the 31 PG legs the writing environment skipped now execute).
+- The tests catch the regressions they name: with
+  `pg_advisory_xact_lock` in `PgInvocationQuota.reserve` replaced by a no-op,
+  the overspend test fails (`['admitted', 'admitted', 'admitted', ...]` — a
+  third distinct Invocation gets in); additionally removing the `FOR UPDATE`
+  from the settlement reservation read makes the duplicate-settlement test
+  fail (`invocation_quota_evidence_pkey` UniqueViolationError under the
+  concurrent gather).
