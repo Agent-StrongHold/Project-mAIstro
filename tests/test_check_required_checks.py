@@ -430,6 +430,10 @@ class TestPathsFilters:
             "packages/**/*.py",
             "quality/mutation-critical-files.json",
             "quality/mutation-baseline.json",
+            # Listed by develop's #2120: a PR touching only the image-pin
+            # registry otherwise never triggers this producer and gates-ran
+            # stays pending forever (rationale in mutation.yml itself).
+            "quality/image-pins.json",
             ".github/workflows/mutation.yml",
         ]
     }
