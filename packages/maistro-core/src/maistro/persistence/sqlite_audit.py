@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
@@ -79,6 +85,14 @@ class SqliteAuditLog:
 
     def __init__(self, conn: aiosqlite.Connection, *, signer: AuditSigner | None = None) -> None:
         self._conn = conn
+        # One aiosqlite connection is shared by every caller, so a purge's
+        # `BEGIN IMMEDIATE` landing inside another caller's open write
+        # transaction (e.g. a `log()` INSERT that has not committed yet, or an
+        # overlapping purge) would raise "cannot start a transaction within a
+        # transaction" instead of waiting. The same asyncio lock the Session,
+        # Prompt and Quota stores carry serializes the complete log() and
+        # purge_expired() write transactions so callers queue rather than fail.
+        self._write_lock = asyncio.Lock()
         self.signer = signer or AuditSigner.from_environment()
         if self.signer.ephemeral:
             logger.warning(
@@ -113,6 +127,11 @@ class SqliteAuditLog:
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
+            # Retention's purge scans oldest-first across every scope, so it
+            # needs the timestamp-led index the org-led page indexes reverse.
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp, id)"
+            )
 
             for name, fields in AUDIT_PAGE_INDEXES.items():
                 await self._conn.execute(
@@ -144,31 +163,92 @@ class SqliteAuditLog:
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""
-        signed = self.signer.sign(entry)
-        await self._conn.execute(
-            """INSERT INTO audit_log
+        async with self._write_lock:
+            signed = self.signer.sign(entry)
+            await self._conn.execute(
+                """INSERT INTO audit_log
                (timestamp, boundary, user_id, org_id, team_id, agent_id,
                 tool_name, verdict, detail, trace_id, request_id,
                 signature, signing_key_id, proof_type)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                getattr(signed, "timestamp", datetime.now(UTC)).isoformat(),
-                signed.boundary,
-                signed.user_id,
-                getattr(signed, "org_id", "") or "",
-                getattr(signed, "team_id", ""),
-                signed.agent_id,
-                getattr(signed, "tool_name", "") or "",
-                signed.verdict,
-                signed.detail,
-                getattr(signed, "trace_id", ""),
-                getattr(signed, "request_id", ""),
-                signed.signature,
-                signed.signing_key_id,
-                signed.proof_type,
-            ),
-        )
-        await self._conn.commit()
+                (
+                    # Stored as a UTC instant: purge_expired and retention health
+                    # order this column as text, so a non-UTC offset (e.g.
+                    # ``09:00-05:00`` == 14:00 UTC) must not sort as 09:00 UTC and
+                    # get purged by an earlier-looking cutoff.
+                    getattr(signed, "timestamp", datetime.now(UTC)).astimezone(UTC).isoformat(),
+                    signed.boundary,
+                    signed.user_id,
+                    getattr(signed, "org_id", "") or "",
+                    getattr(signed, "team_id", ""),
+                    signed.agent_id,
+                    getattr(signed, "tool_name", "") or "",
+                    signed.verdict,
+                    signed.detail,
+                    getattr(signed, "trace_id", ""),
+                    getattr(signed, "request_id", ""),
+                    signed.signature,
+                    signed.signing_key_id,
+                    signed.proof_type,
+                ),
+            )
+            await self._conn.commit()
+
+    async def purge_expired(
+        self,
+        *,
+        before: datetime,
+        limit: int = 1_000,
+        legal_hold_user_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete an old bounded batch without crossing a legal hold.
+
+        The audit log is append-only evidence with a bounded lifetime (its
+        policy, including legal hold, is the importing product's per the #325
+        owner decision — this is the mechanism, not the policy). The delete
+        runs as one transaction of at most ``limit`` rows ordered oldest-first,
+        so a replica's lock hold is bounded and a crash mid-purge commits
+        nothing: the next call re-selects the same rows, which makes retries
+        and concurrent replicas idempotent.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[Any] = [before.astimezone(UTC).isoformat()]
+        if legal_hold_user_ids:
+            marks = ",".join("?" for _ in legal_hold_user_ids)
+            hold_sql = f" AND user_id NOT IN ({marks})"  # nosec B608 - values bound, identifiers are literal ?
+            params.extend(legal_hold_user_ids)
+        params.append(limit)
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                    "WHERE timestamp < ?" + hold_sql + " ORDER BY timestamp, id LIMIT ?)",
+                    params,
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish the audit log's stored volume after a successful purge (#325).
+
+        The audit horizon is the importing product's policy; the engine's
+        contribution is making the table's actual level observable — rows,
+        bytes where the backend can measure them, and how far back the
+        retained evidence reaches — so a horizon nobody enforces is visible
+        instead of assumed. Throttled per store by the publisher.
+        """
+        if not retention_health_probe_due("audit:sqlite"):
+            return
+        sample = await sqlite_table_sample(self._conn, "audit_log", "timestamp", oldest_unit="iso")
+        if sample is not None:
+            publish_retention_table_health("audit:sqlite", "sqlite", [sample], min_interval_s=0.0)
 
     async def get_entries(
         self,
