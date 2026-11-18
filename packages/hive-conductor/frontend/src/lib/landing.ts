@@ -8,6 +8,8 @@
 
 export const LANDING_PREF_KEY = "workspace_default_landing";
 export const RESTORE_PREF_KEY = "workspace_restore_aggressiveness";
+/** path → epoch-ms until which a learned-landing proposal stays quiet (#1050). */
+export const SUGGESTION_COOLDOWN_PREF_KEY = "workspace_landing_suggestion_cooldown";
 
 /** Surfaces a user may pin as their Workspace default. Home is the baseline. */
 export const LANDING_OPTIONS: { path: string; label: string }[] = [
@@ -180,6 +182,12 @@ export const LEARNED_IMMEDIATE_MS = 45_000;
  */
 export const LEARNED_STREAK_MIN = 3;
 
+/**
+ * How long dismiss/"Not now" keeps a learned proposal quiet. Stored on the
+ * durable profile (`SUGGESTION_COOLDOWN_PREF_KEY`) so a return does not re-nag.
+ */
+export const LEARNED_SUGGESTION_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
 export type LandingNavPattern = {
   path: string;
   streak: number;
@@ -192,7 +200,10 @@ export type LandingSuggestion = {
 };
 
 export type LandingSuggestionDecision =
-  | { show: false; reason: "explicit" | "suppressed" | "insufficient" | "ineligible" }
+  | {
+      show: false;
+      reason: "explicit" | "suppressed" | "cooldown" | "insufficient" | "ineligible";
+    }
   | { show: true; suggestion: LandingSuggestion };
 
 /** Record an immediate Home→surface hop; returns the updated streak pattern. */
@@ -210,14 +221,50 @@ export function recordImmediateLandingHop(
   return { path: target, streak: 1, lastAtMs: nowMs };
 }
 
+/** Normalize the durable dismiss-cooldown map (path → until epoch-ms). */
+export function resolveSuggestionCooldown(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const path = resolveLandingPath(key);
+    if (path === DEFAULT_LANDING_PATH) continue;
+    const until = Number(value);
+    if (!Number.isFinite(until) || until <= 0) continue;
+    out[path] = Math.floor(until);
+  }
+  return out;
+}
+
+/** Merge a dismiss for `path` into the cooldown map; prune expired entries. */
+export function mergeSuggestionCooldown(
+  prior: unknown,
+  path: string,
+  nowMs: number,
+  cooldownMs: number = LEARNED_SUGGESTION_COOLDOWN_MS,
+): Record<string, number> {
+  const current = resolveSuggestionCooldown(prior);
+  const pruned: Record<string, number> = {};
+  for (const [p, until] of Object.entries(current)) {
+    if (until > nowMs) pruned[p] = until;
+  }
+  const target = resolveLandingPath(path);
+  if (target !== DEFAULT_LANDING_PATH) {
+    pruned[target] = nowMs + Math.max(0, cooldownMs);
+  }
+  return pruned;
+}
+
 /**
  * Decide whether to propose making `pattern.path` the default landing.
- * Explicit non-Home default and prior dismissals suppress without nagging.
+ * Explicit non-Home default, local suppress, and profile cooldown suppress
+ * without nagging. Learned defaults are never applied silently — accept only.
  */
 export function decideLandingSuggestion(args: {
   pattern: LandingNavPattern | null;
   explicitDefault: string;
   suppressedPaths: ReadonlySet<string>;
+  cooldownUntilByPath?: Readonly<Record<string, number>>;
+  nowMs?: number;
   streakMin?: number;
 }): LandingSuggestionDecision {
   const explicit = resolveLandingPath(args.explicitDefault);
@@ -232,6 +279,11 @@ export function decideLandingSuggestion(args: {
   }
   if (args.suppressedPaths.has(path)) {
     return { show: false, reason: "suppressed" };
+  }
+  const nowMs = args.nowMs ?? Date.now();
+  const until = args.cooldownUntilByPath?.[path];
+  if (typeof until === "number" && until > nowMs) {
+    return { show: false, reason: "cooldown" };
   }
   const min = args.streakMin ?? LEARNED_STREAK_MIN;
   if (pattern.streak < min) {
