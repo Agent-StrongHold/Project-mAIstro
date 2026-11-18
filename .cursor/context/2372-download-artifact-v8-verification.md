@@ -53,3 +53,45 @@ the develop tip the PR merges into, not regressions introduced by the version
 bump. Everything locally runnable about this change is green (points 3–6).
 
 No code change was required; this note is the only artifact of the repair pass.
+
+## Round 2 (2026-11-18, head `34c0da9fa488`): gates-ran pending — root cause found and repaired
+
+The prior "RED gates attributed to the develop tip" attribution was wrong for
+the actual merge-queue blocker. Captured evidence at this head (dispatch
+context, 2026-11-18T01:47:35Z): **all 78 check-runs are success or
+skipped-for-scope** — including docker-build, postgres pg17/pg18, MinIO,
+compose-durability, integration-scope, lint-and-type-check, compliance
+registry, cross-product-parity. The only non-success is the repo-custom
+`gates-ran` commit status: 10 publisher runs, all `pending` — "Required
+execution evidence is still arriving" (runs 44065183567…44071220285,
+2026-11-17T10:29–11:08Z).
+
+CI-exact replay (`scripts/check-gates-ran.py --check-runs <captured 78>
+--require-complete --base-branch develop --event-name pull_request
+--changed-files <measured envelope ['.github/workflows/mutation-nightly.yml']>):
+exit 2 — `not present yet (1): Mutation gate (changed critical lines)`.
+Appending one synthetic successful mutation-gate check-run to the same payload
+flips the replay to `ok: all 72 required check(s) ran on this head` (exit 0).
+The absent producer is the sole blocker; the service gates are not involved.
+
+Root cause: `mutation.yml`'s `pull_request.paths` filter never named
+`.github/workflows/mutation-nightly.yml`, so a PR touching only that file does
+not trigger the mutation workflow, while `check-required-checks.py` keeps its
+row in the required evidence set on every PR — exactly the #2120 class
+(`b6dcf485bb`), whose fix added `quality/image-pins.json` but missed the
+nightly sibling. Repair (additive, follows the reviewed precedent; no gate
+weakened): `.github/workflows/mutation-nightly.yml` joins the paths list, so
+this PR class produces real zero-overlap mutation evidence instead of
+permanent absence.
+
+Round-2 validation: evaluator replays above; `tests/test_mutation_targets.py`
+36 passed (new `TestNightlyWorkflowEditsReachTheGate` pin parses the YAML and
+fails on the pre-fix workflow content — regression demonstrated, exit 1 on
+HEAD's file); `tests/test_check_gates_ran.py`
++ `tests/test_gates_ran_publisher_contract.py`
++ `tests/test_gates_ran_merge_group_scope.py` + `tests/test_mutation_pr_gate.py`
+119 passed; `check-required-checks.py` / `check-workflow-inventory.py` /
+`check-workflow-write-safety.py` / `check-suite-inventory.py` (delta declared
+in `docs/testing/inventory-notes/cr-2372-mutation-gate-nightly-path.md`) all
+exit 0; `ruff check .` and `ruff format --check .` pass. Inventory delta:
+`tests/` +1 (4117 → 4118 expected).
