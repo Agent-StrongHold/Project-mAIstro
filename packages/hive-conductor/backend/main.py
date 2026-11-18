@@ -48,6 +48,7 @@ from routes import (
     missions,
     profile,
     program,
+    projects,
     providers,
     quotas,
     rum,
@@ -387,6 +388,10 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/v1/skills")
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
+    # Project onboarding wizard (intake → scan → deploy). Distinct from
+    # maistro.projects Workspace/Project *scope* — see disposition
+    # hive-project-onboarding. Router already declares prefix=/v1/projects.
+    app.include_router(projects.router)
     app.include_router(work_items.router, prefix="/v1/work-items")
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")

@@ -581,6 +581,7 @@ class TestCanvasAbilityWiring:
         monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
 
     def test_a_real_engine_gets_the_postgres_store(self) -> None:
+        from maistro_canvas.canvas.asset_tool import AssetTool
         from maistro_canvas.canvas.store import PgCanvasStore
 
         test_app = FastAPI()
@@ -589,18 +590,45 @@ class TestCanvasAbilityWiring:
         store = test_app.state.canvas_store
         assert isinstance(store, PgCanvasStore)
         assert store._engine is engine
+        assert isinstance(test_app.state.canvas_asset_tool, AssetTool)
+        assert test_app.state.canvas_asset_router_mounted is True
 
     def test_no_engine_keeps_the_503_surface(self) -> None:
         test_app = FastAPI()
         assert main_module._wire_canvas_ability(test_app, None) is False
         assert getattr(test_app.state, "canvas_store", None) is None
+        assert getattr(test_app.state, "canvas_asset_tool", None) is None
 
     def test_an_already_composed_store_is_not_replaced(self) -> None:
+        from maistro_canvas.canvas.asset_tool import AssetTool
+
         test_app = FastAPI()
         sentinel = object()
         test_app.state.canvas_store = sentinel
         assert main_module._wire_canvas_ability(test_app, MagicMock()) is True
         assert test_app.state.canvas_store is sentinel
+        # AssetInstance CONNECT still lands when LayerRecord was pre-composed.
+        assert isinstance(test_app.state.canvas_asset_tool, AssetTool)
+
+    def test_assetinstance_wire_is_idempotent_once_tool_is_bound(self) -> None:
+        from maistro_canvas.canvas.asset_tool import AssetTool
+
+        test_app = FastAPI()
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        tool = test_app.state.canvas_asset_tool
+        assert isinstance(tool, AssetTool)
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        assert test_app.state.canvas_asset_tool is tool
+
+    def test_assetinstance_skips_remount_when_router_flag_already_set(self) -> None:
+        """Branch at main.py:202 True — router already mounted, tool still absent."""
+        from maistro_canvas.canvas.asset_tool import AssetTool
+
+        test_app = FastAPI()
+        test_app.state.canvas_asset_router_mounted = True
+        assert main_module._wire_canvas_assetinstance(test_app) is True
+        assert isinstance(test_app.state.canvas_asset_tool, AssetTool)
+        assert test_app.state.canvas_asset_router_mounted is True
 
     async def test_the_lifespan_wires_the_store_when_an_engine_exists(self) -> None:
         """Through the real lifespan, not just the helper: the wiring lives in

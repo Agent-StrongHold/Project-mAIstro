@@ -135,6 +135,18 @@ def runner() -> ExtensionSandboxRunner:
     return ExtensionSandboxRunner(selector)
 
 
+def _guest_workdir(tier: str) -> str:
+    """The in-sandbox path of the sandbox's own ephemeral workspace.
+
+    Both backends bind the same host-side workdir; only the guest pathname
+    differs: bwrap mounts it at ``/work``, Kata's OCI argv at ``/workspace``
+    (measured live: ``/work`` does not exist under Kata, ``/workspace`` is the
+    01777 bind). Assertions that write into the sandbox address it through
+    this so the same contract is exercised on every real backend.
+    """
+    return "/workspace" if tier == "vm" else "/work"
+
+
 def _limits_argv(timeout_s: int, cpu_cores: float) -> list[str]:
     """Read the rlimits the workload itself sees, from inside the sandbox."""
     cpu_budget = math.ceil(timeout_s * cpu_cores) + 2  # the backend's grace
@@ -162,11 +174,21 @@ class TestResourceLimitsAreReal:
             _limits_argv(timeout_s=int(profile.timeout_s), cpu_cores=float(profile.cpu_cores)),  # type: ignore[arg-type]
         )
         assert outcome.succeeded, f"limits readback failed: {outcome.stderr}"
-        as_bytes, nproc, cpu_budget, fsize, _expected = (int(x) for x in outcome.stdout.split())
-        assert as_bytes == 256 * 1024 * 1024
+        as_bytes, nproc, cpu_rlimit, fsize, _expected = (int(x) for x in outcome.stdout.split())
         assert nproc == int(profile.max_processes)  # type: ignore[arg-type]
         assert fsize == 8 * 1024 * 1024
-        assert cpu_budget == math.ceil(int(profile.timeout_s) * float(profile.cpu_cores)) + 2  # type: ignore[arg-type]
+        if outcome.backend == "kata":
+            # Measured live on the Kata VM: the PID and file-size ceilings are
+            # the workload's own rlimits, the CPU ceiling is the profile's
+            # CPU-seconds budget exactly (no bwrap grace), and memory is NOT a
+            # per-process RLIMIT_AS — it is the VM's budget, whose enforcement
+            # the memory-hog test proves live. Asserting RLIMIT_AS == 256MB
+            # here would pin bwrap's mechanism, not the profile's ceiling.
+            assert as_bytes == -1  # RLIM_INFINITY: memory is the VM budget
+            assert cpu_rlimit == int(int(profile.timeout_s) * float(profile.cpu_cores))  # type: ignore[arg-type]
+        else:
+            assert as_bytes == 256 * 1024 * 1024
+            assert cpu_rlimit == math.ceil(int(profile.timeout_s) * float(profile.cpu_cores)) + 2  # type: ignore[arg-type]
 
     async def test_a_memory_hog_is_stopped_by_the_ceiling(
         self, runner: ExtensionSandboxRunner
@@ -176,7 +198,13 @@ class TestResourceLimitsAreReal:
             ["python3", "-c", "b = bytearray(1024 * 1024 * 1024)"],
         )
         assert outcome.exit_code != 0
-        assert "MemoryError" in outcome.stdout + outcome.stderr
+        if outcome.backend == "kata":
+            # Measured live: under Kata the ceiling is the VM's memory budget,
+            # so the kernel SIGKILLs the hog (137, empty streams) instead of
+            # Python raising. The wall clock must not be what stopped it.
+            assert outcome.timed_out is False
+        else:
+            assert "MemoryError" in outcome.stdout + outcome.stderr
 
     async def test_a_cpu_busy_loop_is_stopped_by_the_budget_not_the_wall_clock(
         self, runner: ExtensionSandboxRunner
@@ -238,9 +266,19 @@ class TestNetworkIsDeniedUntilDeclared:
 @requires_real_backend
 class TestFilesystemBoundary:
     async def test_host_paths_outside_the_profile_are_not_there(
-        self, runner: ExtensionSandboxRunner
+        self, runner: ExtensionSandboxRunner, tmp_path: Path
     ) -> None:
-        outcome = await runner.exec(_profile(), ["cat", "/etc/hostname"])
+        """A file that provably exists on the host is not there to read.
+
+        The probe is a freshly written host-only path rather than a fixed one
+        like ``/etc/hostname``: a VM backend brings its OWN rootfs, where
+        fixed host filenames can exist for unrelated reasons — but a file
+        created just now, outside the profile's mounts, cannot.
+        """
+        host_only = tmp_path / "host-only-probe.txt"
+        host_only.write_text("host secret")
+        assert host_only.exists()  # it IS on the host
+        outcome = await runner.exec(_profile(), ["cat", str(host_only)])
         assert outcome.exit_code != 0
         assert "No such file" in outcome.stdout + outcome.stderr
 
@@ -261,10 +299,13 @@ class TestFilesystemBoundary:
         config = build_sandbox_config(_profile())  # type: ignore[arg-type]
         instance = await backend.spawn(config=config)
         try:
+            guest_workdir = _guest_workdir(instance.isolation_tier)
             result = await backend.exec(
-                instance, ["bash", "-c", "echo written > /work/proof"], timeout_s=30
+                instance,
+                ["bash", "-c", f"echo written > {guest_workdir}/proof"],
+                timeout_s=30,
             )
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.stderr
             workdir = Path(str(instance.metadata["workdir"]))
             assert (workdir / "proof").read_text().strip() == "written"
         finally:
@@ -277,11 +318,24 @@ class TestWorkspaceStorageRule:
         self, runner: ExtensionSandboxRunner
     ) -> None:
         """max_file_mb=8 is the temporary/workspace storage rule, enforced as
-        RLIMIT_FSIZE: the write dies on SIGXFSZ (bwrap reports a signal death
-        as 128+signal) with nothing on the streams — the kernel stopped it."""
+        RLIMIT_FSIZE: the write dies on SIGXFSZ (reported as 128+signal) with
+        nothing on the streams — the kernel stopped it. Measured identical on
+        Kata (the --ulimit=fsize reaches the workload) once the write targets
+        the sandbox's own workspace mount; a write to a nonexistent path would
+        prove nothing about the ceiling."""
+        profile = _profile()
+        assert profile is not None
+        selector = build_selector(sandbox_config=build_sandbox_config(profile))  # type: ignore[arg-type]
+        _tier, _backend = selector.select(profile.workload_policy())
         outcome = await runner.exec(
             _profile(),
-            ["dd", "if=/dev/zero", "of=/work/big", "bs=1M", "count=64"],
+            [
+                "dd",
+                "if=/dev/zero",
+                f"of={_guest_workdir(_tier)}/big",
+                "bs=1M",
+                "count=64",
+            ],
         )
         assert outcome.exit_code == 128 + int(signal.SIGXFSZ)
         assert outcome.timed_out is False
