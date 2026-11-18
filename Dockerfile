@@ -133,17 +133,35 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
 # flags the 1.27.2 stdlib inside the built binary.
+#
+# 29.9.3 bump (PR #2389 CI repair, 2026-11-04, run 41768658312 job
+# 126372930414): trivy flagged the vendored dependency set of v29.9.1 —
+# go-jose/v4 4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK parameters,
+# HIGH, fixed in 4.1.6) inside usr/local/bin/docker. The current DB also
+# flags v29.9.1's golang.org/x/net 0.60.0 (CVE-2026-78661, DoS via crafted
+# HTML input, HIGH, fixed in 0.62.0 — first seen on develop's CR1373 round)
+# and grype flags its klauspost/compress v1.20.1 (GO-2026-6865 HIGH, fixed
+# v1.20.2). No upstream docker/cli tag ships all three fixed: v29.9.3
+# vendors go-jose 4.1.7 and compress 1.20.2 upstream (verified in its
+# vendor.sum) but still pins x/net 0.60.0, so the tag bump is combined with
+# patching x/net onto the pinned tag — the same policy as the age stage in
+# packages/hive-conductor/Dockerfile — and `go mod vendor` re-syncs the
+# vendored tree to the renamed go.mod before the build.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
+    go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
