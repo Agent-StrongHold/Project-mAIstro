@@ -257,6 +257,63 @@ Sensitive or broad roots (`/`, `/home`, `/etc`, `/run`, `/dev`, and the generic
 serialize on a per-instance ownership lock, so teardown cannot remove the
 workdir while a host operation or bwrap process is using it.
 
+## The builders adapter (canonical selector)
+
+The builders/RSI loop's `ContainerBuilderSandbox` (see
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/container_sandbox.py`)
+is an adapter over the canonical `maistro.sandbox` selector (ADR-093, #76; the
+private Docker path was removed by M2-B1, #2241), not an isolation
+implementation of its own. `__enter__` asks the host-evidenced selector for a
+backend satisfying `BUILDER_AGENT` — whose floor is the `vm` tier, because a
+builders session runs model-generated edits and commands unattended — and
+every read, write, edit and command executes through that backend. A host that
+cannot evidence a strong enough backend refuses (`NoSuitableBackendError`)
+before anything is seeded; there is no flag or environment override that can
+widen this. What the adapter itself owns is the host-side credential boundary:
+the workspace is a host-side denylist-filtered copy of the repo
+(`_SEED_EXCLUDES`, built by host-side tar under the canonical workspace
+allowlist), and `sync_to_host()` excludes `.git` host-side — the agent had a
+shell inside the sandbox, so repo refs/config/hooks are untrusted on the way
+back out. Supervised RSI runs may still place a builders session on a weaker
+tier by policy; autonomous runs refuse `--isolation container` under the mode
+floors above.
+
+Conformance and escape coverage for the backends the selector may choose lives
+in `packages/maistro-core/tests/sandbox/`: escape conformance across
+registered backends, the Kata backend plus its live-conformance lane, the
+launcher-VM backend, host-path and credential boundaries, network
+default-deny, and the single-authority checks that keep the selector the only
+placement authority. The adapter contract itself is tested in
+`packages/maistro-bootstrap/tests/test_container_sandbox.py` (selector
+authority including the no-suitable-backend refusal, seed/sync credential
+boundary, session envelopes, lifecycle teardown) and
+`test_container_sandbox_hardening.py` (seed hygiene against replaced index
+paths). CI (`ci.yml` `sandbox-conformance`) additionally executes the
+fail-closed proof — the adapter must refuse on a runner with no `vm`-tier
+backend — and runs the `maistro-builders:latest` image contract on the rootless
+lane provisioned by `scripts/ci-rootless-mountns.sh` (host AppArmor policy
+untouched): build from the digest-pinned base, load into a rootless daemon,
+run as the provisioned non-root uid 65532 with `--network=none`, under a
+cgroup-v2 memory budget whose enforcement is read back from inside the
+container. The lane's provisioning regressions live in
+`packages/maistro-bootstrap/tests/test_container_lane.py` (opt-in via
+`MAISTRO_TEST_ROOTLESS_LANE=1`).
+
+Historical note (superseded evidence, kept for provenance): through #1450's
+earlier rounds the adapter was a private, self-contained Docker backend whose
+in-container escape suite included a launch-time `/proc/self/uid_map` refusal
+of rootful, unmapped daemons. That implementation and its suite were removed
+by #2241 in favor of the canonical selector; the uid-mapping guarantee moved
+into whatever `vm`-tier backend the selector evidences, and the Docker-gated
+escape suite was superseded by the canonical suites above. The rootless lane's
+earlier live runs and its seed-path regression record remain real evidence for
+the provisioning machinery the lane still uses:
+[current execution evidence](../testing/inventory-notes/l80-securityfs-lane-repair.md),
+[seed-path regression record](../testing/inventory-notes/l80-seed-path-replacement.md),
+and the M2-B1 reconciliation round
+([cr1450-develop-sync-m2b1-reconciliation](../testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md)).
+Hosted CI execution of the lane remains unverified remotely.
+
 ## Verification
 
 - Flag construction is asserted on **every** host, because the flags are the
