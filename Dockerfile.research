@@ -111,6 +111,10 @@ RUN uv export --locked --package maistro-server \
 # x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
 # root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
 # Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
+# and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
+# versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
+# vendor.sum), so only the x/net patch below remains.
 FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
@@ -134,7 +138,9 @@ RUN apk add --no-cache git && \
     go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
