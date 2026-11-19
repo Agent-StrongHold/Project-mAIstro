@@ -24,8 +24,9 @@ pending list-or-unavailable). List-shape assertion also requires `tier` +
 ## packages/hive-conductor/tests/e2e: +0
 
 Playwright `workspace-approvals-shell.spec.ts` is not collected by pytest.
-Added three scripted cases (AC-5 HITL answer + Run link; capability approve
-body parity; foreign capability fail-closed toast) — inventory count unchanged.
+Added three scripted cases (AC-5 HITL pending → answer → queue clears + Run
+link exercised; capability approve body parity; foreign capability fail-closed
+toast) — inventory count unchanged.
 
 ## AC evidence matrix
 
@@ -35,7 +36,7 @@ body parity; foreign capability fail-closed toast) — inventory count unchanged
 | AC-2 Approve/deny/cancel → same canonical state | **met** | UI `POST`s `{approved}` to `/v1/capabilities/approvals/{id}` and HITL answer/cancel doors; CLI approve/deny identical body; E2E posts `{approved:true}`; backend resolve round-trips already in `test_capabilities_routes` / `test_hitl_door` |
 | AC-3 Foreign ids fail closed | **met** | Capability 404 + HITL answer/cancel 404 in UI contract; E2E foreign deny → error toast; deeper foreign-workspace isolation in `test_hitl_door` |
 | AC-4 No parallel store | **met** | Page imports only `lib/approvals` path helpers; contract asserts no `/v1/approvals`, no `localStorage`/`indexedDB` queue; FEATURE-PARITY-MATRIX P-1 |
-| AC-5 E2E pending → answer → Run resume | **met** | Playwright: stubbed HITL pending → Submit answer → `Run {id}` link `href=/dag-runs?run=…` visible (terminal/resume surface via #1036 dag-runs) |
+| AC-5 E2E pending → answer → Run resume | **met** | Playwright: stubbed HITL pending → Submit answer → the pending stub answers `[]` only after the POST is accepted, and the empty state + `Run {id}` count 0 are asserted (so the page's post-answer `loadHitl()` refresh is actually exercised, not assumed) → the `Run {id}` link is clicked and `/dag-runs?run=<id>` selected with the query param asserted (terminal/resume surface via #1036 dag-runs). This closes the review gap where the link was only checked pre-submission against a static stub |
 
 ## Behavior
 
