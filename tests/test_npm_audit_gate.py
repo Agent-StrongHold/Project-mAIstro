@@ -4,11 +4,10 @@ The report fixtures mirror the real shape of ``npm audit --json`` captured on
 2026-11-18 against packages/maistro-canvas/frontend (picomatch
 GHSA-fc5q-39xc-vjpf cascading through fdir/tinyglobby/vite/vitest/
 @vitejs/plugin-react): ``via`` mixes real advisory objects (with a GHSA URL)
-with bare strings naming the package that carries the advisory. That
-advisory was withdrawn later the same day, so the gate's live ``ALLOWED``
-list is empty again and every test here injects its waiver explicitly —
-including the stale-waiver ratchet that fired on CI when the withdrawal
-landed while the waiver still lingered.
+with bare strings naming the package that carries the advisory. The advisory
+itself was withdrawn 2026-11-18T15:38:56Z and the shipped ``ALLOWED`` list is
+empty again, so every waiver-dependent test injects its own allowlist instead
+of relying on the live advisory database.
 """
 
 from __future__ import annotations
@@ -24,14 +23,9 @@ import pytest
 PatchedFix = {"name": "vitest", "version": "3.1.4", "isSemVerMajor": True}
 
 
-PICO_ID = "GHSA-fc5q-39xc-vjpf"
-PICO_WAIVER = (
-    "withdrawn 2026-11-18 as not a security issue; kept here only as the "
-    "triage-shape example the fixtures exercise"
-)
-
-
-def _picomatch_report(advisory_id: str = PICO_ID, severity: str = "high") -> dict[str, Any]:
+def _picomatch_report(
+    advisory_id: str = "GHSA-fc5q-39xc-vjpf", severity: str = "high"
+) -> dict[str, Any]:
     """The real cascade shape: one root advisory object, five cascade strings."""
     return {
         "auditReportVersion": 2,
@@ -142,15 +136,37 @@ def _run(
     return rc
 
 
-def test_a_triaged_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """A live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report(), allowed={PICO_ID: PICO_WAIVER})
+def test_a_waiver_covers_the_advisory_and_every_package_it_cascades_into(
+    gate, tmp_path, capsys
+) -> None:
+    """A triaged waiver covers the advisory AND every package it cascades into."""
+    advisory_id = "GHSA-fc5q-39xc-vjpf"
+    rc = _run(
+        gate,
+        tmp_path,
+        _picomatch_report(advisory_id),
+        allowed={advisory_id: "withdrawn upstream, no fix ever shipped; build-time exposure only"},
+    )
     out = capsys.readouterr().out
     assert rc == 0
-    assert "allowed: " + PICO_ID in out
+    assert f"allowed: {advisory_id}" in out
     # every cascaded package is attributed to the one root advisory
     assert "fdir" in out and "tinyglobby" in out and "vitest" in out
     assert "npm audit OK" in out
+
+
+def test_the_shipped_allowlist_is_empty_after_the_withdrawn_picomatch_waiver(
+    gate,
+) -> None:
+    """ALLOWED ships empty: the picomatch waiver died with its withdrawn advisory.
+
+    GHSA-fc5q-39xc-vjpf was withdrawn 2026-11-18T15:38:56Z, npm's audit stopped
+    reporting it, and the gate's two-way ratchet fails on any entry the report
+    no longer lists — so the shipped state is a waiver-free allowlist. Pinning
+    that state here makes every FUTURE waiver a conscious edit of this test,
+    not a quiet dict append.
+    """
+    assert gate.ALLOWED == {}
 
 
 def test_an_unwaived_advisory_fails_naming_the_id_and_affecting_packages(
@@ -159,7 +175,7 @@ def test_an_unwaived_advisory_fails_naming_the_id_and_affecting_packages(
     rc = _run(gate, tmp_path, _picomatch_report(), allowed={})
     out = capsys.readouterr().out
     assert rc == 1
-    assert PICO_ID in out
+    assert "GHSA-fc5q-39xc-vjpf" in out
     # npm's fixAvailable is quoted verbatim as the hint (its forced fix is a
     # lie here — vitest 3.1.4 still depends on vulnerable picomatch — so the
     # gate surfaces it rather than asserting unavailability it cannot know).
@@ -183,7 +199,14 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report, allowed={PICO_ID: PICO_WAIVER})
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={
+            "GHSA-fc5q-39xc-vjpf": "withdrawn upstream, no fix ever shipped; build-time exposure only"
+        },
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
@@ -245,12 +268,7 @@ def test_a_malformed_vulnerabilities_object_is_an_infrastructure_failure(gate, t
 
 
 def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path, capsys) -> None:
-    """A clean report with a lingering waiver must fail until the waiver is deleted.
-
-    This is exactly what CI hit on 2026-11-18: GitHub withdrew
-    GHSA-fc5q-39xc-vjpf, the audit went clean, and the waiver that remained
-    in ALLOWED failed the job as stale.
-    """
+    """A clean report with a live waiver must fail until the waiver is deleted."""
     report = {
         "auditReportVersion": 2,
         "vulnerabilities": {
@@ -275,11 +293,16 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report, allowed={PICO_ID: PICO_WAIVER})
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={"GHSA-fc5q-39xc-vjpf": "suppose the withdrawn advisory were still waived"},
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
-    assert PICO_ID in out
+    assert "GHSA-fc5q-39xc-vjpf" in out
 
 
 def test_usage_error(gate) -> None:
