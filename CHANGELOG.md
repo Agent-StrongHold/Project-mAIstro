@@ -91,6 +91,13 @@ or placeholder-only section.
   immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
   Security tab stays actionable without editing cage-guarded trees.
 
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
 ### Added
 
 - **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
@@ -137,8 +144,8 @@ or placeholder-only section.
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
-  enable/disable over the same public APIs. Agents, Topology, and Integrations
-  leave primary nav (URL-only until deleted); Skills was already URL-only.
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
 
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
