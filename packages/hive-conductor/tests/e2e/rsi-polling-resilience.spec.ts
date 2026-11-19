@@ -506,6 +506,20 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
           .filter((r) => r.url.includes("/rsi/status"))
           .map((r) => r.t),
       );
+    // Advance the paused clock in SMALL chunks with a real sleep between
+    // them. Why not one big runFor(delay): the aborted fetch's rejection is
+    // delivered in REAL time, and when that delivery lands while a walk is
+    // in flight, the loop rearms its backoff timer from wherever virtual
+    // time the walk happens to stand — a drift proportional to the walk
+    // length (a 10s walk showed a +5.25s shift on this host; +1s on CI).
+    // Chunked advancement bounds every rearm to at most one chunk of
+    // virtual drift, which the bands below then absorb.
+    const advance = async (total: number): Promise<void> => {
+      for (let done = 0; done < total; done += 500) {
+        await cpage.clock.runFor(Math.min(500, total - done));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
     // Real-time settle (the clock is paused: no timer can fire, only
     // in-flight responses land), so the ladder flip starts from quiet state.
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -516,18 +530,22 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
     setModes("abort");
     // Fire the pending steady timer (due within one base interval of the
     // last healthy poll): it fails and increments failures to 1. The chunk
-    // deliberately overshoots the fire — Playwright anchors timer deadlines
-    // at the CHUNK END, and the failure settles (in real time, clock frozen
-    // at that same chunk end) — so the first backoff deadline is exactly
-    // flipEnd + delay, which is exactly what the loop's rearm computes:
-    // interval * 2^failures * 0.75 (jitter pinned).
-    const flipStart = await cpage.evaluate(() => Date.now());
-    await cpage.clock.runFor(10_000);
+    // deliberately overshoots the fire — the abort settles in real time
+    // wherever Playwright's virtual-time walk happens to stand, and the
+    // loop rearms its backoff timer from THAT instant. On a loaded runner
+    // the walk interleaves other page timers (a 1s heartbeat showed up as
+    // a +1000ms shift on CI), so the rearm instant races the window end
+    // and EXACT deadline anchoring is a machine-speed assertion. The ladder
+    // below is therefore asserted as BANDS around each nominal delay:
+    // tight enough that skipping a doubling, arming the wrong step, or
+    // breaking the 60s cap still fails, loose enough to absorb the
+    // quantized settle race (observed: +1000ms on CI, +1350ms locally,
+    // +0ms on a retry of the same run).
+    await advance(10_000);
     await new Promise((resolve) => setTimeout(resolve, 200));
     let stamps = await starts();
     expect(stamps.length, "the first outage poll fired").toBe(n0 + 1);
-    const flipEnd = flipStart + 10_000;
-    await cpage.clock.runFor(7_500);
+    await advance(7_500);
     await expect
       .poll(async () => {
         await cpage.clock.runFor(5);
@@ -536,22 +554,43 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
       .toBe(n0 + 2);
     stamps = await starts();
     expect(stamps.length, "exactly one poll in the first backoff step").toBe(n0 + 2);
-    expect(
-      Math.abs(stamps[n0 + 1] - flipEnd - 7_500),
-      "first backoff step = interval·2¹ at pinned jitter, from the rearm instant",
-    ).toBeLessThanOrEqual(10);
+    // Band shape shared by every step below: never sooner than the nominal
+    // ladder delay (≤10ms slop absorbs the 5ms inter-chunk nudge), never
+    // later than it plus the chunked-advancement settle budget (one 500ms
+    // chunk of rearm drift plus nudge slop, with margin). 750ms sits an
+    // order of magnitude under the 7500ms ladder spacing, so no realistic
+    // mis-arm can pass.
+    const band = (gap: number, delay: number, label: string) => {
+      expect(gap, `${label}: ≥ ${delay}ms (never polls sooner than its ladder step)`).toBeGreaterThanOrEqual(
+        delay - 10,
+      );
+      expect(gap, `${label}: ≤ ${delay}ms + one-chunk settle budget (never arms a wrong step)`).toBeLessThanOrEqual(
+        delay + 750,
+      );
+    };
+    band(
+      stamps[n0 + 1] - stamps[n0],
+      7_500,
+      "first backoff step = interval·2¹ (75% pinned jitter)",
+    );
 
-    // Each later step: advance the clock by exactly the expected delay. The
-    // timer fires AT its deadline (stamp = deadline); its failure rearms
-    // during the real settle with the clock frozen at the same virtual
-    // instant, so the next deadline lands exactly one delay later. A tiny
-    // slop of ≤10ms absorbs the 5ms safety nudge between chunks.
+    // Each later step: advance the clock by the expected delay, then pin
+    // the OBSERVED gap into a band around its nominal value. The gap
+    // inherits at most the one-chunk settle race by construction (see
+    // `advance`), so the band is what carries the contract:
+    //   - below the band: the cap would be polling FASTER than 45s (floor
+    //     broken) or a step skipped its doubling;
+    //   - above the band: a step armed the wrong ladder value (missed or
+    //     extra doubling) or the 60s cap stopped bounding (60s = 45000 +
+    //     15000 ≫ band).
+    // Every band edge sits ≥ 6.7s from the adjacent ladder value (7500 →
+    // 15000 → 30000 → 45000), so no mis-arm passes.
     const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
     await settle();
     const gaps: number[] = [];
     for (const delay of [15_000, 30_000, 45_000, 45_000, 45_000]) {
       const before = (await starts()).length;
-      await cpage.clock.runFor(delay);
+      await advance(delay);
       await expect
         .poll(async () => {
           await cpage.clock.runFor(5);
@@ -563,16 +602,13 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
       gaps.push(arr[before] - arr[before - 1]);
       await settle();
     }
-    // Exponential (interval * 2^failures, 75% pinned jitter) and then BOUNDED:
-    // the 60s cap floors the cadence at 45s instead of growing forever. The
-    // first step (7.5s) was asserted above; these double from it: 15s = 2×7.5s,
-    // 30s = 2×15s, then the cap holds.
-    const near = (gap: number, delay: number, label: string) =>
-      expect(Math.abs(gap - delay), `${label}: gap ≈ ${delay}ms (≤10ms boundary slop)`).toBeLessThanOrEqual(10);
-    near(gaps[0], 15_000, "second step doubles");
-    near(gaps[1], 30_000, "third step doubles again");
-    for (const gap of gaps.slice(2)) expect(gap, "the cap floors the cadence at ~45s").toBeLessThanOrEqual(45_010);
-    for (const gap of gaps) expect(gap, "no gap exceeds the capped delay").toBeLessThanOrEqual(45_010);
+    // Exponential (interval * 2^failures, 75% pinned jitter) and then
+    // BOUNDED: the 60s cap floors the cadence at 45s instead of growing
+    // forever. The first step (7.5s) was banded above; these double from
+    // it: 15s = 2×7.5s, 30s = 2×15s, then the cap holds.
+    band(gaps[0], 15_000, "second step doubles");
+    band(gaps[1], 30_000, "third step doubles again");
+    for (const gap of gaps.slice(2)) band(gap, 45_000, "the 60s cap floors the cadence at ~45s");
 
     // Bounded over the long run: five more virtual minutes at the capped
     // cadence cost ~7 polls, where the old fixed 5s interval would have
