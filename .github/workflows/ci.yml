@@ -699,17 +699,18 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: npm run build
         working-directory: packages/maistro-canvas/frontend
-      # scripts/npm_audit_gate.py owns the npm verdict for this frontend
-      # (#1450): bare `npm audit --audit-level=high` was unsatisfiable on
-      # every tree while GHSA-fc5q-39xc-vjpf (picomatch ReDoS) listed every
-      # published picomatch as vulnerable with no patched release. On
-      # 2026-11-18 the advisory database stopped reporting it — 0 advisories
-      # against the identical lock, picomatch still pinned at 4.0.7 — and
-      # the gate's two-way ratchet deleted the waiver (#2375); ALLOWED is
-      # empty again. Any high/critical advisory outside the triaged ALLOWED
-      # list still fails the job — including future advisories on the same
-      # packages — and a waiver whose advisory stops being reported fails
-      # as stale.
+      # The canvas frontend's audit is judged by a triaged gate, not a bare
+      # `npm audit --audit-level=high`: GHSA-fc5q-39xc-vjpf (picomatch ReDoS)
+      # listed every published picomatch as vulnerable with no patched release
+      # while vite@8 depends on picomatch ^4.0.7 directly, so no lock this
+      # frontend can produce audited clean. The advisory was withdrawn
+      # 2026-11-18T15:38:56Z — 0 advisories against the identical lock,
+      # picomatch still pinned at 4.0.7 (#2375) — and the gate's two-way
+      # ratchet deleted the waiver, so ALLOWED ships empty. The step still
+      # writes the JSON report and scripts/npm_audit_gate.py owns the verdict:
+      # any high/critical advisory outside its ALLOWED list fails the job —
+      # including future advisories on the same packages — and a waiver whose
+      # advisory stops being reported fails as stale.
       - run: npm audit --json > /tmp/npm-audit.json || true
         working-directory: packages/maistro-canvas/frontend
       - run: python scripts/npm_audit_gate.py /tmp/npm-audit.json
