@@ -270,25 +270,53 @@ Kept, with justification reworded to stay truthful:
   this PR ships the plan_delivery grant.
 - This note stands as the PR's evidence record.
 
-Repair-head local battery (CI-exact arguments) — results recorded in the
-round-5 battery note that follows this section:
+Repair-head local battery (CI-exact arguments) — measured at repair commit
+`ad8ce55c8492` (base `d521240c6b2d`):
 
 - `RATCHET_BASE_REV=origin/develop uv run python
-  scripts/check-ratchet-provenance.py` (vulture-ratchet.yml invocation) —
-  the grant's removal cannot expand the candidate; expected 88 → 88, no
-  candidate-approved expansion.
-- `uv run python scripts/check-reachability.py`; `uv run python
-  scripts/check-reachability-dispositions.py`; `uv run python
-  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
-  --exclude '*/third_party/*'`; `uv run python
-  scripts/check-suite-inventory.py` — all expected exit 0 (ledger is
-  byte-identical to develop, so every scanner result must equal develop's).
-- `uv run ruff check .` / `uv run ruff format --check .` → clean.
-- Merge-order residual for the operator: #1640's head carries a commit that
-  removes `mutation.yml`'s `paths` filter entirely, which overlaps this
-  branch's trigger additions — whichever lands second must resolve the
-  conflict in favor of a filter that still lists the governance surfaces
-  (or accept the other PR's design), so this PR and #1640 need merge-order
-  coordination.
-- Hosted CI green on the repair tip remains UNVERIFIED from this lane (push
-  prohibited), as in every prior round.
+  scripts/check-ratchet-provenance.py` → **exit 0**; base `d521240c6b2d` →
+  candidate `ad8ce55c8492`; reachability ratchet 88 → 88 of 1492 modules,
+  "no candidate-approved expansion"; 55 quality JSON consumer(s) have
+  explicit provenance; all other ledgers (adr-status-language,
+  citation-status, promotion-surface 439, shell-execution 3,
+  contract-markers 358, enumerations 1, lifecycle 0) unchanged from base.
+- `uv run python scripts/check-reachability.py` → **exit 0** (1492
+  production modules, 88 unreachable; grep over the scan output finds 0
+  occurrences of plan_delivery).
+- `uv run python scripts/check-reachability-dispositions.py` → **exit 0**
+  (30 groups: 67 CONNECT, 20 LIBRARY, 1 RETIRE).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (exact CI args) →
+  **exit 0** (1235 reviewed identities = 1235 findings).
+- `uv run python scripts/check-suite-inventory.py` → **exit 0** (21/21
+  suites; this note intentionally carries no `inventory-delta` block — no
+  test change, as above).
+- `python3 scripts/check-required-checks.py` (workflow-lint, CI-exact) →
+  **exit 0** (78 PR checks match the contract table; the mutation.yml edit
+  is comment-only, so the derived required set is unchanged).
+- `uv run ruff check .` → all checks passed; `uv run ruff format --check .`
+  → 3581 files already formatted.
+- `uv run pytest` ratchet/reachability/inventory set (13 files:
+  test_ratchet_provenance, test_check_ratchet_provenance,
+  test_ratchet_provenance_integration_base,
+  test_ratchet_provenance_repository, test_ratchet_base_rev_policy,
+  test_reachability_baseline_identity, test_check_reachability,
+  test_check_reachability_dispositions, test_reachability_scanner,
+  test_reachability_source_universe, test_check_vulture_baseline,
+  test_check_suite_inventory, test_check_ac_state_ratchet) → **392
+  passed**; gates/required-checks/mutation set (9 files: test_check_gates_ran,
+  test_gates_ran_merge_group_scope, test_gates_ran_publisher_contract,
+  test_check_required_checks, test_mutation_targets,
+  test_mutation_targets_script_inverse, test_mutation_critical,
+  test_mutation_pr_gate, test_mutation_diff_scope) → **260 passed**; 0
+  failed.
+
+Merge-order residual for the operator: #1640's head carries a commit that
+removes `mutation.yml`'s `paths` filter entirely, which overlaps this
+branch's trigger additions — whichever lands second must resolve the
+conflict in favor of a filter that still lists the governance surfaces
+(or accept the other PR's design), so this PR and #1640 need merge-order
+coordination.
+
+Hosted CI green on the repair tip remains UNVERIFIED from this lane (push
+prohibited), as in every prior round.
