@@ -41,6 +41,20 @@ on:
       # of permanent absence; the job itself fails closed whenever a critical
       # file does change.
       - 'quality/image-pins.json'
+      # Ratchet grant ledgers and the testing-inventory notes are governance
+      # and evidence surfaces, not mutation-critical code, but grant-only and
+      # verification-note PRs touch exactly them (#2371, the @tool/plan_delivery
+      # reachability grant for #1629). Measured on that PR's head ca2feefd1d9b
+      # with the CI-exact evaluator (check-gates-ran.py --require-complete
+      # --base-branch develop --event-name pull_request): 71/72 required
+      # checks present, "Mutation gate (changed critical lines)" absent ->
+      # PENDING forever (the same failure mode #2120 fixed for image pins;
+      # every producer had completed, so no later publisher run could ever
+      # flip the verdict). Listing these paths here produces real zero-overlap
+      # evidence instead of permanent absence; the job still fails closed
+      # whenever a critical file does change.
+      - 'quality/ratchet-authorizations.json'
+      - 'docs/testing/inventory-notes/**'
       - '.github/workflows/mutation.yml'
   workflow_dispatch:
 
