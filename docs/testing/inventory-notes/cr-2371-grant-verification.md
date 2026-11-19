@@ -406,3 +406,52 @@ at `scripts/check-reachability.py:30`.
   docker base-image PRs, not this lane.
 - **Post-merge re-run of exact-debt / reachability on #1640 tip** remains
   unreachable pre-merge from this lane.
+
+## Round 7 evidence — independent verification at the assigned head `173145985214` (no tree change beyond this addendum)
+
+Fresh hosted evidence at this exact head (captured 2026-11-19T10:04–10:19Z), re-derived independently:
+
+- **`gates-ran` = `success` at this head** (published 10:18:42Z, after the last
+  producer completed); combined commit status `success`. CI-exact evaluator on
+  the fresh 80-check-run capture with the PR changed-file envelope
+  `{measured: true, truncated: false, files: [mutation.yml, this note]}`:
+  `python3 scripts/check-gates-ran.py --check-runs <capture> --require-complete
+  --base-branch develop --event-name pull_request --changed-files <envelope>` →
+  `ok: all 73 required check(s) ran on this head`, **EXIT 0**. The round-6
+  hosted success therefore reproduces on the current tip, and the merge-queue
+  block "commit status not successful" is resolved with fresh evidence.
+- 80 check-runs: **73 success / 6 skipped / 1 failure**. The single failure,
+  `Container scan + SBOM + cosign`, is the round-6 triage reproduced with fresh
+  data: the `security` workflow fails on the last 5 `develop` runs including
+  the merge base `d521240c6b` (run 44479653421); the scanned inputs are
+  byte-identical between develop and this head (`git diff --name-only
+  origin/develop HEAD -- '*Dockerfile*' quality/image-pins.json '*uv.lock*'
+  'packages/hive-conductor/package*.json'` is empty); the job-level row is not
+  in the "Pr merge" ruleset's `required_status_checks` (the ruleset requires
+  the `security` context, which is `success` at this head).
+- **Local root suite**: `uv run pytest tests/ -q` → 5926 passed / 1 failed. The
+  failure (`test_every_quality_json_state_surface_is_classified_once` →
+  "unclassified quality state: quality/ac-state.json") is **worktree
+  contamination, not branch content**: `quality/ac-state.json` is gitignored
+  generated output (`.gitignore:88`, written by `scripts/check-ac-state.py`)
+  present only because earlier rounds ran the acceptance-state gate locally;
+  the involved files (`scripts/check-branch-independence.py`, its registry, the
+  test, all of `quality/`) are byte-identical to develop; and `git archive
+  HEAD` into a clean directory reproduces **1 passed** for the same test
+  (no `quality/ac-state.json` there). CI's clean checkout cannot hit it.
+- Round-6 battery independently re-executed at this head, all EXIT 0 with CI
+  arguments: `ruff check .`; `check-reachability.py` (1492 modules / 88
+  unreachable); `check-reachability-dispositions.py` (30 groups);
+  `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` (0 violations,
+  55 consumers); `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (1235 = 1235); `check-suite-inventory.py`
+  (21/21); `check-required-checks.py` (78/78); `check-workflow-inventory.py`
+  (32); `check-workflow-write-safety.py` (32); `mutation_critical.py
+  --validate` (8 sources); plus the gates/mutation/required-checks/inventory
+  test set (6 files) → **331 passed**.
+- **Closure-keyword audit**: PR body and all branch commit messages scanned —
+  zero `fixes/closes/resolves #N` occurrences (the body's "Unblocks #1640 /
+  #1629" is not a closure keyword; prose "fixes"/"resolves" in commit bodies
+  carry no issue numbers).
+
+No test inventory change (docs-only addendum).
