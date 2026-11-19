@@ -263,6 +263,10 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
         "memory_search if it's something you'd have saved earlier. "
         "When the user asks about performance, latency, TTFT, cost, or runtime data — use query_metrics. "
         "When they tell you something about themselves, their project, or preferences — use profile_set to save it. "
+        "Workspace restore phrases: 'hold onto my sessions longer' / 'take me back when I come back' → "
+        "profile_set workspace_restore_aggressiveness=generous (expands the restore window); "
+        "'always open this Workspace to Goals' → workspace_default_landing=/goals; "
+        "'go back to Home by default' → workspace_default_landing=/home. "
         "When you need context about the user or project — use profile_get first. "
         "For freeform notes/facts that don't fit profile fields — use memory_add. "
         "When they ask to forget something — use memory_delete or profile_delete. "
@@ -1715,8 +1719,16 @@ async def _cancellation_answer(
     canonical_run_id = str(record.get("canonical_run_id") or "")
     if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
         raise cancelled
+    # Mirror the spine's CANCELLED through the shared #1036 terminality
+    # contract — never a second product-private finish authority. The
+    # public cancel route never writes the projection at all; this chat
+    # awaiter only records after the spine fence was observed.
     with contextlib.suppress(Exception):
-        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+        await get_dag_run_store().record_outcome(
+            exec_id,
+            status="cancelled",
+            canonical_run_id=canonical_run_id,
+        )
     return {
         "run_id": exec_id,
         "dag_id": dag_id,
@@ -3077,6 +3089,8 @@ PROFILE_SCHEMA = {
         # #1050: how eagerly to restore a prior surface after absence
         # (off|brief|balanced|generous). Continuity consumer is #1822.
         "workspace_restore_aggressiveness",
+        # #1050: learned-landing dismiss cooldown (path → until epoch-ms).
+        "workspace_landing_suggestion_cooldown",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3121,7 +3135,19 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    from services.workspace_preferences import PreferenceValueError
+    from services.workspace_preferences import (
+        PreferenceValueError,
+        audit_workspace_preference,
+        interpret_restore_aggressiveness_request,
+    )
+
+    # Natural-language restore requests may arrive as the value when the model
+    # mirrors the user's words; map known phrases onto the durable band so the
+    # same RESTORE_KEY expands the window whether UI, API, or Agent wrote it.
+    if field == "workspace_restore_aggressiveness" and isinstance(value, str):
+        mapped = interpret_restore_aggressiveness_request(value)
+        if mapped is not None:
+            value = mapped
 
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
@@ -3135,6 +3161,16 @@ async def _tool_profile_set(
         # and answered `updated: True`, so the model told the user their fact
         # was saved when nothing held it (#699).
         return {"error": f"profile not saved: {exc}"}
+    # Off the loop: Pg-backed audit schedules onto this ASGI loop and then
+    # blocks on future.result — calling it inline deadlocks the worker for
+    # the audit timeout whenever an Agent saves a Workspace preference.
+    await asyncio.to_thread(
+        audit_workspace_preference,
+        actor=user_id,
+        field=field,
+        value=value,
+        source="agent",
+    )
     return {"updated": True, "field": field, "value": value}
 
 
@@ -3194,7 +3230,9 @@ PROFILE_TOOLS = [
                 "their preferences, or corrections. Workspace product prefs: "
                 "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
                 "workspace_restore_aggressiveness (off|brief|balanced|generous — "
-                "how long to restore the prior surface after absence)."
+                "how long to restore the prior surface after absence). "
+                "Phrase 'hold onto my sessions longer' / 'take me back when I come back' "
+                "→ workspace_restore_aggressiveness=generous (expands the restore window)."
             ),
             "parameters": {
                 "type": "object",
