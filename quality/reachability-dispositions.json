@@ -12,10 +12,7 @@
         "@flat/hive-conductor/services.chatbot_integration",
         "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
-        "@flat/hive-conductor/services.onboard_db",
-        "@flat/hive-conductor/services.pipeline_orchestrator",
-        "@flat/hive-conductor/services.preference_calibration",
-        "@flat/hive-conductor/services.repo_scanner"
+        "@flat/hive-conductor/services.preference_calibration"
       ]
     },
     {
@@ -37,20 +34,6 @@
       "modules": [
         "maistro.governance.conformance",
         "maistro.governance.conformance_types"
-      ]
-    },
-    {
-      "id": "canvas-assetinstance",
-      "subsystem": "Canvas ability",
-      "disposition": "CONNECT",
-      "rationale": "The ADR-044 AssetInstance replacement, complete but not cut over: routes.py still wires the legacy executor and compositor. ADR-045, which performs the cutover, is still Proposed.",
-      "root": "maistro_canvas.canvas.routes, after the ADR-045 cutover",
-      "modules": [
-        "maistro_canvas.canvas.asset_compositor",
-        "maistro_canvas.canvas.asset_executor",
-        "maistro_canvas.canvas.asset_routes",
-        "maistro_canvas.canvas.asset_store",
-        "maistro_canvas.canvas.asset_tool"
       ]
     },
     {
@@ -87,17 +70,6 @@
         "maistro.cli._container.lifecycle",
         "maistro.cli._container.podman_runtime",
         "maistro.cli._container.runtime"
-      ]
-    },
-    {
-      "id": "events-handlers-recipes",
-      "subsystem": "Events and checkpoints",
-      "disposition": "CONNECT",
-      "rationale": "ADR-086 handlers and recipes with no bus subscription in a shipped process. #61 migrates event families onto one envelope, which is where these get subscribed.",
-      "root": "the canonical event bus wiring (#61)",
-      "modules": [
-        "maistro.events.handlers",
-        "maistro.events.recipes"
       ]
     },
     {
@@ -164,26 +136,6 @@
       ]
     },
     {
-      "id": "classifier-logging",
-      "subsystem": "Router and classifier",
-      "disposition": "CONNECT",
-      "rationale": "Classifier decision logging, which ADR-089 wants for measuring classification quality; nothing calls it.",
-      "root": "maistro.classifier.engine",
-      "modules": [
-        "maistro.classifier.logging"
-      ]
-    },
-    {
-      "id": "sessions-search",
-      "subsystem": "Sessions",
-      "disposition": "CONNECT",
-      "rationale": "ADR-048 session search with no route. Under ADR-082226-5104 this becomes a pgvector query rather than a separate index.",
-      "root": "a Conductor session-search route over pgvector (ADR-082226-5104)",
-      "modules": [
-        "maistro.sessions.search"
-      ]
-    },
-    {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
       "disposition": "CONNECT",
@@ -216,14 +168,13 @@
       "id": "tools-approval-and-reversibility",
       "subsystem": "Tool execution",
       "disposition": "CONNECT",
-      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline.",
+      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline. maistro.tools.reversibility_registry left this group when #57 wired it: maistro.tools.contracts (GovernedToolExecutor/ToolContractRegistry) constructs the registry and resolves every tool call admitted at the governed seam's reversibility tier from it as an Invocation admission fact; hive-conductor's services.governed_tools is the shipped constructor (boot Agent tools and chat web tools), while legacy DAG tool nodes carry the legacy-tool effect floor on their own canonical Invocation.",
       "root": "governed tool Invocation (#57)",
       "modules": [
         "maistro.tools.approval",
         "maistro.tools.approval.gate",
         "maistro.tools.approval.protocols",
-        "maistro.tools.approval.types",
-        "maistro.tools.reversibility_registry"
+        "maistro.tools.approval.types"
       ]
     },
     {
@@ -279,16 +230,6 @@
       ]
     },
     {
-      "id": "hive-project-onboarding",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "CONNECT",
-      "rationale": "routes/projects.py is a project onboarding flow \u2014 intake, scan, deploy, persisted through the Launch DB/Cache/Store \u2014 declaring prefix=/v1/projects and never registered in main.py. An earlier disposition called it a duplicate of the canonical project scope surface and marked it RETIRE. That was wrong: maistro.projects owns Workspace/Project *scope*, which is a different thing from an onboarding wizard.",
-      "root": "main.py route registration",
-      "modules": [
-        "@flat/hive-conductor/routes.projects"
-      ]
-    },
-    {
       "id": "canvas-legacy-layerrecord",
       "subsystem": "Canvas ability",
       "disposition": "RETIRE",
@@ -296,16 +237,6 @@
       "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
       "modules": [
         "maistro_canvas.canvas.tool"
-      ]
-    },
-    {
-      "id": "canvas-job-runner",
-      "subsystem": "Canvas ability",
-      "disposition": "CONNECT",
-      "rationale": "The wiring debt this disposition names was paid by #93: the maistro-canvas-worker service (maistro_canvas.canvas.worker_service, a declared reachability root) builds the runner through build_canvas_runtime and starts it at deploy time, so PENDING jobs advance without an external ad-hoc process. It stays in the baseline only because the module graph deliberately cannot see composition.py's constant-string importlib.import_module(\"maistro_canvas.canvas.runner\") edge \u2014 the same gate refuses to guess at non-literal-sweep dynamic imports \u2014 so the graph identity remains 'no static import path' even though a real process entry point reaches it. canvas/executor.py documents the 'CanvasJobRunner contract' on _execute_claimed; alembic revision 003_canvas_job_lease_203 exists specifically so the runner can take leases and retry; and dedicated suites cover it, including single-claim-under-contention and lease reaping.",
-      "root": "maistro-canvas-worker (maistro_canvas.canvas.worker_service), reached through build_canvas_runtime",
-      "modules": [
-        "maistro_canvas.canvas.runner"
       ]
     },
     {
