@@ -9,10 +9,14 @@ read those keys as suite names and failed the CI `test` job with
 "recorded suites with no collection recipe: added, modified, removed" — the
 block is therefore removed rather than re-indented.)
 
-This PR is a two-merge ratchet grant only: one entry `@tool/plan_delivery`
+This PR began as a two-merge ratchet grant: one entry `@tool/plan_delivery`
 under `reachability` in `quality/ratchet-authorizations.json` (+5 lines vs
-merge-base), so #1640 can bank the matching baseline/disposition row from a
-base that already carries the grant.
+merge-base), so #1640 could bank the matching baseline/disposition row from
+a base that already carries the grant. Round 5 below **withdrew that grant
+as moot** — no reachable tree can ever produce the `@tool/plan_delivery`
+identity, and no ledger row for it exists anywhere — so the current diff is
+the `mutation.yml` gates-ran trigger repair (round 4) plus this note, with
+`quality/` byte-identical to the merge base.
 
 ## Round 2 evidence (local, CI-exact arguments, head after develop sync)
 
@@ -225,3 +229,66 @@ No test inventory change (no tests added, removed, or modified).
 - #1640's head `4fb4a2be` carries its own red `test` check run (2026-11-18)
   and its own `gates-ran` eventually went success there; that is #1640's
   lane, not this PR's head.
+
+## Round 5 evidence — grant withdrawn as moot (repair at this head)
+
+The independent verify round at `cb17b1b4f0` returned NEEDS-REPAIR: the
+grant this PR was opened to authorize is void on every reachable tree. Facts
+re-derived locally at the repair head (not trusted from the dispatch):
+
+- `git cat-file -e origin/develop:scripts/plan_delivery.py` and the same
+  for `HEAD` both fail — the file exists on **no** reachable tree. It was
+  born inside PR #1640 and relocated there to `tools/plan_delivery.py`
+  (#1640 commit `5ba1b82b85`, "relocate delivery planner to tools/ so the
+  reachability floor-raise it cannot self-authorize is no longer required").
+  `check-reachability.py` cannot see `tools/` either: it collects tooling
+  from `TOOLING_DIR = "scripts"` only (`scripts/check-reachability.py:29`).
+- `grep -c plan_delivery` over `quality/reachability-baseline.json`,
+  `quality/reachability-dispositions.json` and develop's
+  `ratchet-authorizations.json` → 0 rows everywhere; only this branch's own
+  grant ever mentioned the identity, so the grant reason's claim to authorize
+  "its matching disposition" described a row that does not exist.
+- `uv run python scripts/check-reachability.py` at the repair head → exit 0,
+  88 unreachable of 1492 modules, **none named plan_delivery**.
+
+Why removal rather than leaving the grant inert: round 3's residual ("unused
+authorizations are harmless") is **superseded**. Develop itself prunes
+superseded grants (the `design_coverage@39.641` ac-state prune of
+#2361/#2363, recorded in round 2 above), so merging a dangling grant
+recreates the anti-pattern develop just cleaned up — and it would pre-waive
+the two-merge review for any future `scripts/plan_delivery.py`. The grant
+hunk is therefore removed; `git diff origin/develop -- quality/` is empty
+(byte-identical ledger) at the repair head.
+
+Kept, with justification reworded to stay truthful:
+
+- The `mutation.yml` trigger additions (round 4) **stand**:
+  `docs/testing/inventory-notes/**` is exercised by this PR's own remaining
+  diff, and `quality/ratchet-authorizations.json` stays for the class it
+  fixes — recurring grant-only PRs of the two-merge protocol, measured
+  PENDING-forever at `ca2feefd1d9b`. The in-file comment no longer claims
+  this PR ships the plan_delivery grant.
+- This note stands as the PR's evidence record.
+
+Repair-head local battery (CI-exact arguments) — results recorded in the
+round-5 battery note that follows this section:
+
+- `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-ratchet-provenance.py` (vulture-ratchet.yml invocation) —
+  the grant's removal cannot expand the candidate; expected 88 → 88, no
+  candidate-approved expansion.
+- `uv run python scripts/check-reachability.py`; `uv run python
+  scripts/check-reachability-dispositions.py`; `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`; `uv run python
+  scripts/check-suite-inventory.py` — all expected exit 0 (ledger is
+  byte-identical to develop, so every scanner result must equal develop's).
+- `uv run ruff check .` / `uv run ruff format --check .` → clean.
+- Merge-order residual for the operator: #1640's head carries a commit that
+  removes `mutation.yml`'s `paths` filter entirely, which overlaps this
+  branch's trigger additions — whichever lands second must resolve the
+  conflict in favor of a filter that still lists the governance surfaces
+  (or accept the other PR's design), so this PR and #1640 need merge-order
+  coordination.
+- Hosted CI green on the repair tip remains UNVERIFIED from this lane (push
+  prohibited), as in every prior round.
