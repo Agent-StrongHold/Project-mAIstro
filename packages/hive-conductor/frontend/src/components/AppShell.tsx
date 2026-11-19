@@ -71,8 +71,8 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
-  // as the primary nav entry; those four stay URL-reachable until deleted.
+  // #2273: one Capabilities surface; Agents / MCP / Skills / Topology pages
+  // are deleted (old URLs redirect to /capabilities — not revived).
   { to: "/capabilities", icon: Boxes, label: "Capabilities" },
   // #1049 MERGE: Optimizer + Messages nav entries removed — both surfaces
   // project into Attention. Old /optimizer and /messages URLs redirect there.
