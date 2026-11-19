@@ -264,7 +264,8 @@ def audit_report(path: str) -> int:
             "\nFix by upgrading the affected dependency. Only add an advisory ID "
             "to ALLOWED in scripts/npm_audit_gate.py when no fixed version exists, "
             "and say why — the retired GHSA-fc5q-39xc-vjpf waiver (git history of "
-            "this file) shows the expected shape."        )
+            "this file) shows the expected shape."
+        )
         return 1
 
     allowed_present = [a for a in advisories if a.identifier in ALLOWED]
