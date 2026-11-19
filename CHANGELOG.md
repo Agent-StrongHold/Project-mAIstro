@@ -44,6 +44,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
 - **Attention CI repair (#2363).** The `test` job failed on a new
   `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
   during render; the mirror now happens in an effect declared before the load
