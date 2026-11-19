@@ -148,3 +148,80 @@ unreachable, no candidate-approved expansion).
   recorded above. At capture, 61 of the head's 64 check runs were still
   `in_progress`/`queued` with 3 completed successes, so hosted CI remains the
   separate acceptance gate.
+
+## Round 4 evidence — root cause of the stuck merge-queue gate + repair (head after develop sync `d521240c6b`)
+
+The lane block was "commit status not successful". Root-caused from the
+dispatch-captured GitHub evidence at `ca2feefd1d9b` and reproduced locally
+with CI's own evaluator — **the only non-successful signal on that head is
+the required `gates-ran` commit status, permanently PENDING**:
+
+- Hosted check runs at `ca2feefd` (captured 07:41Z): **79 runs, 73 success /
+  6 skipped (classifier-scoped)/ 0 failures / 0 in-progress**. Every
+  previously-RED gate (Analyze x3, Compliance registry, Container scan,
+  Coverage gate, DevSkim, Gate C, Quality / Acceptance state, Quality/*)
+  is `success`. The earlier "RED gates" list predates this head.
+- The 9 `gates-ran` commit statuses are all `pending` ("Required execution
+  evidence is still arriving", last 06:19:59Z — *after* the last producer
+  finished). PR #2371 is `mergeable: true, mergeable_state: unstable` purely
+  on that status.
+- **CI-exact reproduction** (`python3 scripts/check-gates-ran.py
+  --check-runs <captured> --require-complete --base-branch develop
+  --event-name pull_request --changed-files <PR files>`): `EXIT 2 — PENDING,
+  not present yet (1): Mutation gate (changed critical lines)`.
+- Why permanent: `mutation.yml`'s `pull_request` paths filter does not match
+  this PR (grant JSON + inventory note only), so the workflow never triggers
+  and the check can never appear; `check-gates-ran.py` includes every
+  every-PR row from the generated table in the evidence set and only excuses
+  the `PATH_SCOPED_CHECKS` classifier legs. This is precisely the failure
+  mode and remedy documented in the same file for `quality/image-pins.json`
+  (#2120): list the governance surface in the trigger so the gate reports
+  real zero-overlap evidence instead of permanent absence.
+
+Repair (this round, commit `1ea63a73e7`): added
+`quality/ratchet-authorizations.json` and `docs/testing/inventory-notes/**`
+to `mutation.yml`'s PR trigger. Grant content untouched (`git diff --numstat
+origin/develop HEAD -- quality/` = exactly +5 on
+`ratchet-authorizations.json`; every other ledger byte-identical). Also
+merged `origin/develop` (`d521240c6b`, one commit, no conflicts) — the
+branch was out-of-date; merge head `a854dfb694`.
+
+Local proof at `a854dfb694`:
+
+- Post-fix evaluator run (captured 79 runs + the zero-overlap success run the
+  fixed trigger now produces): `ok: all 73 required check(s) ran on this
+  head`, **exit 0** → the publisher flips `gates-ran` to success on the next
+  hosted evaluation of this PR.
+- The zero-overlap job path itself: `uv run python scripts/mutation_critical.py
+  --changed-from <empty and non-Python sets>` → `no mutation-critical files
+  in the changed set`, exit 0 twice.
+- `python3 scripts/check-required-checks.py` (workflow-lint, CI-exact) → ok,
+  78 PR checks match the contract table.
+- Exact-debt companions, CI arguments: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → 1235 =
+  1235 identities, exit 0; `check-reachability.py` → 1492 modules / 88
+  unreachable, exit 0; `check-reachability-dispositions.py` → 30 groups OK;
+  `RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` → base
+  `d521240c6b2d` → candidate `a854dfb69491`, "no candidate-approved
+  expansion", 55 consumers, exit 0; `check-suite-inventory.py` → 21/21.
+- Tests: gates/required-checks/mutation-targets set → **197 passed**;
+  ratchet/reachability set (12 files) → **299 passed** (same as round 3).
+- `uv run ruff check .` / `ruff format --check .` → clean.
+
+No test inventory change (no tests added, removed, or modified).
+
+## Residuals (recorded, not repaired here)
+
+- The `gates-ran` fix takes hosted effect only once this branch's
+  `mutation.yml` change is the PR definition GitHub evaluates (pull_request
+  workflows run the candidate's definition), i.e. on the next CI run of this
+  PR after push. Push is prohibited from this lane, so hosted green remains
+  the separate acceptance gate; the evaluator proof above is CI-exact.
+- A deeper evaluator-side design option (treat generated `paths`-scoped rows
+  like `PATH_SCOPED_CHECKS`, excusing absence on a measured changed-file
+  envelope) would fix the class without widening triggers, but cannot make
+  *this* PR green (the publisher evaluates with default-branch code) and is
+  a contract change beyond this grant lane.
+- #1640's head `4fb4a2be` carries its own red `test` check run (2026-11-18)
+  and its own `gates-ran` eventually went success there; that is #1640's
+  lane, not this PR's head.
