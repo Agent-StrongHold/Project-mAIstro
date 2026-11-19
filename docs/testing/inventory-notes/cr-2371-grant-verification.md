@@ -242,7 +242,7 @@ re-derived locally at the repair head (not trusted from the dispatch):
   (#1640 commit `5ba1b82b85`, "relocate delivery planner to tools/ so the
   reachability floor-raise it cannot self-authorize is no longer required").
   `check-reachability.py` cannot see `tools/` either: it collects tooling
-  from `TOOLING_DIR = "scripts"` only (`scripts/check-reachability.py:29`).
+  from `TOOLING_DIR = "scripts"` only (`scripts/check-reachability.py:30`).
 - `grep -c plan_delivery` over `quality/reachability-baseline.json`,
   `quality/reachability-dispositions.json` and develop's
   `ratchet-authorizations.json` → 0 rows everywhere; only this branch's own
@@ -320,3 +320,89 @@ coordination.
 
 Hosted CI green on the repair tip remains UNVERIFIED from this lane (push
 prohibited), as in every prior round.
+
+## Round 6 evidence — hosted gates-ran success + failure triage (verification
+at this head, no tree change beyond this note)
+
+The prior lane block ("commit status not successful", independent review
+BLOCKED) is re-derived from fresh hosted evidence at `fbe22de78408` and
+resolved into two concrete facts:
+
+1. **`gates-ran` is now success.** The head's single commit status is
+   `gates-ran` → `success` (published 2026-11-19T09:09:06Z, after the last
+   producer completed 08:47:25Z). The round-4 root cause — required
+   `Mutation gate (changed critical lines)` check-run absent forever on a
+   grant/note-only PR — is fixed on the hosted side: that check-run exists at
+   this head with conclusion `success`. Locally re-proven with CI's exact
+   evaluator on the fresh capture (all 80 check-runs, PR changed-file
+   envelope `{measured: true, truncated: false, files: [mutation.yml, this
+   note]}`): `python3 scripts/check-gates-ran.py --check-runs <capture>
+   --require-complete --base-branch develop --event-name pull_request
+   --changed-files <envelope>` → `ok: all 73 required check(s) ran on this
+   head`, EXIT 0. Every ruleset-required context ("Pr merge" ruleset, 25
+   contexts) is `success` or a classifier-scoped `skipped` leg (the 6
+   path-scoped service checks the measured envelope excuses).
+2. **The only failed check is inherited and non-required.**
+   `Container scan + SBOM + cosign` fails at this head (grype "discovered
+   vulnerabilities at or above the severity threshold", exit 2: fresh
+   node 24.22.1 / python 3.12.16 / 3.13.18 binary CVEs in the
+   `maistro-engine-research` base image). It is not a content regression:
+   - the same job **fails on `develop` itself** at the merge base
+     `d521240c6b` (push run 2026-11-19T07:26:38Z, job conclusion `failure`),
+     i.e. the failure predates and is independent of this branch;
+   - the **same job passed on this same branch** at `ca2feefd1d9b`
+     (2026-11-19T05:39:36Z, `success`) — and `git diff --name-only
+     origin/develop HEAD -- '*Dockerfile*' quality/image-pins.json
+     '*uv.lock*' 'packages/hive-conductor/package*.json'` is empty, so the
+     scanned image inputs are byte-identical; the delta is grype DB drift
+     (freshly disclosed CVEs), not tree content;
+   - the job-level row is **absent from the `Pr merge` ruleset's
+     `required_status_checks`** (the ruleset requires the `security`
+     workflow context, which is `success`), and the PR reads
+     `mergeable: true, mergeStateStatus: UNSTABLE` on it;
+   - remediation is already in flight repo-wide via dependabot **docker**
+     base-image bump PRs (which fail this same scan at their own heads).
+   Bumping image pins here would widen the lane beyond the issue's grant
+   scope, and `quality/image-pins.json` is mutation-critical (#2120): the
+   mutation gate fails closed on it by design.
+
+Local CI-exact battery re-run at this head (all EXIT 0): `ruff check .` /
+`ruff format --check .` clean; `check-required-checks.py` 78/78;
+`check-workflow-inventory.py` clean (32 workflows);
+`check-workflow-write-safety.py` ok (32 workflows);
+`RATCHET_BASE_REV=origin/develop check-ratchet-provenance.py` base
+`d521240c6b2d` → candidate `fbe22de78408`, no candidate-approved expansion,
+55 consumers; `check-reachability.py` 1492 modules / 88 unreachable, 0
+plan_delivery; `check-reachability-dispositions.py` 30 groups;
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` 1235 = 1235; `check-suite-inventory.py` 21/21;
+`mutation_critical.py --validate` 8 sources OK, `--changed-from` on the PR
+envelope and on an empty envelope both → zero overlap (neither new trigger
+path is mutation-critical: `quality/mutation-critical-files.json` contains
+no ratchet-authorizations or inventory-notes entry). Tests: ratchet/
+reachability/inventory set → **392 passed**; gates/required-checks/mutation
+set → **260 passed**.
+
+Also corrected this round: the round-5 citation
+`scripts/check-reachability.py:29` was off by one — `TOOLING_DIR` is defined
+at `scripts/check-reachability.py:30`.
+
+## Residuals (recorded, not repaired here — final state)
+
+- **PR body claim drift (GitHub-side).** The PR body still says "Adds one
+  entry … +5" and "Diff is grant-only"; false at this head (diff =
+  `mutation.yml` +21 + this note +322; `quality/` byte-identical to
+  develop). Correcting it requires editing the PR body — prohibited from
+  this lane. The authoritative record is this note.
+- **Merge-order coordination with #1640 (operator decision).** #1640's head
+  removes `mutation.yml`'s `paths:` filter entirely and pins a new invariant
+  test (`test_no_pr_workflow_paths_filters_its_required_check_out_of_reporting`
+  — "the pull_request trigger must stay unfiltered"), which strictly subsumes
+  this branch's trigger additions. Whichever lands second must resolve the
+  mutation.yml conflict; if #1640 lands first, this branch's trigger hunk
+  should be dropped in favor of #1640's design.
+- **Container scan green** remains a repo-wide environmental gate (fails on
+  develop at the merge base); closure arrives via the in-flight dependabot
+  docker base-image PRs, not this lane.
+- **Post-merge re-run of exact-debt / reachability on #1640 tip** remains
+  unreachable pre-merge from this lane.
