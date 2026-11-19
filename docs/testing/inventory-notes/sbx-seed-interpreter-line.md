@@ -17,12 +17,20 @@ is real, the registry row is the only thing `check-image-pins.py` flags — and
 the seed image is unbuildable because `uv sync --frozen` (#351 removed the
 `|| true`) needs cpNNN wheels the lock does not carry and the image installs no
 C compiler to build sdists from. On today's tree the test passes at cp312 (zero
-offenders) and its checker flags 18 distributions at cp315 and coincurve alone
-at cp314, matching both the 2026-10-25/26 empirical replays (#2136) and the
-2026-11-18 re-verification (#2376): with psycopg-binary raised to a
-cp315-wheel release the sync fails next on cffi 2.0.0's sdist (no libffi
-headers in the image), and coincurve 21.0.0 is still the latest release without
-cp315 wheels.
+offenders); re-counted 2026-11-19 against the develop-synced lock (post-#2377
+uv.lock), the same checker flags 21 distributions at cp315 (coincurve, cffi,
+pyyaml, uvloop, psycopg-binary, …) and coincurve alone at cp314, matching both
+the 2026-10-25/26 empirical replays (#2136) and the 2026-11-18 re-verification
+(#2376): with psycopg-binary raised to a cp315-wheel release the sync fails
+next on cffi 2.0.0's sdist (no libffi headers in the image), and coincurve
+21.0.0 is still the latest release without cp315 wheels.
+
+Deliberately scoped against develop's #2377, which DID move
+`packages/hive-conductor/tests/Dockerfile` to python:3.15-slim: that harness
+`pip install`s three pure-wheel packages (pytest/httpx/tzdata) and never syncs
+the workspace lock, so it has no wheel ceiling. This contract governs only the
+sbx seed, whose entire purpose is a warm `uv sync --frozen` cache over the
+locked workspace set.
 
 Deliberately narrower than "the lock is universal": entries with no linux
 wheels at all (sdist-only publishes such as crcmod) are outside the contract —
