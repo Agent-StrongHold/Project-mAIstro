@@ -13,7 +13,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
-    InvalidLifecycleTransition,
     lease_is_expired,
     reclaim_attempt,
     renew_attempt_lease,
@@ -526,42 +525,35 @@ class DurableRunExecutionStore:
     ) -> tuple[Attempt, bool]:
         """Settle one lapsed canonical Attempt, or report what it actually is.
 
-        Three answers, and only one of them is a reclaim. Already terminal: the
-        canonical row won a race, so the projection is repaired and it counts
-        as reclaimed only if it settled the way reclaim would have. Still live:
-        the holder renewed before recovery observed the expiry, so the stale
-        projection is repaired rather than the live work cancelled. Otherwise
-        it is genuinely lapsed and is settled here.
+        Exact-ID reclaim under the RunStore lock (#2366 / #232 P3a) is the only
+        write path: ``reclaim_expired_attempt`` commits CANCELLED+RECOVERED
+        together via ``reclaim_attempt``. A generic ``transition_attempt`` must
+        never carry this leaf — it would drop the cause. Already terminal or
+        still live: nothing new is written; the projection is repaired from
+        canonical truth. CANCELLED winners (including a concurrent reclaim)
+        still count as reclaimed for the returned list; COMPLETED/FAILED/etc.
+        do not.
         """
         assert self._run_store is not None
+        try:
+            written = await self._run_store.reclaim_expired_attempt(
+                projected.attempt_id, now=moment
+            )
+        except AttemptNotFound as exc:
+            raise RunIntegrityError(
+                f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
+            ) from exc
+        if written is not None:
+            return written, True
+
         canonical = await self._run_store.get_attempt(projected.attempt_id)
         if canonical is None:
             raise RunIntegrityError(
                 f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
             )
         if canonical.status in TERMINAL_ATTEMPT_STATUSES:
-            return canonical, canonical.status is reclaim_attempt(projected, at=moment).status
-        if not lease_is_expired(canonical, moment):
-            return canonical, False
-        lease = canonical.execution_lease
-        # `lease_is_expired` above is false for a leaseless Attempt, so reaching
-        # here means there is one. Asserted rather than re-checked: a branch
-        # nothing can take is a branch nothing can test.
-        assert lease is not None
-        settled = reclaim_attempt(canonical, at=moment)
-        try:
-            return await self._run_store.transition_attempt(
-                canonical.attempt_id,
-                settled.status,
-                at=moment,
-                error=settled.error,
-                fencing_token=lease.fencing_token,
-            ), True
-        except (InvalidLifecycleTransition, StaleExecutionFence):
-            refreshed = await self._run_store.get_attempt(canonical.attempt_id)
-            if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
-                raise
-            return refreshed, True
+            return canonical, canonical.status is AttemptStatus.CANCELLED
+        return canonical, False
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         record = await self._get_record()
