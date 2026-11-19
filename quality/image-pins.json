@@ -74,34 +74,13 @@
     {
       "image": "golang",
       "tag": "1.27.3-alpine",
-      "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
-      "recorded": "2026-10-22",
-      "recorded_in": "#1152",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries. Narrowed 2026-11-18 (#2414): the root builder Dockerfiles re-pinned the tag to its 2026-11-05 re-serialized index (see the fa3d596 row); this row retains the 2026-10-22 index for the Conductor image's agebuild stage, whose pin that PR did not touch.",
-      "used_by": [
-        "packages/hive-conductor/Dockerfile"
-      ]
-    },
-    {
-      "image": "golang",
-      "tag": "1.27.3-alpine",
-      "digest": "sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18",
-      "recorded": "2026-11-18",
-      "recorded_in": "#2414",
-      "note": "Dependabot digest bump of the dockerclibuild stage's golang:1.27.3-alpine pin in both root builder Dockerfiles: upstream re-serialized the tag's index on 2026-11-05 (this OCI index, linux/amd64 child 0fd028db9bdd4…, config created 2026-11-05 on alpine-minirootfs 3.24.4). Verified against the Docker Hub registry API on 2026-11-18: the tag resolves to this index and the linux/amd64 config env reads GOLANG_VERSION=1.27.3 — the same toolchain as the prior index b8c9b82… (minirootfs 3.24.3, amd64 child bff16a94…), so this is a base rebuild re-pin, not a Go version change (the commit metadata's '1.27.4-alpine' is the listing annotation; the tag annotation stays 1.27.3-alpine). Builds the static docker CLI for the release images (#363/#1152 lineage).",
-      "used_by": [
-        "Dockerfile",
-        "Dockerfile.research"
-      ]
-    },
-    {
-      "image": "golang",
-      "tag": "1.27.3-alpine",
       "digest": "sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18",
       "recorded": "2026-11-17",
       "recorded_in": "#2413",
-      "note": "Builds the age static binaries in packages/hive-conductor/Dockerfile from their pinned upstream release tags (#363, then #1152). Dependabot re-resolved the same 1.27.3-alpine tag on 2026-11-17 (#2413): upstream re-serialized the tag's index again since the 2026-10-22 recording — the same tag-move pattern that recording already absorbed once — so the age-build stage pins the fresh digest, registered here in the same change per the registry-and-tree-hold-each-other-closed rule above (the mutable tag moves; the digest pin cannot). Root Dockerfile and Dockerfile.research still build their dockerclibuild stage from the 2026-10-22 digest, so both index digests of this shared tag stay registered: the row above retains them until those Dockerfiles take their own refresh. Index digest verified via `docker buildx imagetools inspect golang:1.27.3-alpine` (OCI index sha256:fa3d596…818, linux/amd64 present).",
+      "note": "Builds the static docker CLI for the release images and the age static binaries for the Conductor image from their pinned upstream release tags (#363, then #1152 lineage): the published docker:29-cli binary embeds go stdlib, and both builders moved to 1.27.3-alpine to shed 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, then CVE-2026-111943, fixed in go1.26.10/1.27.3 — see #1152, #1095, #795). Upstream re-serialized the tag's index on 2026-11-05 since the 2026-10-22 b8c9b82 recording — the same tag-move pattern that recording already absorbed once — and dependabot re-resolved the same tag independently in two lanes: #2413 for the Conductor image's agebuild stage and #2414 for the root builder Dockerfiles' dockerclibuild stage, both landing on this identical index digest (linux/amd64 child 0fd028db9bdd4…, config created 2026-11-05 on alpine-minirootfs 3.24.4). Verified against the Docker Hub registry API on 2026-11-18: the tag resolves to this index and the linux/amd64 config env reads GOLANG_VERSION=1.27.3 — the same toolchain as the prior b8c9b82 index (minirootfs 3.24.3, amd64 child bff16a94…), so this is a base rebuild re-pin, not a Go version change (dependabot commit metadata's '1.27.4-alpine' is the listing annotation; the tag annotation stays 1.27.3-alpine). The two lanes registered this digest as separate rows that collided as duplicates when #2414 merged into #2413's branch; consolidated here into one row covering all three Dockerfiles, and the b8c9b82 row retired with it — no Dockerfile builds from the 2026-10-22 index anymore. Index digest verified via `docker buildx imagetools inspect golang:1.27.3-alpine` (OCI index sha256:fa3d596…818, linux/amd64 present).",
       "used_by": [
+        "Dockerfile",
+        "Dockerfile.research",
         "packages/hive-conductor/Dockerfile"
       ]
     },
