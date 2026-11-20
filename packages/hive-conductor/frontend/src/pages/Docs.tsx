@@ -235,9 +235,9 @@ When the AI uses the browser, you'll see a \`browser_task\` tool call in the cha
   {
     id: "home-automation",
     title: "Home Automation",
-    content: `Home Automation is **not shipped in Workspaces v1.0** (#2320). The hand-wired Home Assistant / CoinSwarm / ntfy bridges under \`maistro.integrations\` are retired for this release.
+    content: `Home Automation is **not shipped in Workspaces v1.0** (#2320). The hand-wired Home Assistant / CoinSwarm / ntfy bridges under maistro.integrations are retired for this release.
 
-External tools that *are* shipped go through the Capabilities MCP surface (\`/v1/mcp\`), not those bridges. Do not expect Chat to turn lights on or talk to a Home Assistant instance out of the box.`,
+External tools that *are* shipped go through the Capabilities MCP surface (the hive MCP server registry), not those bridges. Do not expect Chat to turn lights on or talk to a Home Assistant instance out of the box.`,
   },
   {
     id: "strategies",
