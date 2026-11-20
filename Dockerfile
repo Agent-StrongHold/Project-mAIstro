@@ -143,37 +143,34 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # alone cannot close the second advisory: x/net is patched onto the pinned
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# Digest-pinned (#349); re-pinned 2026-11-18 (#2414) to the 2026-11-05
+# re-serialized index of golang:1.27.3-alpine (upstream rebuild on Alpine
+# minirootfs 3.24.4; the amd64 config still carries GOLANG_VERSION=1.27.3).
 # #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
 # klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
 # upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
 # only the x/net patch below remains.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
+FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
-# 2026-11-16 (#2110 CI-repair round): the v29.9.1 vendored tree carried three
-# HIGH findings in the docker binary. The trivy leg (security.yml
-# `Container scan + SBOM + cosign`, HIGH/CRITICAL, exit 1) flagged
-# CVE-2026-78661 (x/net/html DoS via crafted HTML input, fixed in v0.62.0)
-# and CVE-2026-116587 (go-jose DoS via crafted RSA parameters in JWKs,
-# fixed in v4.1.6); the grype cross-check leg then added GO-2026-6865
-# (klauspost/compress, fixed in v1.20.2) on a v29.9.1 build that had cleared
-# the trivy pair. Tag bumped to v29.9.3, which vendors go-jose v4.1.7 (≥ the
-# fix) and klauspost/compress v1.20.2 (vendor.sum verified 2026-11-16). No
-# docker/cli tag ships x/net ≥ v0.62.0 yet (v29.9.3 still vendors v0.60.0),
-# so the build upgrades that one module in place — this tree already compiles
-# in module mode (vendor.mod -> go.mod above), and vendor.mod's own header
-# names `go mod vendor` as the way it is managed. Both pins below are exact,
-# and the commit assert still fails the build if the tag moves under us.
-# Exact module pin for the vendored upgrade; keep in sync with the comment
-# block above and with Dockerfile.research's identical stage.
-ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
+# The grype DB additionally flags the vendored github.com/klauspost/compress
+# v1.20.1 (GO-2026-6865 HIGH, fixed v1.20.2; security.yml run 43812084107 job
+# 133115778563, #1450 CI repair 2026-11-16). No upstream docker/cli tag ships
+# it fixed — the same scans read v29.9.3's vendored tree — and the gate
+# policy upgrades when a fix exists rather than ignores, so the tag bump
+# above (which already carries go-jose 4.1.7 upstream, closing trivy's
+# CVE-2026-116587 without a downgrade patch) is combined with patching that
+# vendored module onto the advisory fix version the same way x/net is
+# patched below. `go get` edits only go.mod/go.sum; `go mod vendor` rewrites
+# vendor/ from them, so the build stays in vendor mode with content-hash-
+# pinned replacements. Module versions on the Go module proxy are immutable.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get "${X_NET_MODULE_UPGRADE}" && go mod vendor && \
+    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
+    go mod vendor && \
     mkdir -p /out && \
     # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
     # supersedes it, so build from the module set, not the vendored tree.
