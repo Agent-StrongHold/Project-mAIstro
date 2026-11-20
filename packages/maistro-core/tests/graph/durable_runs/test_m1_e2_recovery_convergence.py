@@ -22,6 +22,7 @@ from maistro.graph.nodes.base import (
     PAUSE_AWAITING_HARNESS,
     PAUSE_AWAITING_HUMAN_ANSWER,
     PAUSE_AWAITING_HUMAN_APPROVAL,
+    PAUSE_AWAITING_HUMAN_DECISION,
     PAUSE_AWAITING_HUMAN_REVIEW,
     PAUSE_AWAITING_REMOTE_DELEGATION,
     PAUSE_AWAITING_ROLE_DELEGATE,
@@ -52,6 +53,10 @@ PAUSE_REASON_WAKERS: dict[str, tuple[str, ...]] = {
     PAUSE_AWAITING_HUMAN_ANSWER: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_HUMAN_APPROVAL: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_HUMAN_REVIEW: ("CanonicalDurableRunStore.submit_hitl_answer",),
+    # The design-loop fence (#794) settles through the same human route: a
+    # recorded park/redirect/accept consumes the pause like an answer
+    # (store-side); the deadline tick expires it.
+    PAUSE_AWAITING_HUMAN_DECISION: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_ROLE_DELEGATE: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_REMOTE_DELEGATION: (
         "Container.wake_external_graph_result",

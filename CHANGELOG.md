@@ -23,39 +23,49 @@ or placeholder-only section.
 
 ## [Unreleased]
 
-### Dependencies
+### Removed
 
-- **Advisory patch refresh of the audited dependency set (#2304).** `uv.lock`
-  moves `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 →
-  3.3.1 (CVE-2026-119286), `joserfc` 1.7.5 → 1.7.6 (CVE-2026-119284), and the
-  OpenTelemetry family to api/sdk 1.45.2 + semantic-conventions 0.66b2
-  (CVE-2026-126360) — the pip-audit advisories the triage gate started
-  reporting once the 2026-11 DB revisions landed, each with an upstream-fixed
-  release, so the gate's upgrade-first policy applies rather than a triage
-  row. A second pass moves the research image's trivy findings to their
-  fixed versions: `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1`
-  0.6.4 → 0.6.5 (CVE-2026-119194…119197), `pypdf` 6.21.2 → 6.21.4
-  (CVE-2026-119203…119209), `soupsieve` 3.0.3 → 4.0 (CVE-2026-126190) —
-  13 HIGH findings, all with upstream fixes, so the upgrade-first policy
-  applies again. Same locked contract for the shipped images (they install
-  via `uv export --locked` + `--require-hashes` from this lock).
+- **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
+  `MessageBoard.tsx` and `OptimizationInbox.tsx`; AppShell no longer links
+  Messages or Optimizer. `/messages`, `/optimizer`, and `/optimization-inbox`
+  `Navigate` to `/attention` so bookmarks cannot revive the modules. Backend
+  `/v1/messages` and `/v1/optimizer` remain the canonical owners projected
+  into Attention.
 
-- **Conductor image runtime OS layer builds on `python:3.15.2-slim-bookworm`
-  (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
-  moved to the CPython 3.15 line (fresh Debian 12 security-patch state),
-  landing on the 3.15.2 base build: the grype cross-check flags
-  CVE-2026-115557 (Critical, fixed 3.15.2) on the 3.15.0 CPython binary the
-  original dependabot pin shipped — the OS python stays in the final image
-  even though the app runs on the grafted contract build, so the binary is
-  scanned. The app keeps running on the registered CPython 3.13.18 contract
-  interpreter: the builder stage keeps the 3.13.18 pin and the runtime grafts
-  its exact installation (binary, libpython, stdlib), so the shipped venv
-  needs no managed download. Identity pins, the uv.lock install and the
-  build-time smoke are unchanged (the 3.13.18 refresh is a grype-driven
-  patch refresh within the 3.13 line, see the Security section).
+### Changed
+
+- **Attention projects messages + optimizer proposals (#1049).** Unread agent
+  messages and pending Workspace-scoped optimizer proposals join the
+  read-time Attention projection (critical→severity/blocking, warning→queued,
+  info + optimizer→proactive/Waiting). Summary adds interruption counts and
+  Waiting quality metadata. Priority ladder remains severity >
+  time_sensitive > blocking > queued > follow_up > proactive. HITL
+  answer/defer/dismiss behavior is unchanged.
 
 ### Fixed
 
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
 - **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
@@ -64,47 +74,6 @@ or placeholder-only section.
   another product commit.
 
 ### Security
-
-- **The shipped docker CLI no longer embeds the vulnerable vendored go-jose,
-  x/net and klauspost/compress modules (#2304).** docker/cli v29.9.1's vendor
-  tree pins go-jose v4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK
-  parameters, fixed v4.1.6), golang.org/x/net v0.60.0 (CVE-2026-78661, DoS
-  via crafted HTML input, fixed v0.62.0) and klauspost/compress v1.20.1
-  (GO-2026-6865, HIGH, fixed v1.20.2 — flagged by the gate's grype
-  cross-check, which trivy's DB does not carry yet); all have upstream
-  fixes, so the container-scan gate fails the release tag as-is. The
-  `dockerclibuild` stages of the maistro-engine and research images now
-  override the three modules to their fixed versions and re-vendor before
-  building (the same patched-toolchain policy the age stage already
-  applies); the release tag, commit pin and toolchain are unchanged.
-
-- **Image base refresh within the CPython patch lines (#2304).** The grype
-  cross-check flags CVE-2026-115557 (Critical, CPython binary, fixed in
-  3.13.18 / 3.12.16) in the `python:3.13.16-slim-bookworm` and
-  `python:3.12-slim` builds the previous digests carried, so the
-  engine/Conductor contract stages refresh to the registered
-  `3.13.18-slim-bookworm` digest and the research/RSI/e2e/sbx images move
-  from the floating `3.12-slim` tag (which had re-resolved to Debian
-  trixie) to the exact `3.12.16-slim-bookworm` patch tag — keeping the
-  bookworm-scoped apt triage notes true. Identity contract unchanged:
-  coincurve 21.0.0 cp313 wheels, same smoke assertions, same venv build.
-  `quality/image-pins.json` rows moved with the Dockerfiles.
-
-- **The research image ships a pinned system Node instead of the drivers'
-  bundled Node binaries (#2304).** The playwright 1.65.2 and patchright
-  1.64.1 wheels bundle their own Node drivers (v26.13.1 / v24.21.0,
-  measured from the locked wheels), and the grype cross-check flags those
-  shipped binaries — CVE-2026-111497 (Critical) and
-  CVE-2026-105482/105483/106069 (High) on the v24.21.0 build, fixed
-  upstream in Node 24.22.1 — inside the published image. Both drivers are
-  JavaScript launched through Node and consult `PLAYWRIGHT_NODEJS_PATH`
-  first, so `Dockerfile.research` now installs a checksum-verified Node
-  24.22.1 into `/usr/local`, points the drivers at it, and deletes the
-  bundled binaries plus npm's vendored tree (nothing in the image uses
-  npm at runtime). Rebuild proof: trivy 0.73.0 HIGH/CRITICAL and grype
-  0.116.0 `--only-fixed --fail-on high` both exit 0 on the rebuilt image,
-  and Chromium launches through the system Node under the shipped
-  non-root user.
 
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
@@ -131,7 +100,25 @@ or placeholder-only section.
   immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
   Security tab stays actionable without editing cage-guarded trees.
 
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
 ### Added
+
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
 
 - **Extension attribution evidence: identity, version, publisher, and provenance
   through canonical telemetry (#976).** `maistro.extensions` now ships the
@@ -166,8 +153,8 @@ or placeholder-only section.
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
-  enable/disable over the same public APIs. Agents, Topology, and Integrations
-  leave primary nav (URL-only until deleted); Skills was already URL-only.
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
 
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
