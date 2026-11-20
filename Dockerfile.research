@@ -209,6 +209,20 @@ COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 # The lock-built venv (third-party pins hash-verified, members non-editable).
 COPY --from=builder /app/venv /app/venv
 
+# patchright 1.64.4 (latest on PyPI as of 2026-11-20) still ships driver node
+# 24.22.1. Grype --fail-on high --only-fixed flags CVE-2026-126051 /
+# CVE-2026-123865 / CVE-2026-123866 / CVE-2026-123874 / CVE-2026-123863 /
+# CVE-2026-123872 / CVE-2026-123864 on that binary (fixed in Node 24.22.3 /
+# 26.13.1). playwright 1.65.2 already ships driver node 26.13.1 in the same
+# venv — overlay that binary onto patchright's driver until a patchright
+# release bumps its own bundled Node. Same "upgrade when a fix exists"
+# doctrine as prior research-image Node repairs (#1450 round 6).
+RUN PLAYWRIGHT_NODE="$(python -c 'import pathlib, playwright; print(pathlib.Path(playwright.__file__).with_name("driver") / "node")')" \
+ && PATCHRIGHT_NODE="$(python -c 'import pathlib, patchright; print(pathlib.Path(patchright.__file__).with_name("driver") / "node")')" \
+ && test -x "$PLAYWRIGHT_NODE" && test -x "$PATCHRIGHT_NODE" \
+ && cp -f "$PLAYWRIGHT_NODE" "$PATCHRIGHT_NODE" \
+ && "$PATCHRIGHT_NODE" --version | grep -Eq '^v(26\.13\.|26\.1[4-9]\.|26\.[2-9]|2[7-9]\.|[3-9])'
+
 # Application sources — on-disk assets the app reads at runtime (agent YAML,
 # prompts, migrations) and the two packages' data files. The venv is
 # non-editable, so these are not on sys.path; they are still read from disk.
