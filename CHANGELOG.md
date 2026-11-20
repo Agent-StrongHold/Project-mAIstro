@@ -23,8 +23,49 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Removed
+
+- **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
+  `MessageBoard.tsx` and `OptimizationInbox.tsx`; AppShell no longer links
+  Messages or Optimizer. `/messages`, `/optimizer`, and `/optimization-inbox`
+  `Navigate` to `/attention` so bookmarks cannot revive the modules. Backend
+  `/v1/messages` and `/v1/optimizer` remain the canonical owners projected
+  into Attention.
+
+### Changed
+
+- **Attention projects messages + optimizer proposals (#1049).** Unread agent
+  messages and pending Workspace-scoped optimizer proposals join the
+  read-time Attention projection (critical→severity/blocking, warning→queued,
+  info + optimizer→proactive/Waiting). Summary adds interruption counts and
+  Waiting quality metadata. Priority ladder remains severity >
+  time_sensitive > blocking > queued > follow_up > proactive. HITL
+  answer/defer/dismiss behavior is unchanged.
+
 ### Fixed
 
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
 - **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
@@ -59,7 +100,25 @@ or placeholder-only section.
   immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
   Security tab stays actionable without editing cage-guarded trees.
 
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
 ### Added
+
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
 
 - **Extension attribution evidence: identity, version, publisher, and provenance
   through canonical telemetry (#976).** `maistro.extensions` now ships the
@@ -94,8 +153,8 @@ or placeholder-only section.
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
-  enable/disable over the same public APIs. Agents, Topology, and Integrations
-  leave primary nav (URL-only until deleted); Skills was already URL-only.
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
 
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace

@@ -28,6 +28,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/ontology/test_design_loop_kind_fencing.py
+  - packages/maistro-core/tests/graph/durable_runs/test_fence_decisions.py
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
