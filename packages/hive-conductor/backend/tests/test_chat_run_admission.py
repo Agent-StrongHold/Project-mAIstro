@@ -292,9 +292,10 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 
 
 @pytest.mark.contract("behavioral")
-def test_a_session_id_the_caller_does_not_own_is_not_recorded(
+def test_a_session_id_the_caller_does_not_own_is_refused_before_the_model(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
+    """#1822 AC-5: foreign session id on complete/stream matches missing (404)."""
     from services import conversation_sessions
 
     foreign_ws = _workspace(owner="someone-else", name="foreign")
@@ -302,10 +303,67 @@ def test_a_session_id_the_caller_does_not_own_is_not_recorded(
 
     r = _complete(authed_client, session_id=foreign)
 
-    assert r.status_code == 200
-    run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
-    assert "session_id" not in run.provenance
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
     _run(conversation_sessions.delete("someone-else", foreign))
+
+
+@pytest.mark.contract("behavioral")
+def test_unknown_session_id_on_complete_matches_foreign_refusal(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    _workspace()
+    r = _complete(authed_client, session_id="00000000-0000-4000-8000-000000000000")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+
+
+@pytest.mark.contract("behavioral")
+def test_wrong_workspace_session_id_on_complete_is_refused(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    from services import conversation_sessions
+
+    ws_a = _workspace(name="A")
+    ws_b = _workspace(name="B")
+    sid = _run(conversation_sessions.create(USER, ws_a, "t")).session_id
+
+    r = _complete(authed_client, session_id=sid, workspace_id=ws_b)
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+    _run(conversation_sessions.delete(USER, sid))
+
+
+@pytest.mark.contract("behavioral")
+def test_http_refusal_inside_admit_keeps_status_not_503(
+    container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1822: HTTPException after container lookup must not become admission 503.
+
+    Foreign-session refusals raise before the try; this covers the in-try
+    handler that releases the dispatch shield and re-raises unchanged.
+    """
+    from fastapi import HTTPException
+
+    async def _refuse(_user_id: str, _workspace_id: Any) -> str:
+        raise HTTPException(status_code=403, detail="workspace membership required")
+
+    monkeypatch.setattr(chat_runs, "_turn_workspace", _refuse)
+
+    async def _turn() -> None:
+        with pytest.raises(HTTPException) as refused:
+            await chat_runs.admit_turn(  # type: ignore[arg-type]
+                _principal(), [{"role": "user", "content": "hi"}]
+            )
+        assert refused.value.status_code == 403
+        assert refused.value.detail == "workspace membership required"
+
+    _run(_turn())
 
 
 @pytest.mark.contract("behavioral")
