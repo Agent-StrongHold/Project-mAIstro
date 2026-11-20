@@ -70,13 +70,22 @@ def _canonical_recovery_sink(
     return CanonicalRecoveryEventSink(store, recorded), recorded
 
 
-async def _cancelled_attempt(store: InMemoryRunStore, node_run_id: str) -> Any:
+async def _cancelled_attempt(
+    store: InMemoryRunStore,
+    node_run_id: str,
+    *,
+    cause: CancellationCause = CancellationCause.RECOVERED,
+) -> Any:
+    """CANCELLED with a typed cause (#232 P4b refuses unknown)."""
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
-    return await store.transition_attempt(
+    cancelled = await store.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.CANCELLED,
         error="orphaned physical Attempt recovered after process loss",
     )
+    typed = cancelled.model_copy(update={"cancellation_cause": cause})
+    store._attempts[cancelled.attempt_id] = typed
+    return typed
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
@@ -108,7 +117,7 @@ async def test_a_recovered_cancellation_says_so_on_the_canonical_event_stream() 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_a_requested_cancellation_is_a_different_disposition() -> None:
     store, _run_id, node_run_id = await _running_node()
-    attempt = await _cancelled_attempt(store, node_run_id)
+    attempt = await _cancelled_attempt(store, node_run_id, cause=CancellationCause.REQUESTED)
     sink, recorded = _canonical_recovery_sink(store)
 
     await AttemptLifecycleReconciler(store, events=sink).reconcile(
