@@ -340,6 +340,33 @@ def test_wrong_workspace_session_id_on_complete_is_refused(
 
 
 @pytest.mark.contract("behavioral")
+def test_http_refusal_inside_admit_keeps_status_not_503(
+    container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1822: HTTPException after container lookup must not become admission 503.
+
+    Foreign-session refusals raise before the try; this covers the in-try
+    handler that releases the dispatch shield and re-raises unchanged.
+    """
+    from fastapi import HTTPException
+
+    async def _refuse(_user_id: str, _workspace_id: Any) -> str:
+        raise HTTPException(status_code=403, detail="workspace membership required")
+
+    monkeypatch.setattr(chat_runs, "_turn_workspace", _refuse)
+
+    async def _turn() -> None:
+        with pytest.raises(HTTPException) as refused:
+            await chat_runs.admit_turn(  # type: ignore[arg-type]
+                _principal(), [{"role": "user", "content": "hi"}]
+            )
+        assert refused.value.status_code == 403
+        assert refused.value.detail == "workspace membership required"
+
+    _run(_turn())
+
+
+@pytest.mark.contract("behavioral")
 def test_stream_turn_returns_its_run_id_and_completes_the_run(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
