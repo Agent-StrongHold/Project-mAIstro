@@ -89,12 +89,12 @@ or placeholder-only section.
   wheel on PyPI; copy the digest-pinned `node:24.22.3-bookworm-slim` binary
   over the driver and assert `v24.22.3`.
 
-- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2356).** Trivy
-  HIGH on `usr/bin/age` / `age-keygen` (and the same stdlib in the static
-  docker CLI) when built on `golang:1.27.3-alpine`: MaxBytesReader HTTP/1
-  hang, fixed in go1.26.11/1.27.4. Bump the digest-pinned builder in
-  `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
-  `Dockerfile.research`; refresh `quality/image-pins.json`.
+- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2375; aligned
+  in #2356).** Trivy HIGH on `usr/bin/age` / `age-keygen` (and the same
+  stdlib in the static docker CLI) when built on `golang:1.27.3-alpine`:
+  MaxBytesReader HTTP/1 hang, fixed in go1.26.11/1.27.4. Digest-pinned
+  builder in `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
+  `Dockerfile.research`; `quality/image-pins.json` single 1.27.4 row.
 
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still

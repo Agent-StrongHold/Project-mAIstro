@@ -39,13 +39,16 @@ RUN npm run build
 # age artifact embeds a toolchain carrying the 2026 stdlib fixes (trivy:
 # CVE-2026-78667/78669/97031 HIGH in stdlib 1.25.x, then CVE-2026-111943 HIGH in
 # stdlib 1.27.2 — crypto/x509 MITM via untrusted intermediate certificates,
-# fixed in 1.26.10/1.27.3 — then CVE-2026-97054 HIGH in stdlib 1.27.3,
-# MaxBytesReader HTTP/1 connection hang, fixed in 1.26.11/1.27.4). Build the
-# exact immutable release tag ourselves with a patched Go toolchain/dependency
-# set so the runtime does not inherit vulnerabilities from an otherwise-current
-# source release. The release tag resolves to b8564ad; fail if upstream ever
-# disagrees. Digest-pinned (#349); golang:1.27.4-alpine index digest from Docker
-# Hub 2026-11-20 (hub tag digest sha256:70bd7dde…).
+# fixed in 1.26.10/1.27.3). Build the exact immutable
+# release tag ourselves with a patched Go toolchain/dependency set so the
+# runtime does not inherit vulnerabilities from an otherwise-current source
+# release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
+# The 1.27.3 rebuild then aged out itself: CVE-2026-97054 (net/http
+# MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4) flagged
+# age-keygen's stdlib 1.27.3 in the #2375 Container scan gate (security.yml run
+# 44477475371 job 135401410021, 2026-11-19), so the builder moved to
+# 1.27.4-alpine, retiring the 2026-10-22 1.27.3 index (#1152 lineage).
+# Digest-pinned (#349); golang:1.27.4-alpine resolved to this index digest 2026-11-19.
 FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
