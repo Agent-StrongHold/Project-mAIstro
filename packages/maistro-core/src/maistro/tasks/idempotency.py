@@ -100,7 +100,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from maistro.observability.metrics import registry
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    registry,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.tasks.models import TaskCreate
 from maistro.types.errors import ConfigError
 
@@ -1084,7 +1091,26 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
             )
             changed = int(cursor.rowcount)
             await self._conn.commit()
-            return changed
+        await self._publish_table_health()
+        return changed
+
+    async def _publish_table_health(self) -> None:
+        """Publish the claim table's stored volume after a purge (#325).
+
+        The replay window is swept by every claim, so a stalled sweeper here
+        is invisible in delete counts — claims stop, deletes stop, and the
+        rate looks healthy. The stored level is what still shows the table
+        holding every claim ever made. Throttled per store by the publisher.
+        """
+        if not retention_health_probe_due("idempotency:sqlite"):
+            return
+        sample = await sqlite_table_sample(
+            self._conn, "task_idempotency", "created_at", oldest_unit="unix_us"
+        )
+        if sample is not None:
+            publish_retention_table_health(
+                "idempotency:sqlite", "sqlite", [sample], min_interval_s=0.0
+            )
 
 
 def _row_of(row: Any) -> AdmissionRecord:
@@ -1340,7 +1366,26 @@ class PgTaskIdempotencyStore(_ClaimFlow):
                 _to_us(now),
                 limit,
             )
+        await self._publish_table_health()
         return int(tag.rsplit(" ", 1)[-1])
+
+    async def _publish_table_health(self) -> None:
+        """Publish the claim table's stored volume after a purge (#325).
+
+        Same contract as the SQLite tier's probe, plus the table size only
+        PostgreSQL can measure. Throttled per store by the publisher.
+        """
+        if not retention_health_probe_due("idempotency:postgres"):
+            return
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "task_idempotency", "created_at", oldest_unit="unix_us"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "idempotency:postgres", "postgres", [sample], min_interval_s=0.0
+            )
 
 
 async def wire_task_idempotency(conn: Any, *, pg_pool: Any = None) -> TaskIdempotencyStore:
