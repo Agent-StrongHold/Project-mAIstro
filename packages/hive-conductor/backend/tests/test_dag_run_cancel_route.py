@@ -186,6 +186,82 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     assert detail["status"] == "cancelled"
 
 
+async def test_cancel_route_never_writes_projection_terminal_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1036 AC-3: cancel/control delegates through #1169 only.
+
+    The public cancel route must not call DagRunStore.finish_run / record_outcome
+    / record_status — those would be a second terminalization authority on the
+    product-private JsonStore projection. The projection row stays open; the
+    inspection overlay serves the spine's CANCELLED.
+    """
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from routes.dag_runs import get_run as get_run_route
+    from services.dag_run_store import DagRunStore, get_dag_run_store
+
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    from services.workspace_authority import canonical_store_for_tests
+
+    store, run_id, worker, release, _provider_exits = await _long_running_canonical_run(view.id)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+
+    projection = get_dag_run_store()
+    await projection.start_run(
+        run_id="dag-cancel-no-proj-write",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id=run_id,
+    )
+
+    writes: list[str] = []
+
+    async def _spy_finish(self: Any, *args: Any, **kwargs: Any) -> None:
+        writes.append("finish_run")
+        raise AssertionError("cancel must not finish the projection")
+
+    async def _spy_outcome(self: Any, *args: Any, **kwargs: Any) -> None:
+        writes.append("record_outcome")
+        raise AssertionError("cancel must not record_outcome on the projection")
+
+    async def _spy_status(self: Any, *args: Any, **kwargs: Any) -> None:
+        writes.append("record_status")
+        raise AssertionError("cancel must not record_status on the projection")
+
+    monkeypatch.setattr(DagRunStore, "finish_run", _spy_finish)
+    monkeypatch.setattr(DagRunStore, "record_outcome", _spy_outcome)
+    monkeypatch.setattr(DagRunStore, "record_status", _spy_status)
+
+    response = await cancel_route("dag-cancel-no-proj-write", _ScopedRequest(_USER_ID))
+    assert response["cancelled"] is True
+    assert writes == []
+
+    # Raw projection receipt stays open — no product-private finished_at.
+    raw = projection.get_run("dag-cancel-no-proj-write")
+    assert raw is not None
+    assert raw["finished_at"] is None
+
+    # Inspection overlay still follows the canonical cancel.
+    detail = await get_run_route("dag-cancel-no-proj-write", _ScopedRequest(_USER_ID))
+    assert detail["status"] == "cancelled"
+    assert detail["finished_at"] is not None  # canonical Run.finished_at
+
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is RunStatus.CANCELLED
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+    assert release.is_set() is False
+
+
 async def test_cancel_route_refuses_while_the_spine_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
