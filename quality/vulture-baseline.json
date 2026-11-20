@@ -435,7 +435,6 @@
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'revision_id'",
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'revision_id'",
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'source_kind'",
-        "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'target_kind'",
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'text_after'",
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'text_before'",
         "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused variable 'todo_id'",

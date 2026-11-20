@@ -371,6 +371,31 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
    establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
    against hostile code, which is what Tiers 1 and 2 are still for.
+   The Builder sandbox has the matching conformance evidence (#80, M2-B5, reconciled onto
+   M2-B1's canonical selector, #2241): the production `ContainerBuilderSandbox` no longer
+   carries a private Docker path — it asks the host-evidenced `maistro.sandbox` selector for
+   a backend satisfying `BUILDER_AGENT`'s vm-tier floor and **refuses**
+   (`NoSuitableBackendError`) without one. That fail-closed refusal is the lane-level proof
+   where no vm-tier backend is evidenced: CI's `sandbox-conformance` job executes exactly
+   that proof on a runner with none, then provisions a rootless userns daemon and runs the
+   real `maistro-builders` image contract on it — non-root uid, `--network=none`, enforced
+   `--memory`. `packages/maistro-bootstrap/tests/test_container_sandbox.py` instantiates the
+   production adapter everywhere: policy admission and the denylist seed boundary (proven
+   not to copy `.env`, `.git/config`, `.git/hooks` or key-shaped files, and never to
+   materialize what a worktree symlink points at), isolation until the explicit sync-back
+   (which never brings `.git` back), path escapes, exec bridging and teardown; where the
+   Kata profile is evidenced, that file's live lane asserts network default-deny and host
+   isolation against the real VM. Backend conformance and escape coverage itself lives in
+   `packages/maistro-core/tests/sandbox/` — filesystem, process, namespace, device,
+   host-socket, credential and privilege surfaces, memory/CPU/file-size exhaustion and
+   post-timeout cleanup against a real kernel, network default-deny against the namespace,
+   and the construction-level credential boundary — executed in CI by the `coverage
+   (no services)` producer with bubblewrap installed, and against the selected Kata VM by
+   its live conformance suite where that profile is evidenced. The supported-backend matrix
+   (including the builder adapter section) is
+   [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md); the
+   M2-B1 reconciliation of this lane is recorded in
+   [`docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md`](docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md).
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced
