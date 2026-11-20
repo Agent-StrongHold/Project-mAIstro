@@ -314,7 +314,7 @@ def test_drifting_reads_fail_materialization() -> None:
 
 def test_drifting_reads_fail_the_command_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     """The same drift surfaces through the command as exit code 1."""
-    monkeypatch.setattr(cli_mod, "FakeSandboxBackend", _DriftingBackend)
+    monkeypatch.setattr("maistro.sandbox.backends.fake.FakeSandboxBackend", _DriftingBackend)
     result = CliRunner().invoke(app, ["eval-workspace", "conformance", "--allow-fake"])
     assert result.exit_code == 1
     assert "Conformance FAILED" in result.output

@@ -693,6 +693,58 @@ def test_batch_size_caps_match_the_frontend_contract() -> None:
     assert ts_schema.group(1) == py_schema.group(1)
 
 
+def _literal_set_members(text: str, declaration: str, *, end_sentinel: str) -> set[str]:
+    """Quoted members of a Python ``frozenset`` / TS ``new Set`` declaration.
+
+    Both allowlists are literal string sets in their own language, so the
+    pins below read the source rather than importing one side of a
+    two-language contract that cannot share a module. No member string can
+    contain the sentinel, so the first occurrence after the declaration is
+    the literal's close.
+    """
+    import re as re_mod
+
+    start = text.index(declaration)
+    end = text.find(end_sentinel, start)
+    assert end != -1, f"unterminated set literal for {declaration}"
+    return set(re_mod.findall(r'"([^"]+)"', text[start:end]))
+
+
+def test_route_root_allowlists_match_the_frontend_contract() -> None:
+    """The collector's route allowlists are the client's, byte for byte.
+
+    rum_store.py repeats the browser normalizers' allowlists as a second
+    boundary (docs/RUM.md): an event whose route the client accepted must
+    never be refused by the server, and vice versa. The lists drifted once:
+    #2273 added ``capabilities`` to the SPA surface and to the client's
+    ``PAGE_ROUTE_ROOTS`` but not to this module's, so every live
+    /capabilities batch was refused 422 wholesale and the e2e correlation
+    spec had nothing stored to read back. A set-equality pin fails on the
+    next unreviewed root instead of on a red browser suite.
+    """
+    import pathlib as pathlib_mod
+
+    backend_dir = pathlib_mod.Path(__file__).resolve().parents[1]
+    frontend_dir = backend_dir.parent / "frontend"
+    py = (backend_dir / "services" / "rum_store.py").read_text(encoding="utf-8")
+    ts = (frontend_dir / "src" / "lib" / "rumSchema.ts").read_text(encoding="utf-8")
+
+    for roots_name in ("PAGE_ROUTE_ROOTS", "API_COLLECTION_ROOTS"):
+        py_members = _literal_set_members(py, f"{roots_name} = frozenset(", end_sentinel="\n)")
+        ts_members = _literal_set_members(ts, f"{roots_name} = new Set([", end_sentinel="]);")
+        assert py_members == ts_members, (
+            f"{roots_name} drifted between services/rum_store.py and "
+            f"frontend/src/lib/rumSchema.ts: server-only "
+            f"{sorted(py_members - ts_members)}, client-only "
+            f"{sorted(ts_members - py_members)}"
+        )
+    # The surface this pin exists for: the primary product surface must be a
+    # reviewed page route on both sides.
+    assert "capabilities" in _literal_set_members(
+        py, "PAGE_ROUTE_ROOTS = frozenset(", end_sentinel="\n)"
+    )
+
+
 # --- who may read the ring (#1420's operator boundary) -----------------------
 
 

@@ -146,6 +146,27 @@ async def test_finish_run_sets_finished_at():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["created", "queued", "running", "waiting", "paused"],
+)
+async def test_finish_run_refuses_nonterminal_finished_at(status: str) -> None:
+    """#1036 purity: WAITING/PAUSED/RUNNING (and the other nonterminals) must
+    never receive an irreversible projection `finished_at` via finish_run —
+    even when a caller bypasses record_outcome. Demote to record_status."""
+    store = DagRunStore()
+    run = await store.start_run(run_id=f"pure-{status}")
+    await store.finish_run(run.id, status=status, canonical_run_id=f"canon-{status}")
+    assert run.finished_at is None
+    assert run.status == status
+    assert run.canonical_run_id == f"canon-{status}"
+    # A later real terminal write must still be able to finish the open row.
+    await store.finish_run(run.id, status="completed")
+    assert run.finished_at is not None
+    assert run.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_singleton_get_dag_run_store_returns_same_instance():
     a = get_dag_run_store()
     b = get_dag_run_store()
