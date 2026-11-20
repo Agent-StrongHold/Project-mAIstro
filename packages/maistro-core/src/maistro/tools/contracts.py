@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.expected_effect import ExpectedEffectEvidence, canonical_digest
+from maistro.tools.approval.gate import PlanApprovalState, needs_escalation, needs_plan_approval
+from maistro.tools.approval.protocols import ApprovalGate
+from maistro.tools.approval.types import Impact, Threshold
 from maistro.tools.reversibility import ToolRegistration, ToolReversibility
 from maistro.tools.reversibility_registry import ReversibilityRegistry
 
@@ -30,6 +33,10 @@ class ToolContractError(ValueError):
 
 class ToolNotAuthorized(ToolContractError):
     """The agent or host did not authorize the requested tool name."""
+
+
+class ToolApprovalRequired(ToolContractError):
+    """An irreversible tool call needs a human approval gate before dispatch."""
 
 
 class UnknownToolSchema(ToolContractError):
@@ -261,11 +268,48 @@ class GovernedToolExecutor:
         contracts: ToolContractRegistry,
         binding_for: ToolBindingResolver,
         backend: Callable[[str, dict[str, Any]], Awaitable[Any]],
+        approval_gate: ApprovalGate | None = None,
+        plan_state: PlanApprovalState | None = None,
+        escalation_thresholds: tuple[Threshold, ...] = (),
     ) -> None:
         self._effects = effects
         self._contracts = contracts
         self._binding_for = binding_for
         self._backend = backend
+        self._approval_gate = approval_gate
+        self._plan_state = plan_state
+        self._escalation_thresholds = escalation_thresholds
+
+    async def _require_irreversible_approval(
+        self,
+        contract: ToolContract,
+        *,
+        task_id: str,
+        impacts: tuple[Impact, ...] = (),
+    ) -> None:
+        """ADR-051 / SPEC-253: irreversible calls need plan coverage or a live gate."""
+        if self._contracts.reversibility_of(contract.name) is not ToolReversibility.IRREVERSIBLE:
+            return
+        if not needs_escalation(
+            contract.name,
+            impacts,
+            self._escalation_thresholds,
+            plan_state=self._plan_state,
+        ):
+            return
+        gate = self._approval_gate
+        if gate is None:
+            raise ToolApprovalRequired(
+                f"irreversible tool {contract.name!r} requires an ApprovalGate before dispatch"
+            )
+        if needs_plan_approval(self._plan_state):
+            decision = await gate.request_plan_approval(task_id, (contract.name,))
+        else:
+            decision = await gate.request_escalation(task_id, contract.name, impacts)
+        if decision.outcome != "approved":
+            raise ToolNotAuthorized(
+                f"irreversible tool {contract.name!r} was not approved ({decision.outcome})"
+            )
 
     async def _authorized_binding(
         self, contract: ToolContract, binding: Binding, context: ToolInvocationContext
@@ -419,6 +463,7 @@ class GovernedToolExecutor:
         # schema or diverging from the persisted prediction and effect key.
         arguments = deepcopy(arguments)
         contract, binding = await self._admit_call(tool_name, arguments, context, authorized_tools)
+        await self._require_irreversible_approval(contract, task_id=context.run_id)
         expected_evidence = self._expected_evidence(contract, arguments)
         invocation = await self._invoke_admitted(
             contract, binding, context, arguments, expected_evidence, effect_scope=effect_scope
@@ -431,6 +476,7 @@ __all__ = [
     "ExpectedEffectRequired",
     "GovernedToolExecutor",
     "PredictionMismatch",
+    "ToolApprovalRequired",
     "ToolArgumentError",
     "ToolBindingResolver",
     "ToolContract",
