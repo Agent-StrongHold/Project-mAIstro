@@ -79,7 +79,6 @@
     "maistro.tools.approval.gate",
     "maistro.tools.approval.protocols",
     "maistro.tools.approval.types",
-    "maistro.tools.media",
     "maistro.tools.net_guard",
     "maistro_canvas.canvas.tool",
     "maistro_evolve.architecture_fit",
