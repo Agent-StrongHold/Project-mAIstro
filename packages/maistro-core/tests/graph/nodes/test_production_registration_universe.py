@@ -110,40 +110,31 @@ def test_the_core_catalog_kinds_are_in_the_universe_through_the_sweep() -> None:
     assert set(core.values()) <= report.loaded
 
 
-def test_the_unreachable_registration_module_stays_out_of_the_proof() -> None:
-    """`maistro_design.nodes` registers `design.orchestrate` and
-    `design.consistency_eval`, but the reviewed `design-node` disposition
-    records that no production process ever imports it — the catalog sweep
-    cannot load it and the kinds are never registered. The guard must neither
-    sweep those kinds as production proof nor silently drop the module: the
-    exclusion has to be the reviewed one."""
+def test_the_design_orchestrate_kinds_are_production_kinds_through_nodes() -> None:
+    """#2311 CONNECT for `design-node`: `maistro_design.nodes` is reachable via
+    the package public surface (same pattern as explore/judge), so
+    `design.orchestrate` and `design.consistency_eval` enter the reconciled
+    production universe through that module — not as an unreachable exclusion.
+    """
     report = _real_reconciliation()
 
-    assert "maistro_design.nodes" not in report.loaded
-    assert "maistro_design.nodes" in unreachable_identities(_REPO_ROOT)
-    assert "maistro_design.nodes" in dispositioned_modules(_REPO_ROOT)
-    # The unreachable module's own kinds stay out of the proof. (The design
-    # wave kinds are a different matter — #987 moved them onto the canonical
-    # spine through their own reachable modules, which the next test proves.)
-    assert not {"design.orchestrate", "design.consistency_eval"} & set(report.production_kinds)
-    # And the kinds stay unregistered in a process that only loads production
-    # modules: nothing above ever imported the unreachable module.
-    import pytest
-
-    with pytest.raises(KeyError):
-        get_node("design.orchestrate")
+    assert "maistro_design.nodes" in report.loaded
+    assert "maistro_design.nodes" not in unreachable_identities(_REPO_ROOT)
+    assert "maistro_design.nodes" not in dispositioned_modules(_REPO_ROOT)
+    for kind in ("design.orchestrate", "design.consistency_eval"):
+        assert report.production_kinds[kind] == "maistro_design.nodes"
+        get_node(kind)  # registered in a process that only loads production modules
 
 
 def test_the_governed_design_wave_kinds_are_production_kinds_through_their_own_modules() -> None:
     """#987 put the design wave on the canonical spine, so these kinds are
     production kinds — proven through their own loaded source identity.
 
-    Before #987 every `design.*` kind came from the unreachable
-    `maistro_design.nodes` module, so the proof was "no `design.*` kind is
-    registered at all". The governed explore/judge kinds are registered by
-    reachable production modules instead, and the reconciled universe has to
-    say so: each one is attributed to the module that defines it, and that
-    module is one the guard actually loaded."""
+    The governed explore/judge kinds are registered by reachable production
+    modules, and the reconciled universe has to say so: each one is
+    attributed to the module that defines it, and that module is one the
+    guard actually loaded. (`design.orchestrate` / `design.consistency_eval`
+    land through `maistro_design.nodes` — proven in the test above.)"""
     report = _real_reconciliation()
 
     for kind, module in (

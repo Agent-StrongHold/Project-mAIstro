@@ -61,6 +61,7 @@ trail as state-shaped events.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -68,6 +69,10 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from maistro.extensions.attribution import (
+    attribution_from_governed_install,
+    log_fields_suffix,
+)
 from maistro.extensions.authority import AuthorityBaseline, compute_authority_delta
 from maistro.extensions.compatibility import CompatibilityPolicy, evaluate_compatibility
 from maistro.extensions.effective_authority import (
@@ -104,6 +109,8 @@ from maistro.extensions.types import (
     TrustClaim,
     UnknownInstall,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -972,6 +979,22 @@ class ExtensionInstallService:
         )
         await self._retire_displaced_active(record, actor=actor, scope=scope, detail=detail)
         await self._store.set_active(record)
+        # M9-I1 (#976): the one log line per activation names the exact package
+        # (version, publisher, both digests) and the canonical install/scope
+        # linkage, so every effect of this extension is traceable to the
+        # identity that produced it — including after upgrade or removal.
+        attribution = attribution_from_governed_install(record)
+        # Rendered into the message, not only ``extra``: the configured stdlib
+        # formatter emits ``%(message)s``, so an ``extra`` field alone never
+        # reaches the line — describe() names only part of the identity, and
+        # the digests and install/scope linkage must be on it too.
+        fields = attribution.to_log_fields()
+        logger.info(
+            "extension active: %s %s",
+            attribution.describe(),
+            log_fields_suffix(fields),
+            extra=fields,
+        )
         return record
 
     async def _retire_displaced_active(

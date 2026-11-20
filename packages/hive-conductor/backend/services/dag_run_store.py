@@ -24,23 +24,26 @@ The writer census (every production writer of a row's status):
   terminal canonical status finishes the row, a non-terminal one is
   mirrored open with no invented `finished_at`, and a missing or
   non-canonical status records nothing.
-- The DAG run route (`routes.dags._record_run_projection`) applies its
-  own inline terminal-only gate (#1877) and calls `finish_run` directly,
-  never `record_outcome`: a terminal canonical outcome finishes the row,
-  while a non-terminal canonical state leaves the row open and
-  correlated at this store's in-flight default rather than mirroring the
-  canonical status.
-- `services.dag_run_live.LiveRunProjection.record_result` also calls
-  `finish_run` directly, with `result["status"] or "failed"` -- a
-  status-less settled result is stamped `failed`. That fallback is
-  pre-existing behavior outside this module, recorded here as open debt
-  in the #35/#1036 writer census.
+- The DAG run route (`routes.dags._record_run_projection`) applies the
+  #1036 terminality contract inline (#1877): a terminal canonical outcome
+  calls `finish_run`; a non-terminal canonical state calls `record_status`
+  so the row mirrors the exact status with no invented `finished_at`
+  (never left stuck at the store's in-flight default).
+- `services.dag_run_live.LiveRunProjection.record_result` routes through
+  `record_outcome` (same terminality contract). Missing or unknown status
+  is logged and records nothing -- never coerced to `failed`.
 - The chat tool's witnessed-attempt branches stamp display facts, never
   a copied or guessed canonical verdict: `_cancellation_answer`
-  finishes a row `cancelled` only after the spine's cancel fence was
-  observed, and the unknown-outcome branch finishes `failed` when the
-  chat attempt it launched died before any canonical verdict existed,
-  so a dead launch is not indistinguishable from a live one (#697).
+  records `cancelled` through `record_outcome` only after the spine's
+  cancel fence was observed (the public cancel route never writes the
+  projection — it delegates to #1169 and lets the read overlay follow),
+  and the unknown-outcome branch finishes `failed` when the chat
+  attempt it launched died before any canonical verdict existed, so a
+  dead launch is not indistinguishable from a live one (#697).
+- `finish_run` itself refuses known nonterminal statuses (#1036 purity):
+  CREATED/QUEUED/RUNNING/WAITING/PAUSED demote to `record_status` with
+  no invented `finished_at`, so a bypass of `record_outcome` cannot
+  irreversibly finish a Run the spine still holds open.
 
 Runs are grouped by the run id supplied by the executing route. Each run has
 ordered node events; the frontend reconstructs the live DAG state from them.
@@ -493,12 +496,12 @@ class DagRunStore:
 
         Not every production writer routes through here (see the module
         docstring's writer census): the run route's inline terminal-only
-        gate and the live projection's direct `finish_run` write
-        canonical-derived statuses outside this method, and the chat
-        tool's witnessed-attempt branches stamp display facts directly.
-        None of them outranks the read door -- `services.dag_run_inspection`
-        reconciles every row against the canonical Run its correlation
-        names (#35).
+        gate and the live projection's `record_outcome` path both apply the
+        same contract, and the chat tool's witnessed-attempt branches stamp
+        display facts only after observing the spine (cancel) or when no
+        canonical verdict exists (dead launch). None of them outranks the
+        read door -- `services.dag_run_inspection` reconciles every row
+        against the canonical Run its correlation names (#35).
         """
         parsed = parse_canonical_status(status)
         if parsed is not None and parsed in TERMINAL_RUN_STATUSES:
@@ -528,16 +531,22 @@ class DagRunStore:
         reported nothing to the list endpoint (#697).
 
         `status` is meant to be copied from the canonical Run's terminal state
-        by the caller; the projection never decides one itself (#35) -- the
-        module docstring's writer census records the callers, including the
-        live projection's `or "failed"` fallback for a status-less result,
-        open census debt that read-door reconciliation outranks.
-        `canonical_run_id`
-        records which canonical Run the outcome came from when the row's own
-        key is not already that id (the chat workflow tool's pre-opened rows),
-        so inspection can reconcile the row against canonical truth at read
-        time instead of trusting a locally stamped terminal status.
+        by the caller; the projection never decides one itself (#35).
+        Defense in depth for #1036: a known nonterminal canonical status
+        (CREATED/QUEUED/RUNNING/WAITING/PAUSED) must never invent
+        `finished_at` — even if a caller bypasses `record_outcome` and hits
+        this method directly. Those calls demote to `record_status` so the
+        row stays open and later terminal writes can still land.
+        `canonical_run_id` records which canonical Run the outcome came from
+        when the row's own key is not already that id (the chat workflow
+        tool's pre-opened rows), so inspection can reconcile the row against
+        canonical truth at read time instead of trusting a locally stamped
+        terminal status.
         """
+        parsed = parse_canonical_status(status)
+        if parsed is not None and parsed not in TERMINAL_RUN_STATUSES:
+            await self.record_status(run_id, status=status, canonical_run_id=canonical_run_id)
+            return
         run = self._runs.get(run_id)
         if run and run.finished_at is None:
             run.finished_at = time.time()

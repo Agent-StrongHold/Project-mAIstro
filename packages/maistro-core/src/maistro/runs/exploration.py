@@ -19,10 +19,10 @@ for that fan-out. It is deliberately small:
 - ``ExplorationPolicy`` is a pack-declared, per-Run-overridable parameter. The
   three policies are values of one enum — not three products.
 
-This module does **not** import or revive ``maistro.orchestrator.waves``
-(ADR-052 / SPEC-255). That island is unreachable dead code pending the C6
-reachability decision and is never the owner of design exploration; the
-canonical ``Goal -> Graph -> Run -> NodeRun -> Attempt`` spine is.
+This module does **not** own ADR-052 / SPEC-255 git wave fan-in/out — those
+helpers live under ``maistro.orchestrator.waves`` and are absorbed onto the
+Graph fan-out path via ``agent.synth_dag`` (#2314). Design exploration stays
+on the canonical ``Goal -> Graph -> Run -> NodeRun -> Attempt`` spine here.
 """
 
 from __future__ import annotations

@@ -45,6 +45,26 @@ class InMemorySessionStore:
 
         return [{"role": role, "content": content} for _, role, content, _ in valid]
 
+    async def transcript(
+        self,
+        session_id: str,
+        ttl_seconds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Return every retained message, oldest first.
+
+        Unlike ``get_history`` this is not clipped to the model-context
+        ``max_messages`` window: retention is the TTL alone. Callers that
+        aggregate over the whole session (ADR-048 search) need the full
+        retained body, not the truncated context the model sees.
+        """
+        ttl = ttl_seconds or self._config.ttl_seconds
+        cutoff = time.time() - ttl
+        valid = sorted(
+            (e for e in self._sessions.get(session_id, []) if e[3] >= cutoff),
+            key=lambda x: x[0],
+        )
+        return [{"role": role, "content": content} for _, role, content, _ in valid]
+
     async def append_messages(
         self,
         session_id: str,

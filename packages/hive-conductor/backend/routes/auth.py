@@ -7,6 +7,7 @@ when the task completes, fails, or is cancelled.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import threading
 import time as _time
@@ -19,7 +20,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from services import registration_policy, username_registry
+from services import authorization, registration_policy, username_registry
 from services.human_auth_mode import HumanAuthModePolicy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
@@ -127,11 +128,39 @@ _SESSION_COOKIE = "hive_session"
 # eligible authenticated activity and never live longer than seven days.
 # These are server-side limits; browser restoration/preferences cannot change them.
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+_ELEVATION_TTL_SECONDS = 15 * 60
 _SESSION_IDLE_TIMEOUT = 60 * 30
 _SESSION_ABSOLUTE_TTL = _COOKIE_MAX_AGE
 _SESSION_ACTIVITY_EXCLUDED_PATHS = frozenset({"/v1/auth/whoami"})
 _SESSION_LOCK = threading.RLock()
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+
+
+def _elevation_ttl_seconds() -> int:
+    """Live elevation TTL for newly issued grants.
+
+    ``HIVE_ELEVATION_TTL_SECONDS`` lets a deployment shorten the window. It can
+    only SHORTEN it: the value is clamped to the 15-minute default from above
+    and to one second from below, so a stray or hostile env value can never
+    extend how long an elevation outlives its task. The clamp is also what the
+    authorization browser E2E uses to prove a grant expiring for real.
+    """
+    raw = os.getenv("HIVE_ELEVATION_TTL_SECONDS", "").strip()
+    if not raw:
+        return _ELEVATION_TTL_SECONDS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _ELEVATION_TTL_SECONDS
+    return max(1, min(requested, _ELEVATION_TTL_SECONDS))
+
+
+def _elevation_ttl_message(ttl_seconds: int) -> str:
+    if ttl_seconds % 60 == 0:
+        return f"They expire in {ttl_seconds // 60} minutes or when the task completes."
+    return f"They expire in {ttl_seconds} seconds or when the task completes."
+
+
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -290,7 +319,34 @@ def _resolve_session(
 
 def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
     grants = sess.get("elevated_grants", {})
-    return {tid: perms for tid, perms in grants.items() if isinstance(perms, list)}
+    expiries = sess.get("elevated_grant_expires", {})
+    now = datetime.now(UTC)
+    active: dict[str, list[str]] = {}
+    for task_id, permissions in grants.items():
+        if not isinstance(permissions, list):
+            continue
+        raw_expiry = expiries.get(task_id) if isinstance(expiries, dict) else None
+        if raw_expiry:
+            try:
+                expiry = datetime.fromisoformat(str(raw_expiry))
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=UTC)
+                if expiry <= now:
+                    continue
+            except ValueError:
+                # A malformed expiry fails closed instead of extending a grant.
+                continue
+        active[task_id] = permissions
+    return active
+
+
+def _grant_expiries(sess: dict[str, Any]) -> dict[str, str]:
+    expiries = sess.get("elevated_grant_expires", {})
+    return (
+        {task_id: str(value) for task_id, value in expiries.items()}
+        if isinstance(expiries, dict)
+        else {}
+    )
 
 
 def refresh_session_activity(session_id: str | None) -> bool:
@@ -330,6 +386,11 @@ def get_current_user(
         "did": user.did,
         "elevated_permissions": all_elevated,
         "elevated_tasks": list(grants.keys()),
+        "elevated_task_expiries": {
+            task_id: expiry
+            for task_id, expiry in _grant_expiries(sess).items()
+            if task_id in grants
+        },
         # This is policy/health metadata only. The opaque session id is never
         # included in the response.
         "session_policy": {
@@ -398,6 +459,7 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
             "role": user.role,
             "permissions": user.permissions,
             "elevated_grants": {},
+            "elevated_grant_expires": {},
             "created_at": issued_at.isoformat(),
             "last_activity_at": issued_at.isoformat(),
         }
@@ -430,7 +492,13 @@ def revoke_task_elevation(session_id: str, task_id: str) -> None:
         grants = sess.get("elevated_grants", {})
         if task_id in grants:
             del grants[task_id]
-            stores.sessions[session_id] = {**sess, "elevated_grants": grants}
+            expiries = _grant_expiries(sess)
+            expiries.pop(task_id, None)
+            stores.sessions[session_id] = {
+                **sess,
+                "elevated_grants": grants,
+                "elevated_grant_expires": expiries,
+            }
 
 
 def _normalized_oauth_provider(provider: str) -> str:
@@ -930,13 +998,29 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
 
 
 @router.get("/whoami")
-def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
+def whoami(response: Response, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
     # Intentionally observational: the SPA may call this during restoration,
     # but a health check must not keep an unattended session alive.
+    response.headers["Cache-Control"] = "no-store"
     user = get_current_user(hive_session, refresh_activity=False)
     if user is None:
         return {"authenticated": False}
     return {"authenticated": True, "user": user}
+
+
+@router.get("/capabilities")
+def capabilities(response: Response, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
+    """Return the live effective policy used by the HTTP authorization gate.
+
+    This is intentionally a fresh, no-store projection. The frontend may use it
+    for convenience, but it cannot grant access: AuthMiddleware evaluates the
+    same policy again on every request.
+    """
+    user = get_current_user(hive_session)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    response.headers["Cache-Control"] = "no-store"
+    return authorization.capability_snapshot(user)
 
 
 @router.post("/elevate")
@@ -979,13 +1063,21 @@ def elevate(
 
     grants: dict[str, list[str]] = sess.get("elevated_grants", {})
     grants[body.task_id] = granted
+    expiries = _grant_expiries(sess)
+    ttl_seconds = _elevation_ttl_seconds()
+    expiry = datetime.now(UTC).timestamp() + ttl_seconds
+    expiries[body.task_id] = datetime.fromtimestamp(expiry, UTC).isoformat()
     with _SESSION_LOCK:
         # Re-read under the same lock as expiry/revocation so an elevation
         # cannot overwrite a concurrent logout or session purge.
         current = _resolve_session(hive_session)
         if current is None:
             raise HTTPException(status_code=401, detail="No session")
-        stores.sessions[hive_session] = {**current, "elevated_grants": grants}
+        stores.sessions[hive_session] = {
+            **current,
+            "elevated_grants": grants,
+            "elevated_grant_expires": expiries,
+        }
     log_audit(
         "elevate",
         user.username,
@@ -997,7 +1089,8 @@ def elevate(
         "ok": True,
         "task_id": body.task_id,
         "elevated_permissions": granted,
-        "message": "Permissions elevated for this task. They will be revoked when the task completes.",
+        "elevated_until": expiries[body.task_id],
+        "message": f"Permissions elevated for this task. {_elevation_ttl_message(ttl_seconds)}",
     }
 
 

@@ -99,6 +99,12 @@ def scores(rows_path: Path) -> dict[str, tuple[int, int]]:
         source = mutations[0].get("module_path") if mutations else None
         if not isinstance(source, str):
             continue
+        # SKIPPED rows (annotation-filtered mutants) were never executed, so
+        # they are excluded from the denominator, matching the viability
+        # adjustment in scripts/mutation_viability.py.
+        outcome_name = str(outcome.get("test_outcome") or outcome.get("worker_outcome") or "")
+        if outcome_name.upper().endswith("SKIPPED"):
+            continue
         killed, total = result.setdefault(source, [0, 0])
         result[source] = [killed + (outcome.get("test_outcome") == "killed"), total + 1]
     return {source: (values[0], values[1]) for source, values in result.items()}
@@ -378,7 +384,7 @@ def main(argv: list[str]) -> int:
         # diagnostic, never a silent 'unknown' or a write without identity.
         scheduler_tool_version, legacy_tool_version = _analyzer_versions(prov)
     except prov.RatchetProvenanceError as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        print(_ci_error_annotation(str(exc)), file=sys.stderr)
         return 2
 
     if args.write_baseline and _scheduler_telemetry_for(args.rows) is not None:
@@ -393,7 +399,7 @@ def main(argv: list[str]) -> int:
                 tool_version=scheduler_tool_version,
             )
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            print(f"::error::{exc}", file=sys.stderr)
+            print(_ci_error_annotation(str(exc)), file=sys.stderr)
             return 2
 
     current = scores(args.rows)
@@ -405,7 +411,7 @@ def main(argv: list[str]) -> int:
     try:
         prov.require_measurement(current, ratchet=RATCHET, what="mutation source outcomes")
     except prov.RatchetProvenanceError as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        print(_ci_error_annotation(str(exc)), file=sys.stderr)
         return 2
 
     if args.write_baseline:
@@ -442,7 +448,7 @@ def main(argv: list[str]) -> int:
                 )
             )
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"::error::{exc}", file=sys.stderr)
+            print(_ci_error_annotation(str(exc)), file=sys.stderr)
             return 2
 
     print(

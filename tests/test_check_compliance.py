@@ -330,8 +330,8 @@ def test_forged_disabled_stale_evidence_fails_closed(checker: ModuleType, regist
             "observed_at": "2000-01-01",
             "result": "passed",
             "workflow_ref": ".github/workflows/mutation.yml",
-            "workflow_enabled": True,
-            "manual_only": False,
+            "workflow_enabled": False,
+            "manual_only": True,
             "ran": True,
         }
     ]

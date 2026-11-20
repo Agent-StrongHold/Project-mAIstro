@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "owner": "@BlakeMatthews-dev",
+  "policy": "Mutation-critical file list (#330). The PR gate mutates changed lines in exactly these files plus the nightly sweep measures them first. The list only grows monotonically: removing or weakening an entry requires a governance-approved change recorded in the reason/evidence fields. Tests that inspect source text or compare constants to their own defaults are not evidence for these properties (see #320, #321, #322); only killed mutants count.",
+  "domains": [
+    "secret-comparison",
+    "resource-floors",
+    "privilege-checks",
+    "router-scorer-magnitudes",
+    "memory-decay-consolidation",
+    "pii-bands",
+    "rubric-thresholds"
+  ],
+  "entries": [
+    {
+      "source": "packages/maistro-core/src/maistro/security/secret_equal.py",
+      "domain": "secret-comparison",
+      "reason": "The constant-time secret comparison primitive. #320 demonstrated the compare_digest -> == mutant survives source-inspection tests; the live decision must route through compare_digest.",
+      "evidence": ["#320", "#322", "#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/security/resource_policy.py",
+      "domain": "resource-floors",
+      "reason": "Resource-security floors (rate limit, body caps, circuit breaker, active-run ceilings). #321 demonstrated the 100x rate-limit and 1024x body-limit mutants survive tests that compare production constants to themselves; the oracle is quality/security-resource-floors.json.",
+      "evidence": ["#321", "#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/privilege.py",
+      "domain": "privilege-checks",
+      "reason": "Privilege checks including the live admin-key bypass. #322 demonstrated a secret_equal -> == mutation on the active comparison is the real bypass; every authorization decision must be exercised through the public boundary.",
+      "evidence": ["#322", "#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/router/scorer.py",
+      "domain": "router-scorer-magnitudes",
+      "reason": "Router scorer magnitudes decide which model/agent serves a request; an off-by-one or sign flip silently changes routing class without failing any functional test.",
+      "evidence": ["#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/memory/episodic/decay_driver.py",
+      "domain": "memory-decay-consolidation",
+      "reason": "Memory decay magnitudes decide what the agent forgets. A weakened decay threshold retains stale or poisoned context with no functional failure.",
+      "evidence": ["#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/memory/episodic/consolidation.py",
+      "domain": "memory-decay-consolidation",
+      "reason": "Memory consolidation decides what is promoted to durable memory; a mutated guard can promote unvetted content.",
+      "evidence": ["#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/observability/tiers.py",
+      "domain": "pii-bands",
+      "reason": "PII sensitivity tiers gate which observability payloads may leave the workspace; weakening a band check leaks PII on normal-tier events (ADR-055 / SPEC-070226-2b70).",
+      "evidence": ["#330"]
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/personas/rubric.py",
+      "domain": "rubric-thresholds",
+      "reason": "Persona rubric thresholds decide pass/fail scoring boundaries; a nudged comparison operator or magnitude changes acceptance verdicts invisibly.",
+      "evidence": ["#330"]
+    }
+  ]
+}

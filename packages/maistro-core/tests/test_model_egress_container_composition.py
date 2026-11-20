@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -155,7 +156,11 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     calls: list[str] = []
 
     async def fake_execute_model_chat(
-        provider: Any, payload: Any, *, endpoint: Any
+        provider: Any,
+        payload: Any,
+        *,
+        endpoint: Any,
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         del payload
         calls.append(provider.name)

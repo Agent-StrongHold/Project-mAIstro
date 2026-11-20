@@ -1,7 +1,10 @@
 import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
+import { LandingSuggestionBanner } from "./LandingSuggestionBanner";
+import { LastSurfaceTracker } from "./LastSurfaceTracker";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { AppearanceToggle } from "./AppearanceToggle";
 import { DegradedBanner } from "./DegradedBanner";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -22,11 +25,9 @@ import {
   Workflow,
   PlayCircle,
   Boxes,
-  Zap,
   Repeat,
   ListTodo,
   CalendarClock,
-  Inbox,
   Bell,
   Gauge,
   ScrollText,
@@ -70,24 +71,23 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
-  // as the primary nav entry; those four stay URL-reachable until deleted.
+  // #2273: one Capabilities surface; Agents / MCP / Skills / Topology pages
+  // are deleted (old URLs redirect to /capabilities — not revived).
   { to: "/capabilities", icon: Boxes, label: "Capabilities" },
-  { to: "/optimizer", icon: Zap, label: "Optimizer" },
-  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
-  // implemented routes with no navigation entry (audit GLO-01). Each is a
-  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
-  // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
-  // Skills, Work Items, Memory) deliberately stay off this list —
-  // docs/route-inventory.md records their URL-only dispositions. Evolution
-  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
-  { to: "/messages", icon: Inbox, label: "Messages" },
+  // #1049 MERGE: Optimizer + Messages nav entries removed — both surfaces
+  // project into Attention. Old /optimizer and /messages URLs redirect there.
+  // #1417: Quotas, Containers, CLI and Audit were registered routes with no
+  // navigation entry (audit GLO-01). Each is a retained surface per the
+  // cutover plan (PROJECT rows, and CLI/Containers under contracts #292/#382),
+  // so they stay discoverable; legacy pages scheduled for replacement
+  // (Agents, Topology, Integrations, Skills, Work Items, Memory) stay off
+  // this list — docs/route-inventory.md. Evolution: #2275 hid the route for
+  // v1.0 (restore v1.2 / #51).
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
-  { to: "/rsi", icon: Repeat, label: "RSI" },
+  { to: "/rsi", icon: Repeat, label: "RSI", surface: "rsi" },
   // #1417: CLI and Containers keep their v1.0 contract lanes (#292, #382),
   // so they stay shipped and must stay reachable while those run.
   // `scope` as above: every Containers mutation requires containers.control
@@ -100,15 +100,9 @@ const fullNav = [
 ];
 
 
-// #1417 review: entries with a `scope` are only actionable for sessions
-// holding that permission (admins pass every gate, as in the backend), so
-// filter them instead of showing screens whose mutations all 403.
-function visibleNav(user: ReturnType<typeof useUser>) {
-  if (!user) return fullNav.filter((item) => !item.scope);
-  if (user.role === "admin") return fullNav;
-  return fullNav.filter((item) => !item.scope || user.permissions.includes(item.scope));
-}
-
+// #1417 review: gated entries are only shown for sessions the canonical
+// authorization policy lets act on them (admins pass every gate, as in the
+// backend), so the nav never advertises a screen whose mutations all 403.
 async function logout() {
   try {
     // frontend-typed-client: allow pre-existing banked raw fetch (was :60); line shifted by the #97 DegradedBanner import/render above.
@@ -125,11 +119,31 @@ async function logout() {
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
+  const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const nav = fullNav.filter((item) => {
+    // One canonical filter for both gating spellings: `surface` resolves
+    // through the SURFACE_POLICY contract served at /v1/auth/capabilities,
+    // `scope` (#1417) names the same API-enforced permission directly. UI
+    // filtering is convenience only — the API re-checks every request (#373).
+    const permission = item.surface
+      ? authorization.surfacePermission(item.surface)
+      : item.scope;
+    if (!permission) {
+      // A gated entry whose permission cannot be resolved fails closed;
+      // ungated entries stay for every authenticated session.
+      return !item.surface && !item.scope;
+    }
+    // Keep a grant that only needs self-elevation reachable so the user can
+    // see the explanation and elevate; hide surfaces they cannot ever use.
+    return authorization.can(permission) || authorization.canElevate(permission);
+  });
   const shellTitle = "Hive Conductor";
 
   return (
     <div className="app-shell">
+      {/* #1050/#1822: stamp last surface for recent-return landing. */}
+      <LastSurfaceTracker />
       <button
         className="hamburger"
         onClick={() => setDrawerOpen(true)}
@@ -157,16 +171,17 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {visibleNav(user).map((item) => (
+          {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) => `drawer-link${isActive ? " active" : ""}`}
               end={item.to === "/cli"}
               onClick={() => setDrawerOpen(false)}
+              title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
             >
               <span className="drawer-link-icon"><item.icon size={16} strokeWidth={1.5} /></span>
-              <span>{item.label}</span>
+              <span>{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
             </NavLink>
           ))}
         </div>
@@ -178,16 +193,16 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {visibleNav(user).map((item) => (
+        {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) => `nav-icon${isActive ? " active" : ""}`}
             end={item.to === "/cli"}
-            title={item.label}
+            title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
           >
             <span aria-hidden><item.icon size={16} strokeWidth={1.5} /></span>
-            <span className="nav-icon-label">{item.label}</span>
+            <span className="nav-icon-label">{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
           </NavLink>
         ))}
         <div style={{ flex: 1 }} />
@@ -250,6 +265,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
             the banner names every degraded optional capability from
             /health and disappears on its own when they recover. */}
         <DegradedBanner />
+        {/* #1050: non-blocking learned-landing proposal (preference-aware). */}
+        <LandingSuggestionBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

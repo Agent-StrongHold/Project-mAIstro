@@ -104,6 +104,7 @@ wait forever for an `Expected` result.
 | CI | `docker-build` | every PR |
 | CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -111,21 +112,23 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
-| CodeQL Advanced | `Analyze (actions)` | base `main` |
-| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
-| CodeQL Advanced | `Analyze (python)` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (python)` | base `main`, `develop` |
 | DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |

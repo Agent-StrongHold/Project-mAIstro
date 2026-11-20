@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import runpy
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -44,6 +46,24 @@ def test_main_parses_argv_and_runs_auto_climb(monkeypatch: pytest.MonkeyPatch) -
         "path": "/x",
         "max_passes": 2,
     }
+
+
+def test_dunder_main_delegates_to_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``python -m services.ui_auto_climb`` must hit the shared ``main()`` entry."""
+    from services import ui_auto_climb
+
+    runs: list[Any] = []
+
+    def fake_run(coro: Any) -> Any:
+        runs.append(coro)
+        if hasattr(coro, "close"):
+            coro.close()
+        return {"best_score": 0, "passes": 0, "history": []}
+
+    monkeypatch.setattr(sys, "argv", ["ui_auto_climb", "--passes", "1"])
+    monkeypatch.setattr(asyncio, "run", fake_run)
+    runpy.run_path(str(Path(ui_auto_climb.__file__)), run_name="__main__")
+    assert runs, "dunder-main must call main() → asyncio.run(auto_climb(...))"
 
 
 def test_loopback_service_defaults_import() -> None:

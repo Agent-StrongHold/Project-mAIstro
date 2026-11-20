@@ -199,7 +199,16 @@ jobs:
   containers:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 -> 45 on 2026-10-24, capacity not scope. At #2298's merge-queue
+    # evaluation (run 40119239790) the job died at the 30-minute cap mid
+    # "Reconcile installed packages to uv.lock" after 29.5 minutes: four
+    # image builds (the research image alone 16 minutes on a cold cache),
+    # four Trivy scans, a Grype cross-check and two SBOMs consumed the
+    # budget before signing started. Recent healthy runs take 18-20 minutes,
+    # so 30 left no headroom for one cold buildx cache. Same precedent as
+    # the coverage gate's 15 -> 30: a cancelled scan never reports, so it
+    # blocks the merge group without measuring anything.
+    timeout-minutes: 45
     # License and container evidence is required before code reaches either
     # protected development or release branch. Release tags are checked again
     # against their pushed digest in release.yml.
@@ -286,13 +295,22 @@ jobs:
           --load --cache-from type=gha,scope=engine-research
           --cache-to type=gha,scope=engine-research,mode=max .
 
+      # The scope carries a `-r2` rotation (PR #2283, CI run 40091186336 job
+      # 120864018186): `--no-cache-filter runtime-apt` forces the apt stage to
+      # re-execute, but the scan of the freshly loaded image still reported the
+      # pre-advisory libbrotli1 1.1.0-2+b7 while the same build's own log showed
+      # deb13u1 unpacked — a stale result read out of this week-old cache scope
+      # is the only state source that can carry that layer, and it is the same
+      # replay class #795 closed at instruction level. Rotation severs every
+      # cached vertex under the old scope; a cache miss rebuilds, so the worst
+      # case is one cold build per workflow.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --no-cache-filter runtime-apt
-          --load --cache-from type=gha,scope=rsi-runner
-          --cache-to type=gha,scope=rsi-runner,mode=max .
+          --load --cache-from type=gha,scope=rsi-runner-r2
+          --cache-to type=gha,scope=rsi-runner-r2,mode=max .
 
       - name: Verify live Python packages and Conductor identity contract
         run: |
@@ -304,13 +322,13 @@ jobs:
           # same floors without asking the image for an extra dist.
           docker run --rm --entrypoint python \
             "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; _v = lambda s: tuple(int(p) for p in s.split('.') if p.isdigit()); assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert _v(m.version('msgpack')) >= (1, 2, 1), m.version('msgpack'); assert _v(m.version('setuptools')) >= (78, 1, 1), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
+            -c "import importlib.metadata as m, sys; _v = lambda s: tuple(int(p) for p in s.split('.') if p.isdigit()); assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); assert _v(m.version('msgpack')) >= (1, 2, 1), m.version('msgpack'); assert _v(m.version('setuptools')) >= (78, 1, 1), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve')+' pynacl='+m.version('pynacl'))"
 
       - name: Verify live observability extra in Conductor image
         run: |
           docker run --rm --entrypoint python \
             "hive-conductor-observability:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
+            -c "import importlib.metadata as m, sys; assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '2.12.2', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert m.version('pynacl') == '1.6.2', m.version('pynacl'); import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp; from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('observability=importable identity=operational python='+sys.version.split()[0])"
 
       - name: Trivy scan (HIGH/CRITICAL only)
         # The step above verifies the versions of the packages installed into
@@ -474,12 +492,17 @@ jobs:
           uv export --locked --package hive-conductor \
             --no-dev --no-emit-workspace \
             --format requirements-txt --output-file /tmp/expected-hive.txt
+          # setuptools and tzdata are the image's declared extras: exact pins
+          # installed by packages/hive-conductor/Dockerfile (ARG
+          # TZDATA_VERSION; the setuptools pin) and deliberately absent from
+          # the lock export, so they are asserted here as members (#290, #348).
           python scripts/check-image-lock-reconciliation.py \
             --image "hive-conductor:pr-${CANDIDATE_TAG}" \
             --expected-file /tmp/expected-hive.txt \
             --member maistro-core==0.9.0 --member maistro-bootstrap==0.9.0 \
             --member maistro-canvas==0.9.0 --member maistro-design==0.9.0 \
-            --member maistro-evolve==0.9.0 --member setuptools==84.2.1
+            --member maistro-evolve==0.9.0 --member setuptools==84.2.1 \
+            --member tzdata==2026.3
 
           uv export --locked --package maistro-server \
             --extra observability --extra browser \

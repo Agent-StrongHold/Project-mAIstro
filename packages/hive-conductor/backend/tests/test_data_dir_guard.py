@@ -1,0 +1,355 @@
+"""Data-directory durability guard (#331).
+
+Covers services/data_dir_guard.py:
+- verify_durable_data_dir: creates a missing directory and returns it resolved
+- unwritable directory → DataDirRefused (probe write fails)
+- unwritable parent (cannot create) → DataDirRefused
+- inside a container: unmounted data dir → DataDirRefused (ephemeral)
+- inside a container: mounted data dir passes
+- inside a container: CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR=1 is the escape hatch
+- outside a container: plain directories pass without any mount requirement
+- missing data dir beside .restore-old-*/.restore-staging* debris → refused
+  (DATA_DIR_RESTORE_RECOVERY); an existing dir beside such debris still passes
+- in a container: missing data dir whose parent holds pre-#331 flat-layout
+  files (state.db/secrets.age/admin.key at the volume root) → refused
+  (DATA_DIR_LEGACY_LAYOUT) with the migration; outside a container the same
+  layout passes (a host's ~/state.db is not a mount-root layout)
+- Foundation.start refuses before initializing any subsystem
+"""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import sys
+from pathlib import Path
+
+import pytest
+
+_BACKEND = pathlib.Path(__file__).resolve().parents[1]
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from services.data_dir_guard import (  # noqa: E402
+    DataDirRefused,
+    _fs_type,
+    verify_durable_data_dir,
+)
+
+
+@pytest.fixture(autouse=True)
+def _outside_container(monkeypatch: pytest.MonkeyPatch):
+    """Tests run as if on a host by default; container tests opt in."""
+    monkeypatch.setattr(
+        "services.data_dir_guard.running_in_container", lambda: False, raising=False
+    )
+    yield
+
+
+def test_creates_missing_dir_and_returns_resolved(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "data"
+    resolved = verify_durable_data_dir(target)
+    assert resolved == target
+    assert target.is_dir()
+    # The writability probe cleaned up after itself.
+    assert list(target.iterdir()) == []
+
+
+def test_unwritable_dir_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "data"
+    target.mkdir()
+    os.chmod(target, 0o500)
+    try:
+        with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
+            verify_durable_data_dir(target)
+    finally:
+        os.chmod(target, 0o700)
+
+
+# --- interrupted-restore debris -----------------------------------------
+
+
+def test_missing_dir_beside_restore_old_artifact_is_refused(tmp_path: Path) -> None:
+    """The kill-between-renames window: target gone, original in .restore-old-*.
+
+    Startup must refuse instead of recreating the directory (which would
+    open a fresh state database and reopen first-run provisioning).
+    """
+    target = tmp_path / "data"
+    old = tmp_path / ".data.restore-old-4711"
+    old.mkdir()
+    (old / "state.db").write_bytes(b"original")
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_RESTORE_RECOVERY"):
+        verify_durable_data_dir(target)
+
+    assert not target.exists()  # nothing was fresh-initialized
+    assert (old / "state.db").read_bytes() == b"original"
+
+
+def test_missing_dir_beside_stale_staging_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "data"
+    (tmp_path / ".data.restore-staging").mkdir()
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_RESTORE_RECOVERY"):
+        verify_durable_data_dir(target)
+
+    assert not target.exists()
+
+
+def test_existing_dir_beside_restore_artifacts_still_passes(tmp_path: Path) -> None:
+    """Leftover debris beside an intact data dir is harmless — do not refuse."""
+    target = tmp_path / "data"
+    target.mkdir()
+    (tmp_path / ".data.restore-old-4711").mkdir()
+    (tmp_path / ".data.restore-staging").mkdir()
+
+    assert verify_durable_data_dir(target) == target
+
+
+def test_uncreatable_parent_is_refused(tmp_path: Path) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.mkdir()
+    os.chmod(blocker, 0o500)
+    try:
+        with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
+            verify_durable_data_dir(blocker / "data")
+    finally:
+        os.chmod(blocker, 0o700)
+
+
+# --- pre-#331 flat layout (volume-root data files) -----------------------
+
+
+def test_in_container_missing_dir_beside_flat_layout_files_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upgrade trap: volume root still holds state.db + vault + key.
+
+    CONDUCTOR_DATA_DIR moved from the volume root to /data/conductor; a
+    volume created before that change must not get a fresh, empty data
+    directory created beside its live files — refuse with the migration.
+    """
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"  # the mount root, pre-nesting layout
+    volume.mkdir()
+    (volume / "state.db").write_bytes(b"accounts")
+    (volume / "secrets.age").write_bytes(b"vault")
+    (volume / "admin.key").write_bytes(b"identity")
+    nested = volume / "conductor"  # CONDUCTOR_DATA_DIR, does not exist yet
+
+    with pytest.raises(DataDirRefused, match="DATA_DIR_LEGACY_LAYOUT"):
+        verify_durable_data_dir(nested)
+
+    assert not nested.exists()  # nothing was fresh-initialized
+    assert (volume / "state.db").read_bytes() == b"accounts"  # data untouched
+
+
+def test_outside_container_flat_layout_files_in_parent_pass(
+    tmp_path: Path,
+) -> None:
+    """Host deployments are exempt: ~/state.db is not a volume-root layout."""
+    (tmp_path / "state.db").write_bytes(b"unrelated")
+    target = tmp_path / "conductor"
+    assert verify_durable_data_dir(target) == target
+    assert target.is_dir()
+
+
+def test_in_container_existing_dir_beside_flat_layout_files_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing data dir is live state; never second-guess it here."""
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"
+    volume.mkdir()
+    (volume / "state.db").write_bytes(b"old")
+    nested = volume / "conductor"
+    nested.mkdir()
+    (nested / "state.db").write_bytes(b"new")
+    # Deterministic mounted-volume simulation: a runner's tmp_path can be
+    # tmpfs, which the durability guard would rightly refuse for its own
+    # reasons — this test is about the flat-layout check only.
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
+    assert verify_durable_data_dir(nested) == nested
+
+
+# --- in-container ephemerality ------------------------------------------
+
+
+def _in_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("services.data_dir_guard.running_in_container", lambda: True, raising=False)
+
+
+def test_in_container_unmounted_dir_is_refused_as_ephemeral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    plain_dir = tmp_path / "conductor"  # on the container root fs
+    plain_dir.mkdir()
+    # Deterministic: force the dir's device to equal the container root's,
+    # whatever filesystem the test's tmp_path actually lands on.
+    root_dev = os.stat("/").st_dev
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: root_dev)
+    with pytest.raises(DataDirRefused, match="DATA_DIR_EPHEMERAL"):
+        verify_durable_data_dir(plain_dir)
+
+
+def test_in_container_mounted_dir_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _in_container(monkeypatch)
+    mounted = tmp_path / "data"
+    mounted.mkdir()
+    # The data dir itself is the mount root: a different device from /,
+    # backed by a durable (non-memory) filesystem. _fs_type is pinned because
+    # a runner's tmp_path can legitimately be tmpfs — a device difference
+    # alone must not wave a tmpfs mount through (see the tmpfs tests below).
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
+    assert verify_durable_data_dir(mounted) == mounted
+
+
+def test_in_container_dir_nested_inside_mounted_volume_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The standalone Compose layout: volume at /data, data dir /data/conductor.
+
+    A data directory that is NOT itself the mount root must still pass — the
+    deployment depends on it, and restore depends on the path being
+    renameable (a mount point is not; rename(2) returns EBUSY).
+    """
+    _in_container(monkeypatch)
+    volume = tmp_path / "data"  # the mount root
+    nested = volume / "conductor"  # CONDUCTOR_DATA_DIR
+    volume.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "ext4")
+    assert verify_durable_data_dir(nested) == nested
+    assert nested.is_dir()
+
+
+def test_in_container_unstattable_dir_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    missing = tmp_path / "vanished"
+
+    def boom(path: object) -> int:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr("services.data_dir_guard._st_dev", boom)
+    with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
+        verify_durable_data_dir(missing)
+
+
+def test_in_container_tmpfs_dir_is_refused_despite_different_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tmpfs mount has a different st_dev from / but is never persisted.
+
+    Docker drops tmpfs files when the container stops, so a device
+    difference alone must not pass the durability guard: the backing
+    filesystem type is checked and /dev/shm-style directories are refused
+    like the container's own layer.
+    """
+    _in_container(monkeypatch)
+    shm_dir = tmp_path / "shm-data"
+    shm_dir.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "tmpfs")
+    with pytest.raises(DataDirRefused, match="DATA_DIR_EPHEMERAL"):
+        verify_durable_data_dir(shm_dir)
+
+
+def test_in_container_tmpfs_dir_passes_only_with_escape_hatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    monkeypatch.setenv("CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR", "1")
+    shm_dir = tmp_path / "shm-data"
+    shm_dir.mkdir()
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: 1 if p == Path("/") else 2)
+    monkeypatch.setattr("services.data_dir_guard._fs_type", lambda p, mounts_path=None: "tmpfs")
+    assert verify_durable_data_dir(shm_dir) == shm_dir
+
+
+def test_fs_type_returns_deepest_containing_mount(tmp_path: Path) -> None:
+    table = tmp_path / "mounts"
+    table.write_text(
+        "sysfs /sys sysfs rw 0 0\n"
+        "tmpfs /dev/shm tmpfs rw 0 0\n"
+        "overlay / overlay rw 0 0\n"
+        "tmpfs /dev/shm/work tmpfs rw 0 0\n",
+        encoding="utf-8",
+    )
+    fs_type = _fs_type
+    # These are synthetic mount-table keys looked up against the fixture above,
+    # never filesystem targets, so the hardcoded tmp path is the point of the test.
+    assert fs_type(Path("/dev/shm/conductor"), table) == "tmpfs"  # nosec B108
+    assert fs_type(Path("/dev/shm/work/conductor"), table) == "tmpfs"  # nosec B108
+    assert fs_type(Path("/data/conductor"), table) == "overlay"
+    assert fs_type(Path("/sys/class/block"), table) == "sysfs"
+    assert fs_type(Path("/nonexistent"), tmp_path / "absent") is None
+
+
+def test_escape_hatch_allows_ephemeral_but_still_probes_writability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _in_container(monkeypatch)
+    monkeypatch.setenv("CONDUCTOR_ALLOW_EPHEMERAL_DATA_DIR", "1")
+    plain_dir = tmp_path / "throwaway"
+    plain_dir.mkdir()
+    resolved = verify_durable_data_dir(plain_dir)
+    assert resolved == plain_dir
+
+    # The hatch is an acknowledgement of ephemerality, not of brokenness:
+    # an unwritable dir is still refused with it set.
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    os.chmod(readonly, 0o500)
+    try:
+        with pytest.raises(DataDirRefused, match="DATA_DIR_UNWRITABLE"):
+            verify_durable_data_dir(readonly)
+    finally:
+        os.chmod(readonly, 0o700)
+
+
+def test_outside_container_no_mount_requirement(tmp_path: Path) -> None:
+    # Host deployments keep state in plain directories like ~/.conductor;
+    # the guard must not demand a mount point there.
+    assert verify_durable_data_dir(tmp_path / "conductor") == tmp_path / "conductor"
+
+
+# --- Foundation wiring ---------------------------------------------------
+
+
+def test_foundation_start_refuses_before_touching_subsystems(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from services import foundation as foundation_module
+
+    _in_container(monkeypatch)
+    bad_dir = tmp_path / "conductor"
+    bad_dir.mkdir()
+    # Deterministic: put the dir on the container root fs' device regardless
+    # of where the test runner's tmp_path actually lives.
+    root_dev = os.stat("/").st_dev
+    monkeypatch.setattr("services.data_dir_guard._st_dev", lambda p: root_dev)
+
+    started: list[str] = []
+
+    class ExplodingFoundation(foundation_module.Foundation):
+        def _init_vault(self, settings: object, data_dir: Path) -> None:
+            started.append("vault")
+            raise AssertionError("vault must not initialize after a refusal")
+
+        def _init_state(self, settings: object, data_dir: Path) -> None:
+            started.append("state")
+            raise AssertionError("state must not initialize after a refusal")
+
+    foundation = ExplodingFoundation()
+    settings = type("S", (), {"conductor_data_dir": str(bad_dir)})()
+    with pytest.raises(DataDirRefused, match="DATA_DIR_EPHEMERAL"):
+        asyncio.run(foundation.start(settings))  # type: ignore[arg-type]
+    assert started == []
