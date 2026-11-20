@@ -71,8 +71,10 @@ async def _seed_active_attempt(
         node_run.node_run_id,
         executor_id="dead-canvas-worker",
         lease_holder="dead-canvas-worker",
+        lease_ttl=timedelta(seconds=30),
     )
     assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is not None
     await runs.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.RUNNING,
@@ -239,6 +241,7 @@ async def test_reclaimed_worker_attempt_is_fenced_before_retry() -> None:
         AttemptStatus.COMPLETED,
     ]
     assert attempts[0].attempt_id == abandoned.attempt_id
+    assert attempts[0].cancellation_cause is CancellationCause.RECOVERED
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
