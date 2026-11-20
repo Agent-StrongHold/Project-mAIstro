@@ -476,7 +476,7 @@ jobs:
           cache-dependency-path: |
             packages/hive-conductor/frontend/package-lock.json
             packages/maistro-canvas/frontend/package-lock.json
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
