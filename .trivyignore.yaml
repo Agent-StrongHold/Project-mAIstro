@@ -55,6 +55,21 @@ vulnerabilities:
       fail-on high, independent Anchore feed). Re-triage when the feed
       reconciles or trixie ships a newer brotli point release; remove this
       entry and re-scan then.
+
+  - id: CVE-2026-78661
+    path: usr/local/bin/docker
+    expired_at: 2026-12-31
+    statement: >-
+      golang.org/x/net/html DoS (fixed in 0.62.0) in the statically built
+      docker CLI binary. docker/cli v29.9.3 still vendors golang.org/x/net
+      v0.60.0 as of this pin, and no v29.9.x release ships a newer vendored
+      copy; the binary is built on the patched Go 1.27.3 toolchain, but the
+      module version is controlled by upstream's vendor tree. Triaged: the CLI
+      is invoked only against a mounted, operator-controlled Docker socket for
+      sandbox container lifecycle, not against attacker-supplied HTML. Re-triage
+      when docker/cli vendors x/net >= 0.62.0 or a newer release is pinned;
+      remove this entry and re-scan then.
+
 secrets:
   - id: aws-access-key-id
     path: moto/
