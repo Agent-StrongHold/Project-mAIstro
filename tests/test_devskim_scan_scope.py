@@ -16,6 +16,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 
 from __future__ import annotations
 
+import os
 import re
 from functools import cache
 from pathlib import Path
@@ -107,48 +108,42 @@ def _is_scanned(path: str) -> bool:
     return allowed and not denied
 
 
+_EXCLUDED_DIRS = {
+    "tests",
+    "__tests__",
+    "node_modules",
+    "dist",
+    "third_party",
+    "swagger-ui",
+    "corpora",
+    "eval",
+}
+
+
 def _shipped_sources() -> list[str]:
     seen: set[str] = set()
     for tree in SHIPPED_TREES:
         for base in REPO_ROOT.glob(tree):
-            for path in base.rglob("*"):
-                if path.suffix not in SOURCE_SUFFIXES:
-                    continue
-                rel = path.relative_to(REPO_ROOT)
-                parts = set(rel.parts)
-                # Tests, vendored code, and the vendored swagger-ui-dist
-                # release (#1425, served by backend/routes/api_docs.py with
-                # sha256 provenance pinned in `_ASSETS` and enforced by
-                # `backend/tests/test_docs_first_party.py`) are what the list
-                # is *for*; they are not the shipped surface it must leave
-                # alone.
-                if parts & {
-                    "tests",
-                    "__tests__",
-                    "node_modules",
-                    "dist",
-                    "third_party",
-                    "swagger-ui",
-                    "corpora",
-                    "eval",
-                }:
-                    continue
-                # Bundled Open Design fixtures (json/md/css only) under
-                # systems/catalog — excluded as a location, not a filename shape.
-                if "systems" in rel.parts and "catalog" in rel.parts:
-                    try:
-                        systems_i = rel.parts.index("systems")
-                    except ValueError:
-                        systems_i = -1
-                    if (
-                        systems_i >= 0
-                        and systems_i + 1 < len(rel.parts)
-                        and rel.parts[systems_i + 1] == "catalog"
-                    ):
+            if not base.exists():
+                continue
+            for root, dirs, files in os.walk(base):
+                # Prune directories that never contribute shipped sources, so
+                # the scan-scope check does not spend its 30s budget walking
+                # (e.g.) node_modules or vendored trees. Semantics match the
+                # previous `parts & _EXCLUDED_DIRS` filter.
+                dirs[:] = [d for d in dirs if d not in _EXCLUDED_DIRS]
+                # Bundled Open Design fixtures under systems/catalog are
+                # excluded as a location, not a filename shape.
+                if "catalog" in dirs and Path(root).name == "systems":
+                    dirs.remove("catalog")
+                for name in files:
+                    path = Path(root) / name
+                    if path.suffix not in SOURCE_SUFFIXES:
                         continue
-                if ".test." in path.name:
-                    continue
-                seen.add(rel.as_posix())
+                    rel = path.relative_to(REPO_ROOT)
+                    if ".test." in name:
+                        continue
+                    seen.add(rel.as_posix())
     return sorted(seen)
 
 
