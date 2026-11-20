@@ -2467,6 +2467,12 @@ async def _provision_configured_workspace(
                 raise
 
 
+
+def _goal_store_requires_postgres(config: AgentConfig, supplied_pg_pool: Any) -> bool:
+    """True when the Goal store must use the durable Postgres backend."""
+    return config.database_url.startswith(("postgresql:", "postgres:")) or supplied_pg_pool is not None
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2696,8 +2702,7 @@ async def create_container(
         goal_store = await wire_goal_store(
             db_pool,
             pg_pool=pg_pool,
-            require_postgres=config.database_url.startswith(("postgresql:", "postgres:"))
-            or supplied_pg_pool is not None,
+            require_postgres=_goal_store_requires_postgres(config, supplied_pg_pool),
         )
         working_log = await _wire_working_memory_backend(db_pool)
         node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
