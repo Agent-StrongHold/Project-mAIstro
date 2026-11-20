@@ -36,7 +36,18 @@ test("the template picker's skeleton has real size while templates load", async 
   // way a real slow link would.
   await page.route("**/v1/dashboard/demos", async (route) => {
     await new Promise((r) => setTimeout(r, 400));
-    await route.continue();
+    // The assertions below can all complete inside this 400ms hold on a
+    // fast host, and the trailing unroute() then disposes the still-pending
+    // route — so by the time the sleep ends, continue() throws "Route is
+    // already handled". That disposition is exactly the intended teardown,
+    // not a product defect: this handler's only job is to hold the fetch
+    // long enough for the skeleton to be observed, and a route Playwright
+    // already resolved needs no second verdict.
+    try {
+      await route.continue();
+    } catch {
+      // Already handled (unroute raced the sleep): nothing left to do.
+    }
   });
 
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });

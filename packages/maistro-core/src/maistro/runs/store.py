@@ -23,6 +23,7 @@ from maistro.runs.concurrency import (
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     refuse_completion_under_terminal_run,
@@ -758,6 +759,24 @@ class RunStore(Protocol):
         written row, or ``None`` when nothing new was written (live lease,
         already terminal, no/infinite lease). Missing ids raise
         ``AttemptNotFound`` — never invent a reclaim for an absent row.
+        """
+        ...
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure (#2369 / #232 P2d).
+
+        Re-reads under authoritative mutation protection, checks the fence,
+        then commits ``CANCELLED`` + ``RECOVERED`` via
+        ``compensate_unlaunched_attempt``. Refuses RUNNING / terminal / stale
+        fence / already-caused winners rather than rewriting them.
         """
         ...
 
@@ -1830,6 +1849,22 @@ class InMemoryRunStore:
         if not lease_is_expired(attempt, moment):
             return None
         settled = reclaim_attempt(attempt, at=moment)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        attempt = self._require_attempt(attempt_id)
+        self._validate_fence(attempt, fencing_token)
+        settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
         self._attempts[attempt_id] = settled
         return settled.model_copy(deep=True)
 
