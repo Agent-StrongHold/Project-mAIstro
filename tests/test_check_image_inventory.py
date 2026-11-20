@@ -192,10 +192,109 @@ def test_a_shipped_entry_may_lack_jobs_behind_an_owned_exception(gate, tmp_path,
             "owner": "@someone",
             "issue": "#346",
             "reason": "needs a preseed step CI does not run yet",
+            "version_scope": "images built from deploy/sbx/template before that lands",
+            "expires": "2999-01-01",
         },
     }
     tree = _tree(tmp_path, [entry], ["Dockerfile"])
     assert _run(gate, tree, monkeypatch) == 0
+
+
+def test_an_exception_without_an_expiry_is_a_permanent_exemption(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """AC-4's "expiring": an exception with no end date never has to be
+    revisited, which is how a temporary gap becomes a permanent exemption."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {
+            "owner": "@someone",
+            "issue": "#346",
+            "reason": "needs a preseed step CI does not run yet",
+            "version_scope": "images built from deploy/sbx/template",
+        },
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "needs `expires` (YYYY-MM-DD)" in capsys.readouterr().out
+
+
+def test_an_exception_with_a_lapsed_expiry_no_longer_excuses_anything(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """A lapsed exception behaves like a lapsed .trivyignore.yaml entry: it
+    stops suppressing, the gate goes red, and the fix is real coverage or a
+    renewed exception with fresh justification — not silence."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {
+            "owner": "@someone",
+            "issue": "#346",
+            "reason": "needs a preseed step CI does not run yet",
+            "version_scope": "images built from deploy/sbx/template",
+            "expires": "2000-01-01",
+        },
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "lapsed on 2000-01-01" in capsys.readouterr().out
+
+
+def test_an_exception_with_a_malformed_expiry_fails(gate, tmp_path, monkeypatch, capsys):
+    """A date the gate cannot parse is a date it cannot lapse on; both
+    directions matter, so only YYYY-MM-DD is accepted."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {
+            "owner": "@someone",
+            "issue": "#346",
+            "reason": "needs a preseed step CI does not run yet",
+            "version_scope": "images built from deploy/sbx/template",
+            "expires": "someday",
+        },
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "must be YYYY-MM-DD" in capsys.readouterr().out
+
+
+def test_an_exception_without_a_version_scope_can_widen_silently(
+    gate, tmp_path, monkeypatch, capsys
+):
+    """AC-4's "version-scoped": without a stated scope, an exception written
+    for one constrained image quietly covers every future build of it."""
+    entry = {
+        "id": "demo",
+        "dockerfile": "Dockerfile",
+        "disposition": "DISTRIBUTED",
+        "rationale": "operator builds it",
+        "built_by": [],
+        "scanned_by": [],
+        "coverage_exception": {
+            "owner": "@someone",
+            "issue": "#346",
+            "reason": "needs a preseed step CI does not run yet",
+            "expires": "2999-01-01",
+        },
+    }
+    tree = _tree(tmp_path, [entry], ["Dockerfile"])
+    assert _run(gate, tree, monkeypatch) == 1
+    assert "needs `version_scope`" in capsys.readouterr().out
 
 
 def test_an_exception_without_an_owner_is_an_exemption(gate, tmp_path, monkeypatch, capsys):
@@ -709,3 +808,47 @@ def test_a_workflow_with_no_jobs_block_declares_no_jobs(gate, tmp_path, monkeypa
     )
     assert _run(gate, tree, monkeypatch) == 1
     assert "declares no job 'containers'" in capsys.readouterr().out
+
+
+# ── the producer-side gate: deploy/sbx/build.sh (#346) ────────────
+
+BUILD_SH = ROOT / "deploy" / "sbx" / "build.sh"
+
+
+def test_the_sbx_producer_script_fails_closed_on_an_unpinned_scanner():
+    """The sbx images cannot be built by CI (the preseed constraint recorded
+    in the inventory's coverage_exception), so the producer script owns their
+    vulnerability gate. That gate is only real if an unpinned or missing
+    scanner is a refusal, not a skip: the same fail-closed pinned-tool
+    contract the script's syft license gate established, now for trivy and
+    grype at exactly the versions security.yml pins."""
+    text = BUILD_SH.read_text(encoding="utf-8")
+    for tool, version in (("trivy", "0.73.0"), ("grype", "0.116.0")):
+        assert f"command -v {tool} >/dev/null 2>&1" in text, (
+            f"{tool} must be required on PATH before any scan runs"
+        )
+        assert "refusing an unpinned vulnerability scan" in text, (
+            "a version mismatch must be a refusal, not a warning"
+        )
+        assert version in text, f"{tool} must be pinned to CI's version ({version})"
+
+
+def test_the_sbx_producer_scans_carry_the_blocking_policy():
+    """Reporting is not gating. The producer scans must carry the same
+    blocking flags as security.yml's containers job: trivy HIGH/CRITICAL with
+    exit-code 1 and ignore-unfixed, grype --fail-on high --only-fixed."""
+    text = BUILD_SH.read_text(encoding="utf-8")
+    assert "--severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed" in text
+    assert "--fail-on high --only-fixed" in text
+
+
+def test_the_sbx_producer_scans_run_before_any_push():
+    """The whole point of the producer gate: a vulnerable image cannot leave
+    the build host. Both scans must precede the PUSH_TAG push (and the local
+    `sbx template load`), or a finding would be reported after the image had
+    already shipped."""
+    text = BUILD_SH.read_text(encoding="utf-8")
+    first_scan = min(text.index("trivy image --severity"), text.index('grype "$image"'))
+    push = text.index('docker push "$PUSH_TAG"')
+    load = text.index("sbx template load /tmp/")
+    assert first_scan < push < load

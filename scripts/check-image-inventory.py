@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -412,22 +413,47 @@ def _build_must_not_publish(
 
 
 def check_exception(entry: dict[str, object], ident: str, failures: list[str]) -> bool:
-    """A shipped image may lack jobs only behind an owned, issue-scoped exception.
+    """A shipped image may lack jobs only behind an owned, issue-scoped,
+    version-scoped, expiring exception (#346's AC-4).
 
-    #346's AC-4 asks for exceptions that are "version-scoped, owned, expiring".
-    Owned and issue-scoped are what this can check from here; an exception with
-    no owner and no issue is not an exception, it is an exemption, and it would
-    let the cheapest thing to write -- nothing -- silently satisfy the gate.
+    An exception with no owner and no issue is not an exception, it is an
+    exemption, and it would let the cheapest thing to write -- nothing --
+    silently satisfy the gate. `version_scope` states which builds the
+    exception covers, so it cannot quietly widen into "every future image".
+    `expires` is a date: a lapsed exception no longer excuses anything, the
+    same way a lapsed .trivyignore.yaml entry stops suppressing -- the gate
+    goes red until the coverage is real or the exception is renewed with
+    fresh justification.
     """
     raw = entry.get("coverage_exception")
     if not isinstance(raw, dict):
         return False
-    for field in ("owner", "issue", "reason"):
+    for field in ("owner", "issue", "reason", "version_scope"):
         if not str(raw.get(field, "")).strip():
             failures.append(
                 f"{ident}: `coverage_exception` needs `{field}`. "
                 "An exception nobody owns is an exemption"
             )
+    expires = str(raw.get("expires", "")).strip()
+    if not expires:
+        failures.append(
+            f"{ident}: `coverage_exception` needs `expires` (YYYY-MM-DD). "
+            "An exception with no expiry is a permanent exemption"
+        )
+    else:
+        try:
+            expiry = date.fromisoformat(expires)
+        except ValueError:
+            failures.append(
+                f"{ident}: `coverage_exception.expires` must be YYYY-MM-DD, got {expires!r}"
+            )
+        else:
+            if expiry < date.today():
+                failures.append(
+                    f"{ident}: `coverage_exception` lapsed on {expires}. Wire the "
+                    "real coverage, or renew the exception with fresh justification "
+                    "and a new expiry"
+                )
     return True
 
 
