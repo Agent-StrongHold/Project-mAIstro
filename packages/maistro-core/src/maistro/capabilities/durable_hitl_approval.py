@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from maistro.capabilities.approval_store import approval_request_digest
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.effect_context import CapabilityEffectContext
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
@@ -84,7 +84,9 @@ class _InfraApprovalNode(BaseNode[_InfraActionIn, _InfraActionOut]):
         async def resolver(candidate: Binding) -> InfraAction:
             return await self._resolve_provider(candidate)
 
-        async def executor(provider: InfraAction, payload: Any) -> dict[str, Any]:
+        async def executor(provider: ResolvedCapabilityProvider, payload: Any) -> dict[str, Any]:
+            if not isinstance(provider, InfraAction):
+                raise TypeError("infra approval Invocation resolved a non-infra provider")
             body = dict(payload) if isinstance(payload, Mapping) else {}
             result = await self._execute_approved(
                 provider,
