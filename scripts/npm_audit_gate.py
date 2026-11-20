@@ -22,6 +22,15 @@ PYSEC-2026-1325 ("upstream states there is no planned fix"), which
 ``scripts/pip_audit_gate.py`` already solved with a triaged allowlist. This
 module mirrors that design for npm: one list, one verdict.
 
+Waiver ledger: that advisory was waived here from 2026-10-19 (#1450, round 9).
+On 2026-11-18 npm's advisory database stopped reporting it — ``npm audit
+--json`` returned **zero** advisories against the identical lock (picomatch
+still pinned at 4.0.7, no new release) — and the two-way ratchet below
+consumed the waiver (#2375): a waiver whose advisory stops being reported must
+go with it. ALLOWED is empty again; the gate stays so the next unpatchable
+advisory gets the same triaged treatment, and if the advisory resurfaces it
+blocks again until it is re-triaged on its own merits.
+
 Contract
 --------
 The workflow step writes the JSON report and this gate owns the verdict::
@@ -70,10 +79,13 @@ BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 # and say why the tree is acceptable anyway, specifically enough to re-audit.
 # An entry whose advisory stops being reported fails as stale — delete it.
 #
-# Ships EMPTY: the one waiver this list ever carried (GHSA-fc5q-39xc-vjpf,
-# picomatch ReDoS through single-branch repeated extglobs, range <=4.0.7 with
-# no patched version) was withdrawn by upstream on 2026-11-18T15:38:56Z, npm's
-# audit stopped reporting it, and the stale leg below required its deletion.
+# Ships EMPTY since 2026-11-18 (#2375): the one waiver this list ever carried
+# (GHSA-fc5q-39xc-vjpf, picomatch ReDoS through single-branch repeated
+# extglobs, range <=4.0.7 with no patched version) was withdrawn by upstream
+# on 2026-11-18T15:38:56Z — npm's advisory database stopped reporting it
+# against the identical lock, picomatch still pinned at 4.0.7 — and the stale
+# leg below required its deletion. History in the module docstring and
+# REPAIR-NOTES-1450-round9-picomatch-audit-gate.md.
 ALLOWED: dict[str, str] = {}
 
 

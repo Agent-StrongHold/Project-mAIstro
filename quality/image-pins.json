@@ -51,11 +51,11 @@
     },
     {
       "image": "python",
-      "tag": "3.14.8-slim-bookworm",
-      "digest": "sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83",
-      "recorded": "2026-10-23",
-      "recorded_in": "#2117",
-      "note": "Autonoetic Copier template base. Dependabot index pin verified against Docker Hub on 2026-10-23; its linux/amd64 image config reports PYTHON_VERSION=3.14.8. The mutable tag has since advanced to a newer index; this row preserves the reviewed immutable Dependabot pin. The single-tenant template retains its separate 3.12.12 pin.",
+      "tag": "3.15.0-slim-bookworm",
+      "digest": "sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d",
+      "recorded": "2026-11-18",
+      "recorded_in": "#2375",
+      "note": "Autonoetic Copier template base. Dependabot index pin (semver-minor 3.14.8 -> 3.15.0, #2375) re-verified against Docker Hub on 2026-11-18: `docker buildx imagetools inspect python:3.15.0-slim-bookworm` resolves the tag to exactly this index digest, and the linux/amd64 manifest annotates org.opencontainers.image.version 3.15.0-slim-bookworm with its image config reporting PYTHON_VERSION=3.15.0. Supersedes the #2117 3.14.8 row, whose mutable tag had already advanced past the old pin. The single-tenant template retains its separate 3.12.12 pin.",
       "used_by": [
         "templates/autonoetic/Dockerfile.jinja"
       ]
@@ -73,25 +73,15 @@
     },
     {
       "image": "golang",
-      "tag": "1.27.3-alpine",
-      "digest": "sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c",
-      "recorded": "2026-10-22",
-      "recorded_in": "#1152",
-      "note": "Builds the age static binaries and the static docker CLI from their pinned upstream release tags (#363, then #1152): the published docker:29-cli binary embeds go1.26.8 stdlib and the age prebuilt binary go1.25.x, both carrying 2026 stdlib HIGHs (CVE-2026-78667/78669/97031, fixed in go1.26.9/1.27.2) that no released tag of either project ships fixed. The 1.27.2 rebuild then aged out itself: CVE-2026-111943 (crypto/x509 MITM via untrusted intermediate certificates, HIGH, fixed in go1.26.10/1.27.3) flagged both binaries' stdlib, so the builder moved to 1.27.3-alpine — #1095's trunk-CI repair independently hit the same advisory and re-resolved the same tag to this identical digest. Resolved 2026-10-22 hours after upstream re-serialized the tag's index with unchanged per-arch content (the earlier same-day index d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 carries the identical linux/amd64 child). The same 1.27.2 -> 1.27.3 bump was independently required by the #795 container-cache repair lane, whose Container scan gate flagged the identical CVE on the age/age-keygen and docker CLI binaries. Narrowed 2026-11-18 (#2414): the root builder Dockerfiles re-pinned the tag to its 2026-11-05 re-serialized index (see the fa3d596 row); this row retains the 2026-10-22 index for the Conductor image's agebuild stage, whose pin that PR did not touch.",
-      "used_by": [
-        "packages/hive-conductor/Dockerfile"
-      ]
-    },
-    {
-      "image": "golang",
-      "tag": "1.27.3-alpine",
-      "digest": "sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18",
-      "recorded": "2026-11-18",
-      "recorded_in": "#2414",
-      "note": "Dependabot digest bump of the dockerclibuild stage's golang:1.27.3-alpine pin in both root builder Dockerfiles: upstream re-serialized the tag's index on 2026-11-05 (this OCI index, linux/amd64 child 0fd028db9bdd4…, config created 2026-11-05 on alpine-minirootfs 3.24.4). Verified against the Docker Hub registry API on 2026-11-18: the tag resolves to this index and the linux/amd64 config env reads GOLANG_VERSION=1.27.3 — the same toolchain as the prior index b8c9b82… (minirootfs 3.24.3, amd64 child bff16a94…), so this is a base rebuild re-pin, not a Go version change (the commit metadata's '1.27.4-alpine' is the listing annotation; the tag annotation stays 1.27.3-alpine). Builds the static docker CLI for the release images (#363/#1152 lineage).",
+      "tag": "1.27.4-alpine",
+      "digest": "sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280",
+      "recorded": "2026-11-19",
+      "recorded_in": "#2375",
+      "note": "Builds the age static binaries (Conductor image's agebuild stage) and the static docker CLI (dockerclibuild stage in both root builder Dockerfiles) from their pinned upstream release tags (#363/#1152 lineage). The toolchain bump chain: prebuilt age 1.25.x / docker:29-cli go1.26.8 stdlib (CVE-2026-78667/78669/97031) -> 1.27.2 rebuild aged out by CVE-2026-111943 (fixed go1.26.10/1.27.3, #1152/#1095) -> 1.27.3 builders aged out by CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4): the #2375 Container scan gate flagged age-keygen's stdlib v1.27.3 (security.yml run 44477475371 job 135401410021, 2026-11-19), so both prior rows \u2014 the 2026-10-22 1.27.3 index b8c9b82\u2026 (#1152, Conductor agebuild) and the 2026-11-05 re-serialized 1.27.3 index fa3d596\u2026 (#2414, root dockerclibuild) \u2014 retire into this single 1.27.4 pin for all three Dockerfiles. Tag resolved to this index via `docker buildx imagetools inspect` 2026-11-19 (index created 2026-11-10, linux/amd64 child ea30e256\u2026, base alpine:3.24) and verified live: `docker run` of the pinned digest prints `go version go1.27.4 linux/amd64` on Alpine 3.24.4.",
       "used_by": [
         "Dockerfile",
-        "Dockerfile.research"
+        "Dockerfile.research",
+        "packages/hive-conductor/Dockerfile"
       ]
     },
     {
