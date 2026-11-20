@@ -30,6 +30,7 @@ from maistro.graph.durable_runs import (
     DurableRunRecord,
     DurableRunStore,
     RunStatus,
+    durable_graph_launch_provenance,
     run_durable_graph,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
@@ -173,6 +174,8 @@ async def admit_self_repair_approval(
     store: DurableRunStore,
     effect_context: CapabilityEffectContext,
     binding: Binding,
+    workspace_id: str,
+    project_id: str,
     action: str,
     params: Mapping[str, Any],
     effect_key: str,
@@ -182,12 +185,24 @@ async def admit_self_repair_approval(
 ) -> DurableRunRecord:
     """Park one self-repair action on a durable waiting-human NodeRun.
 
+    ``workspace_id`` / ``project_id`` are the canonical authorization scope for
+    the admitted Run (HITL discovery and settlement). They must be a real
+    Workspace + Project the operator can authorize — not the synthetic
+    effect-Binding ids used only for ``infra_action`` resolution.
+
+    When ``run_store`` is set, a canonical Run is admitted first (QUEUED, with
+    durable launch provenance) and its id is passed to the executor. Calling
+    ``run_durable_graph`` with a store and no admitted ``run_id`` raises
+    ``RunIntegrityError``.
+
     Raises ``ValueError`` when the action does not require approval (caller
     should auto-run those). Returns the durable record; status is ``PAUSED``.
     """
     tier = tier_for(action, dict(params))
     if tier is ActionTier.READ:
         raise ValueError(f"action {action!r} does not require durable approval")
+    if not workspace_id.strip() or not project_id.strip():
+        raise ValueError("workspace_id and project_id are required for durable HITL scope")
 
     if effect_context.approval_store is None:
         raise RuntimeError("CapabilityEffectContext has no ApprovalStore for durable HITL")
@@ -217,8 +232,8 @@ async def admit_self_repair_approval(
         execute_approved=execute_approved,
     )
     graph = _approval_graph(
-        workspace_id=binding.workspace_id,
-        project_id=binding.project_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
         action=action,
         params=params,
         effect_key=effect_key,
@@ -229,23 +244,43 @@ async def admit_self_repair_approval(
             raise KeyError(node_id)
         return node
 
+    inputs = {
+        "action": action,
+        "params": dict(params),
+        "effect_key": effect_key,
+    }
+    provenance = {
+        "admission_source": "self_repair",
+        "executor": "durable_graph",
+        "effect_key": effect_key,
+        "action": action,
+    }
+    actor = actor_principal_id or "self-repair"
+    run_id: str | None = None
+    if run_store is not None:
+        # Admission owns Run identity when the canonical spine is present.
+        # Skipping create_run leaves run_durable_graph to raise RunIntegrityError
+        # (#2405 Codex P1) — every Hive-wired approval would FAIL closed.
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            actor_principal_id=actor,
+            provenance={
+                **provenance,
+                **durable_graph_launch_provenance(inputs=inputs),
+            },
+        )
+        run_id = admitted.run_id
+
     record = await run_durable_graph(
         graph,
         store=store,
         node_resolver=resolver,
-        inputs={
-            "action": action,
-            "params": dict(params),
-            "effect_key": effect_key,
-        },
-        actor_principal_id=actor_principal_id or "self-repair",
+        inputs=inputs,
+        actor_principal_id=actor,
+        run_id=run_id,
         run_store=run_store,
-        provenance={
-            "admission_source": "self_repair",
-            "executor": "durable_graph",
-            "effect_key": effect_key,
-            "action": action,
-        },
+        provenance=provenance,
     )
     if record.run.status is not RunStatus.PAUSED:
         raise RuntimeError(

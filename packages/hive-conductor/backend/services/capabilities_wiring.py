@@ -167,6 +167,30 @@ def _build_self_repair_effect_invoker(
     return invoke_action
 
 
+async def _resolve_self_repair_hitl_scope() -> tuple[str, str]:
+    """Canonical Workspace + Root Project for self-repair approval Runs.
+
+    The effect Binding keeps synthetic ids for ``infra_action`` resolution;
+    HITL discovery (``/v1/hitl``) requires a real Project in
+    ``authorized_project_ids``. Mirror the schedule admission rule: Hive's
+    configured default Workspace and that Workspace's Root Project.
+    """
+    from config import get_settings
+
+    from services.engine import get_engine
+
+    engine = get_engine()
+    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    scope = getattr(container, "project_scope_store", None)
+    if scope is None:
+        raise RuntimeError("project_scope_store unavailable for durable self-repair approval")
+    workspace_id = str(get_settings().hive_default_workspace_id or "").strip()
+    if not workspace_id:
+        raise RuntimeError("hive_default_workspace_id is unset for durable self-repair approval")
+    root = await scope.root_for_workspace(workspace_id)
+    return workspace_id, root.project_id
+
+
 def _build_self_repair_approval_admittor(
     registry: CapabilityRegistry,
     effect_context: CapabilityEffectContext,
@@ -179,6 +203,7 @@ def _build_self_repair_approval_admittor(
         store = engine.graph_run_store
         if store is None:
             raise RuntimeError("graph_run_store unavailable for durable self-repair approval")
+        workspace_id, project_id = await _resolve_self_repair_hitl_scope()
 
         async def resolve_provider(candidate: Binding) -> InfraAction:
             try:
@@ -202,6 +227,8 @@ def _build_self_repair_approval_admittor(
             store=store,
             effect_context=effect_context,
             binding=binding,
+            workspace_id=workspace_id,
+            project_id=project_id,
             action=proposal.action or "",
             params=proposal.params,
             effect_key=effect_key,
@@ -211,6 +238,21 @@ def _build_self_repair_approval_admittor(
         return record.run.run_id
 
     return admit
+
+
+def _build_self_repair_approval_run_status() -> Callable[[str], Any]:
+    async def status_of(run_id: str) -> str | None:
+        from services.engine import get_engine
+
+        store = get_engine().graph_run_store
+        if store is None:
+            return None
+        record = await store.get(run_id)
+        if record is None:
+            return None
+        return record.run.status.value
+
+    return status_of
 
 
 async def _register_self_repair(
@@ -248,6 +290,7 @@ async def _register_self_repair(
             infra_monitor=monitor,
             effect_invoker=invoke_action,
             approval_admittor=admit_approval,
+            approval_run_status=_build_self_repair_approval_run_status(),
             autonomy=config.infra_autonomy,
         )
     )

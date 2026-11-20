@@ -72,10 +72,13 @@ async def test_remediation_parks_durable_run_until_approved() -> None:
         return action
 
     async def admit(proposal: RepairProposal, effect_key: str) -> str:
+        binding = _binding()
         record = await admit_self_repair_approval(
             store=store,
             effect_context=effects,
-            binding=_binding(),
+            binding=binding,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
             action=proposal.action or "",
             params=proposal.params,
             effect_key=effect_key,

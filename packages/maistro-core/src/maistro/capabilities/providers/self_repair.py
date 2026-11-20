@@ -42,6 +42,11 @@ Autonomy = Literal["approve_all", "auto_safe", "detect_only"]
 InfraEffectInvoker = Callable[[str, dict[str, Any], str], Awaitable[ActionResult]]
 #: Admit one approval-gated proposal as a durable waiting-human Run; return its run_id.
 ApprovalAdmittor = Callable[[RepairProposal, str], Awaitable[str]]
+#: Look up a parked approval Run's status value (e.g. ``cancelled``); ``None`` if unknown.
+ApprovalRunStatus = Callable[[str], Awaitable[str | None]]
+
+#: Durable Run statuses that settle an approval wait and release the governor.
+_TERMINAL_APPROVAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
 
 
 class RuleBasedRepair:
@@ -58,6 +63,7 @@ class RuleBasedRepair:
         infra_monitor: InfraMonitor | None,
         effect_invoker: InfraEffectInvoker | None = None,
         approval_admittor: ApprovalAdmittor | None = None,
+        approval_run_status: ApprovalRunStatus | None = None,
         governor: SafetyGovernor | None = None,
         autonomy: Autonomy = "auto_safe",
         max_actions_per_cycle: int = 2,
@@ -65,6 +71,7 @@ class RuleBasedRepair:
         self._monitor = infra_monitor
         self._effect_invoker = effect_invoker
         self._approval_admittor = approval_admittor
+        self._approval_run_status = approval_run_status
         self._governor = governor or SafetyGovernor()
         self._autonomy = autonomy
         self._max_actions = max_actions_per_cycle
@@ -112,6 +119,11 @@ class RuleBasedRepair:
             self._last_cycle = RepairCycleResult(ts="", results=[])
             return self._last_cycle
 
+        # Release in_flight for waits that settled out-of-band (cancel_hitl,
+        # timeout, resume-to-completion) so later faults on that resource are
+        # not permanently suppressed (#2405 Codex P2).
+        await self._reconcile_pending_approvals()
+
         try:
             health = await self._monitor.snapshot()
         except Exception as exc:  # monitor failure → safe_noop empty cycle, never raise
@@ -130,6 +142,28 @@ class RuleBasedRepair:
 
         self._last_cycle = RepairCycleResult(ts=health.ts, results=results)
         return self._last_cycle
+
+    async def _reconcile_pending_approvals(self) -> None:
+        if not self._pending_approval_runs or self._approval_run_status is None:
+            return
+        settled: list[str] = []
+        for resource, run_id in self._pending_approval_runs.items():
+            try:
+                status = await self._approval_run_status(run_id)
+            except Exception as exc:
+                logger.warning(
+                    "self_repair: approval run status lookup failed for %s (%s): %s",
+                    resource,
+                    run_id,
+                    exc,
+                )
+                continue
+            if status is None or status not in _TERMINAL_APPROVAL_STATUSES:
+                continue
+            self._governor.record_result(resource, recovered=(status == "completed"))
+            settled.append(resource)
+        for resource in settled:
+            del self._pending_approval_runs[resource]
 
     # --- per-proposal handling ---
     async def _handle(self, proposal: RepairProposal, dispatched: int) -> tuple[RepairResult, bool]:
