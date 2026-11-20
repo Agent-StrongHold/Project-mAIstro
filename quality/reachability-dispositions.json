@@ -138,9 +138,9 @@
     {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
-      "disposition": "CONNECT",
-      "rationale": "ADR-069's signed code registry, ADR-070's repertoire, and the skills catalog, connectors, forge and loader. #59 puts MCP, skill import and signed loading on one governed path, which is where every one of these is reached.",
-      "root": "the governed supply-chain path (#59)",
+      "disposition": "RETIRE",
+      "rationale": "#2319: Capabilities UI (#2273) ships slots/providers only; the governed skills path (#59) already admits via import_pipeline + InMemorySkillRegistry + code_registry. These eight packages have no production callers and must not be invented onto Capabilities. Physical deletion waits on #35 parity.",
+      "replaced_by": "maistro.skills.import_pipeline / maistro.skills.registry / maistro.capabilities.discovery (skills); maistro.memory.learnings.lifecycle.commit_to_repertoire (repertoire; ADR-070)",
       "modules": [
         "maistro.repertoire",
         "maistro.repertoire.protocol",
