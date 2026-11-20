@@ -1,6 +1,6 @@
 ---
 name: code-health
-description: Deep "better than a linter" quality scan that the regular CI ruff/mypy pass does not catch — cyclomatic complexity + maintainability (radon/xenon), dead code (vulture), god functions/files (lizard + AST), copy-paste (pylint R0801), security (bandit), and optionally architecture boundaries (import-linter), dep hygiene (deptry), docstring coverage (interrogate). Argument-driven: pass a path/package, or omit to scan files changed vs the base branch. Use before opening a PR, or when reviewing a chunk of work.
+description: "Deep \"better than a linter\" quality scan that the regular CI ruff/mypy pass does not catch — cyclomatic complexity + maintainability (radon/xenon), dead code (vulture), god functions/files (lizard + AST), copy-paste (pylint R0801), security (bandit), and optionally architecture boundaries (import-linter), dep hygiene (deptry), docstring coverage (interrogate). Argument-driven: pass a path/package, or omit to scan files changed vs the base branch. Use before opening a PR, or when reviewing a chunk of work."
 ---
 
 The user wants a deep quality scan. The argument is $ARGUMENTS (an optional path or package dir to scan). This runs the analyzers that are intentionally NOT in the per-commit CI loop — the ones too slow or too noisy to gate every push, but valuable on demand.

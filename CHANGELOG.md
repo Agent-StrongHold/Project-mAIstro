@@ -118,6 +118,27 @@ or placeholder-only section.
 
 ### Security
 
+- **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
+  the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
+  session now returns the same 404 as a missing id; provenance-omit-and-admit
+  is gone. Workspace switch clears the prior transcript immediately and Chat
+  Retry re-hydrates after load failures (AC-3/AC-7).
+
+- **Overlay patchright driver Node 24.22.3 in the research image (#2356).**
+  Grype `--only-fixed --fail-on high` failed Container scan on
+  `maistro-engine-research` for seven HIGHs in the wheel-bundled
+  `patchright/driver/node` 24.22.1 (CVE-2026-126051/123865/123866/123874/
+  123863/123872/123864; fixed in 24.22.3/26.13.1). No newer patchright
+  wheel on PyPI; copy the digest-pinned `node:24.22.3-bookworm-slim` binary
+  over the driver and assert `v24.22.3`.
+
+- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2375; aligned
+  in #2356).** Trivy HIGH on `usr/bin/age` / `age-keygen` (and the same
+  stdlib in the static docker CLI) when built on `golang:1.27.3-alpine`:
+  MaxBytesReader HTTP/1 hang, fixed in go1.26.11/1.27.4. Digest-pinned
+  builder in `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
+  `Dockerfile.research`; `quality/image-pins.json` single 1.27.4 row.
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in
