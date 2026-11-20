@@ -711,6 +711,14 @@ jobs:
       # any high/critical advisory outside its ALLOWED list fails the job —
       # including future advisories on the same packages — and a waiver whose
       # advisory stops being reported fails as stale.
+      #
+      # Reconciliation with #344's merge over this exact step: the surface is
+      # now judged twice, deliberately. security.yml's js-supply-chain job
+      # audits every tracked npm surface (any severity, expiring
+      # version-pinned exceptions plus GuardDog/license/typosquat/provenance)
+      # while this step keeps the in-tree high/critical verdict behind its
+      # no-fix-only waiver ratchet. Both fail closed, so their verdicts can
+      # only ever disagree by one of them going red — never a silent pass.
       - run: npm audit --json > /tmp/npm-audit.json || true
         working-directory: packages/maistro-canvas/frontend
       - run: python scripts/npm_audit_gate.py /tmp/npm-audit.json
