@@ -5,6 +5,9 @@
 # The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
 # publishes the required Linux wheels for cp313, but not cp314. Keep the exact
 # patch version here so a moving base tag cannot silently change that contract.
+# 3.13.16 -> 3.13.18 (#2303 CI repair): grype's fresh DB flags CVE-2026-115557
+# (CRITICAL) in the 3.13.16 interpreter binary; the fix landed in 3.13.18, and
+# the in-image assertion below moves with the pin so the contract stays exact.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
