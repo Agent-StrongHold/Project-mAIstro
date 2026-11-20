@@ -25,6 +25,7 @@ from maistro.runs.model import (
 
 _ACTIVE_NODE = frozenset({RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING})
 _ACTIVE_ATTEMPT = frozenset({AttemptStatus.CREATED, AttemptStatus.RUNNING})
+_PARKABLE_NODE = frozenset({RunStatus.RUNNING, RunStatus.WAITING})
 
 
 class RecoveredDispositionRefused(ValueError):
@@ -79,6 +80,39 @@ def _has_active_physical_work(
     return False
 
 
+def _assert_recovered_disposition_lineage(*, attempt: Attempt, run: Run, node_run: NodeRun) -> None:
+    if not is_typed_recovered_attempt(attempt):
+        raise RecoveredDispositionRefused(
+            f"Attempt {attempt.attempt_id!r} is not a typed RECOVERED cancellation"
+        )
+    if attempt.node_run_id != node_run.node_run_id:
+        raise RecoveredDispositionRefused("Attempt does not belong to the resolved NodeRun")
+    if node_run.run_id != run.run_id:
+        raise RecoveredDispositionRefused("NodeRun does not belong to the resolved Run")
+
+
+def _preserve_recovered_disposition(
+    *,
+    attempt: Attempt,
+    node_run: NodeRun,
+    all_node_runs: list[NodeRun],
+    attempts_by_node_run: dict[str, list[Attempt]],
+) -> RecoveredDispositionPlan | None:
+    """Return a no-op plan when parking must be skipped; else ``None`` to continue."""
+    latest = latest_node_runs(all_node_runs).get(node_run.node_id)
+    if latest is None or latest.node_run_id != node_run.node_run_id:
+        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
+
+    peers = attempts_by_node_run.get(node_run.node_run_id, [])
+    highest = _highest_ordinal(peers)
+    if highest is None or highest.attempt_id != attempt.attempt_id:
+        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
+
+    if node_run.status in TERMINAL_RUN_STATUSES or node_run.status is RunStatus.PAUSED:
+        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
+    return None
+
+
 def plan_recovered_attempt_disposition(
     *,
     attempt: Attempt,
@@ -100,29 +134,18 @@ def plan_recovered_attempt_disposition(
     - NodeRun PAUSED or terminal
     - already WAITING with active siblings (parent stays RUNNING)
     """
-    if not is_typed_recovered_attempt(attempt):
-        raise RecoveredDispositionRefused(
-            f"Attempt {attempt.attempt_id!r} is not a typed RECOVERED cancellation"
-        )
-    if attempt.node_run_id != node_run.node_run_id:
-        raise RecoveredDispositionRefused("Attempt does not belong to the resolved NodeRun")
-    if node_run.run_id != run.run_id:
-        raise RecoveredDispositionRefused("NodeRun does not belong to the resolved Run")
-
-    latest = latest_node_runs(all_node_runs).get(node_run.node_id)
-    if latest is None or latest.node_run_id != node_run.node_run_id:
-        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
-
-    peers = attempts_by_node_run.get(node_run.node_run_id, [])
-    highest = _highest_ordinal(peers)
-    if highest is None or highest.attempt_id != attempt.attempt_id:
-        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
-
-    if node_run.status in TERMINAL_RUN_STATUSES or node_run.status is RunStatus.PAUSED:
-        return RecoveredDispositionPlan(park_node_run=False, park_run=False)
+    _assert_recovered_disposition_lineage(attempt=attempt, run=run, node_run=node_run)
+    preserved = _preserve_recovered_disposition(
+        attempt=attempt,
+        node_run=node_run,
+        all_node_runs=all_node_runs,
+        attempts_by_node_run=attempts_by_node_run,
+    )
+    if preserved is not None:
+        return preserved
 
     park_node = node_run.status is RunStatus.RUNNING
-    if node_run.status not in {RunStatus.RUNNING, RunStatus.WAITING}:
+    if node_run.status not in _PARKABLE_NODE:
         raise RecoveredDispositionRefused(
             f"NodeRun {node_run.node_run_id!r} in {node_run.status.value!r} "
             "cannot receive a recovered disposition"

@@ -2002,6 +2002,59 @@ class PgRunStore:
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
         return settled
 
+    async def _locked_recovered_disposition_tree(
+        self, conn: Any, attempt_id: str
+    ) -> tuple[Attempt, Run, NodeRun, list[NodeRun], dict[str, list[Attempt]]]:
+        """Resolve lineage under Run + NodeRun locks for recovered parking.
+
+        Attempt rows are read without Attempt locks (facts only). Candidate
+        NodeRun is rebound from the locked set so the planner and writer share
+        the same identity snapshot. Cold trees hydrate via ``archive_key``.
+        """
+        attempt = await self._require_attempt(attempt_id, conn=conn)
+        node_row = await conn.fetchrow(
+            "SELECT node_run_id, payload, archive_key FROM canonical_node_runs "
+            "WHERE node_run_id = $1",
+            attempt.node_run_id,
+        )
+        if node_row is None:
+            raise NodeRunNotFound(attempt.node_run_id)
+        node_run = NodeRun.model_validate(await self._hydrate(node_row))
+
+        run = Run.model_validate(
+            await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
+        )
+        node_rows = await conn.fetch(
+            """SELECT node_run_id, payload, archive_key FROM canonical_node_runs
+               WHERE run_id = $1
+               ORDER BY node_run_id
+               FOR UPDATE""",
+            run.run_id,
+        )
+        all_node_runs = [NodeRun.model_validate(await self._hydrate(row)) for row in node_rows]
+        locked_candidate = next(
+            (nr for nr in all_node_runs if nr.node_run_id == node_run.node_run_id),
+            None,
+        )
+        if locked_candidate is None:
+            raise NodeRunNotFound(node_run.node_run_id)
+
+        attempt = await self._require_attempt(attempt_id, conn=conn)
+        attempts_by_node_run: dict[str, list[Attempt]] = {
+            nr.node_run_id: [] for nr in all_node_runs
+        }
+        if all_node_runs:
+            attempt_rows = await conn.fetch(
+                """SELECT attempt_id, payload, archive_key FROM canonical_attempts
+                   WHERE node_run_id = ANY($1::text[])
+                   ORDER BY ordinal""",
+                [nr.node_run_id for nr in all_node_runs],
+            )
+            for row in attempt_rows:
+                peer = Attempt.model_validate(await self._hydrate(row))
+                attempts_by_node_run.setdefault(peer.node_run_id, []).append(peer)
+        return attempt, run, locked_candidate, all_node_runs, attempts_by_node_run
+
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -2016,55 +2069,13 @@ class PgRunStore:
         pool-acquiring helpers inside the transaction.
         """
         async with self._pool.acquire() as conn, conn.transaction():
-            attempt = await self._require_attempt(attempt_id, conn=conn)
-            # Hydrate through archive_key: a cold tree still has rows, but
-            # payload is NULL after archive_cold_runs (#2424 Codex).
-            node_row = await conn.fetchrow(
-                "SELECT node_run_id, payload, archive_key FROM canonical_node_runs "
-                "WHERE node_run_id = $1",
-                attempt.node_run_id,
-            )
-            if node_row is None:
-                raise NodeRunNotFound(attempt.node_run_id)
-            node_run = NodeRun.model_validate(await self._hydrate(node_row))
-
-            run = Run.model_validate(
-                await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
-            )
-            node_rows = await conn.fetch(
-                """SELECT node_run_id, payload, archive_key FROM canonical_node_runs
-                   WHERE run_id = $1
-                   ORDER BY node_run_id
-                   FOR UPDATE""",
-                run.run_id,
-            )
-            all_node_runs = [NodeRun.model_validate(await self._hydrate(row)) for row in node_rows]
-            # Re-bind the candidate NodeRun from the locked set so identity
-            # facts match what the planner sees under the same locks.
-            locked_candidate = next(
-                (nr for nr in all_node_runs if nr.node_run_id == node_run.node_run_id),
-                None,
-            )
-            if locked_candidate is None:
-                raise NodeRunNotFound(node_run.node_run_id)
-            node_run = locked_candidate
-
-            # Attempt facts on this connection without Attempt row locks.
-            attempt = await self._require_attempt(attempt_id, conn=conn)
-            attempts_by_node_run: dict[str, list[Attempt]] = {
-                nr.node_run_id: [] for nr in all_node_runs
-            }
-            if all_node_runs:
-                attempt_rows = await conn.fetch(
-                    """SELECT attempt_id, payload, archive_key FROM canonical_attempts
-                       WHERE node_run_id = ANY($1::text[])
-                       ORDER BY ordinal""",
-                    [nr.node_run_id for nr in all_node_runs],
-                )
-                for row in attempt_rows:
-                    peer = Attempt.model_validate(await self._hydrate(row))
-                    attempts_by_node_run.setdefault(peer.node_run_id, []).append(peer)
-
+            (
+                attempt,
+                run,
+                node_run,
+                all_node_runs,
+                attempts_by_node_run,
+            ) = await self._locked_recovered_disposition_tree(conn, attempt_id)
             plan = plan_recovered_attempt_disposition(
                 attempt=attempt,
                 run=run,
