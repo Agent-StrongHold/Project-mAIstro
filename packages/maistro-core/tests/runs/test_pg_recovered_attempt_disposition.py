@@ -52,9 +52,6 @@ class _DispositionPool:
     async def fetchval(self, query: str, *args: object) -> object | None:
         sql = " ".join(query.split())
         self.statements.append(sql)
-        if "FROM canonical_node_runs WHERE node_run_id" in sql:
-            payload = self.node_runs.get(str(args[0]))
-            return payload
         raise AssertionError(f"unexpected fetchval query: {query!r}")
 
     async def fetchrow(self, query: str, *args: object) -> _Row | None:
@@ -65,6 +62,13 @@ class _DispositionPool:
             if payload is None:
                 return None
             return _Row(run_id=str(args[0]), payload=payload, archive_key=None)
+        if "FROM canonical_node_runs WHERE node_run_id" in sql:
+            # Unlocked lineage read — hydrate via payload/archive_key.
+            assert "FOR UPDATE" not in sql
+            payload = self.node_runs.get(str(args[0]))
+            if payload is None:
+                return None
+            return _Row(node_run_id=str(args[0]), payload=payload, archive_key=None)
         if "FROM canonical_attempts WHERE attempt_id" in sql:
             # Unlocked Attempt read — must not carry FOR UPDATE.
             assert "FOR UPDATE" not in sql, "Attempt facts must not take row locks"
@@ -80,7 +84,7 @@ class _DispositionPool:
         if "FROM canonical_node_runs" in sql and "FOR UPDATE" in sql:
             run_id = str(args[0])
             rows = [
-                _Row(payload=payload)
+                _Row(node_run_id=node_run_id, payload=payload, archive_key=None)
                 for node_run_id, payload in sorted(self.node_runs.items())
                 if self.node_run_runs.get(node_run_id) == run_id
             ]
@@ -89,7 +93,7 @@ class _DispositionPool:
             assert "FOR UPDATE" not in sql, "Attempt facts must not take row locks"
             node_ids = set(args[0]) if args else set()
             return [
-                _Row(payload=payload)
+                _Row(attempt_id=attempt_id, payload=payload, archive_key=None)
                 for attempt_id, payload in self.attempts.items()
                 if self.attempt_nodes.get(attempt_id) in node_ids
             ]
@@ -217,3 +221,24 @@ async def test_repeat_disposition_is_a_fixed_point_with_no_writes() -> None:
     assert parked_node.status is RunStatus.WAITING
     assert parked_run.status is RunStatus.WAITING
     assert pool.updates == []
+
+
+async def test_lineage_reads_select_archive_key_for_hydrate() -> None:
+    """Cold trees keep rows with NULL payload; disposition must ask for archive_key."""
+    pool, attempt_id = await _disposition_pool()
+    store = _store(pool)
+
+    await store.apply_recovered_attempt_disposition(attempt_id)
+
+    unlocked_node = next(
+        s for s in pool.statements if "FROM canonical_node_runs WHERE node_run_id" in s
+    )
+    node_lock = next(
+        s for s in pool.statements if "FROM canonical_node_runs" in s and "FOR UPDATE" in s
+    )
+    attempt_facts = next(
+        s for s in pool.statements if "FROM canonical_attempts" in s and "ANY" in s
+    )
+    assert "archive_key" in unlocked_node
+    assert "archive_key" in node_lock
+    assert "archive_key" in attempt_facts

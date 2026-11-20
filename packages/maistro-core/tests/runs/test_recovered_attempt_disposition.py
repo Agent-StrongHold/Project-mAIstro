@@ -5,6 +5,7 @@ Protocol + in-memory / SQLite / PostgreSQL. Reconciler wiring is P4b.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -319,3 +320,46 @@ def test_planner_refuses_lineage_mismatch() -> None:
             all_node_runs=[node_run],
             attempts_by_node_run={node_run.node_run_id: [attempt]},
         )
+
+
+async def test_sqlite_cancelled_error_rolls_back_open_transaction(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CancelledError must not leave BEGIN IMMEDIATE open on the shared conn."""
+    import aiosqlite
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.sqlite_store import SqliteRunStore
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-cancel")
+    project = await projects.create(
+        workspace_id="ws-cancel", parent_project_id=root.project_id, name="c"
+    )
+    conn = await aiosqlite.connect(tmp_path / "disposition.db")
+    store = SqliteRunStore(conn, project_store=projects)
+    await store.ensure_schema()
+    try:
+        spine = (store, "ws-cancel", project.project_id)
+        store_inner, attempt, _node, _run = await _running_recovered(spine)
+
+        real_require = store_inner._require_attempt
+
+        async def _cancel_after_begin(attempt_id: str) -> Any:
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(store_inner, "_require_attempt", _cancel_after_begin)
+
+        with pytest.raises(asyncio.CancelledError):
+            await store_inner.apply_recovered_attempt_disposition(attempt.attempt_id)
+
+        monkeypatch.setattr(store_inner, "_require_attempt", real_require)
+        # A later writer must be able to BEGIN IMMEDIATE again — proof the
+        # cancelled disposition rolled back rather than leaving a nested txn.
+        parked_node, parked_run = await store_inner.apply_recovered_attempt_disposition(
+            attempt.attempt_id
+        )
+        assert parked_node.status is RunStatus.WAITING
+        assert parked_run.status is RunStatus.WAITING
+    finally:
+        await conn.close()

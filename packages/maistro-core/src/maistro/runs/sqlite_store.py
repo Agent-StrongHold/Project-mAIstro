@@ -1710,7 +1710,10 @@ class SqliteRunStore:
                         (status, payload, identity),
                     )
                 await self._conn.commit()
-            except Exception:
+            except BaseException:
+                # CancelledError inherits BaseException, not Exception: leaving
+                # BEGIN IMMEDIATE open after the write lock releases poisons
+                # the shared connection for every later writer (#2424 Codex).
                 self._pending.clear()
                 await self._conn.rollback()
                 raise
