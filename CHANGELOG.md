@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Changed
 
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
 - **Hive never-registered / unfinished climb services RETIREd (#2309).**
   Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
   `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
