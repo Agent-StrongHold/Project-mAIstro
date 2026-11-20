@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +20
+  packages/hive-conductor/backend/tests: +23
   packages/maistro-core/tests: +32
 ---
 # cursor-port-1981-1084-admitted-calls-c4f8-623a
@@ -28,13 +28,18 @@ cases onto `GovernedLLMClient(AdmittedModelCalls)`:
 Hive bridge wiring tests were rewritten for the same admitted_calls /
 `llm._calls` contract without a net inventory delta after refresh.
 
-## packages/hive-conductor/backend/tests (+20)
+## packages/hive-conductor/backend/tests (+23)
 
-Restored `test_materialized_model_authority.py` from the #1981 lineage (adapted
-to `effective_llm_gateway_key` and current RuntimeSource materialization):
-definition-Workspace restriction, Binding refusal, live Attempt lease,
-sampling/API-base fidelity, distinct Agent effect keys, and
-revocation-before-replay for later-materialized Agents.
+- Restored `test_materialized_model_authority.py` from the #1981 lineage
+  (adapted to `effective_llm_gateway_key` and current RuntimeSource
+  materialization): definition-Workspace restriction, Binding refusal, live
+  Attempt lease, sampling/API-base fidelity, distinct Agent effect keys, and
+  revocation-before-replay for later-materialized Agents (+20).
+- Restored `test_configured_hive_agents_use_admitted_execution_and_usage`
+  (param `boot`/`materialized`) plus `test_start_exposes_admitted_calls_over_configured_container`
+  (+3): real SQLite-provisioned bridge join of Invocation to actor/Workspace/
+  Project/Run/Attempt/Binding/usage, then Binding revocation with zero new
+  effects.
 
-Evidence notes (no inventory-delta): `1084-agent-admission-binding-actor.md`,
+Evidence notes: `1084-agent-admission-binding-actor.md`,
 `1084-agent-delegation-effects.md`, `1084-hive-agent-admitted-calls.md`.

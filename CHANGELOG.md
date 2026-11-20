@@ -67,6 +67,12 @@ or placeholder-only section.
   Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
   Agent effect keys, and revocation-before-replay for later-materialized Agents.
 
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
+
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
   PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
