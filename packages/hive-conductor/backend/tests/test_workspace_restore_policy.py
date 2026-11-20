@@ -1,31 +1,15 @@
 """Recent-return restore policy bands (#1050 / #1822).
 
-The SPA owns the landing decision (`decideLanding` in
-``frontend/src/lib/landing.ts``). These tests pin the same absolute windows
-and proportional extensions so a drift between docs and the published bands
-fails closed in CI — not a second authority.
+Exercises production ``decide_landing`` / ``restore_window_ms`` in
+``services.workspace_preferences`` (lockstep with frontend ``landing.ts``).
+Changing or removing the stale-window / proportional-window logic must fail
+these cases — not a second test-local authority.
 """
 
 from __future__ import annotations
 
 import pytest
-
-# Mirror of frontend RESTORE_ABSOLUTE_MS — keep in lockstep with landing.ts.
-RESTORE_ABSOLUTE_MS = {
-    "off": 0,
-    "brief": 15 * 60 * 1000,
-    "balanced": 4 * 60 * 60 * 1000,
-    "generous": 24 * 60 * 60 * 1000,
-}
-
-
-def _window_ms(aggressiveness: str, *, left_at: int, session_started: int) -> int:
-    absolute = RESTORE_ABSOLUTE_MS[aggressiveness]
-    if aggressiveness in {"balanced", "generous"} and 0 < session_started <= left_at:
-        session_len = left_at - session_started
-        proportion = 1.0 if aggressiveness == "generous" else 0.5
-        return max(absolute, int(session_len * proportion))
-    return absolute
+from services.workspace_preferences import decide_landing, restore_window_ms
 
 
 @pytest.mark.parametrize(
@@ -48,5 +32,22 @@ def test_restore_window_bands(
 ) -> None:
     left_at = 1_700_000_000_000
     session_started = left_at - session_len
-    window = _window_ms(band, left_at=left_at, session_started=session_started)
+    window = restore_window_ms(band, left_at_ms=left_at, session_started_at_ms=session_started)
     assert (away_ms <= window) is expect_restore
+
+    decision = decide_landing(
+        aggressiveness=band,
+        default_landing="/home",
+        recent={
+            "path": "/chat",
+            "left_at_ms": left_at,
+            "session_started_at_ms": session_started,
+        },
+        now_ms=left_at + away_ms,
+    )
+    if expect_restore:
+        assert decision == {"path": "/chat", "reason": "restore"}
+    elif band == "off":
+        assert decision == {"path": "/home", "reason": "off"}
+    else:
+        assert decision == {"path": "/home", "reason": "stale"}
