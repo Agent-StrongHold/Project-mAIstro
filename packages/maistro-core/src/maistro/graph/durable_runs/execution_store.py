@@ -622,32 +622,13 @@ class DurableRunExecutionStore:
             if attempt.node_run_id == node_run_id
         ]
 
-    async def apply_recovered_attempt_disposition(
+    async def _apply_local_recovered_disposition(
         self,
         attempt_id: str,
         *,
-        at: datetime | None = None,
+        at: datetime | None,
     ) -> tuple[NodeRun, Run]:
-        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
-
-        When a canonical RunStore is wired, the disposition write is that
-        store's atomic method; this adapter mirrors the resulting NodeRun/Run
-        into the durable Graph record so AttemptLifecycleReconciler can use
-        DurableRunExecutionStore as AttemptLifecycleStore (mypy / #2425).
-        """
-        if self._run_store is not None:
-            settled_node, settled_run = await self._run_store.apply_recovered_attempt_disposition(
-                attempt_id, at=at
-            )
-            self._require_run_id(settled_run.run_id)
-
-            def mirror(record: DurableRunRecord) -> DurableRunRecord:
-                updated = self._replace_node_run(record, settled_node)
-                return updated.model_copy(update={"run": settled_run})
-
-            await self._mutate(mirror)
-            return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
-
+        """In-record recovered parking when no canonical RunStore is wired."""
         record = await self._get_record()
         attempt = next(
             (item for item in record.attempts if item.attempt_id == attempt_id),
@@ -685,6 +666,34 @@ class DurableRunExecutionStore:
             return updated
 
         await self._mutate(update)
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
+
+        When a canonical RunStore is wired, the disposition write is that
+        store's atomic method; this adapter mirrors the resulting NodeRun/Run
+        into the durable Graph record so AttemptLifecycleReconciler can use
+        DurableRunExecutionStore as AttemptLifecycleStore (mypy / #2425).
+        """
+        if self._run_store is None:
+            return await self._apply_local_recovered_disposition(attempt_id, at=at)
+
+        settled_node, settled_run = await self._run_store.apply_recovered_attempt_disposition(
+            attempt_id, at=at
+        )
+        self._require_run_id(settled_run.run_id)
+
+        def mirror(record: DurableRunRecord) -> DurableRunRecord:
+            updated = self._replace_node_run(record, settled_node)
+            return updated.model_copy(update={"run": settled_run})
+
+        await self._mutate(mirror)
         return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
 
     async def transition_attempt(

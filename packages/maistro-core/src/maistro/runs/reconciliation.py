@@ -212,32 +212,9 @@ class AttemptLifecycleReconciler:
 
         node_run = await self._require_node_run(attempt.node_run_id)
         if attempt.status is AttemptStatus.COMPLETED:
-            physical = AttemptResult.from_attempt(persisted)
-            accepted = node_run.accepted_outcome
-            announce_cause = cancellation or CancellationCause.RECOVERED
-            if accepted is not None:
-                if accepted.attempt_result == physical:
-                    # Acceptance and parent settlement are separate durable writes.
-                    # A crash between them must be repairable by replaying the
-                    # already-persisted Attempt rather than stranding the Run.
-                    await self._settle_run_if_fully_observed(node_run.run_id)
-                    await self._announce(persisted, node_run, announce_cause)
-                    return node_run
-                raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
-            outcome = AcceptedNodeOutcome(
-                node_run_id=node_run.node_run_id,
-                attempt_result=physical,
-                logical_status=RunStatus.COMPLETED,
-                result=physical.result,
-            )
-            settled = await self._accept_node_outcome(node_run, outcome)
-            await self._settle_run_if_fully_observed(settled.run_id)
-            await self._announce(persisted, settled, announce_cause)
-            return settled
-
+            return await self._reconcile_completed(persisted, node_run, cancellation=cancellation)
         if attempt.status is AttemptStatus.CANCELLED:
             return await self._reconcile_cancelled(persisted, node_run, cancellation=cancellation)
-
         if attempt.status is AttemptStatus.YIELDED:
             # A pause, not a failure. The disposition is read off the persisted
             # Attempt rather than passed in, so a process that restarts and
@@ -252,6 +229,37 @@ class AttemptLifecycleReconciler:
         await self._park_run_if_inactive(parked.run_id)
         await self._announce(persisted, parked, cancellation or CancellationCause.RECOVERED)
         return parked
+
+    async def _reconcile_completed(
+        self,
+        persisted: Attempt,
+        node_run: NodeRun,
+        *,
+        cancellation: CancellationCause | None,
+    ) -> NodeRun:
+        """Accept a COMPLETED Attempt into the NodeRun, repairing stranded Runs."""
+        physical = AttemptResult.from_attempt(persisted)
+        accepted = node_run.accepted_outcome
+        announce_cause = cancellation or CancellationCause.RECOVERED
+        if accepted is not None:
+            if accepted.attempt_result == physical:
+                # Acceptance and parent settlement are separate durable writes.
+                # A crash between them must be repairable by replaying the
+                # already-persisted Attempt rather than stranding the Run.
+                await self._settle_run_if_fully_observed(node_run.run_id)
+                await self._announce(persisted, node_run, announce_cause)
+                return node_run
+            raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
+        outcome = AcceptedNodeOutcome(
+            node_run_id=node_run.node_run_id,
+            attempt_result=physical,
+            logical_status=RunStatus.COMPLETED,
+            result=physical.result,
+        )
+        settled = await self._accept_node_outcome(node_run, outcome)
+        await self._settle_run_if_fully_observed(settled.run_id)
+        await self._announce(persisted, settled, announce_cause)
+        return settled
 
     async def _reconcile_cancelled(
         self,
