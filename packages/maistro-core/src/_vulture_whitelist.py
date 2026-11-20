@@ -9,6 +9,7 @@ Invocation execution API.
 
 from maistro import identity as identity_package
 from maistro.a2a.external import ExternalAgentRegistry
+from maistro.agents.spec.agent_spec import AgentRole
 from maistro.backlog.markdown_io import ParsedItem
 from maistro.backlog.model import (
     BacklogClaim,
@@ -21,6 +22,7 @@ from maistro.backlog.pg_store import PgBacklogStore
 from maistro.backlog.sqlite_store import SqliteBacklogStore
 from maistro.backlog.store import BacklogStore, InMemoryBacklogStore
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
 from maistro.cli._backlog import RoleChoice
 from maistro.cli._backlog import cutover as backlog_cutover_command
@@ -101,6 +103,7 @@ from maistro.goals.reconciliation.store import (
     SqliteGoalStore,
 )
 from maistro.governance.promotion import PromotionContract, PromotionLedger
+from maistro.graph.durable_runs.execution_store import DurableRunExecutionStore
 from maistro.graph.harness_targets import HarnessEvolutionProposal, HarnessTargetKind
 from maistro.identity import __getattr__ as identity_getattr
 from maistro.identity._crypto import ConductorSeed, DerivedKey
@@ -171,6 +174,13 @@ provenance_snapshot = "provenance_snapshot"
 format_version = "format_version"
 
 _VULTURE_WHITELIST = (
+    # AgentRole's closed vocabulary is the agent-spec wire contract: role
+    # values round-trip through YAML manifests and API payloads by string
+    # value, and the spec tests pin the complete member set. #847 removed
+    # DEFAULT_TOOLS, the only in-src reference to the intent_router member;
+    # the vocabulary itself stays, so the member is named here the same way
+    # the #793 pack-contract enums are.
+    AgentRole.INTENT_ROUTER,
     # P0.1 identity split (#53): Principal is always importable; crypto and lifecycle
     # symbols load through __getattr__ and ConductorSeed's public API.
     identity_getattr,
@@ -188,6 +198,11 @@ _VULTURE_WHITELIST = (
     ResolvedBinding.resolved_at,
     Invocation._validate_invocation,
     InvocationExecutionService.invoke,
+    # The expected-effect evidence model (#57) validates its cross-field
+    # digest contract through Pydantic decorator dispatch; no scanned call
+    # site names the validator (same shape as Binding._validate_binding
+    # above).
+    ExpectedEffectEvidence._validate_evidence,
     # PersistedStore's atomic username-claim transactions (#1061). The durable
     # backend is reached from packages/hive-conductor's username_registry via
     # getattr(backend, ...) duck-typing, so no scanned call site names these
@@ -341,6 +356,22 @@ _VULTURE_WHITELIST = (
     SqliteRunStore.get_eval_score,
     PgRunStore.record_eval_score,
     PgRunStore.get_eval_score,
+    # Exact-ID lease reclaim (#2358 / #232 P2b). Protocol + three stores ship
+    # ahead of the Graph adapter caller (P3a); tests exercise the seam, and
+    # this packages/*/src scan does not read tests — same posture as the
+    # eval-score write/read seam above.
+    RunStore.reclaim_expired_attempt,
+    InMemoryRunStore.reclaim_expired_attempt,
+    SqliteRunStore.reclaim_expired_attempt,
+    PgRunStore.reclaim_expired_attempt,
+    # Owned CREATED prelaunch compensation (#2369 / #232 P2d). Wired through
+    # AttemptExecutionService; the packages/*/src scan still needs the
+    # protocol/backends named because the Protocol method is structural.
+    RunStore.compensate_unlaunched_attempt,
+    InMemoryRunStore.compensate_unlaunched_attempt,
+    SqliteRunStore.compensate_unlaunched_attempt,
+    PgRunStore.compensate_unlaunched_attempt,
+    DurableRunExecutionStore.compensate_unlaunched_attempt,
     EvalMethod.MODEL_JUDGE,
     EvalMethod.HUMAN,
     EvalJudge._validate_judge,

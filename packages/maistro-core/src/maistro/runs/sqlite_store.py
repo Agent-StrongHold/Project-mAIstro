@@ -10,6 +10,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
+from maistro.observability.metrics import (
+    OldestUnit,
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
@@ -20,6 +26,7 @@ from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
     refuse_completion_under_terminal_run,
@@ -218,6 +225,20 @@ _PURGE_DEPENDENT_SQL = {
         "DELETE FROM graph_continuations WHERE run_id IN (SELECT value FROM json_each(?))"
     ),
 }
+
+#: The spine tables this store's purge governs, with each table's oldest-record
+#: expression and unit, for the post-purge health probe (#325). The Run,
+#: NodeRun and Attempt models serialize `created_at` inside the payload, the
+#: eval scores carry a real `scored_at` column, and the graph continuation
+#: denormalizes `created_at` (migration 021) — ISO-8601 text in every case, so
+#: `MIN` orders the same way the datetimes do.
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("canonical_runs", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_node_runs", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_attempts", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_run_eval_scores", "scored_at", "iso"),
+    ("graph_continuations", "created_at", "iso"),
+)
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -1128,6 +1149,23 @@ class SqliteRunStore:
             continuations += max(cursor.rowcount, 0)
         return continuations
 
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the spine this store owns (#325).
+
+        Rows, bytes and the oldest retained record, per run_purge table —
+        the level that shows a policy leaking before its backlog age does.
+        Throttled per store by the publisher, so a per-admission sweep costs
+        at most one probe per interval no matter how chatty the Workspaces.
+        """
+        if not retention_health_probe_due("runs:sqlite"):
+            return
+        samples = []
+        for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+            sample = await sqlite_table_sample(self._conn, table, oldest_expr, oldest_unit=unit)
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("runs:sqlite", "sqlite", samples, min_interval_s=0.0)
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -1149,34 +1187,42 @@ class SqliteRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
+        outcome: PurgeOutcome | None = None
         async with self._write_lock:
             doomed = await self._collect_purge_doomed(scope, cutoff, limit)
             if not doomed:
-                return PurgeOutcome(scope=scope)
-            purged = doomed[:limit]
-            # One json array parameter per statement: the id lists never
-            # travel as interpolated SQL (see the statement constants above).
-            run_id_param = json.dumps([run_id for run_id, _run in purged])
-            node_runs, attempts = await self._count_purge_spine(run_id_param)
-            # Dependent evidence beyond the spine, in the same transaction:
-            # owned resumable state deleted, retained provenance counted.
-            continuations = await self._purge_dependent_tables(run_id_param)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
-            await self._conn.commit()
-            return PurgeOutcome(
-                scope=scope,
-                runs=len(purged),
-                node_runs=node_runs,
-                attempts=attempts,
-                continuations=continuations,
-                backlog_remaining=len(doomed) > limit,
-            )
+                outcome = PurgeOutcome(scope=scope)
+            else:
+                purged = doomed[:limit]
+                # One json array parameter per statement: the id lists never
+                # travel as interpolated SQL (see the statement constants above).
+                run_id_param = json.dumps([run_id for run_id, _run in purged])
+                node_runs, attempts = await self._count_purge_spine(run_id_param)
+                # Dependent evidence beyond the spine, in the same transaction:
+                # owned resumable state deleted, retained provenance counted.
+                continuations = await self._purge_dependent_tables(run_id_param)
+                # Eval evidence is spine-attached (FK on run_id), so it dies with
+                # the Run tree, in the same transaction and before the rows it
+                # names (M7-A3).
+                await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
+                await self._conn.commit()
+                outcome = PurgeOutcome(
+                    scope=scope,
+                    runs=len(purged),
+                    node_runs=node_runs,
+                    attempts=attempts,
+                    continuations=continuations,
+                    backlog_remaining=len(doomed) > limit,
+                )
+        # Outside the write lock: the probe is read-only housekeeping and must
+        # not extend the lock hold a transition may be waiting on. A quiet
+        # table publishes too — zero deletions is exactly when the stored
+        # level is the only health signal there is.
+        await self._publish_table_health()
+        return outcome
 
     async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
         async with self._write_lock:
@@ -1520,6 +1566,11 @@ class SqliteRunStore:
         today, and not something to make load-bearing. The candidate set is
         already narrowed to non-terminal Attempts by the status predicate,
         which is the part that matters for cost.
+
+        Selection outside the write lock is only a candidate list. Each row is
+        re-read and re-validated inside ``_write_lock`` so a renewal (or other
+        terminalizer) that won between nominating and writing is skipped —
+        batch returns only newly written rows (#2358 / #232 P2b+P2c).
         """
         moment = now if now is not None else datetime.now(UTC)
         cursor = await self._conn.execute(
@@ -1533,17 +1584,65 @@ class SqliteRunStore:
         )
         reclaimed: list[Attempt] = []
         async with self._write_lock:
-            for attempt in doomed[:limit]:
-                settled = reclaim_attempt(attempt, at=moment)
+            for nominee in doomed[:limit]:
+                current = await self.get_attempt(nominee.attempt_id)
+                if current is None or not lease_is_expired(current, moment):
+                    continue
+                settled = reclaim_attempt(current, at=moment)
                 await self._update_payload(
                     "canonical_attempts",
                     "attempt_id",
-                    attempt.attempt_id,
+                    nominee.attempt_id,
                     settled.status.value,
                     json_of(settled),
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None

@@ -75,7 +75,7 @@ from maistro.memory.working_graph.wiring import (
 )
 from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.quota.default_tracker import set_default_quota_tracker
+from maistro.quota.recorder import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -122,6 +122,8 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.backlog.store import BacklogItemStore
+from maistro.workspaces.backlog.wiring import wire_backlog_store
 from maistro.workspaces.backlog_history.store import BacklogHistoryStore
 from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
 from maistro.workspaces.campaigns.store import CampaignStore
@@ -292,6 +294,8 @@ class Container:
     #: it lives in the `goal_reader` seam below, over the canonical Workspace
     #: authorization path (#1150).
     goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+    #: Workspace/Project-scoped BacklogItems (#98), on the Project store's backend.
+    backlog_store: BacklogItemStore = None  # type: ignore[assignment]
 
     @property
     def goal_reader(self) -> ScopedGoalStore:
@@ -506,6 +510,10 @@ class Container:
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
+    # Compatibility adapters all cross this one canonical model boundary.
+    model_chat_binding: Any = None
+    model_chat_egress: Any = None
+    model_chat_client: Any = None
     # Observability record/replay + PII tier routing (ADR-055).
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
@@ -2315,6 +2323,59 @@ class Container:
             self.catalog_service = CatalogService(store)
         return self.catalog_service
 
+    async def wake_external_graph_result(self, task: Any) -> None:
+        """Write an A2A completion into its canonical parent Graph pause.
+
+        A2A task state is only a transport receipt. The metadata stamped at
+        dispatch identifies the canonical Run and NodeRun that own the pause;
+        this method is the reachable production waker for terminal receipts.
+        """
+        if self.graph_run_store is None:
+            return
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        run_id = str(metadata.get("parent_run_id") or "")
+        node_id = str(metadata.get("parent_node_id") or "")
+        status = getattr(getattr(task, "status", None), "value", None)
+        if not run_id or not node_id or status not in {"completed", "failed", "cancelled"}:
+            return
+        try:
+            await self.graph_run_store.submit_external_result(
+                run_id,
+                node_id,
+                {
+                    "status": status,
+                    "task_id": str(getattr(task, "id", "")),
+                    "result": getattr(task, "result", None),
+                    "error": getattr(task, "error", None),
+                },
+            )
+        except (KeyError, ValueError):
+            # The parent may have timed out, been answered, or been purged
+            # before an at-least-once receipt arrived. Its canonical outcome
+            # remains authoritative and must not be rewritten here.
+            logger.info(
+                "A2A completion did not wake parent Run %s node %s",
+                run_id,
+                node_id,
+            )
+
+    def _schedule_external_graph_result(self, task: Any) -> None:
+        """Schedule the async canonical wake from A2A's synchronous receipt API."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule A2A completion without a running event loop")
+            return
+        scheduled = loop.create_task(
+            self.wake_external_graph_result(task),
+            name=f"a2a-graph-wakeup-{getattr(task, 'id', 'unknown')}",
+        )
+        scheduled.add_done_callback(
+            lambda completed: None if completed.cancelled() else completed.exception()
+        )
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2609,6 +2670,11 @@ async def create_container(
         # The configured Workspace is provisioned at composition, not left to
         # the first operator action (#1152 review) — why is on the helper.
         await _provision_configured_workspace(workspace_store, config.workspace_id)
+        backlog_store = await wire_backlog_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,
@@ -2687,13 +2753,11 @@ async def create_container(
         router = RouterEngine()
         classifier = ClassifierEngine()
         context_builder = ContextBuilder()
-
         strike_tracker = _wire_strike_tracker(
             enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
         )
 
         gate = Gate(warden=warden, strike_tracker=strike_tracker)
-
         from maistro.security.permission_policy import (
             build_permission_table,
             describe_permission_table,
@@ -2773,6 +2837,12 @@ async def create_container(
         handler_caller = HTTPHandlerCaller(handler_invocation_store)
 
         event_bus = EventBus()
+
+        # ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
+        # Recipes land disabled so localhost defaults cannot fire until ops arm them.
+        from maistro.events.wiring import wire_legacy_trigger_surface
+
+        wire_legacy_trigger_surface(event_bus)
 
         # ADR-047 delivery gateway (#2312 CONNECT): process ChannelRegistry with
         # the default log channel so outbound dispatch is process-reachable.
@@ -2855,6 +2925,52 @@ async def create_container(
             provider_registry=provider_registry,
         )
 
+        # One active model Binding per container, composed over the container's
+        # own governed effect context. Compatibility callers may derive a scoped
+        # copy, but they register it in this same BindingStore before the
+        # Invocation starts; no app-specific registry or effect authority
+        # exists. The binding names the deployment's default gateway credential
+        # so acquire() can route the call through the same scoped pool the
+        # operator-declared Bindings use.
+        from maistro.capabilities.binding import Binding
+        from maistro.capabilities.model_chat import GovernedModelChatClient, ModelChatEgress
+        from maistro.capabilities.providers.llm_gateway import (
+            DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            GatewayEndpoint,
+        )
+        from maistro.credentials.types import CredentialRecord
+
+        model_chat_binding = Binding(
+            workspace_id=config.workspace_id,
+            project_id="default",
+            capability="model.chat",
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        )
+        await capability_effects.bindings.put(model_chat_binding)
+        # The deployment's gateway secret, registered under the one reference
+        # the composition root ever registers, so the binding above can acquire
+        # it through the canonical credential router (#1091). Without a key
+        # there is nothing to authorize and every governed call refuses with
+        # CredentialScopeError before reaching the gateway.
+        if config.litellm_key:
+            capability_effects.credentials.add(
+                workspace_id=config.workspace_id,
+                project_id="default",
+                record=CredentialRecord(
+                    key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+                    provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+                    api_key=config.litellm_key,
+                ),
+            )
+        model_chat_egress = ModelChatEgress(
+            capability_effects,
+            registry=provider_registry,
+            router=llm_router,
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+        )
+        model_chat_client = GovernedModelChatClient(model_chat_egress, model_chat_binding)
+
         # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
         wired_harness_adapters = _wire_harness_adapters(harness_adapters)
         # Governed effects hold the backend-selected canonical EventStore chosen
@@ -2866,6 +2982,9 @@ async def create_container(
         canonical_event_publisher = CanonicalEventPublisher(
             capability_effects.event_store, legacy_bus=event_bus
         )
+        from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+        recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -2900,7 +3019,6 @@ async def create_container(
         spawn_harness_node = AgentSpawnHarnessNode(
             adapters=wired_harness_adapters, effect_context=capability_effects
         )
-
         # --- Personas golden records (SPEC-192) --------------------------------
         from maistro.personas.golden import InMemoryGoldenRecordStore
 
@@ -2941,6 +3059,7 @@ async def create_container(
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
             persona_store=persona_store,
+            backlog_store=backlog_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2951,7 +3070,11 @@ async def create_container(
             chat_admitter=chat_admitter,
             template_store=graph_template_store,
             node_template_store=node_template_store,
-            graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+            graph_run_store=CanonicalDurableRunStore(
+                run_store,
+                graph_continuations,
+                events=recovery_event_sink,
+            ),
             schedule_store=schedule_store,
             schedule_admitter=schedule_admitter,
             task_idempotency=task_idempotency,
@@ -2982,6 +3105,9 @@ async def create_container(
             goal_reconciliation_store=goal_reconciliation_store,
             provider_registry=provider_registry,
             llm_router=llm_router,
+            model_chat_binding=model_chat_binding,
+            model_chat_egress=model_chat_egress,
+            model_chat_client=model_chat_client,
             record_store=record_store,
             pii_detector=pii_detector,
             identity_store=identity_store,
@@ -3039,7 +3165,6 @@ async def create_container(
             history_conn=history_conn,
         )
         raise
-
     # One word again, and only because this change is what makes it true.
     #
     # #135 had to report the stores and the durable events separately, because
@@ -3065,6 +3190,10 @@ async def create_container(
     # an end-to-end code-execution route is wired (see invoke_code).
     _ = container.code_registry
     _ = container.invoke_code
+    # A2A remains a receipt store; terminal receipts wake the canonical parent
+    # through this container-owned bridge rather than a second lifecycle.
+    a2a_delegator.set_completion_handler(container._schedule_external_graph_result)
+
     logger.info("Container wired (%s stores)", backend)
     return container
 
@@ -3890,7 +4019,15 @@ async def _select_effect_backend(
         pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
         await pg_quota.ensure_schema()
         await pg_approvals.ensure_schema()
-        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+        # The boot model-chat Binding registration below `put`s into this
+        # store, and `put` reads the revocation tombstone first (#1133) —
+        # without ensure_schema a container wired against an unmigrated
+        # database dies on `capability_binding_revocations` before it can
+        # come up (durable-events job, #1084 CI repair). Mirrors the SQLite
+        # branch and new_postgres_effect_context, both of which ensure it.
+        bindings = PgBindingStore(pg_pool)
+        await bindings.ensure_schema()
+        approvals, quota = pg_approvals, pg_quota
     elif db_pool is not None:
         sqlite_bindings = SqliteBindingStore(db_pool)
         sqlite_approvals = SqliteApprovalStore(db_pool)

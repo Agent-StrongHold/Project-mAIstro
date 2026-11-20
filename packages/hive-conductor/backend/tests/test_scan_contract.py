@@ -46,14 +46,14 @@ if str(_BACKEND) not in sys.path:
 #: `module.handler` that owns each surface. Enumerated from the app at test
 #: time -- not trusted from this list.
 #:
-#: Note: `routes/projects.py` also defines `POST /{project_id}/scan` (a real
-#: repo scanner), but that router is not mounted in `main.py`, so it is no
-#: reachable surface; the no-stub source sweep below still covers its module.
+#: `routes/projects.py` mounts `POST /v1/projects/{project_id}/scan` (repo
+#: scanner) through `main.py` — part of the hive-project-onboarding CONNECT.
 EXPECTED_SCAN_ROUTES: dict[str, str] = {
     "/v1/agents/scan": "routes.agents.scan_proposed_config",
     "/v1/agents/{agent_id}/scan": "routes.agents.scan_agent",
     "/v1/skills/scan": "routes.skills.scan_skills",
     "/v1/mcp/servers/{server_id}/scan": "routes.mcp.scan_server",
+    "/v1/projects/{project_id}/scan": "routes.projects.trigger_scan",
 }
 
 #: Scan surfaces that deliberately have no scanner wired. They must refuse
@@ -198,6 +198,9 @@ class TestTheScanSurfaceContract:
             "/v1/skills/scan": "tests/test_skills_routes.py::test_scan_flags_a_dirty_stored_skill",
             "/v1/mcp/servers/{server_id}/scan": (
                 "tests/test_mcp_routes.py::test_scan_server_found_is_explicitly_unsupported"
+            ),
+            "/v1/projects/{project_id}/scan": (
+                "tests/test_projects_onboarding_connect.py::TestTheProjectsScanActuallyScans"
             ),
         }
         assert set(coverage) == set(EXPECTED_SCAN_ROUTES)
