@@ -107,6 +107,27 @@ regexes = [
 ]
 
 [[allowlists]]
+# SPEC-101826-1836's mutation table quotes one did:key specimen: the canonical
+# example DID published in the W3C did:key specification (an Ed25519 test
+# vector that authenticates to nothing). The document is a byte-exact
+# golden-vector contract -- the digest column is pinned to those exact input
+# bytes, to become literal test assertions on acceptance -- so rewording the
+# specimen would invalidate the recorded digest, and splitting the literal
+# cannot clear findings from already-written commit patches inside a PR-range
+# scan (the same reason the commit-scoped entry below exists). The generic
+# api-key rule matches the `key:` field-name prefix without regard to whether
+# what follows is a value or a specification specimen -- the same reason
+# ADR-064 and SPEC-070626-5341 keep their specimens. The reviewed identity is
+# the value itself: content-scoped, line-number- and commit-independent, and
+# scoped to the one rule family. Any OTHER credential-shaped value in this
+# document still fails closed. (#1836 introduced the document.)
+description = "W3C did:key specification's published example DID, quoted as a golden-vector input by SPEC-101826-1836; a public test vector that authenticates to nothing."
+targetRules = ["generic-api-key"]
+regexes = [
+  '''z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK''',
+]
+
+[[allowlists]]
 # The sentinel PII-filter fixture suite builds a PEM specimen in code:
 # an f-string whose body is the placeholder `{body}`, spliced between the
 # BEGIN/END markers at runtime. There is no key material on that line — the
