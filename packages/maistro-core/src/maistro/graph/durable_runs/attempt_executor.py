@@ -394,20 +394,40 @@ async def _reconcile_orphaned_attempts(
     if latest is None:
         raise KeyError(f"no such run: {record.run_id!r}")
 
-    # Replay already-marked RECOVERED terminals (including ones settled before
-    # this resume) so NodeRun parking is not skipped when the durable projection
-    # is ahead of logical activity (ADR-082826-08f0/AC-3).
-    for attempt in latest.attempts:
-        if (
-            attempt.status is AttemptStatus.CANCELLED
-            and attempt.cancellation_cause is CancellationCause.RECOVERED
-        ):
-            await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+    for attempt in _recovered_attempts_to_replay(latest):
+        await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
 
     parked = await store.get(record.run_id)
     if parked is None:
         raise KeyError(f"no such run: {record.run_id!r}")
     return parked
+
+
+def _recovered_attempts_to_replay(record: DurableRunRecord) -> tuple[Attempt, ...]:
+    """Current CANCELLED+RECOVERED Attempts whose NodeRun still needs parking.
+
+    Superseded recovered rows must not re-park a NodeRun that has already
+    advanced (retry / HITL answer → QUEUED); ``_park_node_run`` rejects that
+    as integrity failure.
+    """
+    node_runs_by_id = {node_run.node_run_id: node_run for node_run in record.node_runs}
+    current_by_node_run: dict[str, Attempt] = {}
+    for attempt in record.attempts:
+        existing = current_by_node_run.get(attempt.node_run_id)
+        if existing is None or attempt.ordinal > existing.ordinal:
+            current_by_node_run[attempt.node_run_id] = attempt
+    replay: list[Attempt] = []
+    for attempt in current_by_node_run.values():
+        if (
+            attempt.status is not AttemptStatus.CANCELLED
+            or attempt.cancellation_cause is not CancellationCause.RECOVERED
+        ):
+            continue
+        node_run = node_runs_by_id.get(attempt.node_run_id)
+        if node_run is None or node_run.status is not RunStatus.RUNNING:
+            continue
+        replay.append(attempt)
+    return tuple(replay)
 
 
 def _replay_refused(node_id: str, attempt: Attempt, semantics: ReplaySemantics) -> NodeResult:

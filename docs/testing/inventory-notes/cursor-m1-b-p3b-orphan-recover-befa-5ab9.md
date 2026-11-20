@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +27
 ---
 
 # P3b: Graph orphan recover_orphaned_attempt (#2417 / #232)
@@ -26,6 +26,7 @@ retry. Live leased rows remain refused; the sweep stays on reclaim.
 - recover mirrors CANCELLED+RECOVERED onto the projection; wrong owning run
 - local-mode recover commits RECOVERED; local-mode wrong owning run refuses
 
-`packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py` (+1):
+`packages/maistro-core/tests/graph/durable_runs/test_recovery_disposition.py` (+2):
 
 - already-CANCELLED+RECOVERED Attempt is replayed before retry
+- superseded recovered Attempt is not replayed onto a QUEUED NodeRun
