@@ -34,12 +34,20 @@ test.describe("Chat Page", () => {
   });
 });
 
-test.describe("Agents Page", () => {
-  test("loads agents from API", async ({ page }) => {
-    await page.goto("/agents");
-    await expect(page.locator("text=The Hive").first()).toBeVisible({ timeout: 10000 });
-    const response = await page.waitForResponse("**/v1/agents", { timeout: 10000 }).catch(() => null);
+test.describe("Capabilities Page", () => {
+  test("loads capabilities from API", async ({ page }) => {
+    await page.goto("/capabilities");
+    await expect(page.locator("text=Capabilities").first()).toBeVisible({ timeout: 10000 });
+    const response = await page.waitForResponse("**/v1/capabilities", { timeout: 10000 }).catch(() => null);
     if (response) expect(response.status()).toBe(200);
+  });
+
+  test("legacy /agents redirects to Capabilities", async ({ page }) => {
+    await page.goto("/agents");
+    await page.waitForURL("**/capabilities");
+    await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible({
+      timeout: 10000,
+    });
   });
 });
 
@@ -47,14 +55,6 @@ test.describe("Missions Page", () => {
   test("loads missions from API", async ({ page }) => {
     await page.goto("/missions");
     const response = await page.waitForResponse("**/v1/tasks", { timeout: 10000 }).catch(() => null);
-    if (response) expect(response.status()).toBe(200);
-  });
-});
-
-test.describe("Skills Page", () => {
-  test("loads skills from API", async ({ page }) => {
-    await page.goto("/skills");
-    const response = await page.waitForResponse("**/v1/skills", { timeout: 10000 }).catch(() => null);
     if (response) expect(response.status()).toBe(200);
   });
 });
@@ -75,11 +75,15 @@ test.describe("Memory Page", () => {
   });
 });
 
-test.describe("MCP Page", () => {
-  test("loads MCP servers and tools", async ({ page }) => {
-    await page.goto("/mcp");
-    const response = await page.waitForResponse("**/v1/mcp/servers", { timeout: 10000 }).catch(() => null);
-    if (response) expect(response.status()).toBe(200);
+test.describe("Retired capability deep links", () => {
+  test("/mcp /skills /topology redirect to Capabilities", async ({ page }) => {
+    for (const path of ["/mcp", "/skills", "/topology"]) {
+      await page.goto(path);
+      await page.waitForURL("**/capabilities");
+      await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible({
+        timeout: 10000,
+      });
+    }
   });
 });
 
@@ -124,7 +128,8 @@ test.describe("Design System", () => {
   });
 
   test("hex badges render with clip-path", async ({ page }) => {
-    await page.goto("/agents");
+    // Credentials still uses Hex badges; Agents page was deleted (#2273).
+    await page.goto("/credentials");
     await page.waitForTimeout(3000);
     const hex = page.locator(".hex-badge").first();
     if (await hex.isVisible()) {
