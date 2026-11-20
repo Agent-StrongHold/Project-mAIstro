@@ -30,13 +30,14 @@ from maistro.runs import (
     NodeRun,
     RunStatus,
 )
-from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run
-from maistro.runs.model import CancellationCause
+from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run, transition_run
+from maistro.runs.model import CancellationCause, GraphSnapshot, Run
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.store import (
     ActiveAttemptExists,
     AttemptNotFound,
     RunIntegrityError,
+    StaleExecutionFence,
 )
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -205,6 +206,31 @@ async def test_more_than_one_unmirrored_attempt_is_a_disagreement() -> None:
 
     with pytest.raises(RunIntegrityError, match="one-row continuation"):
         await execution_store.create_attempt(node_run_id)
+
+
+async def test_compensate_unlaunched_mirrors_cancelled_recovered_onto_the_projection() -> None:
+    """P2d: Graph execution store must expose the CREATED prelaunch leaf so
+    AttemptExecutionService can accept DurableRunExecutionStore as its store."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="graph launch boom",
+    )
+
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "graph launch boom"
 
 
 async def test_reclaim_leaves_alone_an_attempt_whose_holder_renewed() -> None:
@@ -765,3 +791,100 @@ async def test_a_cancellation_replay_over_the_cascade_settled_row_converges() ->
     projected = next(item for item in persisted.node_runs if item.node_run_id == node_run_id)
     assert projected.status is RunStatus.CANCELLED
     assert projected.error == canonical.error
+
+
+# --- P2d CI repair: the compensation leaf's untested halves -----------------
+
+
+async def _local_only_store() -> tuple[
+    InMemoryDurableRunStore, DurableRunExecutionStore, DurableRunRecord, str
+]:
+    """The graph-store shape with no canonical RunStore wired.
+
+    Graph execution can run without a canonical store; `compensate_unlaunched_attempt`
+    must then apply the same lifecycle leaf under the record's own run lock,
+    or a prelaunch failure in that mode would strand a CREATED Attempt forever.
+    """
+    graph = Graph(
+        workspace_id="ws-local",
+        project_id="project-local",
+        name="Local compensate",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    run = transition_run(run, RunStatus.QUEUED)
+    run = transition_run(run, RunStatus.RUNNING)
+    node_run = NodeRun(run_id=run.run_id, node_id="node-1", ordinal=1)
+    node_run = transition_node_run(node_run, RunStatus.QUEUED)
+    node_run = transition_node_run(node_run, RunStatus.RUNNING)
+    record = DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(run_id=run.run_id, active_node_ids=("node-1",)),
+        node_runs=(node_run,),
+        version=1,
+    )
+    store = InMemoryDurableRunStore()
+    await store.create(record)
+    return (
+        store,
+        DurableRunExecutionStore(store, run_id=record.run_id),
+        record,
+        node_run.node_run_id,
+    )
+
+
+async def test_compensate_unlaunched_in_local_mode_commits_cancelled_recovered() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="local launch boom",
+    )
+
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "local launch boom"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "local launch boom"
+
+
+async def test_compensate_unlaunched_in_local_mode_refuses_a_stale_fence() -> None:
+    """The record's own lock does not excuse a stale fencing token."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    with pytest.raises(StaleExecutionFence):
+        await execution_store.compensate_unlaunched_attempt(
+            attempt.attempt_id, fencing_token="not-the-token", error="x"
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED
+    assert persisted.attempts[0].cancellation_cause is None
+    assert persisted.attempts[0].finished_at is None
+
+
+async def test_compensate_unlaunched_in_local_mode_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.compensate_unlaunched_attempt(
+            "missing", fencing_token="tok", error="x"
+        )
