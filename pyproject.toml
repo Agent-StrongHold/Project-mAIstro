@@ -249,10 +249,12 @@ constraint-dependencies = [
     # 2026-10-22, #891/#2238 round): gitpython arrives via cosmic-ray,
     # graphql-core via moto[server]. CVE-2026-114145 is fixed in gitpython
     # 3.2.1; CVE-2026-75507/75508 in graphql-core 3.3.0 (stable, 2026-09-27;
-    # the advisory text still names the 3.3.0rc1 fix line). Both packages
-    # are test-infrastructure only; neither ships in the runtime images.
+    # the advisory text still names the 3.3.0rc1 fix line), and
+    # CVE-2026-119286 in 3.3.0 is fixed in 3.3.1 (pip-audit gate,
+    # 2026-11-16, #2110 CI-repair round). Test-infrastructure only; neither
+    # ships in the runtime images.
     "gitpython>=3.2.1",
-    "graphql-core>=3.3.0",
+    "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
     # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
@@ -266,64 +268,51 @@ constraint-dependencies = [
     # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
     # authlib arrives via fastmcp / browser-use; dnspython via email-validator
     # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
-    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
-    # direct production pin — floors keep the frozen dev env above the advisories.
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0 and
+    # CVE-2026-128089 in 2.9.2 (pip-audit gate, 2026-11-16, #2110 CI-repair
+    # round). Neither is a direct production pin — floors keep the frozen
+    # dev env above the advisories.
     "authlib>=1.9.1",
-    "dnspython>=2.9.0",
-    # Same shape again (pip-audit gate, 2026-11-16, CR1373 CI-repair round,
-    # merge-queue run 43788520668 at 39d0d137): dnspython arrives via
-    # email-validator (pydantic[email]), graphql-core via moto[server],
-    # joserfc via authlib / fastmcp-slim / moto, and opentelemetry-api is
-    # maistro-core's direct telemetry dependency caught in the frozen dev
-    # env. CVE-2026-128089 (GHSA-vvf4-9x63-8xvv) is fixed in dnspython
-    # 2.9.2; CVE-2026-119286 (GHSA-mpqx-q82w-9x46) in graphql-core 3.3.1;
-    # CVE-2026-119284 (GHSA-9pg5-8c7x-5hfx) in joserfc 1.7.6; CVE-2026-126360
-    # (GHSA-mf5v-w3w3-f6cg) in opentelemetry-api 1.45.2. Every fix version
-    # satisfies the floors already declared here or in
-    # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
-    # lock moves; floors keep it above the advisories on the next resolve.
     "dnspython>=2.9.2",
-    "graphql-core>=3.3.1",
+    # Same shape again (pip-audit gate, 2026-11-16, #2110 CI-repair round):
+    # joserfc arrives via authlib / fastmcp-slim / moto and ships in no
+    # runtime image (same extras reasoning as fastmcp above);
+    # CVE-2026-119284 is fixed in joserfc 1.7.6. opentelemetry-api is a
+    # direct runtime dependency (maistro-core telemetry) that DOES ship in
+    # the images; CVE-2026-126360 is fixed in 1.45.2, a patch release on the
+    # resolved 1.45.x line, so the floor tracks the advisory without moving
+    # the >= 1.30 compatibility floor in the manifests.
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
-    # Same shape again (Container scan + SBOM + cosign gate, 2026-11-16,
-    # CR1373 CI-repair round, merge-queue run 43821935433 at 4295a40): four
-    # HIGH python-pkg advisories in the maistro-engine-research image
-    # (maistro-server + observability + browser via browser-use, each a
-    # single consumer, none a direct production pin):
-    #
-    # - oauthlib 4.0.0 (via requests-oauthlib via google-auth-oauthlib via
-    #   browser-use) — CVE-2026-49272, authentication bypass, fixed in 4.0.1;
-    # - pyasn1 0.6.4 (via pyasn1-modules via google-auth via browser-use) —
-    #   CVE-2026-119194/195/196/197, all fixed in 0.6.5;
-    # - pypdf 6.21.2 (browser-use direct) — CVE-2026-119203..119209, fixed by
-    #   6.21.4 (119206 in 6.21.3, the rest in 6.21.4);
-    # - soupsieve 3.0.3 (via beautifulsoup4 via markdownify via browser-use) —
-    #   CVE-2026-126190, fixed in 4.0.0. PyPI never published a 4.0.0: its
-    #   4.0 release is PEP 440-equal to the trivy-named fix (4.0 == 4.0.0),
-    #   so the floor is written as the real release the DB names.
-    #
-    # Every fix version satisfies the upstream ranges already in the tree
-    # (browser-use: pypdf>=5.7.0; beautifulsoup4 4.15: soupsieve>=1.6.1;
-    # requests-oauthlib 2.0: oauthlib>=3.0.0; pyasn1-modules 0.4.2:
-    # pyasn1>=0.6.1,<0.7.0), so only the lock moves; floors keep it above
-    # the advisories on the next resolve. Nothing in packages/ or tests/
-    # imports any of the four, so the exposure is the shipped image only.
+    # Same shape again (trivy image gate, 2026-11-16, #2110 CI-repair round):
+    # four advisories the research image's locked export ships. oauthlib
+    # arrives via google-auth-oauthlib → requests-oauthlib; pyasn1 via
+    # google-auth → pyasn1-modules; pypdf via browser-use (maistro-core's
+    # `[browser]` extra) and soupsieve via beautifulsoup4 → markdownify,
+    # same browser chain — all four enter an image only through the research
+    # export (the API image's scan is clean on the same DB). CVE-2026-49272
+    # (oauthlib device-code validation bypass, HIGH) is fixed in 4.0.1;
+    # CVE-2026-119194/119195/119196/119197 (pyasn1 ASN.1 decoding DoS
+    # family) are fixed in 0.6.5; CVE-2026-119203/119204/119205/119206 and
+    # CVE-2026-119207/119208/119209 (pypdf parsing DoS family) are fixed by
+    # 6.21.4; CVE-2026-126190 (soupsieve) is fixed in 4.0.0.
     "oauthlib>=4.0.1",
     "pyasn1>=0.6.5",
     "pypdf>=6.21.4",
-    "soupsieve>=4.0",
-    # Same gate, same round, the wheel-shipped binary half: the research
-    # image's grype leg (step 16, --only-fixed --fail-on high, fresh DB per
-    # run) also flags the Node binary that patchright/playwright wheels ship
-    # as their driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV,
-    # fixed 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright
-    # 1.64.4 bundles node 24.22.1 and playwright 1.65.2 bundles node
-    # 26.13.1 (both verified by unpacking the wheels and running the
-    # bundled driver); browser-use declares patchright>=1.52.5 /
-    # playwright>=1.52.0 uncapped, so the floors only move the lock.
-    "patchright>=1.64.4",
+    "soupsieve>=4.0.0",
+    # Two more, grype-only (container gate's Grype cross-check, 2026-11-16,
+    # #2110 CI-repair round): playwright and patchright bundle each library's
+    # browser-driver Node runtime (playwright/driver/node,
+    # patchright/driver/node), and at 1.64.0 / 1.64.1 both bundle Node
+    # 24.21.0, HIGH CVE-2026-106069 and CVE-2026-105483 — grype
+    # `--fail-on high --only-fixed` exits 2 on the research image where
+    # trivy reports nothing for the same node binaries. Playwright 1.65.2
+    # bundles Node 26.13.1; patchright 1.64.4 (its ceiling) bundles Node
+    # 24.22.1 (both verified in-image by the #2251 round-4 build).
+    # browser-use declares neither library version-bounded, so the floors
+    # are constraints here rather than manifest edits.
     "playwright>=1.65.2",
+    "patchright>=1.64.4",
 ]
 
 [tool.ruff]
