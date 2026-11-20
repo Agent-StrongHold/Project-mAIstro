@@ -25,6 +25,11 @@ or placeholder-only section.
 
 ### Changed
 
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
 - **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
   group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
   naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
