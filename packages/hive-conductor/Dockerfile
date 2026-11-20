@@ -43,8 +43,13 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
+# The 1.27.3 rebuild then aged out itself: CVE-2026-97054 (net/http
+# MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4) flagged
+# age-keygen's stdlib 1.27.3 in the #2375 Container scan gate (security.yml run
+# 44477475371 job 135401410021, 2026-11-19), so the builder moved to
+# 1.27.4-alpine, retiring the 2026-10-22 1.27.3 index (#1152 lineage).
+# Digest-pinned (#349); golang:1.27.4-alpine resolved to this index digest 2026-11-19.
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
