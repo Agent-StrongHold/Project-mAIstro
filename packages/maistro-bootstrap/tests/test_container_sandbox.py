@@ -18,6 +18,8 @@ Two lanes:
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -196,6 +198,51 @@ class TestTheCredentialBoundary:
         # The host's credential surface is untouched by the sandbox existing.
         assert (seeded_repo / ".env").exists()
         assert (seeded_repo / ".git" / "config").exists()
+
+    def test_seed_never_materializes_what_a_worktree_symlink_points_at(
+        self, tmp_path: Path
+    ) -> None:
+        """Unrelated host secrets must not enter the seed through a symlink.
+
+        The seed is a host-side ``tar`` traversal of the worktree, and tar
+        archives a symlink as a symlink — it never dereferences by default
+        (GNU tar and bsdtar alike), so nothing beneath ``link-dir`` is ever an
+        archive entry. The hazard this pins (M2-B5: the sandbox must not
+        receive *unrelated host secrets*) is a seed rewrite that dereferences
+        (``tar -h``, ``shutil.copytree(symlinks=False)``), which would
+        materialize the external directory — and its secret — as regular seed
+        files the sandbox backends bind into the guest. Asserted as a property
+        of construction, where the seed itself is the trust boundary.
+        """
+        outside = tmp_path / "outside-the-repo"
+        outside.mkdir()
+        (outside / "unrelated-host-secret.txt").write_text(
+            "l80-secret-sentinel\n", encoding="utf-8"
+        )
+        (outside / ".env").write_text("AWS_SECRET_ACCESS_KEY=ambient\n", encoding="utf-8")
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        repo = _repo(repo)
+        (repo / "link-dir").symlink_to(outside, target_is_directory=True)
+        (repo / "leaf-link").symlink_to(outside / "unrelated-host-secret.txt")
+
+        backend = _StubVMSandbox()
+        with ContainerBuilderSandbox(repo, selector=_selector(backend)) as sb:
+            seed = Path(backend.spawned[0].workspace_host or "")
+            # Both links arrive AS symlinks: a dereferencing seed would lstat
+            # the first as a directory (with the secret inside it) and the
+            # second as a regular file carrying the sentinel's bytes.
+            assert stat.S_ISLNK(os.lstat(seed / "link-dir").st_mode)
+            assert stat.S_ISLNK(os.lstat(seed / "leaf-link").st_mode)
+            # The worktree itself still arrives.
+            assert "original" in sb.read_file("hello.py")
+
+        # The external secret is real (the hazard is live, not vacuous), and
+        # seeding left it exactly where it was.
+        assert "l80-secret-sentinel" in (outside / "unrelated-host-secret.txt").read_text(
+            encoding="utf-8"
+        )
 
     def test_sync_never_brings_git_back(self, seeded_repo: Path) -> None:
         backend = _StubVMSandbox()
