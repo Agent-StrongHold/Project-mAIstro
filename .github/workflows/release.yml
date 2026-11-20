@@ -489,7 +489,7 @@ jobs:
       # is what every later step (scan, promote, sign, attest, SBOM) binds to.
       - name: Build + push maistro-engine (release candidate)
         id: engine
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -529,7 +529,7 @@ jobs:
 
       - name: Build + push hive-conductor (release candidate)
         id: conductor
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           file: packages/hive-conductor/Dockerfile
