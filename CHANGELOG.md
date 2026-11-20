@@ -25,6 +25,11 @@ or placeholder-only section.
 
 ### Changed
 
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
+
 - **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
   `maistro.cli._container*` as a parked operator-lifecycle leaf under
   #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
