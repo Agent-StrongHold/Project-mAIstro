@@ -2,25 +2,29 @@
 
 Owner decision (2026-09-25, on #1049): Attention is computed on every read
 from the owners that already hold the state — human-paused NodeRuns in the
-durable run store and failed Runs behind the scoped Run-inspection door.
-An item's ``answer_href`` points at the canonical HITL answer route, which
-stays the only way to settle a pause.
+durable run store, failed Runs behind the scoped Run-inspection door, unread
+agent messages, and pending optimizer proposals. An item's ``answer_href``
+points at the canonical HITL answer route when the source is a pause; other
+owners keep their own settle doors (optimizer accept/reject, message read).
 
 The one thing this module may persist is a **defer/dismiss preference**
 (same shape as Home adaptive dismissals): evidence that the user asked not
 to see a source id in this Workspace. That is not a second Attention store
-and does not transition HITL/Run state.
+and does not transition HITL/Run/message/proposal state.
 
 Classification uses deterministic evidence only. A persisted HITL deadline
 inside the horizon makes an item time-sensitive; every other human pause and
-every failed Run is queued. Age is never evidence on its own, so an item that
-has merely waited a long time keeps the class it had on day one.
+every failed Run is queued. Unread critical messages are severity; unread
+warnings are queued; unread info and pending optimizer proposals enter as
+proactive (Waiting). Age is never evidence on its own, so an item that has
+merely waited a long time keeps the class it had on day one.
 """
 
 from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,14 +43,14 @@ from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL, PAUSE_AWAITI
 from services.dag_run_inspection import list_visible_runs
 from services.dag_run_store import MAX_RUNS
 from services.model_store import JsonStore
+from services.optimizer import DECISION_PENDING, list_proposals
 from services.workspace_authority import hitl_membership_mutation_lock, is_member
 
 DISMISSALS_STORE = "attention_dismissals"
 dismissal_store: JsonStore = stores.register_json_store(JsonStore(DISMISSALS_STORE))
 
-#: The issue's priority ladder, most important first. Only `time_sensitive`
-#: and `queued` have a deterministic producer today; the others are named so
-#: ordering and `highest_class` already mean the same thing once they do.
+#: Priority ladder (#1049), most important first:
+#: severity > time_sensitive > blocking > queued > follow_up > proactive.
 ATTENTION_CLASSES: tuple[str, ...] = (
     "severity",
     "time_sensitive",
@@ -56,8 +60,23 @@ ATTENTION_CLASSES: tuple[str, ...] = (
     "proactive",
 )
 
+#: Interruption vocabulary from the issue (blocking / popup / queued / waiting),
+#: derived from the priority class so UI never invents ranking client-side.
+INTERRUPTION_FOR_CLASS: dict[str, str] = {
+    "severity": "blocking",
+    "time_sensitive": "popup",
+    "blocking": "blocking",
+    "queued": "queued",
+    "follow_up": "waiting",
+    "proactive": "waiting",
+}
+
 #: How close a persisted deadline must be before it raises its item.
 DEFAULT_TIME_SENSITIVE_HORIZON = timedelta(hours=24)
+
+#: Optimizer proposals at or above this priority_score count as "valuable"
+#: Waiting for the quality indicator (not an escalation by themselves).
+_VALUABLE_PROPOSAL_SCORE = 0.5
 
 #: Items one response returns, after ordering; the `/v1/hitl/pending` ceiling.
 #: Applied only once everything scanned is classified and sorted, so a long
@@ -68,6 +87,29 @@ _DECISION_REASONS = {
     PAUSE_AWAITING_HUMAN_APPROVAL: "approval",
     PAUSE_AWAITING_HUMAN_REVIEW: "review",
 }
+
+_MESSAGE_CLASS: dict[str, str] = {
+    "critical": "severity",
+    "warning": "queued",
+    "info": "proactive",
+}
+
+#: Wired from ``main`` (already an importer of ``routes.messages``) so this
+#: module never gains a retirement-ledger edge on the messages router/store.
+_MessageRows = Callable[..., list[dict[str, Any]]]
+_message_rows_provider: _MessageRows | None = None
+
+
+def set_message_rows_provider(provider: _MessageRows | None) -> None:
+    """Install the canonical messages list callable (MessageBoard MERGE)."""
+    global _message_rows_provider
+    _message_rows_provider = provider
+
+
+def _message_rows() -> list[dict[str, Any]]:
+    if _message_rows_provider is None:
+        return []
+    return list(_message_rows_provider())
 
 
 @dataclass(frozen=True)
@@ -214,6 +256,137 @@ async def _failed_runs(user_id: str, workspace_id: str) -> list[_Item]:
     ]
 
 
+def _message_item(row: dict[str, Any], *, workspace_id: str) -> _Item | None:
+    """Unread agent message → Attention class (MessageBoard MERGE, #1049).
+
+    Messages have no Workspace column today: they are intentionally
+    user-global notifications projected into every Workspace the caller can
+    read. Critical → severity (blocking interruption); warning → queued;
+    info → proactive (Waiting). Read rows stay off the projection.
+    """
+    if row.get("read"):
+        return None
+    msg_id = str(row.get("id") or "")
+    if not msg_id:
+        return None
+    priority = str(row.get("priority") or "info")
+    attention_class = _MESSAGE_CLASS.get(priority, "proactive")
+    subject = str(row.get("subject") or "(no subject)")
+    from_agent = str(row.get("from_agent") or "agent")
+    category = str(row.get("category") or "general")
+    return _Item(
+        source_kind="agent_message",
+        source_id=msg_id,
+        workspace_id=workspace_id,
+        attention_class=attention_class,
+        reason=f"Message from {from_agent}: {subject}",
+        evidence={
+            "from_agent": from_agent,
+            "to": row.get("to"),
+            "subject": subject,
+            "body": row.get("body"),
+            "priority": priority,
+            "category": category,
+            "created_at": row.get("created_at"),
+            "synthetic": bool(row.get("synthetic")),
+            "user_global": True,
+            "interruption": INTERRUPTION_FOR_CLASS[attention_class],
+        },
+        answer_href=None,
+    )
+
+
+def _message_items(*, workspace_id: str) -> list[_Item]:
+    # Provider is installed by main from routes.messages.list_messages so
+    # Attention does not become a new importer of a retiring surface (#1046).
+    items: list[_Item] = []
+    for row in _message_rows():
+        if not isinstance(row, dict):
+            continue
+        item = _message_item(row, workspace_id=workspace_id)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _optimizer_item(row: dict[str, Any], *, workspace_id: str) -> _Item | None:
+    """Pending optimizer proposal → proactive Waiting (OptimizationInbox MERGE).
+
+    Only proposals whose ``workspace_id`` matches are projected, so one
+    Workspace's suggestions never bleed into another. Accept/reject stay on
+    the canonical optimizer routes — Attention does not terminalize them.
+    """
+    if str(row.get("decision") or "") != DECISION_PENDING:
+        return None
+    if str(row.get("workspace_id") or "") != workspace_id:
+        return None
+    proposal_id = str(row.get("id") or "")
+    if not proposal_id:
+        return None
+    dag_id = str(row.get("dag_id") or "")
+    kind = str(row.get("kind") or "proposal")
+    rationale = str(row.get("rationale") or "").strip()
+    score = float(row.get("priority_score") or 0.0)
+    reason = (
+        f"Optimizer suggests {kind} on DAG {dag_id}: {rationale}"
+        if rationale
+        else f"Optimizer suggests {kind} on DAG {dag_id}"
+    )
+    topology = row.get("topology_proposal")
+    evidence: dict[str, Any] = {
+        "dag_id": dag_id or None,
+        "kind": kind,
+        "field_path": row.get("field_path"),
+        "rationale": rationale or None,
+        "priority_score": score,
+        "class": row.get("class"),
+        "blocked_by_edit_lock": bool(row.get("blocked_by_edit_lock")),
+        "interruption": "waiting",
+        "accept_href": f"/v1/optimizer/proposals/{proposal_id}/accept",
+        "reject_href": f"/v1/optimizer/proposals/{proposal_id}/reject",
+    }
+    # Preserve concrete mutation details so Accept can show from→to (ex-
+    # OptimizationInbox). Do not invent a topology when the proposal has none.
+    if isinstance(topology, dict):
+        evidence["topology_proposal"] = {
+            key: topology.get(key)
+            for key in (
+                "kind",
+                "target_node_id",
+                "from_value",
+                "to_value",
+                "expected_improvement",
+            )
+            if key in topology
+        }
+    return _Item(
+        source_kind="optimizer_proposal",
+        source_id=proposal_id,
+        workspace_id=workspace_id,
+        attention_class="proactive",
+        reason=reason,
+        evidence=evidence,
+        answer_href=None,
+    )
+
+
+def _optimizer_items(*, workspace_id: str) -> list[_Item]:
+    # Read through services.optimizer.list_proposals (already an allowed
+    # importer of optimizer_proposals) so Attention does not gain a store edge.
+    # Scope by Workspace *before* the 200 cap so another Workspace's newer
+    # pending rows cannot hide this Workspace's proposals.
+    items: list[_Item] = []
+    for row in list_proposals(
+        decision=DECISION_PENDING, workspace_id=workspace_id, limit=_MAX_ITEMS
+    ):
+        if not isinstance(row, dict):
+            continue
+        item = _optimizer_item(row, workspace_id=workspace_id)
+        if item is not None:
+            items.append(item)
+    return items
+
+
 def _dismissal_key(workspace_id: str, source_kind: str, source_id: str) -> str:
     return f"{workspace_id}:{source_kind}:{source_id}"
 
@@ -277,6 +450,25 @@ def dismissed_source_ids(workspace_id: str) -> set[tuple[str, str]]:
     return out
 
 
+def _waiting_quality(items: list[_Item]) -> dict[str, Any]:
+    """Compact Waiting indicator: count + unusually valuable ids (not a rank invent)."""
+    waiting = [
+        item for item in items if INTERRUPTION_FOR_CLASS.get(item.attention_class) == "waiting"
+    ]
+    valuable: list[str] = []
+    for item in waiting:
+        if item.source_kind == "optimizer_proposal":
+            score = item.evidence.get("priority_score")
+            if isinstance(score, (int, float)) and float(score) >= _VALUABLE_PROPOSAL_SCORE:
+                valuable.append(item.source_id)
+        elif item.attention_class == "follow_up":
+            valuable.append(item.source_id)
+    return {
+        "count": len(waiting),
+        "valuable_source_ids": valuable[:_MAX_ITEMS],
+    }
+
+
 def _summary(
     items: list[_Item],
     *,
@@ -285,14 +477,25 @@ def _summary(
     dismissed_count: int,
 ) -> dict[str, Any]:
     counts = Counter(item.attention_class for item in items)
+    interruptions = Counter(
+        INTERRUPTION_FOR_CLASS[item.attention_class]
+        for item in items
+        if item.attention_class in INTERRUPTION_FOR_CLASS
+    )
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
+        "counts_by_interruption": {
+            name: interruptions[name]
+            for name in ("blocking", "popup", "queued", "waiting")
+            if interruptions[name]
+        },
         "highest_class": items[0].attention_class if items else None,
         "rising": [
             item.source_id
             for item in items[:_MAX_ITEMS]
             if item.attention_class == "time_sensitive"
         ],
+        "waiting_quality": _waiting_quality(items),
         "truncated": truncated,
         # Honest source status: HITL pauses need the canonical graph spine.
         # When it is down, failed-Run items may still populate the page.
@@ -307,6 +510,7 @@ def _public(item: _Item, rank: int) -> dict[str, Any]:
         "source_id": item.source_id,
         "workspace_id": item.workspace_id,
         "attention_class": item.attention_class,
+        "interruption": INTERRUPTION_FOR_CLASS.get(item.attention_class, "queued"),
         "rank": rank,
         "reason": item.reason,
         "evidence": item.evidence,
@@ -336,6 +540,10 @@ async def list_attention(
     paused, scan_capped, hitl_unavailable = await _paused_records(user_id, workspace_id)
     items = [_human_item(record, pending, now=now, horizon=horizon) for record, pending in paused]
     items.extend(await _failed_runs(user_id, workspace_id))
+    # MessageBoard + OptimizationInbox MERGE (#1049): same projection, no
+    # second lifecycle store. Proactive/optimizer suggestions default to Waiting.
+    items.extend(_message_items(workspace_id=workspace_id))
+    items.extend(_optimizer_items(workspace_id=workspace_id))
     hidden = dismissed_source_ids(workspace_id)
     dismissed_count = 0
     if hidden and not include_dismissed:

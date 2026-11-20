@@ -1,20 +1,14 @@
 /**
- * The Schedules and MCP journeys complete from the keyboard alone (#370).
+ * The Schedules journey completes from the keyboard alone (#370).
  *
- * Both pages switched views with click-only `<div>` tabs, Schedules toggled a
- * schedule with a click-only `<div className="toggle">` and picked cron
- * presets with click-only `<span>`s, and MCP expanded a server by clicking the
- * whole card. None of those were in the tab order, so a keyboard user could
- * not disable a schedule or reach MCP's Tools view at all.
- *
- * Every control here is reached by pressing Tab from the real page order,
- * never by `locator.focus()`, so a control that drops out of the tab order
- * fails the spec.
+ * MCP page keyboard journeys lived on MCP.tsx and left with that module
+ * (#2273). /mcp now redirects to Capabilities; this file keeps the Schedules
+ * contract and asserts the MCP URL does not revive the deleted page.
  */
 
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import { loginAsAdmin, loginAsPM, setupIfNeeded } from "./session";
+import { loginAsPM, setupIfNeeded } from "./session";
 
 test.describe.configure({ mode: "serial" });
 
@@ -32,27 +26,6 @@ const schedule = {
   next_run: null,
   created_at: "2026-09-01T00:00:00Z",
   updated_at: "2026-09-01T00:00:00Z",
-};
-
-const server = {
-  id: "mcp-kbd-1",
-  name: "Docs server",
-  description: "reads the docs",
-  url: "http://docs.local:9999/mcp",
-  status: "connected",
-  tools_count: 1,
-  last_ping: null,
-  version: "1.2.3",
-  capabilities: ["tools"],
-};
-
-const tool = {
-  id: "tool-kbd-1",
-  server_id: server.id,
-  name: "search_docs",
-  description: "full-text search",
-  input_schema: {},
-  category: "read",
 };
 
 const scheduleWrites: unknown[] = [];
@@ -79,12 +52,6 @@ test.beforeAll(async ({ browser }) => {
     scheduleWrites.push(body);
     current = { ...current, ...body };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(current) });
-  });
-  await page.route("**/v1/mcp/servers", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([server]) });
-  });
-  await page.route("**/v1/mcp/tools", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([tool]) });
   });
 });
 
@@ -230,100 +197,10 @@ test("a schedule can be viewed, disabled and given a preset from the keyboard", 
   await expect(page.getByPlaceholder("schedule name", { exact: true })).toBeHidden();
 });
 
-test("MCP tools are reachable and a server expands from the keyboard", async () => {
+test("/mcp redirects to Capabilities — MCP page module is not revived (#2273)", async () => {
   await page.goto("/mcp", { waitUntil: "domcontentloaded" });
-
-  const tabs = page.getByRole("tablist", { name: "MCP views" });
-  const serversTab = tabs.getByRole("tab", { name: "Servers" });
-  const toolsTab = tabs.getByRole("tab", { name: "Tools" });
-  await expect(page.getByText(server.name)).toBeVisible();
-
-  await tabTo(serversTab);
-  await page.keyboard.press("ArrowRight");
-  await expect(toolsTab).toBeFocused();
-  await expect(toolsTab).toHaveAttribute("aria-selected", "true");
-  const toolsPanel = page.getByRole("tabpanel", { name: "Tools" });
-  await expect(toolsPanel.getByText(tool.name)).toBeVisible();
-  await page.keyboard.press("Tab");
-  await expect(toolsPanel).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(toolsTab).toBeFocused();
-
-  await page.keyboard.press("ArrowLeft");
-  await expect(serversTab).toHaveAttribute("aria-selected", "true");
-
-  const disclosure = page.getByRole("button", { name: new RegExp(`^${server.name}`) });
-  await tabTo(disclosure, 6);
-  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await expectVisibleFocus(disclosure);
-  const detailsId = await disclosure.getAttribute("aria-controls");
-  expect(detailsId).toBeTruthy();
-  const details = page.locator(`[id="${detailsId}"]`);
-  await expect(details).toBeHidden();
-  await page.keyboard.press("Enter");
-  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-  await expect(details.getByText("URL")).toBeVisible();
-  await expect(details.getByText(server.version)).toBeVisible();
-
-  // The remove control is its own sibling tab stop, not nested in the toggle.
-  // #373: for the daily user (no `mcp.write`) the mutation controls are
-  // disabled — deliberately outside the tab order, per "a control guaranteed
-  // to fail must not look actionable". The structure contract (sibling of the
-  // disclosure, never nested inside it) is still asserted here on the
-  // disabled element; the focusability half of the contract is walked under
-  // the admin account in the test below, where the control is live.
-  const remove = page.getByRole("button", { name: `Remove ${server.name}` });
-  await expect(remove).toBeDisabled();
-  expect(await remove.evaluate((el) => el.closest("[aria-expanded]"))).toBeNull();
-  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-
-  await expectNoAxeViolations();
-
-  // Focus never left the disclosure — the disabled remove control is not a
-  // tab stop — so collapse it directly from where the walk stands.
-  await page.keyboard.press("Space");
-  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await expect(details).toBeHidden();
-});
-
-test("MCP mutation controls are their own tab stops under an authorized principal", async ({ browser }) => {
-  // #373: the remove/edit controls only exist as reachable tab stops for a
-  // principal the capability policy lets act on MCP. The keyboard contract
-  // the original walk pinned (remove is focusable, its own sibling stop, and
-  // toggling the disclosure does not absorb it) is preserved under admin,
-  // with the same route mocks so no real server is needed.
-  const adminContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
-  await adminContext.addInitScript(() => {
-    window.localStorage.setItem("hive_onboarded", "1");
-  });
-  const adminPage = await adminContext.newPage();
-  await setupIfNeeded(adminPage);
-  await loginAsAdmin(adminPage);
-
-  await adminPage.route("**/v1/mcp/servers", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([server]) });
-  });
-  await adminPage.route("**/v1/mcp/tools", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([tool]) });
-  });
-
-  try {
-    await adminPage.goto("/mcp", { waitUntil: "domcontentloaded" });
-    const disclosure = adminPage.getByRole("button", { name: new RegExp(`^${server.name}`) });
-    for (let step = 0; step < 80 && !(await isFocused(disclosure)); step += 1) {
-      await adminPage.keyboard.press("Tab");
-    }
-    await expect(disclosure).toBeFocused();
-    await adminPage.keyboard.press("Enter");
-    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    const remove = adminPage.getByRole("button", { name: `Remove ${server.name}` });
-    await expect(remove).toBeEnabled();
-    await adminPage.keyboard.press("Tab");
-    await expect(remove).toBeFocused();
-    expect(await remove.evaluate((el) => el.closest("[aria-expanded]"))).toBeNull();
-    await adminPage.keyboard.press("Shift+Tab");
-    await expect(disclosure).toBeFocused();
-  } finally {
-    await adminContext.close();
-  }
+  await page.waitForURL("**/capabilities");
+  await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "MCP", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tablist", { name: "MCP views" })).toHaveCount(0);
 });
