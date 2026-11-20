@@ -28,7 +28,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
-from maistro.runs.model import ExecutionLease
+from maistro.runs.model import CancellationCause, ExecutionLease
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
@@ -229,6 +229,35 @@ async def test_repeated_orphan_reconciliation_is_idempotent() -> None:
     assert settled is not None
     assert len(settled.attempts) == 1
     assert settled.attempts[0].status is AttemptStatus.CANCELLED
+    assert settled.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert "orphaned" in (settled.attempts[0].error or "")
+    assert settled.node_runs[0].status is RunStatus.WAITING
+    assert settled.status is RunStatus.WAITING
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-3")
+async def test_already_recovered_attempt_is_replayed_before_retry() -> None:
+    """A prior CANCELLED+RECOVERED row still parks NodeRun activity on resume."""
+    store = InMemoryDurableRunStore()
+    crashed = _crashed_record("replay-run")
+    values = crashed.attempts[0].model_dump(mode="python")
+    values["status"] = AttemptStatus.CANCELLED
+    values["finished_at"] = crashed.run.created_at
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    values["error"] = "orphaned physical Attempt recovered after process loss"
+    pre_settled = Attempt.model_validate(values)
+    await store.create(crashed.model_copy(update={"attempts": (pre_settled,)}))
+
+    record = await store.get("replay-run")
+    assert record is not None
+    await attempt_executor._reconcile_orphaned_attempts(record, store=store)
+
+    settled = await store.get("replay-run")
+    assert settled is not None
+    assert len(settled.attempts) == 1
+    assert settled.attempts[0].status is AttemptStatus.CANCELLED
+    assert settled.attempts[0].cancellation_cause is CancellationCause.RECOVERED
     assert settled.node_runs[0].status is RunStatus.WAITING
     assert settled.status is RunStatus.WAITING
 
@@ -261,6 +290,7 @@ async def test_mid_attempt_restart_on_sqlite_produces_the_documented_disposition
     ]
     assert [attempt.ordinal for attempt in recovered.attempts] == [1, 2]
     assert "orphaned" in (recovered.attempts[0].error or "")
+    assert recovered.attempts[0].cancellation_cause is CancellationCause.RECOVERED
     assert recovered.node_runs[0].status is RunStatus.COMPLETED
     assert _Work.calls == 1
 

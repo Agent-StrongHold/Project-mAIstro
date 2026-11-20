@@ -27,7 +27,12 @@ from maistro.graph.nodes.base import (
 from maistro.graph.policies import declared_dag_max_cycles, declared_node_timeout_s
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
+from maistro.runs.lifecycle import (
+    ORPHANED_ATTEMPT_ERROR,
+    lease_is_expired,
+    transition_path,
+    transition_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.recovery_events import RecoveryEventSink
@@ -352,17 +357,18 @@ async def _reconcile_orphaned_attempts(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
-    """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
+    """Terminalize process-lost active Attempts and reconcile their NodeRuns.
+
+    Leased death proof stays on ``reclaim_expired_attempts``; leaseless active
+    rows use the dedicated ``recover_orphaned_attempt`` writer (#2417 / #232
+    P3b). Already-CANCELLED+RECOVERED rows are replayed through the reconciler
+    so a stale continuation projection still parks before retry decisions.
+    """
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
     lifecycle = AttemptLifecycleReconciler(
         execution_store,
         events=events,
         source=_RESUME_DISPOSITION_SOURCE,
-    )
-    active = tuple(
-        attempt
-        for attempt in record.attempts
-        if attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
     )
     now = datetime.now(UTC)
     _require_no_live_attempts(record, now=now)
@@ -371,19 +377,37 @@ async def _reconcile_orphaned_attempts(
     for attempt in reclaimed:
         await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
 
-    for attempt in active:
-        if attempt.execution_lease is not None:
+    for attempt in record.attempts:
+        if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
             continue
-        terminal = await execution_store.transition_attempt(
+        if attempt.execution_lease is not None:
+            # Live leases were refused above; expired leases are the reclaim path.
+            continue
+        terminal = await execution_store.recover_orphaned_attempt(
             attempt.attempt_id,
-            AttemptStatus.CANCELLED,
-            error="orphaned physical Attempt recovered after process loss",
+            owning_run_id=record.run_id,
+            error=ORPHANED_ATTEMPT_ERROR,
         )
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
+
     latest = await store.get(record.run_id)
     if latest is None:
         raise KeyError(f"no such run: {record.run_id!r}")
-    return latest
+
+    # Replay already-marked RECOVERED terminals (including ones settled before
+    # this resume) so NodeRun parking is not skipped when the durable projection
+    # is ahead of logical activity (ADR-082826-08f0/AC-3).
+    for attempt in latest.attempts:
+        if (
+            attempt.status is AttemptStatus.CANCELLED
+            and attempt.cancellation_cause is CancellationCause.RECOVERED
+        ):
+            await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+
+    parked = await store.get(record.run_id)
+    if parked is None:
+        raise KeyError(f"no such run: {record.run_id!r}")
+    return parked
 
 
 def _replay_refused(node_id: str, attempt: Attempt, semantics: ReplaySemantics) -> NodeResult:
