@@ -242,3 +242,39 @@ async def test_lineage_reads_select_archive_key_for_hydrate() -> None:
     assert "archive_key" in unlocked_node
     assert "archive_key" in node_lock
     assert "archive_key" in attempt_facts
+
+
+async def test_missing_node_run_row_refuses_disposition() -> None:
+    """Unlocked lineage read must raise when the Attempt's NodeRun row is gone."""
+    from maistro.runs.store import NodeRunNotFound
+
+    pool, attempt_id = await _disposition_pool()
+    store = _store(pool)
+    # Drop the unlocked NodeRun payload; Attempt still points at it.
+    node_run_id = pool.attempt_nodes[attempt_id]
+    del pool.node_runs[node_run_id]
+
+    try:
+        await store.apply_recovered_attempt_disposition(attempt_id)
+    except NodeRunNotFound as exc:
+        assert node_run_id in str(exc)
+    else:
+        raise AssertionError("expected NodeRunNotFound for a missing unlocked NodeRun")
+
+
+async def test_locked_set_missing_candidate_refuses_disposition() -> None:
+    """FOR UPDATE set must rebind the candidate; absence is NodeRunNotFound."""
+    from maistro.runs.store import NodeRunNotFound
+
+    pool, attempt_id = await _disposition_pool()
+    store = _store(pool)
+    node_run_id = pool.attempt_nodes[attempt_id]
+    # Unlocked read still finds the row; the locked set omits it (race / wrong run).
+    pool.node_run_runs[node_run_id] = "other-run-id"
+
+    try:
+        await store.apply_recovered_attempt_disposition(attempt_id)
+    except NodeRunNotFound as exc:
+        assert node_run_id in str(exc)
+    else:
+        raise AssertionError("expected NodeRunNotFound when locked set omits the candidate")
