@@ -1,7 +1,7 @@
 ---
 name: adr
-description: Scaffold a new Architecture Decision Record in docs/adr/. Uses the date-based ADR-MMDDYY-XXXX ID scheme (per ADR-062026-9b30; sequential ADR-NNN is frozen) and the ADR-031/ADR-097 front-matter contract (validated by maistro-registry; registry CI is strict). Pass a short title as the argument, e.g. /adr graph-caching-strategy
-disable-model-invocation: false
+description: "Scaffold a new Architecture Decision Record in docs/adr/. Uses the date-based ADR-MMDDYY-XXXX ID scheme (per ADR-062026-9b30; sequential ADR-NNN is frozen) and the ADR-031/ADR-097 front-matter contract (validated by maistro-registry; registry CI is strict). Pass a short title as the argument, e.g. /adr graph-caching-strategy
+disable-model-invocation: false"
 ---
 
 The user wants to create a new ADR. The argument is $ARGUMENTS (the short title/slug).
