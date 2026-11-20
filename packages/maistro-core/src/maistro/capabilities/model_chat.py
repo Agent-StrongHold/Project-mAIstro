@@ -42,6 +42,7 @@ from maistro.capabilities.provider_adapters import (
     default_adapter_catalog,
 )
 from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
     LlmGatewayProvider,
@@ -947,6 +948,7 @@ def build_model_chat_client(
 
 
 __all__ = [
+    "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
     "GovernedLLMClient",
     "GovernedModelChatClient",
