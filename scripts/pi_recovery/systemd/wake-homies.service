@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile pinned Pi foremen using native intercom
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/pi_recovery/cli.py foremen cycle
+WorkingDirectory=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/pi-recovery.env
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=true

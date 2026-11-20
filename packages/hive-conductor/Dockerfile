@@ -15,7 +15,7 @@
 FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
-RUN npm ci
+RUN npm config set audit-level=high && npm ci
 COPY packages/hive-conductor/frontend/ ./
 ARG VITE_POC_MODE=
 ENV VITE_POC_MODE=${VITE_POC_MODE}

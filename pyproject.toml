@@ -252,7 +252,11 @@ constraint-dependencies = [
     # the advisory text still names the 3.3.0rc1 fix line). Both packages
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
-    "graphql-core>=3.3.0",
+    # 3.3.0 -> 3.3.1 on 2026-11-16 (#1896 CI-repair round): CVE-2026-119286
+    # — `validate()` re-raised a module-level shared ValidationAbortedError,
+    # so every aborted validation grew the shared traceback without bound
+    # (memory exhaustion). Fixed in 3.3.1.
+    "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
     # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
@@ -283,7 +287,6 @@ constraint-dependencies = [
     # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
     # lock moves; floors keep it above the advisories on the next resolve.
     "dnspython>=2.9.2",
-    "graphql-core>=3.3.1",
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
     # Same shape again (Container scan + SBOM + cosign gate, 2026-11-16,
@@ -328,6 +331,20 @@ constraint-dependencies = [
     # patchright/driver/node until upstream republishes.
     "patchright>=1.64.4",
     "playwright>=1.65.2",
+    # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
+    # round): temporalio ships in the maistro-rsi-runner image
+    # (root `[rsi-fitness]` extra), and its wheel vendors the Rust bridge's
+    # Cargo.lock — trivy scans that lockfile in place
+    # (workspace/.venv/.../temporalio/bridge/Cargo.lock) and 1.34.0's lock
+    # pinned the `zip` crate 8.6.0: CVE-2026-115905 (CRITICAL, parser
+    # differential / security control bypass via dual headers, fixed in
+    # 9.0.5) and CVE-2026-115907/115908/115909 (HIGH, DoS + arbitrary file
+    # overwrite via symlink handling, fixed in 9.0.0). temporalio 1.36.1's
+    # vendored lock pins zip 9.5.1; the compiled bridge .so is built from
+    # that same lock upstream, so the upgrade replaces the vulnerable code,
+    # not just the metadata. No member source imports temporalio; the
+    # rsi-fitness harness does.
+    "temporalio>=1.36.1",
 ]
 
 [tool.ruff]

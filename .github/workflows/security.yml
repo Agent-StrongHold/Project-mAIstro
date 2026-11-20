@@ -410,11 +410,13 @@ jobs:
           set -euo pipefail
           (
             cd packages/hive-conductor/frontend
+            npm config set audit-level=high
             npm ci
             npm run build
           )
           (
             cd packages/maistro-canvas/frontend
+            npm config set audit-level=high
             npm ci
             npm run build
           )

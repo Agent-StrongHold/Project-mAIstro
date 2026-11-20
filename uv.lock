@@ -36,7 +36,6 @@ constraints = [
     { name = "dnspython", specifier = ">=2.9.2" },
     { name = "fastmcp", specifier = ">=4.1.2" },
     { name = "gitpython", specifier = ">=3.2.1" },
-    { name = "graphql-core", specifier = ">=3.3.0" },
     { name = "graphql-core", specifier = ">=3.3.1" },
     { name = "joserfc", specifier = ">=1.7.6" },
     { name = "oauthlib", specifier = ">=4.0.1" },
@@ -47,6 +46,7 @@ constraints = [
     { name = "pypdf", specifier = ">=6.21.4" },
     { name = "setuptools", specifier = ">=84.1.0" },
     { name = "soupsieve", specifier = ">=4.0" },
+    { name = "temporalio", specifier = ">=1.36.1" },
 ]
 
 [[package]]
