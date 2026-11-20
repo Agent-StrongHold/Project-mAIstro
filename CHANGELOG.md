@@ -51,6 +51,11 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
   PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of

@@ -31,6 +31,16 @@ def _chunk(content: str = "", *, finish: str | None = None, **delta: Any) -> dic
     }
 
 
+def _choice_deltas(chunk: dict[str, Any]) -> list[Any]:
+    choices = chunk.get("choices") or []
+    return [choice.get("delta") for choice in choices if isinstance(choice, dict)]
+
+
+def _finish_reasons(chunk: dict[str, Any]) -> list[Any]:
+    choices = chunk.get("choices") or []
+    return [choice.get("finish_reason") for choice in choices if isinstance(choice, dict)]
+
+
 class _Bytes(httpx.AsyncByteStream):
     def __init__(self, frames: list[bytes | Exception]) -> None:
         self.frames = frames
@@ -261,8 +271,13 @@ async def test_agent_stream_replay_rechecks_binding_revocation() -> None:
         assert chunks[0]["choices"][0]["delta"]["content"] == "answer"
         llm.set_turn()
         replay = [chunk async for chunk in llm.stream([], "request-alias")]
-        assert len(replay) == 1 and replay[0]["_maistro_replayed"] is True
-        assert replay[0]["choices"][0]["delta"]["content"] == "answer"
+        assert replay and all(chunk["_maistro_replayed"] is True for chunk in replay)
+        assert [_choice_deltas(chunk) for chunk in replay] == [
+            _choice_deltas(chunk) for chunk in chunks
+        ]
+        assert [_finish_reasons(chunk) for chunk in replay] == [
+            _finish_reasons(chunk) for chunk in chunks
+        ]
         assert len(s.sent) == 1
         await s.effects.bindings.revoke("declared")
         llm.set_turn()
@@ -277,3 +292,49 @@ async def test_agent_stream_replay_rechecks_binding_revocation() -> None:
         if event.invocation_id == invocation.invocation_id
     ]
     assert len(events) == 1
+
+
+async def test_agent_stream_replay_preserves_tool_calls_and_finish_reason() -> None:
+    """Replayed streams must keep tool_calls deltas and terminal finish_reason."""
+
+    s = await setup()
+    llm = client(s)
+    tool_delta = {
+        "tool_calls": [
+            {
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q":"x"}'},
+            }
+        ]
+    }
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        s.sent.append(request)
+        return httpx.Response(
+            200,
+            stream=_Bytes(
+                [
+                    _frame(_chunk(**tool_delta)),
+                    _frame(_chunk(finish="tool_calls")),
+                    _frame({"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 2}}),
+                    b"data: [DONE]\n\n",
+                ]
+            ),
+        )
+
+    set_test_transport(httpx.MockTransport(transport))
+    with context(s):
+        first = [chunk async for chunk in llm.stream([], "request-alias")]
+        assert first[0]["choices"][0]["delta"]["tool_calls"] == tool_delta["tool_calls"]
+        assert "tool_calls" in _finish_reasons(first[1])
+        llm.set_turn()
+        replay = [chunk async for chunk in llm.stream([], "request-alias")]
+    assert len(s.sent) == 1
+    assert replay and all(chunk["_maistro_replayed"] is True for chunk in replay)
+    assert [_choice_deltas(chunk) for chunk in replay] == [_choice_deltas(chunk) for chunk in first]
+    assert [_finish_reasons(chunk) for chunk in replay] == [
+        _finish_reasons(chunk) for chunk in first
+    ]
+    assert "tool_calls" in _finish_reasons(replay[1])

@@ -32,24 +32,29 @@ if TYPE_CHECKING:
 _STREAM_ENDED: Any = object()
 
 
-def _replayed_stream_chunk(result: ModelCallResult) -> dict[str, Any]:
-    """One marked assembled chunk for an effect-replayed stream."""
+def _replayed_stream_chunks(result: ModelCallResult) -> Any:
+    """Replay a terminal stream effect with structured deltas intact.
 
+    Prefer the gateway's persisted ``_stream_chunks`` so tool_calls and the
+    original finish_reason survive deduplicated replay. Fall back to a single
+    assembled text chunk only when no chunk list was recorded.
+    """
+
+    chunks = result.body.get("_stream_chunks")
+    if isinstance(chunks, list) and chunks:
+        for prior in chunks:
+            if isinstance(prior, dict):
+                yield {**prior, "_maistro_replayed": True}
+        return
     content = ""
+    finish_reason: Any = "stop"
     with suppress(KeyError, IndexError, TypeError, AttributeError):
-        content = str(result.body["choices"][0]["message"].get("content") or "")
-    if not content:
-        chunks = result.body.get("_stream_chunks")
-        if isinstance(chunks, list):
-            for prior in chunks:
-                if not isinstance(prior, dict):
-                    continue
-                choices = prior.get("choices") or []
-                delta = choices[0].get("delta", {}) if choices else {}
-                if isinstance(delta, dict) and delta.get("content"):
-                    content += str(delta["content"])
-    return {
-        "choices": [{"delta": {"content": content}, "finish_reason": "stop"}],
+        choice = result.body["choices"][0]
+        content = str(choice["message"].get("content") or "")
+        if choice.get("finish_reason") is not None:
+            finish_reason = choice.get("finish_reason")
+    yield {
+        "choices": [{"delta": {"content": content}, "finish_reason": finish_reason}],
         "_maistro_replayed": True,
     }
 
@@ -254,8 +259,16 @@ class AdmittedModelCalls:
                 pump.cancel()
             with suppress(BaseException):
                 await pump
-        if delivered == 0 and result is not None:
-            yield _replayed_stream_chunk(result)
+        for chunk in _empty_delivery_replay(delivered, result):
+            yield chunk
+
+
+def _empty_delivery_replay(delivered: int, result: ModelCallResult | None) -> list[dict[str, Any]]:
+    """Chunks to emit when the live pump delivered none (effect replay)."""
+
+    if delivered != 0 or result is None:
+        return []
+    return list(_replayed_stream_chunks(result))
 
 
 def _identity(identity: tuple[str, str, str] | None) -> tuple[str, str, str]:
