@@ -1485,19 +1485,31 @@ class Container:
         spend the whole budget a second time. Only observed persisted progress
         (an accepted outcome or a Run settlement) charges the budget (#1850).
         """
+        from maistro.runs.model import RunStatus
+        from maistro.runs.recovered_disposition import RecoveredDispositionRefused
         from maistro.runs.store import RunIntegrityError
 
         done = 0
         for node_run in await self.run_store.list_node_runs(run_id):
             if done >= remaining:
                 break
-            attempt = await self._replayable_terminal_attempt(node_run.node_run_id, moment=moment)
+            # P5a rediscovery is for mid-flight RUNNING NodeRuns only; a
+            # CREATED/QUEUED leaf under a typed RECOVERED Attempt is the
+            # reclaim half's refusal table (#232 P4a), not rediscovery scope.
+            attempt = await self._replayable_terminal_attempt(
+                node_run.node_run_id,
+                moment=moment,
+                allow_stranded_recovered=node_run.status is RunStatus.RUNNING,
+            )
             if attempt is None:
                 continue
             try:
                 if await self._reconcile_terminal_attempt_progress(attempt, reconciler):
                     done += 1
-            except RunIntegrityError:
+            except (RunIntegrityError, RecoveredDispositionRefused):
+                # Same catch as `_reclaim_abandoned_attempts`: a refusal from
+                # the disposition planner must not abort the tick after the
+                # physical Attempt is already settled.
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
                     attempt.attempt_id,
@@ -1530,18 +1542,26 @@ class Container:
         return latest if is_typed_recovered_attempt(latest) else None
 
     async def _replayable_terminal_attempt(
-        self, node_run_id: str, *, moment: datetime
+        self,
+        node_run_id: str,
+        *,
+        moment: datetime,
+        allow_stranded_recovered: bool = True,
     ) -> Attempt | None:
         """The one Attempt this sweep may replay for a NodeRun, if any.
 
         A persisted completion keeps its existing priority — replaying it is
         the older half of this sweep (#804) and must not lose a selection race
         against rediscovery (#1863 / #232 P5a). Only a NodeRun with no
-        replayable completion falls to the stranded typed-RECOVERED check.
+        replayable completion falls to the stranded typed-RECOVERED check, and
+        only when ``allow_stranded_recovered`` is true (RUNNING NodeRuns —
+        prelaunch CREATED/QUEUED leaves stay with the reclaim refusal path).
         """
         completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
         if completed is not None:
             return completed
+        if not allow_stranded_recovered:
+            return None
         return await self._stranded_recovered_attempt(node_run_id, moment=moment)
 
     async def _reconcile_unreconciled_terminal_attempts(
