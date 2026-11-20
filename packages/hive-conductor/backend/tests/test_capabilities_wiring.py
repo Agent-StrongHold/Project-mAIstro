@@ -12,7 +12,6 @@ from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.slots.infra import (
     ActionResult,
-    InfraAction,
     InfraHealth,
     ResourceHealth,
 )
@@ -54,7 +53,11 @@ async def test_no_url_leaves_infra_slots_empty() -> None:
     assert reg.installed("infra_action") == []
 
 
-async def test_action_shares_the_registry_inbox_instance() -> None:
+async def test_action_does_not_wire_in_process_inbox_approval() -> None:
+    """#2405: HostHealthAction is a pure executor; no InboxApproval Event wait."""
+    from maistro.capabilities.providers.host_health import HostHealthAction
+    from maistro.capabilities.providers.self_repair import RuleBasedRepair
+
     reg = default_capability_registry()
     await wire_capabilities(
         reg,
@@ -63,10 +66,11 @@ async def test_action_shares_the_registry_inbox_instance() -> None:
         vault=None,
     )
     action = reg.provider("infra_action", "host_health")
-    assert isinstance(action, InfraAction)
-    # The action's approval provider must be the same inbox the routes resolve.
-    inbox = reg.provider("approval", "inbox")
-    assert action._approval is inbox  # asserting shared wiring
+    assert isinstance(action, HostHealthAction)
+    assert not hasattr(action, "_approval")
+    repair = reg.provider("self_repair", "rule_based_repair")
+    assert isinstance(repair, RuleBasedRepair)
+    assert repair._approval_admittor is not None
 
 
 async def test_token_prefers_vault_over_env_fallback() -> None:
