@@ -1416,6 +1416,8 @@ class Container:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
         from maistro.observability.metrics import recovered_attempts_total
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.recovered_disposition import RecoveredDispositionRefused
+        from maistro.runs.store import RunIntegrityError
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
@@ -1431,9 +1433,10 @@ class Container:
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
-                except RunIntegrityError:
-                    # The Attempt is already settled; a NodeRun another path
-                    # terminalized concurrently is not this sweep's to rewrite.
+                except (RunIntegrityError, RecoveredDispositionRefused):
+                    # The Attempt is already settled; a NodeRun that never left
+                    # CREATED/QUEUED (or another path terminalized concurrently)
+                    # is not this sweep's to rewrite (#232 P4a refusal table).
                     logger.warning(
                         "reclaimed Attempt %s could not be reconciled",
                         attempt.attempt_id,
