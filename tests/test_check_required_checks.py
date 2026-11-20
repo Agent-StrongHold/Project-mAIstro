@@ -18,6 +18,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
@@ -413,3 +414,117 @@ class TestWorkflowDiscovery:
 
         source = inspect.getsource(gate._workflow_files)
         assert "*.yml" in source and "*.yaml" in source
+
+
+class TestPathsFilters:
+    """The `paths:` filter map check-gates-ran.py consumes to excuse a
+    path-filtered producer's absence (#2059). The globs stay raw here: the
+    evaluator owns the match semantics, this module owns the trigger
+    contract, and a filter the contract cannot express fails loudly."""
+
+    #: The shipped tree's one path-filtered producer. Hard-coded on purpose:
+    #: a change to mutation.yml's filter is a change to which PRs see the
+    #: gate at all, and must come with this list updated under review.
+    SHIPPED: ClassVar[dict[str, list[str]]] = {
+        "Mutation gate (changed critical lines)": [
+            "packages/**/*.py",
+            "quality/mutation-critical-files.json",
+            "quality/mutation-baseline.json",
+            # Listed by develop's #2120: a PR touching only the image-pin
+            # registry otherwise never triggers this producer and gates-ran
+            # stays pending forever (rationale in mutation.yml itself).
+            "quality/image-pins.json",
+            ".github/workflows/mutation.yml",
+        ]
+    }
+
+    def test_the_shipped_mutation_filter_is_discovered(self, gate) -> None:
+        assert gate.paths_filters() == self.SHIPPED
+
+    def test_every_filtered_check_is_a_collected_pr_check(self, gate) -> None:
+        collected = {name for _workflow, name, _scope in gate.collect()}
+        assert set(gate.paths_filters()) <= collected
+
+    def test_a_workflow_without_paths_is_absent_from_the_map(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump(
+                {"name": "W", "on": {"pull_request": None}, "jobs": {"j": {"name": "J"}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        assert gate.paths_filters() == {}
+
+    def test_a_malformed_paths_filter_fails_closed(self, gate, tmp_path, monkeypatch) -> None:
+        # `paths: null` is YAML for "no filter" and must not fail -- only a
+        # present-but-unusable filter is a contract error.
+        for bad in ("docs/**", ["docs/**", 3], [], [""]):
+            workflow = tmp_path / "w.yml"
+            workflow.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "W",
+                        "on": {"pull_request": {"paths": bad}},
+                        "jobs": {"j": {"name": "J"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monkeypatch.setattr(gate, "_workflow_files", lambda workflow=workflow: [workflow])
+            with pytest.raises(gate.ContractError):
+                gate.paths_filters()
+
+    def test_two_workflows_disagreeing_on_one_name_fail_closed(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        first = tmp_path / "a.yml"
+        second = tmp_path / "b.yml"
+        first.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "A",
+                    "on": {"pull_request": {"paths": ["docs/**"]}},
+                    "jobs": {"j": {"name": "J"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        second.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "B",
+                    "on": {"pull_request": {"paths": ["src/**"]}},
+                    "jobs": {"j": {"name": "J"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [first, second])
+        with pytest.raises(gate.ContractError):
+            gate.paths_filters()
+
+    def test_a_matrix_job_maps_every_concrete_name(self, gate, tmp_path, monkeypatch) -> None:
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "W",
+                    "on": {"pull_request": {"paths": ["docs/**"]}},
+                    "jobs": {
+                        "j": {
+                            "name": "J ${{ matrix.os }}",
+                            "strategy": {"matrix": {"os": ["ubuntu", "macos"]}},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        assert gate.paths_filters() == {
+            "J ubuntu": ["docs/**"],
+            "J macos": ["docs/**"],
+        }

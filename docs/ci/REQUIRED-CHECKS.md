@@ -50,6 +50,25 @@ set by the unconditional `integration-scope` aggregate, which verifies every
 classifier-selected specialized leg succeeded. Protected pushes and main
 promotions retain their existing full specialized and release-tier check set.
 
+A workflow-level `paths:` filter on a trigger is a third producer-scoping
+mechanism, and it leaves no check run behind at all (#2059): GitHub evaluates
+the filter before any job of the workflow exists, so a pull request outside
+the filter — say a docs-only PR against the mutation workflow's
+`packages/**/*.py` — produces no run, not even `skipped`, and a required
+check that is merely absent stays pending forever. `gates-ran` therefore
+reconciles these producers through `check-required-checks.paths_filters()`:
+when the measured changed-file envelope proves no changed path can match the
+reviewed globs, that check's absence is excused as producer-scoped, and its
+absence without such proof (unmeasured envelope, truncated envelope,
+unmodelable glob, or a path that could still match) stays pending. A real run
+under any other trigger is still judged normally. On a merge group such a
+producer cannot run at all unless it also declares `merge_group`, so PR-only
+producers of this kind — the mutation gate's `pr-gate` job is
+`if: github.event_name == 'pull_request'` — are additionally named in
+`MERGE_GROUP_PR_ONLY_CHECKS` and never requested as evidence for a synthetic
+queue SHA; their PR-event enforcement still covers the diff before the queue,
+and the nightly mutation run measures the full critical set independently.
+
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
 It accepts GitHub queue refs under `gh-readonly-queue/develop/` and refuses any
 other merge-group base. A future `main` queue must extend this resolver in the

@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -899,3 +899,251 @@ class TestAttemptOrdering:
     ) -> None:
         assert check._supersedes(_run("a", conclusion="failure"), _run("a"))
         assert check._supersedes(_run("a"), _run("a", conclusion="failure"))
+
+
+class TestTheWorkflowPathsFilterTranslation:
+    """`check-required-checks.paths_filters()` hands this evaluator the raw
+    `paths:` globs of every workflow-level path-filtered producer; the
+    translation to "can this trigger fire at all" lives here. GitHub's
+    documented filter characters are `*` (within a segment), `**` (across
+    segments), `?` and `[...]`, with a leading `!` negating and the last
+    matching pattern deciding. Anything else is not modeled and must fail
+    closed: an unprovable filter keeps the check required."""
+
+    MUTATION_GLOBS: ClassVar[list[str]] = [
+        "packages/**/*.py",
+        "quality/mutation-critical-files.json",
+        "quality/mutation-baseline.json",
+        ".github/workflows/mutation.yml",
+    ]
+
+    def test_a_segment_star_stays_inside_its_segment(self, check: ModuleType) -> None:
+        # `docs/x.md` matches, so the trigger can fire: no exclusion.
+        assert check._provably_excluded(["docs/*.md"], ["docs/x.md"]) is False
+        # A segment star must not reach across `/` or past the prefix.
+        assert check._provably_excluded(["docs/*.md"], ["docs/a/b.md"]) is True
+        assert check._provably_excluded(["docs/*.md"], ["docsx.md"]) is True
+
+    def test_a_globstar_crosses_segments_in_all_documented_positions(
+        self, check: ModuleType
+    ) -> None:
+        assert check._provably_excluded(["packages/**/*.py"], ["packages/a.py"]) is False
+        assert check._provably_excluded(["packages/**/*.py"], ["packages/a/b/c.py"]) is False
+        assert check._provably_excluded(["**/temp"], ["temp"]) is False
+        assert check._provably_excluded(["**/temp"], ["a/b/temp"]) is False
+        assert check._provably_excluded(["packages/**"], ["packages/x/y"]) is False
+        assert check._provably_excluded(["a/**/b"], ["a/b"]) is False
+
+    def test_a_globstar_never_lets_its_prefix_bleed_into_the_filename(
+        self, check: ModuleType
+    ) -> None:
+        # `packages/**/*.py` must not match `packagesfoo.py`: the segment
+        # boundary is real even when the globstar matches zero directories.
+        assert check._provably_excluded(["packages/**/*.py"], ["packagesfoo.py"]) is True
+
+    def test_question_mark_and_character_classes_are_supported(self, check: ModuleType) -> None:
+        assert check._provably_excluded(["a?c.md"], ["abc.md"]) is False
+        assert check._provably_excluded(["a?c.md"], ["a/c.md"]) is True
+        assert check._provably_excluded(["[!abc].py"], ["d.py"]) is False
+        assert check._provably_excluded(["[!abc].py"], ["a.py"]) is True
+
+    def test_negation_follows_the_last_matching_pattern_wins_rule(self, check: ModuleType) -> None:
+        globs = ["packages/*.py", "!packages/skip.py"]
+        assert check._provably_excluded(globs, ["packages/skip.py"]) is True
+        assert check._provably_excluded(globs, ["packages/keep.py"]) is False
+        assert check._provably_excluded(globs, ["README.md"]) is True
+
+    def test_a_filter_without_a_positive_glob_cannot_fire_at_all(self, check: ModuleType) -> None:
+        assert check._provably_excluded(["!anything"], ["whatever.txt"]) is True
+
+    def test_unmodelable_syntax_fails_closed(self, check: ModuleType) -> None:
+        for pattern in ("a{b,c}.py", "a**b.py", "a\\b.py", "[unclosed.md", "a+b.py"):
+            assert check._provably_excluded([pattern], ["a.py"]) is False, pattern
+
+    def test_the_shipped_mutation_filter_is_translated_end_to_end(self, check: ModuleType) -> None:
+        assert check._provably_excluded(self.MUTATION_GLOBS, ["docs/a.md", "uv.lock"]) is True
+        assert (
+            check._provably_excluded(self.MUTATION_GLOBS, ["docs/a.md", "packages/x.py"]) is False
+        )
+        assert (
+            check._provably_excluded(self.MUTATION_GLOBS, ["quality/mutation-critical-files.json"])
+            is False
+        )
+
+
+class TestWorkflowPathFilteredProducers:
+    """A workflow-level `paths:` filter leaves no check run behind: GitHub
+    evaluates it before any job exists, so a PR outside the filter produces
+    absence, not `skipped` (#2059). The evaluator may excuse that absence
+    exactly when the measured changed-file envelope proves the trigger
+    cannot match; every other absence stays pending."""
+
+    MUTATION_GATE = "Mutation gate (changed critical lines)"
+
+    @staticmethod
+    def _envelope(
+        tmp_path: Path, files: list[str], *, measured: bool = True, truncated: bool = False
+    ) -> Path:
+        path = tmp_path / "changed-files.json"
+        payload: dict[str, Any] = {"measured": measured, "truncated": truncated, "files": files}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_a_docs_only_envelope_proves_the_mutation_gate_cannot_trigger(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        excused = check.untriggerable_checks(
+            "pull_request",
+            self._envelope(tmp_path, ["docs/a.md", ".github/workflows/quality.yml"]),
+        )
+        assert excused == frozenset({self.MUTATION_GATE})
+
+    def test_an_in_filter_path_keeps_the_gate_required(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        for file in (
+            "packages/x.py",
+            "quality/mutation-baseline.json",
+            ".github/workflows/mutation.yml",
+        ):
+            excused = check.untriggerable_checks("pull_request", self._envelope(tmp_path, [file]))
+            assert self.MUTATION_GATE not in excused, file
+
+    def test_an_unmeasured_envelope_cannot_excuse_anything(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        excused = check.untriggerable_checks(
+            "pull_request", self._envelope(tmp_path, ["docs/a.md"], measured=False)
+        )
+        assert excused == frozenset()
+
+    def test_a_truncated_envelope_cannot_excuse_anything(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        excused = check.untriggerable_checks(
+            "pull_request", self._envelope(tmp_path, ["docs/a.md"], truncated=True)
+        )
+        assert excused == frozenset()
+
+    def test_a_missing_envelope_cannot_excuse_anything(self, check: ModuleType) -> None:
+        assert check.untriggerable_checks("pull_request", None) == frozenset()
+
+    def test_merge_groups_need_no_envelope_for_pr_only_producers(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        # A queue SHA carries no PR changed-file envelope; producers that
+        # cannot run there are removed from the required set itself.
+        excused = check.untriggerable_checks("merge_group", self._envelope(tmp_path, ["docs/a.md"]))
+        assert excused == frozenset()
+        names = check.required_check_names(base_branch="develop", event_name="merge_group")
+        assert self.MUTATION_GATE not in names
+        assert "pr-base" not in names
+        assert check.INTEGRATION_SCOPE_CHECK in names
+
+    def test_an_absent_excused_check_is_not_pending(self, check: ModuleType) -> None:
+        verdict = check.evaluate(
+            [self.MUTATION_GATE, "test"],
+            [_run("test", conclusion="success")],
+            require_complete=True,
+            untriggerable=frozenset({self.MUTATION_GATE}),
+        )
+        assert verdict.excused == [self.MUTATION_GATE]
+        assert verdict.ok is True
+        assert verdict.pending is False
+
+    def test_a_bare_skip_of_an_excused_check_is_also_excused(self, check: ModuleType) -> None:
+        verdict = check.evaluate(
+            [self.MUTATION_GATE],
+            [_run(self.MUTATION_GATE, conclusion="skipped")],
+            require_complete=True,
+            untriggerable=frozenset({self.MUTATION_GATE}),
+        )
+        assert verdict.excused == [self.MUTATION_GATE]
+        assert verdict.ok is True
+
+    def test_a_real_verdict_from_another_trigger_is_still_judged(self, check: ModuleType) -> None:
+        # A workflow_dispatch run on the same head produces a real verdict
+        # even for a PR whose envelope proves the paths filter cannot match;
+        # that verdict is evidence and must be judged, never excused.
+        verdict = check.evaluate(
+            [self.MUTATION_GATE],
+            [_run(self.MUTATION_GATE, conclusion="failure")],
+            require_complete=True,
+            untriggerable=frozenset({self.MUTATION_GATE}),
+        )
+        assert verdict.ran == [self.MUTATION_GATE]
+        assert verdict.ok is True
+
+    def test_without_proof_an_absent_gate_stays_pending(self, check: ModuleType) -> None:
+        verdict = check.evaluate(
+            [self.MUTATION_GATE],
+            [],
+            require_complete=True,
+        )
+        assert verdict.absent == [self.MUTATION_GATE]
+        assert verdict.pending is True
+        assert verdict.ok is False
+
+    def test_a_green_head_with_a_docs_only_envelope_publishes_ok(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The #2059 shape end to end: every required check ran green on the
+        head except the mutation gate, which is absent because this PR's
+        measured file set cannot match its producer's `paths:` filter."""
+        required = [
+            name
+            for name in check.required_check_names(base_branch="develop", event_name="pull_request")
+            if name != self.MUTATION_GATE
+        ]
+        runs = [_run(name, conclusion="success") for name in required]
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+                "--base-branch",
+                "develop",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(
+                    self._envelope(
+                        tmp_path, ["docs/a.md", ".cursor/context/note.md", "CHANGELOG.md"]
+                    )
+                ),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "ok:" in out
+        assert "absent by measured trigger scope" in out
+
+    def test_a_green_head_in_mutation_scope_stays_pending_when_the_gate_is_absent(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The envelope excuses what it proves unreachable, never what it
+        proves reachable: a PR touching packages/**/*.py with no mutation
+        run is evidence still arriving, not a pass."""
+        required = [
+            name
+            for name in check.required_check_names(base_branch="develop", event_name="pull_request")
+            if name != self.MUTATION_GATE
+        ]
+        runs = [_run(name, conclusion="success") for name in required]
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+                "--base-branch",
+                "develop",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(self._envelope(tmp_path, ["packages/maistro-core/src/x.py"])),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "PENDING: execution evidence is still arriving" in out
+        assert self.MUTATION_GATE in out
