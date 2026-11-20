@@ -732,6 +732,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         if "harness_wait_version" in pause:
             if reason != PAUSE_AWAITING_HARNESS:
                 raise ValueError("harness continuation has the wrong pause reason")
+            # Fencing: a versioned harness wait is always settled by a fresh
+            # poll of the durable dispatch receipt, never by a submitted
+            # answer body. At-least-once redelivery can deliver an answer
+            # that was stamped against an earlier wait ordinal (or a foreign
+            # handle) after the harness re-dispatched; trusting it would
+            # fail the run instead of recovering. The answer body only has
+            # standing where no pause carries provenance (see below).
             return await self._poll(await self._load_wait(pause, inputs, ctx), inputs, ctx, pause)
         if {"dispatch_invocation_id", "observation_index", "deadline_at"}.intersection(pause):
             raise ValueError("harness continuation is missing its version")
