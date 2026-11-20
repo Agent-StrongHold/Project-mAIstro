@@ -34,6 +34,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
 - **Attention projects messages + optimizer proposals (#1049).** Unread agent
   messages and pending Workspace-scoped optimizer proposals join the
   read-time Attention projection (critical→severity/blocking, warning→queued,

@@ -2,46 +2,33 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from tests._admitted_model_fixture import setup
 
 import maistro.capabilities.providers.llm_gateway as gateway
-from maistro.capabilities.effect_context import (
-    binding_scope_policy,
-    new_in_memory_effect_context,
-)
 from maistro.capabilities.model_chat import GovernedLLMClient
-from maistro.credentials.types import CredentialRecord
+from maistro.http import set_test_transport
 from maistro.observability.correlation import (
     bind_execution_context,
     detached_execution_context,
 )
 from maistro.providers.registry import InMemoryProviderRegistry
-from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
 
 pytestmark = pytest.mark.contract("behavioral")
 
 
 @pytest.fixture
-def governed(
+async def governed(
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]]]:
+) -> tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]], tuple[str, str, str]]:
     """Keep Binding, credentials and Invocation real; replace only gateway HTTP."""
-    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
-    effects.credentials.add(
-        workspace_id="ws-tool-choice",
-        project_id="p1",
-        record=CredentialRecord(
-            key_id=gateway.DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
-            provider=gateway.MODEL_GATEWAY_CREDENTIAL_PROVIDER,
-            api_key="test-litellm-key",
-        ),
-    )
     registry = InMemoryProviderRegistry(
         models=[
             ModelMetadata(
@@ -53,52 +40,42 @@ def governed(
             )
         ]
     )
-    client = GovernedLLMClient(
-        effects,
-        registry=registry,
-        router=CostAwareRouter(registry),
-        endpoint=gateway.GatewayEndpoint(base_url="http://gw:4000"),
-        workspace_id="ws-tool-choice",
-        project_id="p1",
-    )
+    s = await setup(registry=registry, key="test-litellm-key")
+    client = GovernedLLMClient(s.calls)
     payloads: list[dict[str, Any]] = []
 
-    class _GatewayClient:
-        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+    def transport(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://gateway.fixture/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer test-litellm-key"
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
 
-        async def __aenter__(self) -> _GatewayClient:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None: ...
-
-        async def post(self, url: str, **kwargs: Any) -> httpx.Response:
-            assert url == "http://gw:4000/v1/chat/completions"
-            assert kwargs["headers"]["Authorization"] == "Bearer test-litellm-key"
-            payloads.append(deepcopy(kwargs["json"]))
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
-            )
-
-    monkeypatch.setattr(httpx, "AsyncClient", _GatewayClient)
-    recorded = AsyncMock(wraps=client._egress.complete)
-    monkeypatch.setattr(client._egress, "complete", recorded)
-    return client, recorded, payloads
+    set_test_transport(httpx.MockTransport(transport))
+    recorded = AsyncMock(wraps=s.calls.complete)
+    monkeypatch.setattr(s.calls, "complete", recorded)
+    # The transport assertions below still exercise the real governed boundary;
+    # the fixture now supplies persisted admission instead of correlation alone.
+    return client, recorded, payloads, s.identity
 
 
 async def _complete(
-    client: GovernedLLMClient, messages: list[dict[str, Any]], **kwargs: Any
+    client: GovernedLLMClient,
+    messages: list[dict[str, Any]],
+    identity: tuple[str, str, str],
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Supply explicit canonical context without changing the #1827 identity seam."""
     with (
         detached_execution_context(),
         bind_execution_context(
-            run_id="run-tool-choice",
-            node_run_id="node-tool-choice",
-            attempt_id="attempt-tool-choice",
+            run_id=identity[0],
+            node_run_id=identity[1],
+            attempt_id=identity[2],
         ),
     ):
-        client.set_turn("run-tool-choice")
+        client.set_turn(identity[0])
         try:
             return await client.complete(messages, "fast-model", **kwargs)
         finally:
@@ -107,9 +84,10 @@ async def _complete(
 
 @pytest.mark.parametrize("choice", ["none", "auto", "required", "provider:custom/value", " \t "])
 async def test_explicit_tool_choice_survives_governed_adapter(
-    governed: tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]]], choice: str
+    governed: tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]], tuple[str, str, str]],
+    choice: str,
 ) -> None:
-    client, recorded, payloads = governed
+    client, recorded, payloads, identity = governed
     messages = [{"role": "user", "content": "Use the approved tool"}]
     tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
     original = deepcopy((messages, tools))
@@ -117,6 +95,7 @@ async def test_explicit_tool_choice_survives_governed_adapter(
     result = await _complete(
         client,
         messages,
+        identity,
         tools=tools,
         tool_choice=choice,
         temperature=0.15,
@@ -155,13 +134,13 @@ async def test_explicit_tool_choice_survives_governed_adapter(
     ids=["omitted", "none", "empty"],
 )
 async def test_conversation_payload_still_omits_tools_and_absent_choice(
-    governed: tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]]],
+    governed: tuple[GovernedLLMClient, AsyncMock, list[dict[str, Any]], tuple[str, str, str]],
     kwargs: dict[str, Any],
 ) -> None:
-    client, recorded, payloads = governed
+    client, recorded, payloads, identity = governed
     messages = [{"role": "user", "content": "Just chat"}]
 
-    await _complete(client, messages, **kwargs)
+    await _complete(client, messages, identity, **kwargs)
 
     recorded.assert_awaited_once()
     request = recorded.await_args.kwargs["request"]
@@ -171,7 +150,6 @@ async def test_conversation_payload_still_omits_tools_and_absent_choice(
         {
             "model": "fast-model",
             "messages": messages,
-            "temperature": 0.7,
             "stream": False,
         }
     ]

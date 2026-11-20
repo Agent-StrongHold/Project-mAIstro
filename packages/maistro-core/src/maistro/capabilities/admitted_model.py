@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
@@ -26,6 +28,30 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.runs.model import Attempt, NodeRun, Run
     from maistro.runs.store import RunStore
+
+_STREAM_ENDED: Any = object()
+
+
+def _replayed_stream_chunk(result: ModelCallResult) -> dict[str, Any]:
+    """One marked assembled chunk for an effect-replayed stream."""
+
+    content = ""
+    with suppress(KeyError, IndexError, TypeError, AttributeError):
+        content = str(result.body["choices"][0]["message"].get("content") or "")
+    if not content:
+        chunks = result.body.get("_stream_chunks")
+        if isinstance(chunks, list):
+            for prior in chunks:
+                if not isinstance(prior, dict):
+                    continue
+                choices = prior.get("choices") or []
+                delta = choices[0].get("delta", {}) if choices else {}
+                if isinstance(delta, dict) and delta.get("content"):
+                    content += str(delta["content"])
+    return {
+        "choices": [{"delta": {"content": content}, "finish_reason": "stop"}],
+        "_maistro_replayed": True,
+    }
 
 
 class AdmittedModelCalls:
@@ -66,7 +92,11 @@ class AdmittedModelCalls:
         return timeout
 
     async def _authorize(
-        self, identity: tuple[str, str, str] | None, binding_id: str
+        self,
+        identity: tuple[str, str, str] | None,
+        binding_id: str,
+        *,
+        required_workspace_id: str | None = None,
     ) -> tuple[Binding, str, tuple[str, str, str], datetime | None]:
         from maistro.runs.store import RunIntegrityError
         from maistro.runs.store_boundary import require_admitted_actor
@@ -82,6 +112,9 @@ class AdmittedModelCalls:
             raise RunIntegrityError("model call execution records belong to different executions")
         _require_running(run, node, attempt)
         _require_scope(run)
+        # None means unrestricted; any concrete value (including "") narrows.
+        if required_workspace_id is not None and run.workspace_id != required_workspace_id:
+            raise RunIntegrityError("Agent definition workspace does not match its admitted Run")
         actor = require_admitted_actor(run.actor_principal_id)
         binding = await self._binding(
             binding_id,
@@ -116,6 +149,21 @@ class AdmittedModelCalls:
             capability=MODEL_CHAT_CAPABILITY,
         )
 
+    def _egress(
+        self, timeout_s: float | None, deadline_at: datetime | None
+    ) -> tuple[ModelChatEgress, float]:
+        timeout = self._timeout(timeout_s, deadline_at)
+        return (
+            ModelChatEgress(
+                self._effects,
+                registry=self._registry,
+                router=self._router,
+                endpoint=self._endpoint.model_copy(update={"timeout_s": timeout}),
+                adapters=self._adapters,
+            ),
+            timeout,
+        )
+
     async def complete(
         self,
         *,
@@ -124,16 +172,12 @@ class AdmittedModelCalls:
         identity: tuple[str, str, str] | None = None,
         binding_id: str = "",
         timeout_s: float | None = None,
+        required_workspace_id: str | None = None,
     ) -> ModelCallResult:
-        binding, actor, selected, deadline_at = await self._authorize(identity, binding_id)
-        timeout = self._timeout(timeout_s, deadline_at)
-        egress = ModelChatEgress(
-            self._effects,
-            registry=self._registry,
-            router=self._router,
-            endpoint=self._endpoint.model_copy(update={"timeout_s": timeout}),
-            adapters=self._adapters,
+        binding, actor, selected, deadline_at = await self._authorize(
+            identity, binding_id, required_workspace_id=required_workspace_id
         )
+        egress, timeout = self._egress(timeout_s, deadline_at)
         # Provider adapters retain their own transport limits. The outer bound
         # also enforces this consumer's deadline for that path; cancellation
         # after dispatch is settled UNKNOWN by the existing Invocation owner.
@@ -147,6 +191,71 @@ class AdmittedModelCalls:
                 effect_key=effect_key,
                 request=request,
             )
+
+    async def stream(
+        self,
+        *,
+        request: ModelChatRequest,
+        effect_key: str,
+        identity: tuple[str, str, str] | None = None,
+        binding_id: str = "",
+        timeout_s: float | None = None,
+        required_workspace_id: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield admitted incremental chunks inside one Invocation (SPEC-285).
+
+        Uses the existing egress ``on_chunk`` observer rather than a second
+        physical path. Consumers that stop early must close this iterator.
+        """
+        binding, actor, selected, deadline_at = await self._authorize(
+            identity, binding_id, required_workspace_id=required_workspace_id
+        )
+        egress, timeout = self._egress(timeout_s, deadline_at)
+        streamed = request.model_copy(update={"stream": True})
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        def observe(chunk: dict[str, Any]) -> None:
+            queue.put_nowait(chunk)
+
+        async def run() -> ModelCallResult:
+            try:
+                async with asyncio.timeout(timeout):
+                    return await egress.complete(
+                        binding=binding,
+                        run_id=selected[0],
+                        node_run_id=selected[1],
+                        attempt_id=selected[2],
+                        actor_id=actor,
+                        effect_key=effect_key,
+                        request=streamed,
+                        on_chunk=observe,
+                    )
+            finally:
+                queue.put_nowait(_STREAM_ENDED)
+
+        pump = asyncio.ensure_future(run())
+        delivered = 0
+        result: ModelCallResult | None = None
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_ENDED:
+                    break
+                if isinstance(item, dict):
+                    delivered += 1
+                    yield item
+            result = await pump
+        except BaseException:
+            if not pump.done():
+                pump.cancel()
+            raise
+        finally:
+            if not pump.done():
+                pump.cancel()
+            with suppress(BaseException):
+                await pump
+        if delivered == 0 and result is not None:
+            yield _replayed_stream_chunk(result)
 
 
 def _identity(identity: tuple[str, str, str] | None) -> tuple[str, str, str]:

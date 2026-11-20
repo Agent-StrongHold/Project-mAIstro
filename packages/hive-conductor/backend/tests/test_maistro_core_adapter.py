@@ -137,24 +137,24 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_start_hands_the_roster_the_container_model_client(monkeypatch):
-    """The roster's LLM client IS the Container's canonical model client.
+async def test_start_hands_the_roster_an_admitted_governed_client(monkeypatch):
+    """Boot Agents share one AdmittedModelCalls-backed GovernedLLMClient (#1084).
 
     Later-materialized Agents must reach models through the same authorized
-    effect authority as the boot roster (#1084): the client the Container
-    composes over its model-chat Binding/egress, never a bridge-local
-    transport. When the Container supplies none, the bridge composes the same
-    canonical boundary over its configured gateway (the fallback above).
+    effect authority as the boot roster: configured Binding admission over
+    persisted Run/Attempt identity, never a fabricated agent-runtime Binding.
     """
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
     container = _fake_container()
-    canonical_client = object()
-    container.model_chat_client = canonical_client
     captured = _capture_runtime_seams(monkeypatch, container)
 
     bridge = MaistroCoreBridge()
     await bridge.start(Settings(maistro_agents_dir="agents", litellm_api_base="http://gw.test/v1"))
 
-    assert captured["llm"] is canonical_client
+    assert isinstance(captured["llm"], GovernedLLMClient)
+    assert captured["llm"]._calls is captured["admitted_calls"]
+    assert bridge.admitted_calls is captured["admitted_calls"]
 
 
 @pytest.mark.asyncio
@@ -180,9 +180,11 @@ async def test_start_exposes_governed_egress_over_the_container_authorities(monk
     assert egress._effects is container.capability_effects
     assert egress._registry is container.provider_registry
     assert egress._router is container.llm_router
-    # One gateway endpoint, shared with the roster's model clients rather
-    # than rebuilt -- the two doors cannot drift onto different credentials.
-    assert egress._endpoint is captured["model_endpoint"]
+    # One gateway endpoint, shared with the roster's admitted model clients
+    # rather than rebuilt -- the two doors cannot drift onto different credentials.
+    assert egress._endpoint is captured["admitted_calls"]._endpoint
+    assert captured["llm"]._calls is captured["admitted_calls"]
+    assert bridge.admitted_calls is captured["admitted_calls"]
 
 
 @pytest.mark.asyncio
