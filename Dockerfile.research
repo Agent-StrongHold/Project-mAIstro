@@ -102,7 +102,11 @@ RUN uv export --locked --package maistro-server \
 # if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
 # independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
-# flags the 1.27.2 stdlib inside the built binary.
+# flags the 1.27.2 stdlib inside the built binary. That 1.27.3 builder aged out
+# in turn: CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH,
+# fixed in go1.26.11/1.27.4) flags the 1.27.3 stdlib inside the built binary
+# (#2375 Container scan gate, security.yml run 44477475371, 2026-11-19), so the
+# builder moved to 1.27.4-alpine, retiring both 1.27.3 indexes.
 #
 # 29.9.3 bump (CR1373 CI repair, 2026-11-16): v29.9.1 vendored go-jose/v4 4.1.5
 # (CVE-2026-116587 HIGH, fixed in 4.1.6) and golang.org/x/net 0.60.0
@@ -110,8 +114,9 @@ RUN uv export --locked --package maistro-server \
 # usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but still pins
 # x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
 # root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
-# Digest-pinned (#349); bumped 2026-11-20 to golang:1.27.4-alpine for
-# CVE-2026-97054 (stdlib HIGH on rebuilt Go binaries).
+# Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
+# golang:1.27.4-alpine (index created 2026-11-10; verified live: `go version`
+# in the pinned image reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
 # and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
 # versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
