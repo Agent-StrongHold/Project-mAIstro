@@ -1,13 +1,13 @@
-"""Docker-backed development implementation of `MicroVmSandbox`.
+"""Canonical-selector-backed development implementation of `MicroVmSandbox`.
 
-Wraps the existing `maistro.tools.sandbox.docker.SandboxContainer` (ADR-054:
-one sandbox per task, ephemeral FS, durable state in Postgres/git) so RSI
-cycles are runnable today without a real microVM host. `create_microvm_sandbox`
-is the single seam to replace once a microVM backend is selected — Firecracker
-gives the fastest boot/snapshot story, E2B wraps Firecracker as a hosted SDK
-with no host KVM setup, gVisor trades some isolation strength for deployability
-on existing container infra. None of the rest of `maistro_rsi` depends on which
-one wins; it only depends on `MicroVmSandbox`.
+Wraps `maistro.tools.sandbox.canonical` (which enters through the canonical
+`maistro.sandbox` selector, #76) so RSI cycles are runnable today without a
+Kata-capable host. `create_microvm_sandbox` is the single seam to replace
+once a dedicated microVM backend is registered behind the same selector —
+Firecracker gives the fastest boot/snapshot story, E2B wraps Firecracker as a
+hosted SDK with no host KVM setup, gVisor trades some isolation strength for
+deployability on existing container infra. None of the rest of `maistro_rsi`
+depends on which one wins; it only depends on `MicroVmSandbox`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import uuid
 import structlog
 
 from maistro.config.settings import SandboxSettings
-from maistro.tools.sandbox.docker import SandboxContainer, create_sandbox
+from maistro.tools.sandbox.canonical import CanonicalSandboxContainer, create_sandbox
 from maistro_rsi.protocols import MicroVmSandbox
 from maistro_rsi.sandbox.local import LocalSandbox
 
@@ -104,7 +104,7 @@ class DockerMicroVmSandbox:
     genuine pause/resume here without changing this class's interface.
     """
 
-    def __init__(self, container: SandboxContainer) -> None:
+    def __init__(self, container: CanonicalSandboxContainer) -> None:
         self._container = container
         self._snapshots: dict[str, str] = {}
 

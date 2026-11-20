@@ -31,6 +31,7 @@ const PAGE_ROUTE_ROOTS = new Set([
   "agents",
   "audit",
   "backlog",
+  "capabilities",
   "chat",
   "cli",
   "containers",

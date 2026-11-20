@@ -362,7 +362,15 @@ async def test_settings_projection_uses_bounded_core_pages(
 
     async def bounded_page(**kwargs):
         assert kwargs["limit"] == 50
-        assert kwargs["boundary"] in {"settings_patch", "settings_reload", "settings_update"}
+        # #1050: the settings trail also serves Workspace preference writes
+        # (profile_preference_set via Profile UI / PATCH / Agent profile_set).
+        # Still per-action bounded pages — never a corpus materialization.
+        assert kwargs["boundary"] in {
+            "settings_patch",
+            "settings_reload",
+            "settings_update",
+            "profile_preference_set",
+        }
         calls.append(kwargs)
         return await original_page(**kwargs)
 
@@ -375,7 +383,7 @@ async def test_settings_projection_uses_bounded_core_pages(
     assert response.status_code == 200, response.text
     assert len(response.json()) == 60
     assert [e["detail"]["message"] for e in response.json()] == [str(i) for i in range(74, 14, -1)]
-    assert len(calls) == 4  # two matching pages, one empty page per other action
+    assert len(calls) == 5  # two matching pages, one empty page per other action
     assert sum(call["cursor"] is not None for call in calls) == 1
 
 
