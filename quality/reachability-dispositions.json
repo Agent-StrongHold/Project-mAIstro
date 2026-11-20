@@ -50,8 +50,8 @@
       "id": "collaboration",
       "subsystem": "Collaboration",
       "disposition": "CONNECT",
-      "rationale": "Multi-actor editing sessions with no product surface. ADR-070426-3a1f's A2UI protocol is the consumer, and it is not built.",
-      "root": "a Conductor collaboration route (#34)",
+      "rationale": "Multi-actor editing sessions with no product surface (#2323). Parked until A2UI (ADR-070426-3a1f) — not a v1.0 Workspaces mount. No silent dead UI entry.",
+      "root": "A2UI-backed collaboration surface (ADR-070426-3a1f; #2323)",
       "modules": [
         "maistro.collaboration",
         "maistro.collaboration.session_collab",
@@ -62,8 +62,8 @@
       "id": "cli-container-runtimes",
       "subsystem": "Core CLI",
       "disposition": "CONNECT",
-      "rationale": "Docker/Podman runtime selection for the CLI's container commands, with no CLI subcommand reaching it. ADR-093's sandbox isolation model is the consumer.",
-      "root": "a maistro.cli subcommand",
+      "rationale": "Docker/Podman runtime selection with no Typer subcommand reaching it (#2324). Stays CONNECT under #2280 Decision A (CLI operator-lifecycle only for v1.0; no product CRUD). ADR-093 sandbox isolation is the eventual consumer — not Workspace UI.",
+      "root": "a named operator-lifecycle maistro.cli subcommand or ADR-093 sandbox path (#2324)",
       "modules": [
         "maistro.cli._container",
         "maistro.cli._container.docker_runtime",
