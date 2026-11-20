@@ -79,7 +79,50 @@ or placeholder-only section.
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
   `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
-  another product commit.
+  another product commit. (#2359)
+
+- **Container gate: clear the fresh Trivy/Grype advisories that re-flagged the
+  four shipped images (#2303 CI repair).** The merge-queue evaluation at
+  d754936 failed exactly one required check — "Container scan + SBOM + cosign"
+  (job 133166051159) — and the `npm audit` tail in its log was a red herring:
+  step #27, `RUN npm ci` in the hive-conductor frontend stage, completed
+  successfully (identical output, exit 0, reproduced against the pinned
+  node:22-alpine digest). The real failure was the maistro-rsi-runner Trivy
+  scan: temporalio 1.34.0's bundled `bridge/Cargo.lock` carries the `zip` crate
+  8.6.0 with one CRITICAL and three HIGH advisories (CVE-2026-115905/-907/-908/-909,
+  fixed in zip 9.0.0–9.0.5) that the Trivy DB gained after develop's own
+  containers run passed. And because that scan failed first, the job never
+  reached the Grype cross-check, whose fresh DB flags CVE-2026-115557 (CRITICAL)
+  in the CPython 3.12.15/3.13.16 binaries the digest-pinned bases ship, plus
+  1 CRITICAL + 3 HIGH in the node 24.21.0 binary bundled by the playwright/
+  patchright 1.64 wheels (fixed in node 24.22.1). All fixed upstream, so the
+  repair moves dependencies rather than adding ignores:
+
+  - uv.lock: temporalio 1.34.0 -> 1.36.1 (bridge Cargo.lock now ships zip 9.5.1;
+    nexus-rpc moves 1.4.0 -> 1.5.0 with it), playwright 1.64.0 -> 1.65.2 and
+    patchright 1.64.1 -> 1.64.4 (bundled driver node now 26.13.1 / 24.22.1).
+    temporalio reaches only the rsi-runner image (root meta-package dep);
+    playwright/patchright only the research image (browser extra) — the
+    engine/hive/research Trivy scans and the pip-audit gate are unaffected.
+  - Base pins: python:3.13.16-slim-bookworm -> 3.13.18-slim-bookworm
+    (sha256:a5a7017e…) for the engine and Conductor images and
+    python:3.12-slim -> sha256:5e2bdb1b… (now 3.12.16) for research, rsi-runner,
+    e2e and sbx-tests, recorded in quality/image-pins.json — the same
+    grype-driven refresh mechanism as #363 and #1152. The Conductor identity
+    contract moves with the pin: the in-image assertion, both security.yml
+    identity smokes and tests/test_distribution_contract.py now assert
+    (3, 13, 18), and the canvas smoke's control image follows the same digest
+    (held closed by tests/test_pinned_digest_references.py).
+
+  Proven locally with CI's exact procedures on rebuilt images: Trivy 0.73.0
+  `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile
+  .trivyignore.yaml` exits 0 on all four, Grype v0.116.0 `--fail-on high
+  --only-fixed` exits 0 on all four (rsi-runner's only raw findings left are
+  the documented moto secret fixtures), `check-image-lock-reconciliation.py`
+  passes for rsi-runner (220 distributions) and research (147), the Conductor
+  identity smoke prints `identity=operational python=3.13.18`, and the
+  pip-audit gate still passes (only the triaged ecdsa advisory remains).
+  (#2303)
 
 ### Security
 
@@ -2128,6 +2171,38 @@ or placeholder-only section.
   lease-ownership behavior is unchanged.
 
 ### Dependencies
+
+- **Trivy-advisory refresh in the research image venv (#2303 CI repair).**
+  The maistro-engine-research Trivy scan (merge-queue job 133112186114 at
+  58cc1eb) flagged 13 HIGH advisories with fixed releases available that the
+  trivy DB gained after develop's own 2026-11-08 run passed the same scan:
+  `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1` 0.6.4 → 0.6.5
+  (CVE-2026-119194/-119195/-119196/-119197), `pypdf` 6.21.2 → 7.1.0
+  (CVE-2026-119203 … CVE-2026-119209, eight findings fixed in 6.21.3/6.21.4)
+  and `soupsieve` 3.0.3 → 4.1.1 (CVE-2026-126190, fixed in 4.0.0). All four
+  are transitive dependencies (browser-use, beautifulsoup4, pyasn1-modules,
+  requests-oauthlib) with no manifest constraint to raise — pure `uv.lock`
+  moves under existing resolution constraints. Proven with CI's exact trivy
+  invocation (`--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+  --ignorefile .trivyignore.yaml`, trivy 0.73.0) on a rebuilt research image:
+  exit 0, zero findings. The pip-audit gate (its DB lags trivy on these four)
+  still passes with only the triaged ecdsa advisory.
+
+- **Pip-audit-advisory refresh across the lock and the engine docker CLI
+  (#2303 CI repair).** The supply-chain gate and the maistro-engine Trivy scan
+  both failed on advisories with fixed releases available. `uv.lock` moves
+  `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 → 3.3.2
+  (CVE-2026-119286, fixed in 3.3.1), `joserfc` 1.7.5 → 1.8.0 (CVE-2026-119284,
+  fixed in 1.7.6), and `opentelemetry-api` 1.45.1 → 1.45.2 (CVE-2026-126360;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move to their
+  matching releases). The engine and research images' source-built docker CLI
+  moves v29.9.1 → v29.9.3 (5457199, commit-verified in stage): v29.9.3 vendors
+  go-jose v4.1.7 upstream (CVE-2026-116587, fixed in v4.1.6), and the still-
+  pinned golang.org/x/net 0.60.0 is patched to v0.62.0 on the pinned tag
+  (CVE-2026-78661) with `go mod vendor` re-syncing the vendored tree before the
+  build. All four Python upgrades are floor moves
+  under existing constraints (no manifest change), and the image venvs that
+  install from the lock clear the Trivy `dnspython` HIGH in the same change.
 
 - **Pillow and certifi move past their open advisories (#363).** The
   installed `pillow` 12.3.0 carried eight advisories with fixes only in
