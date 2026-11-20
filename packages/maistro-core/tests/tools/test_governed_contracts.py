@@ -911,9 +911,7 @@ async def test_irreversible_tool_without_gate_refuses() -> None:
         )
 
 
-async def _allow_irreversible_policy(
-    _binding: Binding, _request: Any, _context: Any
-) -> Any:
+async def _allow_irreversible_policy(_binding: Binding, _request: Any, _context: Any) -> Any:
     """Test-only: Invocation-layer approval is separate from the ADR-051 gate under test."""
     from maistro.policy.types import Decision, PolicyVerdict
 
@@ -1008,3 +1006,128 @@ async def test_irreversible_declared_plan_skips_gate() -> None:
     assert gate.plan_calls == []
     assert gate.escalation_calls == []
     assert calls == [("wipe_disk", {"path": "/tmp/x"})]
+
+
+@pytest.mark.asyncio
+async def test_plan_state_task_id_must_match_run() -> None:
+    from datetime import UTC, datetime
+
+    from maistro.tools.approval.gate import PlanApprovalState
+    from maistro.tools.contracts import ToolApprovalRequired
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        plan_state=PlanApprovalState(
+            task_id="other-run",
+            approved_calls=frozenset({"wipe_disk"}),
+            approved_at=datetime.now(UTC),
+        ),
+    )
+    with pytest.raises(ToolApprovalRequired, match="ApprovalGate"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_successful_plan_approval_covers_later_calls() -> None:
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="approved")
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+    )
+    await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/a"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/b"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    assert len(gate.plan_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_thresholds_without_impacts_fail_closed() -> None:
+    from maistro.tools.approval.types import Threshold
+    from maistro.tools.contracts import ToolApprovalRequired
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=_RecordingGate(outcome="approved"),
+        escalation_thresholds=(Threshold(dimension="cost", gt=1.0),),
+    )
+    with pytest.raises(ToolApprovalRequired, match="no per-call impacts"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )

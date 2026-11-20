@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
@@ -271,6 +272,10 @@ class GovernedToolExecutor:
         approval_gate: ApprovalGate | None = None,
         plan_state: PlanApprovalState | None = None,
         escalation_thresholds: tuple[Threshold, ...] = (),
+        impact_estimator: (
+            Callable[[str, dict[str, Any]], Awaitable[tuple[Impact, ...]] | tuple[Impact, ...]]
+            | None
+        ) = None,
     ) -> None:
         self._effects = effects
         self._contracts = contracts
@@ -279,22 +284,61 @@ class GovernedToolExecutor:
         self._approval_gate = approval_gate
         self._plan_state = plan_state
         self._escalation_thresholds = escalation_thresholds
+        self._impact_estimator = impact_estimator
+
+    def _plan_state_for_task(self, task_id: str) -> PlanApprovalState | None:
+        """Only a plan whose task_id matches the current Run covers irreversible calls."""
+        state = self._plan_state
+        if state is None or state.task_id != task_id:
+            return None
+        return state
+
+    def _record_plan_approval(self, task_id: str, call: str) -> None:
+        """Retain standing plan coverage for later irreversible calls in this task."""
+        existing = self._plan_state_for_task(task_id)
+        approved = set(existing.approved_calls) if existing is not None else set()
+        approved.add(call)
+        self._plan_state = PlanApprovalState(
+            task_id=task_id,
+            approved_calls=frozenset(approved),
+            approved_at=datetime.now(UTC),
+        )
+
+    async def _resolve_impacts(
+        self, contract: ToolContract, arguments: dict[str, Any]
+    ) -> tuple[Impact, ...]:
+        if self._impact_estimator is None:
+            return ()
+        estimated = self._impact_estimator(contract.name, arguments)
+        if isinstance(estimated, tuple):
+            return estimated
+        return await estimated
 
     async def _require_irreversible_approval(
         self,
         contract: ToolContract,
         *,
         task_id: str,
-        impacts: tuple[Impact, ...] = (),
+        arguments: dict[str, Any],
+        impacts: tuple[Impact, ...] | None = None,
     ) -> None:
         """ADR-051 / SPEC-253: irreversible calls need plan coverage or a live gate."""
         if self._contracts.reversibility_of(contract.name) is not ToolReversibility.IRREVERSIBLE:
             return
+        resolved_impacts = (
+            impacts if impacts is not None else await self._resolve_impacts(contract, arguments)
+        )
+        if self._escalation_thresholds and not resolved_impacts:
+            raise ToolApprovalRequired(
+                f"irreversible tool {contract.name!r} has escalation thresholds but no "
+                "per-call impacts; supply impacts or an impact_estimator"
+            )
+        plan_state = self._plan_state_for_task(task_id)
         if not needs_escalation(
             contract.name,
-            impacts,
+            resolved_impacts,
             self._escalation_thresholds,
-            plan_state=self._plan_state,
+            plan_state=plan_state,
         ):
             return
         gate = self._approval_gate
@@ -302,14 +346,16 @@ class GovernedToolExecutor:
             raise ToolApprovalRequired(
                 f"irreversible tool {contract.name!r} requires an ApprovalGate before dispatch"
             )
-        if needs_plan_approval(self._plan_state):
+        if needs_plan_approval(plan_state):
             decision = await gate.request_plan_approval(task_id, (contract.name,))
         else:
-            decision = await gate.request_escalation(task_id, contract.name, impacts)
+            decision = await gate.request_escalation(task_id, contract.name, resolved_impacts)
         if decision.outcome != "approved":
             raise ToolNotAuthorized(
                 f"irreversible tool {contract.name!r} was not approved ({decision.outcome})"
             )
+        if decision.target == "plan":
+            self._record_plan_approval(task_id, contract.name)
 
     async def _authorized_binding(
         self, contract: ToolContract, binding: Binding, context: ToolInvocationContext
@@ -449,6 +495,7 @@ class GovernedToolExecutor:
         context: ToolInvocationContext,
         authorized_tools: frozenset[str] | set[str] | tuple[str, ...],
         effect_scope: str = "",
+        impacts: tuple[Impact, ...] | None = None,
     ) -> Any:
         """Admit and execute one tool call at the canonical boundary.
 
@@ -456,6 +503,10 @@ class GovernedToolExecutor:
         this call (e.g. the provider ToolCall id). It only distinguishes
         logical calls; it cannot widen authorization or detach the recorded
         evidence from the exact materialized arguments.
+
+        ``impacts`` are host-owned per-call estimates for ADR-051 escalation
+        thresholds. When omitted, the optional constructor ``impact_estimator``
+        is used; configured thresholds with no impacts fail closed.
         """
         # Detach nested input before the first admission await. Otherwise a
         # caller retaining the dictionary can change validated arguments while
@@ -463,7 +514,12 @@ class GovernedToolExecutor:
         # schema or diverging from the persisted prediction and effect key.
         arguments = deepcopy(arguments)
         contract, binding = await self._admit_call(tool_name, arguments, context, authorized_tools)
-        await self._require_irreversible_approval(contract, task_id=context.run_id)
+        await self._require_irreversible_approval(
+            contract,
+            task_id=context.run_id,
+            arguments=arguments,
+            impacts=impacts,
+        )
         expected_evidence = self._expected_evidence(contract, arguments)
         invocation = await self._invoke_admitted(
             contract, binding, context, arguments, expected_evidence, effect_scope=effect_scope
