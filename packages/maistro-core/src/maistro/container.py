@@ -1343,7 +1343,11 @@ class Container:
         NodeRun stayed ``RUNNING`` forever was durable state still claiming
         work was in flight. Both halves are idempotent, so a crash between
         them heals on any later reconcile of the same Attempt rather than
-        needing this tick to be atomic.
+        needing this tick to be atomic — including a crash between the
+        physical reclaim and that first reconciliation (#1863): the replay
+        half re-finds a reclaimed Attempt its NodeRun still shows ``RUNNING``
+        for, so the stranded Run is parked on the next tick instead of
+        waiting for a reconcile that would never come.
 
         The tick also refreshes the recovery-visibility gauges (#338): how
         many Runs are non-terminal, and how old the oldest one is.
@@ -1484,22 +1488,58 @@ class Container:
         for node_run in await self.run_store.list_node_runs(run_id):
             if done >= remaining:
                 break
-            completed = await self._latest_reconcilable_completed_attempt(
-                node_run.node_run_id, moment=moment
-            )
-            if completed is None:
+            attempt = await self._replayable_terminal_attempt(node_run.node_run_id, moment=moment)
+            if attempt is None:
                 continue
             try:
-                if await self._reconcile_terminal_attempt_progress(completed, reconciler):
+                if await self._reconcile_terminal_attempt_progress(attempt, reconciler):
                     done += 1
             except RunIntegrityError:
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
-                    completed.attempt_id,
+                    attempt.attempt_id,
                     exc_info=True,
                 )
                 continue
         return done
+
+    async def _stranded_reclaimed_attempt(
+        self, node_run_id: str, *, moment: datetime
+    ) -> Attempt | None:
+        """A reclaimed Attempt whose reconciliation a crash interrupted (#1863).
+
+        The lease sweep commits the physical ``CANCELLED`` before the
+        Container reconciles it; a process lost in between leaves the NodeRun
+        and its Run ``RUNNING`` with no live work behind them. Rediscovery is
+        deliberately narrow: only when the reclaimed Attempt is still the
+        *newest* row under the NodeRun — a newer Attempt means the window
+        already healed and someone re-attempted the node, and parking over
+        that would overwrite a decision the newer Attempt owns. Anything that
+        is not reclaim evidence (a FAILED, TIMED_OUT, or requested-CANCELLED
+        Attempt) stays with its retry owner, exactly as before.
+        """
+        from maistro.runs.lifecycle import has_live_execution_lease, is_reclaimed_attempt
+
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if not attempts or has_live_execution_lease(attempts, moment):
+            return None
+        latest = max(attempts, key=lambda attempt: attempt.ordinal)
+        return latest if is_reclaimed_attempt(latest) else None
+
+    async def _replayable_terminal_attempt(
+        self, node_run_id: str, *, moment: datetime
+    ) -> Attempt | None:
+        """The one Attempt this sweep may replay for a NodeRun, if any.
+
+        A persisted completion keeps its existing priority — replaying it is
+        the older half of this sweep (#804) and must not lose a selection race
+        against the rediscovery added for #1863. Only a NodeRun with no
+        replayable completion falls to the stranded-reclaim check.
+        """
+        completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
+        if completed is not None:
+            return completed
+        return await self._stranded_reclaimed_attempt(node_run_id, moment=moment)
 
     async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
