@@ -185,7 +185,9 @@ async def test_approve_resolves_durable_approval_then_answers(approval_client) -
 
 async def test_deny_resolves_durable_approval_as_denied(approval_client) -> None:
     client, graph_store, approvals = approval_client
-    await _seed_approval_pause(graph_store, approvals, run_id="hitl-apr-deny", request_id="apr-deny")
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-deny", request_id="apr-deny"
+    )
 
     response = client.post(
         "/v1/hitl/hitl-apr-deny/effect/answer",
@@ -250,6 +252,98 @@ async def test_contrary_first_writer_wins_is_409(approval_client) -> None:
     assert settled is not None
     assert settled.status is ApprovalStatus.APPROVED
     assert settled.actor == "first-writer"
+
+
+async def test_synthetic_binding_scope_still_answers(approval_client) -> None:
+    """Self-repair Binding keeps default/default; Run uses hive workspace (#2423 P1)."""
+    client, graph_store, approvals = approval_client
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Approval WS-hitl-apr-synth",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    from services.workspace_authority import canonical_store_for_tests
+
+    root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
+    run_id = "hitl-apr-synth"
+    node_run_id = f"nr-{run_id}"
+    await graph_store.create(
+        _approval_paused_record(
+            run_id,
+            workspace_id=workspace.id,
+            project_id=root.project_id,
+            request_id="apr-synth",
+            node_run_id=node_run_id,
+        )
+    )
+    # governed_invocation stamps Binding scope (default/default), not the Run's.
+    await approvals.create(
+        DurableApproval(
+            request=ApprovalRequest(
+                request_id="apr-synth",
+                action="infra_action",
+                params={"request": {"action": "restart_container", "params": {"name": "x"}}},
+                tier="policy",
+                requester="self_repair",
+            ),
+            workspace_id="default",
+            project_id="default",
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id="attempt-1",
+            binding_id="binding-55",
+            effect_key=_EFFECT_KEY,
+            request_digest=_DIGEST,
+        )
+    )
+
+    response = client.post(
+        f"/v1/hitl/{run_id}/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-synth"},
+    )
+    assert response.status_code == 200, response.text
+    settled = await approvals.get("apr-synth")
+    assert settled is not None and settled.status is ApprovalStatus.APPROVED
+    assert settled.workspace_id == "default"
+    assert settled.project_id == "default"
+    assert workspace.id != "default"
+
+
+async def test_elapsed_deadline_refuses_before_approval_resolve(approval_client) -> None:
+    """An elapsed pause must not permanently resolve the ApprovalStore (#2423 P2)."""
+    from datetime import UTC, datetime, timedelta
+
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-deadline", request_id="apr-deadline"
+    )
+    record = await graph_store.get("hitl-apr-deadline")
+    assert record is not None
+    pauses = dict(record.graph_state.metadata["pauses"])
+    pauses["effect"] = {
+        **pauses["effect"],
+        "resume_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+    }
+    metadata = {**record.graph_state.metadata, "pauses": pauses}
+    await graph_store.update(
+        DurableRunRecord(
+            run=record.run,
+            graph_state=record.graph_state.model_copy(update={"metadata": metadata}),
+            node_runs=record.node_runs,
+            version=record.version + 1,
+        )
+    )
+
+    response = client.post(
+        "/v1/hitl/hitl-apr-deadline/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-deadline"},
+    )
+    assert response.status_code == 409, response.text
+    pending = await approvals.get("apr-deadline")
+    assert pending is not None and pending.status is ApprovalStatus.PENDING
 
 
 async def test_ordinary_human_pause_still_answers_without_approval_fields(

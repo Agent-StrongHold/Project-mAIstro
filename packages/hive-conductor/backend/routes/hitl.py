@@ -49,10 +49,12 @@ from services.workspace_authority import (
 from maistro.capabilities.approval_store import ApprovalStatus, DurableApproval
 from maistro.graph.durable_runs import (
     HitlAuthorization,
+    HitlDeadlineElapsed,
     expire_hitl_pauses,
     pending_hitl_node_ids,
     pending_hitl_records,
 )
+from maistro.graph.durable_runs.stores import require_answerable_fence
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL
 from maistro.identity import Principal
 from maistro.runs.model import RunStatus
@@ -253,14 +255,14 @@ def _require_approval_matches_pause(
         ),
         (approval.run_id == record.run.run_id, "approval run_id does not match paused Run"),
         (
-            approval.workspace_id == record.run.workspace_id,
-            "approval workspace_id does not match Run",
-        ),
-        (approval.project_id == record.run.project_id, "approval project_id does not match Run"),
-        (
             approval.node_run_id == node_run.node_run_id,
             "approval node_run_id does not match pause",
         ),
+        # Binding workspace/project may be synthetic (self-repair effect
+        # Binding uses ``default``/``default`` while the Run is admitted into
+        # hive_default_workspace + Root Project — #2423 Codex P1). Run +
+        # NodeRun identity already binds the approval to this pause; caller
+        # Project authorization is enforced separately against the Run.
     ]
     pause_effect_key = str(metadata.get("effect_key") or "").strip()
     if pause_effect_key:
@@ -286,6 +288,16 @@ def _require_approval_matches_pause(
     for ok, detail in checks:
         if not ok:
             raise _approval_mismatch(detail)
+
+
+def _require_answerable_before_approval_resolve(record: Any, node_id: str) -> None:
+    """Refuse elapsed/unanswerable pauses before ApprovalStore.resolve (#2423)."""
+    try:
+        require_answerable_fence(record, node_id)
+    except HitlDeadlineElapsed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 async def _resolve_durable_approval_for_answer(
@@ -350,6 +362,7 @@ async def _resolve_durable_approval_for_answer(
     _require_approval_matches_pause(
         loaded, record=record, node_id=node_id, expected_request_id=expected
     )
+    _require_answerable_before_approval_resolve(record, node_id)
 
     try:
         resolved = await approvals.resolve(expected, approved=bool(body.approved), actor=actor)
