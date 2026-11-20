@@ -338,3 +338,115 @@ async def test_agent_stream_replay_preserves_tool_calls_and_finish_reason() -> N
         _finish_reasons(chunk) for chunk in first
     ]
     assert "tool_calls" in _finish_reasons(replay[1])
+
+
+async def test_stream_replay_without_persisted_chunks_uses_message_body() -> None:
+    """Complete-then-stream replay falls back when `_stream_chunks` was never stored."""
+
+    from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+
+    s = await setup()
+    request = ModelChatRequest(model="request-alias", messages=[])
+    with context(s):
+        first = await s.calls.complete(
+            request=request, effect_key="ek-text-fallback", identity=s.identity
+        )
+        assert "_stream_chunks" not in first.body
+        streamed = request.model_copy(update={"stream": True})
+        replay = [
+            chunk
+            async for chunk in s.calls.stream(
+                request=streamed, effect_key="ek-text-fallback", identity=s.identity
+            )
+        ]
+    assert len(s.sent) == 1
+    assert replay and all(chunk["_maistro_replayed"] is True for chunk in replay)
+    assert replay[0]["choices"][0]["delta"]["content"] == "answer"
+    assert replay[0]["choices"][0]["finish_reason"] == "stop"
+
+
+async def test_stream_replay_preserves_recorded_finish_reason_without_chunks() -> None:
+    """Fallback replay keeps a non-null finish_reason from the completion body."""
+
+    from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+
+    s = await setup()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        s.sent.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "request-alias",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "done"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    set_test_transport(httpx.MockTransport(transport))
+    request = ModelChatRequest(model="request-alias", messages=[])
+    with context(s):
+        await s.calls.complete(request=request, effect_key="ek-finish", identity=s.identity)
+        replay = [
+            chunk
+            async for chunk in s.calls.stream(
+                request=request.model_copy(update={"stream": True}),
+                effect_key="ek-finish",
+                identity=s.identity,
+            )
+        ]
+    assert replay[0]["choices"][0]["finish_reason"] == "length"
+
+
+async def test_required_workspace_id_mismatch_refuses_without_egress() -> None:
+    """A concrete definition workspace that disagrees with the Run refuses."""
+
+    s = await setup()
+    llm = GovernedLLMClient(s.calls, workspace_id="foreign")
+    with context(s), pytest.raises(RunIntegrityError, match="workspace"):
+        await llm.complete([], "request-alias")
+    assert s.sent == []
+
+
+async def test_agent_stream_aclose_cancels_in_flight_pump() -> None:
+    """Early aclose cancels a pump still blocked on the provider stream."""
+
+    s = await setup()
+    llm = client(s)
+    blocked = asyncio.Event()
+
+    class _HangAfterFirst(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield _frame(_chunk("hi"))
+            await blocked.wait()
+            yield _frame(_chunk(finish="stop"))
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    source = _HangAfterFirst()
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        s.sent.append(request)
+        return httpx.Response(200, stream=source)
+
+    set_test_transport(httpx.MockTransport(transport))
+    with context(s):
+        stream = llm.stream([], "request-alias")
+        assert (await anext(stream))["choices"][0]["delta"]["content"] == "hi"
+        await stream.aclose()
+        assert (await rows(s))[0].status in {
+            InvocationStatus.UNKNOWN,
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+        }
+    assert len(s.sent) == 1
