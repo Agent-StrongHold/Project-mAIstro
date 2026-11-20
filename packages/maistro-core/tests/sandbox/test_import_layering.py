@@ -25,7 +25,6 @@ _ENTRY_POINTS = (
     "maistro.runs",
     "maistro.sandbox",
     "maistro.tools.sandbox.microvm",
-    "maistro.tools.sandbox.docker",
 )
 
 
