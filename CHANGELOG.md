@@ -81,6 +81,13 @@ or placeholder-only section.
   is gone. Workspace switch clears the prior transcript immediately and Chat
   Retry re-hydrates after load failures (AC-3/AC-7).
 
+- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2356).** Trivy
+  HIGH on `usr/bin/age` / `age-keygen` (and the same stdlib in the static
+  docker CLI) when built on `golang:1.27.3-alpine`: MaxBytesReader HTTP/1
+  hang, fixed in go1.26.11/1.27.4. Bump the digest-pinned builder in
+  `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
+  `Dockerfile.research`; refresh `quality/image-pins.json`.
+
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
   contained `.github/` and `deploy/` findings while those trees were listed in

@@ -143,14 +143,15 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # alone cannot close the second advisory: x/net is patched onto the pinned
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
-# Digest-pinned (#349); re-pinned 2026-11-18 (#2414) to the 2026-11-05
-# re-serialized index of golang:1.27.3-alpine (upstream rebuild on Alpine
-# minirootfs 3.24.4; the amd64 config still carries GOLANG_VERSION=1.27.3).
+# Digest-pinned (#349); bumped 2026-11-20 (#2356) to golang:1.27.4-alpine for
+# CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang, HIGH, fixed 1.26.11/1.27.4)
+# which Trivy flagged in age/docker CLI binaries built on 1.27.3. Hub index
+# digest sha256:70bd7dde…. Prior #2414 pin was 1.27.3-alpine@fa3d596….
 # #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
 # klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
 # upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
 # only the x/net patch below remains.
-FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS dockerclibuild
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
 # The grype DB additionally flags the vendored github.com/klauspost/compress
