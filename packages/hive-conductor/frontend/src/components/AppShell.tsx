@@ -1,5 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
+import { LandingSuggestionBanner } from "./LandingSuggestionBanner";
+import { LastSurfaceTracker } from "./LastSurfaceTracker";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { useAuthorization } from "../context/AuthorizationContext";
@@ -23,11 +25,9 @@ import {
   Workflow,
   PlayCircle,
   Boxes,
-  Zap,
   Repeat,
   ListTodo,
   CalendarClock,
-  Inbox,
   Bell,
   Gauge,
   ScrollText,
@@ -71,19 +71,18 @@ const fullNav = [
   { to: "/missions", icon: Target, label: "Missions" },
   // #99: editable backlog (board/list/detail) over the canonical service.
   { to: "/backlog", icon: ListTodo, label: "Backlog" },
-  // #2273: one Capabilities surface replaces Agents / MCP / Skills / Topology
-  // as the primary nav entry; those four stay URL-reachable until deleted.
+  // #2273: one Capabilities surface; Agents / MCP / Skills / Topology pages
+  // are deleted (old URLs redirect to /capabilities — not revived).
   { to: "/capabilities", icon: Boxes, label: "Capabilities" },
-  { to: "/optimizer", icon: Zap, label: "Optimizer" },
-  // #1417: Messages, Quotas, Containers, CLI and Audit were all registered,
-  // implemented routes with no navigation entry (audit GLO-01). Each is a
-  // retained surface per the cutover plan (PROJECT rows, and CLI/Containers
-  // under contracts #292/#382), so they get discoverable entries here; the
-  // legacy pages scheduled for replacement (Agents, Topology, Integrations,
-  // Skills, Work Items, Memory) deliberately stay off this list —
-  // docs/route-inventory.md records their URL-only dispositions. Evolution
-  // is not URL-only either: #2275 removed its route for v1.0 (restore v1.2 / #51).
-  { to: "/messages", icon: Inbox, label: "Messages" },
+  // #1049 MERGE: Optimizer + Messages nav entries removed — both surfaces
+  // project into Attention. Old /optimizer and /messages URLs redirect there.
+  // #1417: Quotas, Containers, CLI and Audit were registered routes with no
+  // navigation entry (audit GLO-01). Each is a retained surface per the
+  // cutover plan (PROJECT rows, and CLI/Containers under contracts #292/#382),
+  // so they stay discoverable; legacy pages scheduled for replacement
+  // (Agents, Topology, Integrations, Skills, Work Items, Memory) stay off
+  // this list — docs/route-inventory.md. Evolution: #2275 hid the route for
+  // v1.0 (restore v1.2 / #51).
   { to: "/quotas", icon: Gauge, label: "Quotas" },
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
@@ -143,6 +142,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   return (
     <div className="app-shell">
+      {/* #1050/#1822: stamp last surface for recent-return landing. */}
+      <LastSurfaceTracker />
       <button
         className="hamburger"
         onClick={() => setDrawerOpen(true)}
@@ -264,6 +265,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
             the banner names every degraded optional capability from
             /health and disappears on its own when they recover. */}
         <DegradedBanner />
+        {/* #1050: non-blocking learned-landing proposal (preference-aware). */}
+        <LandingSuggestionBanner />
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

@@ -62,6 +62,10 @@ class AdmittedTurn:
     container: Any
     admitter: ChatRunAdmitter
     session_id: str | None = None
+    #: Client logical-turn key (#1822 AC-4). When set, SessionStore append
+    #: uses it as the idempotence key so a retry of the same client turn
+    #: cannot duplicate the transcript.
+    client_turn_id: str | None = None
 
 
 def _capacity(exc: RunConcurrencyExceeded) -> HTTPException:
@@ -208,12 +212,23 @@ def _owned_session(
     return session_id
 
 
+def _client_turn_id(raw: Any) -> str | None:
+    """A nonempty client turn key, or None when absent/invalid."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > 128:
+        return None
+    return value
+
+
 async def admit_turn(
     request: Request,
     messages: list[dict[str, Any]],
     *,
     workspace_id: Any = None,
     session_id: Any = None,
+    turn_id: Any = None,
 ) -> AdmittedTurn:
     """Admit one turn as a RUNNING chat Run, or refuse it before the model."""
     user_id = user_id_from_request(request)
@@ -227,6 +242,7 @@ async def admit_turn(
     admitter: ChatRunAdmitter | None = None
     marked = False
     owned_session: str | None = None
+    client_turn = _client_turn_id(turn_id)
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
@@ -268,6 +284,7 @@ async def admit_turn(
         container=container,
         admitter=admitter,
         session_id=owned_session,
+        client_turn_id=client_turn,
     )
 
 
@@ -334,9 +351,10 @@ async def _persist_conversation_turn(
 ) -> None:
     """Append the accepted user+assistant pair to SessionStore after a model answer.
 
-    Uses the Run id as `turn_id` so a retry of the same Run cannot duplicate
-    the transcript (#327 / ADR-083026-5fab). Failures here must not undo the
-    answered turn — the Run already closed successfully.
+    Prefer the client `turn_id` when admitted (#1822 AC-4); otherwise the Run
+    id so a retry of the same Run cannot duplicate the transcript (#327 /
+    ADR-083026-5fab). Failures here must not undo the answered turn — the
+    Run already closed successfully.
     """
     if not turn.session_id:
         return
@@ -352,17 +370,18 @@ async def _persist_conversation_turn(
     if last_user is not None and isinstance(last_user.get("content"), str):
         batch.append({"role": "user", "content": last_user["content"]})
     batch.append({"role": "assistant", "content": content})
+    idempotence_key = turn.client_turn_id or turn.run.run_id
     try:
         await conversation_sessions.append_turn(
             turn.session_id,
             batch,
-            turn_id=turn.run.run_id,
+            turn_id=idempotence_key,
         )
     except Exception:
         logger.warning(
             "conversation transcript append failed for session %s turn %s",
             turn.session_id,
-            turn.run.run_id,
+            idempotence_key,
             exc_info=True,
         )
 

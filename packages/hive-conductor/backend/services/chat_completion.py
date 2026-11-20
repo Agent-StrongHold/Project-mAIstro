@@ -15,7 +15,7 @@ import os
 from collections.abc import AsyncIterator, Collection
 from typing import Any
 
-from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
+from adapters.llm_http import HttpOpenAIProtocolLLM
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from fastapi import HTTPException
@@ -23,6 +23,7 @@ from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 from routes.audit import log_audit
 
+from maistro.capabilities.model_chat import GovernedModelChatClient
 from maistro.http import shared_client
 from services.agent_materialization import (
     AgentDefinitionRejected,
@@ -42,6 +43,7 @@ from services.chat_gate import (
     new_gate_id,
     refusal_content,
 )
+from services.chat_runs import RETRY_AFTER_SECONDS
 from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
@@ -83,8 +85,42 @@ def build_llm_port() -> LLMPort:
     if not base:
         base = os.environ.get("LITELLM_PROXY_URL")
     if not base or not key:
-        return StubLLMPort()
-    return HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant=s.llm_http_variant)
+        # Fail closed (#1084 gap 2): an unconfigured model door must never
+        # answer an admitted turn with a success-shaped stub. The 503 escapes
+        # through `execute_turn`, which closes the admitted Run as failed — a
+        # retryable refusal with zero model effects, the same contract the
+        # admission boundary already gives an inadmissible turn.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "model egress is not configured (set LITELLM_API_BASE and its "
+                "key); the turn was admitted but never dispatched to a model"
+            ),
+            headers={"Retry-After": RETRY_AFTER_SECONDS},
+        )
+
+    # Prefer the real Container's registry, Binding store, and Invocation
+    # ledger. The no-engine fallback composes the same core seam for dev
+    # processes; it never restores adapter-owned HTTP dispatch.
+    client = None
+    try:
+        from services.engine import get_engine
+
+        container = getattr(get_engine().agent_port, "container", None)
+        if container is not None:
+            client = GovernedModelChatClient(
+                container.model_chat_egress,
+                container.model_chat_binding,
+                protocol=s.llm_http_variant,
+            )
+    except Exception:
+        client = None
+    return HttpOpenAIProtocolLLM(
+        base_url=base,
+        api_key=key,
+        variant=s.llm_http_variant,
+        client=client,
+    )
 
 
 def conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
@@ -227,6 +263,10 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
         "memory_search if it's something you'd have saved earlier. "
         "When the user asks about performance, latency, TTFT, cost, or runtime data — use query_metrics. "
         "When they tell you something about themselves, their project, or preferences — use profile_set to save it. "
+        "Workspace restore phrases: 'hold onto my sessions longer' / 'take me back when I come back' → "
+        "profile_set workspace_restore_aggressiveness=generous (expands the restore window); "
+        "'always open this Workspace to Goals' → workspace_default_landing=/goals; "
+        "'go back to Home by default' → workspace_default_landing=/home. "
         "When you need context about the user or project — use profile_get first. "
         "For freeform notes/facts that don't fit profile fields — use memory_add. "
         "When they ask to forget something — use memory_delete or profile_delete. "
@@ -1352,15 +1392,15 @@ async def _tool_memory_add(
 async def _tool_web_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    """Search the live web."""
+    """Search the live web through the governed tool Invocation seam (#57)."""
     query = args.get("query", "")
     if not query:
         return {"error": "query is required"}
     max_results = args.get("max_results", 5)
     try:
-        from services.tool_executor import web_search as _web_search
+        from services.governed_tools import governed_web_search
 
-        return await _web_search(query, max_results=max_results)
+        return await governed_web_search(query, max_results=max_results)
     except Exception as e:
         return {"error": f"web_search failed: {e}"}
 
@@ -1368,15 +1408,15 @@ async def _tool_web_search(
 async def _tool_browse_url(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    """Fetch and summarize a URL."""
+    """Fetch and summarize a URL through the governed tool Invocation seam (#57)."""
     url = args.get("url", "")
     if not url:
         return {"error": "url is required"}
     task = args.get("task", "Extract key facts and quotes")
     try:
-        from services.tool_executor import browse_url as _browse_url
+        from services.governed_tools import governed_browse_url
 
-        return await _browse_url(url, task)
+        return await governed_browse_url(url, task)
     except Exception as e:
         return {"error": f"browse_url failed: {e}"}
 
@@ -1679,8 +1719,16 @@ async def _cancellation_answer(
     canonical_run_id = str(record.get("canonical_run_id") or "")
     if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
         raise cancelled
+    # Mirror the spine's CANCELLED through the shared #1036 terminality
+    # contract — never a second product-private finish authority. The
+    # public cancel route never writes the projection at all; this chat
+    # awaiter only records after the spine fence was observed.
     with contextlib.suppress(Exception):
-        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+        await get_dag_run_store().record_outcome(
+            exec_id,
+            status="cancelled",
+            canonical_run_id=canonical_run_id,
+        )
     return {
         "run_id": exec_id,
         "dag_id": dag_id,
@@ -1890,44 +1938,33 @@ async def _tool_analyze_dashboard(
 
     # Send to vision model
     try:
-        from config import get_settings
-
-        s = get_settings()
-        base = s.litellm_api_base or ""
-        key = _resolve_litellm_api_key(s) or ""
-        if not base or not key:
-            return {"error": "LLM not configured"}
-
         vision_model = args.get("model", "gpt-4o-mini")
         prompt = args.get(
             "prompt",
             "Analyze this dashboard screenshot. Identify: 1) Widgets that look broken or show useless data, 2) Poor sizing choices, 3) Bad chart type choices for the data shown, 4) Missing widgets that would add value, 5) Layout improvements for better visual flow. Be specific and actionable.",
         )
 
-        async with shared_client(timeout=60) as client:
-            resp = await client.post(
-                f"{base.rstrip('/')}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": vision_model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                                },
-                            ],
-                        }
-                    ],
-                    "max_tokens": 2000,
-                },
+        llm = build_llm_port()
+        response = await llm.complete(
+            ChatCompletionRequest(
+                model=vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=2000,
             )
-            resp.raise_for_status()
-            analysis = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            return {"analysis": analysis, "model": vision_model}
+        )
+        analysis = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return {"analysis": analysis, "model": vision_model}
     except Exception as e:
         return {"error": f"Vision analysis failed: {e}"}
 
@@ -3052,6 +3089,8 @@ PROFILE_SCHEMA = {
         # #1050: how eagerly to restore a prior surface after absence
         # (off|brief|balanced|generous). Continuity consumer is #1822.
         "workspace_restore_aggressiveness",
+        # #1050: learned-landing dismiss cooldown (path → until epoch-ms).
+        "workspace_landing_suggestion_cooldown",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3096,7 +3135,19 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    from services.workspace_preferences import PreferenceValueError
+    from services.workspace_preferences import (
+        PreferenceValueError,
+        audit_workspace_preference,
+        interpret_restore_aggressiveness_request,
+    )
+
+    # Natural-language restore requests may arrive as the value when the model
+    # mirrors the user's words; map known phrases onto the durable band so the
+    # same RESTORE_KEY expands the window whether UI, API, or Agent wrote it.
+    if field == "workspace_restore_aggressiveness" and isinstance(value, str):
+        mapped = interpret_restore_aggressiveness_request(value)
+        if mapped is not None:
+            value = mapped
 
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
@@ -3110,6 +3161,16 @@ async def _tool_profile_set(
         # and answered `updated: True`, so the model told the user their fact
         # was saved when nothing held it (#699).
         return {"error": f"profile not saved: {exc}"}
+    # Off the loop: Pg-backed audit schedules onto this ASGI loop and then
+    # blocks on future.result — calling it inline deadlocks the worker for
+    # the audit timeout whenever an Agent saves a Workspace preference.
+    await asyncio.to_thread(
+        audit_workspace_preference,
+        actor=user_id,
+        field=field,
+        value=value,
+        source="agent",
+    )
     return {"updated": True, "field": field, "value": value}
 
 
@@ -3169,7 +3230,9 @@ PROFILE_TOOLS = [
                 "their preferences, or corrections. Workspace product prefs: "
                 "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
                 "workspace_restore_aggressiveness (off|brief|balanced|generous — "
-                "how long to restore the prior surface after absence)."
+                "how long to restore the prior surface after absence). "
+                "Phrase 'hold onto my sessions longer' / 'take me back when I come back' "
+                "→ workspace_restore_aggressiveness=generous (expands the restore window)."
             ),
             "parameters": {
                 "type": "object",

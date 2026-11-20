@@ -64,6 +64,12 @@ from maistro.events.invocations import (
     validated_outcome,
 )
 from maistro.events.trigger_store import TriggerDefinition
+from maistro.observability.metrics import (
+    PostgresFetchRow,
+    postgres_table_sample,
+    publish_retention_table_health,
+    retention_health_probe_due,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -225,6 +231,55 @@ class PgEventLog:
 
     async def ensure_schema(self) -> None:
         await ensure_event_schema(self._pool)
+
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_entity_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded delivery-history batch after terminal processing."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_entity_ids else " AND entity_id <> ALL($2::text[])"
+        params: tuple[object, ...]
+        if legal_hold_entity_ids:
+            params = (before, list(legal_hold_entity_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before, limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "
+            "WHERE created_at < $1" + hold + " ORDER BY id LIMIT " + limit_mark + ")"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(query, *params)
+        await self._publish_table_health()
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def _publish_table_health(self) -> None:
+        """Publish the durable delivery log's stored volume after a purge (#325).
+
+        Same contract as the SQLite store's probe, plus the per-table size
+        only PostgreSQL can measure (`pg_total_relation_size`). Throttled
+        per store by the publisher; a quiet purge publishes too.
+        """
+        if not retention_health_probe_due("event_log:postgres"):
+            return
+        async with self._pool.acquire() as conn:
+            fetchrow: PostgresFetchRow = conn.fetchrow
+            sample = await postgres_table_sample(
+                fetchrow, "event_log", "created_at", oldest_unit="unix_s"
+            )
+        if sample is not None:
+            publish_retention_table_health(
+                "event_log:postgres", "postgres", [sample], min_interval_s=0.0
+            )
 
     async def append(
         self,

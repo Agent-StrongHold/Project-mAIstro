@@ -532,6 +532,66 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
     asyncio.run(scenario())
 
 
+def test_foreign_workspace_template_is_reused_and_the_run_lands_in_the_schedules_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#290 (f283f41a): a template already registered under another Workspace
+    is reused, not refused, and the admitted Run still lands in the
+    schedule's Workspace.
+
+    The store keys templates by ``(template_id, version)`` and refuses
+    divergent content itself, so a bundled seed's entry is content-identical
+    across Workspaces and its ``workspace_id`` is provenance, not authority.
+    Refusing the reuse used to leave a schedule unable to ever compute a
+    cursor (and thus ``next_run``) once the template had been primed under
+    another Workspace — including stale state from a previous process. The
+    other half of the contract lives in the admitter: it instantiates with
+    ``schedule.workspace_id``, so the template's provenance never decides
+    where the Run executes.
+    """
+
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        # The store's entry was primed under a foreign Workspace first: a
+        # bundled seed another Workspace's schedule put there, or stale state
+        # from a previous process. Content is identical, so the store accepts
+        # the re-registration (its conflict refusal keys on content, not
+        # provenance).
+        stored = await container.template_store.get("scheduled-template", version=1)
+        assert stored is not None
+        foreign = stored.model_copy(update={"workspace_id": "ws-other"})
+        await container.template_store.put(foreign)
+
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._evaluate_schedule(
+                "s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+            )
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None and recorded.last_run_id
+            runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
+            assert len(runs) == 1
+            # The Run's Workspace is the schedule's, never the template's
+            # provenance.
+            assert runs[0].workspace_id == "ws-1"
+            assert runs[0].workspace_id != "ws-other"
+            # Reuse, not rewrite: the store still holds the
+            # foreign-provenance entry, unchanged.
+            still = await container.template_store.get("scheduled-template", version=1)
+            assert still is not None
+            assert still.workspace_id == "ws-other"
+            assert still.content_hash == foreign.content_hash
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

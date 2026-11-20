@@ -23,7 +23,126 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Removed
+
+- **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
+  `MessageBoard.tsx` and `OptimizationInbox.tsx`; AppShell no longer links
+  Messages or Optimizer. `/messages`, `/optimizer`, and `/optimization-inbox`
+  `Navigate` to `/attention` so bookmarks cannot revive the modules. Backend
+  `/v1/messages` and `/v1/optimizer` remain the canonical owners projected
+  into Attention.
+
+### Changed
+
+- **Attention projects messages + optimizer proposals (#1049).** Unread agent
+  messages and pending Workspace-scoped optimizer proposals join the
+  read-time Attention projection (critical→severity/blocking, warning→queued,
+  info + optimizer→proactive/Waiting). Summary adds interruption counts and
+  Waiting quality metadata. Priority ladder remains severity >
+  time_sensitive > blocking > queued > follow_up > proactive. HITL
+  answer/defer/dismiss behavior is unchanged.
+
+### Fixed
+
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
+- **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
+  `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
+  CodeQL Advanced was widened to `develop`; align the pin so CI catches
+  regressions of the Security-tab refresh path. DevSkim also gains
+  `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
+  another product commit.
+
+### Security
+
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+
+- **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
+  code-scanning alerts on develop).** Route mutation-baseline CI error
+  annotations through the allowlisted `_ci_error_annotation` scrubber
+  (CodeQL `py/clear-text-logging-sensitive-data`). Move DevSkim integrity-pin
+  suppressions onto the same line as each `scripts/vendor_bfcl.py` digest;
+  clear remaining script/product false positives (loopback CLI default,
+  ontology `TODO` enum, placeholder-gate prose, pip-audit curve triage) with
+  same-line dated ignores or rewording. Expand DevSkim `ignore-globs` for
+  immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
+  Security tab stays actionable without editing cage-guarded trees.
+
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
 ### Added
+
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
+
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
 
 - **Workspace Approvals projection over the existing capability + HITL APIs
   (#2278, Parity P-1).** New `/approvals` page lists
@@ -34,8 +153,8 @@ or placeholder-only section.
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
-  enable/disable over the same public APIs. Agents, Topology, and Integrations
-  leave primary nav (URL-only until deleted); Skills was already URL-only.
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
 
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
@@ -51,16 +170,67 @@ or placeholder-only section.
   prompt-fragment append. UI/API-saved bindings share that path; persona
   templates are not mutated.
 
+- **Attention defer/dismiss preference evidence (#1049).** `POST`/`DELETE
+  /v1/workspaces/{id}/attention/dismiss` records Workspace-scoped defer/dismiss
+  preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
+  filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
+  the Attention page write that door; answering still stays on the HITL answer
+  route. Approve/reject pauses submit `{ verdict }` (not a text-only
+  `{ answer }`) so the durable store can resume. Does not settle HITL or Run
+  state outside that door.
+
+- **DAG Run projection writers honor nonterminal mirroring (#1036).** HTTP
+  `_record_run_projection` and live `LiveRunProjection.record_result` now
+  mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
+  `record_outcome` (exact status, `finished_at` null) instead of leaving the
+  row at the store default or coercing missing status to `failed`.
+
+- **Bounded learned-landing suggestion (#1050).** Immediate Home→surface hops
+  (published streak band) can show a non-blocking proposal to make that surface
+  the default. Accept PATCHes `workspace_default_landing`; dismiss suppresses
+  further nags for that path. Explicit non-Home default outranks learning.
+
+- **Chat stream abort marks the optimistic turn interrupted (#1822).** Switching
+  Workspace/session mid-stream aborts the request, epoch-gates late
+  delta/brief/done frames, and marks the in-flight assistant bubble interrupted
+  until reopen replaces from GET truth.
+
+- **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
+  Authenticated `/` now prefers the last Workspace surface (tracked in owned
+  `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
+  absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
+  24h+full session); otherwise it uses `workspace_default_landing` (Home
+  baseline). Chat `brief` stream frames honor the same stream-epoch gate as
+  content patches so a late interview brief cannot paint onto a switched
+  Workspace/session.
+
+- **Goals waiting-human links to Approvals (#65).** A Goal whose execution
+  disposition is `waiting_human` offers Open in Approvals with the blocked
+  run id — joining the #2278 Approvals surface without a second HITL store.
+
+- **Home Goals section reads Goal inspection (#65).** Workspace Home projections
+  list Goals through `services.goal_inspection` (same door as `/goals`) instead
+  of reporting the Goal service unavailable or reading the retiring missions
+  store.
+
+- **Attention Answer CTA posts to the HITL door (#1049).** The Attention page
+  submits answers through `/v1/hitl/{run}/{node}/answer` — the same authority
+  as CLI — then refreshes the projection. Defer/dismiss persistence remains a
+  later slice.
+
+- **DagRuns Cancel control through the inspection door (#1036).** Non-terminal
+  Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
+  (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
+  seam — no product-private lifecycle writer.
+
 - **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
   `/` reads `preferences.workspace_default_landing` from the canonical profile
   store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
   also exposes `workspace_restore_aggressiveness`
   (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
-  restored after absence — the durable band; exact windows are applied by
-  session continuity (#1822). Both fields PATCH/profile_set the same profile
+  restored after absence. Both fields PATCH/profile_set the same profile
   document; out-of-allow-list writes are refused (400). Missing or invalid
-  reads still mean Workspace Home / balanced. Learned suggestions and Agent-
-  driven restoration behavior remain later #1050 slices.
+  reads still mean Workspace Home / balanced.
 
 - **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
   existing Workspace Attention projection (HITL pauses + failed Runs) with the
@@ -395,6 +565,18 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Workspace BacklogItem service (#98, partial).** `maistro.workspaces.backlog`
+  adds a Workspace/Project-scoped `BacklogItem` record, a backend-independent
+  `BacklogItemStore` contract with version compare-and-set updates, acyclic
+  same-Workspace dependency and parent relations, and an exact
+  `(goal_id, goal_revision)` Goal reference. It has in-memory and SQLite
+  (`workspace_backlog_items`, `workspace_backlog_dependencies`) stores, wired
+  as `Container.backlog_store`. maistro-server serves it at
+  `/workspaces/{workspace_id}/backlog`: members read it, contributors and
+  owners write it, and a stale `expected_version` gets 409 with the current
+  item. On PostgreSQL the store is still in-process and logs a warning.
+  BACKLOG.md remains the authority.
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
@@ -407,6 +589,7 @@ or placeholder-only section.
   `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
   declaring their authorities, and an accepted-outcome-required check on
   parked Run resume).
+
 
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
@@ -750,6 +933,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. Workspace-scoped admitters share
+  one process-wide `max_retained` budget; more users do not multiply it.
+  Tracking refuses foreign-Workspace and non-chat Runs.
 - **Conductor batch inspection respects existing projection scope (#1036).**
   Canonical fallback applies only when no projection exists, keeping verdict-list
   visibility consistent with detail and stream admission for colliding run IDs.
@@ -1920,6 +2111,18 @@ or placeholder-only section.
   and `certifi` 2026.10.19. No code path changes; both distributions keep
   the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
 
+- **gitpython and graphql-core move past their open advisories (#1852
+  repair).** The locked dev set carried `gitpython` 3.1.62
+  (CVE-2026-114145, fixed in 3.2.1) and `graphql-core` 3.2.11
+  (CVE-2026-75507/75508, fixed in the 3.3.x line), so the pip-audit gate
+  (`scripts/pip_audit_gate.py`) failed on advisories outside its triaged
+  allowlist. Both are unconstrained transitive dependencies — `cosmic-ray`
+  -> `gitpython`, `moto[server]` -> `graphql-core` — so `uv.lock` alone
+  resolves them to `gitpython` 3.2.1 and `graphql-core` 3.3.0 (stable, not
+  the rc the advisory text named) with no manifest or floor change. No
+  shipped runtime image installs either distribution; the affected surfaces
+  are the dev toolset and the RSI runner's locked dev set.
+
 - **The license inventory gate stops accepting missing license metadata as a
   license, and stops hiding licensed shipped assets (#363).** Four defects in
   `scripts/check-license-inventory.py` are fixed against the acceptance
@@ -1972,6 +2175,18 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
+  The `age` binaries in the conductor image and the static Docker CLI in the
+  engine and research images are compiled in-tree from pinned release tags
+  precisely so a patched toolchain can ship them (#363 policy). The pinned
+  `golang:1.27.2-alpine` builder now emits stdlib 1.27.2, which trivy flags
+  with CVE-2026-111943 (HIGH, crypto/x509 MITM via untrusted intermediate
+  certificates, fixed in go1.26.10/1.27.3) — the container gate fails on the
+  conductor image's first scan step. All three Dockerfiles move to
+  `golang:1.27.3-alpine` (digest re-recorded in `quality/image-pins.json`);
+  the rebuilt binaries rescan clean at HIGH/CRITICAL with fixes, and the
+  conductor/observability runtime verify steps are unchanged.
 
 - **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
   regex injection, and scan-scope noise)** (no linked issue: GitHub

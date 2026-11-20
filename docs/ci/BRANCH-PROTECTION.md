@@ -40,14 +40,14 @@ admission. `main` still records it under Ruleset-only
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **33** |
+| `develop` | yes | **0** | yes | no | no | **20** |
+| `main` | yes | **1** | no | no | no | **34** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
-| `Analyze (actions)` | ○ | ● |
-| `Analyze (javascript-typescript)` | ○ | ● |
-| `Analyze (python)` | ○ | ● |
+| `Analyze (actions)` | adv | ● |
+| `Analyze (javascript-typescript)` | adv | ● |
+| `Analyze (python)` | adv | ● |
 | `Compliance registry` | ● | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
@@ -117,6 +117,7 @@ admission. `main` still records it under Ruleset-only
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `sandbox-conformance` | ● | ● |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |
