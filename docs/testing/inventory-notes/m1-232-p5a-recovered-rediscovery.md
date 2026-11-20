@@ -9,6 +9,7 @@ between physical reclaim and first reconciliation; consumption looks past
 typed RECOVERED only (no string-prefix look-past).
 
 - `test_interrupted_reclaim_characterization.py` **+4** (memory+sqlite × 2)
-- `test_interrupted_reclaim_rediscovery.py` **+5** (retry-owned ×3, spoofed,
-  newer Attempt, sibling park)
+- `test_interrupted_reclaim_rediscovery.py` **+18** spine-parametrized
+  (retry-owned ×3, spoofed prefix, newer Attempt, sibling park × memory /
+  sqlite / postgres)
 - `test_parked_run_resume.py` **+1** spoofed look-past refusal
