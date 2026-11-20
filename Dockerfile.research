@@ -50,6 +50,17 @@
 # The engine image is the one that selects it, and it prunes in the same layer
 # it asserts.
 
+# patchright 1.64.4 still ships node 24.22.1 as its Playwright-driver binary.
+# Grype 0.116.0 (`--only-fixed --fail-on high`, security.yml #2356 tip
+# 3e6a2c8 job 136030372016) flags seven HIGHs in that binary
+# (CVE-2026-126051/123865/123866/123874/123863/123872/123864; fixed in
+# 24.22.3 / 26.13.1). playwright 1.65.2 already ships the fixed 26.13.1
+# line; no newer patchright wheel is on PyPI as of 2026-11-20. Until
+# upstream republishes, overwrite only the patchright driver with the
+# digest-pinned Node 24.22.3 binary from the official glibc image (this
+# runtime is Debian slim, so the musl alpine build is the wrong ABI).
+FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-driver-patch
+
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
@@ -115,8 +126,9 @@ RUN uv export --locked --package maistro-server \
 # x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
 # root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
 # Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
-# golang:1.27.4-alpine (index created 2026-11-10; verified live: `go version`
-# in the pinned image reads go1.27.4 linux/amd64 on Alpine 3.24.4).
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
 # and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
 # versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
@@ -208,6 +220,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 # The lock-built venv (third-party pins hash-verified, members non-editable).
 COPY --from=builder /app/venv /app/venv
+
+# Overlay the fixed Node onto patchright's driver (see node-driver-patch).
+# Assert the path and version so a silent wheel layout change fails the build
+# instead of shipping the vulnerable binary again.
+COPY --from=node-driver-patch /usr/local/bin/node /tmp/node-24.22.3
+RUN python - <<'PY'
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import patchright
+
+dst = Path(patchright.__file__).resolve().parent / "driver" / "node"
+src = Path("/tmp/node-24.22.3")
+if not dst.is_file():
+    raise SystemExit(f"patchright driver node missing at {dst}")
+shutil.copy2(src, dst)
+os.chmod(dst, 0o755)
+ver = subprocess.check_output([str(dst), "-v"], text=True).strip()
+if ver != "v24.22.3":
+    raise SystemExit(f"expected v24.22.3 after overlay, got {ver!r}")
+src.unlink()
+print(f"patched patchright driver node -> {ver} at {dst}")
+PY
 
 # Application sources — on-disk assets the app reads at runtime (agent YAML,
 # prompts, migrations) and the two packages' data files. The venv is
