@@ -183,11 +183,14 @@ test("Workspace A→B mid-stream never paints A or posts A's history (#1822 AC-3
   await composer.fill("A mid-stream marker");
   await page.keyboard.press("Enter");
   await expect.poll(() => streamBodies.length).toBe(1);
-  await expect(page.getByText("A mid-stream marker")).toBeVisible();
+  // Session drawer also titles itself from the first user turn — scope to the
+  // transcript log so Playwright strict mode does not see the drawer link too.
+  const chatLog = page.getByRole("log", { name: "Chat messages" });
+  await expect(chatLog.getByText("A mid-stream marker")).toBeVisible();
 
   // Switch active Workspace via the tab strip (not a same-WS session hop).
   await page.getByRole("tab", { name: new RegExp(`Isolation B`) }).click();
-  await expect(page.getByText("A mid-stream marker")).toHaveCount(0);
+  await expect(chatLog.getByText("A mid-stream marker")).toHaveCount(0);
   await expect(page.getByText("Loading sessions")).toBeVisible({ timeout: 5000 }).catch(() => {
     /* hydrate may already have finished */
   });
