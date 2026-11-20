@@ -61,8 +61,7 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
   { label: "Missions", path: "/missions", probe: (p) => p.getByRole("heading", { name: "Missions", exact: true }) },
   { label: "Backlog", path: "/backlog", probe: (p) => p.getByRole("heading", { name: "Backlog", exact: true }) },
   { label: "Capabilities", path: "/capabilities", probe: (p) => p.getByRole("heading", { name: "Capabilities", exact: true }) },
-  { label: "Optimizer", path: "/optimizer", probe: (p) => p.getByRole("heading", { name: "Optimization Inbox", exact: true }) },
-  { label: "Messages", path: "/messages", probe: (p) => p.getByRole("heading", { name: "Message Board", exact: true }) },
+  // #1049 MERGE: Optimizer + Messages removed from nav; URLs redirect to Attention.
   { label: "Quotas", path: "/quotas", probe: (p) => p.getByRole("heading", { name: "Quotas & Stats", exact: true }) },
   { label: "Inner Temple", path: "/knowledge", probe: (p) => p.getByRole("heading", { name: "Inner Temple", exact: true }) },
   // #373: RSI is a gated surface — without an effective-or-elevatable
@@ -83,11 +82,16 @@ const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (
  * they must keep rendering at their URL while staying out of the nav. */
 const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string }> = [
   { path: "/work-items", heading: "Jira drafts", navLabel: "Work Items" },
-  { path: "/skills", heading: "Skills", navLabel: "Skills" },
-  { path: "/agents", heading: "The Hive", navLabel: "Agents" },
-  { path: "/topology", heading: "Topology", navLabel: "Topology" },
-  { path: "/mcp", heading: "MCP", navLabel: "Integrations" },
   { path: "/memory", heading: "Memory", navLabel: "Memory" },
+];
+
+/** #2273: deleted capability pages — deep links redirect to Capabilities and
+ * must not revive Agents/MCP/Skills/Topology modules (Evolution-style). */
+const CAPABILITY_RETIREMENT_REDIRECTS: Array<{ path: string; navLabel: string }> = [
+  { path: "/agents", navLabel: "Agents" },
+  { path: "/mcp", navLabel: "Integrations" },
+  { path: "/skills", navLabel: "Skills" },
+  { path: "/topology", navLabel: "Topology" },
 ];
 
 /** What the setup wizard's daily user is granted: routes/setup.py's
@@ -99,8 +103,8 @@ const URL_ONLY_ENTRIES: Array<{ path: string; heading: string; navLabel: string 
  * this account and walked under the admin account instead. */
 const DAILY_USER_ENTRIES = NAV_ENTRIES.filter((entry) => !entry.scope);
 
-/** CI's 20s per-test budget, not caution, splits the daily user's 19 rows
- * into chunks. */
+/** CI's 20s per-test budget, not caution, splits the daily user's nav rows
+ * into chunks (#1049 removed Messages + Optimizer from the rail). */
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -302,12 +306,18 @@ for (const scopedGroup of chunk(NAV_ENTRIES.filter((entry) => entry.scope), 7)) 
   });
 }
 
-test("alias /optimization-inbox resolves to the canonical /optimizer surface", async () => {
-  await page.goto("/optimization-inbox");
-  await page.waitForURL("**/optimizer");
-  await expect(page.getByRole("heading", { name: "Optimization Inbox", exact: true })).toBeVisible();
-  // One canonical entry, active; the alias itself is no menu item.
-  await expectSingleActiveRailEntry(page, "Optimizer");
+test("legacy /messages /optimizer /optimization-inbox redirect to Attention without reviving modules", async () => {
+  // #1049 MERGE: deleted MessageBoard + OptimizationInbox must not render.
+  for (const path of ["/messages", "/optimizer", "/optimization-inbox"] as const) {
+    await page.goto(path);
+    await page.waitForURL("**/attention");
+    await expect(page.getByRole("heading", { name: "Attention", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Optimization Inbox", exact: true })).toHaveCount(0);
+    await expectSingleActiveRailEntry(page, "Attention");
+    await expect(page.locator(".icon-sidebar").getByRole("link", { name: "Messages", exact: true })).toHaveCount(0);
+    await expect(page.locator(".icon-sidebar").getByRole("link", { name: "Optimizer", exact: true })).toHaveCount(0);
+  }
 });
 
 test("/cli/canvas keeps its compatibility redirect onto Design Studio", async () => {
@@ -321,14 +331,14 @@ test("/cli/canvas keeps its compatibility redirect onto Design Studio", async ()
 });
 
 test("browser back and forward return canonical surfaces after rail navigation", async () => {
-  // Messages, not Schedules: the back/forward invariant is about history and
+  // Attention, not Schedules: the back/forward invariant is about history and
   // active state, and the daily-user session driving it may not hold
   // `schedules.write` (the scoped rows are walked under the admin account).
   await page.goto("/home");
-  const link = page.locator(".icon-sidebar").getByRole("link", { name: "Messages", exact: true });
+  const link = page.locator(".icon-sidebar").getByRole("link", { name: "Attention", exact: true });
   await link.click();
-  await page.waitForURL("**/messages");
-  await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toBeVisible();
+  await page.waitForURL("**/attention");
+  await expect(page.getByRole("heading", { name: "Attention", exact: true })).toBeVisible();
 
   await page.goBack();
   await page.waitForURL("**/home");
@@ -336,9 +346,9 @@ test("browser back and forward return canonical surfaces after rail navigation",
   await expectSingleActiveRailEntry(page, "Home");
 
   await page.goForward();
-  await page.waitForURL("**/messages");
-  await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toBeVisible();
-  await expectSingleActiveRailEntry(page, "Messages");
+  await page.waitForURL("**/attention");
+  await expect(page.getByRole("heading", { name: "Attention", exact: true })).toBeVisible();
+  await expectSingleActiveRailEntry(page, "Attention");
 });
 
 test("URL-only legacy rows still render but stay out of the navigation", async () => {
@@ -350,6 +360,23 @@ test("URL-only legacy rows still render but stay out of the navigation", async (
   }
   const rail = page.locator(".icon-sidebar");
   for (const entry of URL_ONLY_ENTRIES) {
+    await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
+  }
+});
+
+test("retired capability URLs redirect to Capabilities without reviving legacy modules (#2273)", async () => {
+  const rail = page.locator(".icon-sidebar");
+  for (const entry of CAPABILITY_RETIREMENT_REDIRECTS) {
+    await page.goto(entry.path);
+    await page.waitForURL("**/capabilities");
+    await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+    // Legacy headings must not appear — that would mean the deleted page
+    // module was revived (same failure mode as Evolution for #2275).
+    await expect(page.getByRole("heading", { name: "The Hive", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "MCP", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Skills", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Topology", exact: true })).toHaveCount(0);
+    await expectSingleActiveRailEntry(page, "Capabilities");
     await expect(rail.getByRole("link", { name: entry.navLabel, exact: true })).toHaveCount(0);
   }
 });

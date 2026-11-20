@@ -69,6 +69,10 @@ test.describe("RUM schema redaction rules", () => {
   test("page route templates are the single SPA segment", () => {
     expect(normalizePageRoute("/dashboard")).toBe("/dashboard");
     expect(normalizePageRoute(`/dashboard/${RAW_AGENT_ID}`)).toBe("/dashboard/*");
+    // #2273: Capabilities is the unified surface's own SPA root. Missing it
+    // here normalized every live-collection event on /capabilities to
+    // "unknown", which fails the page-load test's /^\// route assertions.
+    expect(normalizePageRoute("/capabilities")).toBe("/capabilities");
     // A direct navigation can be arbitrary too; only literal SPA roots may
     // become route dimensions.
     expect(normalizePageRoute(`/${RAW_AGENT_ID}`)).toBe("unknown");
@@ -276,19 +280,22 @@ test.describe("RUM live collection", () => {
     // id must be one the server issued for a response this page received.
     // The query string carries a secret-looking token; a page route template
     // that leaked any part of the URL would carry it to the collector.
-    await page.goto(`/dashboard?next=${encodeURIComponent("/agents")}&token=${SECRET_TOKEN}`);
+    await page.goto(`/dashboard?next=${encodeURIComponent("/capabilities")}&token=${SECRET_TOKEN}`);
     await page.waitForLoadState("load");
     // Visit a second route so the api_request events span page routes, and
-    // the agents fetch exercises the shared client on a collection path.
+    // the capabilities fetch exercises the shared client on a collection path.
     // Wait for that fetch to complete — its api_request event must be in the
     // buffer before the pagehide flush fires — and give the (async) LCP
     // observer entries a moment to arrive.
-    const agentsResponse = page.waitForResponse(
-      (r) => r.url().includes("/v1/agents") && r.request().method() === "GET",
+    const capabilitiesResponse = page.waitForResponse(
+      (r) =>
+        r.url().includes("/v1/capabilities") &&
+        !r.url().includes("discover") &&
+        r.request().method() === "GET",
       { timeout: 15000 },
     );
-    await page.goto("/agents");
-    await agentsResponse;
+    await page.goto("/capabilities");
+    await capabilitiesResponse;
     await page.waitForTimeout(1000);
 
     // The reporter's real flush paths are the interval and the unload

@@ -48,6 +48,7 @@ from routes import (
     missions,
     profile,
     program,
+    projects,
     providers,
     quotas,
     rum,
@@ -387,6 +388,10 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/v1/skills")
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
+    # Project onboarding wizard (intake → scan → deploy). Distinct from
+    # maistro.projects Workspace/Project *scope* — see disposition
+    # hive-project-onboarding. Router already declares prefix=/v1/projects.
+    app.include_router(projects.router)
     app.include_router(work_items.router, prefix="/v1/work-items")
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
@@ -435,6 +440,12 @@ def create_app() -> FastAPI:
     # Phase 7 — topology variant comparison.
     app.include_router(topology.router, prefix="/v1/topology")
     app.include_router(messages.router, prefix="/v1/messages")
+    # #1049 MERGE: Attention projects unread messages without gaining a
+    # retirement-ledger importer edge on routes.messages / stores.messages —
+    # main already imports both; wire the list door here.
+    from services import attention as attention_service
+
+    attention_service.set_message_rows_provider(messages.list_messages)
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
     # Perceived-load telemetry collector (#1420). The route exists even when

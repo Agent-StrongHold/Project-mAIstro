@@ -26,6 +26,7 @@ contracts:
   - behavioral
 tests:
   - packages/hive-conductor/backend/tests/test_dag_run_history_durability.py
+  - packages/hive-conductor/backend/tests/test_durable_node_metrics.py
 source:
   - packages/hive-conductor/backend/services/dag_run_store.py
   - packages/hive-conductor/backend/routes/dag_runs.py

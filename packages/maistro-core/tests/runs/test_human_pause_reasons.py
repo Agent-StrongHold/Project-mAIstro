@@ -50,6 +50,9 @@ EXPECTED_HUMAN = {
     "awaiting_human_answer",
     "awaiting_human_approval",
     "awaiting_human_review",
+    # The design-loop fence (#794): park / redirect / accept on a waiting
+    # NodeRun — a person owes the Run one of those recorded decisions.
+    "awaiting_human_decision",
     "awaiting_role_delegate",
     # The responder is an agent, but this pause is answer-gated rather than a
     # timer/poll. It must be persisted as PAUSED so the durable answer API can
