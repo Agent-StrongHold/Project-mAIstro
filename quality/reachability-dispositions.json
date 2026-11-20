@@ -4,26 +4,26 @@
     {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "Product services with no route or background caller. Each is plausible product surface that was never registered; none owns lifecycle state that the spine must reclaim.",
-      "root": "main.py route registration or a background loop",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Workspaces v1.0 has no owner for these never-registered BFF services (chatbot platform bridge, Entra entitlement policy without an identity caller, eval/corpus bootstrap, preference calibration without pairwise UI). Do not invent main.py mounts for the tag. Physical deletion waits on #35 parity.",
       "modules": [
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
         "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.preference_calibration"
-      ]
+      ],
+      "replaced_by": "Capabilities MCP / live hive routes for external tools; #491/#492 Entra identity path for SSO entitlements; Attention + live /v1/optimizer projection for product optimisation signals; ADR-060 persona_feedback for preference signals; maistro-rsi / #2275 for engine self-improvement (Evolution stays hidden)"
     },
     {
       "id": "hive-pg-persistence",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "The remaining pg_persisted helper predates the storage decision. ADR-082226-5104 makes PostgreSQL the durable system of record, so this helper is wiring owed rather than a second credential authority; credential_store_v2 is retired by #1186.",
-      "root": "maistro.container / main.py startup, per ADR-082226-5104",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Sync PostgREST helper predates ADR-082226-5104. Workspaces durable state goes through services.pg_store / maistro.persistence async paths, not this unreachable sync wrapper. Do not invent a startup mount for the tag. Physical deletion waits on #35.",
       "modules": [
         "@flat/hive-conductor/services.pg_persisted"
-      ]
+      ],
+      "replaced_by": "services.pg_store + maistro.persistence / maistro.container (ADR-082226-5104); cutover plan F for Conductor persistence convergence"
     },
     {
       "id": "governance-conformance",
@@ -50,7 +50,7 @@
       "id": "collaboration",
       "subsystem": "Collaboration",
       "disposition": "CONNECT",
-      "rationale": "Multi-actor editing sessions with no product surface (#2323). Parked until A2UI (ADR-070426-3a1f) — not a v1.0 Workspaces mount. No silent dead UI entry.",
+      "rationale": "Multi-actor editing sessions with no product surface (#2323). Parked until A2UI (ADR-070426-3a1f) \u2014 not a v1.0 Workspaces mount. No silent dead UI entry.",
       "root": "A2UI-backed collaboration surface (ADR-070426-3a1f; #2323)",
       "modules": [
         "maistro.collaboration",
@@ -62,7 +62,7 @@
       "id": "cli-container-runtimes",
       "subsystem": "Core CLI",
       "disposition": "CONNECT",
-      "rationale": "Docker/Podman runtime selection with no Typer subcommand reaching it (#2324). Stays CONNECT under #2280 Decision A (CLI operator-lifecycle only for v1.0; no product CRUD). ADR-093 sandbox isolation is the eventual consumer — not Workspace UI.",
+      "rationale": "Docker/Podman runtime selection with no Typer subcommand reaching it (#2324). Stays CONNECT under #2280 Decision A (CLI operator-lifecycle only for v1.0; no product CRUD). ADR-093 sandbox isolation is the eventual consumer \u2014 not Workspace UI.",
       "root": "a named operator-lifecycle maistro.cli subcommand or ADR-093 sandbox path (#2324)",
       "modules": [
         "maistro.cli._container",
@@ -218,16 +218,16 @@
     {
       "id": "hive-dag-and-artifact-optimisation",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "DAG hill-climbing optimises a user's DAG, skills and tools \u2014 the artefacts an agent runs with. That is a product capability, and a distinct thing from maistro-rsi, which improves the engine's own codebase under ADR-088. An earlier disposition here called these a duplicate of RSI and retired four of them on that basis; the rationale was wrong and the deletion was reverted. services/optimizer.py and routes/optimizer.py already ship the DAG half of this surface (POST /v1/optimizer/{dag_id}/run, proposals, accept/reject), so these are unfinished extensions of a live feature rather than a second system. hill_climber is its eval-rotation strategy; skill_optimizer extends it to SKILL.md documents and tool schemas; the ui_* trio climbs the product's own UI against canonical examples, with ui_climb_vm naming the microVM as the execution model.",
-      "root": "services.optimizer / routes.optimizer for the DAG and skill halves; services.hyperlight_executor for the microVM UI loop",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Live DAG optimisation already ships via services.optimizer / routes.optimizer (Attention projects proposals; OptimizerInbox UI retired #1049). hill_climber, skill_optimizer, and the ui_* microVM climb loop are unfinished extensions with no Workspaces caller \u2014 not a second RSI system, but also not in the v1.0 ship set. Do not invent optimizer imports for the tag. Evolution remains hidden (#2275). Physical deletion waits on #35.",
       "modules": [
         "@flat/hive-conductor/services.hill_climber",
         "@flat/hive-conductor/services.skill_optimizer",
         "@flat/hive-conductor/services.ui_auto_climb",
         "@flat/hive-conductor/services.ui_climb_vm",
         "@flat/hive-conductor/services.ui_hill_climber"
-      ]
+      ],
+      "replaced_by": "services.optimizer + routes.optimizer (+ Attention projection) for DAG proposals; packages/hive-conductor/run_hill_climb.py / hill-climb-ui.sh for operator UI climb; maistro-rsi / #2275 for engine self-improvement"
     },
     {
       "id": "canvas-legacy-layerrecord",
