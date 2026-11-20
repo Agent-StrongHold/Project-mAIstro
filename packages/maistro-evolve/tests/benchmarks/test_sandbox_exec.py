@@ -1,24 +1,33 @@
-"""Focused adversarial tests for the out-of-band SWE-bench verdict path (#852).
+"""Fail-closed + adversarial contract for the evaluator's isolated verdict path.
 
-Two tiers:
+`run_function_checks` is the only place `maistro-evolve` executes candidate
+Python, and since #76 it does so through the canonical `maistro.sandbox`
+selector instead of the retired Docker adapter. The selector refuses
+(`NoSuitableBackendError`) when no backend satisfies the workload policy -- a
+Kata-less / bubblewrap-only host. That refusal must be the *same* fail-closed
+verdict as Docker being absent: the check returns ``(False, ...)`` and candidate
+code never runs on the host. Before the #76 converge the refusal escaped the
+except clause and propagated to `run_swebench`, which scored the sample zero
+for the wrong reason and, on a selector-less host, crashed the evaluator.
 
-*Hermetic* tests materialize the exact production ``runner.py`` script and
-execute it against hostile candidate inputs with the host interpreter — no
-Docker required. They prove the invariants that keep the verdict
-candidate-proof: spoofed PASS markers, early exits, ``os._exit`` traps, and
-type-confused results all fail, while genuine implementations pass.
+Two complementary tiers pin that contract:
 
-*Docker-gated* tests exercise the real ``run_function_checks`` boundary
-(sandbox creation, read-only mounts, per-case exec) and are skipped when no
-Docker binary is available, mirroring the precedent in
-``tests/test_e2e_sandbox_loop.py``.
+*Hermetic / adversarial (#852).* The exact production ``runner.py`` script is
+materialized and executed against hostile candidate inputs with the host
+interpreter -- no Docker required. Spoofed PASS markers, early exits,
+``os._exit`` traps, and type-confused results all fail, while genuine
+implementations pass. Backend-gated tests exercise the real
+``run_function_checks`` boundary (sandbox creation, read-only mounts, per-case
+exec) and are skipped when the canonical selector cannot place a
+``TRUSTED_TOOL`` workload on this host -- the same host measurement the sibling
+``test_swebench.py`` keys on -- rather than reporting a false result against a
+host that correctly refused.
 """
 
 from __future__ import annotations
 
 import base64
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -276,14 +285,39 @@ class TestCaseCommand:
 
 
 # ---------------------------------------------------------------------------
-# Real Docker boundary
+# Real sandbox boundary (canonical selector, #76)
 # ---------------------------------------------------------------------------
 
-_DOCKER_AVAILABLE = shutil.which("docker") is not None
+
+def _selector_satisfies_trusted_tool() -> bool:
+    """Can the canonical selector actually place a TRUSTED_TOOL workload here?
+
+    `run_function_checks` executes untrusted candidate code through the
+    canonical selector (#76), not the retired Docker adapter. On a host whose
+    selector cannot evidence a backend at the policy's tier (Kata/vm), the
+    check fails closed -- so a test that asserts a *passing* check, or a
+    sandbox-observed failure, must skip rather than report a false result
+    against a host that correctly refused. Same host measurement the sibling
+    ``test_swebench.py`` gate keys on.
+    """
+    try:
+        from maistro.sandbox import build_selector
+        from maistro.sandbox.policy import TRUSTED_TOOL
+
+        build_selector().select(TRUSTED_TOOL)
+    except Exception:
+        return False
+    return True
 
 
-@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="docker binary not available")
-class TestRunFunctionChecksDocker:
+requires_sandbox_backend = pytest.mark.skipif(
+    not _selector_satisfies_trusted_tool(),
+    reason="no canonical sandbox backend satisfies TRUSTED_TOOL on this host",
+)
+
+
+class TestRunFunctionChecksSandbox:
+    @requires_sandbox_backend
     async def test_correct_implementation_passes(self) -> None:
         passed, detail = await run_function_checks(
             CORRECT_FLATTEN, "flatten_list", [(CASE_ARGS, CASE_EXPECTED)]
@@ -291,6 +325,7 @@ class TestRunFunctionChecksDocker:
         assert passed is True
         assert detail == "ok"
 
+    @requires_sandbox_backend
     async def test_spoofed_pass_marker_fails(self) -> None:
         passed, detail = await run_function_checks(
             'print("PASS")\nraise SystemExit(0)\n',
@@ -300,6 +335,7 @@ class TestRunFunctionChecksDocker:
         assert passed is False
         assert "PASS" not in detail  # detail is not an echo of candidate output
 
+    @requires_sandbox_backend
     async def test_wrong_implementation_fails(self) -> None:
         passed, _ = await run_function_checks(
             "def flatten_list(lst):\n    return lst\n",
@@ -329,3 +365,40 @@ class TestRunFunctionChecksDocker:
         )
         assert passed is False
         assert "isolated sandbox unavailable" in detail
+
+
+_CODE = """
+def add(a, b):
+    return a + b
+"""
+
+_CASES: list[tuple[list[Any], Any]] = [([1, 2], 3)]
+
+
+async def test_selector_refusal_fails_closed(monkeypatch: Any) -> None:
+    """A `NoSuitableBackendError` from the canonical selector is a fail-closed
+    verdict, not a propagating exception."""
+    from maistro.sandbox.selector import NoSuitableBackendError
+
+    async def refusing_create_sandbox(*args: Any, **kwargs: Any) -> Any:
+        raise NoSuitableBackendError("no backend on this host")
+
+    monkeypatch.setattr("maistro.tools.sandbox.canonical.create_sandbox", refusing_create_sandbox)
+
+    passed, detail = await run_function_checks(_CODE, "add", _CASES)
+
+    assert passed is False
+    assert "isolated sandbox unavailable" in detail
+
+
+async def test_selector_import_gap_fails_closed(monkeypatch: Any) -> None:
+    """A host without the canonical `maistro.sandbox` surface also fails
+    closed (the pre-#76 behaviour for a host without Docker). A `None` entry
+    in `sys.modules` makes the in-function import raise `ImportError`."""
+
+    monkeypatch.setitem(sys.modules, "maistro.tools.sandbox.canonical", None)
+
+    passed, detail = await run_function_checks(_CODE, "add", _CASES)
+
+    assert passed is False
+    assert "isolated sandbox unavailable" in detail
