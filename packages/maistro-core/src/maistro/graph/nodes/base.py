@@ -342,6 +342,7 @@ class _NodePaused(Exception):
 PAUSE_AWAITING_HUMAN_ANSWER = "awaiting_human_answer"
 PAUSE_AWAITING_HUMAN_APPROVAL = "awaiting_human_approval"
 PAUSE_AWAITING_HUMAN_REVIEW = "awaiting_human_review"
+PAUSE_AWAITING_HUMAN_DECISION = "awaiting_human_decision"
 PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
 PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
@@ -358,6 +359,7 @@ PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_ANSWER: "human",
     PAUSE_AWAITING_HUMAN_APPROVAL: "human",
     PAUSE_AWAITING_HUMAN_REVIEW: "human",
+    PAUSE_AWAITING_HUMAN_DECISION: "human",
     PAUSE_AWAITING_ROLE_DELEGATE: "human",
     PAUSE_AWAITING_REMOTE_DELEGATION: "human",
     PAUSE_AWAITING_HARNESS: "system",
@@ -399,6 +401,10 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_ANSWER: RESUME_ON_ANSWER,
     PAUSE_AWAITING_HUMAN_APPROVAL: RESUME_ON_ANSWER,
     PAUSE_AWAITING_HUMAN_REVIEW: RESUME_ON_ANSWER,
+    # The design-loop fence (#794) re-enters only when a redirect or accept
+    # decision was recorded on the durable pause; a park never answers, so the
+    # gate stays parked until one of those decisions (or timeout) settles it.
+    PAUSE_AWAITING_HUMAN_DECISION: RESUME_ON_ANSWER,
     PAUSE_AWAITING_ROLE_DELEGATE: RESUME_ON_ANSWER,
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
     # The node checkpoints a canonical dispatch receipt and observation ordinal
