@@ -34,6 +34,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.types import Unavailable
 
 logger = logging.getLogger("maistro.capabilities.invocation")
@@ -249,6 +250,9 @@ class Invocation(BaseModel):
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
+    # Host-owned prediction evidence is part of the Invocation record so a
+    # reviewer can recompute a mismatch without trusting a transient log.
+    expected_effect: ExpectedEffectEvidence | None = None
     usage: InvocationUsage | None = None
     error: str | None = None
     reconciliation_history: tuple[InvocationReconciliation, ...] = ()
@@ -512,6 +516,23 @@ class InvocationQuota(Protocol):
 _PROCESS_ACTIVE_DISPATCHES: set[str] = set()
 
 
+def _bind_expected_effect(
+    invocation: Invocation, expected_effect: ExpectedEffectEvidence | None
+) -> Invocation:
+    """Bind provider and Invocation identity before durable creation."""
+
+    if expected_effect is None:
+        return invocation
+    evidence = expected_effect.model_copy(
+        update={
+            "invocation_id": invocation.invocation_id,
+            "capability": invocation.binding.capability,
+            "provider": invocation.binding.provider_name,
+        }
+    )
+    return invocation.model_copy(update={"expected_effect": evidence})
+
+
 def _require_scope(invocation: Invocation, *, workspace_id: str, project_id: str) -> None:
     """Refuse a caller whose scope is not the Invocation's own.
 
@@ -578,9 +599,11 @@ InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    The service is the lifecycle authority for capability effects. Provider
-    adapters can report evidence, but only this service changes Invocation
-    state.
+    Production model and capability consumers reach this service through their
+    composed effect context; the retry guard is the single authority for those
+    live calls. The service is the lifecycle authority for capability effects:
+    provider adapters can report evidence, but only this service changes
+    Invocation state.
     """
 
     def __init__(
@@ -832,6 +855,7 @@ class InvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        expected_effect: ExpectedEffectEvidence | None = None,
         actor_id: str = "",
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
@@ -876,7 +900,10 @@ class InvocationExecutionService:
                 effect_scope=resolved_effect_scope,
                 request=request,
             )
-            invocation = await self._admit_effect(candidate)
+            # Expected-effect evidence binds provider and Invocation identity
+            # before durable admission, so the canonical row itself carries
+            # enough to recompute a mismatch later (#57).
+            invocation = await self._admit_effect(_bind_expected_effect(candidate, expected_effect))
             settled = _settled_by_another_admission(candidate, invocation, effect_key)
             if settled is not None:
                 # The ledger already holds this effect's accepted outcome,
@@ -924,6 +951,63 @@ class InvocationExecutionService:
         """List evidence-requiring effects without changing their state."""
 
         return await self._store.list_ambiguous(stale_before=_utc(stale_before))
+
+    async def record_expected_effect_observation(
+        self, invocation_id: str, observed_post_state: Any
+    ) -> Invocation:
+        """Persist the host observation and immutable comparison result."""
+
+        async with self._effect_lock:
+            invocation = await self._store.get(invocation_id)
+            if invocation is None:
+                raise KeyError(f"Invocation {invocation_id!r} does not exist")
+            evidence = invocation.expected_effect
+            if evidence is None:
+                raise ValueError("Invocation has no expected-effect evidence")
+            # The first host observation is authoritative. A provider or a
+            # late callback cannot rewrite a mismatch into ordinary success.
+            if evidence.matched is not None:
+                return invocation
+            return await self._store.save(
+                invocation.model_copy(
+                    update={"expected_effect": evidence.observed(observed_post_state)}
+                )
+            )
+
+    @staticmethod
+    def expected_effect_mismatch_event(invocation: Invocation, *, tool_name: str) -> Any:
+        """Build a durable event; the event store remains the append authority."""
+
+        from maistro.events.envelope import EventEnvelope
+
+        evidence = invocation.expected_effect
+        if evidence is None or evidence.matched is not False:
+            raise ValueError("expected-effect mismatch event requires a mismatch")
+        return EventEnvelope(
+            # One host verdict per Invocation. Stable identity lets the
+            # canonical EventStore repair a missed append without duplicates.
+            event_id=f"invocation:{invocation.invocation_id}:expected-effect-mismatch",
+            type="capability.invocation.expected_effect_mismatch",
+            workspace_id=invocation.workspace_id,
+            project_id=invocation.project_id,
+            run_id=invocation.run_id,
+            node_run_id=invocation.node_run_id,
+            attempt_id=invocation.attempt_id,
+            invocation_id=invocation.invocation_id,
+            correlation_id=invocation.run_id,
+            source="maistro.capabilities.tools",
+            payload={
+                "tool_name": tool_name,
+                "capability": evidence.capability,
+                "provider": evidence.provider,
+                "arguments_digest": evidence.arguments_digest,
+                "pre_state_digest": evidence.pre_state_digest,
+                "expected_post_state": evidence.expected_post_state,
+                "observed_post_state": evidence.observed_post_state,
+                "evidence_digest": evidence.evidence_digest,
+                "policy_version": evidence.policy_version,
+            },
+        )
 
     async def reconcile(
         self,
@@ -1204,6 +1288,7 @@ __all__ = [
     "CapabilityUnavailable",
     "EffectClaimStore",
     "EffectNotApplied",
+    "ExpectedEffectEvidence",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationCompletionHook",

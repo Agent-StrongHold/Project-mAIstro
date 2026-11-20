@@ -112,15 +112,16 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
-| CodeQL Advanced | `Analyze (actions)` | base `main` |
-| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
-| CodeQL Advanced | `Analyze (python)` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (python)` | base `main`, `develop` |
 | DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |

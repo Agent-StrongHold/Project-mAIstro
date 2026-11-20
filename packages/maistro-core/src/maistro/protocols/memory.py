@@ -460,6 +460,19 @@ class SessionStore(Protocol):
         """Retrieve conversation history, pruning expired messages."""
         ...
 
+    async def transcript(
+        self,
+        session_id: str,
+        ttl_seconds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Return every retained message, oldest first.
+
+        Not clipped to the model-context ``max_messages`` window: retention
+        is the TTL alone. Search/aggregation callers (ADR-048) read this
+        rather than the bounded context history.
+        """
+        ...
+
     async def append_messages(
         self,
         session_id: str,
