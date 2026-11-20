@@ -148,8 +148,9 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
 # Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
-# golang:1.27.4-alpine (index created 2026-11-10; verified live: `go version`
-# in the pinned image reads go1.27.4 linux/amd64 on Alpine 3.24.4).
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
 # klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
 # upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so

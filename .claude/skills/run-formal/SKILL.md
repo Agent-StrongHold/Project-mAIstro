@@ -1,6 +1,6 @@
 ---
 name: run-formal
-description: Run the Hypothesis property-based conformance tests under formal/. These cover security invariants I1-I22+ and are NOT part of regular CI (they run in formal-conformance.yml). Use before touching security, auth, warden, sentinel, PII, or quota code.
+description: "Run the Hypothesis property-based conformance tests under formal/. These cover security invariants I1-I22+ and are NOT part of regular CI (they run in formal-conformance.yml). Use before touching security, auth, warden, sentinel, PII, or quota code."
 ---
 
 Run the formal property-based conformance test suite:
