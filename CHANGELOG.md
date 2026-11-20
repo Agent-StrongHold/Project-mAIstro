@@ -56,6 +56,12 @@ or placeholder-only section.
   `_maistro_replayed` marker) instead of collapsing to a text-only
   `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
 
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
   PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of

@@ -81,7 +81,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.capabilities.admitted_model import AdmittedModelCalls
-    from maistro.capabilities.model_chat import GovernedLLMClient
+    from maistro.capabilities.model_chat import GovernedLLMClient, build_model_chat_client
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
@@ -140,6 +140,16 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
+    # Agent calls and Hive chat share the Container-owned governed client;
+    # there is no adapter-local HTTP authority. The fallback only supports
+    # container-shaped test seams and still composes the same core boundary.
+    # Direct attribute read required by the wiring-reads ratchet (#1084).
+    llm_client = container.model_chat_client
+    if llm_client is None:
+        llm_client = build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+            workspace_id=config.workspace_id,
+        )
     # The deployment's gateway base, resolved once for both the roster's
     # model clients and this runtime's governed egress (#718) so the two
     # doors cannot drift onto different credentials or bases.
@@ -158,8 +168,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         adapters=getattr(container, "provider_adapter_catalog", None),
     )
     # Boot Agents and later materialization share one AdmittedModelCalls helper;
-    # no fabricated agent-runtime Binding or ambient credential (#1084).
-    llm_client = GovernedLLMClient(admitted_calls)
+    # no fabricated agent-runtime Binding or ambient credential (#1084). The
+    # factory wraps the roster client; RuntimeSource.llm keeps the admitted
+    # authority for Workspace-narrowed materialization.
+    admitted_llm = GovernedLLMClient(admitted_calls)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -234,7 +246,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     return EmbeddedRuntime(
         container=container,
         agents=agents,
-        llm=llm_client,
+        llm=admitted_llm,
         preamble=preamble,
         governed_egress=governed_egress,
         admitted_calls=admitted_calls,
