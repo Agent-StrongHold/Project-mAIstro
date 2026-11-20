@@ -927,6 +927,30 @@ async def test_recover_orphaned_in_local_mode_refuses_wrong_owning_run() -> None
     assert persisted.attempts[0].cancellation_cause is None
 
 
+async def test_recover_orphaned_in_local_mode_skips_sibling_attempts() -> None:
+    """Multi-attempt records must walk past non-target rows (continue branch)."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    first = await execution_store.create_attempt(node_run_id)
+    await execution_store.transition_attempt(
+        first.attempt_id, AttemptStatus.CANCELLED, error="superseded"
+    )
+    second = await execution_store.create_attempt(node_run_id)
+    assert second.execution_lease is None
+
+    settled = await execution_store.recover_orphaned_attempt(
+        second.attempt_id, owning_run_id=record.run_id, error="sibling orphan"
+    )
+
+    assert settled.attempt_id == second.attempt_id
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    by_id = {attempt.attempt_id: attempt for attempt in persisted.attempts}
+    assert by_id[first.attempt_id].status is AttemptStatus.CANCELLED
+    assert by_id[first.attempt_id].cancellation_cause is None
+    assert by_id[second.attempt_id].cancellation_cause is CancellationCause.RECOVERED
+
+
 async def test_compensate_unlaunched_in_local_mode_refuses_a_stale_fence() -> None:
     """The record's own lock does not excuse a stale fencing token."""
     store, execution_store, record, node_run_id = await _local_only_store()

@@ -548,14 +548,15 @@ def recover_orphaned_attempt(
     ``RECOVERED``.
     """
     moment = _now(at)
+    status_label = getattr(attempt.status, "value", attempt.status)
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         raise InvalidLifecycleTransition(
-            f"cannot recover a {attempt.status.value} Attempt "
+            f"cannot recover a {status_label} Attempt "
             f"({attempt.attempt_id!r}) as an orphan; terminal rows already have an outcome"
         )
     if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
         raise InvalidLifecycleTransition(
-            f"cannot recover a {attempt.status.value} Attempt "
+            f"cannot recover a {status_label} Attempt "
             f"({attempt.attempt_id!r}) as an orphan; only CREATED/RUNNING are active"
         )
     if attempt.execution_lease is not None:

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +27
+  packages/maistro-core/tests: +32
 ---
 
 # P3b: Graph orphan recover_orphaned_attempt (#2417 / #232)

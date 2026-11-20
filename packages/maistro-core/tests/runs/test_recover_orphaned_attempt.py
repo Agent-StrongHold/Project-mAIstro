@@ -86,6 +86,44 @@ class TestRecoverOrphanedConstruction:
         with pytest.raises(InvalidLifecycleTransition, match="terminal"):
             recover_orphaned_attempt(_leaseless(cause=CancellationCause.REQUESTED), at=_t(3))
 
+    def test_non_active_non_terminal_status_is_refused(self) -> None:
+        """Defense for corrupted payloads: only CREATED/RUNNING may orphan-recover."""
+        corrupted = Attempt.model_construct(
+            attempt_id="att-bogus",
+            node_run_id="nr-1",
+            ordinal=1,
+            status="queued",  # not CREATED/RUNNING and not a terminal AttemptStatus
+            created_at=_t(0),
+            started_at=None,
+            finished_at=None,
+            execution_lease=None,
+            cancellation_cause=None,
+            result=None,
+            error=None,
+            metrics={},
+        )
+        with pytest.raises(InvalidLifecycleTransition, match="only CREATED/RUNNING"):
+            recover_orphaned_attempt(corrupted, at=_t(3))  # type: ignore[arg-type]
+
+    def test_active_row_with_preexisting_cause_is_refused(self) -> None:
+        """CREATED/RUNNING must not already carry a cause (validators normally forbid)."""
+        corrupted = Attempt.model_construct(
+            attempt_id="att-caused",
+            node_run_id="nr-1",
+            ordinal=1,
+            status=AttemptStatus.CREATED,
+            created_at=_t(0),
+            started_at=None,
+            finished_at=None,
+            execution_lease=None,
+            cancellation_cause=CancellationCause.REQUESTED,
+            result=None,
+            error=None,
+            metrics={},
+        )
+        with pytest.raises(InvalidLifecycleTransition, match="already carries"):
+            recover_orphaned_attempt(corrupted, at=_t(3))
+
 
 async def _spine_store() -> tuple[InMemoryRunStore, str, str]:
     from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -242,3 +280,126 @@ class TestRecoverOrphanedSpine:
         store, _workspace, _project_id = spine
         with pytest.raises(AttemptNotFound):
             await store.recover_orphaned_attempt("missing", owning_run_id="any-run")
+
+
+class _OrphanPool:
+    """Stand-in pool for ``PgRunStore.recover_orphaned_attempt`` lock refusals."""
+
+    def __init__(self) -> None:
+        self.runs: dict[str, dict[str, object]] = {}
+        self.node_runs: dict[str, dict[str, object]] = {}
+        self.attempts: dict[str, dict[str, object]] = {}
+        self.attempt_nodes: dict[str, str] = {}
+        self.node_run_runs: dict[str, str] = {}
+        self.statements: list[str] = []
+        self.updates: list[tuple[str, str]] = []
+
+    def acquire(self) -> _OrphanPool:
+        return self
+
+    async def __aenter__(self) -> _OrphanPool:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> bool:
+        return False
+
+    def transaction(self) -> _OrphanPool:
+        return self
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
+        sql = " ".join(query.split())
+        self.statements.append(sql)
+        if "JOIN canonical_node_runs" in sql:
+            attempt_id = str(args[0])
+            node_run_id = self.attempt_nodes.get(attempt_id)
+            if node_run_id is None or node_run_id not in self.node_run_runs:
+                return None
+            return {"node_run_id": node_run_id, "run_id": self.node_run_runs[node_run_id]}
+        if "FOR UPDATE" not in sql:
+            raise AssertionError(f"unexpected fetchrow query: {query!r}")
+        if "canonical_runs" in sql:
+            return {"run_id": str(args[0])} if str(args[0]) in self.runs else None
+        if "canonical_node_runs" in sql:
+            payload = self.node_runs.get(str(args[0]))
+            return {"node_run_id": str(args[0]), "payload": payload, "archive_key": None}
+        if "canonical_attempts" in sql:
+            payload = self.attempts.get(str(args[0]))
+            return {"attempt_id": str(args[0]), "payload": payload, "archive_key": None}
+        raise AssertionError(f"unexpected FOR UPDATE query: {query!r}")
+
+    async def execute(self, query: str, *args: object) -> str:
+        import json
+
+        sql = " ".join(query.split())
+        self.statements.append(sql)
+        if "UPDATE canonical_attempts" in sql:
+            identity = str(args[2])
+            self.attempts[identity] = json.loads(str(args[1]))
+            self.updates.append(("canonical_attempts", identity))
+            return "UPDATE 1"
+        raise AssertionError(f"unexpected execute query: {query!r}")
+
+
+async def _orphan_pool() -> tuple[_OrphanPool, str, str]:
+    """One leaseless CREATED Attempt on a stand-in PG pool; attempt id + run id."""
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.evidence_json import payload_of
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-orphan-pg")
+    store = InMemoryRunStore(project_store=projects)
+    graph = Graph(
+        workspace_id="ws-orphan-pg",
+        project_id=root.project_id,
+        name="orphan-pg",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    node_run = await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    assert attempt.execution_lease is None
+
+    pool = _OrphanPool()
+    pool.runs[run.run_id] = payload_of(run)
+    pool.node_runs[node_run.node_run_id] = payload_of(node_run)
+    pool.attempts[attempt.attempt_id] = payload_of(attempt)
+    pool.attempt_nodes[attempt.attempt_id] = attempt.node_run_id
+    pool.node_run_runs[node_run.node_run_id] = node_run.run_id
+    return pool, attempt.attempt_id, run.run_id
+
+
+def _pg_store(pool: _OrphanPool) -> Any:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore as Projects
+    from maistro.runs.pg_store import PgRunStore
+
+    return PgRunStore(pool, project_store=Projects())  # type: ignore[arg-type]
+
+
+class TestRecoverOrphanedPgLockRefusals:
+    """No-services stand-ins for the PG orphan writer's integrity arms (#2417)."""
+
+    async def test_missing_owning_run_after_lineage_is_refused(self) -> None:
+        pool, attempt_id, run_id = await _orphan_pool()
+        pool.runs.clear()
+        store = _pg_store(pool)
+
+        with pytest.raises(RunIntegrityError, match="does not exist"):
+            await store.recover_orphaned_attempt(attempt_id, owning_run_id=run_id)
+
+        assert pool.updates == []
+
+    async def test_lineage_changed_under_lock_is_refused(self) -> None:
+        pool, attempt_id, run_id = await _orphan_pool()
+        pool.attempts[attempt_id]["node_run_id"] = "node-run-elsewhere"
+        store = _pg_store(pool)
+
+        with pytest.raises(
+            RunIntegrityError, match="lineage changed under the orphan recovery lock"
+        ):
+            await store.recover_orphaned_attempt(attempt_id, owning_run_id=run_id)
+
+        assert pool.updates == []
