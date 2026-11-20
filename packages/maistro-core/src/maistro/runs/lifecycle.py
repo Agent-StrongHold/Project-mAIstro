@@ -603,10 +603,35 @@ def transition_attempt(
     result: object | None = None,
     error: str | None = None,
     metrics: dict[str, object] | None = None,
+    cancellation_cause: CancellationCause | None = None,
 ) -> Attempt:
+    """Advance an Attempt's status; optionally stamp REQUESTED on CANCELLED.
+
+    Generic callers may pass only ``None`` or ``REQUESTED``. ``RECOVERED`` is
+    refused here — reclaim / compensate / orphan writers own that leaf (#2421 /
+    #232 P3c). An already-caused Attempt refuses a rewrite.
+    """
     if target not in ATTEMPT_TRANSITIONS[attempt.status]:
         raise InvalidLifecycleTransition(
             f"illegal transition: {attempt.status.value} -> {target.value}"
+        )
+    if cancellation_cause is CancellationCause.RECOVERED:
+        raise InvalidLifecycleTransition(
+            "generic transition_attempt cannot stamp RECOVERED; "
+            "use reclaim_attempt / compensate_unlaunched_attempt / recover_orphaned_attempt"
+        )
+    if cancellation_cause is not None and cancellation_cause is not CancellationCause.REQUESTED:
+        raise InvalidLifecycleTransition(
+            f"generic transition_attempt rejects cancellation_cause={cancellation_cause.value}"
+        )
+    if cancellation_cause is not None and target is not AttemptStatus.CANCELLED:
+        raise InvalidLifecycleTransition(
+            f"cancellation_cause requires target CANCELLED, not {target.value}"
+        )
+    if cancellation_cause is not None and attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot rewrite cancellation_cause={attempt.cancellation_cause.value} "
+            f"on Attempt {attempt.attempt_id!r}"
         )
 
     timestamp = _now(at)
@@ -620,7 +645,12 @@ def transition_attempt(
         values["started_at"] = timestamp
     if target in TERMINAL_ATTEMPT_STATUSES:
         values["finished_at"] = timestamp
-    return Attempt.model_validate(values)
+    settled = Attempt.model_validate(values)
+    if cancellation_cause is CancellationCause.REQUESTED:
+        stamped = settled.model_dump(mode="python")
+        stamped["cancellation_cause"] = CancellationCause.REQUESTED
+        return Attempt.model_validate(stamped)
+    return settled
 
 
 __all__ = [
