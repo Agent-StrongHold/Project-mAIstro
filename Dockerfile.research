@@ -51,9 +51,13 @@
 # it asserts.
 
 # ─── Build stage ───────────────────────────────────────
-# Digest-pinned (#349): python:3.12-slim resolved to this index digest on
-# 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
+# Digest-pinned (#349): python:3.12.16-slim-bookworm resolved to this index
+# digest on 2026-11-16; refresh via Dependabot and update quality/image-pins.json.
+# The 3.12.16 refresh (#2304 container-gate round): grype flags CPython binary
+# CVE-2026-115557 (Critical, fixed 3.12.16) in the 3.12.15 build the previous
+# 3.12-slim digest carried; the floating 3.12-slim tag now resolves to Debian
+# trixie, so the pin moves to the exact patch tag and stays on bookworm.
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS builder
 
 WORKDIR /app
 
@@ -140,9 +144,11 @@ RUN apk add --no-cache git && \
     go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
-    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
-    # supersedes it, so build from the module set, not the vendored tree.
-    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
+    # -mod=vendor (explicit since the #2304 round-10 test rewrite): `go mod
+    # vendor` above re-syncs the tree to the patched go.mod, so the build reads
+    # exactly that module set; the develop-side -mod=mod variant of #2120 would
+    # resolve from the module cache instead and is deliberately not taken.
+    CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
@@ -155,7 +161,7 @@ RUN apk add --no-cache git && \
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag.
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
+FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.
@@ -167,6 +173,14 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 #     stack below). The `--no-cache-filter production-apt` CI flag re-runs
 #     this stage on every candidate, so the mirror's current candidate —
 #     deb13u1 or newer — is what ships.
+#   - libatomic1 is installed explicitly, not left to dependency resolution:
+#     playwright 1.65.2 (the lock's browser-surface pin; 1.64 did not link it)
+#     bundles a Node driver whose ELF needs libatomic.so.1 at startup, and
+#     nothing else in this image's apt closure pulls the package in. Without
+#     it `python -m playwright install chromium` dies with "error while
+#     loading shared libraries: libatomic.so.1" before the browser ever
+#     downloads (CI: containers/docker-build at head 094944a81, job
+#     133267675340 / 133270207586, 2026-11-16).
 #   - docker.io (the whole engine) replaced by a static docker CLI (see COPY below).
 #   - curl + wget removed; the HEALTHCHECK now uses stdlib Python.
 #   - autoremove/clean drop orphaned deps and caches.
@@ -176,6 +190,7 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
     libbrotli1 \
+    libatomic1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
@@ -220,6 +235,37 @@ COPY pyproject.toml uv.lock README.md ./
 # resolution happens here. Installed into PLAYWRIGHT_BROWSERS_PATH (set above)
 # so the non-root user can use it.
 RUN python -m playwright install chromium
+
+# Fixed Node runtime for the Playwright/patchright drivers (#2304): the
+# wheels bundle their own Node binaries (playwright 1.65.2 -> v26.13.1,
+# patchright 1.64.1 -> v24.21.0; both measured from the locked wheels), and
+# grype flags those shipped binaries — CVE-2026-111497 Critical +
+# CVE-2026-105482/105483/106069 High on the v24.21.0 build, fixed upstream
+# in 24.22.1 — inside the published image. Each driver is JavaScript
+# launched through Node and consults PLAYWRIGHT_NODEJS_PATH before its
+# bundled driver/node, so a checksum-pinned system Node lets us drop the
+# bundled binaries instead of shipping the vulnerable ones. Verified
+# locally: Node 24.22.1 scans clean under grype --only-fixed --fail-on
+# high, and the drivers launch Chromium through it.
+RUN python - <<'PYDL'
+import hashlib, io, tarfile, urllib.request
+url = "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz"
+expected = "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+data = urllib.request.urlopen(url).read()
+assert hashlib.sha256(data).hexdigest() == expected, "node tarball checksum mismatch"
+tarfile.open(fileobj=io.BytesIO(data), mode="r:xz").extractall("/tmp/node-extract")
+PYDL
+RUN cp -a /tmp/node-extract/node-v24.22.1-linux-x64/. /usr/local/ \
+ && rm -rf /tmp/node-extract
+ENV PLAYWRIGHT_NODEJS_PATH=/usr/local/bin/node
+# Drop the bundled (vulnerable) Node binaries so grype never scans them; the
+# drivers now resolve through PLAYWRIGHT_NODEJS_PATH above.
+RUN rm -f /app/venv/lib/python3.12/site-packages/playwright/driver/node \
+          /app/venv/lib/python3.12/site-packages/patchright/driver/node
+
+# npm ships with its own (vulnerable) undici; nothing in the shipped image
+# uses npm at runtime, so drop it to keep the grype cross-check clean.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Drop the same build tooling the other images drop: pip is not invoked at
 # runtime by anything in the shipped app, and its vendored dependency tree

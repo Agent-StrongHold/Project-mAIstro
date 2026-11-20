@@ -73,6 +73,7 @@ def _include_globs() -> tuple[str, ...]:
     return tuple(glob.strip() for glob in match.group(1).split(",") if glob.strip())
 
 
+@cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
 
@@ -208,6 +209,46 @@ def test_no_shipped_source_file_is_excluded_from_the_scan() -> None:
         "include/ignore configuration removes shipped code from the DevSkim scan:\n  "
         + "\n  ".join(excluded)
     )
+
+
+def test_glob_configuration_is_parsed_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The workflow's glob configuration is parsed once per getter, not per file.
+
+    Structural pin (no wall clock): the scan sweep evaluates `_is_scanned`
+    once per shipped source file. When the getters re-read the workflow on
+    every call, the sweep re-parsed the same YAML ~3.3k times and the guard
+    died of its own 30s `pytest-timeout` budget under the coverage producer
+    before it could report anything (quality job 121855755737 on this
+    branch, job 128649305503 on the develop tip — same test, same timeout
+    inside `yaml.safe_load`). If this regresses, the sweep goes back to
+    being a race between its own assertion and the clock.
+    """
+    _ignore_globs.cache_clear()
+    _include_globs.cache_clear()
+    calls = 0
+    real = _scanner_step
+
+    def counted() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return real()
+
+    monkeypatch.setattr(f"{__name__}._scanner_step", counted)
+    try:
+        assert _ignore_globs(), "ignore globs resolved"
+        assert _ignore_globs() == _ignore_globs(), "ignore globs stable across reads"
+        assert calls == 1, (
+            f"ignore-glob getter parsed the workflow {calls}x for 3 reads; "
+            "the per-file sweep would re-parse it per shipped source"
+        )
+        assert _include_globs(), "include globs resolved"
+        assert calls == 2, (
+            f"the two getters together parsed the workflow {calls}x; "
+            "each must parse once per process, not once per file"
+        )
+    finally:
+        _ignore_globs.cache_clear()
+        _include_globs.cache_clear()
 
 
 def test_the_rsi_test_inventory_module_stays_in_scope() -> None:

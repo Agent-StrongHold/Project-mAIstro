@@ -7,6 +7,16 @@
 # patch version here so a moving base tag cannot silently change that contract.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
+#
+# Since #2304 the builder and the runtime OS layer are deliberately different
+# bases: pybuild keeps the CPython 3.13.18 pin above (it IS the contract
+# interpreter, refreshed from 3.13.16 in the #2304 container-gate round: the
+# gate's grype leg flags CVE-2026-115557, Critical, fixed in 3.13.18 — the
+# same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363),
+# runtime-apt is only the Debian OS/security-patch layer and
+# moved to python:3.15.2-slim-bookworm, and the final stage grafts the
+# builder's exact CPython installation so the copied venv runs on the contract
+# interpreter without any managed download. See the stage comments below.
 # ---- frontend build ----
 # Digest-pinned (#349); node:26-alpine resolved to this index digest 2026-10-25.
 FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
@@ -57,8 +67,18 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
 # ---- builder: self-contained venv (has shell/pip) ----
-# Digest-pinned (#349); shared with the runtime stage below so both resolve to
-# the same CPython build.
+# Digest-pinned (#349). This stage IS the identity contract: the CPython that
+# builds the venv is the CPython the shipped app runs on, so it keeps the
+# exact registered 3.13.18 build that coincurve 21.0.0 ships cp313 wheels for
+# and that the build smoke below asserts (refreshed from 3.13.16 in the #2304
+# container-gate round: grype flags CVE-2026-115557, Critical, fixed in
+# 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152; develop
+# landed the identical refresh from the #1373 CI-repair lane). #2304
+# moved the runtime OS layer to
+# python:3.15.2-slim-bookworm (see runtime-apt); bumping this stage to match
+# would leave no interpreter satisfying the contract on the base -- uv's
+# managed-download fallback resolves an unregistered 3.13.15, which is
+# exactly the silent interpreter change the header forbids.
 FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
@@ -203,7 +223,19 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
-FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
+#
+# #2304: this stage is the OS/security-patch layer only and carries no
+# interpreter contract, so it builds on python:3.15.2-slim-bookworm (digest
+# registered in quality/image-pins.json). The interpreter the app runs on is
+# NOT this stage's: the final stage grafts pybuild's registered CPython
+# 3.13.18 build so the shipped venv resolves.
+# Digest-pinned (#349). Moved 3.15.0 -> 3.15.2 in the #2304 container-gate
+# round: the gate's grype leg flags CVE-2026-115557 (Critical, fixed 3.15.2)
+# on the 3.15.0 CPython binary this base ships (the OS python stays in the
+# final image even though the app runs on the grafted 3.13.18 build, so the
+# binary is scanned). 3.15.2 is still Debian 12 (bookworm), so the grafted
+# binary runs against the glibc it was built against.
+FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
@@ -230,6 +262,20 @@ ENV PATH="/app/venv/bin:$PATH" \
     # test below at build time, and a runtime gap surfaces as degraded
     # `tz_database` health on /health, never as a silently idle scheduler.
     PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo
+# #2304: the runtime OS layer (runtime-apt above) is no longer the image the
+# venv was built in, so the builder's exact CPython installation is grafted
+# in: the venv's interpreter symlinks point at /usr/local/bin/python3.13,
+# which the 3.15 base does not ship. All three paths come from the same
+# digest-pinned pybuild image (the registered 3.13.18 build), and both bases
+# are Debian 12 (bookworm), so the grafted binary runs against the glibc it
+# was built against. No managed download exists anywhere in the shipped
+# image: every interpreter byte is fixed by a ledger row.
+COPY --from=pybuild /usr/local/bin/python3.13 /usr/local/bin/python3.13
+COPY --from=pybuild /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+COPY --from=pybuild /usr/local/lib/python3.13 /usr/local/lib/python3.13
+# ldconfig registers the grafted libpython3.13.so.1.0 the same way the base
+# image registers its own (ld.so.conf.d already covers /usr/local/lib).
+RUN ldconfig
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
@@ -257,6 +303,7 @@ RUN chown -R 65532:65532 /data
 RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
            /app/venv/bin/pip* \
            /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/lib/python3.15/site-packages/pip* \
            /usr/local/bin/pip*
 # Image smoke test (#290): the shipped runtime must resolve UTC and a real
 # region zone through the deliberate PYTHONTZPATH source, with DST-correct
