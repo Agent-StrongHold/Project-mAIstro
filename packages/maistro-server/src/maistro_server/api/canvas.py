@@ -70,7 +70,7 @@ from maistro.capabilities.governed_invocation import (
     InvocationDenied,
 )
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 
@@ -158,7 +158,7 @@ async def _emit(request: Request, event: str, payload: dict[str, Any]) -> None:
         await result
 
 
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
+def _owner_id(auth: Principal | None) -> str:
     return "dev" if auth is None else auth.user_id
 
 
