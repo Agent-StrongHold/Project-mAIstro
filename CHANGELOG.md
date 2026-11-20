@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
 - **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
   `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
   live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
