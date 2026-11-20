@@ -97,16 +97,16 @@
     {
       "id": "integrations-bridges",
       "subsystem": "External integrations",
-      "disposition": "CONNECT",
-      "rationale": "Home Assistant, CoinSwarm, ntfy and Turing bridges \u2014 the homelab product surface, none of it reached from a route or a trigger.",
-      "root": "a Conductor route or an ADR-086 trigger",
+      "disposition": "RETIRE",
+      "rationale": "#2320: Workspaces has no owner for hand-wired HA/CoinSwarm/ntfy/Turing bridges. MCP under Capabilities (#2273) is the shipped external-tool path; ADR-100526-be49 names the connector SDK as the out-of-tree successor. Do not invent these onto Conductor routes for v1.0. Physical deletion waits on #35 parity.",
       "modules": [
         "maistro.integrations",
         "maistro.integrations.coinswarm",
         "maistro.integrations.home_assistant",
         "maistro.integrations.ntfy",
         "maistro.integrations.turing"
-      ]
+      ],
+      "replaced_by": "hive MCP server registry (/v1/mcp via Capabilities #2273) for external tools; maistro.protocols.notification.NotificationClient (+ events.handlers.ntfy_action) for push; packages/maistro-turing for self-model; maistro.connectors / ADR-100526-be49 for out-of-tree connectors"
     },
     {
       "id": "memory-advanced-retrieval",
@@ -175,16 +175,6 @@
         "maistro.tools.approval.gate",
         "maistro.tools.approval.protocols",
         "maistro.tools.approval.types"
-      ]
-    },
-    {
-      "id": "tools-unwired",
-      "subsystem": "Tool execution",
-      "disposition": "CONNECT",
-      "rationale": "The media tool package is not reached from a tool registry. (ADR-049 shadow-git left this group with #2314: fan_in imports ShadowGitWorkspace, so the module is reachable from the waves package surface.)",
-      "root": "the tool registry (#57)",
-      "modules": [
-        "maistro.tools.media"
       ]
     },
     {
