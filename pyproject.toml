@@ -325,6 +325,10 @@ constraint-dependencies = [
     # 26.13.1 (both verified by unpacking the wheels and running the
     # bundled driver); browser-use declares patchright>=1.52.5 /
     # playwright>=1.52.0 uncapped, so the floors only move the lock.
+    # Follow-up (#2356, 2026-11-20): 24.22.1 itself gained seven HIGHs
+    # fixed in 24.22.3; no newer patchright wheel exists, so
+    # Dockerfile.research overlays node:24.22.3-bookworm-slim onto
+    # patchright/driver/node until upstream republishes.
     "patchright>=1.64.4",
     "playwright>=1.65.2",
     # Same shape again (container scan gate, 2026-11-16, #1896 CI-repair
