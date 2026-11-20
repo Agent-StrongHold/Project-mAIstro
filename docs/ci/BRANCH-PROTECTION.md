@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **33** |
+| `develop` | yes | **0** | yes | no | no | **20** |
+| `main` | yes | **1** | no | no | no | **34** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -95,7 +95,6 @@ is also required live on both branches; because it is produced by
 | `SAST / Semgrep` | adv | adv |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
-| `audit` | ○ | ○ |
 | `block` | ● | ● |
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
@@ -110,13 +109,12 @@ is also required live on both branches; because it is produced by
 | `hive-conductor-e2e` | adv | ● |
 | `hive-conductor-e2e-ui` | adv | ● |
 | `integration-scope` | ● | adv |
-| `issue-metadata-tests` | ○ | ○ |
 | `lint-and-type-check` | ● | ● |
 | `object storage (MinIO)` | adv | ● |
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
-| `repair` | ○ | ○ |
+| `sandbox-conformance` | ● | ● |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |

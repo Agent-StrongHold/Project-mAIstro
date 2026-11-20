@@ -38,7 +38,7 @@ from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
 from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
-from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder, get_default_quota_tracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
@@ -57,10 +57,12 @@ async def binding_scope_policy(
     It also carries the legacy-tool effect floor: legacy workflow tools are
     still compatibility providers, but their actual calls must not inherit the
     workflow admission approval. A binding marked destructive/mutating
-    therefore gets its own governed decision.
+    therefore gets its own governed decision, and so does an irreversible tool
+    effect whose tier was resolved from the host-owned ToolContractRegistry
+    and carried as an admission fact rather than chosen by model arguments.
     """
 
-    del request, context
+    del context
     if binding.capability.startswith("legacy_tool:") and binding.config.get("effect") in {
         "mutate",
         "destroy",
@@ -69,6 +71,12 @@ async def binding_scope_policy(
             Decision.REQUIRE_APPROVAL,
             reason="legacy workflow effect requires independent approval",
             rule="m1.legacy-tool-effect",
+        )
+    if isinstance(request, dict) and request.get("_tool_reversibility") == "irreversible":
+        return PolicyVerdict(
+            Decision.REQUIRE_APPROVAL,
+            reason="irreversible tool effect requires approval",
+            rule="tool.reversibility",
         )
     return PolicyVerdict(
         Decision.ALLOW,
@@ -255,8 +263,15 @@ def default_effect_context() -> CapabilityEffectContext:
     if _ephemeral_context is None:
         # This named composition root deliberately selects the narrow scope
         # policy; unnamed contexts stay read-only until an application
-        # supplies one.
-        _ephemeral_context = new_effect_context(policy_evaluator=binding_scope_policy)
+        # supplies one. The usage ledgers mirror the process defaults the
+        # same way: the usage log outright, and the quota ledger when a
+        # composition root registered one — so a caller that crosses this
+        # context (the conductor's governed fallback among them) never
+        # omits its call class from ledger evidence a process carries (#718).
+        _ephemeral_context = new_effect_context(
+            policy_evaluator=binding_scope_policy,
+            quota_tracker=get_default_quota_tracker(),
+        )
     return _ephemeral_context
 
 
