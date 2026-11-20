@@ -41,6 +41,17 @@ on:
       # of permanent absence; the job itself fails closed whenever a critical
       # file does change.
       - 'quality/image-pins.json'
+      # The nightly sibling workflow is the same non-Python integrity surface
+      # (#2372): a PR whose only change is .github/workflows/mutation-nightly.yml
+      # matched no path here, so the mutation gate's required-set row had no
+      # check-run on the candidate head and gates-ran stayed pending forever.
+      # Measured on #2372's head 34c0da9fa488 with the CI-exact
+      # check-gates-ran evaluator: 71/72 required checks present, "Mutation
+      # gate (changed critical lines)" absent -> PENDING. Listing the nightly
+      # file produces real zero-overlap evidence ("No mutation-critical file
+      # changed") instead of permanent absence; the job itself fails closed
+      # whenever a critical file does change.
+      - '.github/workflows/mutation-nightly.yml'
       - '.github/workflows/mutation.yml'
   workflow_dispatch:
 

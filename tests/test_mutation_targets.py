@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "mutation_targets.py"
@@ -243,6 +244,35 @@ class TestWorkflowDiffsAgainstItsOwnBase:
     def test_deletions_are_filtered_out_of_the_diff(self):
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         assert "--diff-filter=ACMR" in workflow
+
+
+class TestNightlyWorkflowEditsReachTheGate:
+    """#2372: a PR whose only change was ``.github/workflows/mutation-nightly.yml``
+    matched no ``pull_request.paths`` entry of this workflow, so the required
+    "Mutation gate (changed critical lines)" check-run never existed on the
+    candidate head and ``gates-ran`` published "Required execution evidence is
+    still arriving" forever. CI-exact replay of the #2372 head 34c0da9fa488:
+    ``check-gates-ran.py`` -> PENDING, 71/72 required checks present, the
+    mutation gate absent; appending a synthetic successful run flips the same
+    replay to "ok: all 72 required check(s) ran on this head". The #2120
+    repair added ``quality/image-pins.json`` for this same class; the nightly
+    sibling workflow file was the one path still missing.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+    NIGHTLY: ClassVar[str] = ".github/workflows/mutation-nightly.yml"
+
+    def test_a_nightly_only_pr_triggers_the_mutation_gate(self):
+        """The property, not the example: the trigger's ``paths:`` filter must
+        name the nightly workflow file itself, or the next PR that edits it
+        re-introduces the permanent pending. Parsed, not substring-matched:
+        a comment mentioning the path is not a trigger."""
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        trigger = doc.get(True, doc.get("on"))
+        assert trigger is not None, "mutation.yml lost its pull_request trigger"
+        paths = trigger.get("pull_request", {}).get("paths")
+        assert isinstance(paths, list), "pull_request.paths filter is missing"
+        assert self.NIGHTLY in paths
 
 
 # --- the inverse mapping: changed tests -> the sources they cover ------------
