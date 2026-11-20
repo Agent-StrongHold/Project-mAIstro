@@ -167,7 +167,8 @@ _IMMUTABLE_VENDORED_TREES = frozenset(
 #: declaration stays a segment — `node_modules` — that authored code never
 #: occupies, because the next `npm ci` deletes whatever a person puts there.
 #: What lands in these trees is governed where dependencies are governed: the
-#: lockfiles, the `npm audit --audit-level=high` CI step, and Dependabot.
+#: lockfiles, the js-supply-chain job's npm audit + GuardDog + policy gate
+#: (#344), and Dependabot.
 _THIRD_PARTY_INSTALL_DIRS = frozenset({"node_modules"})
 
 
