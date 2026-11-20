@@ -12,9 +12,11 @@ from typing import Any
 
 from maistro.events.bus import EventBus
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore, SqliteEventStore
+from maistro.events.handlers import BUILTIN_HANDLERS
 from maistro.events.pg_envelope import PgEventStore
 from maistro.events.publisher import CANONICAL_EVENT_METADATA, CanonicalEventPublisher
-from maistro.events.wiring import wire_canonical_events
+from maistro.events.recipes import BUILTIN_RECIPE_BUILDERS
+from maistro.events.wiring import wire_canonical_events, wire_legacy_trigger_surface
 
 
 class _FakeTransaction:
@@ -123,3 +125,23 @@ async def test_the_wired_publisher_persists_before_notifying_legacy_consumers() 
     [projected] = legacy_bus.get_history()
     assert projected.event_id == persisted.event_id
     assert projected.timestamp == persisted.timestamp
+
+
+def test_wire_legacy_trigger_surface_subscribes_handlers_and_disabled_recipes() -> None:
+    """#2313: process wiring registers builtin actions and the recipe catalog.
+
+    Recipes stay disabled so localhost defaults cannot fire (#836 still holds:
+    disabled triggers never match, so they cannot manufacture success).
+    """
+    bus = EventBus()
+
+    wire_legacy_trigger_surface(bus)
+
+    for action_type in BUILTIN_HANDLERS:
+        assert action_type in bus._handlers
+    triggers = bus.list_triggers()
+    assert len(triggers) == len(BUILTIN_RECIPE_BUILDERS)
+    assert all(not row["enabled"] for row in triggers)
+    assert {row["name"] for row in triggers} == {
+        builder().name for builder in BUILTIN_RECIPE_BUILDERS
+    }

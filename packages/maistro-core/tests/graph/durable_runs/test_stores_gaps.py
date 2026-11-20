@@ -235,3 +235,219 @@ async def test_sqlite_status_listing_pages_past_the_cursor(tmp_path) -> None:  #
 
     last = (cursor_time(base + timedelta(minutes=2)), "lite-2")
     assert await store.list_by_status(RunStatus.RUNNING, limit=5, after=last) == []
+
+
+def _externally_parked(
+    run_id: str,
+    *,
+    status: RunStatus = RunStatus.WAITING,
+    pauses: dict[str, object] | None = None,
+    frontier: str = "work",
+    with_node_run: bool = True,
+):
+    """A parked Run whose frontier pause is the remote-delegation kind."""
+    node_runs = ()
+    if with_node_run:
+        node_run = NodeRun(run_id=run_id, node_id=frontier, ordinal=1)
+        if status is RunStatus.PAUSED:
+            node_run = transition_node_run(node_run, RunStatus.QUEUED)
+            node_run = transition_node_run(node_run, RunStatus.RUNNING)
+            node_run = transition_node_run(node_run, RunStatus.PAUSED)
+        else:
+            node_run = node_run.model_copy(update={"status": RunStatus.WAITING})
+        node_runs = (node_run,)
+    return durable_record(
+        {"id": "d1", "nodes": [{"id": frontier, "kind": "test.noop"}], "edges": []},
+        run_id=run_id,
+        status=status,
+        active_node_id=frontier,
+        metadata={"initial_inputs": {}, "hitl_answers": {}, "pauses": pauses or {}},
+        node_runs=node_runs,
+    )
+
+
+_DELEGATION_PAUSE: dict[str, object] = {
+    "work": {
+        "kind": "wait",
+        "metadata": {
+            "paused_reason": "awaiting_remote_delegation",
+            "peer_name": "hub",
+            "task_id": "t-1",
+        },
+    }
+}
+
+
+async def test_in_memory_submit_external_result_delivers_and_replays_identically() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+
+    first = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert first.run.status is RunStatus.QUEUED
+
+    replayed = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert replayed.version == first.version
+
+
+async def test_in_memory_submit_external_result_missing_run_raises_keyerror() -> None:
+    store = InMemoryDurableRunStore()
+    with pytest.raises(KeyError, match="no such run"):
+        await store.submit_external_result("missing", "work", {"status": "completed"})
+
+
+async def test_in_memory_submit_external_result_conflicting_replay_raises_valueerror() -> None:
+    """A different payload for a settled receipt is a protocol error, not an update."""
+    store = InMemoryDurableRunStore()
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+    await store.submit_external_result("r1", "work", {"status": "completed", "task_id": "t-1"})
+
+    with pytest.raises(ValueError, match="different result"):
+        await store.submit_external_result("r1", "work", {"status": "failed", "task_id": "t-1"})
+
+
+async def test_in_memory_submit_external_result_rejects_invalid_envelopes() -> None:
+    store = InMemoryDurableRunStore()
+
+    await store.create(_externally_parked("still-running", status=RunStatus.RUNNING))
+    with pytest.raises(ValueError, match="not parked"):
+        await store.submit_external_result("still-running", "work", {"status": "completed"})
+
+    await store.create(_externally_parked("foreign-frontier", pauses=_DELEGATION_PAUSE))
+    with pytest.raises(ValueError, match="waiting on frontier"):
+        await store.submit_external_result("foreign-frontier", "elsewhere", {"status": "x"})
+
+    await store.create(_externally_parked("pauseless", pauses={}))
+    with pytest.raises(ValueError, match="no durable pause"):
+        await store.submit_external_result("pauseless", "work", {"status": "x"})
+
+    await store.create(
+        _externally_parked(
+            "malformed-metadata",
+            pauses={"work": {"kind": "wait", "metadata": "not-a-mapping"}},
+        )
+    )
+    with pytest.raises(ValueError, match="malformed pause metadata"):
+        await store.submit_external_result("malformed-metadata", "work", {"status": "x"})
+
+    await store.create(
+        _externally_parked(
+            "human-paused",
+            pauses={
+                "work": {
+                    "kind": "wait",
+                    "metadata": {"paused_reason": "awaiting_human_answer"},
+                }
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="not externally woken"):
+        await store.submit_external_result("human-paused", "work", {"status": "x"})
+
+    await store.create(_externally_parked("no-node-run", pauses=_DELEGATION_PAUSE))
+    store._rows["no-node-run"] = durable_record(
+        {"id": "d1", "nodes": [{"id": "work", "kind": "test.noop"}], "edges": []},
+        run_id="no-node-run",
+        status=RunStatus.WAITING,
+        active_node_id="work",
+        metadata={"initial_inputs": {}, "hitl_answers": {}, "pauses": _DELEGATION_PAUSE},
+        node_runs=(),
+    )
+    with pytest.raises(ValueError, match="no parked NodeRun"):
+        await store.submit_external_result("no-node-run", "work", {"status": "x"})
+
+
+async def test_sqlite_submit_external_result_delivers_and_replays_identically(tmp_path) -> None:
+    store = SqliteDurableRunStore(tmp_path / "durable.db")
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+
+    first = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert first.run.status is RunStatus.QUEUED
+
+    replayed = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert replayed.version == first.version
+
+    with pytest.raises(KeyError, match="no such run"):
+        await store.submit_external_result("missing", "work", {"status": "completed"})
+
+
+async def test_list_hitl_due_stops_at_the_limit_after_authorization_filtering() -> None:
+    store = InMemoryDurableRunStore()
+    deadline = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    for index in range(3):
+        await store.create(
+            _externally_parked(
+                f"due-{index}",
+                status=RunStatus.PAUSED,
+                pauses={
+                    "work": {
+                        "kind": "hitl",
+                        "metadata": {"question": "Ship it?"},
+                        "resume_at": deadline,
+                    }
+                },
+            )
+        )
+    await store.create(
+        _record_for("foreign", status=RunStatus.PAUSED, active_node_id="work", project_id="other")
+    )
+
+    due = await store.list_hitl_due(
+        authorization=hitl_authorization(),
+        now=datetime.now(UTC),
+        limit=2,
+    )
+    assert len(due) == 2
+
+
+async def test_earliest_wakeup_ignores_malformed_sibling_pauses() -> None:
+    """Projecting the next timer after one pause is answered must survive a
+    frontier holding corrupt sibling entries."""
+    from maistro.graph.durable_runs.stores import _earliest_wakeup
+
+    now = datetime.now(UTC)
+
+    def _frontier_with(pause: object) -> dict[str, object]:
+        return {"pauses": {"work": pause}}
+
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": now.isoformat()}),
+            ("work",),
+        )
+        == now
+    )
+    assert _earliest_wakeup(_frontier_with("not-a-mapping"), ("work",)) is None
+    assert _earliest_wakeup(_frontier_with({"kind": "wait"}), ("work",)) is None
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": 123}), ("work",)
+        )
+        is None
+    )
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": "definitely-not-a-date"}),
+            ("work",),
+        )
+        is None
+    )
+    assert (
+        _earliest_wakeup(
+            _frontier_with(
+                {"kind": "wait", "metadata": {}, "resume_at": datetime(2026, 1, 1).isoformat()}
+            ),
+            ("work",),
+        )
+        is None
+    )
+
+    assert _earliest_wakeup({"pauses": ["not-a-mapping"]}, ("work",)) is None
+    assert _earliest_wakeup({}, ("work",)) is None

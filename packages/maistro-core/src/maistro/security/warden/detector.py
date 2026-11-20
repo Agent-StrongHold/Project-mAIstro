@@ -181,17 +181,25 @@ def prior_message_context(messages: Sequence[Mapping[str, object]]) -> list[Ward
     return context_from_messages(messages[:latest_user])
 
 
+def _coerce_provenance(value: object) -> Literal["trusted", "untrusted"]:
+    """Validate one untyped mapping value into the provenance literal union."""
+    if value == "trusted":
+        return "trusted"
+    if value == "untrusted":
+        return "untrusted"
+    raise ValueError("Warden context provenance must be 'trusted' or 'untrusted'")
+
+
 def _coerce_context_item(item: WardenContext | str | Mapping[str, object]) -> WardenContext:
     if isinstance(item, WardenContext):
         return item
     if isinstance(item, str):
         return WardenContext(item)
     role = str(item.get("role", ""))
-    provenance = item.get("provenance")
-    if provenance is None:
-        provenance = "trusted" if role in {"system", "developer"} else "untrusted"
-    if provenance not in {"trusted", "untrusted"}:
-        raise ValueError("Warden context provenance must be 'trusted' or 'untrusted'")
+    raw_provenance = item.get("provenance")
+    if raw_provenance is None:
+        raw_provenance = "trusted" if role in {"system", "developer"} else "untrusted"
+    provenance = _coerce_provenance(raw_provenance)
     boundary = item.get("boundary")
     if boundary is None:
         boundary = f"conversation:{role or 'unknown'}"

@@ -11,10 +11,15 @@ from maistro.classifier.complexity import (
     infer_priority,
 )
 from maistro.classifier.keyword import score_keywords
+from maistro.classifier.logging import ClassifierLogger
 from maistro.classifier.multi_intent import detect_multi_intent
 from maistro.types.intent import TIER_ORDER, Intent
 
 LLM_FALLBACK_THRESHOLD = 3.0
+
+# Agent selection is the router's job; classify records this placeholder until
+# a later observability join can fill the chosen Provider/agent (ADR-089).
+_UNROUTED_AGENT = "unrouted"
 
 
 def is_ambiguous(scores: dict[str, float]) -> bool:
@@ -41,15 +46,21 @@ class ClassifierEngine:
     1. Keyword scoring (instant)
     2. LLM fallback if score < threshold (async, costs tokens)
     3. Complexity and priority estimation
+
+    Every decision is recorded on ``decision_logger`` (ADR-089 auditability).
     """
 
     def __init__(
         self,
         llm_client: LLMClient | None = None,
         classifier_model: str = "auto",
+        decision_logger: ClassifierLogger | None = None,
     ) -> None:
         self._llm = llm_client
         self._model = classifier_model
+        self.decision_logger = (
+            decision_logger if decision_logger is not None else ClassifierLogger()
+        )
 
     async def classify(
         self,
@@ -105,7 +116,7 @@ class ClassifierEngine:
         if task_type == "automation":
             min_tier = automation_min_tier(user_text, min_tier)
 
-        return Intent(
+        intent = Intent(
             task_type=task_type,
             complexity=complexity,
             tier=priority,
@@ -115,6 +126,17 @@ class ClassifierEngine:
             keyword_score=best_score,
             user_text=user_text,
         )
+        self.decision_logger.log_decision(
+            input_text=user_text,
+            intent_hint=None,
+            classified_intent=task_type,
+            confidence=best_score,
+            complexity=complexity,
+            selected_agent=_UNROUTED_AGENT,
+            reason=classified_by,
+            metadata={"tier": priority, "min_tier": min_tier},
+        )
+        return intent
 
     def detect_multi_intent(
         self,
