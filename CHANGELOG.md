@@ -23,6 +23,14 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
+  `maistro.cli._container*` as a parked operator-lifecycle leaf under
+  #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
+  Reachability disposition rationale names the future ADR-093 / operator
+  root. Collaboration CONNECT park (#2323) rationale updated to name A2UI.
+
 ### Removed
 
 - **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
