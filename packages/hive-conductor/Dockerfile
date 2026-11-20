@@ -8,8 +8,8 @@
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
-# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
+# Digest-pinned (#349); node:26-alpine resolved to this index digest 2026-10-25.
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
 RUN npm ci
@@ -59,7 +59,7 @@ RUN apk add --no-cache git && \
 # ---- builder: self-contained venv (has shell/pip) ----
 # Digest-pinned (#349); shared with the runtime stage below so both resolve to
 # the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -127,6 +127,21 @@ RUN uv export --locked --package hive-conductor \
       ./packages/maistro-design ./packages/maistro-evolve \
  && uv pip install --python /app/venv/bin/python --no-cache "setuptools==84.2.1" \
  && uv pip check --python /app/venv/bin/python
+# Deliberate timezone database (#290). The scheduler resolves every schedule
+# zone through `zoneinfo.ZoneInfo`, INCLUDING `ZoneInfo("UTC")` — with no tz
+# database CPython raises `ZoneInfoNotFoundError` for even the UTC key, and
+# the Conductor catches scheduler startup failure and keeps serving, so a
+# zone-less image looks healthy while scheduling is silently down. The Debian
+# base happens to ship a transitive /usr/share/zoneinfo today, but nothing in
+# this file asked for it, so a base-image refresh could drop it unnoticed.
+# Pin the audited `tzdata` wheel inside the self-contained venv instead: it
+# travels with the one artifact the runtime stage copies, and the runtime
+# stage's PYTHONTZPATH below makes this wheel the ONLY source Python consults.
+# (Installed by exact pin, not from the lock export: tzdata is deliberately
+# not a runtime dependency of any workspace member, so `uv export` cannot
+# carry it — the ARG below is the auditable pin.)
+ARG TZDATA_VERSION=2026.3
+RUN uv pip install --python /app/venv/bin/python --no-cache "tzdata==${TZDATA_VERSION}"
 # Tracing is opt-in at build time, and this is the door (#668).
 #
 # `backend/adapters/telemetry_langfuse.py` speaks OTLP using the OpenTelemetry
@@ -169,7 +184,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
-RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
     if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
     fi
@@ -188,7 +203,7 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
@@ -209,7 +224,12 @@ ENV PATH="/app/venv/bin:$PATH" \
     # "Persistent state".
     CONDUCTOR_DATA_DIR=/data/conductor \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Timezone source contract (#290): the pinned `tzdata` wheel inside the
+    # venv is the single zone database. Removing the wheel fails the smoke
+    # test below at build time, and a runtime gap surfaces as degraded
+    # `tz_database` health on /health, never as a silently idle scheduler.
+    PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
@@ -238,6 +258,28 @@ RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
            /app/venv/bin/pip* \
            /usr/local/lib/python3.13/site-packages/pip* \
            /usr/local/bin/pip*
+# Image smoke test (#290): the shipped runtime must resolve UTC and a real
+# region zone through the deliberate PYTHONTZPATH source, with DST-correct
+# offsets. A build that lost the tzdata wheel (or broke PYTHONTZPATH) fails
+# here instead of shipping a scheduler that silently never fires. Runs as
+# root only because it precedes the USER directive below.
+RUN python -c "import os, zoneinfo; assert os.path.isdir(os.environ['PYTHONTZPATH']), os.environ['PYTHONTZPATH']; utc = zoneinfo.ZoneInfo('UTC'); ny = zoneinfo.ZoneInfo('America/New_York'); berlin = zoneinfo.ZoneInfo('Europe/Berlin'); from datetime import datetime, timezone as tz; winter = datetime(2026, 1, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); summer = datetime(2026, 7, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); assert (winter.total_seconds(), summer.total_seconds()) == (3600.0, 7200.0), (winter, summer); print('tz smoke ok: UTC/America/New_York/Europe/Berlin via', os.environ['PYTHONTZPATH'])"
+# Exercise the production cron dialect against the image's actual database,
+# not the test runner's wheel or today's season. ADR-082126-f69c requires a
+# spring gap to be skipped and a repeated fall wall time to fire only once.
+RUN python - <<'PY'
+from datetime import UTC, datetime
+from maistro.scheduling.cron import parse_cron
+
+cron = parse_cron('30 2 * * *')
+spring = cron.next_fire(datetime(2026, 3, 28, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert spring.astimezone(UTC) == datetime(2026, 3, 30, 0, 30, tzinfo=UTC), spring
+fall = cron.next_fire(datetime(2026, 10, 24, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert fall.astimezone(UTC) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC), fall
+following = cron.next_fire(fall, timezone='Europe/Berlin')
+assert following.astimezone(UTC) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC), following
+print('tz cron smoke ok: spring gap skipped; fall fold fires once')
+PY
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.
