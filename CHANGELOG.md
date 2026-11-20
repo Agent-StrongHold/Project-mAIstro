@@ -62,6 +62,11 @@ or placeholder-only section.
   fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
   still holds the shared `AdmittedModelCalls`-backed client for materialization.
 
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
   PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
