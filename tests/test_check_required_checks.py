@@ -329,6 +329,33 @@ class TestAgainstTheRealWorkflows:
                 offenders.append(path.name)
         assert offenders == [], f"unfiltered PR workflows without per-PR cancellation: {offenders}"
 
+    def test_no_pr_workflow_paths_filters_its_required_check_out_of_reporting(self, gate) -> None:
+        """A ``paths:`` filter on a workflow that emits a required check detaches
+        the required context from every PR outside the filter: GitHub creates no
+        check run at all, branch protection waits forever for an ``Expected``
+        result, and the gates-ran publisher stays pending — the exact state that
+        blocked the merge queue for docs/tools-only PRs while mutation.yml
+        filtered its trigger to ``packages/**/*.py`` ("commit status not
+        successful" at head 9ef8d6604). "A check that cannot report on a branch
+        must not be required there" (docs/ci/REQUIRED-CHECKS.md). Base-coupled
+        workflows are the reviewed exception and keep their ``branches:``
+        filters; only path filters make a check unreportable on a whole class
+        of PRs, so only those are pinned out here.
+        """
+        offenders = []
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+            doc = yaml.safe_load(path.read_text()) or {}
+            pull_request = gate._pull_request_trigger(doc)
+            if pull_request is None:
+                continue
+            filters = sorted(key for key in pull_request if str(key).startswith("paths"))
+            if filters:
+                offenders.append(f"{path.name}: {filters}")
+        assert offenders == [], (
+            "PR workflows whose required checks cannot report outside a path "
+            f"filter (widen the trigger; the job must self-scope instead): {offenders}"
+        )
+
 
 class TestTriggerSpellings:
     def test_the_sequence_form_is_a_pr_trigger(self, gate) -> None:
