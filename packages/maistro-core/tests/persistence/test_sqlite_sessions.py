@@ -78,6 +78,34 @@ async def test_get_history_empty_session_returns_empty_list(
 
 
 @pytest.mark.asyncio
+async def test_transcript_returns_full_retained_body(
+    store: SqliteSessionStore,
+) -> None:
+    await store.append_messages(
+        "s1",
+        [
+            {"role": "user", "content": "target"},
+            *({"role": "assistant", "content": f"filler {i}"} for i in range(20)),
+        ],
+    )
+
+    transcript = await store.transcript("s1")
+
+    assert [m["content"] for m in transcript] == [
+        "target",
+        *(f"filler {i}" for i in range(20)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcript_prunes_expired_messages_via_ttl(
+    store: SqliteSessionStore,
+) -> None:
+    await store.append_messages("s1", [{"role": "user", "content": "old"}])
+    assert await store.transcript("s1", ttl_seconds=-1) == []
+
+
+@pytest.mark.asyncio
 async def test_delete_session_removes_all_messages(store: SqliteSessionStore) -> None:
     await store.append_messages("s1", [{"role": "user", "content": "hi"}])
     await store.delete_session("s1")

@@ -232,10 +232,12 @@ async function stubPageEnv(scope: BrowserContext): Promise<void> {
     const w = window as unknown as {
       __rsiStarts: Array<{ url: string; t: number }>;
       __rsiFails: Array<{ url: string; name: string }>;
+      __rsiSettles: Array<{ url: string; t: number }>;
       __rsiSettleHooks: Array<(url: string) => void>;
     };
     w.__rsiStarts = [];
     w.__rsiFails = [];
+    w.__rsiSettles = [];
     w.__rsiSettleHooks = [];
     const wrapped = window.fetch.bind(window);
     const settleRsi = (url: string, err: unknown): void => {
@@ -243,6 +245,15 @@ async function stubPageEnv(scope: BrowserContext): Promise<void> {
       if (err !== null) {
         w.__rsiFails.push({ url, name: (err as { name?: string })?.name ?? "unknown" });
       }
+      // The settle instant in PAGE time: under the fake clock this is the
+      // frozen virtual instant the rejection landed at — exactly where the
+      // app's `await fetch` continuation (and, a few microtasks later, the
+      // loop's finally arming the next cadence timer) is about to run. The
+      // clock test reads the latest of these as the rearm ANCHOR instead of
+      // assuming the anchor sits at a chunk boundary: the abort's real-time
+      // IPC latency decides where the frozen clock is, and assuming a
+      // boundary is what made this test flake under CI load.
+      w.__rsiSettles.push({ url, t: Date.now() });
       // Settle hooks run IN the page, in the microtask chain of the fetch's
       // own settlement and strictly BEFORE the app's `await fetch`
       // continuation (the loop's finally arms the next cadence timer only
@@ -467,6 +478,12 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
   clockContext.on("page", (p) => p.on("pageerror", (err) => errors.push(String(err))));
   await stubPageEnv(clockContext);
   await stubV1Routes(clockContext);
+  // The patch-feed loop is not under test here, and with a selected run its
+  // reviews/rlphd cadence arms timers whose fires land inside this test's
+  // clock chunks. Zero runs keeps that loop unmounted (`enabled:
+  // selectedRun !== null`, and nothing auto-selects), so the page's only
+  // repeating timers are the dashboard ladder's — the thing being measured.
+  ctl.runs = [];
   const cpage = await clockContext.newPage();
   await cpage.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
   // Pause one virtual minute PAST the install instant: between the two calls
@@ -506,62 +523,108 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
           .filter((r) => r.url.includes("/rsi/status"))
           .map((r) => r.t),
       );
+    // Every /v1/rsi/ settlement (fulfil or reject) with its PAGE-clock
+    // instant — the rearm anchor journal.
+    const settles = async (): Promise<number[]> =>
+      cpage.evaluate(() =>
+        (window as unknown as { __rsiSettles: Array<{ url: string; t: number }> }).__rsiSettles.map(
+          (r) => r.t,
+        ),
+      );
     // Real-time settle (the clock is paused: no timer can fire, only
     // in-flight responses land), so the ladder flip starts from quiet state.
     await new Promise((resolve) => setTimeout(resolve, 400));
     const bootStamps = await starts();
     const n0 = bootStamps.length;
+    const settleBaseline = (await settles()).length;
 
     // ── the outage begins ──
     setModes("abort");
-    // Fire the pending steady timer (due within one base interval of the
-    // last healthy poll): it fails and increments failures to 1. The chunk
-    // deliberately overshoots the fire — Playwright anchors timer deadlines
-    // at the CHUNK END, and the failure settles (in real time, clock frozen
-    // at that same chunk end) — so the first backoff deadline is exactly
-    // flipEnd + delay, which is exactly what the loop's rearm computes:
-    // interval * 2^failures * 0.75 (jitter pinned).
-    const flipStart = await cpage.evaluate(() => Date.now());
-    await cpage.clock.runFor(10_000);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Playwright 1.64's clock fires timers AT their exact deadlines: a
+    // runFor chunk jumps now to each due deadline, fires it, and continues
+    // to the chunk end. The pending steady timer's deadline is therefore
+    // somewhere inside the first advance and unknown to this test. Advance
+    // in small chunks (250ms can never reach the minimum 7.5s backoff, so
+    // exactly one poll lands per chunk) and let the page catch up after
+    // each: a fired tick's four aborted fetches settle IN REAL TIME, and
+    // the loop's finally arms the backoff timer at whatever frozen instant
+    // the last settle lands at. That anchor is decided by abort IPC
+    // latency — a real-time race this test cannot schedule — so it is
+    // MEASURED from the settle journal instead of assumed to sit at a
+    // chunk boundary. Assuming the boundary is exactly what made this test
+    // flake under CI load (observed overshoots of +15ms and +1000ms on
+    // otherwise-identical runs, here and on develop tip).
+    const settleTicks = async (ticks: number): Promise<void> => {
+      await expect
+        .poll(async () => (await settles()).length, { intervals: [25], timeout: 15_000 })
+        .toBeGreaterThanOrEqual(settleBaseline + 4 * ticks);
+    };
+    // One tick = four dashboard fetches (status, runs, models, profiles —
+    // loadDashboard's Promise.allSettled); the arming follows the last of
+    // them, and the evaluate round trip that reads the journal drains the
+    // page's microtasks, so the timer is armed before the caller advances.
+    const rearmAnchor = async (): Promise<number> => Math.max(...(await settles()), 0);
+    const advanceToDeadline = async (anchor: number, delay: number): Promise<void> => {
+      const now = await cpage.evaluate(() => Date.now());
+      await cpage.clock.runFor(Math.max(anchor + delay - now, 0));
+    };
+    const advanceUntilPollCount = async (target: number): Promise<void> => {
+      for (let i = 0; i < 60 && (await starts()).length < target; i += 1) {
+        await cpage.clock.runFor(250);
+        await settleTicks((await starts()).length - n0);
+      }
+    };
+
+    // Fire the pending steady timer: it fails and increments failures to 1.
+    await advanceUntilPollCount(n0 + 1);
     let stamps = await starts();
     expect(stamps.length, "the first outage poll fired").toBe(n0 + 1);
-    const flipEnd = flipStart + 10_000;
-    await cpage.clock.runFor(7_500);
+    await settleTicks(1);
+    const anchor0 = await rearmAnchor();
+    // First backoff step = interval·2¹ at pinned jitter (5000·2·0.75),
+    // armed AT the measured settle anchor. Advance from the anchor to
+    // exactly the deadline; the 5ms nudges below are a safety net that in
+    // the deterministic path never fires.
+    await advanceToDeadline(anchor0, 7_500);
     await expect
       .poll(async () => {
         await cpage.clock.runFor(5);
         return (await starts()).length;
       }, { intervals: [25], timeout: 15_000 })
       .toBe(n0 + 2);
+    await settleTicks(2);
     stamps = await starts();
     expect(stamps.length, "exactly one poll in the first backoff step").toBe(n0 + 2);
     expect(
-      Math.abs(stamps[n0 + 1] - flipEnd - 7_500),
-      "first backoff step = interval·2¹ at pinned jitter, from the rearm instant",
+      Math.abs(stamps[n0 + 1] - anchor0 - 7_500),
+      "first backoff step = interval·2¹ at pinned jitter, armed at the settle anchor",
     ).toBeLessThanOrEqual(10);
 
-    // Each later step: advance the clock by exactly the expected delay. The
-    // timer fires AT its deadline (stamp = deadline); its failure rearms
-    // during the real settle with the clock frozen at the same virtual
-    // instant, so the next deadline lands exactly one delay later. A tiny
-    // slop of ≤10ms absorbs the 5ms safety nudge between chunks.
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-    await settle();
+    // Each later step: advance from the freshly measured anchor to exactly
+    // its computed deadline (interval·2^failures·0.75, capped). The loop
+    // starts FROM the first backoff step's own arming anchor — that tick
+    // already fired above — and the timer fires AT each computed deadline;
+    // its failure rearms at the frozen instant the settle lands at, which
+    // the next anchor read measures — so every gap below is the app's
+    // actual rearm delay, immune to where the abort IPC happened to land.
+    // A tiny slop of ≤10ms absorbs the 5ms safety nudge.
     const gaps: number[] = [];
+    let anchor = await rearmAnchor();
+    let fired = n0 + 2;
     for (const delay of [15_000, 30_000, 45_000, 45_000, 45_000]) {
-      const before = (await starts()).length;
-      await cpage.clock.runFor(delay);
+      await advanceToDeadline(anchor, delay);
       await expect
         .poll(async () => {
           await cpage.clock.runFor(5);
           return (await starts()).length;
         }, { intervals: [25], timeout: 15_000 })
-        .toBe(before + 1);
+        .toBe(fired + 1);
+      fired += 1;
+      await settleTicks(fired - n0);
       const arr = await starts();
-      expect(arr.length, "exactly one backoff-driven poll per step").toBe(before + 1);
-      gaps.push(arr[before] - arr[before - 1]);
-      await settle();
+      expect(arr.length, "exactly one backoff-driven poll per step").toBe(fired);
+      gaps.push(arr[fired - 1] - anchor);
+      anchor = await rearmAnchor();
     }
     // Exponential (interval * 2^failures, 75% pinned jitter) and then BOUNDED:
     // the 60s cap floors the cadence at 45s instead of growing forever. The
@@ -579,7 +642,7 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
     // fired ~60.
     const beforeBurn = (await starts()).length;
     await cpage.clock.runFor(300_000);
-    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 150));
     const burned = (await starts()).length - beforeBurn;
     expect(burned, "a five-minute outage at the cap costs ~7 polls, not ~60").toBeLessThanOrEqual(8);
     expect(errors, "no unhandled rejection across the whole outage").toEqual([]);

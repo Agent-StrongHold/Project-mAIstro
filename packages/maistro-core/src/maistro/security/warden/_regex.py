@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 try:  # pragma: no cover - exercised by whichever branch the environment has
     import re2 as _re2  # type: ignore[import-untyped, import-not-found, unused-ignore]
@@ -94,7 +94,10 @@ def compile_pattern(pattern: str, flags: int = 0) -> PatternLike:
     contract; `test_warden_regex_equivalence.py` asserts that rather than
     trusting it.
     """
-    if _RE2_AVAILABLE and not (flags & ~_TRANSLATABLE_FLAGS):
+    # `_RE2_AVAILABLE` stays the semantic switch (tests force the fallback by
+    # clearing it); the `_re2 is not None` conjunct only narrows the optional
+    # import for the attribute accesses inside this branch.
+    if _RE2_AVAILABLE and _re2 is not None and not (flags & ~_TRANSLATABLE_FLAGS):
         try:
             options = _re2.Options()
             options.case_sensitive = not (flags & re.IGNORECASE)
@@ -105,7 +108,11 @@ def compile_pattern(pattern: str, flags: int = 0) -> PatternLike:
             # difference. Fall back rather than dropping the pattern — a
             # pattern that fails to compile must not silently stop matching.
             pass
-    return re.compile(pattern, flags)
+    # `cast`, not an annotation: pyright cannot bind `re.Pattern.search`'s
+    # self parameter to the protocol (Pattern[str] is not assignable to the
+    # protocol's own self type), though the runtime object satisfies it and
+    # mypy accepts the plain annotation.
+    return cast(PatternLike, re.compile(pattern, flags))
 
 
 def compile_all(patterns: list[str], flags: int = 0) -> list[PatternLike]:
