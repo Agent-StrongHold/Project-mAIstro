@@ -409,3 +409,263 @@ async def test_ordinary_human_pause_still_answers_without_approval_fields(
 
     response = admin_client.post("/v1/hitl/hitl-ordinary/ask/answer", json={"answer": "yes"})
     assert response.status_code == 200, response.text
+
+
+async def test_is_durable_approval_pause_false_without_metadata() -> None:
+    from routes.hitl import _is_durable_approval_pause
+
+    record = _approval_paused_record(
+        "r-meta",
+        workspace_id="ws",
+        project_id="proj",
+        request_id="apr",
+    )
+    # Drop pause metadata so the helper returns False via the None branch.
+    pauses = dict(record.graph_state.metadata["pauses"])
+    pauses["effect"] = {"kind": "hitl"}
+    record = DurableRunRecord(
+        run=record.run,
+        graph_state=record.graph_state.model_copy(
+            update={"metadata": {**record.graph_state.metadata, "pauses": pauses}}
+        ),
+        node_runs=record.node_runs,
+        version=record.version,
+    )
+    assert _is_durable_approval_pause(record, "effect") is False
+    assert _is_durable_approval_pause(record, "missing-node") is False
+
+
+async def test_missing_expected_approval_request_id_is_422(approval_client) -> None:
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(graph_store, approvals, run_id="hitl-apr-no-expected")
+
+    response = client.post(
+        "/v1/hitl/hitl-apr-no-expected/effect/answer",
+        json={"approved": True},
+    )
+    assert response.status_code == 422
+    assert "expected_approval_request_id" in response.json()["detail"]
+
+
+async def test_approval_store_unavailable_is_503(
+    approval_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from services.engine import get_engine
+
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(graph_store, approvals, run_id="hitl-apr-no-store")
+
+    engine = get_engine()
+    monkeypatch.setattr(
+        engine,
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(capability_effects=SimpleNamespace())),
+    )
+    response = client.post(
+        "/v1/hitl/hitl-apr-no-store/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-55-1"},
+    )
+    assert response.status_code == 503
+    assert "ApprovalStore" in response.json()["detail"]
+
+
+async def test_non_approver_authority_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-admin without approvals.resolve refuses at the durable-approval gate."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from routes.hitl import _require_approver_authority
+
+    principal = SimpleNamespace(
+        is_admin=False,
+        actor_id=lambda: "user-plain",
+    )
+    monkeypatch.setattr("routes.hitl.require_principal", lambda _req: principal)
+    monkeypatch.setattr("routes.hitl.principal_has_permission", lambda _p, _perm: False)
+    audited: list[str] = []
+
+    def _audit(event, *_a, **_k):
+        audited.append(event)
+
+    monkeypatch.setattr("routes.hitl.log_audit", _audit)
+    monkeypatch.setattr("routes.hitl._session_principal", lambda _req: "user-plain")
+
+    with pytest.raises(HTTPException) as excinfo:
+        _require_approver_authority(SimpleNamespace())
+    assert excinfo.value.status_code == 403
+    assert "not authorized" in excinfo.value.detail
+    assert audited == ["hitl_approval_resolve_refused"]
+
+
+async def test_approval_mismatch_is_409(approval_client) -> None:
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-mismatch", request_id="apr-mismatch"
+    )
+    loaded = await approvals.get("apr-mismatch")
+    assert loaded is not None
+    approvals._items["apr-mismatch"] = loaded.model_copy(update={"effect_key": "write:other"})
+
+    response = client.post(
+        "/v1/hitl/hitl-apr-mismatch/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-mismatch"},
+    )
+    assert response.status_code == 409
+    assert "effect_key" in response.json()["detail"]
+
+
+async def test_paused_node_run_requires_exactly_one_match() -> None:
+    from fastapi import HTTPException
+    from routes.hitl import _paused_node_run as require_paused
+
+    record = _approval_paused_record(
+        "hitl-apr-nr",
+        workspace_id="ws",
+        project_id="proj",
+        request_id="apr-nr",
+        node_run_id="nr-1",
+    )
+    with pytest.raises(HTTPException) as empty:
+        require_paused(
+            DurableRunRecord(
+                run=record.run,
+                graph_state=record.graph_state,
+                node_runs=(),
+                version=1,
+            ),
+            "effect",
+        )
+    assert empty.value.status_code == 409
+
+    first = record.node_runs[0]
+    second = first.model_copy(update={"node_run_id": "nr-2", "ordinal": 2})
+    with pytest.raises(HTTPException) as dup:
+        require_paused(
+            DurableRunRecord(
+                run=record.run,
+                graph_state=record.graph_state,
+                node_runs=(first, second),
+                version=1,
+            ),
+            "effect",
+        )
+    assert dup.value.status_code == 409
+    assert "not awaiting" in dup.value.detail
+
+
+async def test_approval_get_failure_and_missing_are_translated(
+    approval_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-getfail", request_id="apr-getfail"
+    )
+
+    async def boom(_request_id: str):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(approvals, "get", boom)
+    response = client.post(
+        "/v1/hitl/hitl-apr-getfail/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-getfail"},
+    )
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-missing", request_id="apr-missing"
+    )
+
+    async def missing(_request_id: str):
+        return None
+
+    monkeypatch.setattr(approvals, "get", missing)
+    response = client.post(
+        "/v1/hitl/hitl-apr-missing/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-missing"},
+    )
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+async def test_approval_resolve_keyerror_and_valueerror(
+    approval_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, graph_store, approvals = approval_client
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-rkey", request_id="apr-rkey"
+    )
+
+    async def raise_key(*_a, **_k):
+        raise KeyError("apr-rkey")
+
+    monkeypatch.setattr(approvals, "resolve", raise_key)
+    response = client.post(
+        "/v1/hitl/hitl-apr-rkey/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-rkey"},
+    )
+    assert response.status_code == 404
+
+    await _seed_approval_pause(
+        graph_store, approvals, run_id="hitl-apr-rval", request_id="apr-rval"
+    )
+
+    async def raise_val(*_a, **_k):
+        raise ValueError("already resolved")
+
+    monkeypatch.setattr(approvals, "resolve", raise_val)
+    response = client.post(
+        "/v1/hitl/hitl-apr-rval/effect/answer",
+        json={"approved": True, "expected_approval_request_id": "apr-rval"},
+    )
+    assert response.status_code == 409
+    assert "already resolved" in response.json()["detail"]
+
+
+async def test_unanswerable_fence_valueerror_before_resolve() -> None:
+    """ValueError from require_answerable_fence → 409 before ApprovalStore.resolve."""
+    from fastapi import HTTPException
+    from routes.hitl import _require_answerable_before_approval_resolve
+
+    record = _approval_paused_record(
+        "hitl-apr-fence",
+        workspace_id="ws",
+        project_id="proj",
+        request_id="apr-fence",
+    )
+    # Node off the active frontier → ValueError (not HitlDeadlineElapsed).
+    off_frontier = DurableRunRecord(
+        run=record.run,
+        graph_state=record.graph_state.model_copy(update={"active_node_ids": ()}),
+        node_runs=record.node_runs,
+        version=1,
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _require_answerable_before_approval_resolve(off_frontier, "effect")
+    assert excinfo.value.status_code == 409
+    assert "frontier" in str(excinfo.value.detail)
+
+
+async def test_node_pause_helpers_tolerate_malformed_pause_maps() -> None:
+    from routes.hitl import _is_durable_approval_pause, _node_pause, _node_pause_metadata
+
+    record = _approval_paused_record(
+        "r-malformed",
+        workspace_id="ws",
+        project_id="proj",
+        request_id="apr",
+    )
+    # pauses is not a Mapping → _node_pause returns None (line 134).
+    broken = DurableRunRecord(
+        run=record.run,
+        graph_state=record.graph_state.model_copy(
+            update={"metadata": {**record.graph_state.metadata, "pauses": ["not-a-map"]}}
+        ),
+        node_runs=record.node_runs,
+        version=1,
+    )
+    assert _node_pause(broken, "effect") is None
+    assert _node_pause_metadata(broken, "effect") is None
+    assert _is_durable_approval_pause(broken, "effect") is False

@@ -496,3 +496,278 @@ async def test_self_repair_invoker_refuses_a_redirected_binding() -> None:
         await invoke_action("restart_container", {"name": "litellm"}, "effect-k")
 
     assert action.calls == []  # refused before any provider call
+
+
+# --- #2405: durable HITL scope + approval admittor / run-status seams
+
+
+async def _async_pair(a: str, b: str):
+    return a, b
+
+
+def _proposal(**kw):
+    from maistro.capabilities.slots.self_repair import RepairProposal
+
+    base = {
+        "resource": "docker:litellm",
+        "symptom": "unhealthy",
+        "action": "restart_container",
+        "params": {"name": "litellm"},
+    }
+    base.update(kw)
+    return RepairProposal(**base)
+
+
+async def test_resolve_self_repair_hitl_scope_uses_hive_default_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import _resolve_self_repair_hitl_scope
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+
+    scope = InMemoryProjectScopeStore()
+    root = await scope.create_root("ws-hive-2405")
+    monkeypatch.setattr(
+        "config.get_settings",
+        lambda: SimpleNamespace(hive_default_workspace_id="ws-hive-2405"),
+    )
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(
+            _agent_port=SimpleNamespace(
+                container=SimpleNamespace(project_scope_store=scope),
+            ),
+        ),
+    )
+
+    workspace_id, project_id = await _resolve_self_repair_hitl_scope()
+    assert workspace_id == "ws-hive-2405"
+    assert project_id == root.project_id
+
+
+async def test_resolve_self_repair_hitl_scope_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import _resolve_self_repair_hitl_scope
+
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(_agent_port=SimpleNamespace(container=None)),
+    )
+    with pytest.raises(RuntimeError, match="project_scope_store unavailable"):
+        await _resolve_self_repair_hitl_scope()
+
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(
+            _agent_port=SimpleNamespace(
+                container=SimpleNamespace(project_scope_store=object()),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "config.get_settings",
+        lambda: SimpleNamespace(hive_default_workspace_id=""),
+    )
+    with pytest.raises(RuntimeError, match="hive_default_workspace_id is unset"):
+        await _resolve_self_repair_hitl_scope()
+
+
+async def test_self_repair_approval_run_status_reads_graph_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import _build_self_repair_approval_run_status
+
+    from maistro.graph.durable_runs import RunStatus
+
+    class _Store:
+        def __init__(self) -> None:
+            self.by_id = {
+                "run-paused": SimpleNamespace(
+                    run=SimpleNamespace(status=RunStatus.PAUSED),
+                ),
+            }
+
+        async def get(self, run_id: str):
+            return self.by_id.get(run_id)
+
+    status_of = _build_self_repair_approval_run_status()
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(graph_run_store=None),
+    )
+    assert await status_of("anything") is None
+
+    store = _Store()
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(graph_run_store=store),
+    )
+    assert await status_of("missing") is None
+    assert await status_of("run-paused") == RunStatus.PAUSED.value
+
+
+async def test_self_repair_approval_admittor_requires_graph_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import (
+        _build_self_repair_approval_admittor,
+        _self_repair_binding,
+    )
+
+    reg = default_capability_registry(entry_points=[])
+    binding = _self_repair_binding()
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(graph_run_store=None, run_store=None),
+    )
+    admit = _build_self_repair_approval_admittor(reg, effects, binding)
+    with pytest.raises(RuntimeError, match="graph_run_store unavailable"):
+        await admit(_proposal(), "ek")
+
+
+async def test_self_repair_approval_admittor_parks_and_resolves_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admittor resolves Hive scope, parks via admit, and resolve_provider admits."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import (
+        _build_self_repair_approval_admittor,
+        _self_repair_binding,
+    )
+
+    from maistro.capabilities.binding_store import InMemoryBindingStore
+    from maistro.graph.durable_runs import RunStatus
+
+    reg = default_capability_registry(entry_points=[])
+    action = _WiringAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+    reg.activate("infra_action", "host_health")
+
+    binding = _self_repair_binding()
+    store = InMemoryBindingStore()
+    store.register(binding)
+    effects = dataclasses.replace(
+        new_effect_context(policy_evaluator=binding_scope_policy), bindings=store
+    )
+
+    monkeypatch.setattr(
+        "services.capabilities_wiring._resolve_self_repair_hitl_scope",
+        lambda: _async_pair("ws-admit", "project-admit"),
+    )
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(graph_run_store=object(), run_store=object()),
+    )
+
+    admitted: list[dict[str, object]] = []
+
+    async def fake_admit(**kwargs):
+        admitted.append(kwargs)
+        provider = await kwargs["resolve_provider"](binding)
+        assert provider is action
+        return SimpleNamespace(run=SimpleNamespace(run_id="run-admit-1", status=RunStatus.PAUSED))
+
+    monkeypatch.setattr(
+        "services.capabilities_wiring.admit_self_repair_approval",
+        fake_admit,
+    )
+
+    admit = _build_self_repair_approval_admittor(reg, effects, binding)
+    run_id = await admit(_proposal(), "self_repair:docker:restart_container:1")
+    assert run_id == "run-admit-1"
+    assert admitted[0]["workspace_id"] == "ws-admit"
+    assert admitted[0]["project_id"] == "project-admit"
+    assert admitted[0]["effect_key"] == "self_repair:docker:restart_container:1"
+    assert admitted[0]["run_store"] is not None
+
+
+async def test_self_repair_approval_admittor_resolve_provider_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Binding resolve failures / redirects / missing infra refuse closed."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from services.capabilities_wiring import (
+        _build_self_repair_approval_admittor,
+        _self_repair_binding,
+    )
+
+    from maistro.capabilities.binding_store import InMemoryBindingStore
+    from maistro.graph.durable_runs import RunStatus
+
+    binding = _self_repair_binding()
+
+    class _RedirectingStore(InMemoryBindingStore):
+        async def resolve(self, binding_id, **kwargs):
+            resolved = await super().resolve(binding_id, **kwargs)
+            return resolved.model_copy(update={"binding_id": "builtin:redirected"})
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("bindings down")
+
+    monkeypatch.setattr(
+        "services.capabilities_wiring._resolve_self_repair_hitl_scope",
+        lambda: _async_pair("ws", "proj"),
+    )
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(graph_run_store=object(), run_store=None),
+    )
+
+    async def exercise(effects, registry, match: str) -> None:
+        seen: list[object] = []
+
+        async def fake_admit(**kwargs):
+            with pytest.raises(LookupError, match=match):
+                await kwargs["resolve_provider"](binding)
+            seen.append(True)
+            return SimpleNamespace(run=SimpleNamespace(run_id="run-x", status=RunStatus.PAUSED))
+
+        monkeypatch.setattr(
+            "services.capabilities_wiring.admit_self_repair_approval",
+            fake_admit,
+        )
+        admit = _build_self_repair_approval_admittor(registry, effects, binding)
+        assert await admit(_proposal(), "ek") == "run-x"
+        assert seen
+
+    # Exception from BindingStore.resolve → LookupError
+    hostile = dataclasses.replace(
+        new_effect_context(policy_evaluator=binding_scope_policy),
+        bindings=SimpleNamespace(resolve=boom),
+    )
+    await exercise(hostile, default_capability_registry(entry_points=[]), "binding unavailable")
+
+    # Redirected identity → invalid self_repair binding
+    redirecting = _RedirectingStore()
+    redirecting.register(binding)
+    redirected = dataclasses.replace(
+        new_effect_context(policy_evaluator=binding_scope_policy),
+        bindings=redirecting,
+    )
+    await exercise(
+        redirected, default_capability_registry(entry_points=[]), "invalid self_repair binding"
+    )
+
+    # Binding ok but no infra_action provider → infra_action unavailable
+    ok_store = InMemoryBindingStore()
+    ok_store.register(binding)
+    ok_effects = dataclasses.replace(
+        new_effect_context(policy_evaluator=binding_scope_policy), bindings=ok_store
+    )
+    bare = default_capability_registry(entry_points=[])
+    await exercise(ok_effects, bare, "infra_action unavailable")

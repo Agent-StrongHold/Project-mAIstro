@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from maistro.capabilities.approval_store import InMemoryApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.durable_hitl_approval import (
@@ -227,3 +229,363 @@ async def test_rule_based_repair_suppresses_without_durable_admittor() -> None:
     (result,) = cycle.results
     assert result.decision is RepairDecision.SUPPRESSED
     assert "durable approval admittor" in result.detail
+
+
+async def test_admit_rejects_read_tier_actions() -> None:
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return HostHealthAction(_FakeHttp(), autonomy="approve_all")
+
+    with pytest.raises(ValueError, match="does not require durable approval"):
+        await admit_self_repair_approval(
+            store=store,
+            effect_context=effects,
+            binding=_binding(),
+            workspace_id="ws",
+            project_id="proj",
+            action="docker_logs",
+            params={"name": "x"},
+            effect_key="ek-read",
+            resolve_provider=resolve_provider,
+        )
+
+
+async def test_admit_rejects_blank_hitl_scope() -> None:
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return HostHealthAction(_FakeHttp(), autonomy="approve_all")
+
+    with pytest.raises(ValueError, match="workspace_id and project_id are required"):
+        await admit_self_repair_approval(
+            store=store,
+            effect_context=effects,
+            binding=_binding(),
+            workspace_id="  ",
+            project_id="proj",
+            action="restart_container",
+            params={"name": "x"},
+            effect_key="ek-blank",
+            resolve_provider=resolve_provider,
+        )
+
+
+async def test_admit_requires_approval_store() -> None:
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context()  # no ApprovalStore
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return HostHealthAction(_FakeHttp(), autonomy="approve_all")
+
+    with pytest.raises(RuntimeError, match="no ApprovalStore"):
+        await admit_self_repair_approval(
+            store=store,
+            effect_context=effects,
+            binding=_binding(),
+            workspace_id="ws",
+            project_id="proj",
+            action="restart_container",
+            params={"name": "x"},
+            effect_key="ek-no-store",
+            resolve_provider=resolve_provider,
+        )
+
+
+async def test_require_approval_policy_allows_when_already_approved() -> None:
+    from maistro.capabilities.durable_hitl_approval import _require_approval_policy
+    from maistro.capabilities.governed_invocation import InvocationPolicyContext
+    from maistro.policy.types import Decision
+
+    ctx = InvocationPolicyContext(
+        run_id="r",
+        node_run_id="nr",
+        attempt_id="a",
+        effect_key="ek",
+        approved=True,
+    )
+    verdict = await _require_approval_policy(_binding(), {"action": "restart_container"}, ctx)
+    assert verdict.decision is Decision.ALLOW
+    assert verdict.rule == "self-repair-hitl"
+
+    pending = await _require_approval_policy(
+        _binding(),
+        {"action": "restart_container"},
+        InvocationPolicyContext(run_id="r", node_run_id="nr", attempt_id="a", effect_key="ek"),
+    )
+    assert pending.decision is Decision.REQUIRE_APPROVAL
+
+
+async def test_infra_approval_node_executes_approved_provider() -> None:
+    """Post-approval path: resolver + executor + result mapping (#2405)."""
+    from types import SimpleNamespace
+
+    from maistro.capabilities.durable_hitl_approval import (
+        _InfraActionIn,
+        _InfraApprovalNode,
+    )
+    from maistro.graph.nodes.base import NodeContext
+
+    http = _FakeHttp()
+    action = HostHealthAction(http, autonomy="approve_all")
+
+    class _Service:
+        async def invoke(self, **kwargs: Any) -> SimpleNamespace:
+            provider = await kwargs["resolver"](_binding())
+            result = await kwargs["executor"](provider, kwargs["request"])
+            return SimpleNamespace(result=result)
+
+    async def resolve_ok(_c: Binding) -> InfraAction:
+        return action
+
+    async def execute_approved(
+        provider: InfraAction, approved_action: str, approved_params: dict[str, Any]
+    ) -> ActionResult:
+        return await provider.act(approved_action, approved_params, approved=True)
+
+    node = _InfraApprovalNode(
+        service=_Service(),  # type: ignore[arg-type]
+        binding=_binding(),
+        resolve_provider=resolve_ok,
+        execute_approved=execute_approved,
+    )
+    out = await node._execute(
+        _InfraActionIn(action="restart_container", params={"name": "x"}, effect_key="ek"),
+        NodeContext(run_id="r", dag_id="d", node_id="n", node_run_id="nr", attempt_id="a"),
+    )
+    assert out.ok is True
+    assert out.detail == "restarted"
+    assert out.blocked_pending_approval is False
+    assert http.calls
+
+    async def bad_provider(_c: Binding) -> Any:
+        return object()
+
+    bad_node = _InfraApprovalNode(
+        service=_Service(),  # type: ignore[arg-type]
+        binding=_binding(),
+        resolve_provider=bad_provider,
+        execute_approved=execute_approved,
+    )
+    with pytest.raises(TypeError, match="non-infra provider"):
+        await bad_node._execute(
+            _InfraActionIn(action="restart_container", params={}, effect_key="ek"),
+            NodeContext(run_id="r", dag_id="d", node_id="n"),
+        )
+
+    class _EmptyService:
+        async def invoke(self, **kwargs: Any) -> SimpleNamespace:
+            await kwargs["resolver"](_binding())
+            return SimpleNamespace(result="not-a-mapping")
+
+    empty_node = _InfraApprovalNode(
+        service=_EmptyService(),  # type: ignore[arg-type]
+        binding=_binding(),
+        resolve_provider=resolve_ok,
+        execute_approved=execute_approved,
+    )
+    empty_out = await empty_node._execute(
+        _InfraActionIn(action="restart_container", params={}, effect_key="ek"),
+        NodeContext(run_id="r", dag_id="d", node_id="n"),
+    )
+    assert empty_out.ok is False
+    assert empty_out.detail == ""
+
+
+async def test_admit_execute_approved_supports_legacy_act(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production execute_approved: approved=True, plus TypeError fallback."""
+    from maistro.capabilities import durable_hitl_approval as mod
+    from maistro.graph.durable_runs import DurableRunRecord
+    from maistro.graph.execution_state import GraphExecutionState
+    from maistro.runs.model import GraphSnapshot, Run
+
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+    http = _FakeHttp()
+    modern = HostHealthAction(http, autonomy="approve_all")
+    legacy_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _LegacyAction:
+        name = "legacy"
+        slot = "infra_action"
+        trust_tier = "t0"
+
+        def requires(self) -> tuple[str, ...]:
+            return ()
+
+        async def healthcheck(self) -> ProviderHealth:
+            return ProviderHealth(healthy=True)
+
+        def allowed_actions(self) -> tuple[str, ...]:
+            return ("restart_container",)
+
+        async def act(self, action: str, params: dict[str, Any]) -> ActionResult:
+            legacy_calls.append((action, params))
+            return ActionResult(ok=True, detail="legacy-ok")
+
+    captured: list[Any] = []
+
+    async def fake_run_durable_graph(graph, *, node_resolver, **kwargs):
+        node = node_resolver(SELF_REPAIR_APPROVAL_NODE_ID, graph)
+        captured.append(node)
+        # Exercise the nested execute_approved closed over by admit.
+        modern_result = await node._execute_approved(
+            modern, "restart_container", {"name": "modern"}
+        )
+        assert modern_result.ok is True
+        legacy_result = await node._execute_approved(
+            _LegacyAction(),  # type: ignore[arg-type]
+            "restart_container",
+            {"name": "legacy"},
+        )
+        assert legacy_result.detail == "legacy-ok"
+        run = Run(
+            run_id="run-exec",
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph),
+            actor_principal_id="self-repair",
+            status=RunStatus.PAUSED,
+        )
+        return DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=(SELF_REPAIR_APPROVAL_NODE_ID,),
+                blackboard_snapshot={},
+                metadata={},
+            ),
+            node_runs=(),
+            version=1,
+        )
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return modern
+
+    monkeypatch.setattr(mod, "run_durable_graph", fake_run_durable_graph)
+    record = await admit_self_repair_approval(
+        store=store,
+        effect_context=effects,
+        binding=_binding(),
+        workspace_id="ws",
+        project_id="proj",
+        action="restart_container",
+        params={"name": "x"},
+        effect_key="ek-exec",
+        resolve_provider=resolve_provider,
+    )
+    assert record.run.status is RunStatus.PAUSED
+    assert captured and http.calls
+    assert legacy_calls == [("restart_container", {"name": "legacy"})]
+
+
+async def test_admit_resolver_rejects_unknown_node_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities import durable_hitl_approval as mod
+    from maistro.graph.durable_runs import DurableRunRecord
+    from maistro.graph.execution_state import GraphExecutionState
+    from maistro.runs.model import GraphSnapshot, Run
+
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return HostHealthAction(_FakeHttp(), autonomy="approve_all")
+
+    async def fake_run_durable_graph(graph, *, node_resolver, **kwargs):
+        with pytest.raises(KeyError, match="not-the-approval-node"):
+            node_resolver("not-the-approval-node", graph)
+        run = Run(
+            run_id="run-keyerr",
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph),
+            actor_principal_id="self-repair",
+            status=RunStatus.PAUSED,
+        )
+        return DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=(SELF_REPAIR_APPROVAL_NODE_ID,),
+                blackboard_snapshot={},
+                metadata={},
+            ),
+            node_runs=(),
+            version=1,
+        )
+
+    monkeypatch.setattr(mod, "run_durable_graph", fake_run_durable_graph)
+    record = await admit_self_repair_approval(
+        store=store,
+        effect_context=effects,
+        binding=_binding(),
+        workspace_id="ws",
+        project_id="proj",
+        action="restart_container",
+        params={"name": "x"},
+        effect_key="ek-key",
+        resolve_provider=resolve_provider,
+    )
+    assert record.run.status is RunStatus.PAUSED
+
+
+async def test_admit_raises_when_executor_does_not_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities import durable_hitl_approval as mod
+    from maistro.graph.durable_runs import DurableRunRecord
+    from maistro.graph.execution_state import GraphExecutionState
+    from maistro.runs.model import GraphSnapshot, Run
+
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return HostHealthAction(_FakeHttp(), autonomy="approve_all")
+
+    async def running_run(graph, **kwargs):
+        run = Run(
+            run_id="run-running",
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph),
+            actor_principal_id="self-repair",
+            status=RunStatus.RUNNING,
+        )
+        return DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=(),
+                blackboard_snapshot={},
+                metadata={},
+            ),
+            node_runs=(),
+            version=1,
+        )
+
+    monkeypatch.setattr(mod, "run_durable_graph", running_run)
+    with pytest.raises(RuntimeError, match="expected PAUSED"):
+        await admit_self_repair_approval(
+            store=store,
+            effect_context=effects,
+            binding=_binding(),
+            workspace_id="ws",
+            project_id="proj",
+            action="restart_container",
+            params={"name": "x"},
+            effect_key="ek-completed",
+            resolve_provider=resolve_provider,
+        )
