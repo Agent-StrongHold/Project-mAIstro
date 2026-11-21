@@ -262,3 +262,45 @@ families — with pr-base the only completed failure (documented expectation);
 parent-head runs because the branch delta vs the verified parent is
 develop-sync dependency/workflow content only.
 
+## Verification evidence (repair round, head e697856c3be72939)
+
+The round's prior block — "launch/preflight: Hosted PR snapshot incomplete or
+not the review head" — is resolved: this dispatch's snapshot of PR #2425
+carries head sha e697856c3be72939625f0cef0c42bcf4c0b71a23, equal to the local
+review HEAD (79 check runs captured 2026-11-21T12:00Z), and
+`complete_for_scope` is true. The delta vs the verified parent 9f8fa5ebffdb5
+is the develop-sync merge of 884408b066 (hive-conductor legacy Dashboard
+deletion, #2274) plus develop's own quality baselines — `git diff --stat`
+9f8fa5ebff..e697856c3be7 touches no file under packages/maistro-core,
+maistro-canvas or maistro-rsi, and `reconciliation.py` keeps sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — so the P4b
+code under review is byte-identical across all proven rounds. Acceptance
+battery executed fresh (not assumed) at exactly this head: P4b focused suites
+(provenance + disposition + leaseless orphan + pg statement-shape + durable
+execution store + spine conformance + recovery events/evidence + canvas
+canonical execution) 414 passed / 140 skipped without services. Live-database
+leg re-proven on a throwaway pgvector:pg18 container (docker service on port
+5433, `alembic upgrade head` to 068, MAISTRO_TEST_PG_DSN set): the five P4b
+suites 50 passed with zero skips (the 10 service-skips become green postgres
+spine legs), and the wider battery (durable execution store + spine
+conformance + recovery events/evidence + canvas canonical execution) 504
+passed with zero skips; container removed after. Fail-before re-proven with
+the pre-P4b `persisted.cancellation_cause or cancellation` fallback in
+`_reconcile_cancelled`: fails exactly
+`test_unknown_cancelled_refuses_even_with_caller_recovered`
+(RecoveredDispositionRefused instead of the required RunIntegrityError,
+1 failed / 4 passed); restored byte-identical from a backup copy (sha256
+verified above, `git status` empty) and green again (5/5). CI-exact gates at
+this head: `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` exit 0 (1222 == 1222 against base 884408b066f1,
+the new merge base); ruff check + format clean; suite inventory ok ×4 (driver
+check-5..8: hive-conductor backend 4273, maistro-canvas 633, maistro-core
+18771, maistro-rsi 1797 — the merged develop content included). pr-base
+re-proven with the ci.yml exact argv (`--base "$PR_BASE" --labels
+"$PR_LABELS"`): a stacked cursor/ base exits 1 with the retarget-to-develop
+instruction while `--base develop` exits 0 — the ADR-095 stacked-flow
+expectation, matching the hosted snapshot where pr-base is the only completed
+failure and the coverage/postgres/test families were still in flight (None)
+at capture, content-equivalent to the parent-head runs where every completed
+coverage job was success.
+
