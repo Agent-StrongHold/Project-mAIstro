@@ -4,33 +4,33 @@
     {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "Product services with no route or background caller. Each is plausible product surface that was never registered; none owns lifecycle state that the spine must reclaim.",
-      "root": "main.py route registration or a background loop",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Workspaces v1.0 has no owner for these never-registered BFF services (chatbot platform bridge, Entra entitlement policy without an identity caller, eval/corpus bootstrap, preference calibration without pairwise UI). Do not invent main.py mounts for the tag. Physical deletion waits on #35 parity.",
       "modules": [
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
         "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.preference_calibration"
-      ]
+      ],
+      "replaced_by": "Capabilities MCP / live hive routes for external tools; #491/#492 Entra identity path for SSO entitlements; Attention + live /v1/optimizer projection for product optimisation signals; ADR-060 persona_feedback for preference signals; maistro-rsi / #2275 for engine self-improvement (Evolution stays hidden)"
     },
     {
       "id": "hive-pg-persistence",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "The remaining pg_persisted helper predates the storage decision. ADR-082226-5104 makes PostgreSQL the durable system of record, so this helper is wiring owed rather than a second credential authority; credential_store_v2 is retired by #1186.",
-      "root": "maistro.container / main.py startup, per ADR-082226-5104",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Sync PostgREST helper predates ADR-082226-5104. Workspaces durable state goes through services.pg_store / maistro.persistence async paths, not this unreachable sync wrapper. Do not invent a startup mount for the tag. Physical deletion waits on #35.",
       "modules": [
         "@flat/hive-conductor/services.pg_persisted"
-      ]
+      ],
+      "replaced_by": "services.pg_store + maistro.persistence / maistro.container (ADR-082226-5104); cutover plan F for Conductor persistence convergence"
     },
     {
       "id": "governance-conformance",
       "subsystem": "Authorization, privilege, governance",
       "disposition": "CONNECT",
-      "rationale": "The policy-conformance engine of SPEC-206 with no evaluator calling it. ADR-068's approver matrix is the decision it serves and is itself unbuilt (#60). The package initializer itself left this list when the canonical promotion contract (SPEC-100126-a9c4) landed under maistro.governance and the graph template promotion gate began importing it.",
-      "root": "maistro.security.sentinel policy evaluation (#60)",
+      "rationale": "#2322 post-v1 park: SPEC-206 policy-conformance engine stays CONNECT with no Sentinel caller until the ADR-068 approver matrix (#60) lands. Named owner for the tag is #2322 \u2014 do not block v1.0.0; do not invent a Sentinel wire early. Package initializer already left this list when the canonical promotion contract landed under maistro.governance.",
+      "root": "maistro.security.sentinel policy evaluation after #60 / ADR-068 (#2322)",
       "modules": [
         "maistro.governance.conformance",
         "maistro.governance.conformance_types"
@@ -50,7 +50,7 @@
       "id": "collaboration",
       "subsystem": "Collaboration",
       "disposition": "CONNECT",
-      "rationale": "Multi-actor editing sessions with no product surface (#2323). Parked until A2UI (ADR-070426-3a1f) — not a v1.0 Workspaces mount. No silent dead UI entry.",
+      "rationale": "Multi-actor editing sessions with no product surface (#2323). Parked until A2UI (ADR-070426-3a1f) \u2014 not a v1.0 Workspaces mount. No silent dead UI entry.",
       "root": "A2UI-backed collaboration surface (ADR-070426-3a1f; #2323)",
       "modules": [
         "maistro.collaboration",
@@ -62,7 +62,7 @@
       "id": "cli-container-runtimes",
       "subsystem": "Core CLI",
       "disposition": "CONNECT",
-      "rationale": "Docker/Podman runtime selection with no Typer subcommand reaching it (#2324). Stays CONNECT under #2280 Decision A (CLI operator-lifecycle only for v1.0; no product CRUD). ADR-093 sandbox isolation is the eventual consumer — not Workspace UI.",
+      "rationale": "Docker/Podman runtime selection with no Typer subcommand reaching it (#2324). Stays CONNECT under #2280 Decision A (CLI operator-lifecycle only for v1.0; no product CRUD). ADR-093 sandbox isolation is the eventual consumer \u2014 not Workspace UI.",
       "root": "a named operator-lifecycle maistro.cli subcommand or ADR-093 sandbox path (#2324)",
       "modules": [
         "maistro.cli._container",
@@ -97,16 +97,16 @@
     {
       "id": "integrations-bridges",
       "subsystem": "External integrations",
-      "disposition": "CONNECT",
-      "rationale": "Home Assistant, CoinSwarm, ntfy and Turing bridges \u2014 the homelab product surface, none of it reached from a route or a trigger.",
-      "root": "a Conductor route or an ADR-086 trigger",
+      "disposition": "RETIRE",
+      "rationale": "#2320: Workspaces has no owner for hand-wired HA/CoinSwarm/ntfy/Turing bridges. MCP under Capabilities (#2273) is the shipped external-tool path; ADR-100526-be49 names the connector SDK as the out-of-tree successor. Do not invent these onto Conductor routes for v1.0. Physical deletion waits on #35 parity.",
       "modules": [
         "maistro.integrations",
         "maistro.integrations.coinswarm",
         "maistro.integrations.home_assistant",
         "maistro.integrations.ntfy",
         "maistro.integrations.turing"
-      ]
+      ],
+      "replaced_by": "hive MCP server registry (/v1/mcp via Capabilities #2273) for external tools; maistro.protocols.notification.NotificationClient (+ events.handlers.ntfy_action) for push; packages/maistro-turing for self-model; maistro.connectors / ADR-100526-be49 for out-of-tree connectors"
     },
     {
       "id": "memory-advanced-retrieval",
@@ -138,9 +138,9 @@
     {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
-      "disposition": "CONNECT",
-      "rationale": "ADR-069's signed code registry, ADR-070's repertoire, and the skills catalog, connectors, forge and loader. #59 puts MCP, skill import and signed loading on one governed path, which is where every one of these is reached.",
-      "root": "the governed supply-chain path (#59)",
+      "disposition": "RETIRE",
+      "rationale": "#2319: Capabilities UI (#2273) ships slots/providers only; the governed skills path (#59) already admits via import_pipeline + InMemorySkillRegistry + code_registry. These eight packages have no production callers and must not be invented onto Capabilities. Physical deletion waits on #35 parity.",
+      "replaced_by": "maistro.skills.import_pipeline / maistro.skills.registry / maistro.capabilities.discovery (skills); maistro.memory.learnings.lifecycle.commit_to_repertoire (repertoire; ADR-070)",
       "modules": [
         "maistro.repertoire",
         "maistro.repertoire.protocol",
@@ -162,29 +162,6 @@
         "maistro.testing.faux_provider",
         "maistro.testing.harness",
         "maistro.testing.postgres"
-      ]
-    },
-    {
-      "id": "tools-approval-and-reversibility",
-      "subsystem": "Tool execution",
-      "disposition": "CONNECT",
-      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline. maistro.tools.reversibility_registry left this group when #57 wired it: maistro.tools.contracts (GovernedToolExecutor/ToolContractRegistry) constructs the registry and resolves every tool call admitted at the governed seam's reversibility tier from it as an Invocation admission fact; hive-conductor's services.governed_tools is the shipped constructor (boot Agent tools and chat web tools), while legacy DAG tool nodes carry the legacy-tool effect floor on their own canonical Invocation.",
-      "root": "governed tool Invocation (#57)",
-      "modules": [
-        "maistro.tools.approval",
-        "maistro.tools.approval.gate",
-        "maistro.tools.approval.protocols",
-        "maistro.tools.approval.types"
-      ]
-    },
-    {
-      "id": "tools-unwired",
-      "subsystem": "Tool execution",
-      "disposition": "CONNECT",
-      "rationale": "The media tool package is not reached from a tool registry. (ADR-049 shadow-git left this group with #2314: fan_in imports ShadowGitWorkspace, so the module is reachable from the waves package surface.)",
-      "root": "the tool registry (#57)",
-      "modules": [
-        "maistro.tools.media"
       ]
     },
     {
@@ -218,16 +195,16 @@
     {
       "id": "hive-dag-and-artifact-optimisation",
       "subsystem": "Agent Conductor services",
-      "disposition": "CONNECT",
-      "rationale": "DAG hill-climbing optimises a user's DAG, skills and tools \u2014 the artefacts an agent runs with. That is a product capability, and a distinct thing from maistro-rsi, which improves the engine's own codebase under ADR-088. An earlier disposition here called these a duplicate of RSI and retired four of them on that basis; the rationale was wrong and the deletion was reverted. services/optimizer.py and routes/optimizer.py already ship the DAG half of this surface (POST /v1/optimizer/{dag_id}/run, proposals, accept/reject), so these are unfinished extensions of a live feature rather than a second system. hill_climber is its eval-rotation strategy; skill_optimizer extends it to SKILL.md documents and tool schemas; the ui_* trio climbs the product's own UI against canonical examples, with ui_climb_vm naming the microVM as the execution model.",
-      "root": "services.optimizer / routes.optimizer for the DAG and skill halves; services.hyperlight_executor for the microVM UI loop",
+      "disposition": "RETIRE",
+      "rationale": "#2309: Live DAG optimisation already ships via services.optimizer / routes.optimizer (Attention projects proposals; OptimizerInbox UI retired #1049). hill_climber, skill_optimizer, and the ui_* microVM climb loop are unfinished extensions with no Workspaces caller \u2014 not a second RSI system, but also not in the v1.0 ship set. Do not invent optimizer imports for the tag. Evolution remains hidden (#2275). Physical deletion waits on #35.",
       "modules": [
         "@flat/hive-conductor/services.hill_climber",
         "@flat/hive-conductor/services.skill_optimizer",
         "@flat/hive-conductor/services.ui_auto_climb",
         "@flat/hive-conductor/services.ui_climb_vm",
         "@flat/hive-conductor/services.ui_hill_climber"
-      ]
+      ],
+      "replaced_by": "services.optimizer + routes.optimizer (+ Attention projection) for DAG proposals; packages/hive-conductor/run_hill_climb.py / hill-climb-ui.sh for operator UI climb; maistro-rsi / #2275 for engine self-improvement"
     },
     {
       "id": "canvas-legacy-layerrecord",
