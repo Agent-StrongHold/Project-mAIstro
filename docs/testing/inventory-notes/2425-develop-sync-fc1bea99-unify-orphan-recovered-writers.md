@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: -6
+  packages/maistro-core/tests: -3
 ---
 
 # 2425-develop-sync-fc1bea99-unify-orphan-recovered-writers
@@ -36,6 +36,13 @@ Resolution unifies on develop's writer:
   `DurableRunExecutionStore` P4b cases in
   `tests/graph/durable_runs/test_canonical_execution_store.py` survive with
   call sites moved to the unified API.
+- `test_recover_orphaned_attempt.py` **+3** (`TestRecoverOrphanedPgWriter`):
+  the merge's `PgRunStore.recover_orphaned_attempt` had only its two
+  lock-race refusal arms under test; the diff-coverage floor named the
+  unpinned lines. New no-services stand-in cases cover the happy write
+  (exactly one Attempt row persisted, CANCELLED+RECOVERED, default error),
+  missing-attempt → `AttemptNotFound`, and wrong-owner → `RunIntegrityError`
+  before any lock — completing both line and branch arcs of the writer.
 
 The branch's P4b acceptance surface is unchanged: reconciler persisted-cause
 authority (`reconciliation.py` untouched by the merge), typed RECOVERED →
@@ -78,3 +85,15 @@ events/evidence pack): **489 passed / 0 skipped / 0 errors** — proves the
 unified `recover_orphaned_attempt` writer (including `PgRunStore` lineage
 refusals) and the persisted-cause reconciler against PostgreSQL at the
 resolved head.
+
+## Diff-coverage evidence (same round)
+
+Scoped coverage (runs/ + durable_runs/ + capabilities/ + agents/ + canvas +
+rsi-kernel + hive backend, live PG leg included, hive via CI's own
+`coverage run --source=packages/hive-conductor/backend` producer), gate run
+as `scripts/check-diff-coverage.py <xml> --base 4931662df3ed` (this lane's
+starting head, so the whole merge diff is measured): **exit 0 — every
+measured file at or above 90% lines / 80% branch arcs**. First run failed on
+`pg_store.py` 70.6% (the untested PG happy/refusal arms named above); the
+three `TestRecoverOrphanedPgWriter` cases are the repair, and the battery
+re-run totals **9128 passed / 6 skipped** before the hive combine leg.
