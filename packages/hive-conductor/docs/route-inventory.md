@@ -35,7 +35,7 @@ narrow-screen drawer (asserted by
 |---|---|---|---|---|
 | `/home` | Home | Home | KEEP / default landing (Workspace Mission Control) | #1048 |
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
-| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
+| `/dashboard` | Dashboard | **DELETE** — page module removed; `Navigate` to `/home` (replace); must not revive `Dashboard.tsx` | #2274 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
 | `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; MERGE MessageBoard + OptimizationInbox; API requires `dags.write`) | #1049 |
 | `/approvals` | Approvals | Approvals | KEEP — Parity P-1 projection over capability + HITL APIs | #2278 |
@@ -118,6 +118,7 @@ One canonical entry per destination; no duplicate menu items.
 | `/optimizer` | `/attention` (#1049 MERGE: OptimizationInbox deleted) | cutover redirect |
 | `/optimization-inbox` | `/attention` (#1049: former #1417 alias now follows Optimizer into Attention) | cutover redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
+| `/dashboard` | `/home` (#2274 retirement redirect) | retirement redirect |
 | `/agents` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
 | `/mcp` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
 | `/skills` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
