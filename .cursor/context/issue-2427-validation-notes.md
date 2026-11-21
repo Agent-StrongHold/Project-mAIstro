@@ -469,3 +469,97 @@ Residual (driver actions only): retarget PR #2427 base to develop before
 merge; dispatch snapshot still shows 0 check-runs posted on the hosted head
 (CI verdict pending, not locally reproducible). Nothing pushed; no GitHub
 mutations.
+
+## Round at `b80982bf2065` (independent verifier/writer round, 2026-11-21)
+
+Dispatch head `b80982bf206516fad6a9d8e3f58e75ddecdb8ec6` = hosted PR #2427
+head = local HEAD (three-way alignment confirmed from the dispatch snapshot's
+`linked_pr_heads["2427"]` and `git rev-parse HEAD`). `b80982bf` is docs-only
+over the validated `1667511e5a` (`git diff --stat`: one file, this notes
+file, +62 lines — zero src/test changes), so production behavior is
+byte-identical to the validated tree; everything below was nevertheless
+re-executed at this head. Driver deterministic checks (this job's
+check-0..8): sync rc 0, ruff check "All checks passed", ruff format "3610
+files already formatted", 13-file acceptance batch **501 passed, 147
+env-skips**, hive backend audit-pagination **32 passed**, per-suite suite
+inventory ok ×4 (hive 4273 / canvas 633 / core 18776 / rsi 1797).
+
+1. **Five P5a suites vs live pg18**: fresh `public` schema (DROP/CREATE +
+   `CREATE EXTENSION vector`), `DATABASE_URL` → `alembic upgrade head` →
+   **068**, `MAISTRO_TEST_PG_DSN` plain `postgresql://` on 127.0.0.1:15499
+   (`cr2427-verify-pg`, pgvector/pg18): **68 passed, 0 skipped** — matches
+   every prior round; the 16 env-skips of a DSN-less run all ran live.
+2. **Driver's exact 13-file batch vs live PG**: **648 passed, 0 skipped** —
+   reconciles exactly with driver check-3 (501 + 147 = 648); only warning is
+   the canvas PytestWarning proven pre-existing on develop (verified again:
+   `git show origin/develop:packages/maistro-canvas/tests/`
+   `test_canonical_execution.py` has the same sync fn at :1034 under
+   `pytestmark` :23).
+3. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+   `_stranded_recovered_attempt` refuses live leases and selects solely via
+   `is_typed_recovered_attempt(max(attempts, key=ordinal))` (`:1542`);
+   `consumption.py:511` typed look-past; `grep -rn "is_reclaimed_attempt("
+   packages/*/src` minus the definition → **no production call sites**.
+   Named P5a tests present and in the passing 68:
+   `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered`
+   (rediscovery.py:131), `test_recovery_tick_does_not_park_behind_a_newer_attempt`
+   (:159), `test_rediscovery_parks_only_its_own_node` (:180).
+4. **CI-exact gates re-run at this head** (after CI's `uv sync --locked
+   --all-extras` + `uv pip install -e packages/maistro-evolve`):
+   vulture `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+   (vulture-ratchet.yml:82) → **1222 == 1222** rc 0 (base `971e536838ca` →
+   candidate `b80982bf2065`); radon (quality.yml:845) → **124 == 124** rc 0;
+   mypy ci.yml:117-127 exact 10-package list → **Success: no issues found in
+   1127 source files** rc 0; suite inventory no-args (ci.yml:744) → **21
+   suites / 35888 unique identities** rc 0.
+5. **`pr-base`** (ci.yml:79 form): `--base develop` → **ok rc 0**; hosted
+   base `cursor/m1-b-p4b-reconciler-recovered-disposition-8551` → **FAIL rc
+   1** with the ADR-095 "must be retargeted to 'develop' before merge"
+   message (`cursor/` is not in `.github/branch-protection.json` topic
+   prefixes) — exactly the state the PR body documents as expected while
+   stacked (`cursor/` branches are not accepted topic prefixes).
+6. **Ledgers**: `git diff --numstat origin/develop -- quality/` → **empty**
+   (byte-identical); `git status --short` clean; worktree left clean at the
+   dispatch head.
+7. **Inventory note re-measured, no edit owed**: the note's three files
+   (`test_interrupted_reclaim_rediscovery.py` 18 +
+   `test_interrupted_reclaim_characterization.py` 4 + `test_parked_run_resume.py`
+   45) collect **67** (`pytest --collect-only`) — the documented 63 → 67
+   **+4** `inventory-delta` stands; this round changes no tests, so no new
+   delta is owed. (An initial measurement of 97 used the wrong trio —
+   `test_recovered_attempt_disposition.py` is not one of the note's files.)
+
+### NEW post-dispatch fact: origin/develop advanced past the dispatch base
+
+`origin/develop` moved `971e536838` → `77f464050e` (2 commits: `efc13c18dc`
+#2418 admitted-authority port; `77f464050e` #2419 **P3b** orphan
+recover_orphaned_attempt writes CANCELLED+RECOVERED — a sibling M1-B2b
+phase). The delta touches `packages/maistro-core/src` files this PR also
+touches (`attempt_executor.py`, `execution_store.py`, `lifecycle.py`,
+`pg_store.py`, `sqlite_store.py`, `store.py`, `_vulture_whitelist.py`, the
+durable-runs store test): `git merge-tree --write-tree HEAD origin/develop`
+→ **rc 1 — conflicts exist against the NEW develop tip** (the prior round's
+conflict-free rc 0 was against `971e536838`, which IS an ancestor of HEAD;
+`quality/` ledgers remain byte-identical even to the new tip — numstat
+empty — because neither new commit touches them).
+
+**Decision (recorded, not actioned):** do NOT merge develop in this round.
+Prior round `9696a5a040` established that HEAD must stay at the hosted PR
+head; the resolved preflight block ("Hosted PR snapshot incomplete or not
+the review head") holds precisely because hosted head == dispatch head ==
+local HEAD == `b80982bf`. Merging `77f464050e` now would re-break that
+alignment and discard the driver's at-head check evidence. The develop sync
++ conflict resolution (both commits overlap the P5a recovery files, so it is
+a substantive resolution, not a formality) belongs to the NEXT snapshot
+round after the driver re-anchors the hosted head. Branch tip remains the
+dispatch head; this round adds one docs commit on top.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane): (a)
+push the tip and re-anchor the hosted PR head to include the new docs
+commit; (b) after re-anchor, merge the new develop tip `77f464050e` and
+resolve the recovery-file conflicts in place; (c) retarget PR #2427 base to
+develop before merge (pr-base red is the documented stacked state); (d) CI
+check-runs on `b80982bf` were 0/0 at dispatch capture — verdicts remain a
+driver observation.
