@@ -345,3 +345,51 @@ test_unknown_cancelled_refuses_even_with_caller_recovered
 1 failed / 4 passed); restored byte-identical (sha256 verified above,
 `git status` empty) and green again (5/5).
 
+## Verification evidence (verifier+writer round, head ba88f29b1cc44c0d)
+
+The recurring launch block — "Hosted PR snapshot incomplete or not the review
+head" — is resolved: this dispatch's snapshot of PR #2425 carries head sha
+ba88f29b1cc44c0d96dff756b6d9e1b37f1fefde, equal to the local review HEAD
+(80 check runs captured 2026-11-21T13:31Z, `complete_for_scope` true), and
+the hosted snapshot shows every completed job success — including
+coverage (no services), coverage (PostgreSQL), coverage (MinIO), Coverage
+gate, exact-debt-ledger, Quality / Vulture, Mutation gate, Mypy strict,
+postgres (pg17)/(pg18) and the full Quality/SAST families — with pr-base the
+only completed failure (the documented ADR-095 stacked expectation). The
+delta vs the verified parent bdd57cb573cbc53 is this round's docs commit
+alone; `reconciliation.py` keeps sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — the P4b
+code under review is byte-identical across all proven rounds.
+
+Everything below was re-executed fresh at exactly this head, not assumed:
+driver deterministic checks green (check-0..8: uv sync, `ruff check`,
+`ruff format --check` 3610 files, focused battery 441 passed / 140 skipped,
+hive-conductor audit pagination 32 passed, suite inventory ok ×4:
+hive-conductor backend 4273, maistro-canvas 633, maistro-core 18772,
+maistro-rsi 1797). Fail-before re-proven with the pre-P4b
+`persisted.cancellation_cause or cancellation` fallback in
+`_reconcile_cancelled`: fails exactly
+test_unknown_cancelled_refuses_even_with_caller_recovered
+(RecoveredDispositionRefused instead of the required RunIntegrityError,
+1 failed / 4 passed); restored byte-identical from a backup copy (sha256
+verified above, `git status` empty) and green again (5/5).
+
+Live-database leg on a throwaway pgvector:pg18 container (port 5433,
+`DATABASE_URL` for alembic, `alembic upgrade head` to 068,
+MAISTRO_TEST_PG_DSN as a raw asyncpg `postgresql://` DSN — the
+`postgresql+asyncpg://` scheme is rejected by asyncpg itself): the P4b
+battery (canvas canonical execution + durable execution store + pg
+disposition statement + provenance + leaseless orphan + disposition +
+recovery events/evidence + spine conformance) 554 passed with zero skips —
+all 140 service-gated legs green, proving the PG worker-death safety leg at
+this head directly; named legs `test_parks_node_and_run[postgres]` and the
+pg disposition suite 6 passed individually; container removed after.
+Sweep-replay contract re-run green
+(test_the_sweep_survives_an_attempt_it_cannot_reconcile). CI-exact gates at
+this head: `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` exit 0 (1222 == 1222 against base
+971e536838ca); pr-base with the ci.yml exact argv (`--base "$PR_BASE"
+--labels "$PR_LABELS"`): a stacked cursor/ base exits 1 with the
+retarget-to-develop instruction while `--base develop` exits 0 — the
+ADR-095 stacked-flow expectation, matching the hosted snapshot.
+
