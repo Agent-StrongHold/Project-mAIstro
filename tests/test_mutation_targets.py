@@ -245,6 +245,40 @@ class TestWorkflowDiffsAgainstItsOwnBase:
         assert "--diff-filter=ACMR" in workflow
 
 
+class TestScriptsToolingSurfaceIsReachable:
+    """PRs whose Python diff is gate tooling under scripts/ are a recurring
+    surface (every check-*.py repair), and 'packages/**/*.py' cannot match
+    them. With no matching trigger path such a PR never started this job, so
+    the required-set row ("Mutation gate (changed critical lines)") had no
+    check-run on the candidate head and gates-ran stayed pending forever —
+    measured on #2432's head 632d5dbaa6 with the CI-exact evaluator:
+    73/74 required checks present, the mutation row absent -> PENDING. The
+    property, not the example: the trigger must keep covering the whole
+    scripts/ tooling subtree, the way it covers the packages/ source tree.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+
+    def test_the_scripts_tooling_subtree_actually_exists(self, module):
+        """If it did not, the honest fix would be deleting the trigger entry
+        rather than adding a path filter for nothing."""
+        assert (REPO / "scripts").is_dir()
+
+    def test_every_scripts_tooling_change_is_in_the_workflow_scope(self):
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "'scripts/**/*.py'" in workflow
+
+    def test_scripts_scope_stays_zero_overlap_by_construction(self):
+        """The added trigger produces *evidence*, not mutation coverage: the
+        changed-file pathspec stays `-- packages`, so a scripts-only diff
+        resolves to the zero-overlap summary instead of mutating anything.
+        If the pathspec ever widens beyond packages/ this stops being true
+        and the trigger addition above would silently change gate semantics.
+        """
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "-- packages" in workflow
+
+
 # --- the inverse mapping: changed tests -> the sources they cover ------------
 #
 # A PR that only adds tests was invisible to the mutation gate: the workflow's

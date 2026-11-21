@@ -62,6 +62,26 @@ on:
       # critical file does change.
       - 'quality/ratchet-authorizations.json'
       - 'docs/testing/inventory-notes/**'
+      # Python tooling under scripts/ (the gate scripts this contract system
+      # runs on every PR) is a recurring PR surface that 'packages/**/*.py'
+      # cannot match, so gate-script PRs never triggered this workflow and
+      # the required-set row that scripts/check-required-checks.py derives
+      # from it has no check-run on the candidate head and gates-ran stays
+      # pending forever. Measured on #2432's head 632d5dbaa6 (a
+      # scripts/js_dependency_gate.py + frontend lockfile bump) with the
+      # CI-exact evaluator (check-gates-ran.py --require-complete
+      # --base-branch develop --event-name pull_request --changed-files
+      # <measured envelope>): 73/74 required checks present, "Mutation gate
+      # (changed critical lines)" absent -> PENDING (the same failure mode
+      # #2120 fixed for image pins and #2371 for grant ledgers and inventory
+      # notes; every producer had completed, so no later publisher run could
+      # ever flip the verdict). Listing this class here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence — every mutation-critical source lives under
+      # packages/, and the job's changed-file pathspec stays `-- packages`,
+      # so scripts/ diffs are zero-overlap by construction; the job still
+      # fails closed whenever a critical file does change.
+      - 'scripts/**/*.py'
       - '.github/workflows/mutation.yml'
   workflow_dispatch:
 
