@@ -223,3 +223,42 @@ Quality/SAST families — with pr-base the only completed failure (the
 documented stacked-flow expectation) and only 2 jobs still in flight at
 capture (publish-set Coverage gate, test).
 
+## Verification evidence (repair round, head 3e5f17bb9bc40b8d)
+
+The round's prior block — "recovery budget exhausted: launch/preflight:
+Hosted PR snapshot incomplete or not the review head" — is resolved: the
+develop-sync merges (ef000b0fff, 3e5f17bb9bc4, base 527cff843735) landed and
+this dispatch's snapshot of PR #2425 is complete (81 check runs captured
+2026-11-21T11:25Z) with the hosted PR head sha equal to 3e5f17bb9bc40b8dd061
+e3e72988441e68094bcb, the local review head. The delta vs the verified parent
+f19ebd890d2c35 contains zero changes in packages/maistro-core, maistro-canvas
+and maistro-rsi; `reconciliation.py` keeps sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — the P4b
+code under review is byte-identical across all proven rounds. Acceptance
+battery executed fresh at this head: P4b focused suites (provenance +
+disposition + leaseless orphan + pg disposition + recovery events) 50 passed
+/ 10 skipped; canvas canonical_execution + durable execution store + spine
+conformance + recovery evidence pack 364 passed / 130 service-skips; driver
+battery (check-3) 441 passed / 140 skipped at the same head. Fail-before
+re-proven: re-introducing the pre-P4b `persisted.cancellation_cause or
+cancellation` fallback in `_reconcile_cancelled` fails exactly
+`test_unknown_cancelled_refuses_even_with_caller_recovered`
+(RecoveredDispositionRefused instead of the required RunIntegrityError, 1
+failed / 4 passed); restored byte-identical from a backup copy (sha256
+verified above, `git status` empty) and green again. CI-exact gates at this
+head: `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exit 0 (1222 == 1222 against base 527cff843735); ruff
+check + format clean (driver check-1/check-2); `check-suite-inventory.py` ok
+for maistro-core (18771), hive-conductor backend, maistro-canvas,
+maistro-rsi (driver check-5..8). pr-base re-proven with the ci.yml exact argv
+(`--base "$PR_BASE" --labels "$PR_LABELS"`): a stacked cursor/ base exits 1
+with the retarget-to-develop instruction while `--base develop` exits 0 — the
+ADR-095 stacked-flow expectation. Hosted check-runs from the complete
+snapshot at exactly this head sha: 77 success — including coverage (no
+services), coverage (PostgreSQL), coverage (MinIO), exact-debt-ledger,
+Mutation gate, Mypy strict, postgres (pg17)/(pg18) and the full Quality/SAST
+families — with pr-base the only completed failure (documented expectation);
+2 in-flight and 1 queued heavy jobs at capture are content-equivalent to the
+parent-head runs because the branch delta vs the verified parent is
+develop-sync dependency/workflow content only.
+
