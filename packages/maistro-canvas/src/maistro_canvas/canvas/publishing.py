@@ -5,6 +5,14 @@ Canvas owns the visual export capability; the product surface (maistro-server
 Invocation boundary rather than calling a compositor directly (ADR-045:
 "External effects such as publish/export remain governed capabilities").
 
+The governed export boundary itself is NOT transitional; the composite it
+pins is: the pinned pixels come from the legacy LayerRecord compositor, part
+of the TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311). New visual-model
+work belongs on the AssetInstance render path (``asset_compositor``) only;
+this module cannot regain authority over the layer model, and its cutover
+to AssetInstance-composed pages follows the same ADR-044 Phase 2/3 +
+ADR-046 gate as the rest of the legacy surface.
+
 What this module provides:
 
 - :class:`DesignExportProvider` — the ``design.export`` capability provider.
