@@ -42,6 +42,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -1677,6 +1678,7 @@ class SqliteRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._write_lock:
             attempt = await self._require_attempt(attempt_id)
@@ -1688,6 +1690,7 @@ class SqliteRunStore:
                 result=result,
                 error=error,
                 metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             if target is AttemptStatus.COMPLETED:
                 # Same lock `transition_run` holds, so a cancellation either
