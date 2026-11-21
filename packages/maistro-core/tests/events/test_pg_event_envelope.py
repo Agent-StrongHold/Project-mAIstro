@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from maistro.events.envelope import EventEnvelope
-from maistro.events.pg_envelope import PgEventStore, ensure_canonical_event_schema
+from maistro.events.pg_envelope import (
+    _EVENT_COLUMN_TYPES,
+    PgEventStore,
+    ensure_canonical_event_schema,
+)
 
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
@@ -24,18 +27,22 @@ def _require_postgres() -> str:
     pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; PostgreSQL evidence needs a real server")
 
 
-async def _pool():
+async def _pool(schema: str):
     import asyncpg
 
-    pool = await asyncpg.create_pool(_require_postgres(), min_size=1, max_size=8)
+    pool = await asyncpg.create_pool(
+        _require_postgres(), min_size=1, max_size=8, server_settings={"search_path": schema}
+    )
     await ensure_canonical_event_schema(pool)
     return pool
 
 
-async def test_workspace_sequence_survives_postgres_store_restart() -> None:
+async def test_workspace_sequence_survives_postgres_store_restart(
+    canonical_event_schema: str,
+) -> None:
     workspace = f"ws-restart-{uuid4().hex}"
     stream = f"workspace:{workspace}"
-    first_pool = await _pool()
+    first_pool = await _pool(canonical_event_schema)
     try:
         first = await PgEventStore(first_pool).append(
             EventEnvelope(
@@ -46,7 +53,7 @@ async def test_workspace_sequence_survives_postgres_store_restart() -> None:
     finally:
         await first_pool.close()
 
-    restarted_pool = await _pool()
+    restarted_pool = await _pool(canonical_event_schema)
     try:
         store = PgEventStore(restarted_pool)
         second = await store.append(
@@ -62,10 +69,12 @@ async def test_workspace_sequence_survives_postgres_store_restart() -> None:
         await restarted_pool.close()
 
 
-async def test_workspace_sequence_serializes_across_postgres_writers() -> None:
+async def test_workspace_sequence_serializes_across_postgres_writers(
+    canonical_event_schema: str,
+) -> None:
     workspace = f"ws-race-{uuid4().hex}"
     stream = f"workspace:{workspace}"
-    pool = await _pool()
+    pool = await _pool(canonical_event_schema)
     try:
         left = PgEventStore(pool)
         right = PgEventStore(pool)
@@ -120,6 +129,12 @@ class _FakeConnection:
         self._pool.statements.append(sql)
         return self._pool.next_sequence
 
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
+        self._pool.statements.append(sql)
+        if "FROM pg_attribute a" in sql:
+            return self._pool.column_contract
+        return [{"columns": list(key)} for key in self._pool.unique_keys]
+
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
@@ -147,6 +162,16 @@ class _FakeAsyncpgPool:
         self.statements: list[str] = []
         self.rows: dict[str, dict[str, Any]] = rows or {}
         self.next_sequence = 1
+        self.unique_keys = [("event_id",), ("stream_id", "sequence")]
+        self.column_contract = [
+            {"attname": name, "data_type": kind, "can_insert": True}
+            for name, kind in (
+                ("event_id", "text"),
+                ("sequence", "bigint"),
+                ("timestamp", "double precision"),
+                ("payload", "jsonb"),
+            )
+        ]
         self._connection = _FakeConnection(self)
 
     def acquire(self) -> _Acquire:
@@ -157,13 +182,23 @@ class _FakeAsyncpgPool:
         return self.rows.get(str(args[0]))
 
 
-async def test_ensure_schema_locks_then_creates_the_canonical_table() -> None:
+async def test_ensure_schema_checks_the_canonical_table_without_ddl() -> None:
     pool = _FakeAsyncpgPool()
 
     await PgEventStore(pool).ensure_schema()
 
-    assert any("pg_advisory_xact_lock" in sql for sql in pool.statements)
-    assert any("CREATE TABLE IF NOT EXISTS canonical_event_log" in sql for sql in pool.statements)
+    assert any(sql.startswith("SELECT *, ") for sql in pool.statements)
+    assert any("FROM canonical_event_log LIMIT 0" in sql for sql in pool.statements)
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
+    projection = pool.statements[0].removeprefix("SELECT *, ").split(" FROM ", 1)[0]
+    assert projection.split(", ") == list(_EVENT_COLUMN_TYPES)
+
+    await PgEventStore(pool).append(EventEnvelope(type="run.started", workspace_id="ws-contract"))
+    insert = next(
+        sql for sql in pool.statements if sql.startswith("INSERT INTO canonical_event_log")
+    )
+    written = insert.split("(", 1)[1].split(")", 1)[0]
+    assert {column.strip() for column in written.split(",")} == set(_EVENT_COLUMN_TYPES)
 
 
 async def test_append_refuses_an_envelope_that_already_carries_a_sequence() -> None:
@@ -225,11 +260,13 @@ async def test_list_stream_with_a_degenerate_limit_issues_no_query() -> None:
     assert pool.statements == []
 
 
-async def test_event_id_retry_is_idempotent_under_postgres_concurrency() -> None:
+async def test_event_id_retry_is_idempotent_under_postgres_concurrency(
+    canonical_event_schema: str,
+) -> None:
     workspace = f"ws-idempotent-{uuid4().hex}"
     stream = f"workspace:{workspace}"
     event_id = f"event-{uuid4().hex}"
-    pool = await _pool()
+    pool = await _pool(canonical_event_schema)
     try:
         left = PgEventStore(pool)
         right = PgEventStore(pool)
@@ -244,100 +281,35 @@ async def test_event_id_retry_is_idempotent_under_postgres_concurrency() -> None
         await pool.close()
 
 
-async def test_purge_rejects_a_nonpositive_limit_before_touching_the_pool() -> None:
-    """The bounded batch is bounded: a nonpositive limit is a broken sweep
-    loop, refused before any pool I/O."""
+@pytest.mark.parametrize("keys", [[], [("event_id",)], [("stream_id", "sequence")]])
+async def test_ensure_schema_refuses_missing_uniqueness_guarantees(keys) -> None:
     pool = _FakeAsyncpgPool()
-    with pytest.raises(ValueError, match="limit must be positive"):
-        await PgEventStore(pool).purge_expired(before=time.time() + 1, limit=0)
-    assert not pool.statements
+    pool.unique_keys = keys
+    with pytest.raises(RuntimeError, match="Alembic migrations"):
+        await PgEventStore(pool).ensure_schema()
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
 
 
-async def test_purge_honors_legal_hold_workspaces() -> None:
-    """The PG leg of the deletion-authority contract (#325): events in a held
-    Workspace survive a purge that removes their equally expired neighbors."""
-    held = f"ws-hold-{uuid4().hex}"
-    free = f"ws-free-{uuid4().hex}"
-    pool = await _pool()
-    try:
-        store = PgEventStore(pool)
-        old = time.time() - 10_000
-        await store.append(
-            EventEnvelope(
-                event_id=f"event-{uuid4().hex}", type="e", workspace_id=held, timestamp=old
-            )
-        )
-        await store.append(
-            EventEnvelope(
-                event_id=f"event-{uuid4().hex}", type="e", workspace_id=free, timestamp=old
-            )
-        )
-
-        # The purge is global on this shared database; other tests' leftover
-        # rows inflate the count. Assert what this test owns: its held rows
-        # survive, its free row does not.
-        await store.purge_expired(
-            before=time.time() + 60,
-            legal_hold_workspace_ids=(held,),
-        )
-        assert (
-            await pool.fetchval(
-                "SELECT COUNT(*) FROM canonical_event_log WHERE workspace_id = $1", held
-            )
-            == 1
-        )
-        assert (
-            await pool.fetchval(
-                "SELECT COUNT(*) FROM canonical_event_log WHERE workspace_id = $1", free
-            )
-            == 0
-        )
-    finally:
-        await pool.execute(
-            "DELETE FROM canonical_event_log WHERE workspace_id IN ($1, $2)", held, free
-        )
-        await pool.execute(
-            "DELETE FROM canonical_event_stream_watermarks WHERE stream_id IN ($1, $2)",
-            f"workspace:{held}",
-            f"workspace:{free}",
-        )
-        await pool.close()
+async def test_ensure_schema_accepts_additive_migration_indexes() -> None:
+    pool = _FakeAsyncpgPool()
+    pool.unique_keys.append(("event_id", "workspace_id"))
+    await PgEventStore(pool).ensure_schema()
 
 
-async def test_sequence_high_water_mark_survives_event_purge() -> None:
-    """The PG leg of cursor survival (#325): retention may delete every event
-    of a stream, and the next append must continue its sequence from the
-    durable per-stream high-water mark instead of restarting at 1 — a reader
-    resuming from an earlier `after_sequence` cursor would otherwise silently
-    miss the new events until reused numbers passed its position."""
-    workspace = f"ws-purge-hwm-{uuid4().hex}"
-    stream = f"workspace:{workspace}"
-    pool = await _pool()
-    try:
-        store = PgEventStore(pool)
-        for _ in range(2):
-            await store.append(
-                EventEnvelope(event_id=f"event-{uuid4().hex}", type="e", workspace_id=workspace)
-            )
-        # The purge deletes across every stream in this shared database, so
-        # its return count is global: other tests' leftover rows (or a
-        # crashed run's orphans) legitimately inflate it. Assert what this
-        # test owns — its own stream drains to zero — instead of an exact
-        # global count that only a clean database satisfies.
-        assert await store.purge_expired(before=time.time() + 60) >= 2
-        drained = await pool.fetchval(
-            "SELECT COUNT(*) FROM canonical_event_log WHERE stream_id = $1", stream
-        )
-        assert drained == 0
-        resumed = await store.append(
-            EventEnvelope(event_id=f"event-{uuid4().hex}", type="after", workspace_id=workspace)
-        )
-        assert resumed.sequence == 3
-        page = await store.list_stream(stream, after_sequence=2)
-        assert [event.sequence for event in page] == [3]
-    finally:
-        await pool.execute("DELETE FROM canonical_event_log WHERE stream_id = $1", stream)
-        await pool.execute(
-            "DELETE FROM canonical_event_stream_watermarks WHERE stream_id = $1", stream
-        )
-        await pool.close()
+@pytest.mark.parametrize("column", ["event_id", "sequence", "timestamp", "payload"])
+async def test_preflight_rejects_incompatible_consumed_column_types(column: str) -> None:
+    pool = _FakeAsyncpgPool()
+    for row in pool.column_contract:
+        if row["attname"] == column:
+            row["data_type"] = "integer"
+    with pytest.raises(RuntimeError, match=f"incompatible column types: {column}"):
+        await PgEventStore(pool).ensure_schema()
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)
+
+
+async def test_preflight_rejects_missing_insert_privilege() -> None:
+    pool = _FakeAsyncpgPool()
+    pool.column_contract[-1]["can_insert"] = False
+    with pytest.raises(RuntimeError, match="requires INSERT privilege"):
+        await PgEventStore(pool).ensure_schema()
+    assert all(sql.lstrip().startswith("SELECT") for sql in pool.statements)

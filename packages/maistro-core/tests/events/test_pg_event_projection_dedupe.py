@@ -24,20 +24,24 @@ def _require_postgres() -> str:
     pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; PostgreSQL evidence needs a real server")
 
 
-async def _pool():
+async def _pool(schema: str):
     import asyncpg
 
-    pool = await asyncpg.create_pool(_require_postgres(), min_size=1, max_size=8)
+    pool = await asyncpg.create_pool(
+        _require_postgres(), min_size=1, max_size=8, server_settings={"search_path": schema}
+    )
     await ensure_canonical_event_schema(pool)
     return pool
 
 
 @pytest.mark.asyncio
-async def test_two_postgres_publishers_deliver_one_legacy_side_effect_for_same_event() -> None:
+async def test_two_postgres_publishers_deliver_one_legacy_side_effect_for_same_event(
+    canonical_event_schema: str,
+) -> None:
     workspace = f"ws-projection-race-{uuid4().hex}"
     stream = f"workspace:{workspace}"
     event_id = f"event-{uuid4().hex}"
-    pool = await _pool()
+    pool = await _pool(canonical_event_schema)
     side_effects: list[str] = []
     bus = EventBus()
 

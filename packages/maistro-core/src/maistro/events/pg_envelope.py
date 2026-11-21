@@ -17,57 +17,97 @@ from maistro.events.envelope import (
     correlated,
     reconstruct_persisted_event,
 )
-from maistro.observability.metrics import (
-    PostgresFetchRow,
-    postgres_table_sample,
-    publish_retention_table_health,
-    retention_health_probe_due,
-)
 
 if TYPE_CHECKING:
     import asyncpg
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS canonical_event_log (
-    event_id TEXT PRIMARY KEY,
-    stream_id TEXT NOT NULL,
-    sequence BIGINT NOT NULL,
-    type TEXT NOT NULL,
-    timestamp DOUBLE PRECISION NOT NULL,
-    workspace_id TEXT NOT NULL DEFAULT '',
-    stream_scope TEXT NOT NULL DEFAULT '',
-    project_id TEXT NOT NULL DEFAULT '',
-    run_id TEXT NOT NULL DEFAULT '',
-    node_run_id TEXT NOT NULL DEFAULT '',
-    attempt_id TEXT NOT NULL DEFAULT '',
-    invocation_id TEXT NOT NULL DEFAULT '',
-    session_id TEXT NOT NULL DEFAULT '',
-    correlation_id TEXT NOT NULL DEFAULT '',
-    causation_id TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT '',
-    actor_id TEXT NOT NULL DEFAULT '',
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
-    UNIQUE(stream_id, sequence)
-);
-CREATE INDEX IF NOT EXISTS idx_canonical_event_stream
-    ON canonical_event_log (stream_id, sequence);
-CREATE INDEX IF NOT EXISTS idx_canonical_event_run
-    ON canonical_event_log (run_id, sequence);
-CREATE TABLE IF NOT EXISTS canonical_event_stream_watermarks (
-    stream_id TEXT PRIMARY KEY,
-    last_sequence BIGINT NOT NULL
-);
-"""
 
-_SCHEMA_LOCK_KEY = 0x6D61_6531  # "mae1"
+# The columns this store consumes, not a second schema definition: no DDL,
+# defaults, migration stamp or type requirements on additive columns live here.
+_EVENT_COLUMN_TYPES = {
+    "event_id": "text",
+    "stream_id": "text",
+    "sequence": "bigint",
+    "type": "text",
+    "timestamp": "double precision",
+    "workspace_id": "text",
+    "stream_scope": "text",
+    "project_id": "text",
+    "run_id": "text",
+    "node_run_id": "text",
+    "attempt_id": "text",
+    "invocation_id": "text",
+    "session_id": "text",
+    "correlation_id": "text",
+    "causation_id": "text",
+    "source": "text",
+    "actor_id": "text",
+    "payload": "jsonb",
+    "provenance": "jsonb",
+}
 
 
 async def ensure_canonical_event_schema(pool: asyncpg.Pool) -> None:
-    """Create the canonical Event table for standalone/supplied-pool callers."""
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
-        await conn.execute(_SCHEMA)
+    """Require migration 030's read/write contract without changing the schema.
+
+    The historical name is retained for supplied-pool callers. Alembic alone
+    owns DDL; this preflight also runs through CapabilityEffectContext, so an
+    unmigrated pool must fail rather than silently creating a second schema.
+    Check consumed column types, SELECT/INSERT privileges and the two uniqueness
+    guarantees on which event identity and stream ordering depend. Additional
+    columns/indexes from newer migrations are compatible and must not require
+    an exact head stamp.
+    """
+    async with pool.acquire() as conn:
+        # Runtime reads use SELECT *, including additive columns. Also name
+        # consumed columns explicitly so a missing one fails even with no rows.
+        await conn.execute(
+            "SELECT *, event_id, stream_id, sequence, type, timestamp, "
+            "workspace_id, stream_scope, project_id, run_id, node_run_id, "
+            "attempt_id, invocation_id, session_id, correlation_id, causation_id, "
+            "source, actor_id, payload, provenance FROM canonical_event_log LIMIT 0"
+        )
+        columns = await conn.fetch(
+            """SELECT a.attname, a.atttypid::regtype::text AS data_type,
+                      has_column_privilege(a.attrelid, a.attnum, 'INSERT') AS can_insert
+               FROM pg_attribute a
+               WHERE a.attrelid = 'canonical_event_log'::regclass
+                 AND a.attname = ANY($1::text[]) AND NOT a.attisdropped""",
+            list(_EVENT_COLUMN_TYPES),
+        )
+        incompatible = [
+            row["attname"]
+            for row in columns
+            if row["data_type"] != _EVENT_COLUMN_TYPES[row["attname"]]
+        ]
+        if incompatible:
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log has incompatible column types: "
+                + ", ".join(incompatible)
+                + "; apply and verify Alembic migrations before starting the application"
+            )
+        if any(not row["can_insert"] for row in columns):
+            raise RuntimeError(
+                "PostgreSQL canonical_event_log requires INSERT privilege on every "
+                "column written by the Event store"
+            )
+        indexes = await conn.fetch(
+            """SELECT array_agg(a.attname ORDER BY k.ord) AS columns
+               FROM pg_index i
+               JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+               JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+               WHERE i.indrelid = 'canonical_event_log'::regclass
+                 AND i.indisunique AND i.indisvalid AND i.indisready AND i.indimmediate
+                 AND i.indpred IS NULL AND i.indexprs IS NULL
+                 AND k.ord <= i.indnkeyatts
+               GROUP BY i.indexrelid"""
+        )
+    keys = {tuple(row["columns"]) for row in indexes}
+    if not {("event_id",), ("stream_id", "sequence")} <= keys:
+        raise RuntimeError(
+            "PostgreSQL canonical_event_log lacks required unique keys; "
+            "apply and verify Alembic migrations before starting the application"
+        )
 
 
 class PgEventStore:
@@ -83,56 +123,8 @@ class PgEventStore:
         self._pool = pool
 
     async def ensure_schema(self) -> None:
+        """Check the Alembic-managed schema; never create or repair it."""
         await ensure_canonical_event_schema(self._pool)
-
-    async def purge_expired(
-        self,
-        *,
-        before: float,
-        limit: int = 1_000,
-        legal_hold_workspace_ids: tuple[str, ...] = (),
-    ) -> int:
-        """Remove old canonical events in bounded, scope-aware batches."""
-        if limit <= 0:
-            raise ValueError("limit must be positive")
-        hold = "" if not legal_hold_workspace_ids else " AND workspace_id <> ALL($2::text[])"
-        if legal_hold_workspace_ids:
-            params: tuple[object, ...] = (before, list(legal_hold_workspace_ids), limit)
-            limit_mark = "$3"
-        else:
-            params = (before, limit)
-            limit_mark = "$2"
-        query = (
-            "DELETE FROM canonical_event_log WHERE event_id IN ("
-            "SELECT event_id FROM canonical_event_log WHERE timestamp < $1"
-            + hold
-            + " ORDER BY timestamp, event_id LIMIT "
-            + limit_mark
-            + ")"
-        )
-        async with self._pool.acquire() as conn, conn.transaction():
-            rows = await conn.fetch(query + " RETURNING event_id", *params)
-        await self._publish_table_health()
-        return len(rows)
-
-    async def _publish_table_health(self) -> None:
-        """Publish the canonical event log's stored volume after a purge (#325).
-
-        Same contract as the SQLite store's probe, plus the per-table size
-        only PostgreSQL can measure (`pg_total_relation_size`). Throttled
-        per store by the publisher.
-        """
-        if not retention_health_probe_due("events:postgres"):
-            return
-        async with self._pool.acquire() as conn:
-            fetchrow: PostgresFetchRow = conn.fetchrow
-            sample = await postgres_table_sample(
-                fetchrow, "canonical_event_log", "timestamp", oldest_unit="unix_s"
-            )
-        if sample is not None:
-            publish_retention_table_health(
-                "events:postgres", "postgres", [sample], min_interval_s=0.0
-            )
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
@@ -157,21 +149,9 @@ class PgEventStore:
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                 f"canonical-stream:{event.stream_id}",
             )
-            # The durable per-stream high-water mark, not the surviving rows,
-            # is the allocation floor: retention deletes event rows, and
-            # MAX(sequence) over what is left would rewind the stream — a
-            # reader resuming from `after_sequence=N` would silently miss every
-            # new event until reused numbers passed N. The mark is a table of
-            # its own precisely because the purge may remove every row of the
-            # stream (and may remove the highest sequence first: timestamps
-            # need not follow append order). Advanced in the same transaction,
-            # under the same stream lock, so allocation stays serialized.
             sequence = await conn.fetchval(
-                "SELECT GREATEST("
-                "COALESCE((SELECT MAX(sequence) FROM canonical_event_log "
-                "WHERE stream_id = $1), 0), "
-                "COALESCE((SELECT last_sequence FROM canonical_event_stream_watermarks "
-                "WHERE stream_id = $1), 0)) + 1",
+                "SELECT COALESCE(MAX(sequence), 0) + 1 "
+                "FROM canonical_event_log WHERE stream_id = $1",
                 event.stream_id,
             )
             persisted = replace(event, sequence=int(sequence))
@@ -203,22 +183,6 @@ class PgEventStore:
                 persisted.actor_id,
                 json.dumps(persisted.payload),
                 json.dumps(persisted.provenance),
-            )
-            # Advance the mark in the same transaction as the insert: a commit
-            # that moved a stream's sequence without the mark would hand the
-            # next append a number the cursor model has already delivered.
-            # The target's column is qualified on the right side: bare
-            # `last_sequence` is ambiguous there between the existing row and
-            # EXCLUDED (the sqlite twin needs no qualification — its dialect
-            # resolves unqualified names to the original row).
-            await conn.execute(
-                "INSERT INTO canonical_event_stream_watermarks "
-                "(stream_id, last_sequence) VALUES ($1, $2) "
-                "ON CONFLICT (stream_id) DO UPDATE SET "
-                "last_sequence = GREATEST("
-                "canonical_event_stream_watermarks.last_sequence, EXCLUDED.last_sequence)",
-                persisted.stream_id,
-                persisted.sequence,
             )
             return EventAppendResult(persisted, inserted=True)
 
