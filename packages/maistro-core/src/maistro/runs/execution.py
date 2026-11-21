@@ -171,6 +171,7 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt: ...
 
     async def compensate_unlaunched_attempt(
