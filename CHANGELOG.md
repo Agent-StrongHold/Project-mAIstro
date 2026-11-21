@@ -23,6 +23,15 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Security
+
+- **Partial wire of unenforced security controls (#2315).** `ToolGuardrail`
+  now runs on the Workspace Agent tool path (block exact-repeat loops before
+  dispatch). Admin strike recovery is reachable via
+  `POST /v1/admin/strikes/{user}/unlock|enable|remove`, which reads
+  `Container.strike_recovery`. `task_policy`, `trust_boundary`, and
+  `flag_response` stay CONNECT-parked until honest callers exist.
+
 ### Changed
 
 - **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
