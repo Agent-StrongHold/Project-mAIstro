@@ -758,10 +758,19 @@ class Agent:
         delegation_depth: int = 0,
     ) -> Any:
         """Set canonical LLM correlation for one turn, then clear it."""
+        set_agent_turn = getattr(self._llm, "set_agent_turn", None)
         set_turn = getattr(self._llm, "set_turn", None)
         clear_turn = getattr(self._llm, "clear_turn", None)
-        if callable(set_turn):
-            set_turn(turn_id, agent_name=self.identity.name)
+        if callable(set_agent_turn):
+            # In-agent delegation is one tail-call chain inside one Attempt
+            # (ADR-082426-6201). Its existing depth distinguishes revisits to
+            # the same Agent without inventing canonical execution records.
+            set_agent_turn(agent_name=self.identity.name, delegation_depth=delegation_depth)
+        elif callable(set_turn):
+            # Domain turn/session ids are not canonical Run ids. The client
+            # adopts the identity already bound by the Attempt executor.
+            del turn_id
+            set_turn(agent_name=self.identity.name)
         try:
             return await self._run_strategy(
                 context_messages,
