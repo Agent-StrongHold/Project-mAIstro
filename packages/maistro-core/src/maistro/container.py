@@ -1485,6 +1485,7 @@ class Container:
         spend the whole budget a second time. Only observed persisted progress
         (an accepted outcome or a Run settlement) charges the budget (#1850).
         """
+        from maistro.runs.recovered_disposition import RecoveredDispositionRefused
         from maistro.runs.store import RunIntegrityError
 
         done = 0
@@ -1497,7 +1498,12 @@ class Container:
             try:
                 if await self._reconcile_terminal_attempt_progress(attempt, reconciler):
                     done += 1
-            except RunIntegrityError:
+            except (RunIntegrityError, RecoveredDispositionRefused):
+                # The replay half re-finds the same reclaimed Attempt the sweep
+                # half just refused (#232 P4a refusal table): a NodeRun that
+                # never left CREATED/QUEUED — or that another path terminalized
+                # concurrently — is not this tick's to rewrite, and one refusal
+                # must not abort the tick for every other Run.
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
                     attempt.attempt_id,
