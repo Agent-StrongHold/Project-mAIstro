@@ -2602,6 +2602,36 @@
       "production_enabled": true,
       "reason": "records observed budget consumption against the campaign's stop conditions",
       "effect_owner": "campaign store + campaign audit"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/strikes.py",
+      "method": "POST",
+      "route": "/admin/strikes/{target_user_id}/unlock",
+      "handler": "unlock_strikes",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin strike recovery over Container.strike_recovery (#2315): clears a strike-ladder lock; 403 without the admin role, Sentinel-authorizes the actor, refuses self-service, 503 unless wired",
+      "effect_owner": "strike tracker records + audit log"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/strikes.py",
+      "method": "POST",
+      "route": "/admin/strikes/{target_user_id}/enable",
+      "handler": "enable_strikes",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin strike recovery over Container.strike_recovery (#2315): re-enables a disabled strike record; 403 without the admin role, Sentinel-authorizes the actor, refuses self-service, 503 unless wired",
+      "effect_owner": "strike tracker records + audit log"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/strikes.py",
+      "method": "POST",
+      "route": "/admin/strikes/{target_user_id}/remove",
+      "handler": "remove_strikes",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin strike recovery over Container.strike_recovery (#2315): removes N (count>=1, default all) recorded strikes; 403 without the admin role, Sentinel-authorizes the actor, refuses self-service, 503 unless wired",
+      "effect_owner": "strike tracker records + audit log"
     }
   ],
   "frontend_surfaces": [
