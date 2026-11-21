@@ -595,6 +595,38 @@ def refuse_completion_under_terminal_run(run_status: RunStatus, attempt_id: str)
         )
 
 
+def _refuse_generic_recovered_cause(cancellation_cause: CancellationCause | None) -> None:
+    """Generic transition may not stamp RECOVERED (#2421 / #232 P3c)."""
+    if cancellation_cause is CancellationCause.RECOVERED:
+        raise InvalidLifecycleTransition(
+            "generic transition_attempt cannot stamp RECOVERED; "
+            "use reclaim_attempt / compensate_unlaunched_attempt / recover_orphaned_attempt"
+        )
+    if cancellation_cause is not None and cancellation_cause is not CancellationCause.REQUESTED:
+        raise InvalidLifecycleTransition(
+            f"generic transition_attempt rejects cancellation_cause={cancellation_cause.value}"
+        )
+
+
+def _refuse_illegal_requested_stamp(
+    attempt: Attempt,
+    target: AttemptStatus,
+    cancellation_cause: CancellationCause | None,
+) -> None:
+    """REQUESTED is CANCELLED-only and never rewrites an existing cause."""
+    if cancellation_cause is None:
+        return
+    if target is not AttemptStatus.CANCELLED:
+        raise InvalidLifecycleTransition(
+            f"cancellation_cause requires target CANCELLED, not {target.value}"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot rewrite cancellation_cause={attempt.cancellation_cause.value} "
+            f"on Attempt {attempt.attempt_id!r}"
+        )
+
+
 def transition_attempt(
     attempt: Attempt,
     target: AttemptStatus,
@@ -603,11 +635,20 @@ def transition_attempt(
     result: object | None = None,
     error: str | None = None,
     metrics: dict[str, object] | None = None,
+    cancellation_cause: CancellationCause | None = None,
 ) -> Attempt:
+    """Advance an Attempt's status; optionally stamp REQUESTED on CANCELLED.
+
+    Generic callers may pass only ``None`` or ``REQUESTED``. ``RECOVERED`` is
+    refused here — reclaim / compensate / orphan writers own that leaf (#2421 /
+    #232 P3c). An already-caused Attempt refuses a rewrite.
+    """
     if target not in ATTEMPT_TRANSITIONS[attempt.status]:
         raise InvalidLifecycleTransition(
             f"illegal transition: {attempt.status.value} -> {target.value}"
         )
+    _refuse_generic_recovered_cause(cancellation_cause)
+    _refuse_illegal_requested_stamp(attempt, target, cancellation_cause)
 
     timestamp = _now(at)
     values = attempt.model_dump(mode="python")
@@ -620,7 +661,12 @@ def transition_attempt(
         values["started_at"] = timestamp
     if target in TERMINAL_ATTEMPT_STATUSES:
         values["finished_at"] = timestamp
-    return Attempt.model_validate(values)
+    settled = Attempt.model_validate(values)
+    if cancellation_cause is CancellationCause.REQUESTED:
+        stamped = settled.model_dump(mode="python")
+        stamped["cancellation_cause"] = CancellationCause.REQUESTED
+        return Attempt.model_validate(stamped)
+    return settled
 
 
 __all__ = [
