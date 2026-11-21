@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
 - **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
   group `governance-conformance` keeps CONNECT with #2322 as the named owner
   until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early

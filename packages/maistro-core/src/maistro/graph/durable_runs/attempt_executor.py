@@ -374,9 +374,10 @@ async def _reconcile_orphaned_attempts(
     for attempt in active:
         if attempt.execution_lease is not None:
             continue
-        terminal = await execution_store.transition_attempt(
+        # Dedicated leaseless orphan writer stamps CANCELLED+RECOVERED;
+        # generic transition_attempt must not carry RECOVERED (#232 P4b).
+        terminal = await execution_store.recover_leaseless_orphaned_attempt(
             attempt.attempt_id,
-            AttemptStatus.CANCELLED,
             error="orphaned physical Attempt recovered after process loss",
         )
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)

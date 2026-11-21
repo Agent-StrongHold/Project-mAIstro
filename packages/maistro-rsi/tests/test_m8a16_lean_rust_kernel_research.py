@@ -874,6 +874,12 @@ _TRANSLATABLE: dict[str, str] = {
     "has_live_execution_lease": "pure existential over lease_is_expired",
     "cascaded_node_run_error": "pure string formatting",
     "refuse_completion_under_terminal_run": "pure set membership check; raise encodes as Result",
+    "_refuse_generic_recovered_cause": (
+        "pure CancellationCause membership check; raise encodes as Result (#2421)"
+    ),
+    "_refuse_illegal_requested_stamp": (
+        "pure CANCELLED-target + preexisting-cause checks; raise encodes as Result (#2421)"
+    ),
 }
 
 _UNTRANSLATABLE: dict[str, str] = {
@@ -890,6 +896,9 @@ _UNTRANSLATABLE: dict[str, str] = {
     "reclaim_attempt": "delegates to transition_attempt (pydantic boundary)",
     "compensate_unlaunched_attempt": (
         "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
+    ),
+    "recover_leaseless_orphaned_attempt": (
+        "delegates to transition_attempt + model_dump/model_validate + wall clock via _now"
     ),
     "settle_open_node_run": "delegates to transition_node_run (pydantic boundary)",
 }
@@ -1310,8 +1319,8 @@ def test_translatability_classification_covers_exactly_the_module() -> None:
     records, total, translatable, violations = classify_module()
     assert violations == ()
     assert total == len(records)
-    assert translatable == 10
-    assert total == 21
+    assert translatable == 12
+    assert total == 24
 
 
 def test_kernel_decision_functions_are_classified_translatable() -> None:
@@ -1336,9 +1345,9 @@ def test_pydantic_and_clock_boundaries_are_classified_untranslatable() -> None:
 
 def test_report_answers_the_evidence_questions() -> None:
     report = build_report()
-    assert report.module_defs_total == 21
-    assert report.module_defs_translatable == 10
-    assert report.module_translatable_pct == 48
+    assert report.module_defs_total == 24
+    assert report.module_defs_translatable == 12
+    assert report.module_translatable_pct == 50
     assert report.kernel_extraction_coverage.startswith("100%")
     assert len(report.aeneas_breakers) == 4
     assert all(

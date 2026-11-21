@@ -29,7 +29,6 @@ const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
 const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
@@ -186,11 +185,11 @@ function AppRoutes() {
                 <Route path="/" element={<AppShell />}>
                   {/* #1048 / #1050: default landing is Workspace Home unless
                       the user set preferences.workspace_default_landing on
-                      the canonical profile. Dashboard stays registered until
-                      retirement burn-down (#2274) deletes it. */}
+                      the canonical profile. #2274: legacy Dashboard page is
+                      deleted — /dashboard redirects to Home. */}
                   <Route index element={<DefaultLandingRedirect />} />
                   <Route path="home" element={<Home />} />
-                  <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="dashboard" element={<Navigate to="/home" replace />} />
                   <Route path="chat" element={<Chat />} />
                   {/* #1049: Attention is the Workspace orchestration inbox
                       (read-only projection). Home links default here. */}

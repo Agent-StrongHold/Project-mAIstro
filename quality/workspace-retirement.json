@@ -4,13 +4,12 @@
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
-      "disposition": "PROJECT",
-      "replaced_by": "Workspace Home (#1048)",
+      "disposition": "RETIRE",
+      "replaced_by": "Workspace Home (#1048); /dashboard redirects to /home (#2274)",
       "delete_by": "M3-E",
-      "owner": "#1048",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2274",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",

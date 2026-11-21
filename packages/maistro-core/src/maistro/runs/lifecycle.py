@@ -526,6 +526,56 @@ def compensate_unlaunched_attempt(
     return Attempt.model_validate(values)
 
 
+def recover_leaseless_orphaned_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle a lease-less active Attempt under explicit resume as CANCELLED+RECOVERED.
+
+    Dedicated orphan writer (#232 / ADR-082826-08f0): resume of the owning
+    record asserts process death for leaseless work that cannot outlive its
+    process. Live leases belong to ``reclaim_attempt``; prelaunch CREATED with
+    no ``started_at`` belongs to ``compensate_unlaunched_attempt``. Generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
+    if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} in "
+            f"{attempt.status.value!r}; leaseless orphan recovery requires "
+            "CREATED or RUNNING"
+        )
+    if attempt.execution_lease is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that still holds a "
+            "lease; use reclaim_attempt after expiry"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result,
+        error=error or "orphaned physical Attempt recovered after process loss",
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
 #:
 #: Not the Run's own terminal status. The node did not succeed, fail or time
@@ -595,6 +645,38 @@ def refuse_completion_under_terminal_run(run_status: RunStatus, attempt_id: str)
         )
 
 
+def _refuse_generic_recovered_cause(cancellation_cause: CancellationCause | None) -> None:
+    """Generic transition may not stamp RECOVERED (#2421 / #232 P3c)."""
+    if cancellation_cause is CancellationCause.RECOVERED:
+        raise InvalidLifecycleTransition(
+            "generic transition_attempt cannot stamp RECOVERED; "
+            "use reclaim_attempt / compensate_unlaunched_attempt / recover_orphaned_attempt"
+        )
+    if cancellation_cause is not None and cancellation_cause is not CancellationCause.REQUESTED:
+        raise InvalidLifecycleTransition(
+            f"generic transition_attempt rejects cancellation_cause={cancellation_cause.value}"
+        )
+
+
+def _refuse_illegal_requested_stamp(
+    attempt: Attempt,
+    target: AttemptStatus,
+    cancellation_cause: CancellationCause | None,
+) -> None:
+    """REQUESTED is CANCELLED-only and never rewrites an existing cause."""
+    if cancellation_cause is None:
+        return
+    if target is not AttemptStatus.CANCELLED:
+        raise InvalidLifecycleTransition(
+            f"cancellation_cause requires target CANCELLED, not {target.value}"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot rewrite cancellation_cause={attempt.cancellation_cause.value} "
+            f"on Attempt {attempt.attempt_id!r}"
+        )
+
+
 def transition_attempt(
     attempt: Attempt,
     target: AttemptStatus,
@@ -603,11 +685,20 @@ def transition_attempt(
     result: object | None = None,
     error: str | None = None,
     metrics: dict[str, object] | None = None,
+    cancellation_cause: CancellationCause | None = None,
 ) -> Attempt:
+    """Advance an Attempt's status; optionally stamp REQUESTED on CANCELLED.
+
+    Generic callers may pass only ``None`` or ``REQUESTED``. ``RECOVERED`` is
+    refused here — reclaim / compensate / orphan writers own that leaf (#2421 /
+    #232 P3c). An already-caused Attempt refuses a rewrite.
+    """
     if target not in ATTEMPT_TRANSITIONS[attempt.status]:
         raise InvalidLifecycleTransition(
             f"illegal transition: {attempt.status.value} -> {target.value}"
         )
+    _refuse_generic_recovered_cause(cancellation_cause)
+    _refuse_illegal_requested_stamp(attempt, target, cancellation_cause)
 
     timestamp = _now(at)
     values = attempt.model_dump(mode="python")
@@ -620,7 +711,12 @@ def transition_attempt(
         values["started_at"] = timestamp
     if target in TERMINAL_ATTEMPT_STATUSES:
         values["finished_at"] = timestamp
-    return Attempt.model_validate(values)
+    settled = Attempt.model_validate(values)
+    if cancellation_cause is CancellationCause.REQUESTED:
+        stamped = settled.model_dump(mode="python")
+        stamped["cancellation_cause"] = CancellationCause.REQUESTED
+        return Attempt.model_validate(stamped)
+    return settled
 
 
 __all__ = [
@@ -640,6 +736,7 @@ __all__ = [
     "lease_is_expired",
     "reclaim_attempt",
     "reclaimed_attempt_error",
+    "recover_leaseless_orphaned_attempt",
     "refuse_completion_under_terminal_run",
     "renew_attempt_lease",
     "renewed_lease",
