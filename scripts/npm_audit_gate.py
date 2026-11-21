@@ -10,18 +10,26 @@ picomatch is a hard dependency of the frontend's dev toolchain — vite@8.3.8
 depends on ``picomatch ^4.0.7`` directly and tinyglobby 0.2.17 depends on it —
 so no lock refresh, override, or upgrade can produce a report without it.
 
+The advisory was WITHDRAWN on 2026-11-18T15:38:56Z (its own summary now reads
+"Withdrawn Advisory: picomatch vulnerable to ReDoS …"), npm's audit database
+stopped reporting it, and the two-way ratchet below removed the waiver the
+same day: ``ALLOWED`` ships empty again. A future waiver is added here only
+with a no-fix rationale, and this same ratchet deletes it the moment the
+report stops naming it.
+
 This is the same shape the Python supply chain hit with ``ecdsa`` /
 PYSEC-2026-1325 ("upstream states there is no planned fix"), which
 ``scripts/pip_audit_gate.py`` already solved with a triaged allowlist. This
 module mirrors that design for npm: one list, one verdict.
 
-Resolution (2026-11-18): GitHub withdrew GHSA-fc5q-39xc-vjpf ("withdrawn
-because it is a security issue", i.e. retracted as a false report; see the
-advisory's ``withdrawn_at: 2026-11-18T15:38:56Z``). ``npm audit`` stopped
-listing it the same day while the lock still pins picomatch 4.0.7, so the
-two-way ratchet below fired on exactly its own terms and the waiver was
-deleted: ``ALLOWED`` is empty again until the next no-fix advisory arrives
-and is triaged on its own merits.
+Waiver ledger: that advisory was waived here from 2026-10-19 (#1450, round 9).
+On 2026-11-18 npm's advisory database stopped reporting it — ``npm audit
+--json`` returned **zero** advisories against the identical lock (picomatch
+still pinned at 4.0.7, no new release) — and the two-way ratchet below
+consumed the waiver (#2375): a waiver whose advisory stops being reported must
+go with it. ALLOWED is empty again; the gate stays so the next unpatchable
+advisory gets the same triaged treatment, and if the advisory resurfaces it
+blocks again until it is re-triaged on its own merits.
 
 Contract
 --------
@@ -70,11 +78,14 @@ BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 # advisory on it too. Each entry must name an advisory with no available fix
 # and say why the tree is acceptable anyway, specifically enough to re-audit.
 # An entry whose advisory stops being reported fails as stale — delete it.
-# Currently empty: the one entry this gate ever carried (GHSA-fc5q-39xc-vjpf,
-# the picomatch ReDoS report) was withdrawn upstream on 2026-11-18 and npm
-# audit stopped reporting it, so the stale-waiver ratchet required deleting
-# it. The withdrawn rationale is preserved in git history and in
-# docs/testing/inventory-notes/l80-npm-audit-picomatch-waiver.md.
+#
+# Ships EMPTY since 2026-11-18 (#2375): the one waiver this list ever carried
+# (GHSA-fc5q-39xc-vjpf, picomatch ReDoS through single-branch repeated
+# extglobs, range <=4.0.7 with no patched version) was withdrawn by upstream
+# on 2026-11-18T15:38:56Z — npm's advisory database stopped reporting it
+# against the identical lock, picomatch still pinned at 4.0.7 — and the stale
+# leg below required its deletion. History in the module docstring and
+# REPAIR-NOTES-1450-round9-picomatch-audit-gate.md.
 ALLOWED: dict[str, str] = {}
 
 
@@ -252,7 +263,8 @@ def audit_report(path: str) -> int:
         print(
             "\nFix by upgrading the affected dependency. Only add an advisory ID "
             "to ALLOWED in scripts/npm_audit_gate.py when no fixed version exists, "
-            "and say why, with a rationale specific enough to re-audit."
+            "and say why — the retired GHSA-fc5q-39xc-vjpf waiver (git history of "
+            "this file) shows the expected shape."
         )
         return 1
 

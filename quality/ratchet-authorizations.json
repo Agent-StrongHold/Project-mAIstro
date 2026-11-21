@@ -6,6 +6,7 @@
       "reason": "The seam #231 exists to have the live Hive scheduler build against, not yet a consumed dependency: the migration is blocked on maistro.runs.consumption's deliberate single-node-Run scope (#44/#34), since Hive's bundled daily-status DAG is multi-node and a straight swap today would leave firings QUEUED forever. Exposed ahead of its reader so the constructor exists in one reviewed place before the migration lands, following template_store's own precedent (#251) of exposing a store ahead of the routes that consume it."
     }
   },
+  "ac-state": {},
   "reachability": {
     "maistro.events.convergence": {
       "owner": "@BlakeMatthews-dev",
@@ -583,6 +584,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#364",
       "reason": "SQLiteScopeStore.bind_workspace_store is the late-binding composition hook for P0.8 store-boundary scope (#364 / #1841). Conformance tests and container wiring call it after both stores are constructed; vulture scans packages/*/src without test importers. This grant authorizes only this exact identity for the P0.8 burn PR."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'delete_layer'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2311",
+      "reason": "FastAPI DELETE /{canvas_id}/layers/{layer_id} route handler on the transitional legacy /api/canvas surface (ADR-045 explicitly transitional). Deleting canvas/tool.py (#2311 RETIRE) removed the only other tree-wide definition-and-call of the name delete_layer, so vulture's name-based scan stopped crediting the route handler. Same blind-spot class as the sibling handlers (composite_canvas, delete_canvas, list_layer_jobs, start_generate) already banked under the fastapi-route-handler rule: decorated route handlers are reached through FastAPI dispatch, not a call site vulture can see."
+    },
+    "packages/maistro-canvas/src/maistro_canvas/layers.py::unused variable 'perspective'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2311",
+      "reason": "WorldStyle.perspective is a declarative pydantic model field (flat|one_point|two_point|isometric, ADR-039 world-style vocabulary). Deleting canvas/tool.py (#2311 RETIRE) removed the only tree-wide reader of the name, so vulture's name-based scan stopped crediting the field. Same declarative-field class as the pydantic-declarative-field rule. Follow-up filed to serialize perspective into asset-path world-style prompts so the field becomes honestly consumed rather than banked."
     }
   },
   "model-egress": {
@@ -1318,6 +1329,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#2318",
       "reason": "#2318 wires ADR-085 quota verification and ADR-038 resilience helpers onto the Invocation / LLM gateway path that already sits on the container promotion closure. These modules record provider balance evidence, probe context windows, coordinate 429 windows, or choose stage retry delays \u2014 spend, pacing, and retry controls. They score no candidate, gate no merge, and install no promotion authority. This grant lands first so the #2318 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/__init__.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/gate.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/protocols.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/types.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
     }
   },
   "principal-identity": {

@@ -1,6 +1,6 @@
 ---
 name: registry-check
-description: Validate ADR/spec docs with the maistro-registry CLI — front-matter validation, dependency-DAG cycle check, and local link check. Mirrors the registry.yml CI gate. Use after editing docs/adr/ or docs/specs/, before pushing. Optional path argument scopes the walk.
+description: "Validate ADR/spec docs with the maistro-registry CLI — front-matter validation, dependency-DAG cycle check, and local link check. Mirrors the registry.yml CI gate. Use after editing docs/adr/ or docs/specs/, before pushing. Optional path argument scopes the walk."
 ---
 
 The user wants to verify ADR/spec documentation passes the registry gate. The argument is $ARGUMENTS (an optional path to walk; default `.`).

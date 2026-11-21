@@ -132,7 +132,11 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
-# flags the 1.27.2 stdlib inside the built binary.
+# flags the 1.27.2 stdlib inside the built binary. That 1.27.3 builder aged out
+# in turn: CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH,
+# fixed in go1.26.11/1.27.4) flags the 1.27.3 stdlib inside the built binary
+# (#2375 Container scan gate, security.yml run 44477475371, 2026-11-19), so the
+# builder moved to 1.27.4-alpine, retiring both 1.27.3 indexes.
 #
 # 29.9.3 bump (CR1373 CI repair, 2026-11-16): trivy flagged the vendored
 # dependency set of v29.9.1 — go-jose/v4 4.1.5 (CVE-2026-116587, DoS via
@@ -143,12 +147,15 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # alone cannot close the second advisory: x/net is patched onto the pinned
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
 # klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
 # upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
 # only the x/net patch below remains.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
 # The grype DB additionally flags the vendored github.com/klauspost/compress
