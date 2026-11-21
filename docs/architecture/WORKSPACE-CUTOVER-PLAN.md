@@ -537,7 +537,7 @@ M2 security (#66) runs **after** Workspace Agent exists — not on legacy `Chat.
 |--------|------|
 | `tool_binding.py` dispatch | Yes — owner [#2276](https://github.com/Agent-StrongHold/Project-mAIstro/issues/2276) |
 | `repo_scanner`, `pipeline_orchestrator`, `chatbot_integration` | Yes |
-| repertoire → Capabilities UI (#2273); security deps #59/#848 | Yes |
+| repertoire package RETIREd (#2319 → learnings lifecycle); skills security deps #59/#848; Capabilities UI is slots/providers (#2273), not repertoire | Yes |
 | builders → Backlog (#49) | Yes |
 | delivery gateway (#57) | Yes |
 
