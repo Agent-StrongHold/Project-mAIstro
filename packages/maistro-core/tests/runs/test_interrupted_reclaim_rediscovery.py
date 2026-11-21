@@ -1,19 +1,11 @@
-"""Scope guards for the recovery tick's stranded-reclaim rediscovery (#1863).
+"""Scope guards for typed stranded-reclaim rediscovery (#1863 / #232 P5a).
 
-The repair in `Container.recover_abandoned_attempts` re-finds a reclaimed
-Attempt whose reconciliation a crash interrupted, but rediscovery must stay
-narrower than "any terminal Attempt": a FAILED, TIMED_OUT, or
-requested-CANCELLED Attempt says a retry decision is owed to its owner, and a
-newer Attempt under the same NodeRun means the crash window already healed.
-These tests pin both boundaries against the public tick, on the canonical
-store backends, and hold the tick to its #1850 counting rule — parking a
-stranded Run is persisted progress, but it is not a settlement, so a
-rediscovery-only tick reports zero.
-
-The crash window itself is injected at the same seam the #1863
-characterization used: the real `reclaim_expired_attempts` commits the
-physical CANCELLED and the test simply never reconciles it, which is exactly
-the state a process lost between the two halves leaves behind.
+The repair in ``Container.recover_abandoned_attempts`` re-finds a typed
+RECOVERED Attempt whose reconciliation a crash interrupted, but rediscovery
+must stay narrower than "any terminal Attempt" or "error text that looks like
+a reclaim": FAILED / TIMED_OUT / requested-CANCELLED / unknown-cause / spoofed
+prefix stay with their owners, and a newer Attempt under the same NodeRun
+means the crash window already healed.
 """
 
 from __future__ import annotations
@@ -26,7 +18,8 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
-from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.lifecycle import reclaimed_attempt_error
+from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -47,7 +40,6 @@ async def recovery_container(spine: Any) -> Any:
 async def _running_run(
     container: Container, workspace: str, project_id: str, *, nodes: list[str]
 ) -> tuple[str, dict[str, str]]:
-    """A RUNNING Run with one RUNNING NodeRun per name; returns (run_id, node ids)."""
     store = container.run_store
     graph = Graph(
         workspace_id=workspace,
@@ -71,7 +63,6 @@ async def _running_run(
 
 
 async def _stranded_reclaim(container: Container, node_run_id: str, *, moment: datetime) -> str:
-    """Commit the physical reclaim and stop there: the #1863 crash window."""
     store = container.run_store
     attempt = await store.create_attempt(
         node_run_id,
@@ -88,11 +79,11 @@ async def _stranded_reclaim(container: Container, node_run_id: str, *, moment: d
     (reclaimed,) = await store.reclaim_expired_attempts(now=moment)
     assert reclaimed.attempt_id == attempt.attempt_id
     assert reclaimed.status is AttemptStatus.CANCELLED
+    assert reclaimed.cancellation_cause is CancellationCause.RECOVERED
     return attempt.attempt_id
 
 
 def _forbid_dispatch(container: Container, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recovery consumes persisted facts; it must never mint physical work."""
     store = container.run_store
     for name in ("create_attempt", "create_node_run"):
         monkeypatch.setattr(store, name, AsyncMock(side_effect=AssertionError("dispatch")))
@@ -118,12 +109,6 @@ async def test_recovery_tick_leaves_retry_owned_terminals_to_their_owner(
     terminal: AttemptStatus,
     evidence: str,
 ) -> None:
-    """A terminal Attempt without reclaim evidence is nobody's recovery case.
-
-    The lease sweep's own error text is what marks an Attempt as reclaim
-    evidence; a FAILED, TIMED_OUT, or requested-CANCELLED row records a
-    decision someone owes or made, and the tick must not park over it.
-    """
     container, workspace, project_id = recovery_container
     store = container.run_store
     run_id, node_ids = await _running_run(container, workspace, project_id, nodes=["a"])
@@ -143,16 +128,37 @@ async def test_recovery_tick_leaves_retry_owned_terminals_to_their_owner(
     assert await store.get_attempt(attempt.attempt_id) == attempt
 
 
+async def test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered(
+    recovery_container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Error text that looks like a reclaim is not rediscovery authority (#232 P5a)."""
+    container, workspace, project_id = recovery_container
+    store = container.run_store
+    run_id, node_ids = await _running_run(container, workspace, project_id, nodes=["a"])
+    attempt = await store.create_attempt(node_ids["a"])
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    spoofed = await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error=reclaimed_attempt_error("worker-spoof"),
+    )
+    assert spoofed.cancellation_cause is None
+    _forbid_dispatch(container, monkeypatch)
+
+    assert (
+        await container.recover_abandoned_attempts(now=datetime.now(UTC) + timedelta(hours=1)) == 0
+    )
+
+    run = await store.get_run(run_id)
+    node = await store.get_node_run(node_ids["a"])
+    assert run is not None and run.status is RunStatus.RUNNING
+    assert node is not None and node.status is RunStatus.RUNNING
+    assert await store.get_attempt(attempt.attempt_id) == spoofed
+
+
 async def test_recovery_tick_does_not_park_behind_a_newer_attempt(
     recovery_container: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reclaimed Attempt a newer Attempt supersedes is not rediscovered.
-
-    If a newer Attempt exists under the NodeRun, the crash window already
-    healed: someone re-attempted the node after the reclaim. Parking over the
-    newer Attempt's work would substitute a stale recovery artefact for the
-    decision its owner is about to write.
-    """
     container, workspace, project_id = recovery_container
     store = container.run_store
     run_id, node_ids = await _running_run(container, workspace, project_id, nodes=["a"])
@@ -174,13 +180,6 @@ async def test_recovery_tick_does_not_park_behind_a_newer_attempt(
 async def test_rediscovery_parks_only_its_own_node(
     recovery_container: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One stranded node parks alone while a leased sibling still runs.
-
-    The Run is only parked once nothing under it is active, so a sibling
-    NodeRun holding an unexpired lease keeps the Run RUNNING through the tick
-    that heals the stranded node. Expiring the sibling's lease lets the next
-    tick finish the job through the ordinary reclaim-and-reconcile path.
-    """
     container, workspace, project_id = recovery_container
     store = container.run_store
     run_id, node_ids = await _running_run(container, workspace, project_id, nodes=["a", "b"])
@@ -209,7 +208,6 @@ async def test_rediscovery_parks_only_its_own_node(
     assert active is not None and active.status is RunStatus.RUNNING
     assert run is not None and run.status is RunStatus.RUNNING
 
-    # Once the sibling's lease lapses too, the run parks and reports the work.
     assert await container.recover_abandoned_attempts(now=moment + timedelta(hours=3), limit=1) == 1
     healed = await store.get_run(run_id)
     assert healed is not None and healed.status is RunStatus.WAITING
