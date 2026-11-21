@@ -1099,3 +1099,81 @@ cursor/ base is the documented expected state); (b) CI check-runs on
 (c) fold `546e72c0406` in on the next snapshot round (conflict-free);
 (d) nothing pushed; no GitHub mutations; the only change in this round is this
 notes section.
+
+## Round at `3a6c5152f5` (verifier/writer round; prior block = preflight snapshot, 2026-11-21)
+
+**Previous block resolved (diagnosis, no code change owed):** "launch/preflight:
+Hosted PR snapshot incomplete or not the review head" — at dispatch capture the
+hosted PR #2427 head `3a6c5152f542` carried **0 check-runs / 0 statuses**
+(dispatch-context.json sources[28]/[29] both empty lists): CI had not yet
+posted on the freshly pushed head, so the snapshot was *incomplete*, not
+mismatched. Alignment is now exact: dispatch head == `linked_pr_heads["2427"]`
+== `origin/cursor/m1-b-p5a-recovered-rediscovery-8551` == local HEAD ==
+`3a6c5152f5424995461090d54fe02ca07f276c69`; worktree clean; develop
+`dc8c3e756d1a` (P4a #2424) **is an ancestor** of HEAD; `git diff --numstat
+origin/develop -- quality/` is empty (the P4a merge lost no ledger rows).
+Not repairable in-lane: making GitHub post check-runs is a GitHub mutation
+(prohibited). CI verdicts remain a driver observation; locally everything
+reproduces green below.
+
+**The F811 repair commit re-audited:** `3a6c5152f5` (3 files, 217-/0+) removed
+only byte-identical merge-replayed copies. Post-state: `store.py` carries two
+`apply_recovered_attempt_disposition` defs at `:789`/`:1913` — **different
+classes** (`RunStore` Protocol `:507` vs `InMemoryRunStore` `:864`), the
+legitimate shape; `sqlite_store.py` 1 def; `pg_store.py` 1 def + 1
+`_locked_recovered_disposition_tree`. `uv run ruff check .` → All checks
+passed; `ruff format --check .` → 3618 files already formatted.
+
+**Driver deterministic checks (check-0..8 logs inspected):** sync rc 0 (with
+the known side effect: uninstalls editable `maistro-bootstrap` — see the
+environment note above; restored via `uv sync --locked --all-extras` before
+mypy); ruff pair green; batch **477 passed, 137 skipped** (no DSN);
+hive audit-pagination **32 passed**; per-suite inventory ok ×4 (hive 4321 /
+canvas 633 / core 18857 / rsi 1797).
+
+**Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, DB
+`maistro_cr2427`, `alembic current` = **068 (head)**, `MAISTRO_TEST_PG_DSN`
+set):
+
+1. Five P5a suites → **68 passed, 0 skipped** (memory + sqlite + postgres
+   legs all ran); without the DSN the same four runnable suites → 47 passed,
+   16 skipped — the 16 skips are exactly the postgres legs.
+2. Driver's exact 11-file batch → **614 passed, 0 skipped** — reconciles
+   exactly with check-3 (477 + 137 = 614): every env-skipped parametrization
+   ran live against the edited `PgRunStore` seams.
+3. Whole `packages/maistro-core/tests/runs` + `graph/durable_runs` →
+   **2969 passed, 4 skipped (capability), 4 xfailed** — identical to the
+   `6496275370` round.
+
+**Production facts re-read at HEAD:** `container.py:1436`/`:1509` catch
+`(RunIntegrityError, RecoveredDispositionRefused)`; the sole caller at
+`:1499-1502` passes `allow_stranded_recovered=node_run.status is
+RunStatus.RUNNING`; `_stranded_recovered_attempt` refuses live leases and
+selects solely via `is_typed_recovered_attempt(max-by-ordinal)` (`:1542`);
+`consumption.py:42` import + `:511` typed look-past;
+`grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+`lifecycle.py:327` only, **zero production call sites** — the merge kept the
+typed path over develop's `#1863` prefix path.
+
+**CI-exact quality gates re-run at this head:** vulture
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → **1221
+defined == 1221 findings, rc 0** (base `dc8c3e756d1a` → candidate
+`3a6c5152f542`) — no ledger amendment owed; radon
+(`RATCHET_BASE_REV=origin/develop`) → **124 == 124, rc 0**;
+`check-pr-base.py --base develop --labels ''` → **ok rc 0**; the stacked
+cursor/ base → FAIL with the ADR-095 retarget message (documented expected
+state; retargeting is a driver GitHub action); mypy ci.yml:117 exact
+10-package list → **Success, no issues in 1128 source files**;
+`mypy --strict packages/maistro-core/src` → **Success, 846 source files**;
+suite inventory no-args → **21 suites, rc 0**.
+
+**Inventory:** this round adds and changes no tests (the repair deleted only
+src code), so no new `inventory-delta` is owed; the four per-suite inventory
+checks and the no-args run confirm counts unchanged.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane): (a) CI
+check-runs on `3a6c5152f5` were 0/0 at dispatch capture — verdicts pending,
+locally reproduced green at every gate; (b) retarget PR #2427 base to
+`develop` before merge (pr-base red vs the stacked cursor/ base is the
+documented expected state); (c) nothing pushed this round; the only change is
+this notes section.
