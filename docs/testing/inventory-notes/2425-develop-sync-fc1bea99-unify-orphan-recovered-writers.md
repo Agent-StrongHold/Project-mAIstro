@@ -68,3 +68,13 @@ authority (`reconciliation.py` untouched by the merge), typed RECOVERED →
   fallback; caller cause must equal persisted; typed RECOVERED parks via
   `apply_recovered_attempt_disposition`); `attempt_executor.py` leaseless
   orphan path uses the canonical-authority `recover_orphaned_attempt` writer.
+
+## Live-PostgreSQL evidence (same round, pgvector/pgvector:pg18)
+
+`alembic upgrade head` → revision **068**; disposition battery over real
+PgRunStore (`test_pg_recovered_attempt_disposition`, recovered disposition,
+reconciler provenance, unified orphan recovery, spine conformance, recovery
+events/evidence pack): **489 passed / 0 skipped / 0 errors** — proves the
+unified `recover_orphaned_attempt` writer (including `PgRunStore` lineage
+refusals) and the persisted-cause reconciler against PostgreSQL at the
+resolved head.
