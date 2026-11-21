@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
-from maistro.security.guardrail import GuardrailAction, ToolGuardrail
+from maistro.security.guardrail import GuardrailAction, GuardrailThresholds, ToolGuardrail
 from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.sentinel.pii_filter import scan_and_redact
@@ -273,10 +273,12 @@ class Agent:
         # Canonical audit trail for refusals that happen before Sentinel
         # pre_call (#847): the strategy gate and this boundary's own denials.
         self._audit_log = audit_log
-        # #2315: loop detection on the Workspace Agent tool path (check before
-        # dispatch, record after). Host may inject a shared instance; otherwise
-        # each Agent owns a fresh guardrail.
-        self._tool_guardrail = tool_guardrail if tool_guardrail is not None else ToolGuardrail()
+        # #2315: loop detection thresholds only. History is execution-scoped
+        # (created in `_governed_tool_executor`) so concurrent/unrelated turns
+        # on a long-lived Agent do not share repeat counts.
+        self._tool_guardrail_thresholds = (
+            tool_guardrail.thresholds if tool_guardrail is not None else GuardrailThresholds()
+        )
 
     async def handle(
         self,
@@ -866,6 +868,8 @@ class Agent:
         # of how many tool calls the strategy makes. The sanitized string is
         # what flows back into model context, so that is what aggregates.
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
+        # One guardrail per strategy execution — not per Agent lifetime (#2315).
+        tool_guardrail = ToolGuardrail(thresholds=self._tool_guardrail_thresholds)
 
         async def execute(
             call: ToolCall, _agent_name: str, _delegation_depth: int, tool_round: int
@@ -880,6 +884,7 @@ class Agent:
                 tool_call_id=call.id,
                 delegation_depth=delegation_depth,
                 tool_round=tool_round,
+                tool_guardrail=tool_guardrail,
             )
             sanitized = await self._sanitize_tool_result(
                 call.name, to_scan_string(raw_result), auth, context=list(tool_context)
@@ -899,6 +904,7 @@ class Agent:
         tool_call_id: str = "",
         delegation_depth: int = 0,
         tool_round: int = 0,
+        tool_guardrail: ToolGuardrail | None = None,
     ) -> Any:
         # Declarations only narrow authority: a host Sentinel grant cannot
         # expose an undeclared tool. Check the Agent-owned identity here,
@@ -933,7 +939,8 @@ class Agent:
         refusal = await self._validate_tool_request(tool_name, tool_args, auth, tool_defs)
         if refusal is not None:
             return refusal
-        precheck = self._tool_guardrail.check(tool_name, tool_args)
+        guardrail = tool_guardrail or ToolGuardrail(thresholds=self._tool_guardrail_thresholds)
+        precheck = guardrail.check(tool_name, tool_args)
         if precheck.action is GuardrailAction.BLOCK:
             if self._audit_log is not None:
                 await log_scoped_tool_denial(
@@ -953,12 +960,12 @@ class Agent:
                 tool_round=tool_round,
             )
         except Exception as exc:
-            self._tool_guardrail.record(tool_name, tool_args, error=type(exc).__name__)
+            guardrail.record(tool_name, tool_args, error=type(exc).__name__)
             raise
         if isinstance(result, str) and result.startswith("Error:"):
-            self._tool_guardrail.record(tool_name, tool_args, error=result[:200])
+            guardrail.record(tool_name, tool_args, error=result[:200])
         else:
-            self._tool_guardrail.record(tool_name, tool_args, result=result)
+            guardrail.record(tool_name, tool_args, result=result)
         return result
 
     async def _validate_tool_request(

@@ -64,6 +64,9 @@ class ToolGuardrail:
         self._thresholds = thresholds or GuardrailThresholds()
         self._history: list[ToolCallRecord] = []
         self._max_history = max_history
+        # Post-call BLOCK (same-tool failures / idempotent) must latch so the
+        # next pre-dispatch check refuses further tool rounds in this execution.
+        self._dispatch_block: GuardrailResult | None = None
 
     @property
     def history(self) -> list[ToolCallRecord]:
@@ -98,13 +101,18 @@ class ToolGuardrail:
         self._history.append(record)
         self._trim()
 
-        return self._evaluate(record)
+        evaluated = self._evaluate(record)
+        if evaluated.action is GuardrailAction.BLOCK:
+            self._dispatch_block = evaluated
+        return evaluated
 
     def check(
         self,
         tool_name: str,
         args: dict[str, Any],
     ) -> GuardrailResult:
+        if self._dispatch_block is not None:
+            return self._dispatch_block
         args_hash = _hash(_canonical_args(args))
         exact_matches = [
             r for r in self._history if r.tool_name == tool_name and r.args_hash == args_hash
@@ -210,3 +218,4 @@ class ToolGuardrail:
 
     def reset(self) -> None:
         self._history.clear()
+        self._dispatch_block = None
