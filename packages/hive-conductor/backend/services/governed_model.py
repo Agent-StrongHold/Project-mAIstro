@@ -44,6 +44,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     RunStatus,
 )
 from maistro.runs.store_boundary import require_admitted_actor
@@ -528,6 +529,8 @@ async def settle_operation_identity(
     did not succeed), or ``cancelled`` (authorization refused before the work
     ran). Distinct terminal states are what make an authorization refusal
     distinguishable from an execution failure in the canonical record too.
+    Authorization-refused cancellation stamps ``cancellation_cause=REQUESTED``
+    (#2421 / #232 P3c) so recovery cannot confuse it with RECOVERED death proof.
     """
 
     store = runtime.run_store
@@ -546,6 +549,7 @@ async def settle_operation_identity(
         attempt_status,
         result=result,
         error=error,
+        cancellation_cause=(CancellationCause.REQUESTED if outcome == "cancelled" else None),
     )
     if outcome == "completed":
         attempt_result = AttemptResult.from_attempt(attempt)
