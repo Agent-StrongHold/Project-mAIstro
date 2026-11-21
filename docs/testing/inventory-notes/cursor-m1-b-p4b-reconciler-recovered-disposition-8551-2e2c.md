@@ -100,3 +100,47 @@ fallback (without the conflict check) fails exactly
 `test_unknown_cancelled_refuses_even_with_caller_recovered` and
 `test_conflicting_caller_cause_refuses`; HEAD restored byte-identical
 (sha256 5200bb08b7d73a63...) and green again.
+
+## Verification evidence (post-merge verifier round, head 7f1cbf68c45f)
+
+Re-proven at the current review head (merge of develop tip 0d7bdd0a866a;
+merge-base == origin/develop tip, so the branch is develop-current).
+`reconciliation.py` is byte-identical to the content every earlier round
+proved (sha256 5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79),
+so the P4b authority/refusal logic survived all develop merges unchanged.
+Acceptance battery re-executed, not assumed: fresh pgvector:pg18 container,
+alembic head 068; P4b suites (provenance + disposition + orphan + pg
+statement + durable execution_store) 86 passed with the postgres legs
+actually running (`test_unknown_cause_refuses[postgres]`,
+`test_parks_node_and_run[postgres]` PASSED individually); canvas
+canonical_execution + spine conformance + recovery events/evidence 468
+passed; full `tests/runs` + `tests/graph/durable_runs` 2933 passed,
+4 skipped, 4 xfailed — identical counts to the two prior live-PG rounds.
+Fail-before re-proven at this head with the same mutation: the pre-P4b
+`cause = persisted.cancellation_cause or cancellation` fallback fails
+exactly `test_unknown_cancelled_refuses_even_with_caller_recovered` and
+`test_conflicting_caller_cause_refuses` (2 failed / 3 passed), HEAD
+restored byte-identical (sha256 5200bb08..., `git status` empty), green
+again. CI-exact gates at this head: vulture ledger exit 0 (1222 == 1222
+against base 0d7bdd0a866a); `check-suite-inventory.py` 21/21 suites match
+(35881 unique identities, +33 from develop's own changes); `ruff check` +
+`ruff format --check` clean; RSI kernel research 27 passed;
+`test_the_sweep_survives_an_attempt_it_cannot_reconcile` green with both
+Container sweep halves catching `RecoveredDispositionRefused`
+(container.py:1436, container.py:1501) and the Graph tick isolating
+ValueError candidates (recovery.py:391,538). pr-base re-proven as the
+ADR-095 stacked-base expectation: `check-pr-base.py --base
+cursor/m1-b-p4a-recovered-disposition-8551` fails with the retarget
+instruction while `--base develop` passes. Hosted check-runs captured at
+exactly this head sha: every completed run success — including
+coverage (no services), coverage (PostgreSQL), coverage (MinIO),
+exact-debt-ledger, Mutation gate, Mypy strict, and all Quality/SAST jobs —
+except pr-base; at capture time `test` and the publish-set coverage queue
+were still running. Hosted Codex P1 (untyped Canvas CANCELLED before
+parking) confirmed remediated in-branch: `_settle_abandoned_attempt`
+reclaims via the authorized P2a writer (CANCELLED+RECOVERED) before
+disposition, with race-refusal fallback tests
+(`test_race_or_require_terminal_resolves_or_refuses`,
+`test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none`)
+plus the two P4b provenance-suite canvas-adjacent cases in
+test_canonical_execution.py.
