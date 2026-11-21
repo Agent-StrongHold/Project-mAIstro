@@ -161,3 +161,48 @@ the merge lost no rows.
   merge — a GitHub mutation, prohibited in-lane.
 - No GitHub check runs had been posted on `58a76678efae` at capture; CI
   verdicts on the head remain a driver observation.
+
+## Round at `51c0c70987` (verification round, 2026-11-21)
+
+Third verification pass. HEAD adds only this evidence file over
+`58a76678efae` (`git diff --stat 58a76678efae..HEAD` = 1 file, docs-only),
+so all code-level evidence from the previous round transfers verbatim. Every
+claim was nevertheless re-proved independently at this head:
+
+1. **Five P5a suites with live Postgres** (`pgvector/pgvector:pg18` on
+   127.0.0.1:15499, `alembic upgrade head`, `MAISTRO_TEST_PG_DSN`):
+   **68 passed, 0 skipped** (memory + sqlite + postgres legs). Without the
+   DSN the same five report 52 passed, 16 env-skip — the skips are exactly
+   the postgres parametrizations, all covered by the live run.
+2. **Remaining acceptance batch with PG** (canvas canonical, durable-runs
+   store, reclaim characterization, parked-resume, spine conformance, rsi
+   research): **564 passed**.
+3. **Production facts re-read at this head**: `container.py:1436`/`:1509`
+   catch `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+   `:1542` sole selector `is_typed_recovered_attempt`; `consumption.py:511`
+   typed look-past; `is_reclaimed_attempt` has **zero** production call
+   sites (definition `lifecycle.py:327` + `__all__` `:734` + a docstring
+   comment only).
+4. **CI-exact gates at this head**: vulture
+   `packages/*/src --min-confidence 60 --exclude '*/third_party/*'` →
+   **1222 == 1222** (base `0d7bdd0a86`); radon **124 == 124**; reachability
+   rc 0 (82 unreachable, dispositioned); promotion surface ok; backlog ok;
+   mypy strict → **Success, 845 files** (after CI's exact sync:
+   `uv sync --locked --all-extras` + maistro-evolve editable,
+   quality.yml:2479-2488); ruff pair + suite inventory ×4 green in the
+   driver logs (check-1/2, check-5..8).
+5. **`pr-base`**: `--base develop` → ok rc 0; `--base
+   cursor/m1-b-p4b-…` → FAIL rc 1 with the ADR-095 message — the stacked
+   state the PR body explicitly expects, retarget to develop before merge.
+6. **Ledgers**: `git diff --numstat origin/develop -- quality/` empty
+   (byte-identical); develop tip `0d7bdd0a86` is an ancestor of HEAD
+   (`git merge-base --is-ancestor` → yes).
+7. **Inventory note**: `m1-232-p5a-recovered-rediscovery.md` re-verified —
+   its three files collect **67** (`pytest --collect-only`), matching the
+   claimed 63→67 **+4**; `check-suite-inventory.py --suite
+   packages/maistro-core/tests` → ok (18775). No note edit needed.
+
+Residual (unchanged in nature, driver actions): push this tip
+(`51c0c70987`, one docs commit ahead of hosted PR head `58a76678efae`) and
+retarget PR #2427 to develop — both GitHub mutations, prohibited in-lane.
