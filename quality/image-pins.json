@@ -73,11 +73,11 @@
     },
     {
       "image": "node",
-      "tag": "24.22.3-bookworm-slim",
-      "digest": "sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
-      "recorded": "2026-11-20",
-      "recorded_in": "#2356",
-      "note": "Donor for the research image's patchright driver overlay only (Dockerfile.research `node-driver-patch` stage). patchright 1.64.4 still ships node 24.22.1; grype 0.116.0 --only-fixed --fail-on high flags CVE-2026-126051/123865/123866/123874/123863/123872/123864 (HIGH, fixed 24.22.3/26.13.1) on maistro-engine-research while playwright 1.65.2 already ships 26.13.1 and no newer patchright wheel exists on PyPI as of 2026-11-20. Hub index digest resolved 2026-11-20 (linux/amd64 child sha256:0e2646ab…). Remove this pin and the overlay RUN when a patchright release bundles >=24.22.3.",
+      "tag": "26.13.1-bookworm-slim",
+      "digest": "sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1",
+      "recorded": "2026-11-21",
+      "recorded_in": "#2431",
+      "note": "Donor for the research image's patchright driver overlay only (Dockerfile.research `node-driver-patch` stage). patchright 1.64.4 still ships node 24.22.1; grype 0.116.0 --only-fixed --fail-on high flags CVE-2026-126051/123865/123866/123874/123863/123872/123864 (HIGH, fixed 24.22.3/26.13.1) on maistro-engine-research while playwright 1.65.2 already ships 26.13.1 and no newer patchright wheel exists on PyPI as of 2026-11-20. Dependabot bump #2431 moved the donor from the 24.22.3 line to this 26.13.1 line (same seven fixes). Hub index digest verified 2026-11-21: node:26.13.1-bookworm-slim resolves to this OCI image index (linux/amd64 child sha256:18a166e2…, created 2026-11-11); the pinned digest was pulled and `node -v` prints v26.13.1. Remove this pin and the overlay RUN when a patchright release bundles >=24.22.3.",
       "used_by": [
         "Dockerfile.research"
       ]
