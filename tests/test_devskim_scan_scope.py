@@ -44,9 +44,11 @@ SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java"
 # and growing). Re-reading and re-parsing devskim.yml per call made the test
 # wall-clock-bound on slow CI runners: the 2026-11-04 coverage-gate run killed
 # it inside yaml.safe_load (>30s pytest-timeout) after a ~17-minute serial
-# suite, a failure of parsing redundancy, not of the invariant. The workflow
-# cannot change mid-test, so each helper parses/matches once and caches; the
-# assertions below are unchanged. Callers must not mutate the cached results.
+# suite, a failure of parsing redundancy, not of the invariant (develop's
+# CR1373 round recorded the same mechanism again as coverage-gate job
+# 133120551863, run 43812084099, 2026-11-16). The workflow cannot change
+# mid-test, so each helper parses/matches once and caches; the assertions
+# below are unchanged. Callers must not mutate the cached results.
 @lru_cache(maxsize=1)
 def _scanner_step() -> dict[str, object]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -78,6 +80,12 @@ def _as_regex(glob: str) -> re.Pattern[str]:
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
+
+    Compiled once per distinct glob: the sweep below matches every shipped
+    source file against every configured glob. The pattern itself is cheap —
+    the original timeout came from `_ignore_globs`/`_include_globs` re-reading
+    and re-parsing the workflow YAML twice per candidate path (~3.3k parses
+    per sweep); with those cached the match loop is microseconds per file.
     """
     out = ""
     i = 0

@@ -20,6 +20,10 @@ There is no bare-subprocess tier."
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from maistro.tools.sandbox.microvm import LauncherFn, MicroVMConfig, VMMLauncher
 
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
 from maistro.sandbox.protocol import SandboxConfig
@@ -51,6 +55,16 @@ def build_selector(
     caps = capabilities if capabilities is not None else detect_host_capabilities(sandbox_config)
     selector = SandboxSelector()
 
+    if caps.supports("vm"):
+        from maistro.sandbox.backends.kata import KataSandboxBackend, KataUnavailableError
+
+        try:
+            selector.register("vm", KataSandboxBackend())
+        except KataUnavailableError as exc:
+            # Capability probing is deliberately advisory; construction wins
+            # when the daemon/runtime changed between the two operations.
+            logger.warning("sandbox_backend_unavailable tier=vm reason=%s", exc)
+
     if caps.supports("bubblewrap"):
         from maistro.sandbox.backends.bubblewrap import (
             BubblewrapSandboxBackend,
@@ -78,4 +92,28 @@ def build_selector(
     return selector
 
 
-__all__ = ["build_selector"]
+def build_launcher_selector(
+    launcher: VMMLauncher | LauncherFn,
+    *,
+    config: MicroVMConfig | None = None,
+    workspace: str,
+    trusted_env: dict[str, str] | None = None,
+) -> SandboxSelector:
+    """Register an operator-wired launcher under the same selector authority.
+
+    This is explicit wiring, not host capability evidence or a supported VMM
+    implementation. Product consumers must still select and build policy config.
+    """
+    from maistro.sandbox.backends.launcher_vm import LauncherVMSandboxBackend
+
+    selector = SandboxSelector()
+    selector.register(
+        "vm",
+        LauncherVMSandboxBackend(
+            launcher, config=config, workspace=workspace, trusted_env=trusted_env
+        ),
+    )
+    return selector
+
+
+__all__ = ["build_launcher_selector", "build_selector"]
