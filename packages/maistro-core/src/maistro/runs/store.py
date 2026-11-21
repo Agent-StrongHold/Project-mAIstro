@@ -821,24 +821,6 @@ class RunStore(Protocol):
         """
         ...
 
-    async def apply_recovered_attempt_disposition(
-        self,
-        attempt_id: str,
-        *,
-        at: datetime | None = None,
-    ) -> tuple[NodeRun, Run]:
-        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
-
-        One authoritative write: resolve lineage, lock the Run then every
-        NodeRun in deterministic identity order, read Attempt facts without
-        Attempt row locks, revalidate typed RECOVERED + current identity, then
-        atomically commit eligible parking. Returns the settled (NodeRun, Run),
-        including no-op preserves. Raises ``RecoveredDispositionRefused`` for
-        requested/unknown/CREATED-QUEUED refusals; ``AttemptNotFound`` when the
-        id is absent. Events stay outside this commit.
-        """
-        ...
-
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
     ) -> Attempt | None: ...
@@ -1979,38 +1961,6 @@ class InMemoryRunStore:
         settled = recover_orphaned_attempt(attempt, at=at, error=error)
         self._attempts[attempt_id] = settled
         return settled.model_copy(deep=True)
-
-    async def apply_recovered_attempt_disposition(
-        self,
-        attempt_id: str,
-        *,
-        at: datetime | None = None,
-    ) -> tuple[NodeRun, Run]:
-        """Park NodeRun/Run for one already-persisted RECOVERED Attempt."""
-        # Memory is a no-await atomic block: dict authority is the write lock.
-        attempt = self._require_attempt(attempt_id)
-        node_run = self._require_node_run(attempt.node_run_id)
-        run = self._require_run(node_run.run_id)
-        all_node_runs = sorted(self._node_runs_of(run.run_id), key=lambda item: item.node_run_id)
-        attempts_by_node_run: dict[str, list[Attempt]] = {
-            nr.node_run_id: [a for a in self._attempts.values() if a.node_run_id == nr.node_run_id]
-            for nr in all_node_runs
-        }
-        plan = plan_recovered_attempt_disposition(
-            attempt=attempt,
-            run=run,
-            node_run=node_run,
-            all_node_runs=all_node_runs,
-            attempts_by_node_run=attempts_by_node_run,
-        )
-        settled_node, settled_run = materialize_recovered_disposition_plan(
-            plan, run=run, node_run=node_run, attempt=attempt, at=at
-        )
-        if plan.park_node_run:
-            self._node_runs[settled_node.node_run_id] = settled_node
-        if plan.park_run:
-            self._runs[settled_run.run_id] = settled_run
-        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
