@@ -63,6 +63,27 @@ on:
       - 'quality/ratchet-authorizations.json'
       - 'docs/testing/inventory-notes/**'
       - '.github/workflows/mutation.yml'
+      # Dev-tool linter/security-scanner requirements and the campaign's
+      # root-level repair-note evidence files are governance/dependency
+      # surfaces, not mutation-critical code, but PRs that touch exactly
+      # them never trigger this workflow, so the required-set row that
+      # scripts/check-required-checks.py derives from it has no check-run on
+      # the candidate head and gates-ran stays pending forever. Measured on
+      # #2345's head 720aaa2500 with the CI-exact evaluator
+      # (check-gates-ran.py --require-complete --base-branch develop
+      # --event-name pull_request --changed-files <envelope>): 71/72 required
+      # checks present, "Mutation gate (changed critical lines)" absent ->
+      # PENDING (the same failure mode #2120 fixed for image pins and #2371
+      # fixed for grant ledgers and inventory notes; every producer had
+      # completed, so no later publisher run could ever flip the verdict).
+      # Both paths are class-motivated: dev-tool bump PRs (dependabot and
+      # manual) touch exactly requirements-dev-tools.txt, and repair-round
+      # PRs record their evidence in exactly REPAIR-NOTES-*.md at the repo
+      # root. Listing them here produces real zero-overlap evidence instead
+      # of permanent absence; the job still fails closed whenever a critical
+      # file does change.
+      - 'requirements-dev-tools.txt'
+      - 'REPAIR-NOTES-*.md'
   workflow_dispatch:
 
 concurrency:
