@@ -144,3 +144,48 @@ disposition, with race-refusal fallback tests
 `test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none`)
 plus the two P4b provenance-suite canvas-adjacent cases in
 test_canonical_execution.py.
+
+## Verification evidence (independent verifier round, head 92b08598a75e)
+
+Re-proven at the current review head (parent 7f1cbf68c45f + this docs-only
+commit; `reconciliation.py` sha256 5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79
+— byte-identical to every proven round). Acceptance battery executed fresh:
+targeted P4b suites (provenance + disposition + orphan + durable
+execution_store) 71 passed / 10 skipped without services; canvas
+canonical_execution + spine + recovery events/evidence 338 passed / 130
+service-skips; sweep/replay survival 16 passed; marker-docs parametrization
+collects `test_axis_markers_document_only_their_registered_values[timeout]`
+(tests/: +1, skipping as documented). Live-database leg on a throwaway
+pgvector:pg18 container (alembic head 068): the same five P4b suites 86
+passed with zero skips, and the full `tests/runs` +
+`tests/graph/durable_runs` battery 2933 passed, 4 skipped, 4 xfailed —
+identical counts to the three prior live-PG rounds; container removed after.
+Fail-before re-proven with two independent mutations: (1) pre-P4b
+`persisted.cancellation_cause or cancellation` fallback alone fails exactly
+`test_unknown_cancelled_refuses_even_with_caller_recovered`
+(RecoveredDispositionRefused instead of the required RunIntegrityError);
+combined with disabling the conflict check it fails that test AND
+`test_conflicting_caller_cause_refuses` (2 failed / 3 passed); (2) reverting
+`attempt_executor._reconcile_orphaned_attempts` to generic
+`transition_attempt(CANCELLED)` fails 3 test_recovery_disposition cases
+(`test_resume_still_steals_an_expired_recovery_claim`,
+`test_repeated_orphan_reconciliation_is_idempotent`,
+`test_mid_attempt_restart_on_sqlite_produces_the_documented_disposition`) —
+all binding the executor to the dedicated RECOVERED-stamping writer. Both
+mutations restored byte-identical (sha256 5200bb08… / 82e07fbc…, `git
+diff`/`git status` empty) and green again. CI-exact gates at this head:
+vulture ledger exit 0 (1222 == 1222 against base 0d7bdd0a866a);
+`check-suite-inventory.py` 21/21 suites (35881 unique identities); ruff
+check + format clean. pr-base re-proven as the ADR-095 stacked-base
+expectation with the workflow's exact argv:
+`check-pr-base.py --base cursor/m1-b-p4a-recovered-disposition-8551` exits 1
+with the retarget-to-develop instruction, `--base develop` exits 0. Hosted
+check-runs queried live at exactly this head sha: 70 success (incl.
+exact-debt-ledger, Mutation gate, Mypy strict, postgres pg17/pg18,
+Coverage-queue precursors), pr-base the only completed failure, and 9 heavy
+jobs still in flight at capture (docker-build, hive-conductor e2e legs,
+coverage (PostgreSQL)/(no services), test, integration-scope, Container
+scan, Quality gate) — the branch delta vs the verified parent is this single
+docs commit, so those legs are content-equivalent to the parent-head runs
+where every completed coverage job was success.
+
