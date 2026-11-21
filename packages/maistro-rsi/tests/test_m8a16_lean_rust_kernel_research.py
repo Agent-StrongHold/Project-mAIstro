@@ -897,8 +897,8 @@ _UNTRANSLATABLE: dict[str, str] = {
     "compensate_unlaunched_attempt": (
         "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
     ),
-    "recover_leaseless_orphaned_attempt": (
-        "delegates to transition_attempt + model_dump/model_validate + wall clock via _now"
+    "recover_orphaned_attempt": (
+        "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
     ),
     "settle_open_node_run": "delegates to transition_node_run (pydantic boundary)",
 }
