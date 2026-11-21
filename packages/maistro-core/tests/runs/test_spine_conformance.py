@@ -1180,13 +1180,16 @@ async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) ->
     — PostgreSQL would refuse it with a foreign key and the others must agree."""
     store, workspace, project_id = spine
     parent = await _run(spine)
-    await store.create_run(
+    child = await store.create_run(
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     for force in (False, True):
@@ -2545,6 +2548,52 @@ async def _assert_completion_over_a_paused_human_node_refused(spine: Any) -> Non
     settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"answer": "yes"})
 
     assert settled.status is RunStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    "non_success_terminal",
+    [RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT],
+)
+async def test_a_parent_cannot_complete_while_a_child_run_is_open(
+    spine: Any, non_success_terminal: RunStatus
+) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    child = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+
+    with pytest.raises(RunIntegrityError, match=r"child Run.*non-terminal"):
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    unchanged = await store.get_run(parent.run_id)
+    assert unchanged is not None and unchanged.status is RunStatus.RUNNING
+
+    # Non-success outcomes remain truthful even while delegated work is open.
+    non_success_parent = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await store.transition_run(non_success_parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(non_success_parent.run_id, RunStatus.RUNNING)
+    await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=non_success_parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    assert (
+        await store.transition_run(non_success_parent.run_id, non_success_terminal)
+    ).status is non_success_terminal
+
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
+    assert (
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+    ).status is RunStatus.COMPLETED
 
 
 async def test_a_parent_cannot_complete_while_a_human_node_run_is_paused(spine: Any) -> None:

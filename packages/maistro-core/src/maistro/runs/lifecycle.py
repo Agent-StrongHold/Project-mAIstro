@@ -307,8 +307,7 @@ RECLAIMED_ATTEMPT_STATUS = AttemptStatus.CANCELLED
 
 
 #: The fixed head of every reclaimed Attempt's ``error``. Shared with
-#: `is_reclaimed_attempt` so a reader recognises a recovery artefact by the
-#: same text the sweep wrote, rather than by a second spelling of it.
+#: `reclaimed_attempt_error` so the lifecycle marker has one canonical spelling.
 RECLAIMED_ATTEMPT_ERROR_PREFIX = "lease expired; holder "
 
 
@@ -329,10 +328,13 @@ def is_reclaimed_attempt(attempt: Attempt) -> bool:
 
     The status alone cannot say: CANCELLED is also what a requested
     cancellation records. The sweep's own error text is the evidence, which is
-    why `reclaimed_attempt_error` and this predicate share one prefix.
+    why `reclaimed_attempt_error` and this predicate compare the exact holder marker.
     """
-    return attempt.status is RECLAIMED_ATTEMPT_STATUS and (attempt.error or "").startswith(
-        RECLAIMED_ATTEMPT_ERROR_PREFIX
+    lease = attempt.execution_lease
+    return (
+        attempt.status is RECLAIMED_ATTEMPT_STATUS
+        and lease is not None
+        and attempt.error == reclaimed_attempt_error(lease.holder)
     )
 
 

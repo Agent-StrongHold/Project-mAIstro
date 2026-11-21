@@ -715,6 +715,7 @@ class RunStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def create_attempt(
@@ -1569,6 +1570,16 @@ class InMemoryRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
+        if target is RunStatus.COMPLETED:
+            open_children = [
+                child
+                for child in self._runs.values()
+                if child.parent_run_id == run_id and child.status not in TERMINAL_RUN_STATUSES
+            ]
+            if open_children:
+                raise RunIntegrityError(
+                    f"Run cannot complete while {len(open_children)} child Run(s) are non-terminal"
+                )
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
         settled = (
@@ -1714,9 +1725,17 @@ class InMemoryRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         node_run = self._require_node_run(node_run_id)
         self._refuse_under_terminal_run(node_run)
+        if expected_current_attempt_id is not None:
+            attempts = [a for a in self._attempts.values() if a.node_run_id == node_run_id]
+            current = max(attempts, key=lambda a: a.ordinal, default=None)
+            if current is not None and current.attempt_id != expected_current_attempt_id:
+                raise RunIntegrityError(
+                    f"Attempt {expected_current_attempt_id!r} was superseded by {current.attempt_id!r}"
+                )
         if accepted_outcome is not None:
             if accepted_outcome.node_run_id != node_run_id:
                 raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
