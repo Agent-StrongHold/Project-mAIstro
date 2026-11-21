@@ -12,7 +12,7 @@
 // and honest empty/unavailable section states.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { ApiError, apiGet, apiPost } from "../lib/api";
 import type {
   HomeLayout,
@@ -23,6 +23,7 @@ import type {
 import { homeKindLabel, layoutPath, pinPath, projectionsPath } from "../lib/home";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import { Card, EmptyState, Hex, LoadingSpinner, PageHeader, useToast } from "../components/shared";
+import { SetupChecklist } from "../components/SetupChecklist";
 
 function sectionFor(sections: HomeProjectionSection[], kind: string): HomeProjectionSection | null {
   return sections.find((s) => s.kind === kind) ?? null;
@@ -198,6 +199,10 @@ export default function Home() {
         helpHref="/docs#workspaces"
       />
 
+      {/* Setup checklist moved here from the retired Dashboard page (#2274):
+          renders null while loading or when every step is done/dismissed. */}
+      <SetupChecklist />
+
       {!workspacesReady || loading ? (
         <div data-testid="home-loading" aria-busy="true" aria-label="Loading Workspace Home">
           <LoadingSpinner />
@@ -219,11 +224,8 @@ export default function Home() {
       ) : (
         <>
           <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--pencil)" }}>
-            Pinning changes presentation only.{" "}
-            <Link to="/dashboard" style={{ color: "var(--accent)" }}>
-              Legacy Dashboard
-            </Link>{" "}
-            remains until cutover deletes it.
+            Pinning changes presentation only — live domain state still comes
+            from the surfaces each region links to.
           </p>
           <div
             style={{
