@@ -74,3 +74,21 @@ ref equals the validated branch content.
   backend — all ok (no inventory delta).
 - `pr-base` continues to fail by design for this stacked PR (ADR-095; the PR
   body documents it and the gate names the retarget requirement).
+
+## Live-PG re-verification at the merge commit (not assumed from earlier
+## evidence)
+
+With `pgvector/pgvector:pg18` in Docker (fresh database, `alembic upgrade head`,
+`MAISTRO_TEST_PG_DSN` set):
+
+- `test_recovered_attempt_disposition.py` + `test_pg_recovered_attempt_disposition.py`
+  + `test_reconciler_recovered_provenance.py` + `test_recover_orphaned_attempt.py`
+  + `test_recovery_events.py` — 82 passed, 0 skipped (real-PgRunStore spine
+  races, lock-contract statements, P4b persisted-cause provenance arms).
+- `test_spine_conformance.py` + `test_recovery_evidence_pack.py` +
+  `tests/graph/durable_runs/test_canonical_execution_store.py` — 451 passed
+  (memory/sqlite/postgres backends).
+
+The runs/ and graph/durable_runs/ sources are byte-identical between
+`4c1710216c` and the merge tree, so the earlier live-pg18 evidence recorded at
+`049536d7a6` carries over unchanged; the runs above re-prove it at `6b109f5c94`.
