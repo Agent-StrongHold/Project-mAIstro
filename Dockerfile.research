@@ -57,13 +57,33 @@
 # 24.22.3 / 26.13.1). playwright 1.65.2 already ships the fixed 26.13.1
 # line; no newer patchright wheel is on PyPI as of 2026-11-20. Until
 # upstream republishes, overwrite only the patchright driver with the
-# digest-pinned Node 24.22.3 binary from the official glibc image (this
+# digest-pinned Node 26.13.1 binary from the official glibc image (this
 # runtime is Debian slim, so the musl alpine build is the wrong ABI).
-FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-driver-patch
+# The donor line moved from 24.22.3 to 26.13.1 with the Dependabot bump
+# (#2431); both lines carry the same seven fixes, so only the donor
+# version annotation and the assertion below change.
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-driver-patch
 
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
+#
+# #2430 evaluated Dependabot's 3.12 -> 3.15 index bump and rejected it
+# (2026-11-21, the same wheel ceiling as the engine image's #2136
+# disposition, re-verified on this lock): the `uv export --locked …
+# --require-hashes` install below selects psycopg-binary 3.3.4, which
+# ships no cp315 wheel and no sdist at all, so the install fails closed
+# whenever the venv line is bumped to 3.15 — and while it is left at
+# --python 3.12 (as Dependabot's lone-FROM jump ships it), uv instead
+# downloads an un-pinned managed 3.12 into the build and the copied venv
+# dangles on the fresh 3.15 runtime stage, the same dead-runtime outcome
+# demonstrated first-hand for the engine image. coincurve 21.0.0 stops at
+# cp313 and cffi 2.0.0 at cp314, both with sdists needing a compiler this
+# stage does not install. A lone FROM jump would also desync the
+# interpreter line this file itself pins: the venv line below names
+# --python 3.12 and the runtime stage hard-codes the python3.12
+# site-packages cleanup path. The static guard
+# tests/test_root_image_interpreter_lines.py covers this file.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
@@ -170,7 +190,8 @@ RUN apk add --no-cache git && \
 # libexpat1 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214)
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
-# flag.
+# flag. Same base line as the builder — see the #2430 rejection note above:
+# 3.15 is unbuildable for this image's locked install set.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
@@ -224,7 +245,7 @@ COPY --from=builder /app/venv /app/venv
 # Overlay the fixed Node onto patchright's driver (see node-driver-patch).
 # Assert the path and version so a silent wheel layout change fails the build
 # instead of shipping the vulnerable binary again.
-COPY --from=node-driver-patch /usr/local/bin/node /tmp/node-24.22.3
+COPY --from=node-driver-patch /usr/local/bin/node /tmp/node-26.13.1
 RUN python - <<'PY'
 from __future__ import annotations
 
@@ -236,14 +257,14 @@ from pathlib import Path
 import patchright
 
 dst = Path(patchright.__file__).resolve().parent / "driver" / "node"
-src = Path("/tmp/node-24.22.3")
+src = Path("/tmp/node-26.13.1")
 if not dst.is_file():
     raise SystemExit(f"patchright driver node missing at {dst}")
 shutil.copy2(src, dst)
 os.chmod(dst, 0o755)
 ver = subprocess.check_output([str(dst), "-v"], text=True).strip()
-if ver != "v24.22.3":
-    raise SystemExit(f"expected v24.22.3 after overlay, got {ver!r}")
+if ver != "v26.13.1":
+    raise SystemExit(f"expected v26.13.1 after overlay, got {ver!r}")
 src.unlink()
 print(f"patched patchright driver node -> {ver} at {dst}")
 PY
