@@ -25,6 +25,10 @@ or placeholder-only section.
 
 ### Changed
 
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
 - **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
   group `governance-conformance` keeps CONNECT with #2322 as the named owner
   until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
