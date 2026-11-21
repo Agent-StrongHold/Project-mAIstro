@@ -299,6 +299,77 @@ class TestExceptionsAreOwnedExpiringAndVersionSpecific:
             )
 
 
+class TestLicenseExceptionsBindToRealLockfiles:
+    """LICENSE_EXCEPTIONS versions are the versions the triage reviewed, and
+    the lockfiles are where "installed" is defined — so the ledger and the
+    real lockfiles must agree in both directions (#2445's repair made this
+    ledger non-empty for the first time, which is what needs pinning).
+
+    Forward: every real-lockfile (package, license) pair an exception covers
+    must list its INSTALLED version — an exception keyed without the version
+    actually present would approve a version nobody triaged.
+    Backward: every reviewed version in the ledger must still be locked in
+    some real surface — a version no lockfile installs is a stale row whose
+    stated rationale no longer describes the tree.
+    """
+
+    def _declared_license_versions(self, gate: Any) -> dict[tuple[str, str], set[str]]:
+        """(package, declared license) -> versions actually locked, all surfaces."""
+        declared: dict[tuple[str, str], set[str]] = {}
+        for surface in gate.SURFACES:
+            lock = json.loads((ROOT / surface / "package-lock.json").read_text(encoding="utf-8"))
+            for key, entry in (lock.get("packages") or {}).items():
+                if not key or not isinstance(entry, dict) or entry.get("link"):
+                    continue
+                license_value = entry.get("license")
+                if not license_value:
+                    continue
+                declared.setdefault((gate._entry_name(key), license_value), set()).add(
+                    entry["version"]
+                )
+        return declared
+
+    def test_excepted_license_pairs_list_the_installed_versions(self, gate: Any) -> None:
+        declared = self._declared_license_versions(gate)
+        checked = 0
+        for (name, license_value), versions in declared.items():
+            if license_value in gate.APPROVED_LICENSES:
+                continue
+            exception = gate.LICENSE_EXCEPTIONS.get((name, license_value))
+            if exception is None:
+                continue  # unapproved and unexcepted: check_licenses fails it
+            installed = versions
+            reviewed = set(exception.versions)
+            assert installed <= reviewed, (
+                f"LICENSE_EXCEPTIONS[({name!r}, {license_value!r})] reviews "
+                f"{sorted(reviewed)} but lockfiles install {sorted(installed)}; "
+                "a newly installed version is a version nobody triaged"
+            )
+            checked += 1
+        # The fixture the repair added must keep this test meaningful: if the
+        # MPL-2.0 rows ever vanish (e.g. npm stops recording licenses), the
+        # assertion above loops over nothing and this pin must fail instead.
+        assert any(
+            name == "axe-core" and license_value == "MPL-2.0" for name, license_value in declared
+        ), "the axe-core MPL-2.0 lockfile rows this ledger triages are gone"
+        assert checked >= 2, (
+            "no real lockfile row is both unapproved and excepted — the "
+            "forward direction exercised nothing"
+        )
+
+    def test_every_reviewed_version_is_actually_locked_somewhere(self, gate: Any) -> None:
+        declared = self._declared_license_versions(gate)
+        for (name, license_value), exception in gate.LICENSE_EXCEPTIONS.items():
+            assert exception.versions, f"license exception for {name!r} is not version-specific"
+            locked = declared.get((name, license_value), set())
+            stale = set(exception.versions) - locked
+            assert not stale, (
+                f"LICENSE_EXCEPTIONS[({name!r}, {license_value!r})] reviews "
+                f"{sorted(stale)} but no lockfile installs those versions; "
+                "the row's rationale no longer describes the tree"
+            )
+
+
 class TestFailClosed:
     def _surface_tree(self, tmp_path: Path, *, with_lockfile: bool = True) -> Path:
         surface = tmp_path / "packages" / "demo" / "frontend"
