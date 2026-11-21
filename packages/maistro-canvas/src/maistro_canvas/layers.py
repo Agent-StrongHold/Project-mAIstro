@@ -110,11 +110,10 @@ class Transform:
 
 @dataclass(frozen=True)
 class GroundPlane:
-    """Horizon + perspective. Lives on a `BackgroundComposition`."""
+    """Horizon line. Lives on a `BackgroundComposition`."""
 
     horizon_y: float
     vanishing_x: float | None = None
-    perspective: Literal["flat", "one_point", "two_point", "isometric"] = "flat"
 
 
 @dataclass(frozen=True)
