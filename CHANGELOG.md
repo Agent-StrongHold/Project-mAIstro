@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
 - **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
   group `governance-conformance` keeps CONNECT with #2322 as the named owner
   until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
