@@ -34,10 +34,13 @@
 # (2026-11-21, the #2136 wheel ceiling re-verified on this lock):
 # `uv sync --locked --python 3.12` below installs the whole workspace set,
 # which selects psycopg-binary 3.3.4 (no cp315 wheel and no sdist — pinned
-# resolution fails closed) and coincurve 21.0.0 (cp313 ceiling; its sdist
-# needs a compiler this slim base does not carry). A bare FROM jump would
-# also force uv to fetch an un-pinned managed 3.12 interpreter into the
-# build. See tests/test_root_image_interpreter_lines.py.
+# resolution fails closed if the line is ever bumped to 3.15) and
+# coincurve 21.0.0 (cp313 ceiling; its sdist needs a compiler this slim
+# base does not carry). On Dependabot's lone-FROM jump the sync instead
+# runs by downloading an un-pinned managed 3.12 interpreter into the
+# build — an unattested, moving artifact the #349 doctrine forbids, baked
+# into this image only via uv's home-dir python cache. See
+# tests/test_root_image_interpreter_lines.py.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime-apt
 
 # libbrotli1 ships here via git's libcurl; CVE-2026-111497 (Brotli decoder

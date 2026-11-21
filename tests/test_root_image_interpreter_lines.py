@@ -15,8 +15,12 @@ pinned resolution fails closed; coincurve 21.0.0 (still the latest upstream
 release) stops at cp313 and cffi 2.0.0 at cp314, both with sdists that need a
 compiler none of the builders installs. Counted 2026-11-21 against this lock:
 20 linux-relevant entries are cp315-unservable, zero on the pinned 3.12 and
-3.13 lines. The disposition record lives in the image-pins notes
-(quality/image-pins.json, #2430 round) and inline at each FROM.
+3.13 lines. Demonstrated first-hand on the engine mirror (3.15.2 base +
+pinned uv): as Dependabot ships it the build instead silently downloads an
+un-pinned managed CPython 3.13.15 and the copied venv dangles on the fresh
+3.15 runtime stage — the shipped interpreter exits 127. The disposition
+record lives in the image-pins notes (quality/image-pins.json, #2430 round)
+and inline at each FROM.
 
 This module holds that contract closed statically, without Docker, uv or
 network: parse the CPython minor from every digest-pinned `FROM python:` line

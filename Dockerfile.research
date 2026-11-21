@@ -70,10 +70,16 @@ FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b
 # disposition, re-verified on this lock): the `uv export --locked …
 # --require-hashes` install below selects psycopg-binary 3.3.4, which
 # ships no cp315 wheel and no sdist at all, so the install fails closed
-# under 3.15; coincurve 21.0.0 stops at cp313 and cffi 2.0.0 at cp314,
-# both with sdists needing a compiler this stage does not install. A lone
-# FROM jump would also desync the interpreter line this file itself pins: the venv line below names --python 3.12 and the runtime stage
-# hard-codes the python3.12 site-packages cleanup path. The static guard
+# whenever the venv line is bumped to 3.15 — and while it is left at
+# --python 3.12 (as Dependabot's lone-FROM jump ships it), uv instead
+# downloads an un-pinned managed 3.12 into the build and the copied venv
+# dangles on the fresh 3.15 runtime stage, the same dead-runtime outcome
+# demonstrated first-hand for the engine image. coincurve 21.0.0 stops at
+# cp313 and cffi 2.0.0 at cp314, both with sdists needing a compiler this
+# stage does not install. A lone FROM jump would also desync the
+# interpreter line this file itself pins: the venv line below names
+# --python 3.12 and the runtime stage hard-codes the python3.12
+# site-packages cleanup path. The static guard
 # tests/test_root_image_interpreter_lines.py covers this file.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
