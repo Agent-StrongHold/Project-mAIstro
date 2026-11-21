@@ -304,3 +304,44 @@ failure and the coverage/postgres/test families were still in flight (None)
 at capture, content-equivalent to the parent-head runs where every completed
 coverage job was success.
 
+## Verification evidence (independent verifier round, head bdd57cb573cbc53)
+
+The prior block — "recovery budget exhausted: launch/preflight: Hosted PR
+snapshot incomplete or not the review head" — is resolved: the dispatch
+snapshot of PR #2425 carries head sha bdd57cb573cbc53d235a3632d772fac4862207c6,
+equal to the local review HEAD (79 check runs captured 2026-11-21T12:36Z,
+`complete_for_scope` true), and 66 hosted jobs are success with pr-base the
+only completed failure (the documented ADR-095 stacked expectation; 12 still
+in flight at capture). The delta vs the verified parent ef2f8a2ab22022 is the
+develop-sync merge of 971e536838ca (collaboration CONNECT park, #2323):
+`git diff --stat ef2f8a2ab22022..bdd57cb573cbc53` touches exactly one file
+(`packages/maistro-core/tests/test_collaboration_park_2323.py`, +27, develop's
+own content) and no P4b source — `reconciliation.py` keeps sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — so every
+claim proven at parent heads transfers byte-identically.
+
+Everything below was re-executed fresh at exactly this head, not assumed:
+focused P4b battery (provenance + disposition + leaseless orphan + pg
+statement-shape + durable execution store + spine conformance + recovery
+events/evidence + canvas canonical execution + rsi kernel suite) 441 passed /
+140 skipped without services — the 140 skips are precisely the service-gated
+legs. Live-database leg on a throwaway pgvector:pg18 container (port 5433,
+`alembic upgrade head` to 068, MAISTRO_TEST_PG_DSN set): the same battery
+581 passed with zero skips, proving the PG worker-death safety leg at this
+head directly; container removed after. CI-exact vulture ledger
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` exit 0 (1222 == 1222 against base 971e536838ca);
+ruff check + format clean; suite inventory ok ×4 (driver check-5..8:
+hive-conductor backend 4273, maistro-canvas 633, maistro-core 18772 — +1
+from the merged park test — maistro-rsi 1797); `check-doc-links.py` 0
+broken. pr-base re-proven with the ci.yml exact argv (`--base "$PR_BASE"
+--labels "$PR_LABELS"`): a stacked cursor/ base exits 1 with the
+retarget-to-develop instruction while `--base develop` exits 0. Fail-before
+re-proven at this exact head: reintroducing the pre-P4b
+`persisted.cancellation_cause or cancellation` fallback in
+`_reconcile_cancelled` fails exactly
+test_unknown_cancelled_refuses_even_with_caller_recovered
+(RecoveredDispositionRefused instead of the required RunIntegrityError,
+1 failed / 4 passed); restored byte-identical (sha256 verified above,
+`git status` empty) and green again (5/5).
+
