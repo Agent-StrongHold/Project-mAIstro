@@ -280,7 +280,7 @@ test.describe("RUM live collection", () => {
     // id must be one the server issued for a response this page received.
     // The query string carries a secret-looking token; a page route template
     // that leaked any part of the URL would carry it to the collector.
-    await page.goto(`/dashboard?next=${encodeURIComponent("/capabilities")}&token=${SECRET_TOKEN}`);
+    await page.goto(`/home?next=${encodeURIComponent("/capabilities")}&token=${SECRET_TOKEN}`);
     await page.waitForLoadState("load");
     // Visit a second route so the api_request events span page routes, and
     // the capabilities fetch exercises the shared client on a collection path.

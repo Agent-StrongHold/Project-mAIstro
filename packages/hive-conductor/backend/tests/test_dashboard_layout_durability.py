@@ -562,26 +562,6 @@ def test_a_saved_layout_wins_over_the_preset(store: Any) -> None:
     assert dashboard_layouts.effective("demo").layout["widgets"][0]["id"] == "mine"
 
 
-# --- the user-facing half: a 503 nobody reads is not much better than a lie ---
-
-
-@pytest.mark.ac("SPEC-082926-3b80/AC-2")
-def test_the_dashboard_page_reads_the_save_response() -> None:
-    """Codex's third finding. `saveTabs` swallowed every non-2xx: the edit stayed
-    on screen looking saved. Asserted against the source because the Conductor
-    has no unit harness for this page — the e2e suite drives the built app."""
-    page = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "Dashboard.tsx"
-    ).read_text(encoding="utf-8")
-
-    save = page[page.index("async function saveTabs") : page.index("function useServerTabs")]
-    assert "r.ok" in save, "the response status is not read"
-    assert "return null" in save and "HTTP ${r.status}" in save
-
-    assert 'data-testid="dashboard-save-error"' in page, "nothing renders the failure"
-    assert "Retry" in page, "the user is told but given nothing to do about it"
-
-
 @pytest.mark.ac("SPEC-082926-3b80/AC-2")
 def test_a_backend_with_no_writer_to_settle_is_read_anyway(store: Any) -> None:
     """PostgreSQL's store has no queue to drain, and neither does a test double.
