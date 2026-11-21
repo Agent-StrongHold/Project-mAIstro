@@ -45,7 +45,10 @@ aggregator survives to success, and (c) the retired 240-attempt budget
 still fails closed on the identical timeline. Against the pre-repair
 workflow the same test fails (`attempts 240 < 320`), as does the updated
 125/240 → 245/480 pin, so the widening cannot be silently reverted.
-All 13 node tests pass in-tree.
+After the develop sync merge (567d584) the file runs 14 node tests: these
+13 plus the PR #2433 starvation replay that develop ships independently
+(run 44748382537). The merge resolution keeps both replays — each cites a
+distinct real starvation run — and pins the shared 245/480 budget once.
 
 Scope consequence (fail-closed by design, #1351): because this repair
 edits `.github/workflows/integration-scope.yml` itself, the classifier's
