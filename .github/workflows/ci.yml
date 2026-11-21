@@ -704,12 +704,21 @@ jobs:
       # listed every published picomatch as vulnerable with no patched release
       # while vite@8 depends on picomatch ^4.0.7 directly, so no lock this
       # frontend can produce audited clean. The advisory was withdrawn
-      # 2026-11-18T15:38:56Z and the gate's two-way ratchet deleted the waiver,
-      # so ALLOWED ships empty. The step still writes the JSON report and
-      # scripts/npm_audit_gate.py owns the verdict: any high/critical advisory
-      # outside its ALLOWED list fails the job — including future advisories on
-      # the same packages — and a waiver whose advisory stops being reported
-      # fails as stale.
+      # 2026-11-18T15:38:56Z — 0 advisories against the identical lock,
+      # picomatch still pinned at 4.0.7 (#2375) — and the gate's two-way
+      # ratchet deleted the waiver, so ALLOWED ships empty. The step still
+      # writes the JSON report and scripts/npm_audit_gate.py owns the verdict:
+      # any high/critical advisory outside its ALLOWED list fails the job —
+      # including future advisories on the same packages — and a waiver whose
+      # advisory stops being reported fails as stale.
+      #
+      # Reconciliation with #344's merge over this exact step: the surface is
+      # now judged twice, deliberately. security.yml's js-supply-chain job
+      # audits every tracked npm surface (any severity, expiring
+      # version-pinned exceptions plus GuardDog/license/typosquat/provenance)
+      # while this step keeps the in-tree high/critical verdict behind its
+      # no-fix-only waiver ratchet. Both fail closed, so their verdicts can
+      # only ever disagree by one of them going red — never a silent pass.
       - run: npm audit --json > /tmp/npm-audit.json || true
         working-directory: packages/maistro-canvas/frontend
       - run: python scripts/npm_audit_gate.py /tmp/npm-audit.json
