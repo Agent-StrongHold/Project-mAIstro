@@ -200,6 +200,28 @@ test('empty scope returns without querying while malformed budgets still fail cl
   }
 });
 
+test('PR #2435 starvation timeline: evidence ~160 minutes in is covered by the widened budget only', async () => {
+  // Replay of run 44748408749 (job 136329616539): docker-build, the sole
+  // required producer for this candidate, sat queued without a runner for
+  // ~134 minutes, ran 17.7 minutes, and concluded success 159.9 minutes
+  // after the aggregator started — 36 minutes after the retired
+  // 240-attempt budget had expired with "timed out waiting for required
+  // specialized CI evidence". The shipped budget must survive long enough
+  // to observe that evidence; the retired 240-attempt budget must still
+  // fail closed on the identical timeline.
+  const attempts = Number(job.env.EVIDENCE_WAIT_ATTEMPTS);
+  const interval = Number(job.env.EVIDENCE_WAIT_INTERVAL_MS);
+  const starvationAttempts = Math.ceil((160 * 60 * 1000) / interval); // 320
+  assert.ok(starvationAttempts > 240, 'observed starvation must exceed the retired 240-attempt budget');
+  assert.ok(starvationAttempts <= attempts, 'shipped budget must cover the observed starvation');
+  const timeline = Array.from({ length: starvationAttempts - 1 }, () => []);
+  timeline.push([run(30)]);
+  succeeded(await poll(timeline, { attempts, interval: 1 }));
+  const retired = await poll(timeline, { attempts: 240, interval: 1 });
+  assert.deepEqual(retired.failures, ['timed out waiting for required specialized CI evidence']);
+  assert.equal(retired.requests.length, 240);
+});
+
 test('PR #2433 starvation timeline: evidence ~161 minutes in is covered by the widened budget only', async () => {
   // Replay of run 44748382537 (job 136329528687): all nine required
   // producers were created 13:54:02Z but sat queued until 16:39–16:48Z, and
@@ -220,19 +242,21 @@ test('PR #2433 starvation timeline: evidence ~161 minutes in is covered by the w
   assert.equal(retired.requests.length, 240);
 });
 
-
 test('workflow preserves read-only permissions, exact PR/merge-group SHA, and polling budget', () => {
   assert.deepEqual(workflow.permissions, { checks: 'read', contents: 'read' });
   assert.equal(step.env.CANDIDATE_SHA, '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}');
   // #41 run 36303867276: a 60-minute window expired while specialized
-  // producers were queued 38-55 minutes; the window was widened to 120
-  // minutes of evidence (240 x 30s). #2433 run 44748382537 then expired the
-  // 120-minute budget the same way: every required producer was created at
-  // 13:54:02Z but first received a runner at 16:41:11Z, ~161 minutes after
-  // the aggregator began waiting, and all nine concluded success by
-  // 17:00:32Z. The window is now 240 minutes (480 x 30s) inside a
-  // 245-minute job timeout; the timeout must still cover attempts x
-  // interval plus checkout/setup slack.
+  // producers were queued 38-55 minutes. The 120-minute budget then
+  // expired the same way twice: #2433 run 44748382537 saw every required
+  // producer created at 13:54:02Z wait for a runner until 16:41:11Z (~161
+  // minutes after the aggregator began waiting) with all nine green by
+  // 17:00:32Z, and PR #2435 run 44748408749 saw docker-build, the sole
+  // required producer, queued ~134 minutes before receiving a runner and
+  // conclude success 160 minutes after the aggregator started, which had
+  // already failed while every required check was still pending. The
+  // window is now 240 minutes of evidence (480 x 30s) inside a 245-minute
+  // job timeout; the timeout must still cover attempts x interval plus
+  // checkout/setup slack.
   assert.equal(job['timeout-minutes'], 245);
   assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '480');
   assert.ok(
