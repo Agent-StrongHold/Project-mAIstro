@@ -1,6 +1,10 @@
-# Digest-pinned (#349): v1.64.1-noble index digest recorded 2026-10-26 (#2303); the tag
+# Digest-pinned (#349): v1.65.1-noble index digest recorded 2026-11-21 (#2444); the tag
 # stays as the human-readable version annotation, the digest is the authority.
-FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+# The `@playwright/test` build-time pin below MUST move with the image version:
+# the image ships exactly the browser revisions its own version's playwright-core
+# expects, so any other npm version fails every launch with "Executable doesn't
+# exist" (tests/test_playwright_harness_version_parity.py holds this closed).
+FROM mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
 WORKDIR /tests
 # `@axe-core/playwright` is what makes the accessibility assertions in
 # `modal-a11y.spec.ts` a scan rather than a hand-written checklist (#371).
@@ -14,7 +18,7 @@ WORKDIR /tests
 # whose markup links through the router. Versions match the shipped frontend /
 # its lockfile.
 RUN npm init -y && npm install \
-    @playwright/test@1.64.1 \
+    @playwright/test@1.65.1 \
     @axe-core/playwright@4.10.2 \
     typescript \
     esbuild@0.28.1 \
