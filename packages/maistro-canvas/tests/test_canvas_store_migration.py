@@ -259,6 +259,11 @@ async def _round_trip(url: str, *, reorder: bool = True) -> None:
         assert remaining[-1].id == overlay.id
 
         blob_id = await store.store_blob(b"pixels", format="png", metadata={"layer": "sky"})
+        # A new store/session must see committed bytes for governed Invocation
+        # replay; unknown references must be absence, never another blob.
+        reader = PgCanvasStore(engine)
+        assert await reader.get_blob(blob_id) == b"pixels"
+        assert await reader.get_blob(str(uuid.uuid4())) is None
     finally:
         await engine.dispose()
 

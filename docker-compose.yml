@@ -73,6 +73,14 @@ services:
       - CI_WEBHOOK_SECRET=${CI_WEBHOOK_SECRET:-}
       - SANDBOX_NETWORK_DISABLED=true
       - SANDBOX_READINESS_REQUIRED=false
+      # Canvas Studio API token (#851, #2311). The /v2/canvas surface is
+      # fail-closed: while CANVAS_API_TOKEN is unset every canvas route
+      # answers 503 rather than serving unauthenticated requests (June audit
+      # 3.2), so an unset value here leaves the shipped wiring in place with
+      # auth simply refusing. Setting CANVAS_API_TOKEN in .env is what makes
+      # /v2/canvas operable on `docker compose up` — clients then present the
+      # token as `Authorization: Bearer <token>` or `X-Canvas-Token`.
+      - CANVAS_API_TOKEN=${CANVAS_API_TOKEN:-}
     volumes:
       # The host Docker socket is NOT mounted by default: it grants the
       # container control of the host Docker daemon (container escape = host
