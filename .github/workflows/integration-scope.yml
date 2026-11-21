@@ -20,18 +20,26 @@ jobs:
     # #869 demonstrated a 35-minute gap between this aggregator starting and
     # the last required specialized producer receiving a runner. docker-build
     # is bounded to 45 minutes (#899 coherence, raised for the maistro-core
-    # cold-rebuild path measured in run 36831116132). Give evidence 120 minutes
-    # to appear and complete, plus five minutes for checkout/scope resolution
-    # and cleanup. The 60-minute window (issue #41 lane, run 36303867276)
-    # expired while specialized producers were queued 38–55 minutes; every
-    # required check later concluded success (docker-build 67 minutes after
-    # this aggregator started). The window must cover queue starvation, not
-    # just execution time; it does not weaken the required evidence.
-    timeout-minutes: 125
+    # cold-rebuild path measured in run 36831116132). The 60-minute window
+    # (issue #41 lane, run 36303867276) expired while specialized producers
+    # were queued 38–55 minutes; every required check later concluded success
+    # (docker-build 67 minutes after this aggregator started).
+    # PR #2437 (run 44748434713, job 136329705554) measured the starvation
+    # ceiling: the required producers (docker-build, hive-conductor-e2e(-ui),
+    # wheel-imports) were created ~14:36Z and sat queued ~124 minutes before
+    # the first one started at 16:40Z, so the 120-minute evidence budget
+    # expired at ~16:35Z and the aggregator failed at 16:38:18Z — every
+    # required check then concluded success 16:40:50–16:59:24Z. Scope
+    # resolution itself was correct; only the window was too short. Give
+    # evidence 180 minutes to appear and complete, plus slack for
+    # checkout/scope resolution and cleanup. The window must cover queue
+    # starvation, not just execution time; it does not weaken the required
+    # evidence — any non-success conclusion still fails immediately.
+    timeout-minutes: 190
     env:
-      # A 30-second cadence preserves the 120-minute evidence window while
+      # A 30-second cadence preserves the 180-minute evidence window while
       # bounding each aggregator to about 120 check-list requests per hour.
-      EVIDENCE_WAIT_ATTEMPTS: "240"
+      EVIDENCE_WAIT_ATTEMPTS: "360"
       EVIDENCE_WAIT_INTERVAL_MS: "30000"
     steps:
       - uses: actions/checkout@v7
