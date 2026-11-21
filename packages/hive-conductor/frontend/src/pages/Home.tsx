@@ -12,7 +12,7 @@
 // and honest empty/unavailable section states.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { ApiError, apiGet, apiPost } from "../lib/api";
 import type {
   HomeLayout,
@@ -219,11 +219,8 @@ export default function Home() {
       ) : (
         <>
           <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--pencil)" }}>
-            Pinning changes presentation only.{" "}
-            <Link to="/dashboard" style={{ color: "var(--accent)" }}>
-              Legacy Dashboard
-            </Link>{" "}
-            remains until cutover deletes it.
+            Pinning changes presentation only — live domain state still comes
+            from the surfaces each region links to.
           </p>
           <div
             style={{
