@@ -147,7 +147,11 @@ function AttentionRow({
     setBusy(true);
     setError(null);
     try {
-      await submitHitlAnswer(door.runId, door.nodeId, hitlAnswerBody(pausedReason, text));
+      await submitHitlAnswer(
+        door.runId,
+        door.nodeId,
+        hitlAnswerBody(pausedReason, text, item.evidence),
+      );
       setAnswer("");
       onAnswered();
     } catch (e) {

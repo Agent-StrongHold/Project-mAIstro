@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
 
-from maistro.capabilities.providers.approval_inbox import InboxApproval
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 from maistro.capabilities.registry import CapabilityRegistry
 from maistro.capabilities.slots.infra import InfraAction, InfraMonitor
@@ -48,7 +46,7 @@ async def test_monitor_resolves_and_reads(reg: CapabilityRegistry):
 
 async def test_reversible_auto_runs(reg: CapabilityRegistry):
     http = FakeHttp()
-    reg.register(HostHealthAction(http=http, autonomy="auto_safe", approval=InboxApproval()))
+    reg.register(HostHealthAction(http=http, autonomy="auto_safe"))
     reg.activate("infra_action", "host_health")
     action = await reg.resolve("infra_action")
     assert isinstance(action, InfraAction)
@@ -56,20 +54,16 @@ async def test_reversible_auto_runs(reg: CapabilityRegistry):
     assert res.ok and http.calls
 
 
-async def test_destructive_blocks_then_runs_after_inbox_approval(reg: CapabilityRegistry):
+async def test_destructive_blocks_until_approved_flag(reg: CapabilityRegistry):
+    """#2405: HostHealthAction no longer awaits InboxApproval; approved= is required."""
     http = FakeHttp()
-    inbox = InboxApproval()
-    reg.register(inbox)
-    reg.activate("approval", "inbox")
-    reg.register(HostHealthAction(http=http, autonomy="auto_safe", approval=inbox))
+    reg.register(HostHealthAction(http=http, autonomy="auto_safe"))
     reg.activate("infra_action", "host_health")
     action = await reg.resolve("infra_action")
     assert isinstance(action, InfraAction)
 
-    async def approve_soon() -> None:
-        await asyncio.sleep(0.01)
-        pid = inbox.pending()[0].request_id
-        inbox.resolve(pid, approved=True, actor="blake")
+    blocked = await action.act("docker_prune", {})
+    assert blocked.ok is False and blocked.blocked_pending_approval and not http.calls
 
-    res, _ = await asyncio.gather(action.act("docker_prune", {}), approve_soon())
+    res = await action.act("docker_prune", {}, approved=True)
     assert res.ok and http.calls
