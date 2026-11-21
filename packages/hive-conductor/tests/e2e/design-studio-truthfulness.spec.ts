@@ -332,7 +332,7 @@ test("/cli/canvas is a compatibility redirect to the canonical Design Studio rou
 // #95: primary navigation uses the canonical Design Studio route, so the
 // product is a first-class destination rather than a path only insiders type.
 test("primary navigation deep-links the canonical Design Studio route", async () => {
-  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await page.goto("/home", { waitUntil: "domcontentloaded" });
   const navLink = page.locator(".icon-sidebar").getByRole("link", { name: "Design Studio" });
   await expect(navLink).toBeVisible();
   await navLink.click();
