@@ -42,11 +42,15 @@ jobs:
     # ran 17.7 minutes, and concluded success 160 minutes after this
     # aggregator started — which had already failed at 124 minutes while
     # every required check was still pending and later succeeded on the
-    # same SHA. The window must cover queue starvation, not just execution
-    # time; it does not weaken the required evidence. 240 minutes of
-    # evidence inside a 245-minute job timeout covers the measured
-    # starvations with margin; the required evidence set and the
-    # fail-closed behavior are unchanged.
+    # same SHA. PR #2437 (run 44748434713, job 136329705554) then measured
+    # the same ceiling from the candidate side: the required producers sat
+    # queued ~124 minutes and concluded success 16:40:50–16:59:24Z, minutes
+    # after the 120-minute aggregator died at 16:38:18Z; scope resolution
+    # itself was correct, only the window was too short. The window must
+    # cover queue starvation, not just execution time; it does not weaken
+    # the required evidence. 240 minutes of evidence inside a 245-minute
+    # job timeout covers the measured starvations with margin; the
+    # required evidence set and the fail-closed behavior are unchanged.
     timeout-minutes: 245
     env:
       # A 30-second cadence preserves the 240-minute evidence window while
