@@ -187,3 +187,68 @@ def test_create_then_list_round_trip(client: TestClient) -> None:
     assert listed.status_code == 200, listed.text
     names = [c["name"] for c in listed.json()]
     assert "Round Trip" in names
+
+
+class TestDefaultComposeCanSupplyTheToken:
+    """The shipped compose stack can make /v2/canvas operable (#2311 AC).
+
+    The surface is fail-closed (audit 3.2): with CANVAS_API_TOKEN unset every
+    canvas route answers 503. That is correct for an unset deployment — but it
+    means "operable on `docker compose up`" holds only if the compose file
+    actually hands the engine a CANVAS_API_TOKEN knob an operator can set in
+    .env. This pins that wiring structurally, because a compose file that
+    silently drops the variable looks healthy: the engine boots, the store
+    wires, and every canvas request still answers 503.
+    """
+
+    def test_the_engine_service_receives_the_token_variable(self) -> None:
+        from pathlib import Path
+
+        import yaml
+
+        compose = Path(__file__).resolve().parents[3] / "docker-compose.yml"
+        assert compose.is_file(), f"shipped compose file missing: {compose}"
+        doc = yaml.safe_load(compose.read_text(encoding="utf-8"))
+        env = doc["services"]["maistro-engine"]["environment"]
+        entries = [e for e in env if isinstance(e, str) and e.startswith("CANVAS_API_TOKEN=")]
+        assert entries, (
+            "maistro-engine must receive CANVAS_API_TOKEN; without the knob "
+            "no default-compose deployment can ever authenticate to /v2/canvas"
+        )
+
+    def test_the_compose_knob_is_optional_and_empty_not_a_credential(self) -> None:
+        """`${VAR:-}` keeps the audited fail-closed default. A literal or a
+        non-empty fallback would publish a working credential (the rule
+        scripts/check-compose-secrets.py enforces for every tracked compose
+        file), and an unset deployment must keep answering 503, not serve a
+        shared secret."""
+        from pathlib import Path
+
+        import yaml
+
+        compose = Path(__file__).resolve().parents[3] / "docker-compose.yml"
+        doc = yaml.safe_load(compose.read_text(encoding="utf-8"))
+        env = doc["services"]["maistro-engine"]["environment"]
+        value = next(
+            e.split("=", 1)[1]
+            for e in env
+            if isinstance(e, str) and e.startswith("CANVAS_API_TOKEN=")
+        )
+        assert value == "${CANVAS_API_TOKEN:-}", value
+
+    def test_the_compose_name_matches_the_reader_constant(self) -> None:
+        """The knob is only real if the reader consumes the same name: the
+        compose variable and ``maistro_canvas.auth.TOKEN_ENV_VAR`` must stay
+        one name, or a renamed constant silently strands the credential."""
+        from pathlib import Path
+
+        import yaml
+
+        from maistro_canvas.auth import TOKEN_ENV_VAR
+
+        compose = Path(__file__).resolve().parents[3] / "docker-compose.yml"
+        doc = yaml.safe_load(compose.read_text(encoding="utf-8"))
+        env = doc["services"]["maistro-engine"]["environment"]
+        assert any(isinstance(e, str) and e.startswith(f"{TOKEN_ENV_VAR}=") for e in env), (
+            f"compose no longer passes {TOKEN_ENV_VAR} to maistro-engine"
+        )
