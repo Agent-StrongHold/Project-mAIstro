@@ -393,3 +393,47 @@ this head: `check-vulture-baseline.py packages/*/src --min-confidence 60
 retarget-to-develop instruction while `--base develop` exits 0 — the
 ADR-095 stacked-flow expectation, matching the hosted snapshot.
 
+## Verification evidence (verifier round, head 982dd991edd589af)
+
+The prior launch block — "Hosted PR snapshot incomplete or not the review
+head" — is resolved at this head too: the dispatch snapshot of PR #2425 is
+complete (`complete_for_scope` true, 80+ check runs captured
+2026-11-21T14:05Z) and the hosted PR head sha equals 982dd991edd589af113324
+a83c7530592a15cb78, the local review HEAD. The delta vs the verified parent
+ba88f29b1cc44c0d is this round's docs commit alone (one inventory-note
+append); `reconciliation.py` keeps sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — the P4b
+code under review is byte-identical across all proven rounds.
+
+Everything below was re-executed fresh at exactly this head, not assumed:
+driver deterministic checks inspected green (check-0..8: uv sync, `ruff
+check`, `ruff format --check` 3610 files, focused battery 441 passed /
+140 skipped, hive-conductor audit pagination 32 passed, suite inventory
+ok ×4: hive-conductor backend 4273, maistro-canvas 633, maistro-core 18772,
+maistro-rsi 1797) and independently re-run: `ruff check` + `ruff format
+--check` clean; focused battery re-executed at 441 passed / 140 skipped.
+Fail-before re-proven with the pre-P4b `persisted.cancellation_cause or
+cancellation` fallback in `_reconcile_cancelled`: fails exactly
+test_unknown_cancelled_refuses_even_with_caller_recovered
+(RecoveredDispositionRefused instead of the required RunIntegrityError,
+1 failed / 4 passed); restored byte-identical (sha256 verified above,
+`git status` empty) and green again (5/5).
+
+Live-database leg on a throwaway pgvector:pg18 container (port 5433,
+`DATABASE_URL` for alembic, `alembic upgrade head` to 068,
+MAISTRO_TEST_PG_DSN as a raw asyncpg `postgresql://` DSN): the full P4b
+battery 581 passed with zero skips — all 140 service-gated legs green,
+matching the prior round's count exactly; pg disposition + disposition
+suites re-run individually 39 passed; container removed after. Canvas
+race-coverage remediation tests re-run green
+(test_race_or_require_terminal_resolves_or_refuses,
+test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none).
+CI-exact gates at this head: `check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exit 0 (1222 == 1222
+against base 971e536838ca); pr-base with the ci.yml exact argv
+(`--base "$PR_BASE" --labels "$PR_LABELS"`): a stacked cursor/ base exits 1
+with the retarget-to-develop instruction while `--base develop` exits 0 —
+the ADR-095 stacked-flow expectation, matching the hosted snapshot where
+coverage (no services), exact-debt-ledger, and every other completed job
+are success and pr-base is the only completed failure.
+
