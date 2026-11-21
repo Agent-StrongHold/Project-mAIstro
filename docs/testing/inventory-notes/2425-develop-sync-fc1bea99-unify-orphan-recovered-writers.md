@@ -97,3 +97,37 @@ measured file at or above 90% lines / 80% branch arcs**. First run failed on
 `pg_store.py` 70.6% (the untested PG happy/refusal arms named above); the
 three `TestRecoverOrphanedPgWriter` cases are the repair, and the battery
 re-run totals **9128 passed / 6 skipped** before the hive combine leg.
+
+## Independent verification at final head 543651fecf (follow-up round)
+
+Re-validated the same head with CI's exact producer invocations (no tree
+changes; head unchanged):
+
+- Driver deterministic checks 0–7 all green: `ruff check` + `format
+  --check` (3617 files), canvas battery **437 passed / 144 skipped** (no PG),
+  hive backend `test_audit_pagination.py` **32 passed**, suite inventory ok
+  for hive-conductor/backend (4321), maistro-canvas (633), maistro-core
+  (18850).
+- No-PG scoped battery (all nine PR test files): **437 passed / 144
+  skipped**, matching the driver.
+- Live pgvector/pgvector:pg18, `alembic upgrade head` → revision **068**;
+  disposition battery (PG recovered disposition, reconciler provenance,
+  unified orphan recovery incl. `TestRecoverOrphanedPgWriter` PG arms,
+  recovered disposition, spine conformance, recovery events/evidence pack):
+  **492 passed / 0 skipped**.
+- CI-exact vulture ledger (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): **exit 0**, 1221 reviewed identities.
+- CI `quality.yml` unit producers reproduced with live PG env: core producer
+  (`coverage run --branch --source=packages/maistro-core/src/maistro -m
+  pytest packages/maistro-core/tests --timeout=30 -q`) **18514 passed / 277
+  skipped** with 74 pytest-timeout (>30s) starvation failures/errors under
+  the 14.5-minute instrumented run; re-run of exactly those 74 nodes in
+  isolation with `coverage --append` and `--timeout=120`: **74 passed in
+  77.39s** — the failures are machine-load starvation, not branch
+  regressions (the same nodes pass in the scoped batteries above). Canvas
+  producer: **578 passed / 75 skipped**.
+- Diff-coverage gate over those two producers (`--base origin/develop`,
+  floors 90% lines / 80% branch arcs): **exit 0 — 10 changed src files
+  measured, all at or above both floors** (test files exempt by declaration;
+  `_vulture_whitelist.py` named unmeasured, which the gate reports without
+  failing).
