@@ -876,3 +876,102 @@ retarget PR #2427 base to develop before merge; CI check-run verdicts on
 `b33b03fbe9` (0/0 at dispatch capture) remain a driver observation; nothing
 pushed; no GitHub mutations; the only change in this round is this notes
 section.
+
+## Round at `50bbc999c9` (verifier/writer round at the completed workflows-only develop sync, 2026-11-21)
+
+HEAD `50bbc999c9e7` is the **completed deferred sync** the `b33b03fbe9` round
+left recorded: a merge of develop tip `1621f7fefb` (#2434
+docker/build-push-action bump — `.github/workflows/{fleet-images,
+integration-scope,release}.yml`, `tests/ci/integration-scope.test.cjs`,
+`tests/test_check_gates_ran.py` +58, one repair note) into the previously
+validated `0ab60e2e87`. Three-way head alignment re-confirmed: dispatch
+snapshot `linked_pr_heads["2427"]` = `50bbc999c9e7…` = local HEAD = hosted PR
+head. **Zero `packages/` changes** in the merge delta
+(`git diff --stat 0ab60e2e87..HEAD -- packages/` empty), so the P5a
+implementation is byte-identical to the validated tree. Prior claims were NOT
+assumed true; everything below was re-executed at this head.
+
+### Preflight block resolved
+
+The prior "Hosted PR snapshot incomplete or not the review head" block was,
+at capture, exactly this: the hosted head `50bbc999c9` carried **0 check-runs
+and 0 statuses** (dispatch `commits/50bbc999…/check-runs` len 0) — CI had not
+yet reported on the freshly pushed head — while the head itself matches the
+dispatch/review head exactly. Head alignment holds; the missing CI verdicts
+remain a driver observation, not a local failure.
+
+### Independent re-proof at `50bbc999c9`
+
+1. **Merge provenance**: parents `0ab60e2e87` + `1621f7fefb`;
+   `git merge-base --is-ancestor 1621f7fefb HEAD` → yes; after
+   `git fetch origin develop`, tip is still `1621f7fefb` →
+   `origin/develop IS ancestor of HEAD` (sync complete, nothing deferred);
+   `git merge-tree --write-tree HEAD origin/develop` → rc 0;
+   `git diff --numstat origin/develop -- quality/` → **empty** (merge lost no
+   ledger rows).
+2. **Driver deterministic checks (this job's check-0..8) green at this
+   head**: sync rc 0 (with the documented editable-strip env finding), ruff
+   check "All checks passed", ruff format "3618 files already formatted",
+   13-file batch **506 passed, 147 env-skips**, audit-pagination **32
+   passed**, per-suite suite inventory ok ×4 (hive 4321 / canvas 633 / core
+   18857 / rsi 1797).
+3. **Merge-delta tests run directly**: `tests/test_check_gates_ran.py` →
+   **74 passed**; `node --test tests/ci/integration-scope.test.cjs`
+   (ci.yml:1732 exact form) → **14 pass / 0 fail**.
+4. **Five P5a suites vs live pg18** (private DB `maistro_cr2427` on
+   `cr2427-verify-pg`, 127.0.0.1:15499, `alembic upgrade head` current, no
+   concurrent lane on the instance, `MAISTRO_TEST_PG_DSN` plain
+   `postgresql://`): **68 passed, 0 skipped** — memory + sqlite + postgres
+   legs all ran; matches every prior round.
+5. **Driver's exact 13-file batch vs live PG**: **653 passed, 0 skipped**,
+   1 warning (canvas PytestWarning proven pre-existing on develop) —
+   reconciles exactly with driver check-3 (506 + 147 = 653).
+6. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1499` sole caller of
+   `_replayable_terminal_attempt` passes `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`; `:1542`
+   selects solely via `is_typed_recovered_attempt(latest)`;
+   `consumption.py:42` import + `:511` typed look-past;
+   `grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+   `lifecycle.py:327`, docstring comment `:310`, `__all__` `:792` only —
+   **zero production call sites**.
+7. **CI-exact gates re-run at this head** (after CI's exact sync
+   `uv sync --locked --all-extras` + `uv pip install -e
+   packages/maistro-evolve`, quality.yml:103-108): mypy ci.yml:117-127 exact
+   10-package list → **Success: no issues found in 1128 source files, rc 0**;
+   vulture `packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` → **1221 reviewed == 1221 findings, rc 0** (base
+   `1621f7fefba4` → candidate `50bbc999c9e7`); radon
+   (`RATCHET_BASE_REV=origin/develop`, quality.yml:845) → **124 == 124,
+   rc 0**; suite inventory no-args (ci.yml:744, `uv run python`) → **21
+   suites ok, 36024 unique identities, rc 0** (36017 → 36024 = develop's
+   +7 `test_check_gates_ran.py` identities, covered by develop's merged
+   baseline — rc 0 is the proof); promotion-surface / reachability (1496
+   modules, 82 unreachable, dispositioned) / merge-markers /
+   test-duplicates / backlog / layout all rc 0; ruff pair re-run green
+   ("All checks passed" / "3618 files already formatted").
+8. **`pr-base`** (ci.yml:79 form): `--base develop --labels ""` → **ok rc 0**;
+   the hosted stacked base `cursor/m1-b-p4b-reconciler-recovered-disposition-8551`
+   → **FAIL rc 1** with the ADR-095 message ("must be retargeted to 'develop'
+   before merge") — the documented stacked state the PR body itself expects;
+   retarget is a driver GitHub action.
+9. **Inventory note re-measured, no edit owed**: the
+   `m1-232-p5a-recovered-rediscovery.md` trio (`rediscovery` +
+   `characterization` + `parked_run_resume`) collects **67**
+   (`pytest --collect-only`) — the documented 63 → 67 **+4** stands; this
+   round changes no tests, so no new delta is owed.
+
+### Operational note for future rounds (tooling, not a repo defect)
+
+Running `python3 scripts/check-suite-inventory.py` with the **bare system
+`python3`** (not `uv run python …`) collects the hive backend suite with the
+system interpreter (no fastapi) → 105 bogus collection errors. The driver's
+and CI's invocation (`uv run python` / venv python) is the correct form: 21
+suites ok, rc 0. Do not "fix" suites based on a bare-`python3` run.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane):
+retarget PR #2427 base to develop before merge (pr-base red vs the stacked
+cursor/ base is the documented expected state); CI check-run verdicts on
+`50bbc999c9` (0/0 at dispatch capture) remain a driver observation; nothing
+pushed; no GitHub mutations; the only change in this round is this notes
+section.
