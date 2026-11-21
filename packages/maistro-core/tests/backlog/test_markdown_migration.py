@@ -91,8 +91,10 @@ def test_real_backlog_roundtrips_byte_for_byte() -> None:
     document = parse_markdown(text)
     # Pinned count: develop's landed lanes (#99/#100/#101) appended items to
     # the canonical Markdown before the #102 cutover, as the interim authority
-    # allows; the byte-for-byte render below is the actual losslessness proof.
-    assert len(document.items) == 167
+    # allows; lane #860 appended engine-116 (the cluster-wide rate-limit budget
+    # finding) on top. The byte-for-byte render below is the actual
+    # losslessness proof — the count pin only catches silent item loss.
+    assert len(document.items) == 168
     rendered = render_document(document.tokens, _items_from(document))
     assert rendered == text
 
