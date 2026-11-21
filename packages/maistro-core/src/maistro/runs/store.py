@@ -26,6 +26,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -778,6 +779,23 @@ class RunStore(Protocol):
         then commits ``CANCELLED`` + ``RECOVERED`` via
         ``compensate_unlaunched_attempt``. Refuses RUNNING / terminal / stale
         fence / already-caused winners rather than rewriting them.
+        """
+        ...
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume (#2417).
+
+        Re-reads under authoritative mutation protection, checks
+        ``owning_run_id`` lineage, then commits ``CANCELLED`` + ``RECOVERED``
+        via ``recover_orphaned_attempt``. Leased / terminal / wrong-run /
+        already-caused winners refuse. The sweep must not call this seam.
         """
         ...
 
@@ -1867,6 +1885,26 @@ class InMemoryRunStore:
         attempt = self._require_attempt(attempt_id)
         self._validate_fence(attempt, fencing_token)
         settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        attempt = self._require_attempt(attempt_id)
+        node_run = self._require_node_run(attempt.node_run_id)
+        if node_run.run_id != owning_run_id:
+            raise RunIntegrityError(
+                f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                f"not owning_run_id={owning_run_id!r}"
+            )
+        settled = recover_orphaned_attempt(attempt, at=at, error=error)
         self._attempts[attempt_id] = settled
         return settled.model_copy(deep=True)
 

@@ -139,17 +139,48 @@ const VERDICT_PAUSE_REASONS = new Set([
   "awaiting_role_delegate",
 ]);
 
+function approvalRequestIdOf(evidence: Record<string, unknown> | undefined): string {
+  const payload = evidence?.payload;
+  if (payload && typeof payload === "object" && payload !== null) {
+    const id = (payload as Record<string, unknown>).approval_request_id;
+    if (typeof id === "string") return id.trim();
+  }
+  return "";
+}
+
+function approvedVerdictOf(text: string): boolean | null {
+  const lower = text.trim().toLowerCase();
+  if (lower === "approve" || lower === "approved" || lower === "yes") return true;
+  if (lower === "reject" || lower === "rejected" || lower === "no" || lower === "deny") {
+    return false;
+  }
+  return null;
+}
+
 /**
  * Build the HITL answer body from Attention evidence (#1049).
- * Question pauses take `{ answer }`; approve/review/delegate take `{ verdict }`
- * so a text-only "approved" cannot leave the Run paused on a malformed shape.
+ * Question pauses take `{ answer }`; ordinary approve/review/delegate take
+ * `{ verdict }`. Capability-approval pauses (paused_reason +
+ * ``approval_request_id``) take `{ approved, expected_approval_request_id }`
+ * so Attention can settle DurableApproval (#2423 / #55).
  */
 export function hitlAnswerBody(
   pausedReason: unknown,
   text: string,
-): Record<string, string> {
+  evidence?: Record<string, unknown>,
+): Record<string, unknown> {
   const trimmed = text.trim();
   const reason = typeof pausedReason === "string" ? pausedReason : "";
+  const approvalRequestId = approvalRequestIdOf(evidence);
+  if (reason === "awaiting_human_approval" && approvalRequestId) {
+    const approved = approvedVerdictOf(trimmed);
+    // Unmapped free text refuses to invent APPROVED — Attention's Approve /
+    // Reject buttons always send the mapped words.
+    return {
+      approved: approved === true,
+      expected_approval_request_id: approvalRequestId,
+    };
+  }
   if (VERDICT_PAUSE_REASONS.has(reason)) {
     const lower = trimmed.toLowerCase();
     const verdict =
@@ -167,7 +198,7 @@ export function hitlAnswerBody(
 export async function submitHitlAnswer(
   runId: string,
   nodeId: string,
-  body: Record<string, string>,
+  body: Record<string, unknown>,
 ): Promise<unknown> {
   // Bare `fetch` + literal path: shipped-surface-truth discovers mutating
   // browser calls by scanning fetch sites, not apiPost helpers.
