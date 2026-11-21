@@ -29,6 +29,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -42,6 +43,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -1648,6 +1650,33 @@ class SqliteRunStore:
             )
             return settled
 
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            node_run = await self._require_node_run(attempt.node_run_id)
+            if node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -1752,6 +1781,7 @@ class SqliteRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._write_lock:
             attempt = await self._require_attempt(attempt_id)
@@ -1763,6 +1793,7 @@ class SqliteRunStore:
                 result=result,
                 error=error,
                 metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             if target is AttemptStatus.COMPLETED:
                 # Same lock `transition_run` holds, so a cancellation either

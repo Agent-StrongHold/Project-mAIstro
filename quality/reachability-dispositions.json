@@ -165,19 +165,6 @@
       ]
     },
     {
-      "id": "tools-approval-and-reversibility",
-      "subsystem": "Tool execution",
-      "disposition": "CONNECT",
-      "rationale": "ADR-050/ADR-051 reversibility classification and approval gates. SECURITY.md already states that ReversibilityRegistry is never constructed and Sentinel.resolve_tier never consults it; #57 is the work that makes tool execution a governed Invocation carrying both. maistro.tools.reversibility's taxonomy types joined the governed path in M9-E3 (#964): the third-party tool/Skill contract derives every extension tool's ADR-050 classification through this module, and the `maistro extensions contract` CLI reads it, so the module left the baseline. maistro.tools.reversibility_registry left this group when #57 wired it: maistro.tools.contracts (GovernedToolExecutor/ToolContractRegistry) constructs the registry and resolves every tool call admitted at the governed seam's reversibility tier from it as an Invocation admission fact; hive-conductor's services.governed_tools is the shipped constructor (boot Agent tools and chat web tools), while legacy DAG tool nodes carry the legacy-tool effect floor on their own canonical Invocation.",
-      "root": "governed tool Invocation (#57)",
-      "modules": [
-        "maistro.tools.approval",
-        "maistro.tools.approval.gate",
-        "maistro.tools.approval.protocols",
-        "maistro.tools.approval.types"
-      ]
-    },
-    {
       "id": "security-auth-backends",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
@@ -218,16 +205,6 @@
         "@flat/hive-conductor/services.ui_hill_climber"
       ],
       "replaced_by": "services.optimizer + routes.optimizer (+ Attention projection) for DAG proposals; packages/hive-conductor/run_hill_climb.py / hill-climb-ui.sh for operator UI climb; maistro-rsi / #2275 for engine self-improvement"
-    },
-    {
-      "id": "canvas-legacy-layerrecord",
-      "subsystem": "Canvas ability",
-      "disposition": "RETIRE",
-      "rationale": "ADR-044 (Accepted) names compositor.py and tool.py the legacy LayerRecord path, superseded by the AssetInstance modules, with no data migration and new work on AssetInstance. Verified against the ADR body, not inferred. Retired once ADR-045's cutover lands; ADR-045 is still Proposed and routes.py still wires the legacy executor. store.py left this list: the supported server wired it as the /v2/canvas persistence layer (#851), and #93's built-in worker makes it also the host of the SPEC-203 generation-job queue (PgCanvasStore), which the shipped maistro-canvas-worker claims from, so it has a production entry point regardless of the layer-model cutover.",
-      "replaced_by": "maistro_canvas.canvas.asset_store / asset_tool (ADR-044)",
-      "modules": [
-        "maistro_canvas.canvas.tool"
-      ]
     },
     {
       "id": "tools-net-guard-compat",

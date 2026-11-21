@@ -26,6 +26,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -41,6 +42,7 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -784,6 +786,23 @@ class RunStore(Protocol):
         """
         ...
 
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume (#2417).
+
+        Re-reads under authoritative mutation protection, checks
+        ``owning_run_id`` lineage, then commits ``CANCELLED`` + ``RECOVERED``
+        via ``recover_orphaned_attempt``. Leased / terminal / wrong-run /
+        already-caused winners refuse. The sweep must not call this seam.
+        """
+        ...
+
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -818,6 +837,7 @@ class RunStore(Protocol):
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt: ...
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
@@ -1890,6 +1910,26 @@ class InMemoryRunStore:
         self._attempts[attempt_id] = settled
         return settled.model_copy(deep=True)
 
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        attempt = self._require_attempt(attempt_id)
+        node_run = self._require_node_run(attempt.node_run_id)
+        if node_run.run_id != owning_run_id:
+            raise RunIntegrityError(
+                f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                f"not owning_run_id={owning_run_id!r}"
+            )
+        settled = recover_orphaned_attempt(attempt, at=at, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -1952,6 +1992,7 @@ class InMemoryRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         attempt = self._require_attempt(attempt_id)
         self._validate_fence(attempt, fencing_token)
@@ -1962,6 +2003,7 @@ class InMemoryRunStore:
             result=result,
             error=error,
             metrics=metrics,
+            cancellation_cause=cancellation_cause,
         )
         if target is AttemptStatus.COMPLETED:
             # The executor's Run fence is check-then-act across two awaits

@@ -59,6 +59,7 @@ class EmbeddedRuntime(NamedTuple):
     llm: Any
     preamble: str
     governed_egress: Any
+    admitted_calls: Any = None
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -80,7 +81,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.capabilities.admitted_model import AdmittedModelCalls
-    from maistro.capabilities.model_chat import build_model_chat_client
+    from maistro.capabilities.model_chat import GovernedLLMClient, build_model_chat_client
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
@@ -142,15 +143,16 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     # Agent calls and Hive chat share the Container-owned governed client;
     # there is no adapter-local HTTP authority. The fallback only supports
     # container-shaped test seams and still composes the same core boundary.
+    # Direct attribute read required by the wiring-reads ratchet (#1084).
     llm_client = container.model_chat_client
     if llm_client is None:
         llm_client = build_model_chat_client(
             endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
             workspace_id=config.workspace_id,
         )
-    # The deployment's gateway base, resolved once for the runtime's governed
-    # egress (#718) so the tool seam cannot drift onto different credentials
-    # or bases than the roster's clients.
+    # The deployment's gateway base, resolved once for both the roster's
+    # model clients and this runtime's governed egress (#718) so the two
+    # doors cannot drift onto different credentials or bases.
     model_endpoint = GatewayEndpoint(
         base_url=config.litellm_url,
         api_key=config.litellm_key,
@@ -165,6 +167,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
         adapters=getattr(container, "provider_adapter_catalog", None),
     )
+    # Boot Agents and later materialization share one AdmittedModelCalls helper;
+    # no fabricated agent-runtime Binding or ambient credential (#1084). The
+    # factory wraps the roster client; RuntimeSource.llm keeps the admitted
+    # authority for Workspace-narrowed materialization.
+    admitted_llm = GovernedLLMClient(admitted_calls)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -193,11 +200,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
-        capability_effects=container.capability_effects,
-        provider_registry=container.provider_registry,
-        llm_router=container.llm_router,
-        model_endpoint=model_endpoint,
-        workspace_id=config.workspace_id,
+        admitted_calls=admitted_calls,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -243,9 +246,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     return EmbeddedRuntime(
         container=container,
         agents=agents,
-        llm=llm_client,
+        llm=admitted_llm,
         preamble=preamble,
         governed_egress=governed_egress,
+        admitted_calls=admitted_calls,
     )
 
 
@@ -271,6 +275,7 @@ class MaistroCoreBridge:
     def __init__(self) -> None:
         self._container: Any = None
         self._governed_egress: Any = None
+        self._admitted_calls: Any = None
 
     @property
     def container(self) -> Any:
@@ -288,10 +293,16 @@ class MaistroCoreBridge:
         """
         return self._governed_egress
 
+    @property
+    def admitted_calls(self) -> Any:
+        """Configured model calls requiring persisted execution admission."""
+        return self._admitted_calls
+
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
         self._governed_egress = runtime.governed_egress
+        self._admitted_calls = runtime.admitted_calls
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves
