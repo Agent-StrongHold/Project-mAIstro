@@ -72,6 +72,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -1614,6 +1615,7 @@ class PgRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._pool.acquire() as conn, conn.transaction():
             if target is AttemptStatus.COMPLETED:
@@ -1658,7 +1660,13 @@ class PgRunStore:
             # check that was true when it ran and false when it wrote.
             self._validate_fence(attempt, fencing_token)
             updated = transition_attempt(
-                attempt, target, at=at, result=result, error=error, metrics=metrics
+                attempt,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
         return updated

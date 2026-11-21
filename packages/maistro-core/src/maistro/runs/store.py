@@ -42,6 +42,7 @@ from maistro.runs.model import (
     Attempt,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -814,6 +815,7 @@ class RunStore(Protocol):
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt: ...
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
@@ -1936,6 +1938,7 @@ class InMemoryRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         attempt = self._require_attempt(attempt_id)
         self._validate_fence(attempt, fencing_token)
@@ -1946,6 +1949,7 @@ class InMemoryRunStore:
             result=result,
             error=error,
             metrics=metrics,
+            cancellation_cause=cancellation_cause,
         )
         if target is AttemptStatus.COMPLETED:
             # The executor's Run fence is check-then-act across two awaits

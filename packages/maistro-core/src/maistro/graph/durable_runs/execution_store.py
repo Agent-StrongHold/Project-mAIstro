@@ -29,6 +29,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
@@ -676,6 +677,7 @@ class DurableRunExecutionStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         if self._run_store is not None:
             canonical = await self._run_store.transition_attempt(
@@ -686,6 +688,7 @@ class DurableRunExecutionStore:
                 error=error,
                 metrics=metrics,
                 fencing_token=fencing_token,
+                cancellation_cause=cancellation_cause,
             )
             await self._mutate(lambda record: self._replace_attempt(record, canonical))
             return canonical.model_copy(deep=True)
@@ -703,6 +706,7 @@ class DurableRunExecutionStore:
                     result=result,
                     error=error,
                     metrics=metrics,
+                    cancellation_cause=cancellation_cause,
                 )
                 return record.model_copy(update={"attempts": tuple(attempts)})
             raise RunIntegrityError(f"Attempt {attempt_id!r} does not exist")
