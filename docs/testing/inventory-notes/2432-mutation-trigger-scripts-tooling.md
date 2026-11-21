@@ -60,3 +60,36 @@ merge queue.
   `check-branch-protection.py`, `check-install-functions.py`: ok.
 - Full-suite collection for this delta: 21 suites, 35,829 node IDs, only
   `tests/` moved (6126 → 6129, exactly the three new tests).
+
+## Develop-sync re-validation (CI-repair round, head ≥ 17e2c902ac)
+
+The branch was re-synced onto origin/develop (1621f7fefba4) after two
+conflicted develop merges (#2345 dlint bump, #2434 build-push-action bump).
+The conflicts were union resolutions, not drops:
+
+- `scripts/js_dependency_gate.py`: this branch's lightningcss MPL-2.0 rows
+  and develop's #2445 axe-core rows now coexist in one `LICENSE_EXCEPTIONS`
+  dict. Develop's new `TestLicenseExceptionsBindToRealLockfiles` requires
+  version-bound rows, so the lightningcss entries gained
+  `versions=("1.33.0",)` — the version every surface lockfile installs;
+  forward and backward binding checks both pass.
+- `tests/test_mutation_targets.py`: this class and develop's
+  `TestEvidenceOnlyPrSurfacesStillTrigger` (#2345) are both retained; the
+  merged file is develop's file plus exactly the 34 added lines of this
+  class (verified `git diff origin/develop` is pure addition).
+
+Re-measured after the sync, CI-exact invocations:
+
+- `uv run python scripts/check-suite-inventory.py`: ok — 21 suites match;
+  `tests/` 6136 = baseline (4117) + accumulated deltas including this
+  note's `+3`, i.e. still exactly three tests over the develop base.
+- `uv run pytest tests/test_js_dependency_gate.py tests/test_mutation_targets.py`:
+  80 passed; the seven-suite gates-ran family: 258 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: 1221 reviewed = 1221
+  findings, exit 0 (no ledger change).
+- `uv run ruff check .` / `uv run ruff format --check .`: clean.
+- `python3 scripts/check-required-checks.py`: ok — 79 PR checks;
+  `uv run python scripts/mutation_critical.py --validate`: ok.
+- `npm ci --dry-run --ignore-scripts` in `packages/hive-conductor/frontend`:
+  262 packages resolve from the bumped lockfile (@vitejs/plugin-react 6.3.0).
