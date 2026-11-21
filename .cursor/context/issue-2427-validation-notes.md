@@ -975,3 +975,15 @@ cursor/ base is the documented expected state); CI check-run verdicts on
 `50bbc999c9` (0/0 at dispatch capture) remain a driver observation; nothing
 pushed; no GitHub mutations; the only change in this round is this notes
 section.
+
+### Round at f9065bd067 (job 9169dcd8) — re-validation, no code change
+
+Re-ran the driver's full battery on `f9065bd067` (uv sync --locked --extra dev;
+ruff check/format; 13-file pytest batch 653 passed; hive backend audit
+pagination 4321 passed; suite inventory 4 suites 21 suites/36024 ids; vulture
+1221==1221; radon 124==124; mypy 1128 files; pr-base --base develop ok rc0;
+merge-markers ok). Additionally ran the CI `test` job's package suites
+(maistro-server 697p, maistro-turing 225p+138p, maistro-design 689p,
+ext-harness+ext-sdk 420p, root tests 5901p, hive backend 4293p, combined
+cross-suite leakage 10976p) — all green. No code or test changes; no new
+inventory delta owed. Worktree clean; commit is docs-only round record.
