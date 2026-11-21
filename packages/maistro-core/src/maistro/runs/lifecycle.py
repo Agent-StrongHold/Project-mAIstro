@@ -576,6 +576,63 @@ def recover_leaseless_orphaned_attempt(
     return Attempt.model_validate(values)
 
 
+#: Default ``error`` for an explicit owning-record orphan recovery. Shared with
+#: Graph resume so durable disposition tests recognise the artefact by text
+#: without inventing a second spelling of the same leaf (#2417 / #232 P3b).
+ORPHANED_ATTEMPT_ERROR = "orphaned physical Attempt recovered after process loss"
+
+
+def recover_orphaned_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle a leaseless active Attempt as CANCELLED+RECOVERED (#2417 / #232 P3b).
+
+    Second authorized RECOVERED writer: only CREATED/RUNNING with
+    ``execution_lease is None`` and no prior ``cancellation_cause``. The
+    owning-record resume assertion is the death proof — a sweep must never
+    call this leaf, and a still-leased Attempt is refused so live ownership
+    cannot be stolen. Generic ``transition_attempt`` still must not accept
+    ``RECOVERED``.
+    """
+    moment = _now(at)
+    status_label = getattr(attempt.status, "value", attempt.status)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {status_label} Attempt "
+            f"({attempt.attempt_id!r}) as an orphan; terminal rows already have an outcome"
+        )
+    if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {status_label} Attempt "
+            f"({attempt.attempt_id!r}) as an orphan; only CREATED/RUNNING are active"
+        )
+    if attempt.execution_lease is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that still carries an "
+            "execution lease; leased death proof is reclaim_attempt, not orphan recovery"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result,
+        error=ORPHANED_ATTEMPT_ERROR if error is None else error,
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
 #:
 #: Not the Run's own terminal status. The node did not succeed, fail or time
@@ -722,6 +779,7 @@ def transition_attempt(
 __all__ = [
     "ATTEMPT_TRANSITIONS",
     "CASCADED_NODE_RUN_STATUS",
+    "ORPHANED_ATTEMPT_ERROR",
     "RECLAIMED_ATTEMPT_ERROR_PREFIX",
     "RECLAIMED_ATTEMPT_STATUS",
     "RUN_TRANSITIONS",
@@ -737,6 +795,7 @@ __all__ = [
     "reclaim_attempt",
     "reclaimed_attempt_error",
     "recover_leaseless_orphaned_attempt",
+    "recover_orphaned_attempt",
     "refuse_completion_under_terminal_run",
     "renew_attempt_lease",
     "renewed_lease",

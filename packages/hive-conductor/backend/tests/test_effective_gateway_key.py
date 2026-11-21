@@ -272,12 +272,12 @@ class TestNoPlaceholderCredential:
 
         runtime = await _construct_runtime(_settings(litellm_api_base="http://gw.test/v1"))
 
-        assert captured["model_endpoint"].api_key == "sk-effective-key"
-        # The roster's client is the governed compatibility client composed
-        # over the configured gateway, carrying the effective credential (#1084).
-        assert runtime.llm._egress._endpoint.api_key == "sk-effective-key"
+        assert captured["admitted_calls"]._endpoint.api_key == "sk-effective-key"
+        # The roster's client is the admitted governed client composed over
+        # the configured gateway, carrying the effective credential (#1084).
+        assert runtime.llm._calls._endpoint.api_key == "sk-effective-key"
         # The two doors share one endpoint object: they cannot drift.
-        assert runtime.governed_egress._endpoint is captured["model_endpoint"]
+        assert runtime.governed_egress._endpoint is captured["admitted_calls"]._endpoint
 
     async def test_unconfigured_runtime_holds_no_key_at_all(
         self, monkeypatch: pytest.MonkeyPatch
@@ -320,7 +320,7 @@ class TestNoPlaceholderCredential:
 
         runtime = await _construct_runtime(_settings(litellm_api_base="http://gw.test/v1"))
 
-        assert runtime.llm._egress._endpoint.api_key == ""
+        assert runtime.llm._calls._endpoint.api_key == ""
         assert runtime.governed_egress._endpoint.api_key == ""
 
 

@@ -27,7 +27,12 @@ from maistro.graph.nodes.base import (
 from maistro.graph.policies import declared_dag_max_cycles, declared_node_timeout_s
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
+from maistro.runs.lifecycle import (
+    ORPHANED_ATTEMPT_ERROR,
+    lease_is_expired,
+    transition_path,
+    transition_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.recovery_events import RecoveryEventSink
@@ -352,17 +357,18 @@ async def _reconcile_orphaned_attempts(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
-    """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
+    """Terminalize process-lost active Attempts and reconcile their NodeRuns.
+
+    Leased death proof stays on ``reclaim_expired_attempts``; leaseless active
+    rows use the dedicated ``recover_orphaned_attempt`` writer (#2417 / #232
+    P3b). Already-CANCELLED+RECOVERED rows are replayed through the reconciler
+    so a stale continuation projection still parks before retry decisions.
+    """
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
     lifecycle = AttemptLifecycleReconciler(
         execution_store,
         events=events,
         source=_RESUME_DISPOSITION_SOURCE,
-    )
-    active = tuple(
-        attempt
-        for attempt in record.attempts
-        if attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
     )
     now = datetime.now(UTC)
     _require_no_live_attempts(record, now=now)
@@ -371,20 +377,57 @@ async def _reconcile_orphaned_attempts(
     for attempt in reclaimed:
         await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
 
-    for attempt in active:
-        if attempt.execution_lease is not None:
+    for attempt in record.attempts:
+        if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
             continue
-        # Dedicated leaseless orphan writer stamps CANCELLED+RECOVERED;
-        # generic transition_attempt must not carry RECOVERED (#232 P4b).
-        terminal = await execution_store.recover_leaseless_orphaned_attempt(
+        if attempt.execution_lease is not None:
+            # Live leases were refused above; expired leases are the reclaim path.
+            continue
+        terminal = await execution_store.recover_orphaned_attempt(
             attempt.attempt_id,
-            error="orphaned physical Attempt recovered after process loss",
+            owning_run_id=record.run_id,
+            error=ORPHANED_ATTEMPT_ERROR,
         )
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
+
     latest = await store.get(record.run_id)
     if latest is None:
         raise KeyError(f"no such run: {record.run_id!r}")
-    return latest
+
+    for attempt in _recovered_attempts_to_replay(latest):
+        await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+
+    parked = await store.get(record.run_id)
+    if parked is None:
+        raise KeyError(f"no such run: {record.run_id!r}")
+    return parked
+
+
+def _recovered_attempts_to_replay(record: DurableRunRecord) -> tuple[Attempt, ...]:
+    """Current CANCELLED+RECOVERED Attempts whose NodeRun still needs parking.
+
+    Superseded recovered rows must not re-park a NodeRun that has already
+    advanced (retry / HITL answer → QUEUED); ``_park_node_run`` rejects that
+    as integrity failure.
+    """
+    node_runs_by_id = {node_run.node_run_id: node_run for node_run in record.node_runs}
+    current_by_node_run: dict[str, Attempt] = {}
+    for attempt in record.attempts:
+        existing = current_by_node_run.get(attempt.node_run_id)
+        if existing is None or attempt.ordinal > existing.ordinal:
+            current_by_node_run[attempt.node_run_id] = attempt
+    replay: list[Attempt] = []
+    for attempt in current_by_node_run.values():
+        if (
+            attempt.status is not AttemptStatus.CANCELLED
+            or attempt.cancellation_cause is not CancellationCause.RECOVERED
+        ):
+            continue
+        node_run = node_runs_by_id.get(attempt.node_run_id)
+        if node_run is None or node_run.status is not RunStatus.RUNNING:
+            continue
+        replay.append(attempt)
+    return tuple(replay)
 
 
 def _replay_refused(node_id: str, attempt: Attempt, semantics: ReplaySemantics) -> NodeResult:

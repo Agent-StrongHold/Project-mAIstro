@@ -563,3 +563,63 @@ resolve the recovery-file conflicts in place; (c) retarget PR #2427 base to
 develop before merge (pr-base red is the documented stacked state); (d) CI
 check-runs on `b80982bf` were 0/0 at dispatch capture — verdicts remain a
 driver observation.
+
+## Round at develop-sync merge head (this round, 2026-11-21)
+
+Task: the deferred develop sync. `git fetch origin develop` → tip still
+`fc1bea9936bb` (no advance since the conflict snapshot); the preserved
+in-progress merge (`MERGE_HEAD=fc1bea9936bb`) is exactly the required sync.
+Resolved all 8 conflicted files in place and committed the merge:
+
+- **Union resolutions** (both sides added disjoint seams; the merged
+  `test_canonical_execution_store.py` exercises BOTH writers as store
+  contracts): `_vulture_whitelist.py` (P4a `apply_recovered_attempt_disposition`
+  rows + P3b `recover_orphaned_attempt` rows), RSI
+  `test_m8a16_lean_rust_kernel_research.py` stub dict (both writer keys),
+  `store.py` protocol + InMemory, `sqlite_store.py`, `pg_store.py`,
+  `lifecycle.py` (`recover_leaseless_orphaned_attempt` kept alongside
+  develop's `ORPHANED_ATTEMPT_ERROR` + `recover_orphaned_attempt`;
+  `__all__` union), `execution_store.py` (both durable writers + both imports).
+- **`attempt_executor.py` — single call site, develop's P3b writer chosen**:
+  the resume loop now skips leased attempts explicitly and calls
+  `recover_orphaned_attempt(attempt_id, owning_run_id=record.run_id,
+  error=ORPHANED_ATTEMPT_ERROR)`. Rationale: develop's seam is the merged
+  canonical path (#2419 in develop); it enforces `owning_run_id` lineage and
+  delegates to the canonical RunStore when wired (no competing write
+  authority), and its lifecycle leaf produces the identical CANCELLED+RECOVERED
+  stamp with the identical error text (`ORPHANED_ATTEMPT_ERROR` is
+  byte-equal to the P4b literal). The loop can only reach leaseless rows
+  (live leases refused above; expired ones reclaimed first), so observable
+  behavior is unchanged. The P4b `recover_leaseless_orphaned_attempt` store
+  seam remains fully implemented and tested
+  (`test_recover_leaseless_orphaned_attempt.py`, durable-store tests) — it is
+  just no longer the resume loop's writer.
+- **RSI measurement assertions updated to the union reality** (not a gate
+  weakening: the module legitimately grew by one top-level def — develop's
+  `recover_orphaned_attempt` + this branch's `recover_leaseless_orphaned_attempt`
+  over a shared 23-def base): 25 defs, 12 translatable, 48%, 4 breakers —
+  all values re-measured live from the merged module AST, not guessed.
+
+Executed evidence (live PG `pgvector/pgvector:pg18` on 127.0.0.1:15499,
+`alembic upgrade head` current, `MAISTRO_TEST_PG_DSN` set):
+
+| Gate (CI-exact where applicable) | Result |
+|---|---|
+| manifest 13-suite recovery battery (`uv run pytest …`, memory+sqlite+postgres legs) | **653 passed** |
+| full `packages/maistro-core/tests/runs` + `graph/durable_runs` trees | **2969 passed, 4 skipped (known capability skips), 4 xfailed** |
+| `packages/hive-conductor/backend/tests/test_audit_pagination.py` | 32 passed |
+| `uv run ruff check .` / `ruff format --check .` | All checks passed / 3618 formatted |
+| `uv run mypy --strict packages/maistro-core/src` (quality.yml:2488, after `uv sync --all-extras`) | Success: 846 files |
+| `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (quality.yml CI args) | rc 0 — 1222 reviewed identities ≥ 1221 findings vs merge base `971e536838` |
+| `scripts/check-radon-baseline.py` | rc 0 — 124 == 124 |
+| `scripts/check-promotion-surface.py` / `check-reachability.py` | ok / rc 0 (1496 modules, 82 unreachable) |
+| `check-merge-markers.py` / `check-test-duplicates.py` / `check-backlog-consistency.py` / `verify-monorepo-layout.sh` | all ok |
+| `check-suite-inventory.py --suite` ×4 (hive backend, canvas, core, rsi) | ok ×4 — counts unchanged by this round (assertion-only edits) |
+| `check-pr-base.py --base develop --labels ""` (ci.yml:79 shape) | ok — policy check passes for a develop base; prior red was the stacked-base state, resolved by retargeting to develop at merge time |
+
+P5a wiring re-confirmed post-merge: `container.py:1436/:1509` catch
+`(RunIntegrityError, RecoveredDispositionRefused)`; `:1502` gates
+`allow_stranded_recovered` on `RunStatus.RUNNING`; `:1542` selects via
+`is_typed_recovered_attempt` only; `consumption.py:511` looks past typed
+RECOVERED only. Acceptance criteria 1–4 of the prior round re-proven by the
+653-test battery above.

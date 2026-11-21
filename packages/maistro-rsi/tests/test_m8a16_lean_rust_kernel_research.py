@@ -900,6 +900,9 @@ _UNTRANSLATABLE: dict[str, str] = {
     "recover_leaseless_orphaned_attempt": (
         "delegates to transition_attempt + model_dump/model_validate + wall clock via _now"
     ),
+    "recover_orphaned_attempt": (
+        "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
+    ),
     "settle_open_node_run": "delegates to transition_node_run (pydantic boundary)",
 }
 
@@ -1319,11 +1322,13 @@ def test_translatability_classification_covers_exactly_the_module() -> None:
     records, total, translatable, violations = classify_module()
     assert violations == ()
     assert total == len(records)
-    # develop (#2421) contributed two translatable pure predicates; this branch
-    # contributes the untranslatable recover_leaseless_orphaned_attempt, so the
-    # merged module totals 24 defs with 12 translatable (not develop's 23).
+    # develop (#2421) contributed two translatable pure predicates plus the
+    # untranslatable recover_orphaned_attempt writer (#2417/#232 P3b); this
+    # branch contributes the untranslatable recover_leaseless_orphaned_attempt
+    # (#232 P4a). The union therefore totals 25 defs, still 12 translatable —
+    # neither new writer is kernel-shaped.
     assert translatable == 12
-    assert total == 24
+    assert total == 25
 
 
 def test_kernel_decision_functions_are_classified_translatable() -> None:
@@ -1348,9 +1353,9 @@ def test_pydantic_and_clock_boundaries_are_classified_untranslatable() -> None:
 
 def test_report_answers_the_evidence_questions() -> None:
     report = build_report()
-    assert report.module_defs_total == 24
+    assert report.module_defs_total == 25
     assert report.module_defs_translatable == 12
-    assert report.module_translatable_pct == 50
+    assert report.module_translatable_pct == 48
     assert report.kernel_extraction_coverage.startswith("100%")
     assert len(report.aeneas_breakers) == 4
     assert all(
