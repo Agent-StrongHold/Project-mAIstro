@@ -33,16 +33,24 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 PINNED_REF = re.compile(r"\b([a-z0-9._/-]+):([A-Za-z0-9._-]+)@sha256:([0-9a-f]{64})")
 
 
-def _first_from(dockerfile: Path) -> str:
-    """The first FROM line's pinned base reference."""
+def _python_base_from(dockerfile: Path) -> str:
+    """The first ``python:`` FROM line's pinned base reference.
+
+    The control contract tracks the digest-pinned python base the image
+    builds from — the base OS the probe's interpreter runs on. A Dockerfile
+    may stage other bases first (Dockerfile.research's node-driver-patch
+    stage patches the wheels' bundled node driver before the python builder),
+    but those are transient toolchain stages, not the artifact's runtime
+    base, so they are skipped rather than mis-named as the control.
+    """
     for line in dockerfile.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("FROM "):
+        if stripped.startswith("FROM python:"):
             refs = PINNED_REF.findall(stripped)
-            assert refs, f"{dockerfile.name} first FROM is not digest-pinned: {stripped}"
+            assert refs, f"{dockerfile.name} python FROM is not digest-pinned: {stripped}"
             image, tag, digest = refs[0]
             return f"{image}:{tag}@{digest}"
-    raise AssertionError(f"{dockerfile.name} has no FROM line")
+    raise AssertionError(f"{dockerfile.name} has no python: FROM line")
 
 
 def test_ci_still_runs_both_smokes() -> None:
@@ -88,9 +96,9 @@ def test_research_control_image_is_the_dockerfiles_own_base() -> None:
     refs = PINNED_REF.findall(RESEARCH_SMOKE.read_text(encoding="utf-8"))
     assert refs, "research smoke lost its digest-pinned control image"
     control = refs[0]
-    assert f"{control[0]}:{control[1]}@{control[2]}" == _first_from(ROOT / "Dockerfile.research"), (
-        "the research smoke's control image drifted from Dockerfile.research's base"
-    )
+    assert f"{control[0]}:{control[1]}@{control[2]}" == _python_base_from(
+        ROOT / "Dockerfile.research"
+    ), "the research smoke's control image drifted from Dockerfile.research's base"
 
 
 def test_rsi_control_image_is_the_dockerfiles_own_base() -> None:
@@ -98,6 +106,6 @@ def test_rsi_control_image_is_the_dockerfiles_own_base() -> None:
     refs = PINNED_REF.findall(RSI_SMOKE.read_text(encoding="utf-8"))
     assert refs, "rsi smoke lost its digest-pinned control image"
     control = refs[0]
-    assert f"{control[0]}:{control[1]}@{control[2]}" == _first_from(
+    assert f"{control[0]}:{control[1]}@{control[2]}" == _python_base_from(
         ROOT / "Dockerfile.rsi-runner"
     ), "the rsi smoke's control image drifted from Dockerfile.rsi-runner's base"

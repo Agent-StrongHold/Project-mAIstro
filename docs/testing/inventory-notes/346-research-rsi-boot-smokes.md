@@ -32,3 +32,35 @@ diagnosed and repaired in-tree; inventory impact is zero everywhere:
   assertion byte-identical; the sweep still demands `excluded == []` over all
   1648 files. This was the gate's actual failure (pytest-timeout >30s inside
   yaml.safe_load, job 126407866791), not a coverage regression.
+
+## Develop-sync round (2026-11-21, this branch)
+
+No suite-count change anywhere (`tests/: +4` above still holds). The branch
+was merged onto develop through 469f361339 and then origin/develop
+(a3efc93c92); the sync surfaced exactly two places where the branch's smokes
+drifted from develop's evolved Dockerfiles, both repaired and held by the
+suite this note already records:
+
+- Control-image digest refresh: develop refreshed the shared
+  `python:3.12-slim` base to `sha256:5e2bdb1b…` (3.12.16, #2120 round), so
+  both smokes' default `CONTROL_IMAGE` now pin that digest — exactly the
+  same-commit-refresh rule `tests/test_pinned_digest_references.py` enforces;
+  `test_research_control_image_is_the_dockerfiles_own_base` and
+  `test_rsi_control_image_is_the_dockerfiles_own_base` failed on the stale
+  `a0f57064…` pin and pass after the refresh.
+- `_first_from` → `_python_base_from` in `tests/test_image_boot_smokes.py`:
+  develop's `node-driver-patch` stage now precedes the python builder in
+  Dockerfile.research, so "first FROM" no longer names the artifact's runtime
+  base. The helper now takes the first `FROM python:` line — still
+  digest-pinned, still the base the probe's interpreter runs on, still
+  cross-checked against the smoke script's pin. The node stage is a transient
+  toolchain layer, not the control's referent; no assertion weakened.
+
+Conflict resolution provenance: the two merges hit pyproject.toml, uv.lock,
+both Dockerfiles and the devskim test; every hunk was comment- or
+specifier-list-only, resolved to the union of both repair rounds (branch's
+PR #2389 provenance + develop's CR1373/#1450 provenance) — `uv lock --check`
+passes, `git diff origin/develop -- Dockerfile Dockerfile.research
+pyproject.toml` contains comment lines only, and the lock's pypdf 7.1.1 /
+soupsieve 4.1.2 (this branch's 2026-11-18 resolve, both above the CVE
+floors) satisfy `uv lock --check` against the merged manifests.

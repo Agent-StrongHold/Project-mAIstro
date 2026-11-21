@@ -40,7 +40,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: smoke-rsi-runner-imports.sh <image-ref> [control-image]}"
-CONTROL_IMAGE="${2:-python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704}"
+CONTROL_IMAGE="${2:-python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b}"
 
 # The operator contract, verbatim from tools/run_rsi_isolated.sh: the loop's
 # entrypoints import the workspace members from these source trees, not from
