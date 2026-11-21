@@ -1396,7 +1396,15 @@ jobs:
           # (C 11) while folding the PR-diagnostics path into the governed tool
           # contract, and the radon ledger dropped the same row. The ceiling
           # follows the ledger down in the same PR, as the scope test requires.
-          XENON_BASELINE: 126
+          #
+          # 126 -> 124 (#2311): the ADR-045 cutover retired
+          # maistro_canvas/canvas/tool.py outright. The two blocks the ledger
+          # banked for it (execute_canvas E 32, _generate_image C 11) left with
+          # the module, and the radon ledger dropped the same rows -- stale
+          # entries for a module that no longer exists fail the radon checker.
+          # The xenon re-run reports 124 block identities matching the ledger
+          # one-for-one, rank for rank; module and average axes clean.
+          XENON_BASELINE: 124
 
           # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in

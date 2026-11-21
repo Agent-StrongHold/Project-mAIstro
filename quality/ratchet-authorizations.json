@@ -699,16 +699,6 @@
       "issue": "#1682",
       "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
     },
-    "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::_generate_image@11": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
-    "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py::execute_canvas@38": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#1682",
-      "reason": "Newly visible, not newly complex (#1682). The radon ratchet scanned only packages/maistro-core/src, so every C-or-worse block in the other eight shipped packages went unmeasured -- including all 13 D blocks and the single E in production code. This grant admits the block at the complexity it already had on the day the scope widened. It authorizes nothing to get worse: the ledger row is pinned to this exact value and the Boy Scout ratchet takes it down from here."
-    },
     "packages/maistro-canvas/src/maistro_canvas/export.py::export_pptx@11": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1682",
@@ -1329,6 +1319,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#2318",
       "reason": "#2318 wires ADR-085 quota verification and ADR-038 resilience helpers onto the Invocation / LLM gateway path that already sits on the container promotion closure. These modules record provider balance evidence, probe context windows, coordinate 429 windows, or choose stage retry delays \u2014 spend, pacing, and retry controls. They score no candidate, gate no merge, and install no promotion authority. This grant lands first so the #2318 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/__init__.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/gate.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/protocols.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
+    },
+    "packages/maistro-core/src/maistro/tools/approval/types.py": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#2316",
+      "reason": "#2316 wires the SPEC-253 / ADR-051 tool-approval decision core onto GovernedToolExecutor, which already sits on the container promotion closure via the governed tool seam (#57). These modules are pure plan/escalation decision helpers and type/Protocol carriers for human approval of irreversible *tool effects* \u2014 they score no RSI candidate, gate no merge, and install no promotion authority. This grant lands first so the #2316 CONNECT PR cannot approve its own promotion-surface expansion."
     }
   },
   "principal-identity": {

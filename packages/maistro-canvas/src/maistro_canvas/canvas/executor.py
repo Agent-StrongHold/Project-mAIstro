@@ -4,6 +4,13 @@ Da Vinci and Fabulist agents call this via ToolDispatcher. The executor manages
 Canvas-domain job receipts while physical generation is correlated to canonical
 Run/NodeRun/Attempt evidence when a canonical execution binding is configured.
 
+The job-execution half of this module (receipts, claims, canonical stage
+correlation) is the SPEC-203 execution path and stays authoritative until
+#735 converges it; its LayerRecord layer-update surface (variant acceptance
+writing ``layers`` rows) is the TRANSITIONAL COMPATIBILITY WINDOW (ADR-045,
+#2311): new layer-model work belongs on the AssetInstance path
+(``asset_executor``/``asset_tool``) only and cannot regress onto LayerRecord.
+
 Error wrapping contract: raw provider exceptions never surface to callers.
 _sanitise_error() strips stack traces and internal details, preserving only a
 safe, actionable message.
