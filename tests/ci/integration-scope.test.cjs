@@ -205,10 +205,15 @@ test('workflow preserves read-only permissions, exact PR/merge-group SHA, and po
   assert.equal(step.env.CANDIDATE_SHA, '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}');
   // #41 run 36303867276: a 60-minute window expired while specialized
   // producers were queued 38-55 minutes. The window was widened to 120
-  // minutes of evidence (240 x 30s) inside a 125-minute job timeout; the
-  // timeout must still cover attempts x interval plus checkout/setup slack.
-  assert.equal(job['timeout-minutes'], 125);
-  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '240');
+  // minutes of evidence (240 x 30s) inside a 125-minute job timeout.
+  // #2437 run 44748434713: the 120-minute window expired while the required
+  // producers sat ~124 minutes in the runner queue; every one of them then
+  // concluded success 2-21 minutes after the aggregator died. The window is
+  // widened again to 180 minutes of evidence (360 x 30s) inside a
+  // 190-minute job timeout; the timeout must still cover attempts x interval
+  // plus checkout/setup slack.
+  assert.equal(job['timeout-minutes'], 190);
+  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '360');
   assert.ok(
     job['timeout-minutes']
       > (Number(job.env.EVIDENCE_WAIT_ATTEMPTS)
