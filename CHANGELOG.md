@@ -79,6 +79,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
 - **Attention projects messages + optimizer proposals (#1049).** Unread agent
   messages and pending Workspace-scoped optimizer proposals join the
   read-time Attention projection (critical→severity/blocking, warning→queued,
@@ -88,6 +95,28 @@ or placeholder-only section.
   answer/defer/dismiss behavior is unchanged.
 
 ### Fixed
+
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
 
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/

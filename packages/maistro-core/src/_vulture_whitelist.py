@@ -372,6 +372,13 @@ _VULTURE_WHITELIST = (
     SqliteRunStore.compensate_unlaunched_attempt,
     PgRunStore.compensate_unlaunched_attempt,
     DurableRunExecutionStore.compensate_unlaunched_attempt,
+    # Graph orphan recovery (#2417 / #232 P3b). Wired from attempt_executor;
+    # protocol + backends still need naming for the packages/*/src scan.
+    RunStore.recover_orphaned_attempt,
+    InMemoryRunStore.recover_orphaned_attempt,
+    SqliteRunStore.recover_orphaned_attempt,
+    PgRunStore.recover_orphaned_attempt,
+    DurableRunExecutionStore.recover_orphaned_attempt,
     EvalMethod.MODEL_JUDGE,
     EvalMethod.HUMAN,
     EvalJudge._validate_judge,
