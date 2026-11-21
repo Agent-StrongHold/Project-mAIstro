@@ -40,3 +40,31 @@ Resolution unifies on develop's writer:
 The branch's P4b acceptance surface is unchanged: reconciler persisted-cause
 authority (`reconciliation.py` untouched by the merge), typed RECOVERED →
 `apply_recovered_attempt_disposition` parking, and recovered-provenance tests.
+
+## Verification evidence (develop-sync resolution round, merge head 08cf53c127)
+
+- Conflicts resolved in place (8 files); `ruff check .` all green;
+  `ruff format --check .` 3616 files green (one merge-seam blank line
+  reformatted in `execution_store.py`).
+- Battery: canvas `test_canonical_execution.py` + full
+  `maistro-core/tests/graph/durable_runs/` + the seven disposition/provenance
+  runs suites + `maistro-rsi` kernel classification — **1273 passed / 220
+  skipped / 4 xfailed** (was: collection SyntaxError at the conflicted head).
+- Full `packages/maistro-core/tests/runs/`: **1635 passed / 399 skipped**.
+- hive-conductor backend merge-touched suites (durable approval, materialized
+  authority, wiring, routes, adapter): **115 passed**.
+- `scripts/check-suite-inventory.py`: ok, 21 suites (after the `-6` delta
+  above); driver's per-suite collection failures at the conflicted head
+  (hive backend, maistro-rsi) all collect cleanly again.
+- CI-exact vulture ledger (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): exit 0, 1222 reviewed identities.
+- `check-owned-store-access.py`, `check-test-duplicates.py`,
+  `check-promotion-surface.py`: all ok.
+- mypy `packages/maistro-core/src`: single pre-existing `maistro_bootstrap.cli`
+  import-not-found (optional extra, untouched file; present at develop
+  fc1bea9936) — no new errors.
+- Acceptance re-read at merged head: `reconciliation.py:281-301` persisted
+  cause is authoritative (unknown cause → `RunIntegrityError`, no RECOVERED
+  fallback; caller cause must equal persisted; typed RECOVERED parks via
+  `apply_recovered_attempt_disposition`); `attempt_executor.py` leaseless
+  orphan path uses the canonical-authority `recover_orphaned_attempt` writer.
