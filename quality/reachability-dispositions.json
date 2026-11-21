@@ -181,7 +181,7 @@
       "id": "security-auth-backends",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Interchangeable auth backends \u2014 JWT, static, cookie, demo cookie and the composite that selects among them. Products wire their own auth instead, so none is selected here.",
+      "rationale": "Interchangeable auth backends \u2014 JWT, static, cookie, demo cookie and the composite that selects among them. Products wire their own auth instead, so none is selected here. #2315 leaves this group unchanged: product auth selector still chooses among these backends; demo cookie stays quarantined until the live selector ships.",
       "root": "maistro.container auth wiring, or maistro_server middleware",
       "modules": [
         "maistro.security.auth_composite",
@@ -195,11 +195,9 @@
       "id": "security-unenforced-controls",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Guardrails, trust-boundary checks, task policy, Warden flag response and administrative strike recovery: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
-      "root": "the real Conductor chat and tool paths (#66)",
+      "rationale": "#2315 partial: ToolGuardrail is on the Workspace Agent tool path (Agent._authorize_and_invoke) and StrikeRecoveryService is read by maistro-server /v1/admin/strikes/*. Remaining: task_policy (correct caller is tasks.queue admission, not chat), trust_boundary (no FS/exec grant caller beside Sentinel yet), and flag_response (conflicts with current fail-closed tool_result blocking). Parked post-v1 until those callers/policy land \u2014 do not invent Conduit mounts.",
+      "root": "task admission / sandbox grant path / Sentinel warn-class policy (#2315); guardrail+strike_recovery already connected",
       "modules": [
-        "maistro.security.guardrail",
-        "maistro.security.strike_recovery",
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",
         "maistro.security.warden.flag_response"

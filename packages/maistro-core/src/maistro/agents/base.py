@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
+from maistro.security.guardrail import GuardrailAction, ToolGuardrail
 from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.sentinel.pii_filter import scan_and_redact
@@ -246,6 +247,7 @@ class Agent:
         tool_registry: Any = None,
         agent_resolver: Any = None,
         audit_log: Any = None,
+        tool_guardrail: ToolGuardrail | None = None,
     ) -> None:
         self.identity = identity
         self._strategy = strategy
@@ -271,6 +273,10 @@ class Agent:
         # Canonical audit trail for refusals that happen before Sentinel
         # pre_call (#847): the strategy gate and this boundary's own denials.
         self._audit_log = audit_log
+        # #2315: loop detection on the Workspace Agent tool path (check before
+        # dispatch, record after). Host may inject a shared instance; otherwise
+        # each Agent owns a fresh guardrail.
+        self._tool_guardrail = tool_guardrail if tool_guardrail is not None else ToolGuardrail()
 
     async def handle(
         self,
@@ -927,13 +933,33 @@ class Agent:
         refusal = await self._validate_tool_request(tool_name, tool_args, auth, tool_defs)
         if refusal is not None:
             return refusal
-        return await self._invoke_raw_tool(
-            tool_name,
-            tool_args,
-            tool_call_id=tool_call_id,
-            delegation_depth=delegation_depth,
-            tool_round=tool_round,
-        )
+        precheck = self._tool_guardrail.check(tool_name, tool_args)
+        if precheck.action is GuardrailAction.BLOCK:
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason=precheck.message or "tool guardrail blocked call",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
+            return f"Error: {precheck.message or f'tool guardrail blocked {tool_name!r}'}"
+        try:
+            result = await self._invoke_raw_tool(
+                tool_name,
+                tool_args,
+                tool_call_id=tool_call_id,
+                delegation_depth=delegation_depth,
+                tool_round=tool_round,
+            )
+        except Exception as exc:
+            self._tool_guardrail.record(tool_name, tool_args, error=type(exc).__name__)
+            raise
+        if isinstance(result, str) and result.startswith("Error:"):
+            self._tool_guardrail.record(tool_name, tool_args, error=result[:200])
+        else:
+            self._tool_guardrail.record(tool_name, tool_args, result=result)
+        return result
 
     async def _validate_tool_request(
         self,
