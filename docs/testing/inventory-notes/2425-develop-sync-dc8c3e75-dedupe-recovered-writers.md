@@ -2,16 +2,16 @@
 issue: 2425
 round: develop-sync-dc8c3e75-dedupe-recovered-writers
 date: 2026-11-21
-inventory-delta:
-  suites: []
-  added: 0
-  removed: 0
-  note: >-
-    No test files added, removed, or edited. Per-suite collected counts are
-    unchanged from the recorded baseline at the new head.
 ---
 
 # #2425 develop sync @ dc8c3e75: dedupe recovered-writer definitions
+
+No suite inventory delta: no test files were added, removed, or edited, and
+per-suite collected counts are unchanged from the recorded baseline at the
+new head, so this note carries no `inventory-delta:` block — the canonical
+encoding of a zero delta (`check-suite-inventory.py --update` writes the
+block only when a delta exists, and an indented `suites: []` list is not a
+readable `<suite>: <±count>` entry, which the gate rightly refuses).
 
 ## What happened
 
