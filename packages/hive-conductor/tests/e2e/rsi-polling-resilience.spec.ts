@@ -675,7 +675,7 @@ test("an unmount aborts the in-flight patch-feed request and stops both loops", 
 
   // SPA navigation unmounts the page while the fetch is in flight; the app's
   // own AbortController must reject the fetch as AbortError.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   await expect(page.getByRole("link", { name: "RSI" })).toBeVisible();
   await expect
     .poll(abortedReviews, "the in-flight reviews request was aborted on unmount")
@@ -697,7 +697,7 @@ test("a slow patch-feed response never overlaps the next poll", async () => {
   // Leave the page FIRST, then arm the delay and clear the feed counters:
   // with the page unmounted nothing can fire, so the next reviews request is
   // exactly the slow one this test selects.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   ctl.reviewsDelayMs = 2_500;
   counts.reviews = 0;
   times.reviews.splice(0);
