@@ -264,6 +264,64 @@ class TestTheRequiredSet:
         assert "not present yet" in out
         assert names[0] in out
 
+    def test_a_paths_filtered_producer_absent_from_a_green_head_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Replay of the #2434 incident (head 0382be897c02, publisher run
+        44909375407). The PR changed only
+        `.github/workflows/{fleet-images,integration-scope,release}.yml` and
+        `tests/ci/integration-scope.test.cjs` -- none of mutation.yml's
+        `pull_request.paths` -- so mutation.yml never triggered, and the 80
+        check runs that did land on the head were all green with exactly one
+        required row absent. That shape must stay pending, never green and
+        never a hard failure: absence is not non-execution, and
+        `Mutation gate (changed critical lines)` is not in
+        PATH_SCOPED_CHECKS, so a measured PR scope cannot excuse it either.
+        The repair is trigger coverage, not evaluator leniency: the head
+        must eventually carry the row, which is why the repair PR carries a
+        `docs/testing/inventory-notes/**` file (the #2371 trigger path) so
+        the workflow runs and produces real zero-overlap evidence.
+        """
+        orphaned = "Mutation gate (changed critical lines)"
+        names = check.required_check_names(base_branch="develop", event_name="pull_request")
+        assert orphaned in names
+        runs = [_run(name) for name in names if name != orphaned]
+        envelope = _envelope(
+            tmp_path,
+            {
+                "measured": True,
+                "truncated": False,
+                "files": [
+                    ".github/workflows/fleet-images.yml",
+                    ".github/workflows/integration-scope.yml",
+                    ".github/workflows/release.yml",
+                    "tests/ci/integration-scope.test.cjs",
+                ],
+            },
+        )
+        argv = [
+            "--check-runs",
+            str(_payload(tmp_path, runs)),
+            "--require-complete",
+            "--base-branch",
+            "develop",
+            "--event-name",
+            "pull_request",
+            "--changed-files",
+            str(envelope),
+        ]
+        # The incident verdict: the publisher posted `pending` ("Required
+        # execution evidence is still arriving"), and the enqueue
+        # controller's gates-ran precondition stayed red ("commit status not
+        # successful") for as long as no producer could create the row.
+        assert check.main(argv) == check.PENDING_EXIT
+        assert orphaned in capsys.readouterr().out
+        # The repair condition: once the producer's trigger paths cover the
+        # PR, the identical head with the identical 80-run shape is green.
+        runs.append(_run(orphaned))
+        _payload(tmp_path, runs)  # rewrite the evidence file with the row present
+        assert check.main(argv) == 0
+
     def test_one_skipped_check_fails_the_real_contract(
         self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
