@@ -782,3 +782,97 @@ Residual (driver actions only, GitHub mutations prohibited in-lane):
 retarget PR #2427 base to develop before merge; CI check-run verdicts on the
 head remain a driver observation; nothing pushed; no GitHub mutations; the
 only change in this round is this notes section.
+
+## Round at `b33b03fbe9` (verifier/writer round at the develop-sync merge head, 2026-11-21)
+
+HEAD `b33b03fbe948` is the **completed deferred develop sync**: a merge of
+develop's `f626d94fc1` (#2345 dlint>=0.17.0 bump + mutation.yml evidence-surface
+triggers + `tests/test_mutation_targets.py`) — which itself sits atop
+`4fe285fc8a` (#2445 axe-core bump + js_dependency_gate) — into the previously
+validated `628befefe5`. The prior round's deferred sync is therefore done; no
+merge state remains. Three-way head alignment re-confirmed from the dispatch
+snapshot's `linked_pr_heads["2427"]` = `b33b03fbe948…` = local HEAD (the prior
+"Hosted PR snapshot incomplete or not the review head" preflight block is
+resolved by construction). The merge delta vs `628befefe5` is **zero
+`packages/*/src` changes** (11 files: e2e package.json/lock, root
+`tests/test_js_dependency_gate.py` +71 / `tests/test_mutation_targets.py` +78,
+`requirements-dev-tools.txt`, `.github/workflows/mutation.yml`, docs/notes),
+so the P5a implementation is byte-identical to the validated tree. Prior
+claims were NOT assumed true; everything below was re-executed at this head
+(job `9ed7baf036064df0ab03bd9babef6d8d`).
+
+### NEW environment finding (affects every future round)
+
+The driver's sync (`uv sync --locked --extra dev`, check-0) **uninstalls the
+editable `maistro-bootstrap` and `maistro-evolve` packages** (12 packages,
+logged). A mypy run directly after that sync still passes for
+`packages/maistro-core/src`, but any gate touching those packages would fail
+on `import-not-found`. CI restores them (quality.yml:2476-2484:
+`uv sync --locked --all-extras` + `uv pip install -e packages/maistro-evolve`);
+this round re-ran exactly that before the gates.
+
+### Independent re-proof at `b33b03fbe9`
+
+1. **Driver deterministic checks (this job's check-0..8) green at this
+   head**: ruff check "All checks passed", ruff format "3618 files already
+   formatted", 13-file batch **506 passed, 147 env-skips**, audit-pagination
+   **32 passed**, per-suite suite inventory ok ×4 (hive 4321 / canvas 633 /
+   core 18857 / rsi 1797).
+2. **Five P5a suites vs live pg18** (existing private DB `maistro_cr2427` on
+   `cr2427-verify-pg`, 127.0.0.1:15499, `DATABASE_URL` → `alembic upgrade
+   head` already at 068, `MAISTRO_TEST_PG_DSN` plain `postgresql://`):
+   **68 passed, 0 skipped** — matches every prior round.
+3. **Driver's exact 13-file batch vs live PG**: **653 passed, 0 skipped**, 1
+   warning (the canvas PytestWarning proven pre-existing on develop) —
+   reconciles exactly with driver check-3 (506 + 147 = 653): every
+   env-skipped parametrization ran live here.
+4. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`; `:1542`
+   selects solely via `is_typed_recovered_attempt(latest)`; `consumption.py:42`
+   import + `:511` typed look-past; `grep -rn "is_reclaimed_attempt("`
+   over `packages/*/src` → **zero production call sites** (definition
+   `lifecycle.py:327`, docstring comment `:310`, `__all__` `:792`). Named
+   P5a tests present at `test_interrupted_reclaim_rediscovery.py:131` (spoofed
+   prefix), `:159` (no parking behind a newer attempt), `:180` (parks only its
+   own node) — all inside the passing 68.
+5. **CI-exact gates re-run at this head** (after CI's exact sync, see env
+   finding): vulture `packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` (quality.yml:1538) → **1221 reviewed == 1221 findings,
+   rc 0** (baseline base `f626d94fc128` → candidate `b33b03fbe948`); radon
+   ratchet with `RATCHET_BASE_REV=origin/develop` → **124 == 124, rc 0**;
+   `mypy --strict packages/maistro-core/src` (quality.yml:2488) → **Success:
+   no issues found in 846 source files, rc 0**; suite inventory no-args
+   (ci.yml:744) → **21 suites match, rc 0** (develop's merged root tests are
+   covered by the resolved baseline + develop's own merged notes).
+6. **Merge-delta tests run directly**: develop's new
+   `tests/test_js_dependency_gate.py` + `tests/test_mutation_targets.py` →
+   **77 passed**.
+7. **`pr-base`** (ci.yml:79 form): `--base develop --labels ""` → **ok rc 0**;
+   the hosted stacked base `cursor/m1-b-p4b-reconciler-recovered-disposition-8551`
+   → **FAIL rc 1** with the ADR-095 "must be retargeted to 'develop' before
+   merge" message — the documented stacked state; retarget is a driver GitHub
+   action.
+8. **Ledgers**: `git diff --numstat origin/develop -- quality/` → **empty**
+   (byte-identical; the merge lost no rows); worktree clean at HEAD.
+
+### NEW post-dispatch fact: origin/develop advanced one workflows-only commit
+
+`origin/develop` moved `f626d94fc1` → `1621f7fefb` (#2434 docker/
+build-push-action bump): touches only `.github/workflows/{fleet-images,
+integration-scope,release}.yml`, `tests/ci/integration-scope.test.cjs`,
+`tests/test_check_gates_ran.py`, and a repair note — **no P5a file, no
+`packages/*/src`, no `quality/` row** (numstat vs the new tip empty).
+`git merge-tree --write-tree HEAD origin/develop` → **rc 0, conflict-free**.
+Decision (recorded, not actioned): HEAD deliberately stays at the hosted PR
+head `b33b03fbe9` — merging now would re-break the three-way head alignment
+this dispatch's preflight depends on (the `b80982bf` round established the
+precedent; the `f6b002d103` round completed such a deferred sync one snapshot
+later). The next snapshot round should fold `1621f7fefb` in; it is a trivial,
+conflict-free sync.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane):
+retarget PR #2427 base to develop before merge; CI check-run verdicts on
+`b33b03fbe9` (0/0 at dispatch capture) remain a driver observation; nothing
+pushed; no GitHub mutations; the only change in this round is this notes
+section.
