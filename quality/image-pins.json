@@ -125,10 +125,10 @@
     {
       "image": "docker/sandbox-templates",
       "tag": "shell-docker",
-      "digest": "sha256:1560168ac5fb9ce23d413c878349334c5845c07e264cd675d7867f0c78ad1761",
-      "recorded": "2026-09-30",
-      "recorded_in": "#349",
-      "note": "Docker Sandboxes template; `shell-docker` is the template channel name, the digest is the version anchor.",
+      "digest": "sha256:b178ca62ec2e79af2a044e3ec321bdb72188690e1c15d573ea5524b397554d3d",
+      "recorded": "2026-11-18",
+      "recorded_in": "#2378",
+      "note": "Docker Sandboxes template; `shell-docker` is the template channel name, the digest is the version anchor. Dependabot index pin refresh (#2378) re-verified against Docker Hub on 2026-11-18: the tag (last pushed 2026-10-21) resolves to exactly this manifest-list (index) digest via the Hub registry API and `docker buildx imagetools inspect`, with linux/amd64 (sha256:37793cfc...) and linux/arm64 (sha256:1e5422da...) children under it — the same index-digest doctrine as every row above. The mutable tag has advanced past the #349 pin (sha256:1560168...), which still resolves by-digest but no longer names the tag's current index.",
       "used_by": [
         "deploy/sbx/template/Dockerfile"
       ]
