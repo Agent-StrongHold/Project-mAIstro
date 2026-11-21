@@ -894,6 +894,77 @@ class Agent:
 
         return ToolCallExecutor(execute)
 
+    async def _deny_undeclared_tool(self, tool_name: str, auth: Any) -> str | None:
+        """Refuse tools the Agent identity never declared, with an audit row."""
+        # Declarations only narrow authority: a host Sentinel grant cannot
+        # expose an undeclared tool. Check the Agent-owned identity here,
+        # not the mutable tool schemas handed to strategy implementations.
+        if tool_name in self.identity.tools:
+            return None
+        if self._audit_log is not None:
+            await log_scoped_tool_denial(
+                self._audit_log,
+                tool_name=tool_name,
+                reason="tool not in agent allowlist",
+                auth=auth,
+                agent_name=self.identity.name,
+            )
+        return f"Error: Permission denied for undeclared tool '{tool_name}'"
+
+    async def _deny_unauthorizable_tool(self, tool_name: str, auth: Any) -> str | None:
+        """Refuse tool calls with no Sentinel grant or caller auth to check."""
+        if self._sentinel is not None and auth is not None:
+            return None
+        _logging.getLogger("maistro.agent").warning(
+            "Denied tool '%s' for agent '%s': no %s to authorize it",
+            tool_name,
+            self.identity.name,
+            "Sentinel" if self._sentinel is None else "caller auth",
+        )
+        if self._audit_log is not None:
+            await log_scoped_tool_denial(
+                self._audit_log,
+                tool_name=tool_name,
+                reason="no sentinel or caller auth to authorize tool",
+                auth=auth,
+                agent_name=self.identity.name,
+            )
+        return f"Error: Permission denied for tool '{tool_name}'"
+
+    async def _deny_guardrail_block(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        auth: Any,
+        guardrail: ToolGuardrail,
+    ) -> str | None:
+        """Refuse a call the loop-detection guardrail latched BLOCK on."""
+        precheck = guardrail.check(tool_name, tool_args)
+        if precheck.action is not GuardrailAction.BLOCK:
+            return None
+        if self._audit_log is not None:
+            await log_scoped_tool_denial(
+                self._audit_log,
+                tool_name=tool_name,
+                reason=precheck.message or "tool guardrail blocked call",
+                auth=auth,
+                agent_name=self.identity.name,
+            )
+        return f"Error: {precheck.message or f'tool guardrail blocked {tool_name!r}'}"
+
+    def _record_guardrail_outcome(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        guardrail: ToolGuardrail,
+        result: Any,
+    ) -> None:
+        """Feed the call's outcome into the guardrail's repeat/history counts."""
+        if isinstance(result, str) and result.startswith("Error:"):
+            guardrail.record(tool_name, tool_args, error=result[:200])
+        else:
+            guardrail.record(tool_name, tool_args, result=result)
+
     async def _authorize_and_invoke(
         self,
         tool_name: str,
@@ -906,51 +977,25 @@ class Agent:
         tool_round: int = 0,
         tool_guardrail: ToolGuardrail | None = None,
     ) -> Any:
-        # Declarations only narrow authority: a host Sentinel grant cannot
-        # expose an undeclared tool. Check the Agent-owned identity here,
-        # not the mutable tool schemas handed to strategy implementations.
-        # Model-selected and strategy-authored calls share this boundary.
-        if tool_name not in self.identity.tools:
-            if self._audit_log is not None:
-                await log_scoped_tool_denial(
-                    self._audit_log,
-                    tool_name=tool_name,
-                    reason="tool not in agent allowlist",
-                    auth=auth,
-                    agent_name=self.identity.name,
-                )
-            return f"Error: Permission denied for undeclared tool '{tool_name}'"
-        if self._sentinel is None or auth is None:
-            _logging.getLogger("maistro.agent").warning(
-                "Denied tool '%s' for agent '%s': no %s to authorize it",
-                tool_name,
-                self.identity.name,
-                "Sentinel" if self._sentinel is None else "caller auth",
-            )
-            if self._audit_log is not None:
-                await log_scoped_tool_denial(
-                    self._audit_log,
-                    tool_name=tool_name,
-                    reason="no sentinel or caller auth to authorize tool",
-                    auth=auth,
-                    agent_name=self.identity.name,
-                )
-            return f"Error: Permission denied for tool '{tool_name}'"
-        refusal = await self._validate_tool_request(tool_name, tool_args, auth, tool_defs)
+        """Authorize one tool call against every boundary, then dispatch it.
+
+        Model-selected and strategy-authored calls share this boundary:
+        allowlist, Sentinel grant/schema check, and the loop-detection
+        guardrail all run here, and the call's outcome is recorded back
+        into the execution-scoped guardrail history.
+        """
+        for deny in (
+            self._deny_undeclared_tool(tool_name, auth),
+            self._deny_unauthorizable_tool(tool_name, auth),
+            self._validate_tool_request(tool_name, tool_args, auth, tool_defs),
+        ):
+            refusal = await deny
+            if refusal is not None:
+                return refusal
+        guardrail = tool_guardrail or ToolGuardrail(thresholds=self._tool_guardrail_thresholds)
+        refusal = await self._deny_guardrail_block(tool_name, tool_args, auth, guardrail)
         if refusal is not None:
             return refusal
-        guardrail = tool_guardrail or ToolGuardrail(thresholds=self._tool_guardrail_thresholds)
-        precheck = guardrail.check(tool_name, tool_args)
-        if precheck.action is GuardrailAction.BLOCK:
-            if self._audit_log is not None:
-                await log_scoped_tool_denial(
-                    self._audit_log,
-                    tool_name=tool_name,
-                    reason=precheck.message or "tool guardrail blocked call",
-                    auth=auth,
-                    agent_name=self.identity.name,
-                )
-            return f"Error: {precheck.message or f'tool guardrail blocked {tool_name!r}'}"
         try:
             result = await self._invoke_raw_tool(
                 tool_name,
@@ -962,10 +1007,7 @@ class Agent:
         except Exception as exc:
             guardrail.record(tool_name, tool_args, error=type(exc).__name__)
             raise
-        if isinstance(result, str) and result.startswith("Error:"):
-            guardrail.record(tool_name, tool_args, error=result[:200])
-        else:
-            guardrail.record(tool_name, tool_args, result=result)
+        self._record_guardrail_outcome(tool_name, tool_args, guardrail, result)
         return result
 
     async def _validate_tool_request(

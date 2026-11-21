@@ -28,6 +28,8 @@ class StrikeRecoverBody(BaseModel):
 
 
 class StrikeRecordView(BaseModel):
+    """Read-only projection of a target user's strike record after recovery."""
+
     user_id: str
     strike_count: int
     is_locked: bool
@@ -35,10 +37,12 @@ class StrikeRecordView(BaseModel):
 
 
 def _acting_principal(auth: AuthenticatedPrincipal) -> Principal:
+    """Project the authenticated caller into the Sentinel principal for audit."""
     return Principal(id=auth.user_id, kind="human", roles=tuple(sorted(auth.roles)))
 
 
 def _require_admin(auth: AuthenticatedPrincipal) -> None:
+    """Reject non-admin callers before the service is even resolved."""
     if not auth.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -47,6 +51,12 @@ def _require_admin(auth: AuthenticatedPrincipal) -> None:
 
 
 def _recovery_service(request: Request) -> Any:
+    """Read the Container-wired ``StrikeRecoveryService`` or answer 503.
+
+    Raises when the app has no Container yet, or when strike recovery is
+    not configured (no strike tracker) — the wiring-reads ratchet needs
+    this production reader of ``Container.strike_recovery`` (#2315/#1172).
+    """
     container = getattr(request.app.state, "container", None)
     if container is None:
         raise HTTPException(
@@ -65,6 +75,7 @@ def _recovery_service(request: Request) -> Any:
 
 
 def _view(record: Any, *, user_id: str) -> StrikeRecordView:
+    """Project a tracker record (or its absence) into the API view model."""
     if record is None:
         return StrikeRecordView(user_id=user_id, strike_count=0, is_locked=False, disabled=False)
     return StrikeRecordView(
@@ -83,6 +94,12 @@ async def _recover(
     operation: Operation,
     count: int | None = None,
 ) -> StrikeRecordView:
+    """Run one recovery operation; map service denial to HTTP 403.
+
+    Order matters: the admin role is checked before the service is
+    resolved, and the service itself re-checks Sentinel authorization
+    plus the admin role (and refuses self-service recovery).
+    """
     _require_admin(auth)
     service = _recovery_service(request)
     actor = _acting_principal(auth)
@@ -109,6 +126,7 @@ async def unlock_strikes(
     request: Request,
     auth: RequireAuth,
 ) -> StrikeRecordView:
+    """Admin unlock: clear a strike-ladder lock for ``target_user_id``."""
     if auth is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth required")
     return await _recover(request, auth, target_user_id=target_user_id, operation="unlock")
@@ -123,6 +141,7 @@ async def enable_strikes(
     request: Request,
     auth: RequireAuth,
 ) -> StrikeRecordView:
+    """Admin enable: re-enable a disabled strike record for ``target_user_id``."""
     if auth is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth required")
     return await _recover(request, auth, target_user_id=target_user_id, operation="enable")
@@ -138,6 +157,7 @@ async def remove_strikes(
     auth: RequireAuth,
     body: StrikeRecoverBody | None = None,
 ) -> StrikeRecordView:
+    """Admin remove: drop ``count`` (or all) recorded strikes for ``target_user_id``."""
     if auth is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth required")
     count = body.count if body is not None else None
