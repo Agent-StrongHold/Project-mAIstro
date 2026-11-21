@@ -36,7 +36,6 @@ constraints = [
     { name = "dnspython", specifier = ">=2.9.2" },
     { name = "fastmcp", specifier = ">=4.1.2" },
     { name = "gitpython", specifier = ">=3.2.1" },
-    { name = "graphql-core", specifier = ">=3.3.0" },
     { name = "graphql-core", specifier = ">=3.3.1" },
     { name = "joserfc", specifier = ">=1.7.6" },
     { name = "oauthlib", specifier = ">=4.0.1" },
@@ -1802,14 +1801,14 @@ source = { editable = "extensions/reference-gallery/packages/gallery-weather-con
 
 [[package]]
 name = "gherkin-official"
-version = "42.0.1"
+version = "43.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9f/7a/fbc8bd486d1ede3805542e01be84cdfc0726f1d10647b2db20abafebf50f/gherkin_official-42.0.1.tar.gz", hash = "sha256:adcc1f392d97dc044861bb645a614e335632330cc2653d23acb7097c923f75cd", size = 35497, upload-time = "2026-08-05T20:03:18.768Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/cf/974241bcfdeb0d9994b1268128b5d7c7d280b90c86eafc3af68f8d40f0a9/gherkin_official-43.0.0.tar.gz", hash = "sha256:a928f06282cd9d1f848eacd5b80dac39f318cbfc053187defa5122c8019b6e43", size = 36540, upload-time = "2026-11-13T01:07:45.661Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/04/1f16eba1ffc5e0f5ae7b5bfd1847e8f0355c03bf67c34381d6cc5b7b2b2b/gherkin_official-42.0.1-py3-none-any.whl", hash = "sha256:6bf291733d126712eb167f6f75be57931dd8b9c9eb606de28013f3669007ec06", size = 40041, upload-time = "2026-08-05T20:03:17.765Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/c6/663271fd9bd4c28483e99546c9ea6fa107339383c36c30106bc205901767/gherkin_official-43.0.0-py3-none-any.whl", hash = "sha256:ec0e20c765c062cc457408a930ef376ccbbddd813f40e2bfedf3c72e481f96b2", size = 40021, upload-time = "2026-11-13T01:07:44.559Z" },
 ]
 
 [[package]]
@@ -3148,7 +3147,7 @@ requires-dist = [
     { name = "maistro-core", extras = ["llm", "sandbox", "observability", "tui", "builders", "sqlite", "asgi", "identity", "s3", "bcrypt"], marker = "extra == 'all'", editable = "packages/maistro-core" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<3" },
     { name = "openai", marker = "extra == 'browser'", specifier = ">=1.40,<4" },
-    { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
+    { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.45.2,<2" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'observability'", specifier = ">=1.30,<2" },
     { name = "pgvector", specifier = ">=0.3,<1" },
@@ -3546,7 +3545,7 @@ requires-dist = [
     { name = "maistro-registry", editable = "packages/maistro-registry" },
     { name = "moto", extras = ["s3", "server"], marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "opentelemetry-api", specifier = ">=1.30" },
+    { name = "opentelemetry-api", specifier = ">=1.45.2" },
     { name = "pgvector", specifier = ">=0.3" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.49" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
