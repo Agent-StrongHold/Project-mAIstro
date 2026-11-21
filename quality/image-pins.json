@@ -72,6 +72,17 @@
       ]
     },
     {
+      "image": "node",
+      "tag": "24.22.3-bookworm-slim",
+      "digest": "sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+      "recorded": "2026-11-20",
+      "recorded_in": "#2356",
+      "note": "Donor for the research image's patchright driver overlay only (Dockerfile.research `node-driver-patch` stage). patchright 1.64.4 still ships node 24.22.1; grype 0.116.0 --only-fixed --fail-on high flags CVE-2026-126051/123865/123866/123874/123863/123872/123864 (HIGH, fixed 24.22.3/26.13.1) on maistro-engine-research while playwright 1.65.2 already ships 26.13.1 and no newer patchright wheel exists on PyPI as of 2026-11-20. Hub index digest resolved 2026-11-20 (linux/amd64 child sha256:0e2646ab…). Remove this pin and the overlay RUN when a patchright release bundles >=24.22.3.",
+      "used_by": [
+        "Dockerfile.research"
+      ]
+    },
+    {
       "image": "golang",
       "tag": "1.27.4-alpine",
       "digest": "sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280",
@@ -79,9 +90,9 @@
       "recorded_in": "#2375",
       "note": "Builds the age static binaries (Conductor image's agebuild stage) and the static docker CLI (dockerclibuild stage in both root builder Dockerfiles) from their pinned upstream release tags (#363/#1152 lineage). The toolchain bump chain: prebuilt age 1.25.x / docker:29-cli go1.26.8 stdlib (CVE-2026-78667/78669/97031) -> 1.27.2 rebuild aged out by CVE-2026-111943 (fixed go1.26.10/1.27.3, #1152/#1095) -> 1.27.3 builders aged out by CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4): the #2375 Container scan gate flagged age-keygen's stdlib v1.27.3 (security.yml run 44477475371 job 135401410021, 2026-11-19), so both prior rows \u2014 the 2026-10-22 1.27.3 index b8c9b82\u2026 (#1152, Conductor agebuild) and the 2026-11-05 re-serialized 1.27.3 index fa3d596\u2026 (#2414, root dockerclibuild) \u2014 retire into this single 1.27.4 pin for all three Dockerfiles. Tag resolved to this index via `docker buildx imagetools inspect` 2026-11-19 (index created 2026-11-10, linux/amd64 child ea30e256\u2026, base alpine:3.24) and verified live: `docker run` of the pinned digest prints `go version go1.27.4 linux/amd64` on Alpine 3.24.4.",
       "used_by": [
+        "packages/hive-conductor/Dockerfile",
         "Dockerfile",
-        "Dockerfile.research",
-        "packages/hive-conductor/Dockerfile"
+        "Dockerfile.research"
       ]
     },
     {
@@ -103,10 +114,10 @@
     {
       "image": "mcr.microsoft.com/playwright",
       "tag": "v1.64.1-noble",
-      "digest": "sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
-      "recorded": "2026-10-23",
-      "recorded_in": "#2137",
-      "note": "Playwright browsers + deps, e2e harness only.",
+      "digest": "sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea",
+      "recorded": "2026-10-26",
+      "recorded_in": "#2303",
+      "note": "Playwright browsers + deps, e2e harness only. The #2303 refresh is a real content move, not an index re-serialization: the tag's per-arch manifests changed (linux/amd64 bdfda2a8 -> d65108d1, linux/arm64 68456172 -> 969a9e36) because Microsoft rebuilt the same v1.64.1-noble tag on 2026-10-23 (previous image created 2026-10-14). Both configs still report Ubuntu 24.04, the same PLAYWRIGHT_BROWSERS_PATH env and 7 layers, and the harness pins its own `@playwright/test@1.64.1` at build time, so only the base OS/browser layers moved.",
       "used_by": [
         "packages/hive-conductor/tests/Dockerfile.playwright"
       ]

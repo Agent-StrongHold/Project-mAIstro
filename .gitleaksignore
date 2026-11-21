@@ -155,6 +155,20 @@ c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-
 # and `gitleaks git` scans each commit's own patch. Paraphrased deliberately:
 # quoting the fixture verbatim here would trip the same rule in this file.
 4b1284897ef07feca817409d4e605dd61bd28e13:tests/migrations/test_legacy_principal_ownership_live.py:generic-api-key:102
+# ---- #1837: recorded WebAuthn assertion fixture in the adapter-decision ADR ----
+# ADR-101826-c3f1 records one assertion ceremony as reproduction evidence for
+# the #1837 decision gate: a synthetic credential whose id/rawId and
+# authenticatorData blobs are base64url fixture data generated for the ADR and
+# re-executed against webauthn==3.0.1 during review. The generic-api-key rule
+# matches the quoted high-entropy blobs after key-like tokens inside the JSON
+# fixture line. No credential exists — the blob is a verification *input*
+# vector, never an authenticator. Fingerprint scoped to the introducing
+# rebuild commit, path, rule and line; the commit is immutable history, and
+# `gitleaks git` scans each commit's own patch (same shape as the #1095 entry
+# below). Paraphrased deliberately: quoting the fixture verbatim here would
+# trip the same rule in this file.
+2a46c7e00867993e49f1a3fcde868af420ab8769:docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md:generic-api-key:258
+
 # ---- #1690's cross-replica auth-composition test (fixed at source; the
 # introducing commit is history) ----
 # Commit 593295177 assigned synthetic principal literals
