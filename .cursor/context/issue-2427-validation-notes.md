@@ -694,3 +694,91 @@ cursor/ base is the documented expected state); CI check-runs on
 `f6b002d103` as captured in dispatch remain a driver observation. Nothing
 pushed; no GitHub mutations; the only change in this round is this notes
 section.
+
+## Round at `628befefe5` (verifier/writer round at the hosted review head, 2026-11-21)
+
+Dispatch head `628befefe549` = hosted PR #2427 head = `origin/cursor/m1-b-p5a…`
+= local HEAD — three-way alignment re-confirmed after `git fetch` (the prior
+"Hosted PR snapshot incomplete or not the review head" preflight block is
+**resolved**). HEAD is docs-only over the validated merge head `f6b002d1039d`
+(`git diff --stat`: one file, this notes file, +71 lines — zero src/test
+changes), so production behavior is byte-identical to the validated tree.
+Prior claims were NOT assumed true: everything below was re-executed at this
+head. Driver deterministic checks (job 267d77b35f65's check-0..8) were green
+before this round started: sync rc 0, ruff check "All checks passed", ruff
+format "3618 files already formatted", 13-file batch **506 passed, 147
+env-skips**, audit-pagination **32 passed**, per-suite inventory ok ×4 (hive
+4321 / canvas 633 / core 18857 / rsi 1797).
+
+### NEW environment finding: cross-lane PG interference on the shared DSN
+
+The first live-PG batch attempt (five P5a suites vs `15499/maistro`) failed
+non-deterministically (4–5 moving postgres failures/errors: FK violations on
+`canonical_projects`, `run is None`). Root cause, verified via `ps`: a
+**concurrent coverage run from a different lane's worktree**
+(`/home/dev/Git/wt/cr-2425`, started 16:40 UTC) targets the **same DSN**
+`postgresql://maistro:maistro@127.0.0.1:15499/maistro`, mutating shared rows
+mid-test. Isolated tests pass; the interference moves with timing. Remedy
+used here (record for future rounds on the shared container): create a
+private database in the same PG instance
+(`CREATE DATABASE maistro_cr2427` + `CREATE EXTENSION vector` +
+`alembic upgrade head` → 068) and point `MAISTRO_TEST_PG_DSN` at it. With
+isolation: **every number below reproduces the historical greens exactly.**
+
+### Independent re-proof at `628befefe5` (isolated DB unless noted)
+
+1. **Five P5a suites vs live pg18** (`maistro_cr2427` on 127.0.0.1:15499):
+   **68 passed, 0 skipped** — memory + sqlite + postgres legs all ran.
+2. **Named behaviors per-parametrization (`-v`)**:
+   `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered`,
+   `test_recovery_tick_does_not_park_behind_a_newer_attempt`,
+   `test_rediscovery_parks_only_its_own_node`, and all nine
+   `test_recovery_tick_leaves_retry_owned_terminals_to_their_owner` cases —
+   **PASSED on memory, sqlite AND postgres**.
+3. **Driver's exact 13-file batch vs live PG**: **653 passed, 0 skipped**,
+   1 warning (the canvas PytestWarning proven pre-existing on develop) —
+   reconciles exactly with driver check-3 (506 + 147 = 653).
+4. **Whole `runs` + `graph/durable_runs` trees**: **2969 passed, 4 skipped
+   (known capability skips), 4 xfailed** — identical to the merge-head round.
+5. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`; `:1542`
+   `latest if is_typed_recovered_attempt(latest) else None` (max-by-ordinal,
+   live leases refused); `consumption.py:42` import + `:511` typed look-past;
+   `grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+   `lifecycle.py:327`, docstring comment `:310`, `__all__` `:792` only —
+   **zero production call sites**.
+6. **CI-exact gates re-run at this head** (after `uv sync --locked
+   --all-extras` + `uv pip install -e packages/maistro-evolve`, quality.yml
+   pre-mypy steps): vulture `packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` → **1221 == 1221, rc 0** (base `fc1bea9936bb` →
+   candidate `628befefe549`); radon → **124 == 124, rc 0**; mypy ci.yml:117
+   exact 10-package list → **Success: no issues found in 1128 source files,
+   rc 0**; suite inventory no-args (ci.yml:744) → **21 suites ok, rc 0**.
+7. **`pr-base`** (ci.yml:79 form): `--base develop --labels ''` → **ok rc 0**;
+   the hosted stacked base `cursor/m1-b-p4b-…` → **FAIL rc 1** with the
+   ADR-095 "must be retargeted to 'develop' before merge" message — the
+   documented stacked state; retarget is a driver GitHub action.
+8. **Ledgers**: `git diff --numstat origin/develop -- quality/` → **empty**
+   (byte-identical); worktree clean at HEAD; inventory-note trio re-collected
+   **67** — the 63 → 67 **+4** stands; no tests changed, no new delta owed.
+
+### NEW post-dispatch fact: origin/develop advanced again (deferred, recorded)
+
+`origin/develop` moved `fc1bea9936` → `4fe285fc8a` — one commit, #2445
+(dependabot `@axe-core/playwright` bump in hive-conductor e2e): touches only
+`packages/hive-conductor/tests/e2e/{package,package-lock}.json`,
+`scripts/js_dependency_gate.py`, `tests/test_js_dependency_gate.py`, and a
+docs ledger. **No P5a file, no `quality/` row** (numstat empty even against
+the new tip), and `git merge-tree --write-tree HEAD origin/develop` → **rc 0,
+conflict-free**. Decision (recorded, not actioned): HEAD deliberately stays
+at the hosted PR head `628befefe5` — merging now would re-break the three-way
+head alignment this dispatch's preflight depends on (the `b80982bf` round
+established this precedent and the `f6b002d103` round completed the deferred
+sync one round later). The next snapshot round should fold `4fe285fc8a` in;
+it is a trivial, conflict-free sync.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane):
+retarget PR #2427 base to develop before merge; CI check-run verdicts on the
+head remain a driver observation; nothing pushed; no GitHub mutations; the
+only change in this round is this notes section.
