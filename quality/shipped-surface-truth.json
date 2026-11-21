@@ -1917,7 +1917,7 @@
       "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
       "method": "DELETE",
       "route": "/{canvas_id}/layers/{layer_id}",
-      "handler": "delete_layer",
+      "handler": "remove_layer",
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "removes the stored layer",
