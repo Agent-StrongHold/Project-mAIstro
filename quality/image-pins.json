@@ -113,11 +113,11 @@
     },
     {
       "image": "mcr.microsoft.com/playwright",
-      "tag": "v1.64.1-noble",
-      "digest": "sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea",
-      "recorded": "2026-10-26",
-      "recorded_in": "#2303",
-      "note": "Playwright browsers + deps, e2e harness only. The #2303 refresh is a real content move, not an index re-serialization: the tag's per-arch manifests changed (linux/amd64 bdfda2a8 -> d65108d1, linux/arm64 68456172 -> 969a9e36) because Microsoft rebuilt the same v1.64.1-noble tag on 2026-10-23 (previous image created 2026-10-14). Both configs still report Ubuntu 24.04, the same PLAYWRIGHT_BROWSERS_PATH env and 7 layers, and the harness pins its own `@playwright/test@1.64.1` at build time, so only the base OS/browser layers moved.",
+      "tag": "v1.65.1-noble",
+      "digest": "sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579",
+      "recorded": "2026-11-21",
+      "recorded_in": "#2444",
+      "note": "Playwright browsers + deps, e2e harness only. The #2444 move is a real version bump (v1.64.1-noble -> v1.65.1-noble), not a same-tag rebuild: `docker buildx imagetools inspect` reports the index digest sha256:1507cbfc... live (linux/amd64 766137e2, linux/arm64 56be08ac) and the pulled image ships chromium-1255 / chromium_headless_shell-1255 / firefox-1572 / webkit-2388 on node 26.13.1. The harness build-time pin moved with the image (@playwright/test@1.64.1 -> @playwright/test@1.65.1): playwright-core 1.64.1 expects chromium-1248/firefox-1555/webkit-2370, so the raw dependabot head (FROM bumped, npm pin left behind) failed every browser launch with 'Executable doesn't exist' -- the exact hive-conductor-e2e-ui red. tests/test_playwright_harness_version_parity.py holds the npm pin to the image tag so the next bump cannot land half-done.",
       "used_by": [
         "packages/hive-conductor/tests/Dockerfile.playwright"
       ]
