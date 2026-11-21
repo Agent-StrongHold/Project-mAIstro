@@ -390,3 +390,75 @@ class TestStartStopCanvasJobRunner:
         await stop_canvas_job_runner(handle)
         # A second stop on the already-finished task must not raise or hang.
         handle.runtime.runner.stop()
+
+    async def test_restart_against_a_persisted_binding_reuses_the_record(self) -> None:
+        """A second boot against the store the first boot wrote must not
+        collide with the store's immutability rule.
+
+        The binding id is fixed and ``created_at`` defaults to ``now()``, so
+        re-registering on every boot handed the store two different records
+        for one id — the first container restart crashed startup inside
+        compose's ``restart: unless-stopped`` loop (found by live bring-up,
+        invisible to fresh-state tests). The restart must reuse the
+        persisted record: same ``created_at``, no second ``put``.
+        """
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        run_store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+        container = _FakeContainer(run_store)
+        first = await start_canvas_job_runner(
+            store=_IdleQueueStore(),
+            container=container,
+            endpoint=ENDPOINT,
+            workspace_id="ws-default",
+            worker_id="test-canvas-runner",
+        )
+        persisted = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+        assert persisted is not None
+        puts_after_first_boot = len(container.capability_effects.bindings.puts)
+        await stop_canvas_job_runner(first)
+
+        second = await start_canvas_job_runner(
+            store=_IdleQueueStore(),
+            container=container,
+            endpoint=ENDPOINT,
+            workspace_id="ws-default",
+            worker_id="test-canvas-runner-2",
+        )
+        try:
+            reused = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+            assert reused == persisted, "the first boot's record must stay the authority"
+            assert len(container.capability_effects.bindings.puts) == puts_after_first_boot, (
+                "a restart must not re-register the immutable binding"
+            )
+        finally:
+            await stop_canvas_job_runner(second)
+
+    async def test_a_conflicting_persisted_binding_refuses_to_start(self) -> None:
+        """A persisted record whose authorization shape differs from what
+        this composition registers is a deployment fault: the id is
+        immutable, so the start must fail truthfully instead of running
+        under (or silently overwriting) a stale authority."""
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        run_store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+        container = _FakeContainer(run_store)
+        await container.capability_effects.bindings.put(
+            Binding(
+                binding_id=CANVAS_IMAGE_BINDING_ID,
+                workspace_id="ws-default",
+                project_id="default",
+                capability="image.edit",
+                credential_refs=("litellm-gateway",),
+            )
+        )
+        with pytest.raises(RuntimeError, match="different authorization shape"):
+            await start_canvas_job_runner(
+                store=_IdleQueueStore(),
+                container=container,
+                endpoint=ENDPOINT,
+                workspace_id="ws-default",
+                worker_id="test-canvas-runner",
+            )

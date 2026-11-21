@@ -333,25 +333,52 @@ async def start_canvas_job_runner(
 ) -> CanvasRunnerHandle:
     """Compose and start the Canvas runtime's worker on this process's loop.
 
-    Registers the image-generation Binding (idempotent for an identical
-    record, exactly like the Container's own model.chat binding), builds the
-    adapters, constructs the runtime through the package-owned composition
-    seam, and starts the runner. The caller owns shutdown via
-    :func:`stop_canvas_job_runner`.
+    Registers the image-generation Binding (read-first: a restart against
+    the same database reuses the persisted record instead of colliding with
+    the store's immutability rule), builds the adapters, constructs the
+    runtime through the package-owned composition seam, and starts the
+    runner. The caller owns shutdown via :func:`stop_canvas_job_runner`.
     """
     from maistro_canvas.canvas.composition import build_canvas_runtime
 
     effects = container.capability_effects
     admission_workspace, project_id = await container.chat_admitter.admission_scope()
-    await effects.bindings.put(
-        Binding(
-            binding_id=CANVAS_IMAGE_BINDING_ID,
-            workspace_id=workspace_id,
-            project_id="default",
-            capability=IMAGE_GENERATE_CAPABILITY,
-            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
-        )
+    binding = Binding(
+        binding_id=CANVAS_IMAGE_BINDING_ID,
+        workspace_id=workspace_id,
+        project_id="default",
+        capability=IMAGE_GENERATE_CAPABILITY,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
     )
+    # The binding id is fixed, so every boot after the first finds the row
+    # the previous boot wrote. A fresh Binding carries a fresh `created_at`,
+    # and the store treats any differing re-registration of the same id as
+    # an immutability violation — which crashed startup inside compose's
+    # `restart: unless-stopped` loop on the first container restart. Read
+    # first: absent → register; present → the persisted row is the authority
+    # (an operator kill-switch disabling it stays honored, `created_at`
+    # stays theirs), but a persisted record whose authorization shape no
+    # longer matches what this composition registers is a deployment fault
+    # — the id names a contract, and a changed contract needs a new id — so
+    # surface it and refuse to start under a stale authority.
+    persisted = await effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+    if persisted is None:
+        persisted = await effects.bindings.put(binding)
+    elif (
+        persisted.workspace_id != binding.workspace_id
+        or persisted.project_id != binding.project_id
+        or persisted.capability != binding.capability
+        or persisted.credential_refs != binding.credential_refs
+    ):
+        raise RuntimeError(
+            f"Canvas image binding {CANVAS_IMAGE_BINDING_ID!r} is already "
+            "registered with a different authorization shape "
+            f"(capability={persisted.capability!r}, "
+            f"credential_refs={list(persisted.credential_refs)!r}, "
+            f"workspace_id={persisted.workspace_id!r}, "
+            f"project_id={persisted.project_id!r}); the binding id is "
+            "immutable — register the changed contract under a new id"
+        )
     registry = await GatewayModelRegistry.from_gateway(endpoint)
     image_client = GovernedGatewayImageClient(
         effects,
