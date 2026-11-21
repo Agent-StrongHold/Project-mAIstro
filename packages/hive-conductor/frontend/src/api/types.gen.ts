@@ -2535,6 +2535,10 @@ export interface paths {
          *     not to re-decide the answer — the store is called regardless and its verdict
          *     is final, so a race between the read and the call surfaces as its error
          *     rather than as a wrong code.
+         *
+         *     Capability-approval pauses additionally settle the selected DurableApproval
+         *     before the Graph answer is queued (#55 / #1192): resolve, then
+         *     ``submit_hitl_answer``. Ordinary human pauses are unchanged.
          */
         post: operations["answer_human_work_v1_hitl__run_id___node_id__answer_post"];
         delete?: never;
@@ -6664,8 +6668,21 @@ export interface components {
              */
             size: string;
         };
-        /** HumanAnswer */
+        /**
+         * HumanAnswer
+         * @description Answer body for a paused node.
+         *
+         *     Ordinary human pauses accept free-form extras. Capability-approval pauses
+         *     (``awaiting_human_approval``) additionally require a strict boolean
+         *     ``approved`` and ``expected_approval_request_id`` matching the
+         *     server-stamped pause receipt (#55 / #1192).
+         */
         HumanAnswer: {
+            /** Approved */
+            approved?: boolean | null;
+            /** Expected Approval Request Id */
+            expected_approval_request_id?: string | null;
+        } & {
             [key: string]: unknown;
         };
         /** InterviewAnswerBody */
