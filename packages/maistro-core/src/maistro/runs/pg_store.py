@@ -58,6 +58,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -2003,6 +2004,58 @@ class PgRunStore:
             )
             self._validate_fence(attempt, fencing_token)
             settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume.
+
+        Parent-first locks (Run → NodeRun → Attempt) match #1888 repair order so
+        orphan recovery cannot invert against concurrent cascade writers (#2417).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            lineage = await conn.fetchrow(
+                """SELECT a.node_run_id AS node_run_id, n.run_id AS run_id
+                     FROM canonical_attempts a
+                     JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                    WHERE a.attempt_id = $1""",
+                attempt_id,
+            )
+            if lineage is None:
+                raise AttemptNotFound(attempt_id)
+            if lineage["run_id"] != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {lineage['run_id']!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            run_row = await conn.fetchrow(
+                "SELECT run_id FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                owning_run_id,
+            )
+            if run_row is None:
+                raise RunIntegrityError(
+                    f"owning Run {owning_run_id!r} does not exist for Attempt {attempt_id!r}"
+                )
+            node_run = NodeRun.model_validate(
+                await self._locked(
+                    conn, "canonical_node_runs", "node_run_id", lineage["node_run_id"]
+                )
+            )
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            if attempt.node_run_id != lineage["node_run_id"] or node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the orphan recovery lock"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
         return settled
 
