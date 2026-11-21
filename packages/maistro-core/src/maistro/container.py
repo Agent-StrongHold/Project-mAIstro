@@ -2507,6 +2507,12 @@ async def _provision_configured_workspace(
                 raise
 
 
+
+def _goal_store_requires_postgres(config: AgentConfig, supplied_pg_pool: Any) -> bool:
+    """True when the Goal store must use the durable Postgres backend."""
+    return config.database_url.startswith(("postgresql:", "postgres:")) or supplied_pg_pool is not None
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2733,7 +2739,11 @@ async def create_container(
         # with a warning.
         # The authorized `goal_reader` seam is derived on
         # the Container from this store and the Workspace store.
-        goal_store = await wire_goal_store(db_pool, pg_pool=pg_pool)
+        goal_store = await wire_goal_store(
+            db_pool,
+            pg_pool=pg_pool,
+            require_postgres=_goal_store_requires_postgres(config, supplied_pg_pool),
+        )
         working_log = await _wire_working_memory_backend(db_pool)
         node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
         # Same backend the spine just chose (#1176): claims beside the Runs they
