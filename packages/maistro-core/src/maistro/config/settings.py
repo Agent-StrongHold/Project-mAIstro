@@ -307,6 +307,22 @@ class Settings(BaseSettings):
         "default because the webhook routes already reject unsigned requests; "
         "turn it on to convert a runtime 503 into a boot failure.",
     )
+    # The shipped server starts a built-in Canvas job consumer when a durable
+    # spine and Canvas store exist (#2311). A deployment that runs the
+    # supported ``maistro-canvas-worker`` service instead must be able to turn
+    # that in-process consumer off: the server's governed image egress cannot
+    # execute ``refine``, so a competing claim would burn attempts and
+    # terminalize jobs the external worker could have completed.
+    canvas_server_consumer_enabled: bool = Field(
+        default=True,
+        description=(
+            "Start the built-in Canvas job consumer in the server process "
+            "(#2311). Set CANVAS_SERVER_CONSUMER_ENABLED=false when a "
+            "maistro-canvas-worker service owns the generation_jobs queue, so "
+            "the server never claims (and cannot execute, e.g. refine) jobs "
+            "destined for the external worker."
+        ),
+    )
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [
