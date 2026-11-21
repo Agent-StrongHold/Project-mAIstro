@@ -51,11 +51,11 @@
     },
     {
       "image": "python",
-      "tag": "3.15.0-slim-bookworm",
-      "digest": "sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d",
-      "recorded": "2026-11-18",
-      "recorded_in": "#2375",
-      "note": "Autonoetic Copier template base. Dependabot index pin (semver-minor 3.14.8 -> 3.15.0, #2375) re-verified against Docker Hub on 2026-11-18: `docker buildx imagetools inspect python:3.15.0-slim-bookworm` resolves the tag to exactly this index digest, and the linux/amd64 manifest annotates org.opencontainers.image.version 3.15.0-slim-bookworm with its image config reporting PYTHON_VERSION=3.15.0. Supersedes the #2117 3.14.8 row, whose mutable tag had already advanced past the old pin. The single-tenant template retains its separate 3.12.12 pin.",
+      "tag": "3.15.2-slim-bookworm",
+      "digest": "sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9",
+      "recorded": "2026-11-20",
+      "recorded_in": "#2443",
+      "note": "Autonoetic Copier template base. Dependabot index pin (semver-patch 3.15.0 -> 3.15.2, #2443) re-verified against Docker Hub on 2026-11-21: `docker buildx imagetools inspect python:3.15.2-slim-bookworm` resolves the tag to exactly this OCI index digest (linux/amd64 child 6cae5760…, annotated org.opencontainers.image.version 3.15.2-slim-bookworm, base debian:bookworm-slim), and the pinned digest verified in-container: `python --version` prints Python 3.15.2. Supersedes the #2375 3.15.0 row (which itself superseded the #2117 3.14.8 row, whose mutable tag had already advanced past that old pin); the 3.15 line stays accepted for this template since #2375 — the cp315 wheel-ceiling evidence that keeps the sbx-tests image on 3.12-slim concerns that image's dependency set, not this template's (pip install . of a stdlib-only downstream project). The single-tenant template retains its separate 3.12.12 pin.",
       "used_by": [
         "templates/autonoetic/Dockerfile.jinja"
       ]
