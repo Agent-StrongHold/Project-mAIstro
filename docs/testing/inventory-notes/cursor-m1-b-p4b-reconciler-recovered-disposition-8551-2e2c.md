@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +5
+  packages/maistro-core/tests: +9
 ---
 # cursor-m1-b-p4b-reconciler-recovered-disposition-8551-2e2c
 
