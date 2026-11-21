@@ -206,3 +206,68 @@ claim was nevertheless re-proved independently at this head:
 Residual (unchanged in nature, driver actions): push this tip
 (`51c0c70987`, one docs commit ahead of hosted PR head `58a76678efae`) and
 retarget PR #2427 to develop — both GitHub mutations, prohibited in-lane.
+
+## Round at `0ee2bd41f7` (review head; 2026-11-21)
+
+HEAD `0ee2bd41f7e4` is a merge of develop's `99d66477ad` (docker/login-action
++ integration-scope workflow bumps, #2435 family — `.github/` + `tests/ci/*.cjs`
+only, zero `packages/` changes) into the previously validated `fd08199120`.
+The hosted PR #2427 head snapshot now equals this HEAD exactly, resolving the
+prior "Hosted PR snapshot incomplete or not the review head" preflight block.
+No code changed under `packages/` between the old merge-base `0d7bdd0a86` and
+the new one `99d66477ad` (`git diff --stat 0d7bdd0a86 99d66477ad -- packages/`
+is empty), so all package-level evidence transfers; everything below was
+re-run at this head anyway.
+
+### Gates and suites at `0ee2bd41f7`
+
+1. **Ledgers vs develop tip `527cff8437`**: vulture/radon/reachability/
+   promotion-surface byte-identical (`git diff --numstat origin/develop --
+   quality/` shows only `image-pins.json` 10/10); `image-pins.json` differs
+   solely because develop's two newest dependabot commits (#2443 python
+   3.15.2, #2444 playwright 1.65.1) postdate our merge-base — our tree
+   carries the matching older pins and Dockerfiles (internally consistent,
+   0 rows lost; structure 3/3 keys equal).
+2. **CI-exact quality gates** (after `uv sync --locked --all-extras` +
+   `uv pip install -e packages/maistro-evolve`): ruff check + format
+   (3608 files) ok; vulture `packages/*/src --min-confidence 60 --exclude
+   '*/third_party/*'` → **1222 == 1222** (base `99d66477ad` → candidate
+   `0ee2bd41f7`); radon **124 == 124**; mypy `--strict packages/maistro-core/src`
+   → **Success, 845 source files**; reachability rc 0 (1495 modules,
+   82 unreachable, dispositioned); promotion-surface, backlog, merge-markers,
+   test-duplicates, monorepo-layout, suite-inventory (core) all rc 0.
+3. **Live-PG acceptance** (standalone `pgvector/pgvector:pg18` on
+   127.0.0.1:15499, `alembic upgrade head`, plain `postgresql://` DSN — the
+   runs-conftest `pg_pool` fixture feeds `MAISTRO_TEST_PG_DSN` to asyncpg
+   directly, so the `+asyncpg://` scheme errors with
+   `ClientConfigurationError: invalid DSN`; use `postgresql://`):
+   - five P5a suites: **68 passed, 0 skipped** (memory + sqlite + postgres
+     legs all ran);
+   - acceptance batch (canvas canonical, durable-runs store, reclaim
+     characterization, parked-resume, recovery events, evidence pack, spine
+     conformance, rsi research): **580 passed**;
+   - whole `packages/maistro-core/tests/runs`: **2015 passed, 4 skipped**
+     (the 4 are backend-capability skips).
+4. **`test`-job legs** (REQUIRE_AUTH=false MAISTRO_DRY_RUN=1): server
+   **697 passed, 10 skipped**; turing + turing/backend + design +
+   ext-harness + ext-sdk **1472 passed, 1 skipped**; root `tests/`
+   **5891 passed, 140 skipped** — all identical to the `58a76678efae` round,
+   as expected for a `.github/`-only merge.
+5. **Production facts re-read at this head**: `container.py:1436`/`:1509`
+   catch `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`; `:1542`
+   sole selector `is_typed_recovered_attempt`; `consumption.py:511` typed
+   look-past; `is_reclaimed_attempt` has zero production call sites
+   (definition `lifecycle.py:327`, `__all__` `:734`, docstring comment
+   `:310`).
+6. **`pr-base`**: `--base develop` → ok rc 0; `--base
+   cursor/m1-b-p4b-…` → FAIL rc 1 (ADR-095 message). `git merge-tree --write-tree
+   HEAD origin/develop` at develop tip `527cff8437` → rc 0, **0 conflicts**:
+   the PR's GitHub `dirty` state is only against the stale stacked cursor/
+   base and disappears on the documented retarget to develop.
+7. **Inventory note**: re-verified — the three files collect **67** at this
+   head; the note's +4 claim stands; no edit needed.
+
+Residual (driver actions, GitHub mutations prohibited in-lane): CI check
+runs had not been posted on `0ee2bd41f7` at dispatch capture (verdicts are a
+driver observation); retarget PR #2427 base to develop before merge.
