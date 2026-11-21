@@ -16,6 +16,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     renew_attempt_lease,
     renewed_lease,
     transition_attempt,
@@ -478,6 +479,53 @@ class DurableRunExecutionStore:
                     continue
                 self._validate_fence(attempt, fencing_token)
                 settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+                attempts[index] = settled
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert settled is not None
+        return settled.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under Graph resume (#2417 / #232 P3b).
+
+        When a canonical RunStore is wired, that store is the write authority and
+        enforces ``owning_run_id`` lineage; this view mirrors the settled Attempt.
+        Local-only mode applies the same lifecycle leaf under the run lock after
+        verifying the durable record's run_id matches ``owning_run_id``.
+        """
+        if self._run_store is not None:
+            canonical = await self._run_store.recover_orphaned_attempt(
+                attempt_id,
+                owning_run_id=owning_run_id,
+                at=at,
+                error=error,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
+        settled: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled
+            if record.run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {record.run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled = recover_orphaned_attempt(attempt, at=at, error=error)
                 attempts[index] = settled
                 return record.model_copy(update={"attempts": tuple(attempts)})
             raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")

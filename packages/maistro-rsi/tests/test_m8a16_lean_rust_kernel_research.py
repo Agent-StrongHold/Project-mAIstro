@@ -897,6 +897,9 @@ _UNTRANSLATABLE: dict[str, str] = {
     "compensate_unlaunched_attempt": (
         "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
     ),
+    "recover_orphaned_attempt": (
+        "delegates to transition_attempt + model_dump/model_validate (pydantic boundary)"
+    ),
     "settle_open_node_run": "delegates to transition_node_run (pydantic boundary)",
 }
 
@@ -1317,7 +1320,7 @@ def test_translatability_classification_covers_exactly_the_module() -> None:
     assert violations == ()
     assert total == len(records)
     assert translatable == 12
-    assert total == 23
+    assert total == 24
 
 
 def test_kernel_decision_functions_are_classified_translatable() -> None:
@@ -1342,9 +1345,9 @@ def test_pydantic_and_clock_boundaries_are_classified_untranslatable() -> None:
 
 def test_report_answers_the_evidence_questions() -> None:
     report = build_report()
-    assert report.module_defs_total == 23
+    assert report.module_defs_total == 24
     assert report.module_defs_translatable == 12
-    assert report.module_translatable_pct == 52
+    assert report.module_translatable_pct == 50
     assert report.kernel_extraction_coverage.startswith("100%")
     assert len(report.aeneas_breakers) == 4
     assert all(
