@@ -5,6 +5,9 @@
 # The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
 # publishes the required Linux wheels for cp313, but not cp314. Keep the exact
 # patch version here so a moving base tag cannot silently change that contract.
+# 3.13.16 -> 3.13.18 (#2303 CI repair): grype's fresh DB flags CVE-2026-115557
+# (CRITICAL) in the 3.13.16 interpreter binary; the fix landed in 3.13.18, and
+# the in-image assertion below moves with the pin so the contract stays exact.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
 # ---- frontend build ----
@@ -43,9 +46,13 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-# Digest-pinned (#349); golang:1.27.3-alpine index digest resolved 2026-11-17 (#2413),
-# registered in quality/image-pins.json with the same coordinates.
-FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS agebuild
+# The 1.27.3 rebuild then aged out itself: CVE-2026-97054 (net/http
+# MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4) flagged
+# age-keygen's stdlib 1.27.3 in the #2375 Container scan gate (security.yml run
+# 44477475371 job 135401410021, 2026-11-19), so the builder moved to
+# 1.27.4-alpine, retiring the 2026-10-22 1.27.3 index (#1152 lineage).
+# Digest-pinned (#349); golang:1.27.4-alpine resolved to this index digest 2026-11-19.
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
