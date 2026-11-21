@@ -5,7 +5,7 @@ const STEPS = [
   { title: "Welcome to Hive", body: "Your AI-powered project management assistant. Let's get you set up in under 60 seconds.", icon: "🐝" },
   { title: "Chat with your PM", body: "Ask anything about your project. The AI has access to your Jira, Confluence, and team data.", icon: "💬" },
   { title: "Run DAGs", body: "Automated workflows that research, write, and optimize — all scored by evals.", icon: "🔄" },
-  { title: "You're ready!", body: "The setup checklist on your Dashboard walks the rest: activate an LLM provider (admin), then switch to your daily-driver account for your first chat.", icon: "🚀" },
+  { title: "You're ready!", body: "The setup checklist on Home walks the rest: activate an LLM provider (admin), then switch to your daily-driver account for your first chat.", icon: "🚀" },
 ];
 
 export function Onboarding({ onComplete }: { onComplete: () => void }) {
