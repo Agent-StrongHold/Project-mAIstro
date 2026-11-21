@@ -987,3 +987,115 @@ merge-markers ok). Additionally ran the CI `test` job's package suites
 ext-harness+ext-sdk 420p, root tests 5901p, hive backend 4293p, combined
 cross-suite leakage 10976p) — all green. No code or test changes; no new
 inventory delta owed. Worktree clean; commit is docs-only round record.
+
+## Round at `6496275370` (verifier/writer round; prior block = provider error, 2026-11-21)
+
+**Previous block resolved:** the prior rounds at this head died on provider
+errors (job `e38d3e6aaae9`: `nous/stepfun/step-3.7-flash:free 400 … missing
+tags`; earlier `nous/reflection/beam-1.0-501b-a23b:free 404`) — runtime
+failures, **not** a develop sync conflict and not a tree defect, so no merge
+was mandated by the dispatch's conditional. No guessed scanner findings were
+acted on: the vulture ledger is green as-is (no amendment owed). All claims
+below were re-executed at this head; prior rounds' evidence was not assumed.
+
+**Head alignment:** dispatch head == `linked_pr_heads["2427"]` ==
+`origin/cursor/m1-b-p5a-recovered-rediscovery-8551` == local HEAD =
+`64962753705b…`; worktree clean at start. `6496275370` is docs-only over the
+validated `f9065bd067` (one file, this notes file, +12 lines), so code is
+byte-identical to the previously validated tree.
+
+**Driver deterministic checks (this job's check-0..8, logs inspected):**
+sync rc 0; ruff check "All checks passed"; ruff format "3618 files already
+formatted"; 13-file batch **506 passed, 147 env-skips**; hive audit-pagination
+**32 passed**; per-suite inventory ok ×4 (hive 4321 / canvas 633 / core 18857
+/ rsi 1797).
+
+**Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, private DB
+`maistro_cr2427`, alembic `068`, `vector` ext, single-connection instance,
+`MAISTRO_TEST_PG_DSN` plain `postgresql://`):
+
+1. Five P5a suites → **68 passed, 0 skipped** — memory + sqlite + postgres
+   legs all ran; matches every prior round.
+2. Driver's exact 13-file batch → **653 passed, 0 skipped** — reconciles
+   exactly with check-3 (506 + 147 = 653): every env-skipped parametrization
+   ran live. Only warning is the canvas PytestWarning re-confirmed
+   pre-existing on `origin/develop` (same sync fn at develop `:1034` under
+   `pytestmark` `:23`).
+3. Whole `packages/maistro-core/tests/runs` + `graph/durable_runs` →
+   **2969 passed, 4 skipped (capability), 4 xfailed**.
+
+**Production facts re-read at HEAD:** `container.py:1436`/`:1509` catch
+`(RunIntegrityError, RecoveredDispositionRefused)`; the sole caller at
+`:1499-1502` passes `allow_stranded_recovered=node_run.status is
+RunStatus.RUNNING`; `_stranded_recovered_attempt` refuses live leases
+(`:1539`) then selects solely via `is_typed_recovered_attempt(max-by-ordinal)`
+(`:1542`); `consumption.py:42` import + `:511` typed look-past;
+`grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+`lifecycle.py:327` only — **zero production call sites**. Named P5a tests at
+`test_interrupted_reclaim_rediscovery.py:131` (spoofed prefix), `:159` (no
+parking behind a newer attempt), `:180` (parks only its own node) — all in
+the passing 68. Stacked riders: `attempt_executor.py:386` calls the canonical
+`recover_orphaned_attempt` writer; the `timeout` marker is registered
+(`pyproject.toml:451`) and documented (`CONTRIBUTING.md:100`).
+
+**CI-exact quality gates re-run at this head:** ruff pair green; vulture
+`packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → **1221
+defined == 1221 findings, rc 0** (base `1621f7fefba4` → candidate
+`64962753705b`); radon (`RATCHET_BASE_REV=origin/develop`) → **124 == 124,
+rc 0**; promotion-surface ok; reachability rc 0 (1496 modules, 82
+unreachable); merge-markers / test-duplicates / backlog / monorepo-layout all
+rc 0; suite inventory no-args → **21 suites / 36024 identities, rc 0**; mypy
+ci.yml:117 exact 10-package list → **Success, 1128 source files**; after
+CI's exact `uv sync --locked --all-extras` + `uv pip install -e
+packages/maistro-evolve`, `mypy --strict packages/maistro-core/src` →
+**Success, 846 source files**.
+
+**Named gate `test` — every leg reproduced green locally:** server
+**697p/10s**; turing **225p**; turing/backend **138p**; design **689p/1s**;
+ext-harness **273p**; ext-sdk **147p**; root `tests/ --ignore=tests/tools/registry`
+**5901p/140s**; hive backend **4293p/28s**; cross-suite leakage (one process)
+**10976p/169s**; `dump-hive-openapi.py` + `gen:api` → **types.gen.ts no
+diff**; hive frontend lint **0 errors** + build ✓; canvas frontend `test:ci`
+**84 passed** + lint 0 errors + build ✓; canvas `npm audit` gate **OK**;
+inventory + test-duplicates steps rc 0. Additionally reproduced CI's
+pull-request ambient `RATCHET_BASE_REV=origin/cursor/m1-b-p4b-…` for the five
+`real_repository_ratchet_base` self-check files → **155 passed**. A historical
+red on this gate is **not reproducible at this head**; the hosted head carries
+**0 check-runs / 0 statuses** at dispatch capture (CI pending), so the CI
+verdict remains a driver observation.
+
+**Named gate `pr-base` — diagnosed, cause outside the branch:**
+`check-pr-base.py --base develop --labels ''` → **ok rc 0**; the hosted base
+`cursor/m1-b-p4b-reconciler-recovered-disposition-8551` → **FAIL rc 1** with
+the ADR-095 message — exactly the stacked state the PR body documents as
+expected ("Expected: pr-base fails while stacked on a `cursor/` base").
+Cause: the GitHub PR base ref; `cursor/` is not an accepted topic prefix
+(`.github/branch-protection.json`: feat/bug/fix/idea/doc/docs/chore), and
+`is_topic_branch()` (check-pr-base.py:61-76) is a pure ref-name policy check.
+Not repairable in-lane: retargeting the PR is a GitHub mutation (prohibited)
+and adding a prefix would change/weaken the gate (prohibited). Remediation =
+driver retargets PR #2427 to `develop` before merge. No gate was weakened.
+
+**Develop sync state (recorded, deferred):** after `git fetch origin`,
+`origin/develop` = `546e72c0406` — two frontend dep-bump commits past our
+merge point `1621f7fefb` (`76a01d6e29` #2432 vite plugin-react, `546e72c040`
+#2437 eslint-plugin-react-refresh): **no P5a file, no `quality/` row**
+(`git diff --numstat origin/develop -- quality/` empty),
+`git merge-tree --write-tree HEAD origin/develop` → **rc 0, conflict-free**.
+`git merge-base --is-ancestor origin/develop HEAD` → no (2 commits behind).
+This round's block was the provider error, not a develop sync conflict, and
+merging would break the three-way head alignment this dispatch's preflight
+depends on — per the `b80982bf`/`628befefe5` precedent the sync is **recorded
+and deferred** to the next snapshot round.
+
+**Inventory:** `m1-232-p5a-recovered-rediscovery.md` trio re-collected →
+**67** (`pytest --collect-only`), the documented 63 → 67 **+4** stands; this
+round changes no tests, so no new `inventory-delta` is owed.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane): (a)
+retarget PR #2427 base to `develop` before merge (pr-base red vs the stacked
+cursor/ base is the documented expected state); (b) CI check-runs on
+`6496275370` are 0/0 at capture — verdicts pending, locally reproduced green;
+(c) fold `546e72c0406` in on the next snapshot round (conflict-free);
+(d) nothing pushed; no GitHub mutations; the only change in this round is this
+notes section.
