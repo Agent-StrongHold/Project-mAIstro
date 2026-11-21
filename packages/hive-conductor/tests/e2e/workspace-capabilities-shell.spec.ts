@@ -15,7 +15,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("Capabilities is reachable from the icon rail and loads the API surface", async ({ page }) => {
-  await page.goto("/dashboard");
+  await page.goto("/home");
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Capabilities", exact: true });
   await expect(link).toBeVisible();
   await link.click();
