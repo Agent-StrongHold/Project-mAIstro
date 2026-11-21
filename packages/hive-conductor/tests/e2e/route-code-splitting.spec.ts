@@ -25,20 +25,21 @@ test("a route's chunk is fetched only once its page is visited, not on cold load
     }
   });
 
-  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Live Operations" })).toBeVisible({
+  await page.goto("/home", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible({
     timeout: 15000,
   });
-  // The Dashboard route's lazy chunk has resolved and rendered by the time
+  // The Home route's lazy chunk has resolved and rendered by the time
   // its heading is visible; give any in-flight request a moment to be
   // recorded rather than racing the request listener.
   await page.waitForTimeout(300);
 
-  // The Dashboard route's own chunk loaded ...
-  expect(scriptRequests.some((u) => /\/assets\/Dashboard-[^/]+\.js$/.test(u))).toBe(true);
+  // The Home route's own chunk loaded ...
+  expect(scriptRequests.some((u) => /\/assets\/Home-[^/]+\.js$/.test(u))).toBe(true);
   // ... but a page nobody has navigated to yet did not ride along with it.
   expect(scriptRequests.some((u) => /\/assets\/Settings-[^/]+\.js$/.test(u))).toBe(false);
-  expect(scriptRequests.some((u) => /\/assets\/Agents-[^/]+\.js$/.test(u))).toBe(false);
+  // #2274: Dashboard chunk must not ship — the page module is deleted.
+  expect(scriptRequests.some((u) => /\/assets\/Dashboard-[^/]+\.js$/.test(u))).toBe(false);
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page).toHaveURL(/\/settings$/);

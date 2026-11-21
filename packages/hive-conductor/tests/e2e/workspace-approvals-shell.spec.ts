@@ -15,7 +15,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("Approvals is reachable from the icon rail and shows both queues", async ({ page }) => {
-  await page.goto("/dashboard");
+  await page.goto("/home");
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Approvals", exact: true });
   await expect(link).toBeVisible();
   await link.click();

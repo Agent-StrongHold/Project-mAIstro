@@ -82,7 +82,7 @@ test.afterAll(async () => {
 });
 
 test("Attention is reachable from the icon rail", async () => {
-  await page.goto("/dashboard");
+  await page.goto("/home");
   await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Attention", exact: true });
   await expect(link).toBeVisible();
@@ -92,7 +92,7 @@ test("Attention is reachable from the icon rail", async () => {
 });
 
 test("Attention loads the Workspace projection API and shows summary", async () => {
-  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await page.goto("/home", { waitUntil: "domcontentloaded" });
   await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
 
   // Match any workspace attention GET (ok or not) so a 403/404 surfaces as an
