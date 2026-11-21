@@ -23,6 +23,7 @@ import type {
 import { homeKindLabel, layoutPath, pinPath, projectionsPath } from "../lib/home";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import { Card, EmptyState, Hex, LoadingSpinner, PageHeader, useToast } from "../components/shared";
+import { SetupChecklist } from "../components/SetupChecklist";
 
 function sectionFor(sections: HomeProjectionSection[], kind: string): HomeProjectionSection | null {
   return sections.find((s) => s.kind === kind) ?? null;
@@ -197,6 +198,10 @@ export default function Home() {
         subtitle="Mission Control for this Workspace — compact projections over the same services the Agent and API use."
         helpHref="/docs#workspaces"
       />
+
+      {/* Setup checklist moved here from the retired Dashboard page (#2274):
+          renders null while loading or when every step is done/dismissed. */}
+      <SetupChecklist />
 
       {!workspacesReady || loading ? (
         <div data-testid="home-loading" aria-busy="true" aria-label="Loading Workspace Home">
