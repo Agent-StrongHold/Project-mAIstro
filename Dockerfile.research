@@ -64,7 +64,18 @@ FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
-FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
+#
+# #2430 evaluated Dependabot's 3.12 -> 3.15 index bump and rejected it
+# (2026-11-21, the same wheel ceiling as the engine image's #2136
+# disposition, re-verified on this lock): the `uv export --locked …
+# --require-hashes` install below selects psycopg-binary 3.3.4, which
+# ships no cp315 wheel and no sdist at all, so the install fails closed
+# under 3.15; coincurve 21.0.0 stops at cp313 and cffi 2.0.0 at cp314,
+# both with sdists needing a compiler this stage does not install. A lone
+# FROM jump would also desync the interpreter line this file itself pins: the venv line below names --python 3.12 and the runtime stage
+# hard-codes the python3.12 site-packages cleanup path. The static guard
+# tests/test_root_image_interpreter_lines.py covers this file.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
 
@@ -170,8 +181,9 @@ RUN apk add --no-cache git && \
 # libexpat1 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214)
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
-# flag.
-FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS production-apt
+# flag. Same base line as the builder — see the #2430 rejection note above:
+# 3.15 is unbuildable for this image's locked install set.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.

@@ -23,7 +23,20 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS builder
+#
+# #2430 evaluated Dependabot's 3.13.18 -> 3.15.2 index bump and rejected it,
+# re-confirming the #2136 wheel ceiling on 2026-11-21 against the committed
+# lock: psycopg-binary 3.3.4 ships no cp315 wheel and no sdist at all, so
+# the `uv pip install --require-hashes` below fails closed under 3.15 (the
+# research and RSI-runner installs select the same artifact); coincurve
+# 21.0.0 (still latest upstream per PyPI) stops at cp313; cffi 2.0.0 stops
+# at cp314 and its sdist needs libffi headers no builder installs. The
+# static guard tests/test_root_image_interpreter_lines.py names 20
+# cp315-unservable lock entries vs zero on this line. The 3.15.2 index
+# itself is real (`docker manifest inspect` resolves, linux/amd64 present)
+# — the images are simply unbuildable on it. Re-attempt only when every
+# linux-relevant locked distribution ships a cp315 binary artifact.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -204,8 +217,9 @@ RUN apk add --no-cache git && \
 # `--no-cache-filter runtime-apt` so every candidate re-consults the security
 # mirror; release.yml builds cold and needs no flag. The 2026-10-22
 # base-digest bump (#1152) additionally invalidated the previously cached
-# apt layer.
-FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-apt
+# apt layer. Same base as the builder — see the #2430 rejection note above:
+# 3.15.2 is unbuildable for this image's locked install set.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
