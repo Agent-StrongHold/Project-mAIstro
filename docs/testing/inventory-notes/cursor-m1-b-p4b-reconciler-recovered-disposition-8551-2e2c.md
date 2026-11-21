@@ -437,3 +437,33 @@ the ADR-095 stacked-flow expectation, matching the hosted snapshot where
 coverage (no services), exact-debt-ledger, and every other completed job
 are success and pr-base is the only completed failure.
 
+
+## Verifier round at review head 32cc253cdbbd (2026-11-21T15:0xZ snapshot)
+
+The prior round's blocker is closed by the hosted snapshot itself: PR #2425's
+head on GitHub is now 32cc253cdbbddc267 — exactly this local review HEAD — and
+the snapshot is `complete_for_scope` true with 81 check runs captured at that
+sha. 80 completed success; pr-base is the only completed failure, and the
+cause is proven structural, not a code defect: `.github/branch-protection.json`
+topic prefixes are feat/bug/fix/idea/doc/docs/chore, so a PR stacked on a
+`cursor/` base fails by design until retarget. Re-executed with ci.yml's exact
+argv: `--base cursor/m1-b-p4a-recovered-disposition-8551` exits 1 with the
+retarget-to-develop instruction; `--base develop` exits 0.
+
+Everything below re-executed fresh at exactly this head; no source file was
+edited (verifier round). `reconciliation.py` sha256 re-verified
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79 — byte-
+identical to every proven round. Driver deterministic checks inspected green
+(check-0..8: sync, ruff check, format --check 3610 files, battery 441 passed /
+140 skipped, hive-conductor pagination 32 passed, suite inventory ok ×4) and
+independently re-run: core disposition suites (provenance, recovered
+disposition, leaseless orphan, recovery events, evidence pack, spine
+conformance, canonical store, recovery disposition) 367 passed / 140 skipped
+without services; canvas race/reclaim selection 8 passed; CI-exact
+check-vulture-baseline.py exit 0 (1222 == 1222, candidate 32cc253cdbbd vs base
+971e536838ca); live-database leg on a throwaway pgvector:pg18 container
+(alembic upgrade head -> 068, MAISTRO_TEST_PG_DSN set): 554 passed / 0 skipped
+across canvas + core disposition suites — every service-gated leg green;
+container removed after. Fail-before evidence stands from the two prior
+mutation rounds at this same reconciliation.py sha, plus CI's Mutation gate
+(changed critical lines) success at the review head.
