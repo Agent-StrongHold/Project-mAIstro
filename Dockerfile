@@ -178,17 +178,6 @@ RUN python /tmp/prune-dependency-namespaces.py \
 FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
-# The grype DB additionally flags the vendored github.com/klauspost/compress
-# v1.20.1 (GO-2026-6865 HIGH, fixed v1.20.2; security.yml run 43812084107 job
-# 133115778563, #1450 CI repair 2026-11-16). No upstream docker/cli tag ships
-# it fixed — the same scans read v29.9.3's vendored tree — and the gate
-# policy upgrades when a fix exists rather than ignores, so the tag bump
-# above (which already carries go-jose 4.1.7 upstream, closing trivy's
-# CVE-2026-116587 without a downgrade patch) is combined with patching that
-# vendored module onto the advisory fix version the same way x/net is
-# patched below. `go get` edits only go.mod/go.sum; `go mod vendor` rewrites
-# vendor/ from them, so the build stays in vendor mode with content-hash-
-# pinned replacements. Module versions on the Go module proxy are immutable.
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
