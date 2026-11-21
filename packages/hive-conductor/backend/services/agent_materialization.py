@@ -781,10 +781,17 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
         full_soul,
         label="production",
     )
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    llm = source.llm
+    # Later-materialized Agents retain definition-Workspace restriction while
+    # sharing the bridge's one AdmittedModelCalls helper with the boot roster.
+    if isinstance(llm, GovernedLLMClient):
+        llm = GovernedLLMClient(llm._calls, workspace_id=defn.workspace_id)
     return instantiate_agent(
         identity,
         agent_resolver=container.agents.get,
-        llm=source.llm,
+        llm=llm,
         context_builder=container.context_builder,
         prompt_manager=container.prompt_manager,
         warden=container.warden,
