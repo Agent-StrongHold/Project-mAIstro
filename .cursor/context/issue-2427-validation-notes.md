@@ -407,3 +407,65 @@ snapshot shows **0 check runs / 0 statuses posted on `e54207dca9`** — CI has
 not yet reported on the hosted head (this was the prior "Hosted PR snapshot
 incomplete" preflight block's substance; the head itself now matches exactly).
 Retarget PR #2427 base to develop before merge.
+
+## Round at `1667511e5a` (independent verifier round, 2026-11-21)
+
+Prior round's claims were NOT assumed true; every acceptance criterion was
+re-proven against reachable production behavior at this head. `1667511e5a`
+was first proven docs-only over the validated review head `e54207dca9`
+(`git diff --stat`: one file, `.cursor/context/issue-2427-validation-notes.md`,
++64 lines — zero src/test changes), so production behavior is byte-identical
+to the validated tree.
+
+1. **Five P5a suites vs live pg18**: fresh `public` schema (DROP/CREATE +
+   `CREATE EXTENSION vector`), `DATABASE_URL` → `alembic upgrade head` →
+   **068**, `MAISTRO_TEST_PG_DSN` on 127.0.0.1:15499 (`cr2427-verify-pg`,
+   pgvector/pg18): **68 passed, 0 skipped** — postgres legs ran, matching the
+   prior round exactly.
+2. **Acceptance batch vs live PG** (driver check-3's exact 13-file list):
+   **648 passed, 0 skipped** — reconciles exactly with driver check-3 without
+   PG (501 passed + 147 env-skips = 648): every skipped parametrization ran
+   live here.
+3. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+   `_stranded_recovered_attempt` selects solely via
+   `is_typed_recovered_attempt(latest)` on the newest ordinal after refusing
+   live leases; `consumption.py:511` typed look-past;
+   `is_reclaimed_attempt(` has zero production call sites (grep over
+   `packages/*/src`: definition `lifecycle.py:327` only; sole test caller is
+   the characterization suite). Named P5a behaviors exist as tests:
+   `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered`,
+   `test_recovery_tick_does_not_park_behind_a_newer_attempt`,
+   `test_rediscovery_parks_only_its_own_node` — all in the passing 68.
+4. **CI-exact gates re-run at this head**: vulture `packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'` (vulture-ratchet.yml:82)
+   → **1222 == 1222** rc 0, baseline base `971e536838ca` → candidate
+   `1667511e5a37`; radon `check-radon-baseline.py` with `RATCHET_BASE_REV=origin/develop`
+   (quality.yml:844) → **124 == 124** rc 0; mypy CI's exact 7-package list
+   (ci.yml:118, strict via pyproject) after `uv sync --locked --all-extras`
+   → **Success: no issues found in 1022 source files** rc 0; suite inventory
+   no-args (ci.yml:744) → **21 suites / 35888 identities** rc 0; ruff pair
+   green (driver check-1/check-2 logs).
+5. **`pr-base`** (ci.yml:79 exact form): hosted PR #2427's actual base is
+   `cursor/m1-b-p4b-reconciler-recovered-disposition-8551`; reproduced both
+   ways — `--base develop` → **ok rc 0**; the hosted cursor base → **FAIL rc 1**
+   with ADR-095 "must be retargeted to 'develop' before merge" — the state the
+   issue body itself documents as expected while stacked. `git merge-tree
+   --write-tree HEAD origin/develop` → rc 0 (conflict-free on retarget).
+6. **Ledgers**: `git diff --numstat origin/develop -- quality/` empty;
+   `quality/` clean in `git status`.
+7. **Inventory notes**: `m1-232-p5a-recovered-rediscovery.md` unchanged and
+   re-measured — its three files collect **67** (`pytest --collect-only`),
+   the 63 → 67 **+4** `inventory-delta` stands; this round edits no tests, so
+   no new delta is owed.
+8. **Canvas PytestWarning proven pre-existing on develop**: develop's copy of
+   `test_canonical_execution.py` has the same sync function
+   (`test_receipt_status_hydration_coerces_driver_strings_and_passes_legacy_through`)
+   under `pytestmark = pytest.mark.asyncio` (develop lines 1034/23) — the
+   warning is not introduced by this branch.
+
+Residual (driver actions only): retarget PR #2427 base to develop before
+merge; dispatch snapshot still shows 0 check-runs posted on the hosted head
+(CI verdict pending, not locally reproducible). Nothing pushed; no GitHub
+mutations.
