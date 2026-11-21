@@ -25,6 +25,39 @@ or placeholder-only section.
 
 ### Changed
 
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
+
 - **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
   `maistro.cli._container*` as a parked operator-lifecycle leaf under
   #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
