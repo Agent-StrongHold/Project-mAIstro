@@ -189,3 +189,37 @@ scan, Quality gate) — the branch delta vs the verified parent is this single
 docs commit, so those legs are content-equivalent to the parent-head runs
 where every completed coverage job was success.
 
+## Verification evidence (independent verifier round, head f19ebd890d2c35)
+
+Re-proven at the exact review head (delta vs the verified parent 7f1cbf68c45f
+is the f19ebd890d docs commit alone; `reconciliation.py` sha256
+5200bb08b7d73a63a69450696b3bdb71c87bf595a48705b7a24cdcc666fa8e79, unchanged).
+The prior round's launch block — "Hosted PR snapshot incomplete or not the
+review head" — is resolved: the dispatch snapshot of PR #2425 is complete
+(81 check runs captured at 2026-11-21T10:54Z) and the hosted PR head sha
+equals f19ebd890d2c35659fbbda5b7e6ba08439da81f2, the local review head.
+Acceptance battery executed fresh at this head: P4b suites (provenance +
+disposition + orphan + pg disposition + durable execution_store) 76 passed /
+10 skipped; canvas canonical_execution + recovery events/evidence + spine +
+rsi-marker battery 365 passed / 130 service-skips. Fail-before re-proven with
+the pre-P4b `persisted.cancellation_cause or cancellation` fallback in
+`_reconcile_cancelled`: fails exactly
+`test_unknown_cancelled_refuses_even_with_caller_recovered`
+(RecoveredDispositionRefused instead of the required RunIntegrityError,
+1 failed / 4 passed); restored byte-identical (sha256 verified above, `git
+status` empty) and green again. CI-exact gates at this head: vulture ledger
+exit 0 (1222 == 1222 against base 0d7bdd0a866a);
+`check-suite-inventory.py --suite packages/maistro-core/tests` ok (18771
+unique identities; driver runs also ok for hive-conductor backend,
+maistro-canvas, maistro-rsi); ruff check + format clean (driver logs).
+pr-base re-proven as the ADR-095 stacked-base expectation with the ci.yml
+exact argv (`--base "$PR_BASE" --labels "$PR_LABELS"`):
+`check-pr-base.py --base cursor/m1-b-p4a-recovered-disposition-8551` exits 1
+with the retarget-to-develop instruction, `--base develop` exits 0. Hosted
+check-runs from the complete snapshot at this head sha: 78 success — now
+including coverage (no services), coverage (PostgreSQL), coverage (MinIO),
+exact-debt-ledger, Mutation gate, Mypy strict, postgres pg17/pg18 and the
+Quality/SAST families — with pr-base the only completed failure (the
+documented stacked-flow expectation) and only 2 jobs still in flight at
+capture (publish-set Coverage gate, test).
+
