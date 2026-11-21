@@ -10,6 +10,7 @@ caused the timeout.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import sys
 from pathlib import Path
@@ -277,6 +278,83 @@ class TestScriptsToolingSurfaceIsReachable:
         """
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         assert "-- packages" in workflow
+
+
+def _paths_match(declared: list[str], changed: list[str]) -> bool:
+    """Approximate GitHub's `on.pull_request.paths` filter: a change triggers
+    when any changed path matches any declared pattern (Ruby File.fnmatch
+    semantics, which GitHub documents). A pattern with no `/` also matches the
+    basename at any depth, mirroring gitignore-style anchoring; for the
+    patterns under test the changed paths are root-level anyway. A stricter
+    reimplementation is deliberately not attempted — what the assertions
+    actually pin is that the declared patterns exist and cover their named
+    surfaces.
+    """
+
+    def matches(pattern: str, path: str) -> bool:
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path.rsplit("/", 1)[-1], pattern)
+
+    return any(matches(pattern, path) for pattern in declared for path in changed)
+
+
+class TestEvidenceOnlyPrSurfacesStillTrigger:
+    """A PR whose diff touches exactly a governance/evidence surface never
+    started this workflow, so its required "Mutation gate (changed critical
+    lines)" check-run never appeared on the candidate head and gates-ran
+    stayed pending forever — even though every producer had completed, so no
+    later publisher run could ever flip the verdict. Measured on #2345's head
+    720aaa2500 with the CI-exact evaluator (check-gates-ran.py
+    --require-complete --base-branch develop --event-name pull_request):
+    71/72 required checks present, the mutation gate absent -> exit 2
+    (PENDING). The same failure mode was fixed for image pins (#2120) and for
+    grant ledgers / inventory notes (#2371); this pins the dev-tool
+    requirements file and the root-level repair-note class that #2345 hit.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+
+    def _declared_paths(self) -> list[str]:
+        """The workflow's declared pull_request paths patterns."""
+        import yaml
+
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        triggers = doc.get(True, doc.get("on"))  # YAML 1.1 parses `on:` as True
+        paths = triggers["pull_request"]["paths"]
+        assert isinstance(paths, list) and all(isinstance(p, str) for p in paths)
+        return paths
+
+    def test_a_dev_tools_bump_pr_triggers_the_gate(self):
+        """The #2345 surface: a PR whose only content change is the dlint
+        bump in requirements-dev-tools.txt must start the job."""
+        assert _paths_match(self._declared_paths(), ["requirements-dev-tools.txt"])
+
+    def test_a_root_repair_note_pr_triggers_the_gate(self):
+        """Repair-round evidence notes at the repo root are the recurring
+        class this failure mode keeps hitting (#1450/#1837/#2267/#2345/#2375/
+        #2406 all added root REPAIR-NOTES-*.md files)."""
+        assert _paths_match(
+            self._declared_paths(),
+            ["REPAIR-NOTES-2345-develop-sync-round2.md"],
+        )
+
+    def test_the_previously_pinned_evidence_surfaces_remain_triggers(self):
+        """Widening the filter must not narrow it: every evidence surface a
+        prior repair pinned stays a trigger."""
+        declared = self._declared_paths()
+        for pattern in (
+            "quality/image-pins.json",
+            "quality/ratchet-authorizations.json",
+            "docs/testing/inventory-notes/**",
+            ".github/workflows/mutation.yml",
+            "packages/**/*.py",
+        ):
+            assert pattern in declared
+
+    def test_an_unrelated_doc_change_still_does_not_trigger(self):
+        """Negative control: the widening is scoped, not a blanket trigger.
+        A root README edit is neither mutation-critical nor an evidence
+        surface this gate tracks."""
+        assert not _paths_match(self._declared_paths(), ["README.md"])
 
 
 # --- the inverse mapping: changed tests -> the sources they cover ------------
