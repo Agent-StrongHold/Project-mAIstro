@@ -1748,6 +1748,77 @@ class SqliteRunStore:
             )
             return settled
 
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a)."""
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                attempt = await self._require_attempt(attempt_id)
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                cursor = await self._conn.execute(
+                    """SELECT payload FROM canonical_node_runs
+                       WHERE run_id = ? ORDER BY node_run_id""",
+                    (run.run_id,),
+                )
+                all_node_runs = [model_of_json(NodeRun, row[0]) for row in await cursor.fetchall()]
+                attempts_by_node_run: dict[str, list[Attempt]] = {}
+                for nr in all_node_runs:
+                    attempt_cursor = await self._conn.execute(
+                        """SELECT payload FROM canonical_attempts
+                           WHERE node_run_id = ? ORDER BY ordinal""",
+                        (nr.node_run_id,),
+                    )
+                    attempts_by_node_run[nr.node_run_id] = [
+                        model_of_json(Attempt, row[0]) for row in await attempt_cursor.fetchall()
+                    ]
+                plan = plan_recovered_attempt_disposition(
+                    attempt=attempt,
+                    run=run,
+                    node_run=node_run,
+                    all_node_runs=all_node_runs,
+                    attempts_by_node_run=attempts_by_node_run,
+                )
+                settled_node, settled_run = materialize_recovered_disposition_plan(
+                    plan, run=run, node_run=node_run, attempt=attempt, at=at
+                )
+                if plan.park_node_run:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        settled_node.node_run_id,
+                        settled_node.status.value,
+                        json_of(settled_node),
+                    )
+                if plan.park_run:
+                    self._stage_payload(
+                        "canonical_runs",
+                        "run_id",
+                        settled_run.run_id,
+                        settled_run.status.value,
+                        json_of(settled_run),
+                    )
+                pending, self._pending = self._pending, []
+                for (table, identity_column), identity, status, payload in pending:
+                    await self._conn.execute(
+                        f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
+                        (status, payload, identity),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                # CancelledError inherits BaseException, not Exception: leaving
+                # BEGIN IMMEDIATE open after the write lock releases poisons
+                # the shared connection for every later writer (#2424 Codex).
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
+            return settled_node, settled_run
+
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
     ) -> Attempt | None:
