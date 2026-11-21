@@ -23,16 +23,20 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.image_generation import IMAGE_GENERATE_CAPABILITY
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.http import override_transport
 from maistro.observability.correlation import bind_execution_context
 from maistro_server.canvas_runtime import (
     CANVAS_IMAGE_BINDING_ID,
     CanvasImageBlobStore,
+    CanvasRunnerHandle,
     GatewayModelRegistry,
     GovernedGatewayImageClient,
     WardenPromptScan,
@@ -265,6 +269,85 @@ class TestGatewayModelRegistry:
         assert registry.is_registered("image-c") is False
 
 
+class TestGatewayModelFetch:
+    """Use the real fetch/parser and shared HTTP client, not a canned model list."""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "http://gateway.test",
+            "http://gateway.test/",
+            "http://gateway.test/v1",
+            "http://gateway.test/v1/",
+        ],
+    )
+    async def test_fetches_authenticated_models_and_filters_invalid_entries(
+        self, base_url: str
+    ) -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "image-a"}, {"id": "image-b"}, {}, {"id": 7}, None, "bad"]},
+            )
+
+        with override_transport(httpx.MockTransport(respond)):
+            registry = await GatewayModelRegistry.from_gateway(
+                GatewayEndpoint(base_url=base_url, api_key="gateway-key"),
+                env={"MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL": " image-a "},
+            )
+
+        assert len(requests) == 1
+        assert requests[0].method == "GET"
+        assert str(requests[0].url) == "http://gateway.test/v1/models"
+        assert requests[0].headers["Authorization"] == "Bearer gateway-key"
+        assert registry.get_default_draft() == "image-a"
+        assert registry.is_registered("image-a")
+        assert registry.is_registered("image-b")
+        assert not registry.is_registered("7")
+        assert not registry.is_registered("bad")
+        assert not registry.is_registered("not-listed")
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(httpx.Response(200, json=[]), id="not-an-object"),
+            pytest.param(httpx.Response(200, json={}), id="missing-data"),
+            pytest.param(httpx.Response(200, json={"data": {"id": "image-a"}}), id="not-a-list"),
+            pytest.param(httpx.Response(200, content=b"not-json"), id="invalid-json"),
+            pytest.param(
+                httpx.Response(401, json={"data": [{"id": "image-a"}]}), id="unauthorized"
+            ),
+            pytest.param(httpx.Response(503, json={"data": [{"id": "image-a"}]}), id="unavailable"),
+        ],
+    )
+    async def test_unreadable_or_unsuccessful_response_never_admits_a_model(
+        self, response: httpx.Response
+    ) -> None:
+        with override_transport(httpx.MockTransport(lambda _request: response)):
+            registry = await GatewayModelRegistry.from_gateway(
+                ENDPOINT, env={"MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL": "image-a"}
+            )
+        # A configured default must not turn a failed enumeration into admission.
+        assert not registry.is_registered("image-a")
+        assert not registry.is_registered("anything")
+
+    @pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
+    async def test_transport_failure_leaves_admissions_fail_closed(
+        self, error_type: type[httpx.TransportError]
+    ) -> None:
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise error_type("gateway unreachable", request=request)
+
+        with override_transport(httpx.MockTransport(unreachable)):
+            registry = await GatewayModelRegistry.from_gateway(ENDPOINT, env={})
+        assert not registry.is_registered("image-a")
+        with pytest.raises(RuntimeError, match="MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL"):
+            registry.get_default_draft()
+
+
 # ─────────────────────────────────────────────────────────────────────
 # WardenPromptScan
 # ─────────────────────────────────────────────────────────────────────
@@ -389,7 +472,7 @@ class TestStartStopCanvasJobRunner:
         )
         await stop_canvas_job_runner(handle)
         # A second stop on the already-finished task must not raise or hang.
-        handle.runtime.runner.stop()
+        await stop_canvas_job_runner(handle)
 
     async def test_restart_against_a_persisted_binding_reuses_the_record(self) -> None:
         """A second boot against the store the first boot wrote must not
@@ -462,3 +545,110 @@ class TestStartStopCanvasJobRunner:
                 workspace_id="ws-default",
                 worker_id="test-canvas-runner",
             )
+
+
+class TestCanvasRunnerShutdown:
+    """Real tasks controlled by events: no provider sockets or timing assertions."""
+
+    @pytest.fixture(autouse=True)
+    def _immediate_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> Mock:
+        import maistro_server.canvas_runtime as module
+
+        # A zero grace window still yields to asyncio, without a wall-clock race.
+        monkeypatch.setattr(module, "SHUTDOWN_GRACE_SECONDS", 0)
+        log = Mock()
+        monkeypatch.setattr(module, "logger", log)
+        return log
+
+    async def test_stuck_tick_is_cancelled_and_its_outcome_consumed(
+        self, _immediate_shutdown: Mock
+    ) -> None:
+        started = asyncio.Event()
+        interrupted = asyncio.Event()
+
+        async def stuck() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                interrupted.set()
+
+        task = asyncio.create_task(stuck())
+        runner = SimpleNamespace(stop=Mock())
+        handle = CanvasRunnerHandle(runtime=SimpleNamespace(runner=runner), task=task)
+        try:
+            await started.wait()
+            await stop_canvas_job_runner(handle)
+            runner.stop.assert_called_once_with()
+            assert interrupted.is_set()
+            assert task.cancelled()
+            _immediate_shutdown.warning.assert_called_once()
+            _immediate_shutdown.error.assert_not_called()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cancellation_resistant_tick_is_abandoned_and_late_error_logged(
+        self, _immediate_shutdown: Mock
+    ) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        error = RuntimeError("late provider failure")
+
+        async def ignores_cancellation() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+                raise error from None
+
+        task = asyncio.create_task(ignores_cancellation())
+        runner = SimpleNamespace(stop=Mock())
+        handle = CanvasRunnerHandle(runtime=SimpleNamespace(runner=runner), task=task)
+        try:
+            await started.wait()
+            await stop_canvas_job_runner(handle)
+            runner.stop.assert_called_once_with()
+            assert cancelled.is_set()
+            assert not task.done(), "shutdown must return without waiting for the stuck provider"
+            _immediate_shutdown.error.assert_called_once_with(
+                "canvas_runner_shutdown_abandoned; runner task ignored cancellation"
+            )
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            # Let the production done callback consume/log the late exception.
+            await asyncio.sleep(0)
+            _immediate_shutdown.error.assert_any_call(
+                "canvas_runner_exited_with_error", exc_info=error
+            )
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.parametrize("failed", [False, True])
+    async def test_finished_task_outcome_is_consumed_without_cancellation(
+        self, failed: bool, _immediate_shutdown: Mock
+    ) -> None:
+        error = RuntimeError("runner crashed")
+
+        async def finished() -> None:
+            if failed:
+                raise error
+
+        task = asyncio.create_task(finished())
+        await asyncio.gather(task, return_exceptions=True)
+        handle = CanvasRunnerHandle(
+            runtime=SimpleNamespace(runner=SimpleNamespace(stop=Mock())), task=task
+        )
+        await stop_canvas_job_runner(handle)
+        assert task.done() and not task.cancelled()
+        _immediate_shutdown.warning.assert_not_called()
+        if failed:
+            _immediate_shutdown.error.assert_called_once_with(
+                "canvas_runner_exited_with_error", exc_info=error
+            )
+        else:
+            _immediate_shutdown.error.assert_not_called()

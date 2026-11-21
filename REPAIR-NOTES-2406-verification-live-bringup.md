@@ -17,9 +17,11 @@ itself is the runner):
 - `capability_bindings` row `canvas-image-gateway | default | default |
   image.generate` present — `start_canvas_job_runner` ran its registration
   path inside the shipped image.
-- `GET/POST /v2/canvas/designs`: 401 unauthenticated, 200 with API key
-  (+ `X-Canvas-Token` accepted as the alternate credential); a create
-  round-tripped to the PostgreSQL row. Operable, fail-closed.
+- `GET/POST /v2/canvas/designs`: 401 unauthenticated, 200 with API key;
+  a create round-tripped to the PostgreSQL row. Operable, fail-closed.
+  Correction from independent verification: `X-Canvas-Token` alone is not an
+  alternate credential on default compose. The server's `REQUIRE_AUTH`
+  middleware rejects a missing Authorization header before Canvas auth runs.
 - **Runner liveness proven behaviorally, not by log line** (the image logs
   structlog at WARNING, so the INFO `canvas_runner_started` event is
   filtered): a pending `generation_jobs` row inserted directly into
