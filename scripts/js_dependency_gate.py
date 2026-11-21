@@ -322,6 +322,110 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
 
 #: (package, license) -> why a non-approved license is accepted.
 LICENSE_EXCEPTIONS: dict[tuple[str, str], Exception] = {
+    ("lightningcss", "MPL-2.0"): Exception(
+        reason=(
+            "MPL-2.0, a weak file-level copyleft license already carried by "
+            "this repo's legal posture: quality/license-policy.json records "
+            "zbus/secret-service rows for exactly this license class. "
+            "lightningcss is vite 8's hard dependency for CSS transform "
+            "(replacing the MIT/postcss chain vite 7 used) — a build-time "
+            "native binary whose output is plain CSS in the shipped dist/, "
+            "with the MPL-covered source staying upstream and public. "
+            "Build tool, never bundled into an image layer itself. "
+            "Re-triage on expiry."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-android-arm64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-darwin-arm64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-darwin-x64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-freebsd-x64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm-gnueabihf", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm64-gnu", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm64-musl", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-x64-gnu", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package. This is the variant the "
+            "linux image build consumes."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-x64-musl", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-win32-arm64-msvc", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-win32-x64-msvc", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
     ("axe-core", "MPL-2.0"): Exception(
         reason=(
             "axe-core is MPL-2.0 and always has been: the registry manifest "
