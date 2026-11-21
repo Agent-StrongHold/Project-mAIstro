@@ -54,6 +54,34 @@ this exact head: every completed run success except `pr-base` (failure) —
 the documented ADR-095 stacked-base expectation, proven locally
 (`check-pr-base.py` stacked base exit 1, `--base develop` exit 0).
 
+## Verification evidence (independent verifier round, head ccf3fcec09fa)
+
+Re-proven at the current review head, not assumed from earlier rounds:
+targeted P4b battery (canvas canonical_execution + durable execution_store
++ pg statement + provenance + orphan + disposition + recovery events/evidence
++ spine, CI-exact argv) 414 passed, 140 skipped without services; RSI kernel
+research 27 passed; `ruff check` + `ruff format --check` clean; suite
+inventory gates green for hive-backend, canvas, core, and rsi suites.
+Live-database legs proven on a fresh local pgvector/pgvector:pg18 container
+(alembic head 068): the five disposition/provenance/orphan/spine modules 454
+passed with zero skips, and the full `tests/runs` + `tests/graph/durable_runs`
+battery 2933 passed, 4 skipped, 4 xfailed - matching the recorded prior
+round. Fail-before re-proven at this head: reintroducing the pre-P4b
+`persisted.cancellation_cause or cancellation` fallback fails exactly
+test_unknown_cancelled_refuses_even_with_caller_recovered
+(RecoveredDispositionRefused instead of the required RunIntegrityError
+"unknown cancellation_cause"); HEAD restored byte-identical (sha256
+5200bb08b7d73a63..., `git status` empty). Sweep replay contract re-run green
+(test_the_sweep_survives_an_attempt_it_cannot_reconcile), and both Container
+sweep halves catch RecoveredDispositionRefused alongside RunIntegrityError
+(container.py:1436, container.py:1501). pr-base re-proven as the ADR-095
+stacked-base expectation: `check-pr-base.py --base
+cursor/m1-b-p4a-recovered-disposition-8551` exits 1 with the retarget
+instruction while `--base develop` exits 0. Hosted check-runs captured at
+exactly this head sha: every completed run success except pr-base; still
+in progress at capture time were docker-build, coverage (no services), test,
+and integration-scope.
+
 ## Verification evidence (develop-sync repair round, head e4e73977cd)
 
 Resolved the preserved develop-sync conflict (merge of 228dec753f then
