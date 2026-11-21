@@ -10,8 +10,12 @@ typed RECOVERED only (no string-prefix look-past).
 
 Net **+4** against the develop base. An earlier revision of this note recorded
 the three files' collected totals (18/4/1) instead of their deltas; the
-suite-inventory gate caught the +19 over-claim and this note now records the
-measured movement (base collected 18710 → tip collected 18760):
+suite-inventory gate caught the +19 over-claim and this note records the
+measured movement, re-measured at the develop tip (8f4806be, #2430 round)
+during the #2427 repair round: the three files below collect 63 → 67 (**+4**).
+The whole-suite movement (18716 → 18775) additionally carries the stacked
+P4a/P4b test deltas from #2424/#2425, which ride in this branch's history and
+are documented by their own inventory notes — they are not P5a movement:
 
 - `test_interrupted_reclaim_rediscovery.py` **+3** — one new
   spine-parametrized case, `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered`
