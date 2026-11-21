@@ -227,7 +227,7 @@ test.afterAll(async () => {
 });
 
 async function openGoalFromNav(p: Page) {
-  await p.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await p.goto("/home", { waitUntil: "domcontentloaded" });
   await p.locator(".icon-sidebar").getByRole("link", { name: "Goals", exact: true }).click();
   await p.waitForURL("**/goals");
   await expect(p.getByRole("heading", { name: "Goals", exact: true })).toBeVisible();
