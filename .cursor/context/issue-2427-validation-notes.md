@@ -623,3 +623,74 @@ P5a wiring re-confirmed post-merge: `container.py:1436/:1509` catch
 `is_typed_recovered_attempt` only; `consumption.py:511` looks past typed
 RECOVERED only. Acceptance criteria 1–4 of the prior round re-proven by the
 653-test battery above.
+
+## Round at `f6b002d103` (independent verifier/writer round at the merge head, 2026-11-21)
+
+The dispatch head `f6b002d1039d` = hosted PR #2427 head = local HEAD
+(three-way alignment re-confirmed). Prior rounds' claims were NOT assumed
+true: every acceptance criterion was re-executed at this head. Driver
+deterministic checks (this job's check-0..8) were green before this round
+started: sync rc 0, ruff check "All checks passed", ruff format "3618 files
+already formatted", 13-file acceptance batch **506 passed, 147 env-skips**,
+audit-pagination **32 passed**, per-suite suite inventory ok ×4 (hive 4321 /
+canvas 633 / core 18857 / rsi 1797).
+
+Independent re-proof at this head (all commands executed in-lane):
+
+1. **Develop sync is current, not deferred**: `git fetch origin develop` →
+   tip still `fc1bea9936bb`; `git merge-base --is-ancestor origin/develop
+   HEAD` → **yes** — the merge commit is the completed sync, nothing pending.
+2. **Five P5a suites vs live pg18** (fresh `public` schema DROP/CREATE +
+   `CREATE EXTENSION vector`, `DATABASE_URL` → `alembic upgrade head` → 068,
+   `MAISTRO_TEST_PG_DSN` on 127.0.0.1:15499, `cr2427-verify-pg`,
+   pgvector/pg18): **68 passed, 0 skipped** — memory + sqlite + postgres legs
+   all ran; matches every prior round.
+3. **Named P5a behaviors verified per-parametrization** (`-v`):
+   `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered`,
+   `test_recovery_tick_does_not_park_behind_a_newer_attempt`,
+   `test_rediscovery_parks_only_its_own_node`, and all nine
+   retry-owned-terminal cases — **PASSED on memory, sqlite AND postgres**.
+4. **Driver's exact 13-file batch vs live PG**: **653 passed, 0 skipped**, 1
+   warning (the canvas PytestWarning proven pre-existing on develop in the
+   `1667511e5a` round) — reconciles exactly with driver check-3
+   (506 + 147 = 653): every env-skipped parametrization ran live here.
+5. **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+   `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502`
+   `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`; `:1542`
+   selects solely via `is_typed_recovered_attempt(latest)`;
+   `consumption.py:511` typed look-past (import `:42`);
+   `grep -rn "is_reclaimed_attempt(" packages/*/src` minus the definition →
+   **zero production call sites** (definition `lifecycle.py:327`, `__all__`
+   `:792`).
+6. **CI-exact gates re-run at this head** (after `uv sync --locked
+   --all-extras`, quality.yml's pre-mypy step):
+   - vulture `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+     (quality.yml:1538) → **1221 reviewed == 1221 findings, rc 0** (base
+     `fc1bea9936bb` → candidate `f6b002d1039d`; count is 1221 vs the prior
+     round's 1222 because the merged develop P3b code replaced one identity —
+     the gate itself is green).
+   - radon ratchet (quality.yml:845) → **124 == 124, rc 0**.
+   - mypy, ci.yml:117-127 exact 10-package list → **Success: no issues found
+     in 1128 source files, rc 0**.
+   - suite inventory no-args (ci.yml:744) → **21 suites / 36017 unique
+     identities, rc 0** (growth 35888 → 36017 is develop's merged P3b +
+     durable-store tests, covered by the resolved baseline).
+7. **`pr-base`** (ci.yml:79 form): `--base develop --labels ""` → **ok rc 0**;
+   the hosted stacked base `cursor/m1-b-p4b-reconciler-recovered-disposition-8551`
+   → **FAIL rc 1** with the ADR-095 message — the documented stacked state;
+   retarget to develop before merge (driver GitHub action).
+8. **Ledgers**: `git diff --numstat origin/develop -- quality/` → **empty**
+   (byte-identical; the merge lost no rows); `git merge-tree --write-tree HEAD
+   origin/develop` → **rc 0, conflict-free**; worktree clean at HEAD.
+9. **Inventory note re-measured, no edit owed**: the
+   `m1-232-p5a-recovered-rediscovery.md` trio (`rediscovery` +
+   `characterization` + `parked_run_resume`) collects **67**
+   (`pytest --collect-only`) — the documented 63 → 67 **+4** stands; this
+   round changes no tests, so no new delta is owed.
+
+Residual (driver actions only, GitHub mutations prohibited in-lane):
+retarget PR #2427 base to develop before merge (pr-base red vs the stacked
+cursor/ base is the documented expected state); CI check-runs on
+`f6b002d103` as captured in dispatch remain a driver observation. Nothing
+pushed; no GitHub mutations; the only change in this round is this notes
+section.
