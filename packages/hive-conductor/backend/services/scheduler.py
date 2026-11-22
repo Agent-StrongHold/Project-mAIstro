@@ -38,6 +38,11 @@ _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DEFAULT_CATCHUP_WINDOW_SECONDS = DEFAULT_CATCHUP_WINDOW_SECONDS
 
+# Cadence between live ticks. A module constant rather than a literal so a
+# test can drive the real ``start_scheduler`` lifespan loop without waiting
+# out the production pause between ticks.
+_TICK_INTERVAL_S = 30.0
+
 _runner: _ScheduleRunner | None = None
 # Last failure that kept the scheduler from starting or killed its loop.
 # /health reads this (#290): a zoneless or broken scheduler must be visible
@@ -601,7 +606,7 @@ class _ScheduleRunner:
         self._last_check = datetime.now(UTC)
         await backfill_canonical_definitions()
         while self._running:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_TICK_INTERVAL_S)
             try:
                 await self._tick()
             except Exception as exc:
