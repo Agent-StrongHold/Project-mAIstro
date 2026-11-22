@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -60,9 +61,41 @@ from maistro_canvas.types import (
 _MAX_LAYERS_CONST = _MAX_LAYERS
 
 
+@dataclass(frozen=True)
+class CanvasBlobRecord:
+    """One ``canvas_blobs`` row: bytes plus the identity to serve them with.
+
+    ``format`` is the media type the bytes were stored under and ``metadata``
+    carries the write-time stamps (source, canonical Workspace/Project scope)
+    the authorized byte-serving route reads. Immutable on purpose: a stored
+    blob's identity does not change after the write (#2311).
+    """
+
+    id: str
+    data: bytes
+    format: str
+    metadata: dict[str, Any]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Row coercion helpers
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _coerce_blob_metadata(raw: object) -> dict[str, Any]:
+    """The ``metadata`` JSONB column as a plain dict.
+
+    asyncpg hands jsonb back as a ``str``; a driver that decodes it natively
+    (psycopg) hands a ``dict``. Both shapes mean the same row, so both
+    coerce here rather than at every caller. Anything else reads as empty —
+    an unparseable stamp is a missing anchor for the serving route, which
+    already fails closed on one.
+    """
+    if isinstance(raw, str):
+        return cast(dict[str, Any], json.loads(raw))
+    if isinstance(raw, dict):
+        return cast(dict[str, Any], raw)
+    return {}
 
 
 def _coerce_canvas(row: Any) -> CanvasRecord:
@@ -1178,13 +1211,35 @@ class PgCanvasStore:
         ``maistro.capabilities.image_generation`` deliberately leaves to the
         package owning ``canvas_blobs``.
         """
+        record = await self.read_blob(blob_id)
+        return record.data if record is not None else None
+
+    async def read_blob(self, blob_id: str) -> CanvasBlobRecord | None:
+        """One stored blob with its media type and metadata, or None (#2311).
+
+        The whole row the authorized byte-serving route needs: bytes to serve,
+        the media type they were stored under (the response's Content-Type),
+        and the metadata the governed egress stamped at write time — the
+        canonical Workspace/Project scope that anchors the route's
+        authorization. An unknown id reads as ``None``, exactly like every
+        other scoped read in this store: existence itself is scoped
+        information, and a guessed id has no answer but absence.
+        """
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
-                text("SELECT data FROM canvas_blobs WHERE id = :id"),
+                text("SELECT id, data, format, metadata FROM canvas_blobs WHERE id = :id"),
                 {"id": blob_id},
             )
             row = result.first()
-            return bytes(row[0]) if row is not None else None
+            if row is None:
+                return None
+        d = dict(row._mapping)
+        return CanvasBlobRecord(
+            id=str(d["id"]),
+            data=bytes(d["data"]),
+            format=str(d.get("format") or ""),
+            metadata=_coerce_blob_metadata(d.get("metadata")),
+        )
 
     async def store_blob(
         self,

@@ -461,6 +461,13 @@ jobs:
         run: |
           uv run pytest packages/maistro-core/tests/scheduling -v --tb=short
           uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -v --tb=short
+          # #2467's startup reconciliation is a policy over the canonical
+          # ScheduleStore, and its crash windows are only real against the
+          # production PgScheduleStore: the projection-authority suite's pg
+          # leg runs the same scenarios over the migrated server that the
+          # steps above migrated. Same contract: under MAISTRO_REQUIRE_PG_LEGS
+          # a missing DSN is a red job, not a silent skip.
+          uv run pytest packages/hive-conductor/backend/tests/test_schedule_projection_authority.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
