@@ -1482,15 +1482,20 @@ export interface paths {
          * @description Cancel through the canonical Run/Attempt execution seam.
          *
          *     Read visibility never admits a lifecycle write (#1152, #2466): before any
-         *     cancellation the resolved canonical Run must clear the shared mutation
-         *     boundary — `RunStoreBoundary.require_run_mutation`, the exact gate
-         *     maistro-server's cancel route answers through — so only the Run's
-         *     initiating principal or a Workspace administrator gets through, and a
-         *     projection row cannot delegate write authority across Workspaces (its
-         *     canonical link is honoured only when the Run is filed in the row's own
-         *     Workspace, the same attribution rule the read overlay applies). Every
-         *     refusal is the seam's one no-enumeration 404, raised before any
-         *     Run/NodeRun/Attempt state changes or provider work is signalled.
+         *     cancellation state change or physical work, the canonical target Run is
+         *     resolved through the shared `RunStoreBoundary` mutation gate -- the same
+         *     initiator/administrator rule maistro-server's cancel route applies -- so
+         *     only the Run's initiating principal or a Workspace administrator gets
+         *     through, and a projection row cannot delegate write authority across
+         *     Workspaces (its canonical link is honoured only when the Run is filed in
+         *     the row's own Workspace, the same attribution rule the read overlay
+         *     applies). The gate resolves through the wired reader triple the
+         *     inspection reads answer from; without a wired scoped reader it degrades
+         *     to the embedded Workspace authority, whose refusals stay fail-closed.
+         *     Absent, foreign, unadministered and mismatched-link targets all answer
+         *     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
+         *     no provider stop signal; an unreachable canonical authority answers the
+         *     spine-unavailable 503 instead.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
