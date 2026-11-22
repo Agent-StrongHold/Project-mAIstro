@@ -42,3 +42,44 @@ authority direction (its old assertion encoded the retired policy), the
 `configured` fixture there now isolates the seeded Hive rows, and
 `packages/maistro-core/tests/conftest.py` truncates the new
 `schedule_deletions` table between PostgreSQL tests.
+
+## Executed evidence (2026-11-22, head 822579df2c4a)
+
+The closure gate's real-PostgreSQL execution, run in the lane worktree
+against a pg18 server created from `pgvector/pgvector:pg18`, migrated with
+`uv run alembic upgrade head` (chain applied through 069
+`schedule_deletions`):
+
+- `MAISTRO_TEST_PG_DSN=... uv run pytest
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -q`
+  → **62 passed, 0 skipped** — every PostgreSQL leg ran, including the
+  negative-before (`test_the_retired_any_drift_push_reverts_an_acknowledged_edit`)
+  and positive-after (`test_restart_retains_a_canonical_edit_and_repairs_the_stale_row`)
+  restart legs across a real close-and-reopen of the database.
+- `MAISTRO_TEST_PG_DSN=... uv run pytest packages/maistro-core/tests -k schedul -q`
+  → **368 passed** (store conformance incl.
+  `test_concurrent_record_fire_on_one_store_does_not_lose_an_increment`
+  on memory/SQLite/PostgreSQL, and
+  `test_a_due_cursor_write_counts_no_fire_by_default`).
+- `DATABASE_URL=... MAISTRO_TEST_DATABASE_URL=... uv run pytest
+  tests/migrations/test_migration_chain.py
+  tests/migrations/test_goal_installed_base_upgrade.py
+  tests/migrations/test_capability_invocation_effect_index_migration.py -q`
+  → **28 passed** (chain applies to an empty database and reverses,
+  covering 069).
+- Without `MAISTRO_TEST_PG_DSN`, the same suites report the PostgreSQL legs
+  as explicit skips (`MAISTRO_TEST_PG_DSN is unset`) — 72 passed 26 skipped
+  (canonical-due/projection/definitions), 20 passed 10 skipped
+  (projection authority) — so a driver that cannot see a server is never
+  mistaken for one that ran it.
+- Gates: `uv run ruff check .` (clean), `uv run ruff format --check .`
+  (3621 files formatted), canonical `uv run mypy packages/maistro-{core,
+  server,turing,canvas,bootstrap,registry,ext-sdk}/src` (no issues in 959
+  files), `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (exit 0, 1221 reviewed
+  identities = 1221 findings), `scripts/check-suite-inventory.py` (21
+  suites match), `scripts/check-durable-table-inventory.py` (125 tables,
+  `schedule_deletions` declared), `scripts/check-doc-links.py`,
+  `scripts/check-backlog-consistency.py`, `scripts/verify-monorepo-layout.sh`
+  (all ok).
