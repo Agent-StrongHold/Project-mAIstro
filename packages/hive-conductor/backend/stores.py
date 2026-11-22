@@ -139,6 +139,12 @@ registration_invitations: JsonStore = JsonStore("registration_invitations")
 #: Canonical case-folded username -> user-id claims. Account creation writes
 #: this index and the user row in one durable transaction.
 username_claims: JsonStore = JsonStore("username_claims")
+#: The schedule projection ledger (#2467): the durable migration marker,
+#: canonical-deletion tombstones, and pending-create markers that bound how a
+#: restart reconciles the Hive ``schedules`` rows against the canonical
+#: ``ScheduleStore``. Written by ``services.schedule_projection``; see that
+#: module for why each record exists and which crash window it closes.
+schedule_migration: JsonStore = JsonStore("schedule_migration")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -173,6 +179,7 @@ _all_json_stores: list[JsonStore] = [
     dag_runs,
     registration_invitations,
     username_claims,
+    schedule_migration,
 ]
 
 

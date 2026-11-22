@@ -328,26 +328,48 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         created_at=t,
         updated_at=t,
     )
-    await _write_canonical(schedule)
-    try:
-        stores.schedules[sid] = schedule
-    except Exception:
-        # The canonical write above already committed (Codex, #1199): a
-        # failed second write must not leave an enabled canonical row behind
-        # that no Hive-keyed route can reach -- creation failed, so there is
-        # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
-        # only ever adds rows, never removes one. Best-effort compensation;
-        # its own failure is logged and swallowed so the caller sees the real
-        # failure below, not this cleanup's.
-        from services.scheduler import delete_canonical_definition
+    # The create spans two writes with no shared commit (canonical store,
+    # then the Hive projection). The durable pending marker (#2467) is what
+    # lets a crash between them be *resolved* at restart — projection rebuilt
+    # from the committed canonical row, or the create closed as
+    # never-committed — instead of leaving an enabled orphan schedule that
+    # only the canonical due() can see.
+    from services.schedule_projection import clear_pending_create, mark_pending_create
 
+    mark_pending_create(sid)
+    try:
+        await _write_canonical(schedule)
         try:
-            await delete_canonical_definition(sid)
+            stores.schedules[sid] = schedule
         except Exception:
-            logger.warning(
-                "Failed to compensate canonical schedule %s after a failed Hive write", sid
-            )
-        raise
+            # The canonical write above already committed (Codex, #1199): a
+            # failed second write must not leave an enabled canonical row behind
+            # that no Hive-keyed route can reach -- creation failed, so there is
+            # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
+            # only ever adds rows, never removes one. Best-effort compensation;
+            # its own failure is logged and swallowed so the caller sees the real
+            # failure below, not this cleanup's.
+            from services.scheduler import delete_canonical_definition
+
+            try:
+                await delete_canonical_definition(sid)
+            except Exception:
+                logger.warning(
+                    "Failed to compensate canonical schedule %s after a failed Hive write", sid
+                )
+            raise
+    finally:
+        # The two-write window closed one way or the other (projected, or the
+        # canonical write compensated). A crash before this finally leaves the
+        # marker standing, and that is what makes the window recoverable:
+        # startup reconciliation (#2467) resolves it — building the projection
+        # from the committed canonical row, or closing the create as
+        # never-committed — instead of leaving an enabled orphan only due()
+        # can see.
+        try:
+            clear_pending_create(sid)
+        except Exception:
+            logger.warning("Failed to clear the pending-create marker for schedule %s", sid)
     return schedule
 
 
@@ -419,10 +441,22 @@ async def _delete_canonical(schedule_id: str) -> None:
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
+    from services.schedule_projection import record_tombstone
     from services.scheduler import definition_lock
 
     async with definition_lock(schedule_id):
         await _delete_canonical(schedule_id)
+        # The canonical delete is the commit; this tombstone is what keeps a
+        # crash between it and the projection cleanup from being undone by
+        # startup reconciliation (#2467): a surviving Hive row under a
+        # tombstone is dropped, never reimported. Best-effort — a tombstone
+        # write that fails must not fail an already-committed delete; the
+        # restart then reports the unreferenced row degraded rather than
+        # resurrecting it.
+        try:
+            record_tombstone(schedule_id)
+        except Exception:
+            logger.warning("Failed to record the deletion tombstone for schedule %s", schedule_id)
         stores.schedules.pop(schedule_id, None)
 
 
