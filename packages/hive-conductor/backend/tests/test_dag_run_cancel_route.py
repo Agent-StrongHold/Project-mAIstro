@@ -282,6 +282,66 @@ async def test_cancel_route_refuses_while_the_spine_is_unavailable(
     assert refused.value.status_code == 503
 
 
+async def test_cancel_route_refuses_while_the_workspace_authority_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authority loss at the mutation gate is 503, not the seam's 404 (#2466).
+
+    The read seam can degrade gracefully -- the projection row was authorized
+    through the Workspace authority the request started with -- but by cancel
+    time that authority refuses every request (a configured database whose
+    Container never started: `EmbeddedRuntimeUnavailable`). Translating that
+    into `RunNotVisible`'s 404 would tell an initiator their Run does not
+    exist because authorization broke, and would let the same refusal stand
+    in for the not-found answer the seam owes absent/foreign targets. The
+    route must answer the spine-unavailable 503 instead -- the distinct
+    deployment answer `canonical_store_available` already reports to
+    readiness for exactly this state.
+    """
+    import services.engine as engine_mod
+    import services.workspace_authority as workspace_authority
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    view = await _owned_workspace()
+
+    async def authority_lost() -> Any:
+        raise workspace_authority.EmbeddedRuntimeUnavailable(
+            "a database is configured but the maistro-core Container holding the "
+            "canonical Workspace store is not running"
+        )
+
+    # Only the cancel-time authority lookup is lost. Reads keep working
+    # through the store the request started with, so what fails below is the
+    # mutation gate's re-resolution -- the mid-request loss this pins -- not
+    # an unauthorized read (that would answer 404 before the gate runs).
+    monkeypatch.setattr(workspace_authority, "canonical_workspace_store", authority_lost)
+    # A non-None degraded bridge (run store wired, no scoped reader): with a
+    # None run store the route would answer 503 before the gate, and the test
+    # would pass for the wrong reason.
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(
+            run_store=InMemoryRunStore(project_store=InMemoryProjectScopeStore()),
+            run_reader=None,
+        ),
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-authority-lost",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+    )
+
+    with pytest.raises(HTTPException) as unavailable:
+        await cancel_route("dag-authority-lost", _ScopedRequest(_USER_ID))
+    assert unavailable.value.status_code == 503
+    assert unavailable.value.detail == "canonical execution spine unavailable"
+
+
 async def test_cancel_route_answers_a_missing_run_with_a_scoped_404() -> None:
     from routes.dag_runs import cancel_run as cancel_route
 

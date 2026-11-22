@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +8
 ---
 # Inventory note — #1036/#2466 Conductor cancel-route mutation gate
 
-Seven node IDs added to `packages/hive-conductor/backend/tests` (all in
+Eight node IDs added to `packages/hive-conductor/backend/tests` (all in
 `test_dag_run_cancel_route.py`); no test removed or renamed.
 
 - `test_same_workspace_peer_can_read_but_not_cancel_another_initiator_s_run` —
@@ -33,6 +33,11 @@ Seven node IDs added to `packages/hive-conductor/backend/tests` (all in
   Project lives in the spine-wired Project store (the cross-product parity
   profile) instead of 404ing through the fallback Workspace store's default
   Project store.
+- `test_cancel_route_refuses_while_the_workspace_authority_is_unreachable` —
+  the coverage-repair regression for the CI diff-coverage gate: authority
+  loss (`EmbeddedRuntimeUnavailable`) at the cancel-time mutation gate is
+  the spine-unavailable 503, not the read seam's 404 — "cannot authorize"
+  must stay distinct from "no such run".
 
 Red-before evidence: the three negative tests failed against the pre-gate
 route at head `33ac30c5f1` (peer cancel returned 200 and terminalized the

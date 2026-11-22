@@ -1480,6 +1480,15 @@ export interface paths {
         /**
          * Cancel Run
          * @description Cancel through the canonical Run/Attempt execution seam.
+         *
+         *     View-level membership admits reads, never lifecycle mutation (#2466):
+         *     before any cancellation state change or physical work, the canonical
+         *     target Run is resolved through the shared `RunStoreBoundary`
+         *     mutation gate -- the same owner/administrator rule maistro-server's
+         *     cancel route applies -- and the projection-to-Run association is
+         *     enforced. Absent, foreign, unadministered and mismatched-link targets
+         *     all answer the seam's one non-disclosing 404 with no Run/NodeRun/Attempt
+         *     write and no provider stop signal.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
