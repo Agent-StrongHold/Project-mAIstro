@@ -157,3 +157,29 @@ The failed no-tests-collected command was a validation-target error, not a
 product failure; rerunning the actual test modules and the strict closeout
 selection resolved it. No test inventory delta is introduced by this evidence
 update.
+
+## Exact assigned-head validation (398ddb87a613)
+
+Re-executed against the assigned candidate head in this repair round:
+
+- With a fresh-on-suite PostgreSQL scratch database from the running pg18
+  service and `MAISTRO_REQUIRE_PG_LEGS=1`, projection authority, canonical due,
+  and projection suites: **118 passed, 1 skipped** (the in-memory
+  independent-process case is intentionally inapplicable).
+- `MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest packages/maistro-core/tests
+  -k schedul -x -q` against that pg18 service: **368 passed**, including
+  SQLite/PostgreSQL cursor-write serialization and due-cursor persistence.
+- Scheduler-focused Hive suite: **264 passed, 46 skipped**; optional database
+  cases were skipped because this invocation did not set a database DSN.
+- Strict configured scheduler-to-Conductor closeout selector: **3 passed**,
+  emitting `M1_PARITY_EVIDENCE` with `executed=true` and `status=PASSED`.
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3630
+  files formatted).
+
+The PostgreSQL service was explicitly migrated through Alembic head 069 before
+running the store conformance suite. A first combined PG invocation exposed
+that `test_schedule_projection_authority.py` expects its configured database
+to already be migrated (`relation "schedules" does not exist`); after applying
+`uv run alembic upgrade head`, the complete three-module run above passed. This
+was test-environment setup, not a code change. No tests were added and the
+existing inventory delta is unchanged.
