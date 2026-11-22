@@ -83,3 +83,52 @@ against a pg18 server created from `pgvector/pgvector:pg18`, migrated with
   `schedule_deletions` declared), `scripts/check-doc-links.py`,
   `scripts/check-backlog-consistency.py`, `scripts/verify-monorepo-layout.sh`
   (all ok).
+
+## Executed evidence (2026-11-22, head e5459fbfd55e, independent re-validation)
+
+A fresh verification round re-executed the closure gate first-party against a
+newly created pg18 server (`pgvector/pgvector:pg18` on 127.0.0.1:18998) — not
+the previous round's container — migrated with `uv run alembic upgrade head`
+(DATABASE_URL + MAISTRO_TEST_PG_DSN, chain applied through 069
+`schedule_deletions`, `alembic current` = 069 head):
+
+- projection authority + canonical due on real PG: **62 passed, 0 skipped**
+  (standalone: projection authority 30 passed; canonical due 32 passed) —
+  including the negative-before leg
+  (`test_the_retired_any_drift_push_reverts_an_acknowledged_edit`), the
+  positive-after restart legs across a real close-and-reopen of the database,
+  deletion non-resurrection, one-time tombstone-aware legacy migration, and
+  the degraded-503 semantics.
+- `packages/maistro-core/tests -k schedul`: **368 passed** with PG legs live;
+  `test_concurrent_record_fire_on_one_store_does_not_lose_an_increment`
+  re-run standalone across the memory/SQLite/PostgreSQL parametrizations:
+  **3 passed**. (Procedural note: this test errored once in the round when a
+  concurrently running migration-chain suite truncated shared scratch tables
+  on the same database — a harness-parallelism artifact, not a product
+  failure; the sequential re-run passes.)
+- Named admission/restart AC tests: `test_restart_executes_the_queued_run_once`,
+  `test_restart_after_a_cursor_crash_keeps_the_same_run`,
+  `test_two_live_runners_claim_one_occurrence`,
+  `test_hive_row_cannot_force_a_schedule_that_is_not_due` — **4 passed**;
+  due-cursor tests (`test_admission.py -k cursor`) **22 passed**.
+- Broader scheduler surface (scheduler, bounded tick, canonical
+  admission/definitions, manual fire, frequency floor, scope, workspace scope,
+  timezone health incl. the real `start_scheduler()` loop task): **176
+  passed**.
+- Migration chain on the fresh server: `tests/migrations/
+  {test_migration_chain,test_goal_installed_base_upgrade,
+  test_capability_invocation_effect_index_migration}.py` — **28 passed**
+  (apply + reverse, covering 069). Run sequentially with the other
+  database-backed suites; they share the scratch database.
+- Skip semantics re-proven: without `MAISTRO_TEST_PG_DSN`, projection
+  authority reports **20 passed, 10 skipped** (explicit skips), so an
+  environment without a server is never mistaken for one that ran it.
+- Gates, this head: `uv run ruff check .` clean; `uv run ruff format --check .`
+  (3621 files formatted); `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` exit 0 (1221 = 1221);
+  `scripts/check-suite-inventory.py` via `uv run python3` — **21 suites match,
+  exit 0** (a bare-`python3` invocation without the uv venv reports collection
+  errors; use `uv run`); `scripts/check-durable-table-inventory.py` ok (125
+  tables); `scripts/check-test-duplicates.py` ok (0 groups).
+
+Suite counts are unchanged by this note; no new `inventory-delta` is recorded.
