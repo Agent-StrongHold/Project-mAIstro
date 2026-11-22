@@ -464,7 +464,25 @@ async def delete_schedule(schedule_id: str, request: Request) -> None:
 
     async with definition_lock(schedule_id):
         await _delete_canonical(schedule_id)
-        stores.schedules.pop(schedule_id, None)
+        try:
+            stores.schedules.pop(schedule_id, None)
+        except Exception as exc:
+            # As for UPDATE, the canonical commit is authoritative. Its
+            # tombstone prevents the stale projection from re-arming work;
+            # tell the caller what persisted instead of returning an opaque
+            # failure that suggests the schedule may still be active (#2467).
+            logger.warning(
+                "Canonical schedule %s deleted but its Hive projection removal failed; "
+                "projection repair pending",
+                schedule_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"schedule {schedule_id} canonical deletion persisted; its Hive projection "
+                    "removal failed, so the served row is stale until repair"
+                ),
+            ) from exc
 
 
 class ManualFireBody(BaseModel):

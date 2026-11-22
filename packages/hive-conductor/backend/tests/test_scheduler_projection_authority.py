@@ -39,6 +39,7 @@ from maistro.identity import Principal
 from maistro.scheduling import Schedule
 from maistro.scheduling.pg_store import PgScheduleStore
 from maistro.scheduling.store import InMemoryScheduleStore, SqliteScheduleStore
+from maistro.state import PersistedStore, State
 from maistro.types.config import AgentConfig
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
@@ -95,14 +96,61 @@ def database_url(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> str:
     return ""
 
 
+class HiveProjection:
+    """The shipped ModelStore/PersistedStore boundary, reopened from disk."""
+
+    def __init__(self, path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.path = path
+        self.monkeypatch = monkeypatch
+        self.state: State | None = None
+        self.reopen()
+
+    def reopen(self) -> None:
+        import stores
+        from models.schemas import Schedule as HiveSchedule
+        from services.model_store import ModelStore
+
+        self.close()
+        self.state = State(db_path=str(self.path))
+        persisted = PersistedStore(self.state)
+        persisted.initialize()
+        projection = ModelStore("schedules", HiveSchedule, persisted)
+        projection.initialize()
+        self.monkeypatch.setattr(stores, "schedules", projection)
+
+    def close(self) -> None:
+        if self.state is not None:
+            self.state.close()
+            self.state = None
+
+
+@pytest.fixture
+def persisted_projection(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[HiveProjection]:
+    projection = HiveProjection(tmp_path / "hive-state.db", monkeypatch)
+    try:
+        yield projection
+    finally:
+        projection.close()
+
+
 class Harness:
     """The configured process: its Container, and a way to crash-restart it."""
 
-    def __init__(self, container: Any, database_url: str, service: Any, previous: Any) -> None:
+    def __init__(
+        self,
+        container: Any,
+        database_url: str,
+        service: Any,
+        previous: Any,
+        projection: HiveProjection,
+    ) -> None:
         self.container = container
         self.database_url = database_url
         self._service = service
         self._previous = previous
+        self.projection = projection
 
     async def restart(self, monkeypatch: pytest.MonkeyPatch) -> Harness:
         """A fresh process on the same durable state.
@@ -113,6 +161,7 @@ class Harness:
         no durability to reopen, so the same Container stands in for the
         restarted process.
         """
+        self.projection.reopen()
         if self.database_url == "":
             return self
         await self.container.aclose()
@@ -134,7 +183,11 @@ class Harness:
 
 
 @pytest.fixture
-async def configured(database_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Harness]:
+async def configured(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    persisted_projection: HiveProjection,
+) -> AsyncIterator[Harness]:
     """A real Container behind the engine, with the parametrised ScheduleStore."""
     import services.engine as engine_mod
     from services import workspace_authority
@@ -162,7 +215,7 @@ async def configured(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Asyn
     previous = service._agent_port
     service._agent_port = SimpleNamespace(container=container)
     monkeypatch.setattr(_schedule_runner(), "_canonical_container", staticmethod(lambda: container))
-    harness = Harness(container, database_url, service, previous)
+    harness = Harness(container, database_url, service, previous, persisted_projection)
     try:
         workspace = await workspace_authority.create_workspace(
             creator_user_id="user-1",
@@ -230,13 +283,13 @@ def _legacy_row(workspace_id: str, project_id: str, *, enabled: bool = True) -> 
 def _install_row(row: Any) -> None:
     import stores
 
-    stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+    stores.schedules[row.id] = row
 
 
 def _drop_row(sid: str) -> None:
     import stores
 
-    stores.schedules._data.pop(sid, None)  # type: ignore[attr-defined]
+    stores.schedules.pop(sid, None)
 
 
 async def _create_via_route(container: Any, **overrides: Any) -> Any:
@@ -305,7 +358,12 @@ async def test_restart_retains_a_canonical_edit_and_repairs_the_stale_row(
         assert stored is not None
         await container.schedule_store.put(
             stored.model_copy(
-                update={"enabled": False, "cron": "30 4 * * *", "timezone": "Asia/Tokyo"}
+                update={
+                    "enabled": False,
+                    "cron": "30 4 * * *",
+                    "timezone": "Asia/Tokyo",
+                    "graph_template_id": "edited-template",
+                }
             )
         )
         hive = stores.schedules.get(sid)
@@ -321,8 +379,10 @@ async def test_restart_retains_a_canonical_edit_and_repairs_the_stale_row(
         assert kept.enabled is False, "the acknowledged canonical edit survives the restart"
         assert kept.cron == "30 4 * * *"
         assert kept.timezone == "Asia/Tokyo"
+        assert kept.graph_template_id == "edited-template"
         repaired = stores.schedules.get(sid)
         assert repaired is not None
+        assert repaired.mission_template_id == "edited-template"
         assert (repaired.enabled, repaired.cron_expression, repaired.timezone) == (
             False,
             "30 4 * * *",
@@ -678,12 +738,12 @@ async def test_an_update_whose_projection_write_fails_acknowledges_degraded(
         def failing_setitem(self: Any, key: str, value: Any) -> None:
             raise RuntimeError("simulated projection outage")
 
-        monkeypatch.setattr(type(stores.schedules), "__setitem__", failing_setitem)
-        with pytest.raises(HTTPException) as degraded:
-            await routes.update_schedule(
-                sid, routes.UpdateScheduleBody(enabled=False), _request_as_admin()
-            )
-        monkeypatch.undo()
+        with monkeypatch.context() as failure:
+            failure.setattr(type(stores.schedules), "__setitem__", failing_setitem)
+            with pytest.raises(HTTPException) as degraded:
+                await routes.update_schedule(
+                    sid, routes.UpdateScheduleBody(enabled=False), _request_as_admin()
+                )
         assert degraded.value.status_code == 503, degraded.value
         assert "persisted" in degraded.value.detail
 
@@ -694,6 +754,46 @@ async def test_an_update_whose_projection_write_fails_acknowledges_degraded(
         # The next read repairs the projection from the persisted truth.
         projected = await routes._canonical_projection(sid)
         assert projected is not None and projected.enabled is False
+    finally:
+        _drop_row(sid)
+
+
+async def test_delete_projection_failure_reports_committed_truth_and_heals_on_restart(
+    configured: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed durable Hive delete must not obscure a committed canonical delete."""
+    import stores
+    from fastapi import HTTPException
+    from services.scheduler import backfill_canonical_definitions
+
+    created = await _create_via_route(configured.container)
+    sid = str(created.id)
+    try:
+
+        def unavailable(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Hive persistence delete unavailable")
+
+        with monkeypatch.context() as failure:
+            failure.setattr(stores.schedules._persisted, "delete", unavailable)
+            with pytest.raises(HTTPException) as degraded:
+                await _delete_via_route(sid)
+        assert degraded.value.status_code == 503
+        assert sid in degraded.value.detail and "persisted" in degraded.value.detail
+        assert await configured.container.schedule_store.get(sid) is None
+        assert sid in await configured.container.schedule_store.tombstoned_ids()
+        assert stores.schedules.get(sid) is not None
+
+        container = (await configured.restart(monkeypatch)).container
+        assert stores.schedules.get(sid) is not None, "stale row reloaded from Hive disk"
+        await backfill_canonical_definitions()
+        assert stores.schedules.get(sid) is None
+        assert await container.schedule_store.get(sid) is None
+        assert sid not in {
+            s.schedule_id for s in await container.schedule_store.due(now=_FAR_FUTURE)
+        }
+        # The healed projection deletion is itself durable, not just a cache edit.
+        configured.projection.reopen()
+        assert stores.schedules.get(sid) is None
     finally:
         _drop_row(sid)
 
