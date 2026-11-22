@@ -1247,3 +1247,74 @@ reproduced green locally; (b) PR #2427 base must be retargeted to `develop`
 before merge (ADR-095); (c) branch tip now `e4b9e7416b` (+158 lines: 2 tests +
 1 inventory note + this section over the validated `e4bf58a50f`); (d) nothing
 pushed.
+
+## Round at `a9ddfd7451` (develop c83cb9961a folded; prior block = hosted snapshot, 2026-11-22)
+
+**Previous block resolved:** "launch/preflight: Hosted PR snapshot incomplete or
+not the review head" — at this dispatch the snapshot is *complete and aligned*:
+dispatch head == `linked_pr_heads["2427"]` == hosted PR head ==
+`origin/cursor/m1-b-p5a-recovered-rediscovery-8551` == local HEAD ==
+`a9ddfd745188…` (verified by fetch); sources[28]/[29] (check-runs/statuses at
+the head) are empty lists because CI had not yet posted on the fresh merge head
+— the same 0-check-runs-at-fresh-head diagnosis as `3a6c5152f5`/
+`e4bf58a50f`, not a head mismatch. The merge `a9ddfd7451` folds develop tip
+`c83cb9961a` (typescript bump #2436 + its repair notes) into the branch;
+`git diff f1c690d4d4..a9ddfd7451` touches only
+`packages/hive-conductor/frontend/package{,-lock}.json` +
+`REPAIR-NOTES-2436-develop-sync-resolution.md` — **no Python, no tests, no
+ledger** — so the F811 merge-replay risk of `476422e2b7` cannot recur. Branch
+is **0 commits behind** `origin/develop`; merge base == develop tip
+`c83cb9961a`; `git diff --numstat origin/develop -- quality/` empty (no ledger
+drift).
+
+**Every named gate independently re-executed at `a9ddfd7451`** (driver
+check-logs also inspected: sync rc 0; ruff pair green; batch 481 passed, 139
+skipped; audit-pagination 32 passed; per-suite inventory ok ×4 — hive 4321 /
+canvas 633 / core 18863 / rsi 1797):
+
+- **Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, DB
+  `maistro_cr2427`, plain `postgresql://` DSN): driver's exact 13-file batch →
+  **620 passed, 0 skipped** — reconciles exactly with check-3 (481 + 139):
+  every env-skipped parametrization ran live. P5a per-suite counts:
+  `test_interrupted_reclaim_rediscovery` **24** (3 backends × 8, including the
+  RUNNING-gate pin `:131`-family and refusal-catch pin),
+  `test_parked_run_resume` 45, `test_reconciler_recovered_provenance` 5,
+  `test_recovery_events` 10, `test_recovery_evidence_pack` 6 (five-suite set =
+  **90 passed**; the earlier "68" narrative predates the P4a merge's suite
+  composition — current counts recorded here are authoritative),
+  `test_interrupted_reclaim_characterization` 4,
+  `test_recover_leaseless_orphaned_attempt` 6.
+- **Production facts re-read at HEAD:** `container.py:1436`/`:1509` catch
+  `(RunIntegrityError, RecoveredDispositionRefused)`; sole caller of
+  `_replayable_terminal_attempt` at `:1499` passes
+  `allow_stranded_recovered=node_run.status is RunStatus.RUNNING` (`:1502`);
+  `_stranded_recovered_attempt` refuses live leases (`:1539`) then selects
+  solely via `is_typed_recovered_attempt(max-by-ordinal)` (`:1542`);
+  `consumption.py:42` import + `:511` typed look-past;
+  `grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+  `lifecycle.py:327` only, **zero production call sites** — the merge kept the
+  typed path over develop's `#1863` prefix path.
+- **CI-exact content gates:** vulture
+  `packages/*/src --min-confidence 60 --exclude '*/third_party/*'` with CI's
+  ambient pull-request `RATCHET_BASE_REV=origin/cursor/m1-b-p4b-…` → **1221 ==
+  1221, rc 0** (base `c83cb9961a1d` → candidate `a9ddfd745188`); radon → **124
+  == 124, rc 0** under both the stacked base and `origin/develop`;
+  `check-pr-base.py --base develop --labels ''` → **ok rc 0**; the hosted
+  stacked base → **FAIL rc 1** with the ADR-095 retarget message — exactly the
+  documented expected state (PR body: "Expected: pr-base fails while stacked on
+  a `cursor/` base"); suite inventory no-args → **21 suites ok**; merge-markers
+  / test-duplicates / backlog / monorepo-layout all rc 0; mypy ci.yml exact
+  10-package list → **Success, no issues in 1128 source files**.
+
+**Inventory:** this round changes no tests (merge touched only frontend
+package files), so no new `inventory-delta` is owed; per-suite checks (core
+18863) and the no-args run confirm counts unchanged.
+
+**Residual (driver actions only, GitHub mutations prohibited in-lane):**
+(a) CI check-runs on `a9ddfd745188` pending at dispatch capture — every gate
+reproduced green locally at this exact head; (b) PR #2427 base must be
+retargeted to `develop` before merge (ADR-095); note GitHub reported
+`mergeable_state: dirty` at snapshot time while the hosted P4b base head
+`a531f5d7c02a` **is an ancestor** of this branch, so the dirty flag is a
+transient mergeability-cache artifact of the fresh push, not a conflict;
+(c) nothing pushed; the only change in this round is this notes section.
