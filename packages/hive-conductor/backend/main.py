@@ -36,6 +36,7 @@ from routes import (
     dashboard_layout,
     eval_judge,
     feedback,
+    goals,
     harness,
     health,
     hitl,
@@ -47,6 +48,7 @@ from routes import (
     missions,
     profile,
     program,
+    projects,
     providers,
     quotas,
     rum,
@@ -108,7 +110,10 @@ def _include_optional_router(
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
-        state[module_name] = f"{type(exc).__name__}: {exc}"
+        # /health returns this string to browsers (CodeQL
+        # py/stack-trace-exposure). Keep the kind only; full import text
+        # stays in the warning log and audit detail below.
+        state[module_name] = f"{type(exc).__name__}: router failed to mount; see server logs"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
@@ -128,7 +133,10 @@ def _include_optional_router(
                 "optional_router_degraded",
                 "system",
                 target=module_name,
-                detail={"error": state[module_name]},
+                detail={
+                    "error": state[module_name],
+                    "cause": f"{type(exc).__name__}: {exc}",
+                },
                 severity="warning",
             )
         except Exception as audit_exc:
@@ -380,6 +388,10 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/v1/skills")
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
+    # Project onboarding wizard (intake → scan → deploy). Distinct from
+    # maistro.projects Workspace/Project *scope* — see disposition
+    # hive-project-onboarding. Router already declares prefix=/v1/projects.
+    app.include_router(projects.router)
     app.include_router(work_items.router, prefix="/v1/work-items")
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
@@ -404,6 +416,13 @@ def create_app() -> FastAPI:
     app.include_router(dags.router, prefix="/v1/dags")
     app.include_router(dashboard_layout.router)
     app.include_router(dag_runs.router, prefix="/v1/dag-runs")
+    # M3 #65: the Goal-centric inspection layer, mounted under the already-
+    # declared /v1/workspaces prefix (the Home #1048 / Attention #1049 mount)
+    # rather than a new /v1/goals prefix the route-permission registry would
+    # have to re-review. Read-only — runs listed, identified, and controlled
+    # only through the /v1/dag-runs seam above, so the Goal view can never
+    # become a second run or Goal authority.
+    app.include_router(goals.router, prefix="/v1/workspaces")
     # Phase 5 Signal #4: thumbs feedback piggybacks on /v1/dag-runs path
     # space so the SSE stream + feedback live together for the client.
     app.include_router(feedback.router, prefix="/v1/dag-runs")
@@ -421,6 +440,12 @@ def create_app() -> FastAPI:
     # Phase 7 — topology variant comparison.
     app.include_router(topology.router, prefix="/v1/topology")
     app.include_router(messages.router, prefix="/v1/messages")
+    # #1049 MERGE: Attention projects unread messages without gaining a
+    # retirement-ledger importer edge on routes.messages / stores.messages —
+    # main already imports both; wire the list door here.
+    from services import attention as attention_service
+
+    attention_service.set_message_rows_provider(messages.list_messages)
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
     # Perceived-load telemetry collector (#1420). The route exists even when

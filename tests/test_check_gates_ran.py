@@ -264,6 +264,64 @@ class TestTheRequiredSet:
         assert "not present yet" in out
         assert names[0] in out
 
+    def test_a_paths_filtered_producer_absent_from_a_green_head_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Replay of the #2434 incident (head 0382be897c02, publisher run
+        44909375407). The PR changed only
+        `.github/workflows/{fleet-images,integration-scope,release}.yml` and
+        `tests/ci/integration-scope.test.cjs` -- none of mutation.yml's
+        `pull_request.paths` -- so mutation.yml never triggered, and the 80
+        check runs that did land on the head were all green with exactly one
+        required row absent. That shape must stay pending, never green and
+        never a hard failure: absence is not non-execution, and
+        `Mutation gate (changed critical lines)` is not in
+        PATH_SCOPED_CHECKS, so a measured PR scope cannot excuse it either.
+        The repair is trigger coverage, not evaluator leniency: the head
+        must eventually carry the row, which is why the repair PR carries a
+        `docs/testing/inventory-notes/**` file (the #2371 trigger path) so
+        the workflow runs and produces real zero-overlap evidence.
+        """
+        orphaned = "Mutation gate (changed critical lines)"
+        names = check.required_check_names(base_branch="develop", event_name="pull_request")
+        assert orphaned in names
+        runs = [_run(name) for name in names if name != orphaned]
+        envelope = _envelope(
+            tmp_path,
+            {
+                "measured": True,
+                "truncated": False,
+                "files": [
+                    ".github/workflows/fleet-images.yml",
+                    ".github/workflows/integration-scope.yml",
+                    ".github/workflows/release.yml",
+                    "tests/ci/integration-scope.test.cjs",
+                ],
+            },
+        )
+        argv = [
+            "--check-runs",
+            str(_payload(tmp_path, runs)),
+            "--require-complete",
+            "--base-branch",
+            "develop",
+            "--event-name",
+            "pull_request",
+            "--changed-files",
+            str(envelope),
+        ]
+        # The incident verdict: the publisher posted `pending` ("Required
+        # execution evidence is still arriving"), and the enqueue
+        # controller's gates-ran precondition stayed red ("commit status not
+        # successful") for as long as no producer could create the row.
+        assert check.main(argv) == check.PENDING_EXIT
+        assert orphaned in capsys.readouterr().out
+        # The repair condition: once the producer's trigger paths cover the
+        # PR, the identical head with the identical 80-run shape is green.
+        runs.append(_run(orphaned))
+        _payload(tmp_path, runs)  # rewrite the evidence file with the row present
+        assert check.main(argv) == 0
+
     def test_one_skipped_check_fails_the_real_contract(
         self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -780,3 +838,122 @@ class TestTheReport:
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "ok: all" in proc.stdout
+
+
+class TestAttemptOrdering:
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize(
+        ("name", "leg", "old_id", "new_id"),
+        [
+            ("durable-events", "durable_events", 114113275971, 114113361906),
+            ("object storage (MinIO)", "object_storage", 114113275772, 114113362044),
+            ("strike-ladder", "strike_ladder", 114113275571, 114113362255),
+        ],
+    )
+    def test_newer_scoped_skip_replaces_superseded_cancellation(
+        self, check: ModuleType, reverse: bool, name: str, leg: str, old_id: int, new_id: int
+    ) -> None:
+        """#2110 job IDs/conclusions, reconstructed in both possible API orders."""
+        runs = [
+            {**_run(name, conclusion="cancelled"), "id": old_id},
+            {**_run(name, conclusion="skipped"), "id": new_id},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate([name], runs, require_complete=True, scope={leg: False})
+        assert verdict.ok and verdict.ran == []
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("conclusion", ["cancelled", "action_required", "stale"])
+    def test_newer_non_execution_is_not_excused_by_old_scoped_skip(
+        self, check: ModuleType, reverse: bool, conclusion: str
+    ) -> None:
+        runs = [
+            {**_run("durable-events", conclusion="skipped"), "id": 10},
+            {**_run("durable-events", conclusion=conclusion), "id": 20},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(
+            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
+        )
+        assert verdict.not_executed == ["durable-events"] and not verdict.ok
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("conclusion", ["success", "failure", "timed_out"])
+    def test_execution_precedence_is_unchanged(
+        self, check: ModuleType, reverse: bool, conclusion: str
+    ) -> None:
+        executed = {**_run("durable-events", conclusion=conclusion), "id": 10}
+        skipped = {**_run("durable-events", conclusion="skipped"), "id": 20}
+        runs = [executed, skipped]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(
+            ["durable-events"], runs, require_complete=True, scope={"durable_events": False}
+        )
+        # This evaluator proves execution, not success. A failed producer remains
+        # selected and counted as run; its own required check enforces its failure.
+        assert verdict.ran == ["durable-events"]
+        assert check._supersedes(executed, skipped)
+        assert not check._supersedes(skipped, executed)
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_newer_pending_attempt_is_not_hidden_by_older_success(
+        self, check: ModuleType, reverse: bool
+    ) -> None:
+        runs = [
+            {**_run("a"), "id": 10, "started_at": "2026-10-10T02:00:00Z"},
+            {**_run("a", status="queued", conclusion=None), "id": 20, "started_at": None},
+        ]
+        if reverse:
+            runs.reverse()
+        verdict = check.evaluate(["a"], runs, require_complete=True)
+        assert verdict.unfinished == ["a"] and verdict.pending
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_latest_skip_still_needs_measured_out_of_scope_evidence(
+        self, check: ModuleType, reverse: bool
+    ) -> None:
+        runs = [
+            {**_run("durable-events", conclusion="cancelled"), "id": 10},
+            {**_run("durable-events", conclusion="skipped"), "id": 20},
+        ]
+        if reverse:
+            runs.reverse()
+        required = ["durable-events"]
+        assert check.evaluate(required, runs, require_complete=True).not_executed == required
+        assert (
+            check.evaluate(
+                required, runs, require_complete=True, scope={"durable_events": True}
+            ).not_executed
+            == required
+        )
+        assert (
+            check.evaluate(required, runs, require_complete=True, scope_measured=False).unfinished
+            == required
+        )
+
+    def test_ids_override_equal_missing_or_misleading_timestamps(self, check: ModuleType) -> None:
+        for timestamp in (None, "2026-10-10T01:00:00Z", "2026-10-10T03:00:00Z"):
+            older = {
+                **_run("a"),
+                "id": 10,
+                "started_at": timestamp,
+                "completed_at": "2026-10-10T04:00:00Z",
+            }
+            newer = {
+                **_run("a", conclusion="failure"),
+                "id": 20,
+                "started_at": "2026-10-10T01:00:00Z",
+                "completed_at": "2026-10-10T02:00:00Z",
+            }
+            assert check._supersedes(newer, older)
+            assert not check._supersedes(older, newer)
+            assert not check._supersedes(newer, newer)
+
+    def test_legacy_payloads_without_ids_keep_the_ordered_list_contract(
+        self, check: ModuleType
+    ) -> None:
+        assert check._supersedes(_run("a", conclusion="failure"), _run("a"))
+        assert check._supersedes(_run("a"), _run("a", conclusion="failure"))

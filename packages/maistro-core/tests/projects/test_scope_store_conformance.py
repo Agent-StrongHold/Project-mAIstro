@@ -549,6 +549,30 @@ async def test_a_workspace_with_no_root_reports_not_found(backend) -> None:
         await store.root_for_workspace(_workspace("never-created-"))
 
 
+async def test_an_unknown_project_with_a_principal_is_a_scoped_denial(backend) -> None:
+    """A principal must not learn whether a Project id exists (#1150).
+
+    Resolving before the authority check would let `lineage` and its siblings
+    answer "no such Project" for one id and "not yours" for another, making the
+    store an existence oracle. With an acting principal both collapse to the
+    same scoped denial; without one, `ProjectNotFound` remains the contract.
+    """
+    store = await backend.store()
+    missing = f"proj-{uuid4().hex}"
+
+    with pytest.raises(ProjectScopeDenied, match="Project not found"):
+        await store.lineage(missing, principal_id="principal-1")
+    with pytest.raises(ProjectScopeDenied, match="Project not found"):
+        await store.create(
+            workspace_id=_workspace("never-"),
+            parent_project_id=missing,
+            name="Child",
+            principal_id="principal-1",
+        )
+    with pytest.raises(ProjectNotFound):
+        await store.lineage(missing)
+
+
 # ── validate_required_resources ────────────────────────────────────
 
 

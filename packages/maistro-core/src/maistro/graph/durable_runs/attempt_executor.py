@@ -27,7 +27,12 @@ from maistro.graph.nodes.base import (
 from maistro.graph.policies import declared_dag_max_cycles, declared_node_timeout_s
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
+from maistro.runs.lifecycle import (
+    ORPHANED_ATTEMPT_ERROR,
+    lease_is_expired,
+    transition_path,
+    transition_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.recovery_events import RecoveryEventSink
@@ -41,6 +46,7 @@ from maistro.runtime import (
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
+from .failure import sanitize_failure_message
 from .launch import require_admitted_launch_state
 from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
@@ -351,17 +357,18 @@ async def _reconcile_orphaned_attempts(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
-    """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
+    """Terminalize process-lost active Attempts and reconcile their NodeRuns.
+
+    Leased death proof stays on ``reclaim_expired_attempts``; leaseless active
+    rows use the dedicated ``recover_orphaned_attempt`` writer (#2417 / #232
+    P3b). Already-CANCELLED+RECOVERED rows are replayed through the reconciler
+    so a stale continuation projection still parks before retry decisions.
+    """
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
     lifecycle = AttemptLifecycleReconciler(
         execution_store,
         events=events,
         source=_RESUME_DISPOSITION_SOURCE,
-    )
-    active = tuple(
-        attempt
-        for attempt in record.attempts
-        if attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
     )
     now = datetime.now(UTC)
     _require_no_live_attempts(record, now=now)
@@ -370,19 +377,60 @@ async def _reconcile_orphaned_attempts(
     for attempt in reclaimed:
         await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
 
-    for attempt in active:
-        if attempt.execution_lease is not None:
+    for attempt in record.attempts:
+        if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
             continue
-        terminal = await execution_store.transition_attempt(
+        if attempt.execution_lease is not None:
+            # Live leases were refused above; expired leases are the reclaim path.
+            continue
+        # Dedicated leaseless orphan writer stamps CANCELLED+RECOVERED;
+        # generic transition_attempt must not carry RECOVERED (#2417 / #232 P3b,
+        # disposition wire P4b). Canonical RunStore stays the write authority.
+        terminal = await execution_store.recover_orphaned_attempt(
             attempt.attempt_id,
-            AttemptStatus.CANCELLED,
-            error="orphaned physical Attempt recovered after process loss",
+            owning_run_id=record.run_id,
+            error=ORPHANED_ATTEMPT_ERROR,
         )
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
+
     latest = await store.get(record.run_id)
     if latest is None:
         raise KeyError(f"no such run: {record.run_id!r}")
-    return latest
+
+    for attempt in _recovered_attempts_to_replay(latest):
+        await lifecycle.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+
+    parked = await store.get(record.run_id)
+    if parked is None:
+        raise KeyError(f"no such run: {record.run_id!r}")
+    return parked
+
+
+def _recovered_attempts_to_replay(record: DurableRunRecord) -> tuple[Attempt, ...]:
+    """Current CANCELLED+RECOVERED Attempts whose NodeRun still needs parking.
+
+    Superseded recovered rows must not re-park a NodeRun that has already
+    advanced (retry / HITL answer → QUEUED); ``_park_node_run`` rejects that
+    as integrity failure.
+    """
+    node_runs_by_id = {node_run.node_run_id: node_run for node_run in record.node_runs}
+    current_by_node_run: dict[str, Attempt] = {}
+    for attempt in record.attempts:
+        existing = current_by_node_run.get(attempt.node_run_id)
+        if existing is None or attempt.ordinal > existing.ordinal:
+            current_by_node_run[attempt.node_run_id] = attempt
+    replay: list[Attempt] = []
+    for attempt in current_by_node_run.values():
+        if (
+            attempt.status is not AttemptStatus.CANCELLED
+            or attempt.cancellation_cause is not CancellationCause.RECOVERED
+        ):
+            continue
+        node_run = node_runs_by_id.get(attempt.node_run_id)
+        if node_run is None or node_run.status is not RunStatus.RUNNING:
+            continue
+        replay.append(attempt)
+    return tuple(replay)
 
 
 def _replay_refused(node_id: str, attempt: Attempt, semantics: ReplaySemantics) -> NodeResult:
@@ -531,6 +579,12 @@ async def _walk_until_settled(
         await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
+        # A physical terminal write can fail after runtime execution returned.
+        # Do not immediately redispatch or mark the graph failed while the
+        # leased Attempt is still active; the bounded recovery claim will
+        # either observe its terminal evidence or reclaim it after expiry.
+        if _frontier_has_active_attempt(record):
+            return record
 
     record = await traversal._finish_walk(
         record,
@@ -604,10 +658,12 @@ async def _walk_frontier(
         )
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
+        if _frontier_has_active_attempt(latest):
+            return latest
         return await traversal._mark_failed(
             latest,
             error_code="PhysicalExecutionError",
-            error_message=str(exc) or type(exc).__name__,
+            error_message=sanitize_failure_message(str(exc) or type(exc).__name__),
             store=store,
         )
 
@@ -617,6 +673,20 @@ async def _walk_frontier(
         graph,
         items,
         store=store,
+    )
+
+
+def _frontier_has_active_attempt(record: DurableRunRecord) -> bool:
+    """Whether a persisted active Attempt still owns unfinished frontier work."""
+    active_ids = {
+        node_run.node_run_id
+        for node_run in record.node_runs
+        if node_run.status is RunStatus.RUNNING
+    }
+    return any(
+        attempt.node_run_id in active_ids
+        and attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
+        for attempt in record.attempts
     )
 
 
@@ -705,7 +775,7 @@ async def _execute_frontier(
     for node_id, node_run in zip(frontier, node_runs, strict=True):
         spec = traversal._node_spec(graph, node_id)
         assert spec is not None
-        ctx = traversal._build_ctx(record, node_id)
+        ctx = traversal._build_ctx(record, node_id, spec)
         node = node_resolver(node_id, graph)
         inputs = traversal._resolve_inputs(graph, record, node_run, spec)
         prepared.append((node_id, spec, node_run, ctx, node, inputs))
@@ -760,6 +830,7 @@ async def _execute_frontier(
         interrupted = bool(attempts) and attempts[-1].status is not AttemptStatus.COMPLETED
 
         raw_result: NodeResult | None = None
+        executing_attempt_id: str | None = None
 
         async def executor(work_item: Any, execution_context: Any) -> NodeResult:
             nonlocal raw_result
@@ -776,8 +847,10 @@ async def _execute_frontier(
             return result
 
         def context_for_attempt(attempt: Attempt, base: Any) -> NodeContext:
+            nonlocal executing_attempt_id
             if not isinstance(base, NodeContext):
                 raise TypeError("durable Graph execution requires NodeContext")
+            executing_attempt_id = attempt.attempt_id
             return base.model_copy(
                 update={
                     "node_run_id": node_run.node_run_id,
@@ -785,32 +858,35 @@ async def _execute_frontier(
                 }
             )
 
-        await execution_service.execute(
-            node_run.node_run_id,
-            inputs,
-            ctx,
-            executor=executor,
-            executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
-            # The node's declared timeout policy, resolved through the bounded
-            # envelope, becomes the canonical ExecutionRuntime deadline for
-            # this Attempt: `deadline_at` is persisted before launch and
-            # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
-            # today's no-deadline behavior. This is what makes a product
-            # runner's own transport timeout unable to extend work past the
-            # canonical policy — the runtime owns the enforcement (#1184).
-            timeout_s=declared_node_timeout_s(spec.policies),
-            reconcile_logical=False,
-            context_factory=context_for_attempt,
-            prior_completion_accepted=prior_completion_accepted,
-        )
-        if raw_result is None:
-            raise RuntimeError(f"node {node_id!r} completed without a NodeResult")
+        try:
+            await execution_service.execute(
+                node_run.node_run_id,
+                inputs,
+                ctx,
+                executor=executor,
+                executor_id=str(getattr(node, "kind", None) or spec.node_type or node_id),
+                # The node's declared timeout policy, resolved through the bounded
+                # envelope, becomes the canonical ExecutionRuntime deadline for
+                # this Attempt: `deadline_at` is persisted before launch and
+                # expiry terminalizes the Attempt TIMED_OUT. Undeclared nodes keep
+                # today's no-deadline behavior. This is what makes a product
+                # runner's own transport timeout unable to extend work past the
+                # canonical policy — the runtime owns the enforcement (#1184).
+                timeout_s=declared_node_timeout_s(spec.policies),
+                reconcile_logical=False,
+                context_factory=context_for_attempt,
+                prior_completion_accepted=prior_completion_accepted,
+            )
+        except Exception as exc:
+            raw_result = await _resolve_committed_result(
+                execution_store, executing_attempt_id, cause=exc
+            )
         return traversal._FrontierItem(
             node_id,
             spec,
             node_run,
             ctx,
-            raw_result,
+            _require_node_result(raw_result, node_id),
             semantics,
             logical_effect_key,
         )
@@ -823,6 +899,33 @@ async def _execute_frontier(
             )
         )
     )
+
+
+def _require_node_result(result: NodeResult | None, node_id: str) -> NodeResult:
+    if result is None:
+        raise RuntimeError(f"node {node_id!r} completed without a NodeResult")
+    return result
+
+
+async def _resolve_committed_result(
+    execution_store: DurableRunExecutionStore,
+    attempt_id: str | None,
+    *,
+    cause: Exception,
+) -> NodeResult:
+    """Resolve lost acknowledgement only from this launched Attempt's evidence.
+
+    Never retry the write, use the uncommitted in-process result, or adopt an
+    older accepted completion after a failed continuation redispatch. A
+    classified infrastructure failure must reach the recovery boundary without
+    another read through the broken store.
+    """
+    if isinstance(cause, RecoveryInfrastructureError) or attempt_id is None:
+        raise cause
+    persisted = await execution_store.get_attempt(attempt_id)
+    if persisted is None or persisted.status is not AttemptStatus.COMPLETED:
+        raise cause
+    return NodeResult.model_validate(persisted.result)
 
 
 __all__ = [

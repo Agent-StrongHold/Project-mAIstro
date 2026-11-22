@@ -454,9 +454,18 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         initial_status=RunStatus.QUEUED,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
-    # Leave room for a real PostgreSQL round trip while keeping the recovery
-    # window short enough to exercise the heartbeat and expiry boundary.
-    ttl = timedelta(seconds=0.5)
+    # The lease must outlive worst-case event-loop latency on a loaded,
+    # coverage-instrumented runner: the heartbeat ticks at ttl/3, and a
+    # first tick that lands after the expiry boundary is refused
+    # (`renew_attempt_lease` raises on a lapsed lease) and stops the
+    # heartbeat permanently — correct production behavior for a worker
+    # silent past its TTL, but here it reads as "never renewed" and fails
+    # the poll below (seen as a flaky "not renewed by the heartbeat" on
+    # the no-services coverage job, run 40142381555; reproduced locally by
+    # stalling the loop for 1s after resume with ttl=0.5s). 5s keeps the
+    # first tick ~1.7s, far inside the lease, while the recovery tick's
+    # explicit clock keeps the expiry boundary itself deterministic.
+    ttl = timedelta(seconds=5)
     executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
 
     parked = await executor.execute(run)

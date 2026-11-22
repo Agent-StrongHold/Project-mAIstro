@@ -102,7 +102,9 @@ wait forever for an `Expected` result.
 | CI | `Compliance registry` | every PR |
 | CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
+| CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -110,21 +112,23 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
-| CodeQL Advanced | `Analyze (actions)` | base `main` |
-| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
-| CodeQL Advanced | `Analyze (python)` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (python)` | base `main`, `develop` |
 | DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |
@@ -168,6 +172,7 @@ wait forever for an `Expected` result.
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
+| security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `SAST / Bandit` | every PR |
 | security | `SAST / Gitleaks` | every PR |
@@ -178,9 +183,11 @@ wait forever for an `Expected` result.
 
 ## Deliberate base-coupled checks
 
-`Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
-`Container scan + SBOM + cosign` are required on `main` only. They do not report
-as real executed checks on a `develop`-based PR or develop merge group.
+`Analyze (actions)`, `Analyze (javascript-typescript)`, and `Analyze (python)` are
+required on `main` only. `Container scan + SBOM + cosign` also runs for
+`develop`-based PRs and develop merge groups (and on pushes to `develop`) so
+license and final-filesystem evidence exists before release promotion; branch
+protection still requires the check on `main`.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner

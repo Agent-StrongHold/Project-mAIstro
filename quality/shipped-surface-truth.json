@@ -449,8 +449,18 @@
       "handler": "create_cli_session",
       "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "creates a CLI session record; the CLI page contract is tracked in #292",
+      "reason": "creates a CLI session record; the page contract it serves is defined in docs/architecture/CONDUCTOR-CLI-PAGE-CONTRACT.md (#292)",
       "effect_owner": "stores.cli_sessions"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/cli.py",
+      "method": "POST",
+      "route": "/exec",
+      "handler": "exec_cli_command",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "executes one registered CLI-page command through its backend capability (services/cli_commands.py), sanitizes output, appends durable session history, and audits the execution; unregistered commands answer 404",
+      "effect_owner": "services.cli_commands.cli_registry handlers (routes/health.py, routes/agents.py, stores.cli_sessions, routes/audit.log_audit)"
     },
     {
       "source": "packages/hive-conductor/backend/routes/containers.py",
@@ -521,6 +531,16 @@
       "production_enabled": true,
       "reason": "deletes the stored secret for a provider",
       "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "method": "POST",
+      "route": "/{provider_id}/test",
+      "handler": "test_credential",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real model-discovery probe against the operator-supplied OpenAI-compatible endpoint without persisting input, through the shared outbound guard",
+      "effect_owner": "maistro.http.sync_client under maistro.security.outbound explicit-endpoint policy (#67); the gateway's GET /models is the external effect"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -834,6 +854,26 @@
       "effect_owner": "stores.home_adaptive_dismissals"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "POST",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "dismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records Attention defer/dismiss preference evidence (#1049); does not settle HITL",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/attention.py",
+      "method": "DELETE",
+      "route": "/{workspace_id}/attention/dismiss",
+      "handler": "undismiss_workspace_attention",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "clears Attention defer/dismiss preference so the item can resurface",
+      "effect_owner": "services.attention.dismissal_store (JsonStore preference)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/home.py",
       "method": "POST",
       "route": "/{workspace_id}/home/adaptive/compose",
@@ -881,6 +921,16 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "creates a stored MCP server record",
+      "effect_owner": "stores.mcp_servers"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "method": "POST",
+      "route": "/servers/{server_id}/approve",
+      "handler": "approve_server",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records the admin approval and binds the server's finite tool allowlist (#59)",
       "effect_owner": "stores.mcp_servers"
     },
     {
@@ -1654,6 +1704,16 @@
       "effect_owner": "stores.workspaces"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/agent",
+      "handler": "put_workspace_agent_persona",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "swaps the Workspace Agent persona template while keeping the stable agent id (owner-only; same write as chat tool set_workspace_agent_persona)",
+      "effect_owner": "services.workspace_agent.set_workspace_agent_persona"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/ws.py",
       "method": "WEBSOCKET",
       "route": "/tasks/{task_id}",
@@ -1857,7 +1917,7 @@
       "source": "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py",
       "method": "DELETE",
       "route": "/{canvas_id}/layers/{layer_id}",
-      "handler": "delete_layer",
+      "handler": "remove_layer",
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "removes the stored layer",
@@ -2045,6 +2105,26 @@
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/policy/orgs/{org_id}",
+      "handler": "set_organization_extension_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs the organization extension layer wholesale (#971): allow/deny lists, approved publishers and publisher/version pins that no Workspace can widen",
+      "effect_owner": "extension policy engine + policy audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}",
+      "handler": "set_workspace_extension_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "installs one Workspace's narrowing layer (#971): opt-in enablement, denials and permission ceilings under the org layer",
+      "effect_owner": "extension policy engine + policy audit trail"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
       "method": "POST",
       "route": "/health/{extension_id}/operator",
       "handler": "decide_extension_operator_state",
@@ -2052,6 +2132,26 @@
       "production_enabled": true,
       "reason": "applies the durable operator admission decision (enable/disable/quarantine/release) with the authenticated actor and a required reason; append-only evidence whose newest row is the restart-surviving runtime state",
       "effect_owner": "extension health store (operator decisions) + health projections"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "POST",
+      "route": "/policy/orgs/{org_id}/workspaces/{workspace_id}/decisions",
+      "handler": "explain_extension_policy_decision",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "deterministic policy dry run for admin inspection (#971): same fixed rule order as enforcement, no record, no audit row",
+      "truth_contract": "stateless policy evaluation; persists nothing — the side-effect-free twin of the enforcement decision"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
+      "method": "PUT",
+      "route": "/state",
+      "handler": "set_extension_configuration",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "writes one tenant-scoped extension configuration value (#971) under the full (org, workspace, extension) key behind Workspace-ownership authority",
+      "effect_owner": "tenant-scoped extension runtime state"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/extensions.py",
@@ -2172,6 +2272,56 @@
       "production_enabled": true,
       "reason": "updates project defaults (owner-only)",
       "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a Workspace BacklogItem (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PATCH",
+      "route": "/{item_id}",
+      "handler": "update_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "compare-and-set edit of a BacklogItem on expected_version (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PUT",
+      "route": "/{item_id}/parent",
+      "handler": "set_backlog_item_parent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "re-parents a BacklogItem within its Workspace, versioned (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PUT",
+      "route": "/{item_id}/dependencies/{depends_on_item_id}",
+      "handler": "add_backlog_item_dependency",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records an acyclic same-Workspace dependency edge (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "DELETE",
+      "route": "/{item_id}/dependencies/{depends_on_item_id}",
+      "handler": "remove_backlog_item_dependency",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes a dependency edge (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/runs.py",
@@ -2456,16 +2606,6 @@
   ],
   "frontend_surfaces": [
     {
-      "source": "packages/hive-conductor/frontend/src/components/AccountBanner.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/auth/logout",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "signs out through the real backend route",
-      "effect_owner": "routes/auth.py logout (session store + audit)"
-    },
-    {
       "source": "packages/hive-conductor/frontend/src/components/AppShell.tsx",
       "signal": "mutating-api-call",
       "method": "POST",
@@ -2476,64 +2616,14 @@
       "effect_owner": "routes/auth.py logout (session store + audit)"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/providers/${name}/activate",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "activates the provider through the real backend route",
-      "effect_owner": "routes/providers.py activate_provider (LiteLLM registration + test completion)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/components/LlmProviders.tsx",
-      "signal": "mutating-api-call",
-      "method": "PUT",
-      "route": "/v1/providers/${name}/key",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "stores the provider key through the real backend route",
-      "effect_owner": "routes/providers.py put_provider_key (vault)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Chat.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/chatSessions.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "/v1/chat/stream",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
+      "reason": "streams a completion through the real backend route (openChatStream helper used by Chat.tsx)",
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/chat/complete",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "requests a completion through the real backend route",
-      "effect_owner": "routes/chat.py complete (LLM port)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/chat/stream",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
-      "effect_owner": "routes/chat.py stream_complete (LLM port)"
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
-      "signal": "mutating-api-call",
-      "method": "PUT",
-      "route": "/v1/dashboard/layout",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "persists the layout through the real backend route",
-      "effect_owner": "routes/dashboard_layout.py save_layout"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx",
@@ -2636,13 +2726,53 @@
       "effect_owner": "routes/auth.py register"
     },
     {
-      "source": "packages/hive-conductor/frontend/src/pages/Profile.tsx",
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/hitl/${runId}/${nodeId}/answer",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Attention Answer CTA posts to the canonical HITL answer door (#1049)",
+      "effect_owner": "routes/hitl.py answer_human_work (durable HITL store)"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/workspaces/${workspaceId}/attention/dismiss",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Attention Defer/Dismiss CTA writes preference evidence (#1049)",
+      "effect_owner": "routes/attention.py dismiss_workspace_attention"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/attention.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/optimizer/proposals/${encodeURIComponent(proposalId)}/${decision}",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Attention Accept/Reject CTA posts to the canonical optimizer proposal doors (#1049 MERGE)",
+      "effect_owner": "routes/optimizer.py accept_proposal / reject_proposal"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/dagRuns.ts",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/v1/dag-runs/${runId}/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "DagRuns Cancel control posts through the #1036 inspection cancel door",
+      "effect_owner": "routes/dag_runs.py cancel_run -> RunExecutionService.cancel_run"
+    },
+    {
+      "source": "packages/hive-conductor/frontend/src/lib/profile.ts",
       "signal": "mutating-api-call",
       "method": "POST",
       "route": "/v1/chat/stream",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "streams a completion through the real backend route",
+      "reason": "streams a completion through the real backend route (summarizeMemoriesFromContext helper used by Profile.tsx)",
       "effect_owner": "routes/chat.py stream_complete (LLM port)"
     },
     {
@@ -2682,16 +2812,6 @@
       "production_enabled": true,
       "owner_issue": 359,
       "reason": "the scanned timer is the #359 backoff re-arm (setTimeout(() => void run(false), backoffDelayMs())), which polls real backend state; the status words the detector matches inside its lazily captured body are the runs-list JSX (`r.status === 'running'`), which renders the backend's own status rather than a client-timer success animation. Unresolved only because the detector cannot yet distinguish a re-arm timer from a success-animation timer, not because any state is faked."
-    },
-    {
-      "source": "packages/hive-conductor/frontend/src/pages/Settings.tsx",
-      "signal": "mutating-api-call",
-      "method": "POST",
-      "route": "/v1/auth/elevate",
-      "disposition": "domain-state",
-      "production_enabled": true,
-      "reason": "elevates through the real backend route",
-      "effect_owner": "routes/auth.py elevate"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Setup.tsx",

@@ -13,6 +13,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -21,8 +22,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("hive.design_service")
 
+
+class DesignStoreConfigurationError(RuntimeError):
+    """A database URL is configured, but an async engine could not be built.
+
+    Distinct from "no URL configured" (#1826). The engine factory used to turn
+    every creation failure into `None`, and startup then described a configured
+    database in exactly the words it uses for a missing one -- "disabled (no
+    DATABASE_URL configured)" -- so a driver or URL defect wore the costume of
+    a deliberate absence, and the store was simply off on the shipped
+    Compose configuration.
+
+    The message carries the exception's type name against a redacted URL and
+    never `str(exc)`: SQLAlchemy's parse errors interpolate the URL they
+    could not parse, credentials and all, and this sentence lands in logs.
+    """
+
+
 __all__ = [
     "DesignServiceStatus",
+    "DesignStoreConfigurationError",
+    "get_design_canonical_execution",
     "get_design_engine",
     "get_design_status",
     "get_design_store",
@@ -59,17 +79,27 @@ class DesignServiceStatus:
     catalog_available: bool = False
     catalog_cause: str | None = None
     catalog_slugs: tuple[str, ...] = field(default=(), repr=False)
+    #: Why there is no project store, when the reason is *not* absence (#1826).
+    #: None with a store means operational; None without one means nothing was
+    #: configured; set means a URL was configured and failed, and this is its
+    #: sanitized cause -- the string the project routes answer with, in place
+    #: of the no-database message that used to cover both.
+    store_cause: str | None = None
+    #: Whether the canonical Goal->Graph->Run execution binding came up (#52).
+    canonical_execution_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
             "cause": self.cause,
+            "store_cause": self.store_cause,
             "bundled_count": len(self.bundled_slugs),
             "catalog": {
                 "available": self.catalog_available,
                 "cause": self.catalog_cause,
                 "count": len(self.catalog_slugs),
             },
+            "canonical_execution_available": self.canonical_execution_available,
         }
 
 
@@ -102,28 +132,123 @@ def _open_design_config(settings: Any | None = None) -> Any | None:
 
     return OpenDesignConfig(
         enabled=True,
-        base_url=_field("open_design_url", "OPEN_DESIGN_URL", "http://127.0.0.1:7456"),
+        base_url=_field(
+            "open_design_url",
+            "OPEN_DESIGN_URL",
+            "http://127.0.0.1:7456",  # DevSkim: ignore DS162092 until 2027-12-31
+        ),
         token=token,
     )
 
 
 @functools.lru_cache(maxsize=1)
 def _get_async_engine() -> AsyncEngine | None:
-    """Return an async SQLAlchemy engine for design projects, or None if DATABASE_URL is unset."""
-    url = os.environ.get("DATABASE_URL", "")
+    """Return an async SQLAlchemy engine, or None if no database is configured.
+
+    Routed through the shared config contract rather than a raw `DATABASE_URL`
+    read (#1826). Compose provides `postgresql://...`, and handed bare to
+    `create_async_engine` that scheme selects psycopg2 -- a synchronous driver,
+    absent from the async runtime -- so creation raised `ModuleNotFoundError`,
+    the old `except` swallowed it into `None`, and startup reported the store
+    disabled as if no database had been configured at all. This is the same
+    pair of helpers `maistro.memory.store.get_engine` runs: `resolve_database_url`
+    answers "which database" (the `DATABASE_URL` Compose sets, or the `DB_*`
+    set it can compose), `to_async_url` answers "which driver", and no scheme
+    rules are invented here.
+
+    `None` means nothing is configured -- the supported no-database mode. A
+    URL that is configured but fails resolution/validation (a `DB_*` value
+    pydantic rejects) or cannot build an engine raises
+    `DesignStoreConfigurationError`, so the failure reports as what it is
+    instead of becoming absence downstream.
+    """
+    from maistro.config.database import resolve_database_url, to_async_url
+
+    try:
+        url = to_async_url(resolve_database_url())
+    except Exception as exc:
+        # Resolution is persistence-scoped too (#1826 review): a `DB_*` value
+        # that fails validation must reach the store-specific handler as a
+        # `DesignStoreConfigurationError`, not escape startup as a raw
+        # `ValidationError` and mark the whole service unready. Type name
+        # only -- same rule as `_store_failure_cause`, the message never
+        # interpolates the environment it failed on.
+        raise DesignStoreConfigurationError(
+            f"database URL could not be resolved from the environment: {type(exc).__name__}"
+        ) from exc
     if not url:
-        logger.debug("DATABASE_URL not configured — design persistence disabled")
+        logger.debug("No database URL configured — design persistence disabled")
         return None
     try:
         return create_async_engine(url, pool_pre_ping=True)
     except Exception as exc:
-        logger.warning("Failed to create design database engine: %s", exc)
-        return None
+        logger.warning(
+            "Failed to create design database engine for %s: %s",
+            _redacted_url(url),
+            type(exc).__name__,
+        )
+        raise DesignStoreConfigurationError(_store_failure_cause(url, exc)) from exc
+
+
+def _redacted_url(url: str) -> str:
+    """The URL with its credentials dropped, for anything a human might read.
+
+    `maistro.container._redact_url` is the shared implementation -- the one
+    `maistro.config.database` itself reaches for. Two inputs defeat it, and
+    both fall back to the scheme alone, because a string whose credentials
+    cannot be promised away must not be echoed at all:
+
+    - inputs that helper cannot parse without raising (a URL whose port is
+      not a number makes `urlsplit(...).port` raise `ValueError`);
+    - inputs it returns unchanged, which is exactly its no-netloc case: a
+      malformed `postgresql:user:secret@host/db` (no `//`) files the whole
+      credential-bearing tail under *path*, so the helper hands it back
+      verbatim (#1826 review). ADR-064's log scrubber cannot rescue it
+      either -- its userinfo pattern anchors on `://`, which this spelling
+      does not contain.
+
+    A broken deployment is exactly as likely to have typed one of those as a
+    working URL, and a diagnostics path that dies on -- or leaks -- its own
+    input reports nothing, or reports too much.
+    """
+
+    def _scheme_only() -> str:
+        return f"{url.split(':', 1)[0]}:<unparseable>"
+
+    try:
+        from maistro.container import _redact_url
+
+        redacted = str(_redact_url(url))
+    except Exception:
+        return _scheme_only()
+    if not urlsplit(url).netloc:
+        # No authority component, so nothing was parsed as userinfo and the
+        # helper echoed its input. The credentials -- wherever they sit in
+        # the string -- survive only in what this returns, not in it.
+        return _scheme_only()
+    return redacted
+
+
+def _store_failure_cause(url: str, exc: Exception) -> str:
+    """The sanitized sentence a configured-but-broken database reports.
+
+    The exception's *type*, never `str(exc)`: a parse failure interpolates the
+    URL it could not parse, credentials and all.
+    """
+    return (
+        f"database URL {_redacted_url(url)!r} is configured, but the async "
+        f"engine failed to build: {type(exc).__name__}"
+    )
 
 
 @functools.lru_cache(maxsize=1)
 def _get_async_session_factory() -> async_sessionmaker[Any] | None:
-    """Return an async session factory for design projects, or None if no engine."""
+    """Return an async session factory for design projects, or None if no engine.
+
+    Propagates `DesignStoreConfigurationError`: a configured-but-broken URL is
+    not absence, and the caller that can degrade is the one that decides how
+    (#1826).
+    """
     engine = _get_async_engine()
     if engine is None:
         return None
@@ -133,6 +258,10 @@ def _get_async_session_factory() -> async_sessionmaker[Any] | None:
 _engine_singleton: Any = None
 _store_singleton: Any = None
 _renderer_registry_singleton: Any = None
+_canonical_execution_singleton: Any = None
+# Adapters cached per authorized Workspace (#52 review): admission scope is
+# resolved from the request principal, never from the startup binding.
+_canonical_execution_adapters: dict[str, Any] = {}
 _status: DesignServiceStatus = DesignServiceStatus(cause="start_design_service() has not run")
 
 
@@ -160,6 +289,55 @@ def get_design_engine() -> Any:
     return _engine_singleton
 
 
+def get_design_canonical_execution() -> Any | None:
+    """Return the startup wiring probe, if the spine is wired.
+
+    Not an admission scope. The singleton exists to decide, once, whether the
+    Run/NodeRun/Attempt spine is reachable; its Workspace binding is the
+    deployment's own default and must never stand in for a caller's
+    authorization. Route admission resolves scope per principal via
+    `get_design_canonical_execution_for_principal`.
+    """
+    return _canonical_execution_singleton
+
+
+async def get_design_canonical_execution_for_principal(principal_id: str) -> Any | None:
+    """The canonical Design adapter bound to the caller's authorized Workspace.
+
+    Design offers no caller-named Workspace selection, so the caller's own
+    default Workspace — which `resolve_default_workspace` guarantees they own,
+    the same fallback chat admission applies — is the scope every Run files
+    into. A principal is never filed into a Workspace they hold no membership
+    in, and the adapter is cached per Workspace like chat's admitters.
+    """
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        return None
+    from services.default_workspace import resolve_default_workspace
+    from services.engine import get_engine
+
+    try:
+        core_engine = get_engine()
+    except RuntimeError:
+        return None
+    run_store = getattr(core_engine, "run_store", None)
+    scope_store = getattr(core_engine, "project_scope_store", None)
+    if run_store is None or scope_store is None:
+        return None
+    workspace_id = (await resolve_default_workspace(principal_id)).id
+    adapter = _canonical_execution_adapters.get(workspace_id)
+    if adapter is None:
+        from maistro_design.canonical_execution import DesignCanonicalExecution
+
+        root = await scope_store.create_root(workspace_id)
+        adapter = DesignCanonicalExecution(
+            run_store,
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+        )
+        _canonical_execution_adapters[workspace_id] = adapter
+    return adapter
+
+
 def get_design_store() -> Any:
     """Get the PgDesignProjectStore singleton."""
     if _store_singleton is None:
@@ -174,7 +352,9 @@ async def start_design_service(settings: Settings) -> None:
 
     Called during FastAPI lifespan startup.
     """
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
+    _canonical_execution_singleton = None
 
     try:
         from maistro_design.engine import DesignEngine
@@ -228,12 +408,23 @@ async def start_design_service(settings: Settings) -> None:
 
         # Initialize project store if database is available
         project_store: Any | None = None
-        session_factory = _get_async_session_factory()
+        store_cause: str | None = None
+        try:
+            session_factory: async_sessionmaker[Any] | None = _get_async_session_factory()
+        except DesignStoreConfigurationError as exc:
+            # A configured URL that cannot build an engine (#1826). Degrade to
+            # no store -- the systems half of this service needs no database --
+            # but record *why*, so the project routes answer with the actual
+            # sanitized failure and the log says so, instead of both describing
+            # a configured database as if it had never been named.
+            session_factory = None
+            store_cause = str(exc)
+            logger.warning("Design project store unavailable: %s", store_cause)
         if session_factory is not None:
             project_store = PgDesignProjectStore(session_factory=session_factory)
             logger.info("Design project store initialized with PostgreSQL")
-        else:
-            logger.info("Design project store disabled (no DATABASE_URL configured)")
+        elif store_cause is None:
+            logger.info("Design project store disabled (no database URL configured)")
 
         # Initialize design engine with registries and optional store.
         _engine_singleton = DesignEngine(
@@ -257,12 +448,40 @@ async def start_design_service(settings: Settings) -> None:
         _renderer_registry_singleton = registry
         logger.info("Renderer slots available: %s", sorted(s.value for s in filled))
 
+        # Design is a projection over the canonical spine. In degraded/demo
+        # mode there may be no in-process RunStore; leave the action unavailable
+        # rather than fabricating a successful local lifecycle.
+        try:
+            from maistro_design.canonical_execution import DesignCanonicalExecution
+            from services.engine import get_engine
+
+            core_engine = get_engine()
+            run_store = core_engine.run_store
+            scope_store = core_engine.project_scope_store
+            workspace_id = str(getattr(settings, "hive_default_workspace_id", "") or "")
+            if run_store is not None and scope_store is not None and workspace_id:
+                # A wiring probe, not an admission scope (#52 review): this
+                # proves the spine answers (`create_root` is idempotent
+                # create-or-return) before the status claims availability.
+                # Per-caller scope is resolved from the request principal at
+                # admission time, never from this deployment-wide binding.
+                root = await scope_store.create_root(workspace_id)
+                _canonical_execution_singleton = DesignCanonicalExecution(
+                    run_store,
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                )
+        except Exception as exc:
+            logger.info("Design canonical execution unavailable: %s", exc)
+
         _status = DesignServiceStatus(
             ready=True,
             bundled_slugs=bundled,
             catalog_available=catalog_cause is None,
             catalog_cause=catalog_cause,
             catalog_slugs=catalog_slugs,
+            store_cause=store_cause,
+            canonical_execution_available=_canonical_execution_singleton is not None,
         )
 
     # Both handlers still catch, because a Conductor install without
@@ -271,9 +490,11 @@ async def start_design_service(settings: Settings) -> None:
     # routes answer with, instead of a log line and a service that looks ready.
     except ImportError as exc:
         logger.warning("maistro-design not installed or unavailable: %s", exc)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"maistro-design is not installed: {exc}")
     except Exception as exc:
         logger.warning("DesignService initialization failed: %s", exc, exc_info=True)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
 
 
@@ -360,11 +581,14 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
 
 async def stop_design_service() -> None:
     """Cleanup the DesignService singletons."""
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
     _status = DesignServiceStatus(cause="stop_design_service() has run")
     _engine_singleton = None
     _store_singleton = None
     _renderer_registry_singleton = None
+    _canonical_execution_singleton = None
+    _canonical_execution_adapters.clear()
     _get_async_engine.cache_clear()
     _get_async_session_factory.cache_clear()
     try:

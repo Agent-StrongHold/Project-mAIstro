@@ -45,6 +45,53 @@ def _fake_llm_builder(*, fail_prompt: str | None = None):
     return build
 
 
+# Seconds the hermetic sandbox stub below pretends a node takes; the two
+# declared-timeout proofs raise and lower it to move a node across its
+# canonical deadline. ``_SANDBOX_FAIL_PROMPT`` mirrors ``_fake_llm_builder``'s
+# failure injection for the terminal-failure proof.
+_SANDBOX_NODE_DELAY_S = 0.0
+_SANDBOX_FAIL_PROMPT: str | None = None
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_tier_runs_hermetically(monkeypatch: pytest.MonkeyPatch):
+    """A container without a Sentinel now gets no host mode, so ordinary
+    nodes fail closed to the sandbox tier instead of the old unauthorized
+    inline run. The real isolation broker refuses autonomous work on
+    shared-kernel backends and the node script needs a live model endpoint;
+    the stub keeps these Run-semantics proofs (budgets, deadlines, fan-out,
+    metrics) hermetic. Real isolation behavior is proven in
+    test_legacy_dag_node.py."""
+    import services.legacy_dag_node as legacy_node
+
+    def fake_subprocess(
+        node: dict[str, Any],
+        task_desc: str,
+        context: str,
+        base_env: dict[str, str],
+        execution_mode: str = "autonomous",
+    ) -> dict[str, Any]:
+        if _SANDBOX_NODE_DELAY_S:
+            time.sleep(_SANDBOX_NODE_DELAY_S)
+        if _SANDBOX_FAIL_PROMPT and _SANDBOX_FAIL_PROMPT in str(node.get("prompt", "")):
+            return {
+                "role": node.get("role", "worker"),
+                "response": "intentional node failure",
+                "success": False,
+                "model": node.get("model", "gemini-3.5-flash"),
+            }
+        return {
+            "role": node.get("role", "worker"),
+            "response": "ok:sandboxed",
+            "success": True,
+            "isolation": "sandboxed",
+            "model": node.get("model", "gemini-3.5-flash"),
+            "usage": {},
+        }
+
+    monkeypatch.setattr(legacy_node, "_run_node_subprocess", fake_subprocess)
+
+
 def test_graph_normalizes_crud_and_substrate_edge_dialects() -> None:
     from services.canonical_dag_runner import graph_from_legacy_dag
 
@@ -180,6 +227,8 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+
+    monkeypatch.setitem(globals(), "_SANDBOX_FAIL_PROMPT", "fail-me")
 
     store = runner._container().graph_run_store
 
@@ -486,6 +535,48 @@ def test_the_resolver_names_a_node_missing_from_the_adapter_map() -> None:
         resolve("ghost", None)
 
 
+def test_host_mode_exists_only_when_a_sentinel_produced_it() -> None:
+    """A container with the canonical stores but no Sentinel gets no host
+    mode: ``host_mode="async"`` would let ordinary nodes run inline without
+    Sentinel authorization and drop the sandboxed no-policy floor. Failing
+    closed keeps ``_classify_node_execution``'s sandbox/block behavior."""
+    from services.canonical_dag_runner import _host_execution_authority
+
+    class SpineOnlyContainer:
+        run_store = object()
+        graph_run_store = object()
+
+    spine_only = SpineOnlyContainer()
+    assert _host_execution_authority(spine_only) == (None, None)
+
+    spine_only.sentinel = object()
+    sentinel, host_mode = _host_execution_authority(spine_only)
+    assert sentinel is spine_only.sentinel
+    assert host_mode == "async"
+
+
+def test_host_mode_keeps_the_inline_floor_without_the_canonical_spine() -> None:
+    """A container that wires neither the canonical stores nor a Sentinel is a
+    partial fake (standalone/test execution): it keeps the historical inline
+    floor, and only a container that carries the stores but no Sentinel fails
+    closed to the sandbox floor."""
+    from services.canonical_dag_runner import _host_execution_authority
+
+    class PartialContainer:
+        pass
+
+    assert _host_execution_authority(PartialContainer()) == (None, "async")
+    assert _host_execution_authority(None) == (None, "async")
+
+
+def test_host_principal_roles_resolves_no_roles_for_an_anonymous_actor() -> None:
+    """An empty actor id resolves to no roles: the fail-closed permission gate
+    then denies instead of inheriting an unearned role from a request field."""
+    from services.canonical_dag_runner import _host_principal_roles
+
+    assert _host_principal_roles("") == ()
+
+
 def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> None:
     """A Run admitted by some other seam has no legacy node facts to rebuild
     from; guessing defaults here would execute work nobody admitted."""
@@ -664,6 +755,8 @@ async def test_declared_node_timeout_becomes_the_canonical_attempt_deadline(
     hard-code (#1184)."""
     import services.canonical_dag_runner as runner
 
+    monkeypatch.setitem(globals(), "_SANDBOX_NODE_DELAY_S", 3.0)
+
     store = runner._container().graph_run_store
 
     slow_node = _safe_node("a")
@@ -696,6 +789,8 @@ async def test_changing_the_declared_node_timeout_changes_whether_work_survives(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+
+    monkeypatch.setitem(globals(), "_SANDBOX_NODE_DELAY_S", 1.5)
 
     store = runner._container().graph_run_store
 

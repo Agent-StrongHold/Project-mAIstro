@@ -7,12 +7,17 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
 from maistro.persistence.pg_audit import PgAuditLog
+from maistro.security._types import AuditEntry as SentinelAuditEntry
+from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 
@@ -27,10 +32,23 @@ class Call:
         self.args = args
 
 
+class _FakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self._fetch_results: list[list[FakeRecord]] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
@@ -38,6 +56,13 @@ class FakeConnection:
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
+
+    async def fetchrow(self, query: str, *args: Any) -> FakeRecord | None:
+        """The retention-health probe reads one row (or None); the probe's
+        contract degrades an absent row to no sample, which is exactly what
+        an empty queue reports."""
+        self.calls.append(Call("fetchrow", query, args))
+        return None
 
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
@@ -73,6 +98,79 @@ def log(conn: FakeConnection) -> PgAuditLog:
     return PgAuditLog(FakePool(conn))
 
 
+def test_ephemeral_signing_key_warns_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ADR-073 restart contract needs a configured key: without one this
+    durable store writes proofs no later process can verify, so it must say
+    so at wire time instead of failing silently on the first post-restart
+    ``verify()``."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn))
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert SIGNING_KEY_ENV in messages
+    assert "verify" in messages
+
+
+def test_supplied_signing_key_does_not_warn_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deployment that configured its key chose durability; no warning."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32)))
+    assert not [r for r in caplog.records if r.name == "maistro.persistence.audit"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_creates_the_table_and_adds_proof_columns(
+    conn: FakeConnection,
+) -> None:
+    """A container wired against a PostgreSQL database that never ran the
+    migration chain must still come up: `ensure_schema` creates the table
+    when it is missing, and it keeps the idempotent ADD COLUMN IF NOT EXISTS
+    upgrade for the databases created before signed audit records existed."""
+    await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
+
+    statements = [call.query for call in conn.calls]
+    creates = [s for s in statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+    assert len(creates) == 1
+    for column in ("id", "timestamp", "org_id", "signature", "signing_key_id", "proof_type"):
+        assert column in creates[0]
+    # The indexes 005 builds are part of the shape this bootstrap claims to
+    # copy: nothing migrates a bootstrapped database afterwards.
+    for index in ("ix_audit_log_timestamp", "ix_audit_log_user", "ix_audit_log_agent"):
+        assert f"CREATE INDEX IF NOT EXISTS {index}" in creates[0]
+    assert statements[2:6] == [
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+    ]
+    assert statements[6] == (
+        "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+    )
+    # GET_PAGE shapes: `page_query` names one ordered index per filter
+    # combination, and the SQLite sibling's bootstrap creates the same set.
+    assert statements[7:] == [
+        f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+        for name, fields in AUDIT_PAGE_INDEXES.items()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_takes_the_bootstrap_lock(conn: FakeConnection) -> None:
+    """Two workers bootstrapping the table at once must not both run the DDL:
+    the advisory lock serialises them, and it is taken before the CREATE."""
+    await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
+
+    statements = [call.query for call in conn.calls]
+    assert statements[0] == "SELECT pg_advisory_xact_lock($1)"
+    assert "CREATE TABLE IF NOT EXISTS audit_log" in statements[1]
+    # Every statement in the bootstrap must stay inside the locked
+    # transaction, including the index DDL added after the CREATE.
+    assert len(conn.calls) == 7 + len(AUDIT_PAGE_INDEXES)
+
+
 @pytest.mark.asyncio
 async def test_log_inserts_with_team_id_and_tool_name_defaults(
     log: PgAuditLog, conn: FakeConnection
@@ -103,6 +201,9 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
         "ok",
         "t1",
         "r1",
+        log.signer.sign(entry).signature,
+        log.signer.key_id,
+        "Ed25519Signature2020",
     )
 
 
@@ -123,6 +224,64 @@ async def test_log_tool_name_none_becomes_empty_string(
     await log.log(entry)
     call = conn.calls[0]
     assert call.args[5] == ""
+
+
+@pytest.mark.asyncio
+async def test_persisted_deny_row_verifies_as_reconstructed(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """The row PgAuditLog writes must verify when read back as a durable row.
+
+    Durable stores never serialize the violations tuple, so the INSERT params
+    are the whole persisted record: rebuilding an AuditEntry from them and
+    verifying is the exact restart contract, exercised for a deny decision
+    that carries violations.
+    """
+    await log.log(
+        SentinelAuditEntry(
+            boundary="tool_call",
+            user_id="u1",
+            tool_name="bash",
+            verdict="denied",
+            violations=(
+                SentinelViolation(
+                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
+                ),
+            ),
+        )
+    )
+
+    (
+        boundary,
+        user_id,
+        org_id,
+        team_id,
+        agent_id,
+        tool_name,
+        verdict,
+        detail,
+        trace_id,
+        request_id,
+        signature,
+        signing_key_id,
+        proof_type,
+    ) = conn.calls[0].args
+    row = AuditEntry(
+        boundary=boundary,
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team_id,
+        agent_id=agent_id,
+        tool_name=tool_name or None,
+        verdict=verdict,
+        detail=detail,
+        trace_id=trace_id,
+        request_id=request_id,
+        signature=signature,
+        signing_key_id=signing_key_id,
+        proof_type=proof_type,
+    )
+    assert log.verify(row)
 
 
 @pytest.mark.asyncio
@@ -299,3 +458,94 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     assert [entry.boundary for entry in entries] == ["org-a"]
     assert all(entry.org_id == "org-a" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_purge_publishes_stored_volume(pg_pool: Any) -> None:
+    """The PostgreSQL audit probe publishes the one number SQLite cannot
+    honestly produce — `pg_total_relation_size` — alongside rows and the
+    oldest retained record (#325). audit_log is truncated per test, so the
+    counts are this test's own rows."""
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    retention_health._LAST_PROBE.clear()
+
+    audit = PgAuditLog(pg_pool)
+    await audit.log(AuditEntry(boundary="b", user_id="u", org_id="org"))
+    assert await audit.purge_expired(before=datetime.now(UTC) + timedelta(days=1)) == 1
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "audit_log", "backend": "postgres"}
+        ]
+
+    assert _series(retention_table_rows) == [0.0]  # drained: the one row expired
+    assert len(_series(retention_table_bytes)) == 1
+    assert _series(retention_table_bytes)[0] > 0
+    assert _series(retention_oldest_record_timestamp) == []
+
+
+@pytest.mark.asyncio
+async def test_purge_rejects_a_nonpositive_limit(log: PgAuditLog) -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await log.purge_expired(before=datetime.now(UTC), limit=0)
+
+
+@pytest.mark.asyncio
+async def test_purge_legal_hold_compiles_the_held_scoped_query(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """A legal hold scopes the DELETE in SQL — `user_id <> ALL($2::text[])`
+    with the batch limit moved to $3 — so a held principal's evidence is
+    never in the deleted set, whatever rows qualify by age (#325)."""
+    before = datetime.now(UTC)
+    await log.purge_expired(before=before, limit=500, legal_hold_user_ids=("held",))
+
+    purges = [c for c in conn.calls if c.method == "execute" and "DELETE FROM audit_log" in c.query]
+    assert len(purges) == 1
+    assert "user_id <> ALL($2::text[])" in purges[0].query
+    assert "LIMIT $3" in purges[0].query
+    assert purges[0].args == (before.astimezone(UTC), ["held"], 500)
+
+
+@pytest.mark.asyncio
+async def test_purge_returns_zero_when_the_delete_status_is_unparseable(
+    log: PgAuditLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """asyncpg reports a DELETE as "DELETE <n>"; a driver that someday says
+    something else must degrade the count to 0 — a parse failure is a
+    reporting problem, not a reason to fail a committed purge (#325)."""
+
+    async def unparseable_status(query: str, *args: Any) -> str:
+        return "PURGED"  # no numeric tail to parse
+
+    monkeypatch.setattr(log._pool._conn, "execute", unparseable_status)
+    assert await log.purge_expired(before=datetime.now(UTC)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_second_purge_inside_the_probe_interval_probes_nothing(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """The stored-volume probe is the amortized cost of the sweep: two
+    purges inside one probe interval sample PostgreSQL once (#325)."""
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    await log.purge_expired(before=datetime.now(UTC))
+    probes_after_first = len([c for c in conn.calls if c.method == "fetchrow"])
+    assert probes_after_first >= 1  # the first purge probes
+
+    await log.purge_expired(before=datetime.now(UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probes_after_first

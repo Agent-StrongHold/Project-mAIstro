@@ -12,6 +12,15 @@ from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
 
+class RecoveryInfrastructureError(RuntimeError):
+    """A persistence failure that makes continuing the recovery scan unsafe.
+
+    Candidate-local resolver and execution failures are handled by the durable
+    executor or by the recovery tick. Store adapters use this explicit type
+    when a database/session failure invalidates every candidate in the tick.
+    """
+
+
 @runtime_checkable
 class DurableRunStore(Protocol):
     """Persist canonical Run + GraphExecutionState checkpoints."""
@@ -121,6 +130,17 @@ class DurableRunStore(Protocol):
         """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Wake a system-owned remote or harness completion pause."""
+        ...
+
     async def timeout_hitl(
         self,
         run_id: str,
@@ -145,14 +165,49 @@ class DurableRunStore(Protocol):
         """Terminalize a human pause by explicit cancellation."""
         ...
 
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        ...
 
-class RecoveryInfrastructureError(RuntimeError):
-    """A persistence failure that makes continuing the recovery scan unsafe.
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        ...
 
-    Candidate-local resolver and execution failures are handled by the durable
-    executor or by the recovery tick. Store adapters use this explicit type
-    when a database/session failure invalidates every candidate in the tick.
-    """
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
+        ...
 
 
 __all__ = ["DurableRunStore", "RecoveryInfrastructureError"]

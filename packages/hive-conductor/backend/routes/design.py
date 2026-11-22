@@ -11,16 +11,20 @@ GET /design/packs — list domain packs (one uniform selector listing; #793)
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from services.design_service import (
+    get_design_canonical_execution_for_principal,
     get_design_engine,
     get_design_status,
     get_design_store,
     get_renderer_registry,
 )
+from services.request_principal import require_actor_id
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro_design.consistency import (
     CreativeProjectSnapshot,
     evaluate_project_snapshot,
@@ -79,6 +83,17 @@ CONDUCTOR_ORG_ID = "default-org"
 _ABSENT = object()
 
 
+def _request_principal_id(request: Request) -> str:
+    """Return the authenticated actor id; never invent an actor identity.
+
+    AuthMiddleware stamps ``request.state.principal`` for every authenticated
+    ``/v1/`` request (the same boundary HITL and the layout routes use), so
+    the canonical helper — not a locally re-derived user mapping — supplies
+    the principal the canonical spine records as the actor.
+    """
+    return require_actor_id(request)
+
+
 def _get_org_id(request: Request) -> str:
     """The scope this request's design projects belong to.
 
@@ -105,18 +120,48 @@ def _require_store() -> Any:
     service returns ``None`` for a disabled store during startup and older
     callers can still expose its initialization ``RuntimeError``; normalize
     both forms to the same explicit unavailable response.
+
+    When startup recorded a store cause (#1826), that sanitized failure is the
+    answer — a configured database whose engine would not build must not be
+    reported with the same words as one nobody named, and not as a durable
+    success either.
     """
+    status = get_design_status()
     try:
         store = get_design_store()
     except RuntimeError as exc:
+        # Startup degraded before it could build the store. Its recorded cause
+        # is the truth; a ready service with no cause is the deliberate
+        # no-database mode (#1826); anything else is a service that never
+        # started, and the initialization error is the honest answer for it.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            ) from None
+        if status.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence unavailable (no database URL configured)",
+            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"Design persistence unavailable: {exc}",
         ) from None
     if store is None:
+        # Two ways to be here (#1826): nothing configured -- the supported
+        # no-database mode -- or a URL that was configured and failed. The
+        # second carries its own recorded, sanitized cause, and answering it
+        # with "DATABASE_URL not set" is exactly the conflation that kept a
+        # broken deployment indistinguishable from a deliberate one.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            )
         raise HTTPException(
             status_code=503,
-            detail="Design persistence unavailable (DATABASE_URL not set)",
+            detail="Design persistence unavailable (no database URL configured)",
         )
     return store
 
@@ -149,13 +194,31 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # "Project preparation failed: 403: No design scope resolved", hiding an
     # authorization decision behind a 500.
     org_id = _get_org_id(request)
+    principal_id = _request_principal_id(request)
+    # Admission scope is the caller's, resolved per request (#52 review): the
+    # startup binding is a wiring probe, so a personal-default-Workspace user
+    # never files Runs into a Workspace they hold no membership in.
+    canonical = await get_design_canonical_execution_for_principal(principal_id)
+    if canonical is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Design execution unavailable: canonical execution spine is not wired",
+        )
     try:
         # A project preparation response is durable state, never a successful
         # in-memory substitute when persistence is not configured.
         _require_store()
         engine = get_design_engine()
-        project = await engine.generate(discovery, org_id=org_id, team_id=None)
-        return project.to_dict()
+
+        async def _generate() -> Any:
+            return await engine.generate(discovery, org_id=org_id, team_id=None)
+
+        project = await canonical.generate(
+            discovery=discovery,
+            operation=_generate,
+            actor_principal_id=principal_id,
+        )
+        return cast(dict[str, Any], project.to_dict())
     except HTTPException:
         raise
     except SkillNotFoundError as e:
@@ -166,6 +229,17 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
         raise HTTPException(status_code=400, detail=str(e)) from None
     except DesignError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except RunConcurrencyExceeded as exc:
+        # Canonical admission backpressure (#1182), not a preparation failure:
+        # the RunStore refused a new root before any project state existed, so
+        # the same request is admissible once a slot frees. Same contract as
+        # the DAG and chat admission surfaces: retryable 429, scoped detail
+        # (the ceiling kind, never the exception text) and Retry-After.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
 

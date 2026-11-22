@@ -27,6 +27,7 @@ CASES = [
     ("patch", "/v1/workspaces/ws1", "workspaces.write"),
     ("delete", "/v1/workspaces/ws1", "workspaces.write"),
     ("put", "/v1/workspaces/ws1/tool-bindings", "workspaces.write"),
+    ("put", "/v1/workspaces/ws1/agent", "workspaces.write"),
     ("put", "/v1/schedules/s1", "schedules.write"),
     ("delete", "/v1/schedules/s1", "schedules.write"),
     ("put", "/v1/credentials/jira", "credentials.write"),
@@ -72,3 +73,25 @@ def test_product_surface_is_not_gated(authed_client):
             f"{method.upper()} {path} 403'd — product surface must stay "
             "reachable for the daily account"
         )
+
+
+def test_attention_dismiss_is_gated_by_dags_write_not_workspaces_write(
+    authed_client,
+) -> None:
+    """Attention dismiss is exempt from middleware workspaces.write so the
+    route's dags.write check (matching GET /attention) can fire (#1049)."""
+    post = authed_client.post(
+        "/v1/workspaces/ws1/attention/dismiss",
+        json={"sourceKind": "hitl_node_run", "sourceId": "x", "action": "dismiss"},
+    )
+    assert post.status_code == 403
+    assert "dags.write" in post.json()["detail"]
+    assert "workspaces.write" not in post.json()["detail"]
+
+    delete = authed_client.delete(
+        "/v1/workspaces/ws1/attention/dismiss",
+        params={"sourceKind": "hitl_node_run", "sourceId": "x"},
+    )
+    assert delete.status_code == 403
+    assert "dags.write" in delete.json()["detail"]
+    assert "workspaces.write" not in delete.json()["detail"]

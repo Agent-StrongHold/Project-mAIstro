@@ -4,13 +4,12 @@
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Dashboard.tsx",
-      "disposition": "PROJECT",
-      "replaced_by": "Workspace Home (#1048)",
+      "disposition": "RETIRE",
+      "replaced_by": "Workspace Home (#1048); /dashboard redirects to /home (#2274)",
       "delete_by": "M3-E",
-      "owner": "#1048",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2274",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
@@ -93,45 +92,41 @@
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Agents.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /agents redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Topology.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /topology redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Skills.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /skills redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/MCP.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "capabilities projection over the capability registry (#59)",
+      "replaced_by": "Capabilities surface (#2273); old /mcp redirects to /capabilities",
       "delete_by": "M3",
-      "owner": "#59",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "owner": "#2273",
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
@@ -206,9 +201,8 @@
       "replaced_by": "Attention/Waiting (#1049)",
       "delete_by": "M3-E",
       "owner": "#1049",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
@@ -217,20 +211,17 @@
       "replaced_by": "Attention/Waiting (#1049)",
       "delete_by": "M3-E",
       "owner": "#1049",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "importers": [],
+      "deleted": true
     },
     {
       "kind": "page",
       "path": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
       "disposition": "PROJECT",
-      "replaced_by": "hidden for v1.0; Run inspection over canonical Evolve Runs returns v1.2 (#51)",
-      "delete_by": "M4",
+      "replaced_by": "HIDE v1.0 (#2275 / conductor-411): route unregistered; restore v1.2 as Run inspection over canonical Evolve Runs (#51)",
+      "delete_by": "v1.2",
       "owner": "#51",
-      "importers": [
-        "packages/hive-conductor/frontend/src/App.tsx"
-      ]
+      "importers": []
     },
     {
       "kind": "page",

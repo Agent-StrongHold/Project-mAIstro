@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar, cast
 
 from maistro.graph.definitions import Edge, Graph, Node
@@ -37,6 +37,10 @@ _CANVAS_EXECUTOR_ID = "canvas_job_runner"
 _CANVAS_OPERATION_KEY = "canvas_operation_id"
 _CANVAS_RECEIPT = "canvas_receipt"
 _CANVAS_ORG = "canvas_org_id"
+#: Finite canonical Attempt lease so dead-worker fencing can use the
+#: authorized ``reclaim_expired_attempt`` writer (CANCELLED+RECOVERED) rather
+#: than a generic CANCELLED that P4b typed reconciliation refuses (#232 / #735).
+_CANVAS_ATTEMPT_LEASE_TTL = timedelta(seconds=300)
 
 T = TypeVar("T")
 
@@ -95,10 +99,12 @@ class CanvasCanonicalExecution:
         self._service = RunExecutionService(
             store=run_store,
             runtime=runtime or PythonExecutionRuntime(),
+            lease_ttl=_CANVAS_ATTEMPT_LEASE_TTL,
         )
-        # Canvas's own worker lease is deliberately separate from the canonical
-        # Attempt lease. If that worker disappears, the adapter must still fence
-        # the physical Attempt before a replacement try or terminal receipt.
+        # Canvas's own worker lease remains the product death signal; the
+        # canonical Attempt lease is finite so recovered fencing can use the
+        # authorized reclaim writer (#735 / #232 P4b) instead of inventing
+        # RECOVERED after a generic CANCELLED.
         self._reconciler = AttemptLifecycleReconciler(run_store)
 
     async def admit(
@@ -372,7 +378,7 @@ class CanvasCanonicalExecution:
                     job.result_paths = paths
                     changed = True
         elif (
-            job.status is JobStatus.RUNNING
+            job.status == JobStatus.RUNNING
             and job.lease_expires_at is not None
             and job.lease_expires_at > datetime.now(UTC)
         ):
@@ -383,10 +389,13 @@ class CanvasCanonicalExecution:
             # let `claim_next_pending` hand the same job to a second worker
             # and dispatch the provider twice. Only the lease reaper
             # (`reap_expired_leases`) may decide a worker is lost; recovery
-            # leaves a live lease alone.
+            # leaves a live lease alone. (Compared with `==`, not `is`:
+            # `JobStatus` is a StrEnum and a store that hydrates the column
+            # as a plain string must still take this branch -- found live in
+            # the #93 two-worker race, where the guard silently never fired.)
             target = job.status
         elif (
-            job.status is JobStatus.RUNNING
+            job.status == JobStatus.RUNNING
             and run.status in {RunStatus.CREATED, RunStatus.QUEUED}
             and job.attempts >= job.max_attempts
         ):
@@ -410,7 +419,7 @@ class CanvasCanonicalExecution:
                 if run.status in {RunStatus.CREATED, RunStatus.QUEUED}
                 else job.status
             )
-            if run.status is RunStatus.QUEUED and job.status is JobStatus.RUNNING:
+            if run.status is RunStatus.QUEUED and job.status == JobStatus.RUNNING:
                 changed = True
         if job.status != target:
             job.status = target
@@ -681,6 +690,32 @@ class CanvasCanonicalExecution:
                     cancellation=CancellationCause.RECOVERED,
                 )
 
+    async def _race_or_require_terminal(self, attempt_id: str) -> Attempt:
+        raced = await self._runs.get_attempt(attempt_id)
+        if raced is None or raced.status not in TERMINAL_ATTEMPT_STATUSES:
+            raise RunIntegrityError(
+                f"Canvas Attempt {attempt_id!r} could not be settled to a terminal status"
+            )
+        return raced
+
+    async def _reclaim_recovered_attempt(self, persisted: Attempt) -> Attempt:
+        """Fence a dead-worker Attempt via authorized CANCELLED+RECOVERED reclaim."""
+        lease = persisted.execution_lease
+        if lease is None:
+            raise RunIntegrityError(
+                f"active Canvas Attempt {persisted.attempt_id!r} has no execution lease"
+            )
+        moment = datetime.now(UTC)
+        if lease.expires_at is not None and lease.expires_at > moment:
+            moment = lease.expires_at + timedelta(microseconds=1)
+        try:
+            terminal = await self._runs.reclaim_expired_attempt(persisted.attempt_id, now=moment)
+        except Exception:
+            return await self._race_or_require_terminal(persisted.attempt_id)
+        if terminal is None:
+            return await self._race_or_require_terminal(persisted.attempt_id)
+        return terminal
+
     async def _settle_abandoned_attempt(
         self,
         attempt: Attempt,
@@ -705,6 +740,13 @@ class CanvasCanonicalExecution:
             raise RunIntegrityError(
                 f"active Canvas Attempt {persisted.attempt_id!r} has no execution lease"
             )
+
+        if cancellation is CancellationCause.RECOVERED:
+            # Authorized P2a writer — no generic CANCELLED (#232 Codex P1 / #735).
+            terminal = await self._reclaim_recovered_attempt(persisted)
+            await self._reconciler.reconcile(terminal, cancellation=cancellation)
+            return
+
         try:
             terminal = await self._runs.transition_attempt(
                 persisted.attempt_id,

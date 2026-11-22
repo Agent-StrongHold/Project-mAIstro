@@ -201,6 +201,27 @@ def test_base_url_tolerates_a_transiently_empty_port_file(tmp_path: Path) -> Non
         announcer.join()
 
 
+def test_peer_port_announcement_tolerates_the_empty_creation_window(tmp_path: Path) -> None:
+    """An existing-but-empty port file is 'not yet announced', never a port.
+
+    The peer's ``open(path, "w")`` creates the file before the port is
+    written. Announcing through ``exists()`` alone parsed that window as a
+    port and crashed with ``ValueError: invalid literal for int() with base
+    10: ''`` under CI load (coverage gate, 2026-10-18). Pre-creating the
+    empty file makes the window deterministic: the old reader fails on the
+    first poll, the current one waits for the real write. With the atomic
+    child publish (sibling ``.tmp`` plus ``os.replace``) the pre-created
+    empty file is the frozen window the tolerant reader must wait out
+    before the rename lands the real port.
+    """
+    peer = _CrossProcessPeer({"delegationReceived": True}, tmp_path)
+    peer._port_file.write_text("")
+    with peer as base_url:
+        port = base_url.rsplit(":", 1)[1]
+        assert port.isdigit()
+        assert int(port) > 0
+
+
 def _context(
     agent: str = "planner", *, delegation_key: str = "effect-1", **overrides: Any
 ) -> DelegationContext:
@@ -982,3 +1003,51 @@ async def test_scanner_failure_fails_closed() -> None:
     assert verdict.clean is False
     assert verdict.blocked is True
     assert verdict.flags == ("warden_unavailable",)
+
+
+async def test_poll_result_requires_a_task_and_a_known_active_peer() -> None:
+    """Empty task ids and unknown-or-inactive peers have nothing to read."""
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub", active=False))
+
+    assert await manager.poll_result("hub", "") is None
+    assert await manager.poll_result("unknown", "t-1") is None
+    assert await manager.poll_result("hub", "t-1") is None
+
+
+async def test_poll_result_maps_terminal_receipts_and_leaves_running_tasks_parked() -> None:
+    """The peer's task-status resource is the cross-instance timer waker: a
+    terminal receipt becomes a DelegationResult, a running task and an
+    uncertain transport both poll again next tick."""
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        task_id = request.url.path.rsplit("/", 1)[-1]
+        if task_id == "remote-404":
+            return httpx.Response(404)
+        if task_id == "remote-500":
+            return httpx.Response(500)
+        if task_id == "remote-down":
+            raise httpx.ConnectError("peer unreachable")
+        if task_id == "remote-1":
+            return httpx.Response(200, json={"status": "running"})
+        return httpx.Response(
+            200,
+            json={"status": "completed", "task_id": task_id, "result": "done"},
+        )
+
+    set_test_transport(httpx.MockTransport(handler))
+
+    assert await manager.poll_result("hub", "remote-1") is None
+    not_found = await manager.poll_result("hub", "remote-404")
+    assert not_found is not None
+    assert not_found.status == "not_found"
+    completed = await manager.poll_result("hub", "remote-2")
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.task_id == "remote-2"
+    assert completed.result == "done"
+    assert await manager.poll_result("hub", "remote-500") is None
+    assert await manager.poll_result("hub", "remote-down") is None

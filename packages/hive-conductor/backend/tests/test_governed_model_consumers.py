@@ -18,7 +18,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
-from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -635,7 +635,17 @@ async def test_runtime_wires_container_authorities(
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://env-gateway")
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", "env-key")
 
-    runtime = _runtime()
+    # The endpoint's key now resolves through the effective-key contract
+    # (#1824), which reads the cached `get_settings`; the cache must be built
+    # from the env THIS test states, and dropped again so the monkeypatched
+    # values cannot outlive it.
+    import config
+
+    config.get_settings.cache_clear()
+    try:
+        runtime = _runtime()
+    finally:
+        config.get_settings.cache_clear()
 
     assert runtime.effects is effects
     assert runtime.registry is registry
@@ -665,7 +675,17 @@ async def test_endpoint_refuses_without_gateway_configuration(
         "LITELLM_MASTER_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
-    settings = type("Settings", (), {"litellm_api_base": None, "litellm_api_key": None})()
+    settings = type(
+        "Settings",
+        (),
+        {
+            "litellm_api_base": None,
+            "litellm_api_key": None,
+            # The effective-key contract (#1824) also reads the deployment's
+            # own model key off settings; the stand-in models the real shape.
+            "maistro_llm_api_key": None,
+        },
+    )()
     monkeypatch.setattr(config, "get_settings", lambda: settings)
 
     with pytest.raises(ProviderActivationError, match="LLM gateway is not configured"):
@@ -745,8 +765,11 @@ async def test_settle_records_failed_and_cancelled_operations() -> None:
     assert cancelled_node is not None and cancelled_node.status is RunStatus.CANCELLED
     failed_attempt = await run_store.get_attempt(failed.attempt_id)
     assert failed_attempt is not None and failed_attempt.status is AttemptStatus.FAILED
+    assert failed_attempt.cancellation_cause is None
     cancelled_attempt = await run_store.get_attempt(cancelled.attempt_id)
     assert cancelled_attempt is not None and cancelled_attempt.status is AttemptStatus.CANCELLED
+    assert cancelled_attempt.cancellation_cause is CancellationCause.REQUESTED
+    assert cancelled_attempt.error == "authorization refused"
 
 
 @pytest.mark.asyncio

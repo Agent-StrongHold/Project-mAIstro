@@ -82,11 +82,25 @@ class TestPathTraversal:
             validate_workspace_path("../../etc/passwd")
 
     def test_resolved_path_stays_within_prefix(self) -> None:
-        """Traversal within the allowed tree is fine — resolve() normalizes it."""
+        """Traversal within the allowed tree is fine — realpath normalizes it."""
         path = validate_workspace_path("/tmp/maistro-workspace/a/../b")
         assert str(path).startswith(_resolved_tmp_workspace_root())
         # '..' was resolved, so 'a' is gone
         assert "/a/" not in str(path)
+
+    def test_realpath_symlink_escape_still_blocked_after_lexical_pass(self) -> None:
+        """Lexical startswith can pass a path whose realpath leaves the root."""
+        root = Path("/tmp/maistro-workspace")
+        root.mkdir(parents=True, exist_ok=True)
+        link = root / "escape-to-etc"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to("/etc")
+        try:
+            with pytest.raises(ValueError, match="not in an allowed location"):
+                validate_workspace_path(str(link))
+        finally:
+            link.unlink()
 
 
 class TestAdversarialBypassAttempts:
@@ -108,9 +122,11 @@ class TestAdversarialBypassAttempts:
 
     def test_symlink_escape_blocked(self) -> None:
         """A symlink planted inside the allowed tree that points outside it
-        must not grant access to the target — resolve() follows the link
+        must not grant access to the target — realpath follows the link
         before the prefix check runs."""
-        link = Path("/tmp/maistro-workspace/escape-link")
+        root = Path("/tmp/maistro-workspace")
+        root.mkdir(parents=True, exist_ok=True)
+        link = root / "escape-link"
         if link.is_symlink() or link.exists():
             link.unlink()
         link.symlink_to("/etc")
