@@ -1177,3 +1177,73 @@ locally reproduced green at every gate; (b) retarget PR #2427 base to
 `develop` before merge (pr-base red vs the stacked cursor/ base is the
 documented expected state); (c) nothing pushed this round; the only change is
 this notes section.
+
+## Round at `e4bf58a50f` (independent re-verification + gate pins, 2026-11-22)
+
+**Previous block re-resolved with fresh evidence:** dispatch snapshot again
+showed **0 check-runs / 0 statuses** at the hosted PR #2427 head
+(`sources[28]/[29]` empty lists) — CI pending at the fresh head, not a
+mismatch. Alignment re-verified by fetch: `HEAD == origin/
+cursor/m1-b-p5a-recovered-rediscovery-8551 == e4bf58a50f` (dispatch ==
+`linked_pr_heads["2427"]` == hosted PR head sha); `origin/develop
+dc8c3e756d1a` **is an ancestor**; worktree clean. Making GitHub post
+check-runs or retargeting the PR base are GitHub mutations — out of lane.
+
+**Every prior verification claim independently re-executed at `e4bf58a50f`
+(not trusted):** ruff check `All checks passed!`; format `3618 files`;
+driver's 11-file batch with `MAISTRO_TEST_PG_DSN`
+(`postgresql://maistro:maistro@127.0.0.1:15499/maistro_cr2427`, alembic
+`current` = 068 = repo head) → **614 passed, 0 skipped** (first attempt with a
+`postgresql+asyncpg://` DSN errored 408 setups — asyncpg rejects the SQLAlchemy
+scheme; CI's `ci.yml:363` uses plain `postgresql://`, corrected); no-DSN
+batch → 477 passed, 137 skipped (sums to 614); whole
+`runs` + `graph/durable_runs` with DSN → **2969 passed, 4 skipped, 4
+xfailed**; vulture CI-exact (`packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'`, RATCHET_BASE_REV=origin/develop) → **1221 == 1221, rc 0**;
+radon (`RATCHET_BASE_REV=origin/develop`) → **124 == 124, rc 0**; mypy
+ci.yml:117 exact 10-package list → **Success, 1128 source files**;
+`check-pr-base.py --base develop --labels ''` → **ok rc 0**; the stacked
+`cursor/m1-b-p4b-...` base → FAIL with the ADR-095 retarget message (the
+documented expected state; PR body says so verbatim); `check-suite-inventory.py`
+no-args → **21 suites ok (36027 IDs)**; `git diff --numstat origin/develop --
+quality/` empty.
+
+**Production facts re-read at HEAD:** `container.py:1436`/`:1509` catch
+`(RunIntegrityError, RecoveredDispositionRefused)`; `:1502` gates
+`allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+`_stranded_recovered_attempt` (`:1520-1545`) selects solely
+`is_typed_recovered_attempt(max-by-ordinal)` with no live lease;
+`consumption.py:511` typed look-past only; `grep is_reclaimed_attempt(
+packages/*/src` → definition `lifecycle.py:327` + `__all__` only, **zero
+production call sites**. Planner refusal table (`recovered_disposition.py`
+`plan_recovered_attempt_disposition`) raises for CREATED/QUEUED leaves
+(`_PARKABLE_NODE`).
+
+**Gap found and closed (the only code-adjacent change this round):**
+`d4de14bdb8` (RUNNING gate + refusal catch) shipped with **no tests** pinning
+either behavior. Added two spine-parametrized pins to
+`test_interrupted_reclaim_rediscovery.py` (+6 node IDs, inventory note
+`m1-232-p5a-rediscovery-gate-pins.md`):
+`test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table` (QUEUED
+leaf under stranded typed RECOVERED: gate skips it, zero warnings, RUNNING
+sibling parks, parent stays RUNNING, fixed-point second tick) and
+`test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick` (gate
+forced open at `_replayable_terminal_attempt` — the pre-fix shape: refusal
+warning carries `RecoveredDispositionRefused` exc_info, physical reclaim
+stands, sibling still parks, tick survives). Mutually load-bearing: gate
+removed → test 1 red (warning appears, proven by test 2's forced-open rig);
+catch removed → test 2 red (refusal propagates, as the provenance suite's
+`pytest.raises` refusals show).
+
+**Post-change gates:** rediscovery file live-PG → **24 passed** (3 backends ×
+8); no-DSN → 16 passed, 8 skipped; driver batch no-DSN → **481 passed, 139
+skipped** (exact +4/+2); with DSN → **620 passed, 0 skipped**; inventory
+no-args → **21 suites ok** (core 18863 = 18857 + 6); ruff pair green; vulture/
+radon/mypy untouched (src unchanged, tests outside those scans).
+
+**Residual (driver actions, GitHub mutations prohibited in-lane):** (a) CI
+check-runs on the hosted head pending at dispatch capture — every gate
+reproduced green locally; (b) PR #2427 base must be retargeted to `develop`
+before merge (ADR-095); (c) branch tip now `e4b9e7416b` (+158 lines: 2 tests +
+1 inventory note + this section over the validated `e4bf58a50f`); (d) nothing
+pushed.
