@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar, cast
 
 from maistro.graph.definitions import Edge, Graph, Node
+from maistro.observability.correlation import bind_execution_context
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
@@ -510,62 +511,72 @@ class CanvasCanonicalExecution:
                 )
             return await self._project_stage_result(run_id, stage, cast(T, completed.result))
 
-        await self._resume_for_execution(run_id)
-        captured: list[T] = []
+        # The Run row is the attribution authority for everything this stage
+        # files (#2464): bind its durable Workspace/Project onto the ambient
+        # execution context from the record just read — never from this
+        # composition's configuration. A job claimed by a differently-scoped
+        # worker then cannot attribute its provider effects to the worker's
+        # scope: the governed image client resolves its Binding against this
+        # context and refuses a mismatch before any provider dispatch. The
+        # same fields `RunExecutionService` deliberately leaves to whichever
+        # seam holds them (#707) are the fields this seam holds in hand.
+        with bind_execution_context(workspace_id=run.workspace_id, project_id=run.project_id):
+            await self._resume_for_execution(run_id)
+            captured: list[T] = []
 
-        async def _execute(_work_item: object, _context: object) -> T:
-            result = await operation()
-            captured.append(result)
-            return result
+            async def _execute(_work_item: object, _context: object) -> T:
+                result = await operation()
+                captured.append(result)
+                return result
 
-        context = {"run_id": run_id, "node_id": node_id, "canvas_stage": stage}
-        if node_run is None:
-            _node_run_record, attempt = await self._service.execute_node(
-                run_id,
-                node_id,
-                None,
-                context,
-                executor=_execute,
-                executor_id=_CANVAS_EXECUTOR_ID,
-                timeout_s=timeout_s,
-            )
-        else:
-            attempts = await self._runs.list_attempts(node_run.node_run_id)
-            active = next(
-                (
-                    item
-                    for item in reversed(attempts)
-                    if item.status not in TERMINAL_ATTEMPT_STATUSES
-                ),
-                None,
-            )
-            if active is not None:
-                # The Canvas lease was reclaimed but the physical Attempt can
-                # still say RUNNING after a dead worker. Settle/fence it first;
-                # then re-enter from persisted truth. If the old worker actually
-                # completed in the race, the recursive read returns that result
-                # instead of issuing a duplicate provider effect.
-                await self._settle_abandoned_attempt(
-                    active,
-                    error="Canvas worker lease was reclaimed before retry",
-                    cancellation=CancellationCause.RECOVERED,
+            context = {"run_id": run_id, "node_id": node_id, "canvas_stage": stage}
+            if node_run is None:
+                _node_run_record, attempt = await self._service.execute_node(
+                    run_id,
+                    node_id,
+                    None,
+                    context,
+                    executor=_execute,
+                    executor_id=_CANVAS_EXECUTOR_ID,
+                    timeout_s=timeout_s,
                 )
-                return await self.execute_stage(run_id, stage, operation, timeout_s=timeout_s)
-            attempt = await self._service.retry_node(
-                node_run.node_run_id,
-                None,
-                context,
-                executor=_execute,
-                executor_id=_CANVAS_EXECUTOR_ID,
-                timeout_s=timeout_s,
+            else:
+                attempts = await self._runs.list_attempts(node_run.node_run_id)
+                active = next(
+                    (
+                        item
+                        for item in reversed(attempts)
+                        if item.status not in TERMINAL_ATTEMPT_STATUSES
+                    ),
+                    None,
+                )
+                if active is not None:
+                    # The Canvas lease was reclaimed but the physical Attempt can
+                    # still say RUNNING after a dead worker. Settle/fence it first;
+                    # then re-enter from persisted truth. If the old worker actually
+                    # completed in the race, the recursive read returns that result
+                    # instead of issuing a duplicate provider effect.
+                    await self._settle_abandoned_attempt(
+                        active,
+                        error="Canvas worker lease was reclaimed before retry",
+                        cancellation=CancellationCause.RECOVERED,
+                    )
+                    return await self.execute_stage(run_id, stage, operation, timeout_s=timeout_s)
+                attempt = await self._service.retry_node(
+                    node_run.node_run_id,
+                    None,
+                    context,
+                    executor=_execute,
+                    executor_id=_CANVAS_EXECUTOR_ID,
+                    timeout_s=timeout_s,
+                )
+            if captured:
+                return await self._project_stage_result(run_id, stage, captured[0])
+            if attempt.status is AttemptStatus.COMPLETED:
+                return await self._project_stage_result(run_id, stage, cast(T, attempt.result))
+            raise RunIntegrityError(
+                f"Canvas stage {stage!r} returned without a completed Attempt result"
             )
-        if captured:
-            return await self._project_stage_result(run_id, stage, captured[0])
-        if attempt.status is AttemptStatus.COMPLETED:
-            return await self._project_stage_result(run_id, stage, cast(T, attempt.result))
-        raise RunIntegrityError(
-            f"Canvas stage {stage!r} returned without a completed Attempt result"
-        )
 
     async def cancel(self, run_id: str) -> None:
         """Cancel live physical work and terminalize observed logical work."""

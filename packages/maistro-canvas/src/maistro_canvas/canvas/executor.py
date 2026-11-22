@@ -27,6 +27,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypeVar
 
+from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.runs.store import RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
     CanvasCanonicalExecution,
@@ -162,6 +163,19 @@ def _sanitise_error(exc: Exception) -> str:
     """Return a safe error message — strips stack traces and raw provider bodies."""
     if isinstance(exc, PreclassifiedJobFailure):
         return str(exc)
+    if isinstance(exc, BindingResolutionError):
+        # A Binding that cannot authorize the executing Run's scope (#2464) is
+        # governed-boundary machinery, not a provider fault: folding it into
+        # the generic "provider error" message would misreport an authorization
+        # refusal as a provider outage (the same reason PreclassifiedJobFailure
+        # exists). The fixed message carries no provider or user data — not
+        # even the scope ids. classify_failure sees no auth keyword, so the
+        # refusal stays retryable: on a shared receipt queue, the runner that
+        # owns the Run's scope can still win a later claim.
+        return (
+            "Generation refused: the image Binding is not authorized for this "
+            "Run's Workspace/Project scope."
+        )
     if isinstance(exc, TimeoutError):
         # Includes the canonical Runtime's RuntimeDeadlineExceeded, whose text
         # is an execution id rather than anything the keyword match can see.
@@ -538,7 +552,8 @@ class CanvasExecutor:
                 return await operation()
             except Exception as exc:
                 # Canonical Attempt evidence is durable and inspectable, so it
-                # must receive the same safe provider message as the receipt.
+                # must receive the same safe message as the receipt — including
+                # the Binding-scope refusal `_sanitise_error` names as such.
                 raise RuntimeError(_sanitise_error(exc)) from None
 
         return await self._canonical_execution.execute_stage(

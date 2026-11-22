@@ -272,6 +272,28 @@ class TestErrorSanitisation:
     def test_an_exception_with_no_message_is_still_handled(self):
         assert "provider error" in _sanitise_error(RuntimeError())
 
+    def test_a_binding_authorization_refusal_is_not_reported_as_a_provider_fault(self):
+        """#2464: a Binding that cannot authorize the executing Run's scope is
+        governed-boundary machinery, not a provider outage. The refusal keeps
+        its own truthful, fixed message (no raw scope ids, no provider text)
+        instead of the generic "provider error" — and stays retryable, so on a
+        shared receipt queue the runner that owns the Run's scope can still
+        win a later claim."""
+        from maistro.capabilities.binding_store import BindingScopeDenied
+
+        refusal = BindingScopeDenied(
+            "Binding 'canvas-image-gateway@a/b/c' belongs to Workspace 'tenant-a', "
+            "not 'tenant-b'"
+        )
+        message = _sanitise_error(refusal)
+        assert "provider error" not in message
+        assert "not authorized" in message
+        assert "Workspace/Project scope" in message
+        # The refusal text itself is not the receipt: the fixed message is.
+        assert "tenant-a" not in message
+        # Retryable: no permanent-failure class from the refusal message.
+        assert classify_failure(message) is JobFailureClass.UNKNOWN
+
 
 class TestFailureClassification:
     """Typed deadlines cannot become provider faults because of opaque IDs (#1762)."""
