@@ -324,3 +324,69 @@ pgvector:pgvector:pg18 container, `alembic upgrade head` to 068, DSN on
 No suite count moves (config/docs-only delta), so no `inventory-delta` is
 recorded for this repair either.
 
+## Develop-sync completion and re-validation at 939363f33c (2026-11-22)
+
+The salvage round for this lane found the previous attempt's `origin/develop`
+sync left mid-resolution: an in-progress merge of 433a9660bc (develop's "M1-B6
+— Make every schedule firing create a canonical Run (#2478)") with one
+unmerged path, `issue-1199-canonical-scheduler.md` — both branches had
+appended independent evidence sections at the same spot. This round completed
+the sync as the lane brief directs:
+
+- merge ce150065cd resolved the note conflict by keeping both sides (this
+  branch's sections first, develop's second, leaving the file tail identical
+  to develop so future appends merge cleanly) and took develop's
+  `.gitleaksignore` #2268/overlay webauthn fingerprints verbatim;
+- merge 939363f33c then brought origin/develop e0fd6f9f98 (the two
+  uv.lock-only dep bumps regex #2481 and pylint #2480 on top of 433a9660bc);
+  `uv sync --locked --extra dev` rebuilt the environment (regex
+  2026.9.29 → 2026.11.19);
+- 433a9660bc carries no production or test code (`.gitleaksignore` + this
+  note only) and the two dep bumps touch `uv.lock` only, so the branch's
+  scheduling behavior is unchanged from the previously validated head
+  8dbce87911 — the post-merge delta vs origin/develop is exactly the lane's
+  projection-authority work, its tests, migration 069, and evidence notes.
+
+First-party re-validation at 939363f33c (dedicated pgvector:pg18 container
+`auto-1199-pg`, DSN on 127.0.0.1:19432, `DATABASE_URL` pointed at the scratch
+database and `uv run alembic upgrade head` applied the full chain to 069,
+including this branch's 069_schedule_deletions):
+
+- `uv run ruff check .`: all checks passed; `uv run ruff format --check .`:
+  3630 files already formatted.
+- `uv run mypy` over the seven documented package srcs: no issues in 960
+  source files.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match the recorded
+  inventory; `scripts/check-test-duplicates.py`: ok;
+  `scripts/check-doc-links.py`: ok; `scripts/check-backlog-consistency.py`:
+  ok; `scripts/check-durable-table-inventory.py`: ok (125 tables).
+- vulture with CI-exact arguments (`packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): exit 0, 1221 reviewed identities banked
+  (base e0fd6f9f98, candidate 939363f33c).
+- Core scheduling with the PostgreSQL legs live:
+  `packages/maistro-core/tests/scheduling/` 327 passed, 0 skipped (10.6s).
+- Hive-conductor scheduler/definition/scope/manual-fire plus both
+  projection-authority suites (test_scheduler.py, test_scheduler_bounded_tick.py,
+  test_scheduler_canonical_admission.py, test_scheduler_canonical_due.py,
+  test_schedule_canonical_definitions.py, test_schedule_frequency_floor.py,
+  test_schedule_manual_fire_canonical.py, test_manual_fire_canonical.py,
+  test_schedule_workspace_scope.py, test_schedule_projection_authority.py,
+  test_scheduler_projection_authority.py) with the same live DSN: 290 passed,
+  1 skipped (62.5s) — the skip is the by-design memory leg of
+  `test_independent_processes_racing_startup_converge_on_canonical_truth`
+  (two processes need durable state to share; the sqlite and postgres legs
+  pass).
+- Named acceptance tests re-run explicitly: restart and occurrence-claim
+  (`test_restart_executes_the_queued_run_once`,
+  `test_restart_after_a_cursor_crash_keeps_the_same_run`,
+  `test_two_live_runners_claim_one_occurrence`,
+  `test_hive_row_cannot_force_a_schedule_that_is_not_due`) 4 passed;
+  `test_independent_processes_racing_startup_converge_on_canonical_truth`
+  and `test_restart_retains_a_canonical_edit_and_repairs_the_stale_row` 5
+  passed / 1 by-design skip across backends.
+- `tests/cross_product_parity/`: 26 passed (strict-#459 closeout scenario
+  evidence intact at the merged head).
+
+No suite count moves (merge is docs/config/lock only), so no
+`inventory-delta` is recorded for this addendum.
+
