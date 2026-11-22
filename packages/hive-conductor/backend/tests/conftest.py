@@ -89,18 +89,17 @@ def _isolate_schedule_projection_ledger():
     """Give each test a fresh schedule-projection ledger (#2467).
 
     The migration marker, tombstones, and pending-create markers are
-    process-global product state (``stores.schedule_migration``), so a test
-    that completes the legacy import would otherwise flip every later test's
-    startup reconciliation into repair mode and silently change what its
-    direct ``backfill`` calls mean. Snapshot and restore in place, the same
-    way the username-claim index is isolated.
+    process-global product state (``services.schedule_projection``'s
+    ``schedule_migration`` store), so a test that completes the legacy import
+    would otherwise flip every later test's startup reconciliation into repair
+    mode and silently change what its direct ``backfill`` calls mean. Snapshot
+    and restore in place, the same way the username-claim index is isolated.
     """
     import copy
 
-    import stores
     from services import schedule_projection
 
-    ledger_store = stores.schedule_migration
+    ledger_store = schedule_projection.schedule_migration
     snapshot = copy.deepcopy(dict(ledger_store.items()))
     schedule_projection.reset_projection_health()
     yield

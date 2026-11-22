@@ -16,12 +16,15 @@ at every runner startup, forever.
 This module owns the replacement policy. The direction of authority is the
 canonical store; the Hive row is repaired *from* it:
 
-- **Legacy import is bounded.** A durable migration marker
-  (``stores.schedule_migration``) records that the one-time import of
+- **Legacy import is bounded.** A durable migration marker (the
+  ``schedule_migration`` store below) records that the one-time import of
   pre-#1199 Hive rows completed. Only a startup that finds no marker runs the
   import pass (``scheduler.backfill_canonical_definitions``): put rows with
   no canonical counterpart and drift-reconcile rows whose canonical row the
-  old lazy tick left stale. Completing the pass writes the marker; every
+  old lazy tick left stale. Completing the pass writes the marker only if
+  every row imported; a row that fails keeps the marker unwritten, so the
+  next startup retries the whole pass instead of sealing the loss in, and
+  the affected rows are named on the health surface. Every
   startup after it runs the repair pass instead. A previously migrated
   schedule can therefore never be reimported, whatever an old Hive record
   says.
@@ -57,7 +60,20 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import stores
+from stores import JsonStore
+
 logger = logging.getLogger(__name__)
+
+#: The ledger's durable store, owned by this module rather than ``stores.py``:
+#: every ``stores.py`` store is a row in the cutover retirement ledger (#1046)
+#: and a retiring surface may not gain consumers, so durable state added here
+#: lives beside the only code that writes it — the same move ``settings`` made
+#: out of ``stores.py`` (#334) — while ``stores.register_json_store`` keeps the
+#: deployment's persistence wiring and initialization centralized, so the
+#: marker, tombstones, and pending records cannot silently miss the configured
+#: backend and stop surviving the restarts they exist to close.
+schedule_migration: JsonStore = stores.register_json_store(JsonStore("schedule_migration"))
 
 _MARKER_KEY = "migration"
 _TOMBSTONE_PREFIX = "tombstone:"
@@ -139,9 +155,7 @@ class ScheduleProjectionLedger:
 
 def ledger() -> ScheduleProjectionLedger:
     """The ledger over the Hive-persisted ``schedule_migration`` store."""
-    import stores
-
-    return ScheduleProjectionLedger(stores.schedule_migration)
+    return ScheduleProjectionLedger(schedule_migration)
 
 
 def mark_pending_create(sid: str) -> bool:
@@ -221,10 +235,10 @@ async def finish_tombstoned_row(sid: str, container: Any) -> bool:
     """
     if not ledger().is_tombstoned(sid):
         return False
-    import stores
+    from services.scheduler import drop_hive_schedule_row
 
     await container.schedule_store.delete(sid)
-    stores.schedules.pop(sid, None)
+    drop_hive_schedule_row(sid)
     logger.info(
         "Schedule %s was deleted canonically; dropped its stale Hive projection instead of "
         "reimporting it (#2467)",
@@ -241,9 +255,9 @@ async def _repair_projection_one(sid: str, container: Any, degraded: list[str]) 
     from canonical ``due()``) and can never be reimported post-marker, so the
     honest surface is the health record, not a silent stale definition.
     """
-    import stores
+    from services.scheduler import hive_schedule_row, replace_hive_schedule_row
 
-    row = stores.schedules.get(sid)
+    row = hive_schedule_row(sid)
     if row is None:
         return 0
     canonical = await container.schedule_store.get(sid)
@@ -267,7 +281,7 @@ async def _repair_projection_one(sid: str, container: Any, degraded: list[str]) 
     if not _projection_drifted(canonical, row):
         return 0
     updates["updated_at"] = canonical.updated_at
-    stores.schedules[sid] = row.model_copy(update=updates)
+    replace_hive_schedule_row(sid, row.model_copy(update=updates))
     logger.info(
         "Repaired Hive projection of schedule %s from the canonical definition (#2467)",
         sid,
@@ -284,12 +298,15 @@ async def _resolve_pending_creates(runner: Any, container: Any) -> int:
     holds no receipt. Canonical row absent: the create never committed (or
     its compensation ran); the marker closes with nothing to project.
     """
-    import stores
 
     pending = ledger().pending_creates()
     if not pending:
         return 0
-    from services.scheduler import definition_lock
+    from services.scheduler import (
+        definition_lock,
+        hive_schedule_row,
+        replace_hive_schedule_row,
+    )
 
     resolved = 0
     for sid in sorted(pending):
@@ -303,9 +320,9 @@ async def _resolve_pending_creates(runner: Any, container: Any) -> int:
                         sid,
                     )
                 else:
-                    row = stores.schedules.get(sid)
+                    row = hive_schedule_row(sid)
                     if row is None:
-                        stores.schedules[sid] = _hive_row_from_canonical(canonical)
+                        replace_hive_schedule_row(sid, _hive_row_from_canonical(canonical))
                         resolved += 1
                         logger.info(
                             "Rebuilt the Hive projection of schedule %s from its committed "
@@ -313,8 +330,8 @@ async def _resolve_pending_creates(runner: Any, container: Any) -> int:
                             sid,
                         )
                     elif _projection_drifted(canonical, row):
-                        stores.schedules[sid] = row.model_copy(
-                            update=_canonical_projection_updates(canonical)
+                        replace_hive_schedule_row(
+                            sid, row.model_copy(update=_canonical_projection_updates(canonical))
                         )
                         resolved += 1
                 ledger().clear_pending_create(sid)
@@ -334,20 +351,23 @@ async def run_startup_reconciliation() -> int:
 
     Runs before the first tick. With no migration marker, the legacy import
     pass runs (``backfill_canonical_definitions``) and the marker is written
-    on completion — from then on, every startup repairs the projection from
-    canonical truth and a stale Hive row can no longer rewrite it. Returns
+    only on a fully successful pass — from then on, every startup repairs the
+    projection from canonical truth and a stale Hive row can no longer
+    rewrite it. A partially failed pass raises ``LegacyImportIncomplete``;
+    the marker stays unwritten (retryable next startup) and the failed rows
+    are degraded on the health surface. Returns
     how many rows changed. A half-wired Container (a configured core missing
     its schedule/project store) records the degradation on the health surface
     and reconciles nothing, exactly as the old backfill silently did with a
     missing store.
     """
-    import stores
-
     from services.scheduler import (
+        LegacyImportIncomplete,
         ScheduleAdmissionUnavailable,
         _definition_authority,
         backfill_canonical_definitions,
         definition_lock,
+        hive_schedule_ids,
     )
 
     lg = ledger()
@@ -364,11 +384,28 @@ async def run_startup_reconciliation() -> int:
     _PROJECTION_HEALTH["degraded"] = []
     changed = await _resolve_pending_creates(runner, container)
     if not lg.migrated():
-        changed += await backfill_canonical_definitions()
-        lg.mark_migrated()
+        skipped: list[str] = []
+        try:
+            changed += await backfill_canonical_definitions(degraded=skipped)
+            lg.mark_migrated()
+            # Rows the import could never authorize (the canonical scope's
+            # deterministic refusals) are skipped, not failed: the marker
+            # completes and they are named here until the repair pass takes
+            # over the naming next startup.
+            _PROJECTION_HEALTH["degraded"] = skipped
+        except LegacyImportIncomplete as exc:
+            # A failed put must not complete the migration: leave the marker
+            # unwritten so the next startup retries the import pass, and name
+            # the affected rows on the health surface rather than reporting a
+            # clean migration over rows that cannot fire.
+            _PROJECTION_HEALTH["degraded"] = sorted(set(skipped) | set(exc.failed_sids))
+            logger.error(
+                "Legacy schedule import incomplete; migration marker left unwritten for retry: %s",
+                exc,
+            )
     else:
         degraded: list[str] = []
-        for sid in list(stores.schedules.keys()):
+        for sid in hive_schedule_ids():
             try:
                 async with definition_lock(sid):
                     if await finish_tombstoned_row(sid, container):

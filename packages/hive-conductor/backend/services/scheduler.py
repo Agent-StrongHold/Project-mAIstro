@@ -120,6 +120,20 @@ class ScheduleAdmissionUnavailable(RuntimeError):
     """
 
 
+class LegacyImportIncomplete(Exception):
+    """The one-time legacy import pass finished with per-row failures.
+
+    Carries the sids whose import failed so the caller can name them on the
+    health surface and — critically — leave the migration marker unwritten,
+    keeping the import pass retryable on the next startup instead of
+    permanently sealing the failed legacy rows out of canonical truth.
+    """
+
+    def __init__(self, failed_sids: list[str]) -> None:
+        super().__init__(f"legacy import failed for {len(failed_sids)} row(s): {failed_sids}")
+        self.failed_sids = failed_sids
+
+
 async def fire_now(sid: str, *, fire_id: str | None = None, requester_id: str | None = None) -> str:
     """Fire a schedule now through the one canonical admission authority.
 
@@ -371,7 +385,41 @@ async def delete_canonical_definition(sid: str) -> None:
     await authority[1].schedule_store.delete(sid)
 
 
-async def backfill_canonical_definitions() -> int:
+def hive_schedule_ids() -> list[str]:
+    """The Hive schedule projection's ids (the retiring ``stores.schedules`` map).
+
+    ``services.schedule_projection`` reaches the rows only through these
+    helpers: the projection-policy module must not itself name the retiring
+    surface, so the map access stays here, beside the tick loop that has
+    always owned it (#1046 cutover ratchet).
+    """
+    import stores
+
+    return list(stores.schedules.keys())
+
+
+def hive_schedule_row(sid: str) -> Any | None:
+    """One Hive projection row, or None when absent (see :func:`hive_schedule_ids`)."""
+    import stores
+
+    return stores.schedules.get(sid)
+
+
+def replace_hive_schedule_row(sid: str, row: Any) -> None:
+    """Write one Hive projection row (see :func:`hive_schedule_ids`)."""
+    import stores
+
+    stores.schedules[sid] = row
+
+
+def drop_hive_schedule_row(sid: str) -> None:
+    """Drop one Hive projection row (see :func:`hive_schedule_ids`)."""
+    import stores
+
+    stores.schedules.pop(sid, None)
+
+
+async def backfill_canonical_definitions(*, degraded: list[str] | None = None) -> int:
     """Put each Hive row missing or drifted from the canonical store; return how many.
 
     This is the bounded *legacy import* pass of the startup reconciliation
@@ -393,6 +441,20 @@ async def backfill_canonical_definitions() -> int:
     tombstoned row must not rewrite what canonical already acknowledged.
     A tombstoned row is skipped in every phase: its deletion is durable
     canonical truth to finish, not a schedule to import.
+
+    A row whose put fails is logged and collected, not swallowed: after the
+    pass, any failures raise :class:`LegacyImportIncomplete` so the caller
+    can keep the migration marker unwritten and retry the whole pass on the
+    next startup, rather than marking a partially failed import complete.
+    A row the canonical scope refuses — no actor principal (#1201), a Project
+    that no longer exists, a departed Workspace member — raises ``ValueError``
+    and can never be imported: collecting it as a failure would keep the
+    marker unwritten forever and disable the reconciliation for every other
+    row. It is skipped instead — it can never fire either way — named through
+    ``degraded`` (the health surface) when the caller passes a list, and left
+    to the repair pass's degraded reporting after the marker exists. Only a
+    store-level error (connectivity, serialization) is transient enough to
+    fail the pass for retry.
     """
     import stores
 
@@ -404,14 +466,33 @@ async def backfill_canonical_definitions() -> int:
     if store is None or getattr(container, "project_scope_store", None) is None:
         return 0
     written = 0
+    failed: list[str] = []
+    skipped: list[str] = []
     for sid in list(stores.schedules.keys()):
         try:
             async with definition_lock(sid):
                 if await finish_tombstoned_row(sid, container):
                     continue
                 written += await _backfill_one(runner, sid, container)
+        except ValueError as exc:
+            # A deterministic refusal (_canonical_scope's no-actor/unknown
+            # Project/departed-member checks, or the canonical model refusing
+            # the definition): the put would fail identically on every retry,
+            # so failing the pass would keep the marker unwritten forever.
+            # The row can never fire either way (#1201) — skip it, name it.
+            skipped.append(sid)
+            logger.warning(
+                "Legacy schedule %s cannot be imported (%s); skipped as degraded (#2467)",
+                sid,
+                exc,
+            )
         except Exception as exc:
+            failed.append(sid)
             logger.warning("Failed to backfill canonical schedule %s: %s", sid, exc)
+    if degraded is not None:
+        degraded.extend(skipped)
+    if failed:
+        raise LegacyImportIncomplete(failed)
     return written
 
 

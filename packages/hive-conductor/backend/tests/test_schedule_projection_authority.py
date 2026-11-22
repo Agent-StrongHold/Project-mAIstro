@@ -760,18 +760,25 @@ def test_a_create_whose_compensation_also_fails_is_resolved_at_restart(
     )[0].schedule_id
     assert stores.schedules.get(sid) is None, "the process died before the projection"
 
-    assert _reconcile(configured) >= 1
-    projected = stores.schedules.get(sid)
-    assert projected is not None and projected.name == "unprojected", (
-        "the restart repairs the projection from the committed canonical row"
-    )
-    listed = asyncio.run(
-        configured.schedule_store.list_for_project(
-            workspace_id=configured.test_workspace, project_id=root.project_id
+    try:
+        assert _reconcile(configured) >= 1
+        projected = stores.schedules.get(sid)
+        assert projected is not None and projected.name == "unprojected", (
+            "the restart repairs the projection from the committed canonical row"
         )
-    )
-    assert [schedule.schedule_id for schedule in listed] == [sid], "still one identity"
-    assert not ledger().pending_creates()
+        listed = asyncio.run(
+            configured.schedule_store.list_for_project(
+                workspace_id=configured.test_workspace, project_id=root.project_id
+            )
+        )
+        assert [schedule.schedule_id for schedule in listed] == [sid], "still one identity"
+        assert not ledger().pending_creates()
+    finally:
+        # The projected row must not leak into the later scenarios' import
+        # pass: a strict pass (LegacyImportIncomplete) treats a row it cannot
+        # account for as a failure, so this file stays self-cleaning like the
+        # rest of the suite.
+        _drop_hive_row(sid)
 
 
 def test_a_create_succeeds_even_when_its_marker_clear_fails(
@@ -851,6 +858,85 @@ def test_a_tombstoned_row_is_skipped_by_the_import_pass_itself(configured: Any) 
         )
         assert stores.schedules.get(sid) is None, "the stale record is dropped instead"
         assert ledger().migrated(), "the pass still completes and writes the marker"
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_a_no_actor_legacy_row_is_skipped_named_and_never_blocks_the_marker(
+    configured: Any,
+) -> None:
+    """A legacy row no principal can fire (#1201) cannot authorize an import:
+    its canonical put would refuse it ("schedule has no actor principal").
+    Collecting that as a pass failure would leave the migration marker
+    unwritten forever — the Hive stores are seeded with such rows — bricking
+    startup reconciliation and the projection repair for every other row. So
+    the row is skipped: never imported, named on the health surface, and the
+    marker completes (#2467)."""
+    import stores
+    from services.schedule_projection import ledger, projection_health
+
+    sid = "s-legacy-no-actor"
+    stores.schedules._data[sid] = _legacy_row(sid, configured.test_workspace, "", user_id="")
+    try:
+        assert _reconcile(configured) >= 0
+        assert ledger().migrated(), "the pass completes despite the unfireable row"
+        assert asyncio.run(configured.schedule_store.get(sid)) is None, (
+            "a row no principal can fire is never imported"
+        )
+        assert sid in projection_health()["degraded"], (
+            "the skipped row is named, not silently dropped"
+        )
+
+        _restart_canonical_store(configured)
+        assert _reconcile(configured) >= 0
+        assert sid in projection_health()["degraded"], (
+            "the repair pass keeps naming a row canonical cannot account for"
+        )
+        assert asyncio.run(configured.schedule_store.get(sid)) is None, (
+            "and it still cannot be reimported after the marker"
+        )
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_a_failed_import_put_keeps_the_marker_unwritten_for_retry(configured: Any) -> None:
+    """The one-time import must not seal a transient failure in: a row whose
+    canonical put dies raises :class:`LegacyImportIncomplete`, the migration
+    marker stays unwritten (the whole pass retries on the next startup), the
+    failed row is named on the health surface, and a healed store completes
+    the import (#2467)."""
+    import stores
+    from services.schedule_projection import ledger, projection_health
+    from services.scheduler import LegacyImportIncomplete, backfill_canonical_definitions
+
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(configured.test_workspace))
+    sid = "s-legacy-transient"
+    stores.schedules._data[sid] = _legacy_row(sid, configured.test_workspace, root.project_id)
+    store = configured.schedule_store
+    original_put = store.put
+
+    async def failing_put(definition: Any) -> None:
+        if definition.schedule_id == sid:
+            raise RuntimeError("simulated canonical outage")
+        return await original_put(definition)
+
+    try:
+        store.put = failing_put
+        with pytest.raises(LegacyImportIncomplete):
+            asyncio.run(backfill_canonical_definitions())
+
+        assert _reconcile(configured) == 0, "the failed put writes nothing"
+        assert not ledger().migrated(), "the marker stays unwritten for the next startup"
+        health = projection_health()
+        assert health["migrated"] is False
+        assert sid in health["degraded"], "the failed row is named on the health surface"
+
+        store.put = original_put
+        assert _reconcile(configured) >= 1
+        stored = asyncio.run(configured.schedule_store.get(sid))
+        assert stored is not None, "the retried pass imports the row once the store heals"
+        assert ledger().migrated(), "the healed pass writes the durable marker"
+        assert sid not in projection_health()["degraded"]
     finally:
         _drop_hive_row(sid)
 
