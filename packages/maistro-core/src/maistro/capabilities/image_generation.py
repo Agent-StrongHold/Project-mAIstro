@@ -208,8 +208,15 @@ class ImageGenerationEgress:
         attempt_id: str,
         effect_key: str,
         request: ImageGenerationRequest,
+        actor_id: str = "",
     ) -> ImageGenerationResult:
-        """Run one governed image generation and return the decoded images."""
+        """Run one governed image generation and return the decoded images.
+
+        ``actor_id`` is the principal the enclosing Run acts for (#2464); it
+        rides onto the Invocation so quota and audit attribute the physical
+        effect to the same identity the Run was admitted under. Blank keeps
+        the historical "system" attribution for callers with no principal.
+        """
 
         await _require_image_binding(self._effects.bindings, binding)
         selected: list[LlmGatewayImageProvider] = []
@@ -242,6 +249,7 @@ class ImageGenerationEgress:
             resolver=routing.resolver(resolve),
             executor=routing.executor(execute),
             usage_from=lambda body: _usage(selected[0], body),
+            actor_id=actor_id,
         )
         return await self._result(invocation)
 
