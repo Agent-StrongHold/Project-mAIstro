@@ -102,6 +102,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
@@ -481,6 +482,15 @@ class Container:
     # projects each inserted Event onto `event_bus`, so the durable log bridge
     # and legacy triggers/subscribers keep observing recovery facts.
     canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
+    # Recovery dispositions (#2468) announce through the same canonical
+    # authority: the sink `create_container` builds over
+    # `canonical_event_publisher`, injected into the abandoned-Attempt and
+    # terminal-Attempt replay reconcilers so their dispositions persist
+    # through the backend-selected EventEnvelope store before the legacy bus
+    # observes them as a downstream projection. `None` only on a hand-built
+    # Container with no canonical publisher; those sweeps keep the
+    # legacy-only projection (`_recovery_events`), never a second authority.
+    recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -1344,10 +1354,10 @@ class Container:
         work was in flight. Both halves are idempotent, so a crash between
         them heals on any later reconcile of the same Attempt rather than
         needing this tick to be atomic — including a crash between the
-        physical reclaim and that first reconciliation (#1863): the replay
-        half re-finds a reclaimed Attempt its NodeRun still shows ``RUNNING``
-        for, so the stranded Run is parked on the next tick instead of
-        waiting for a reconcile that would never come.
+        physical reclaim and that first reconciliation (#1863 / #232 P5a): the
+        replay half re-finds a typed RECOVERED Attempt its NodeRun still shows
+        ``RUNNING`` for, so the stranded Run is parked on the next tick
+        instead of waiting for a reconcile that would never come.
 
         The tick also refreshes the recovery-visibility gauges (#338): how
         many Runs are non-terminal, and how old the oldest one is.
@@ -1421,13 +1431,16 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            # The Container's bus, so the sweep's dispositions land on the
-            # canonical Event stream rather than only in Run state (#462). A
-            # Container built without one still sweeps; the events are how the
-            # decision becomes inspectable, not how it is made.
+            # The canonical sink `create_container` wired (#2468): the sweep's
+            # dispositions persist through the backend-selected EventEnvelope
+            # store first and only then reach the legacy bus as a downstream
+            # projection of the persist-first publisher. A Container built
+            # without a canonical publisher still sweeps, projecting on its
+            # bare bus; the events are how the decision becomes inspectable,
+            # not how it is made.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=self._recovery_events(),
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
@@ -1445,6 +1458,36 @@ class Container:
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
+
+    def _recovery_events(self) -> RecoveryEventSink | None:
+        """The authority the recovery reconcilers announce dispositions through (#2468).
+
+        The composition root's `CanonicalRecoveryEventSink` persists each
+        disposition through the one backend-selected EventEnvelope store and
+        only then projects it onto the legacy bus, so repeated sweeps cannot
+        mint a second canonical identity for the same logical recovery fact.
+        A hand-built Container with no canonical publisher keeps its
+        legacy-only projection: there is no canonical store behind it to
+        persist through, and none is invented here.
+        """
+        sink = self.recovery_event_sink
+        # A sink captured at composition time can go stale when a recovery
+        # replica swaps ``run_store`` (crash-window harnesses do this to model
+        # a restart on an independent pool). Re-bind to the live store through
+        # the canonical publisher when that happens, so the Run lookup and the
+        # persisted disposition agree with the store being recovered. The
+        # publisher is the one durable authority; the sink is only its adapter.
+        if sink is not None:
+            runs = getattr(sink, "_runs", None)
+            if runs is None or runs is self.run_store:
+                return sink
+        if self.canonical_event_publisher is not None:
+            from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+            return CanonicalRecoveryEventSink(self.run_store, self.canonical_event_publisher)
+        if sink is not None:
+            return sink
+        return self.event_bus
 
     async def _latest_reconcilable_completed_attempt(
         self, node_run_id: str, *, moment: datetime
@@ -1485,6 +1528,7 @@ class Container:
         spend the whole budget a second time. Only observed persisted progress
         (an accepted outcome or a Run settlement) charges the budget (#1850).
         """
+        from maistro.runs.model import RunStatus
         from maistro.runs.recovered_disposition import RecoveredDispositionRefused
         from maistro.runs.store import RunIntegrityError
 
@@ -1492,18 +1536,23 @@ class Container:
         for node_run in await self.run_store.list_node_runs(run_id):
             if done >= remaining:
                 break
-            attempt = await self._replayable_terminal_attempt(node_run.node_run_id, moment=moment)
+            # P5a rediscovery is for mid-flight RUNNING NodeRuns only; a
+            # CREATED/QUEUED leaf under a typed RECOVERED Attempt is the
+            # reclaim half's refusal table (#232 P4a), not rediscovery scope.
+            attempt = await self._replayable_terminal_attempt(
+                node_run.node_run_id,
+                moment=moment,
+                allow_stranded_recovered=node_run.status is RunStatus.RUNNING,
+            )
             if attempt is None:
                 continue
             try:
                 if await self._reconcile_terminal_attempt_progress(attempt, reconciler):
                     done += 1
             except (RunIntegrityError, RecoveredDispositionRefused):
-                # The replay half re-finds the same reclaimed Attempt the sweep
-                # half just refused (#232 P4a refusal table): a NodeRun that
-                # never left CREATED/QUEUED — or that another path terminalized
-                # concurrently — is not this tick's to rewrite, and one refusal
-                # must not abort the tick for every other Run.
+                # Same catch as `_reclaim_abandoned_attempts`: a refusal from
+                # the disposition planner must not abort the tick after the
+                # physical Attempt is already settled.
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
                     attempt.attempt_id,
@@ -1512,43 +1561,51 @@ class Container:
                 continue
         return done
 
-    async def _stranded_reclaimed_attempt(
+    async def _stranded_recovered_attempt(
         self, node_run_id: str, *, moment: datetime
     ) -> Attempt | None:
-        """A reclaimed Attempt whose reconciliation a crash interrupted (#1863).
+        """A typed RECOVERED Attempt whose reconciliation a crash interrupted (#232 P5a).
 
-        The lease sweep commits the physical ``CANCELLED`` before the
-        Container reconciles it; a process lost in between leaves the NodeRun
-        and its Run ``RUNNING`` with no live work behind them. Rediscovery is
-        deliberately narrow: only when the reclaimed Attempt is still the
-        *newest* row under the NodeRun — a newer Attempt means the window
-        already healed and someone re-attempted the node, and parking over
-        that would overwrite a decision the newer Attempt owns. Anything that
-        is not reclaim evidence (a FAILED, TIMED_OUT, or requested-CANCELLED
-        Attempt) stays with its retry owner, exactly as before.
+        The lease sweep commits the physical ``CANCELLED``+``RECOVERED`` before
+        the Container reconciles it; a process lost in between leaves the
+        NodeRun and its Run ``RUNNING`` with no live work behind them.
+        Rediscovery is deliberately narrow: only when the typed RECOVERED
+        Attempt is still the *newest* row under the NodeRun — a newer Attempt
+        means the window already healed. FAILED, TIMED_OUT, requested /
+        unknown CANCELLED, and spoofed reclaim-looking error text stay with
+        their owners; no string parsing selects rediscovery.
         """
-        from maistro.runs.lifecycle import has_live_execution_lease, is_reclaimed_attempt
+        from maistro.runs.lifecycle import has_live_execution_lease
+        from maistro.runs.recovered_disposition import is_typed_recovered_attempt
 
         attempts = await self.run_store.list_attempts(node_run_id)
         if not attempts or has_live_execution_lease(attempts, moment):
             return None
-        latest = max(attempts, key=lambda attempt: attempt.ordinal)
-        return latest if is_reclaimed_attempt(latest) else None
+        latest = max(attempts, key=lambda item: item.ordinal)
+        return latest if is_typed_recovered_attempt(latest) else None
 
     async def _replayable_terminal_attempt(
-        self, node_run_id: str, *, moment: datetime
+        self,
+        node_run_id: str,
+        *,
+        moment: datetime,
+        allow_stranded_recovered: bool = True,
     ) -> Attempt | None:
         """The one Attempt this sweep may replay for a NodeRun, if any.
 
         A persisted completion keeps its existing priority — replaying it is
         the older half of this sweep (#804) and must not lose a selection race
-        against the rediscovery added for #1863. Only a NodeRun with no
-        replayable completion falls to the stranded-reclaim check.
+        against rediscovery (#1863 / #232 P5a). Only a NodeRun with no
+        replayable completion falls to the stranded typed-RECOVERED check, and
+        only when ``allow_stranded_recovered`` is true (RUNNING NodeRuns —
+        prelaunch CREATED/QUEUED leaves stay with the reclaim refusal path).
         """
         completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
         if completed is not None:
             return completed
-        return await self._stranded_reclaimed_attempt(node_run_id, moment=moment)
+        if not allow_stranded_recovered:
+            return None
+        return await self._stranded_recovered_attempt(node_run_id, moment=moment)
 
     async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
@@ -1561,7 +1618,7 @@ class Container:
         moment = now if now is not None else datetime.now(UTC)
         reconciler = AttemptLifecycleReconciler(
             self.run_store,
-            events=self.event_bus,
+            events=self._recovery_events(),
             source="maistro.container.recover_abandoned_attempts",
         )
         reconciled = 0
@@ -3140,6 +3197,7 @@ async def create_container(
             resilience_policies=resilience_policies,
             event_bus=event_bus,
             canonical_event_publisher=canonical_event_publisher,
+            recovery_event_sink=recovery_event_sink,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
