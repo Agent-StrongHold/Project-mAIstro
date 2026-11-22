@@ -27,7 +27,6 @@ Create Date: 2026-11-22
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "069"
@@ -37,18 +36,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "schedule_deletions",
-        sa.Column("schedule_id", sa.Text, nullable=False),
-        sa.Column(
-            "deleted_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.PrimaryKeyConstraint("schedule_id", name="pk_schedule_deletions"),
+    # IF NOT EXISTS, like 063/064: stamp-back and re-upgrade is a live repair
+    # path, and the chain's contract is that re-applying a revision over the
+    # schema it already built is adoption, not an error
+    # (tests/migrations/test_migration_chain.py drives exactly that walk).
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_deletions (
+            schedule_id TEXT NOT NULL,
+            deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT pk_schedule_deletions PRIMARY KEY (schedule_id)
+        )
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_table("schedule_deletions")
+    op.execute("DROP TABLE IF EXISTS schedule_deletions")
