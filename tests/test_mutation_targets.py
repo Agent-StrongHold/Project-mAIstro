@@ -297,6 +297,88 @@ def _paths_match(declared: list[str], changed: list[str]) -> bool:
     return any(matches(pattern, path) for pattern in declared for path in changed)
 
 
+class TestDependencyBumpPrSurfacesStillTrigger:
+    """PRs whose diff is exactly Python dependency metadata are the most
+    recurring non-Python surface in the repository (every dependabot uv
+    bump), and 'packages/**/*.py' cannot match them: a bump edits uv.lock and
+    packages/*/pyproject.toml, and its scan-triage round may edit
+    .trivyignore.yaml. With no matching trigger path such a PR never started
+    this job, so the required "Mutation gate (changed critical lines)" row
+    had no check-run on the candidate head and gates-ran stayed pending
+    forever — measured on #2450's head 62ce6f87a9 (anthropic 1.11.0 ->
+    2.9.0) with the CI-exact evaluator (check-gates-ran.py
+    --require-complete --base-branch develop --event-name pull_request
+    --changed-files <measured envelope>): 73/74 required checks present, the
+    mutation row absent -> exit 2 (PENDING). The same failure mode was fixed
+    for image pins (#2120), grant ledgers / inventory notes (#2371), gate
+    scripts (#2432) and dev-tool requirements (#2345); this pins the
+    lockfile, package-manifest and security-suppression surfaces #2450 hit.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+    CRITICAL_LIST: ClassVar[Path] = REPO / "quality" / "mutation-critical-files.json"
+
+    def _declared_paths(self) -> list[str]:
+        """The workflow's declared pull_request paths patterns."""
+        import yaml
+
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        triggers = doc.get(True, doc.get("on"))  # YAML 1.1 parses `on:` as True
+        paths = triggers["pull_request"]["paths"]
+        assert isinstance(paths, list) and all(isinstance(p, str) for p in paths)
+        return paths
+
+    def test_the_dependency_surfaces_actually_exist(self):
+        """If they did not, the honest fix would be deleting the trigger
+        entries rather than adding path filters for nothing."""
+        assert (REPO / "uv.lock").is_file()
+        assert (REPO / ".trivyignore.yaml").is_file()
+        assert (REPO / "packages" / "maistro-core" / "pyproject.toml").is_file()
+        assert (REPO / "packages" / "maistro-bootstrap" / "pyproject.toml").is_file()
+
+    def test_a_workspace_lock_bump_pr_triggers_the_gate(self):
+        """The #2450 surface: a PR whose content bump is the uv.lock row for
+        a dependency must start the job."""
+        assert _paths_match(self._declared_paths(), ["uv.lock"])
+
+    def test_a_package_manifest_bump_pr_triggers_the_gate(self):
+        """Dependabot edits the version constraint in the package manifest
+        (maistro-core and maistro-bootstrap builders extra in #2450); the
+        trigger must reach any package depth."""
+        assert _paths_match(
+            self._declared_paths(),
+            [
+                "packages/maistro-core/pyproject.toml",
+                "packages/maistro-bootstrap/pyproject.toml",
+            ],
+        )
+
+    def test_a_scan_suppression_triage_pr_triggers_the_gate(self):
+        """The triage round of #2450 added a scoped gcp-service-account
+        suppression to .trivyignore.yaml; the security-suppression registry
+        is an evidence surface like quality/image-pins.json and must start
+        the job."""
+        assert _paths_match(self._declared_paths(), [".trivyignore.yaml"])
+
+    def test_dependency_surfaces_stay_zero_overlap_by_construction(self):
+        """The added triggers produce *evidence*, not mutation coverage:
+        every mutation-critical source is a .py file under packages/, so a
+        lock/manifest/suppression-only diff can never intersect the critical
+        set and resolves to the zero-overlap summary instead of mutating
+        anything. If a lockfile or manifest path ever became
+        mutation-critical, the trigger addition above would silently change
+        gate semantics and this pin must be revisited.
+        """
+        import json
+
+        critical = json.loads(self.CRITICAL_LIST.read_text(encoding="utf-8"))
+        sources = [entry["source"] for entry in critical["entries"]]
+        assert sources, "critical list must not be empty"
+        assert all(source.endswith(".py") for source in sources)
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "-- packages" in workflow
+
+
 class TestEvidenceOnlyPrSurfacesStillTrigger:
     """A PR whose diff touches exactly a governance/evidence surface never
     started this workflow, so its required "Mutation gate (changed critical
