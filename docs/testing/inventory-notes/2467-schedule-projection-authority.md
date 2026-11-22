@@ -1,13 +1,16 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +30
+  packages/hive-conductor/backend/tests: +45
 ---
 
 # Startup reconciliation converges the schedule projection on canonical truth (#2467)
 
 `packages/hive-conductor/backend/tests/test_schedule_projection_authority.py`
-is new: 30 node IDs over the in-memory store and a SQLite store on a tmp file,
-behind a real `create_container` Container swapped into the engine. The SQLite
+is new: 45 node IDs — 15 scenarios over the in-memory store, a SQLite store on
+a tmp file, and the production ``PgScheduleStore`` on the shared test server
+(skips without ``MAISTRO_TEST_PG_DSN``, refuses under
+``MAISTRO_REQUIRE_PG_LEGS``, the repo's durable-leg convention) — behind a real
+`create_container` Container swapped into the engine. The SQLite and PostgreSQL
 leg re-opens the store across the simulated restart, so the canonical rows
 under test are the persisted ones.
 

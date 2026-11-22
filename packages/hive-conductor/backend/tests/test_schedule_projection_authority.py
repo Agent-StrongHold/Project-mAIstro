@@ -80,9 +80,114 @@ async def _sqlite_store(path: pathlib.Path) -> Any:
     return store
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+class _PgStoreLeg:
+    """The production ``PgScheduleStore``, pinned to one background loop.
+
+    These tests drive the store from many short-lived event loops (one per
+    ``asyncio.run``, the same sync style as the sibling schedule suites), and
+    an asyncpg pool is bound to the loop that created it — sharing one pool
+    across them raises "another operation is in progress". Pinning the pool,
+    and every store call, to one dedicated loop keeps the production store
+    semantics while the tests stay sync. Each store call blocks the caller
+    until the pinned loop finishes it, which for these sequential scenarios
+    is exactly what ``asyncio.run`` would have done.
+    """
+
+    def __init__(self, dsn: str, *, fresh: bool = False) -> None:
+        import functools
+        import threading
+
+        from maistro.persistence import _register_json_codecs
+        from maistro.scheduling.pg_store import PgScheduleStore
+
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+        async def create() -> PgScheduleStore:
+            import asyncpg
+
+            pool = await asyncpg.create_pool(
+                dsn, min_size=1, max_size=4, init=_register_json_codecs
+            )
+            if fresh:
+                async with pool.acquire() as conn:
+                    await conn.execute("TRUNCATE schedules")
+            return PgScheduleStore(pool)
+
+        self._store = self._submit(create())
+        self._close = functools.partial(self._submit, self._store._pool.close())
+
+    def _submit(self, coro: Any) -> Any:
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=60)
+
+    def _delegate(self, coro: Any) -> Any:
+        """An awaitable that runs ``coro`` on the pinned loop.
+
+        The store's callers (the scheduler, the tests) all ``await`` store
+        methods, so the adapter hands back a coroutine in the caller's own
+        loop that hops to the pinned loop and waits there — real concurrency
+        for concurrent callers, none of the cross-loop pool misuse.
+        """
+
+        async def hop() -> Any:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            return await asyncio.wrap_future(future)
+
+        return hop()
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._store, name)
+        if not callable(attribute):
+            return attribute
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            return self._delegate(attribute(*args, **kwargs))
+
+        return call
+
+    def close(self) -> None:
+        self._close()
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=10)
+
+
+def _pg_dsn() -> str:
+    """The shared PostgreSQL DSN, demanded under ``MAISTRO_REQUIRE_PG_LEGS``.
+
+    The CI postgres job migrates the database (``alembic upgrade head``) and
+    sets the DSN; without one this leg skips, exactly like every other
+    durable leg in the repo — and refuses to skip silently when the leg is
+    the point of the run.
+    """
+    import os
+
+    from maistro.testing.postgres import postgres_dsn
+
+    dsn = postgres_dsn()
+    if not dsn:
+        if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+            msg = (
+                "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty: "
+                "the canonical schedule authority cannot be checked against the "
+                "production store and must not be silently skipped"
+            )
+            raise RuntimeError(msg)
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
+    return dsn
+
+
+@pytest.fixture(params=["memory", "sqlite", "pg"])
 def configured(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> Iterator[Any]:
-    """A real Container behind the engine, with the parametrised ScheduleStore."""
+    """A real Container behind the engine, with the parametrised ScheduleStore.
+
+    The ``pg`` leg runs the same scenarios against the production
+    ``PgScheduleStore`` on the shared test server — the "real PG" half of the
+    #2467 acceptance — where a restart is a fresh store object over rows the
+    server, not the test process, owns.
+    """
     import services.engine as engine_mod
 
     from maistro.container import create_container
@@ -92,6 +197,11 @@ def configured(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> Iterat
     if request.param == "sqlite":
         container.schedule_store = asyncio.run(_sqlite_store(tmp_path / "schedules.db"))
         container.sqlite_path = tmp_path / "schedules.db"
+    elif request.param == "pg":
+        dsn = _pg_dsn()
+        container.schedule_store = _PgStoreLeg(dsn, fresh=True)
+        container.pg_dsn = dsn
+        container.sqlite_path = None
     else:
         container.sqlite_path = None
     service = engine_mod.get_engine()
@@ -106,6 +216,9 @@ def configured(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> Iterat
         conn = getattr(store, "_conn", None)
         if conn is not None:
             asyncio.run(conn.close())
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
 
 
 def _create(client: Any, workspace_id: str, **overrides: Any) -> dict[str, Any]:
@@ -135,11 +248,19 @@ def _due_ids(container: Any) -> set[str]:
 def _restart_canonical_store(configured: Any) -> None:
     """Re-open the canonical store the way a fresh process would.
 
-    The SQLite leg re-connects to the same file, so the rows the "restarted"
+    The SQLite leg re-connects to the same file and the PostgreSQL leg builds
+    a fresh store over the same server rows, so the rows the "restarted"
     reconciliation sees are the persisted ones. The in-memory leg has nothing
     to re-open — its policy behavior is identical; persistence is not what
     that leg is for.
     """
+    if getattr(configured, "pg_dsn", None):
+        old = configured.schedule_store
+        configured.schedule_store = _PgStoreLeg(configured.pg_dsn)
+        close = getattr(old, "close", None)
+        if close is not None:
+            close()
+        return
     if getattr(configured, "sqlite_path", None) is None:
         return
     configured.schedule_store = asyncio.run(_sqlite_store(configured.sqlite_path))
