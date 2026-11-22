@@ -152,6 +152,7 @@ def _deser_world_style_partial(d: dict[str, Any] | None) -> WorldStylePartial | 
         vehicle_register=d.get("vehicle_register"),
         palette_anchors=tuple(palette) if palette is not None else None,
         fauna_realism=d.get("fauna_realism"),
+        perspective=d.get("perspective"),
     )
 
 
@@ -163,6 +164,7 @@ def _ser_world_style(w: WorldStyle) -> dict[str, Any]:
         "vehicle_register": w.vehicle_register,
         "palette_anchors": list(w.palette_anchors),
         "fauna_realism": w.fauna_realism,
+        "perspective": w.perspective,
     }
 
 
@@ -174,6 +176,8 @@ def _deser_world_style(d: dict[str, Any]) -> WorldStyle:
         vehicle_register=d["vehicle_register"],
         palette_anchors=tuple(d["palette_anchors"]),
         fauna_realism=d["fauna_realism"],
+        # Rows persisted before the field existed default to "flat".
+        perspective=d.get("perspective", "flat"),
     )
 
 
