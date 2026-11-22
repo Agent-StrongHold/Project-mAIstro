@@ -41,3 +41,36 @@ so denial is proven against the physical path (transition spy on
 
 No production file outside `packages/hive-conductor/backend` changes; the
 maistro-server cancel route and `RunStoreBoundary` are consumed, not edited.
+
+## Repair-round validation evidence (head `274cb919bd`, 2026-11-22)
+
+Executed locally in `~/Git/wt/auto-2466` (uv-managed env), replacing the
+earlier round's missing commit with recorded outcomes:
+
+- green-after: `uv run pytest packages/hive-conductor/backend/tests/
+test_dag_run_cancel_authorization.py -q` → **4 passed**.
+- red-before: the same test file copied unmodified into a detached scratch
+  worktree at base `33ac30c5f1` → **3 failed, 1 passed** — the member-B
+  cancellation, the peer-between-successes case, and the cross-Workspace
+  projection delegation all `DID NOT RAISE HTTPException` on the pre-fix
+  route; the outsider/unknown-id case passes at base as disclosed above
+  (regression guard). Scratch worktree removed afterwards; this worktree
+  untouched.
+- adjacent cancel family: `test_dag_run_cancel_route.py` +
+  `test_dag_run_scope.py` + `test_chat_launched_dag_cancel.py` +
+  `test_dag_run_projection_authority.py` → **74 passed**.
+- shared-rule counterpart: `uv run pytest
+  packages/maistro-server/tests/api/test_task_workspace_scope.py -q` →
+  **13 passed**, including
+  `test_cancel_stays_with_the_initiator_or_an_administrator` (the
+  maistro-server half of the divergence guard).
+- full changed package: `uv run pytest packages/hive-conductor/backend/tests
+  -q` → **4296 passed, 29 skipped** (= the 4325 collected identities the
+  inventory records below).
+- lint gates: `uv run ruff check .` → clean; `uv run ruff format --check .`
+  → 3618 files already formatted.
+- `uv run python scripts/check-suite-inventory.py` (CI's exact arguments) →
+  **ok: 21 suite(s) match the recorded inventory**.
+- production-surface check: the fixed route is the only non-test caller of
+  `RunExecutionService.cancel_run` under `packages/hive-conductor/backend` —
+  no second Conductor cancellation path bypasses the gate.
