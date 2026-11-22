@@ -526,6 +526,56 @@ def compensate_unlaunched_attempt(
     return Attempt.model_validate(values)
 
 
+def recover_leaseless_orphaned_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle a lease-less active Attempt under explicit resume as CANCELLED+RECOVERED.
+
+    Dedicated orphan writer (#232 / ADR-082826-08f0): resume of the owning
+    record asserts process death for leaseless work that cannot outlive its
+    process. Live leases belong to ``reclaim_attempt``; prelaunch CREATED with
+    no ``started_at`` belongs to ``compensate_unlaunched_attempt``. Generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
+    if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} in "
+            f"{attempt.status.value!r}; leaseless orphan recovery requires "
+            "CREATED or RUNNING"
+        )
+    if attempt.execution_lease is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that still holds a "
+            "lease; use reclaim_attempt after expiry"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result,
+        error=error or "orphaned physical Attempt recovered after process loss",
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
 #: Default ``error`` for an explicit owning-record orphan recovery. Shared with
 #: Graph resume so durable disposition tests recognise the artefact by text
 #: without inventing a second spelling of the same leaf (#2417 / #232 P3b).
@@ -744,6 +794,7 @@ __all__ = [
     "lease_is_expired",
     "reclaim_attempt",
     "reclaimed_attempt_error",
+    "recover_leaseless_orphaned_attempt",
     "recover_orphaned_attempt",
     "refuse_completion_under_terminal_run",
     "renew_attempt_lease",
