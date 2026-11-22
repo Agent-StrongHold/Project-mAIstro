@@ -183,3 +183,32 @@ to already be migrated (`relation "schedules" does not exist`); after applying
 `uv run alembic upgrade head`, the complete three-module run above passed. This
 was test-environment setup, not a code change. No tests were added and the
 existing inventory delta is unchanged.
+
+## Repair-round exact-head validation (06dd4ef1c551)
+
+The dispatch verifier's `pytest packages/maistro-core/tests/conftest.py -q -x`
+returned exit 5 because a conftest is not a test module (no tests collected).
+Replaced that invalid target with executable behavior suites at this exact
+candidate head:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -q -x`
+  → **39 passed, 29 skipped** without PostgreSQL configured.
+- Repeated those suites with required PostgreSQL legs on the lane's live
+  PostgreSQL 18 service → **67 passed, 1 skipped**; the skip is the
+  intentionally inapplicable memory-only independent-process scenario. The
+  projection fixture creates a scratch DB and upgrades it through Alembic head.
+- `uv run pytest packages/maistro-core/tests -k schedul -x -q` → **321 passed,
+  47 skipped** without PostgreSQL; repeating with required PostgreSQL legs
+  → **368 passed, 0 skipped**, including store concurrency and cursor
+  persistence on PostgreSQL.
+- `uv run pytest packages/hive-conductor/backend/tests -k 'scheduler or schedule' -x -q`
+  → **264 passed, 46 skipped**.
+- Strict closeout selector,
+  `uv run pytest tests/cross_product_parity/test_cross_product_parity.py -k 'schedule_required or schedule_fire or scaffold_only' -q -s`
+  → **3 passed**, emitted executed/PASSED
+  `scheduler-occurrence-to-conductor` evidence.
+- `uv run ruff check . && uv run ruff format --check .` → clean; 3630 files
+  formatted.
+
+This repairs the failed validation target; it required no production or test
+changes. No tests were added and the existing inventory delta is unchanged.
