@@ -402,3 +402,68 @@ Evolve, golden observation — remain the only strict-mode reds, owned by
 The residual items below are unchanged: #1199/#2467 exact-head closure
 evidence and the GH006 merge-queue enqueue are GitHub-side steps this lane
 cannot perform.
+
+## Develop-sync completion and re-validation at 0690501fa0 (2026-11-22)
+
+The branch arrived at b5f8660166 mid develop-sync: an in-flight
+`git merge origin/develop` (433a9660bc, the #2478 M1-B6 evidence squash) with
+exactly one conflict — this note. Develop's copy (299 lines) is a strict
+prefix of this branch's (404 lines: develop's side ends at the SAST/Gitleaks
+section; ours adds the 6c33ee0111 supersession and the scenario-token
+addendum), so the conflict resolved to ours, losing nothing from develop.
+Develop's #2478 `.gitleaksignore` change carries the same two ADR-101826
+line-261 fingerprints this branch added at 57deb2c50a; the auto-merge
+combined them cleanly. The merge was committed as 7eb0b58006, followed by a
+second clean merge of origin/develop's remaining commits through the lane
+brief's develop base 4ec5febf8a (f7cde98a29 regex bump, e0fd6f9f98 pylint
+bump, 4ec5febf8a M1-C5 #2473 cancel-route) as 0690501fa0. `git diff
+origin/develop HEAD --name-only` is exactly this branch's lane delta
+(this note, issue-46-schedule-conductor-scenario.md,
+REPAIR-NOTES-46-schedule-conductor-scenario.md, and the two
+`tests/cross_product_parity/` files); `git diff --numstat origin/develop --
+quality/` is empty (no ledger drift). Develop advanced once more during the
+round (c87dd79acd, a uv.lock-only fastmcp bump) — noted, not chased; the
+brief's stated base is contained.
+
+First-party re-validation at 0690501fa0 (fresh pgvector:pg18 container
+`auto-46-r2-pg`, DSN on 127.0.0.1:16433, `alembic upgrade head` to 068):
+
+- `uv run ruff check .` all checks passed; `uv run ruff format --check .`
+  3628 files already formatted; `uv run mypy` over the seven documented
+  package srcs: no issues in 960 source files.
+- `scripts/check-suite-inventory.py` ok (21 suites match);
+  `scripts/check-test-duplicates.py` ok; `scripts/check-doc-links.py` ok;
+  CI-exact vulture gate (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`): 1221 reviewed identities, all banked, 0 unbanked —
+  no ledger amendment.
+- CI-exact merge-queue gitleaks range
+  `gitleaks git --redact --log-opts="4ec5febf8a..0690501fa0"` (8.30.1):
+  15 commits scanned, `no leaks found`.
+- `MAISTRO_TEST_PG_DSN` set: `packages/maistro-core/tests/scheduling/`
+  **327 passed, 0 skipped**; hive-conductor scheduling suites
+  (`test_scheduler.py`, `test_scheduler_bounded_tick.py`,
+  `test_scheduler_canonical_admission.py`, `test_scheduler_canonical_due.py`,
+  `test_schedule_canonical_definitions.py`, `test_schedule_frequency_floor.py`,
+  `test_schedule_manual_fire_canonical.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_workspace_scope.py`, `test_schedule_projection_authority.py`,
+  `test_schedule_scope.py`) **258 passed, 0 skipped**;
+  `test_scheduler_canonical_admission.py` verbose: all 19 pass live,
+  including `test_two_live_runners_claim_one_occurrence`,
+  `test_restart_executes_the_queued_run_once`,
+  `test_restart_after_a_cursor_crash_keeps_the_same_run`,
+  `test_hive_row_cannot_force_a_schedule_that_is_not_due`, and the
+  revocation/workspace-membership negatives;
+  `packages/maistro-core/tests/persistence/test_schedule_winner_crash.py`
+  4 passed.
+- `tests/cross_product_parity/` non-strict: 26 passed. Strict closeout
+  (`scripts/run-m1-closeout.py`): `scheduler-occurrence-to-conductor`
+  **executed=true, PASSED**; the only pytest reds are the same four
+  evolve/golden scaffold tests — verified pre-existing by running the same
+  script on a clean develop worktree (c87dd79acd), where
+  `scheduler-occurrence-to-conductor` reports **FAILED executed=False**.
+  The branch's delta therefore moves the #46 scenario from abstention to a
+  real executed pass and introduces no new strict red.
+
+No suite count moves at this head (the merged tree's counts are develop's
+own, confirmed by the 21-suite inventory gate), so no `inventory-delta` is
+recorded for this addendum.
