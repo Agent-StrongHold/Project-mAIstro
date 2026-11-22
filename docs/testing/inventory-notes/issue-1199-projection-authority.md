@@ -132,3 +132,28 @@ the previous round's container — migrated with `uv run alembic upgrade head`
   tables); `scripts/check-test-duplicates.py` ok (0 groups).
 
 Suite counts are unchanged by this note; no new `inventory-delta` is recorded.
+
+## Executed evidence (2026-11-22, head 45ef9fd2d5d96ac067ba52e77240798cef3c04ca)
+
+Revalidated the assigned head directly, after the previous verifier's
+`pytest .../conftest.py` invocation exited 5 because that file collects no
+tests. A fresh pgvector/pg18 server was migrated through Alembic head 069:
+
+- Real-PG projection authority, canonical due, and projection suites with
+  `MAISTRO_REQUIRE_PG_LEGS=1`: **118 passed, 1 skipped** (the memory-only
+  independent-process case is intentionally inapplicable).
+- Core scheduling tests with PG legs required: **327 passed**.
+- Strict #459 closeout selection (`schedule_required or schedule_fire or
+  scaffold_only`): **3 passed**, emitting
+  `M1_PARITY_EVIDENCE {"executed": true, "status": "PASSED",
+  "scenario": "scheduler-occurrence-to-conductor"}`.
+- Additional due/admission/store and scheduler projection tests: **300 passed,
+  81 skipped** across explicitly optional-backend runs; the PG-required suites
+  above cover the durable backend legs.
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3630
+  files formatted).
+
+The failed no-tests-collected command was a validation-target error, not a
+product failure; rerunning the actual test modules and the strict closeout
+selection resolved it. No test inventory delta is introduced by this evidence
+update.
