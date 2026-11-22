@@ -107,6 +107,45 @@ First-party re-run of the acceptance-relevant suites at this exact head
   `test_schedule_manual_fire_canonical.py`): 181 passed / 14 skipped without
   PG; 195 passed / 0 skipped with the same live DSN.
 
+Re-validation at the exact assigned head b27d0accab (2026-11-22, verifier
+round): every number above was re-run first-party in a detached clean
+worktree at b27d0accab (the assigned worktree carries uncommitted other-lane
+residue, so the committed tree was validated in isolation):
+
+- `uv run ruff check .`: all checks passed; `uv run ruff format --check .`:
+  3360 files already formatted.
+- `uv run mypy` over the seven documented package srcs: no issues in 905
+  source files.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match;
+  `scripts/check-test-duplicates.py`: ok; `scripts/check-doc-links.py`: ok.
+- Core scheduling with `MAISTRO_TEST_PG_DSN` (dedicated pgvector:pg18
+  container, the suites' own `alembic upgrade head` scratch databases):
+  `packages/maistro-core/tests/scheduling/` 311 passed, 0 skipped (13.1s).
+- Hive-conductor scheduler/definition/scope/manual-fire suites
+  (`test_scheduler.py`, `test_scheduler_bounded_tick.py`,
+  `test_scheduler_canonical_admission.py`, `test_scheduler_canonical_due.py`,
+  `test_schedule_canonical_definitions.py`, `test_schedule_frequency_floor.py`,
+  `test_schedule_manual_fire_canonical.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_workspace_scope.py`) with the same live DSN: 195 passed,
+  0 skipped (22.5s).
+- Strict-#459 scenario re-check: `REAL_SCHEDULE_CONDUCTOR_SCENARIO`
+  (`tests/cross_product_parity/harness.py:230`) is still a
+  permanently-evidenced blocker — its `REAL_SCENARIO_EVIDENCE:
+  schedule-conductor` token exists nowhere outside the parity harness —
+  consistent with the reactivated issue reserving the real
+  app-lifespan/crash-between-writes scenario for the reopened #1199/#2467
+  lanes.
+- At this head the branch's scheduling code is byte-identical to its
+  develop merge parent fad17a87c3; the branch's only unique delta is this
+  note, so nothing here can regress the develop base's scheduler behavior.
+  The assigned worktree additionally holds an uncommitted, partial develop
+  sync of the scheduling subtree (nine modified/untracked scheduling files
+  verified byte-identical to develop base ae1cb3b); it is left untouched for
+  the integration develop-sync step and was excluded from this validation.
+
+No suite count moves (docs-only addendum), so no `inventory-delta` is
+recorded.
+
 Reactivated-#46 status at this head: the #2467 projection-authority defect is
 still present — `services/scheduler.py::run` calls
 `backfill_canonical_definitions()` unconditionally on every startup (line 363)
