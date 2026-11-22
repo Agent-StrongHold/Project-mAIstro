@@ -195,6 +195,9 @@ async def test_second_reconcile_does_not_rewrite_attempt_history() -> None:
     attempt = await store.transition_attempt(
         attempt.attempt_id, AttemptStatus.CANCELLED, error="process lost"
     )
+    # Typed RECOVERED — P4b refuses unknown CANCELLED even with a caller cause.
+    attempt = attempt.model_copy(update={"cancellation_cause": CancellationCause.RECOVERED})
+    store._attempts[attempt.attempt_id] = attempt
     recorded = _RecordingCanonicalSink()
     sink = CanonicalRecoveryEventSink(store, recorded)
     reconciler = AttemptLifecycleReconciler(store, events=sink, source="evidence.crash-loop")
