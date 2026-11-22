@@ -394,3 +394,101 @@ async def test_an_outsider_and_an_unknown_id_get_the_same_refusal(
 
     release.set()
     await worker
+
+
+async def test_an_unstarted_engine_refuses_the_cancel_with_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No engine was ever published: the cancel seam answers 503, not 500.
+
+    `get_engine()` raises RuntimeError when the process lifespan never started
+    the engine, which is a real deployment state (boot failure, mid-restart).
+    The route must translate that seam refusal into the documented
+    "canonical execution spine unavailable" 504-alike — the same answer the
+    missing run store gets (pinned by test_dag_run_cancel_route.py) — raised
+    before any canonical target is resolved or any boundary is built, so a
+    boot failure can never be mistaken for a cancellation attempt.
+    """
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    view = await _workspace("Cancel Auth No Engine", _INITIATOR)
+    # The projection row is visible (read seam), so the refusal below is the
+    # spine seam's, not the read seam's 404: inspection degrades gracefully
+    # to the projection row when the engine is absent.
+    await get_dag_run_store().start_run(
+        run_id="auth-no-engine",
+        user_id=_INITIATOR,
+        workspace_id=view.id,
+        canonical_run_id="auth-canonical-never",
+    )
+    monkeypatch.setattr(engine_mod, "_singleton", None)
+
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("auth-no-engine", _ScopedRequest(_INITIATOR))
+    assert refused.value.status_code == 503
+    assert refused.value.detail == "canonical execution spine unavailable"
+
+
+async def test_a_revoked_member_is_refused_like_an_absent_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Membership revoked between read and cancel: the mutation gate re-checks
+    the live membership, so the refusal is the one 404 — indistinguishable
+    from an id that never existed — and nothing mutates (#2466: "revoked ...
+    indistinguishable").
+
+    The read seam authorized the row once; cancellation is authorized again,
+    separately, over the Workspace store's live membership at mutation time —
+    so a grant that expired between the two decisions cannot ride the earlier
+    answer through.
+    """
+    from routes.dag_runs import cancel_run as cancel_route
+    from routes.dag_runs import get_run as get_run_route
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs import AttemptStatus, RunStatus
+
+    view = await _workspace("Cancel Auth Revoked", _INITIATOR)
+    await _grant_member(view.id, _PEER, "member")
+    store, reader = await _store_and_reader()
+    _engine_at(monkeypatch, store, reader)
+    run_id, node_run_id, worker, release, provider_exits = await _parked_run(
+        view.id, _INITIATOR, store
+    )
+    transitions = _transition_spy(store, monkeypatch)
+    await get_dag_run_store().start_run(
+        run_id="auth-revoked-row",
+        user_id=_INITIATOR,
+        workspace_id=view.id,
+        canonical_run_id=run_id,
+    )
+
+    # Before revocation the peer's read is admitted (#1152 membership).
+    detail = await get_run_route("auth-revoked-row", _ScopedRequest(_PEER))
+    assert detail["canonical_run_id"] == run_id
+
+    await canonical_store_for_tests().remove_membership(
+        view.id, user_id=_PEER, principal_id=_INITIATOR
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("auth-revoked-row", _ScopedRequest(_PEER))
+    assert refused.value.status_code == 404
+    assert refused.value.detail == "run not found"
+    with pytest.raises(HTTPException) as unknown:
+        await cancel_route("auth-never-was", _ScopedRequest(_PEER))
+    assert unknown.value.status_code == refused.value.status_code
+    assert unknown.value.detail == refused.value.detail
+
+    assert transitions == [] and provider_exits == []
+    assert not worker.done()
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is not RunStatus.CANCELLED
+    attempts = await store.list_attempts(node_run_id)
+    assert attempts and attempts[-1].status is AttemptStatus.RUNNING
+
+    release.set()
+    await worker
