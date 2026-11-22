@@ -1377,3 +1377,98 @@ this exact head; (b) PR #2427 must be retargeted to `develop` before merge
 (ADR-095; GitHub `mergeable_state: dirty` at snapshot time is the transient
 cache artifact documented last round — the hosted P4b base head is an ancestor
 of this branch); (c) nothing pushed (GitHub mutations prohibited).
+
+## Round at `9a610f4909` — independent re-verification, snapshot-complete dispatch (job `97f742de`)
+
+Scope: verifier/writer re-validation only; no code or test changes. Starting
+head exactly `9a610f49090a1b9239797da806872ff45dfb933e` (dispatch == hosted
+PR head == local HEAD), worktree clean. HEAD is docs-only over the validated
+`0ca694d73491` (one file, this notes file, +59 lines — zero src/test changes).
+
+**Previous block resolved:** "recovery budget exhausted: launch/preflight:
+Hosted PR snapshot incomplete or not the review head" — this dispatch's
+snapshot **is complete and exactly aligned**: dispatch head ==
+`linked_pr_heads["2427"]` == hosted PR #2427 head sha == `origin/
+cursor/m1-b-p5a-recovered-rediscovery-8551` == local HEAD ==
+`9a610f4909` (verified by `git fetch`). `pulls/2427` was captured
+(`mergeable_state: dirty`, base `cursor/m1-b-p4b-…` — the documented ADR-095
+stacked state) and the check-runs/statuses endpoints **at this head** were
+both captured with 0 entries: CI had not posted on the fresh tip yet — the
+same 0-check-runs-at-fresh-head diagnosis as `3a6c5152f5`/`e4bf58a50f`/
+`0ca694d73491`, an *incomplete-CI* snapshot, not a head mismatch. Not
+repairable in-lane (GitHub mutations prohibited); CI verdicts remain a driver
+observation, and every gate is independently reproduced green locally below.
+
+**Independently re-executed at this head (prior claims not trusted):**
+- **Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, private DB
+  `maistro_cr2427` — the cross-lane-interference remedy, instance verified
+  quiet, `alembic upgrade head` → 068 = repo head, `MAISTRO_TEST_PG_DSN`
+  plain `postgresql://`): driver's exact 13-file batch → **620 passed,
+  0 skipped in 28.2s** (reconciles driver check-3's 481 + 139 env-skips
+  exactly; only warning is the canvas PytestWarning proven pre-existing on
+  develop). `test_interrupted_reclaim_rediscovery.py -v`: **24/24 PASSED**
+  (8 fns × memory/sqlite/postgres), including
+  `test_spoofed_reclaim_prefix_without_typed_cause_is_not_rediscovered` (:133),
+  `test_recovery_tick_does_not_park_behind_a_newer_attempt` (:161),
+  `test_rediscovery_parks_only_its_own_node` (:182), the RUNNING-gate pin
+  `test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table` (:257),
+  and the refusal-catch pin
+  `test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick` (:296)
+  — every P5a behavior proven on the live postgres leg, not just in-memory.
+- **Production facts re-read at HEAD**: `container.py:1436`/`:1509` catch
+  `(RunIntegrityError, RecoveredDispositionRefused)`; `:1502` sole caller
+  passes `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+  `:1542` selects solely via `is_typed_recovered_attempt(latest)`;
+  `consumption.py:42` import + `:511` typed look-past;
+  `grep -rn "is_reclaimed_attempt(" packages/*/src` → definition
+  `lifecycle.py` only, **zero production call sites** — the merge kept the
+  typed path over develop's `#1863` prefix path.
+- **CI-exact gates**: vulture `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → **1221 == 1221, rc 0** under BOTH the develop base
+  (`c83cb9961a1d` → candidate `9a610f49090a`) and CI's ambient stacked
+  `RATCHET_BASE_REV=origin/cursor/m1-b-p4b-…`; radon
+  (`RATCHET_BASE_REV=origin/develop`) → **124 == 124, rc 0**; mypy ci.yml
+  exact 10-package list (after CI's exact sync `uv sync --locked
+  --all-extras` + `uv pip install -e packages/maistro-evolve`) → **Success,
+  no issues in 1128 source files**; suite inventory no-args (ci.yml:744) →
+  **21 suites ok, rc 0**; merge-markers / test-duplicates / backlog /
+  monorepo-layout / promotion-surface / reachability (1496 modules, 82
+  unreachable, dispositioned) all rc 0; `check-pr-base.py --base develop
+  --labels ''` → **ok rc 0**; the hosted stacked base → **FAIL** with the
+  ADR-095 "must be retargeted to 'develop' before merge" message — the state
+  the PR body documents as expected while stacked.
+- **Ledgers**: `git diff --numstat origin/develop -- quality/` → empty
+  (byte-identical); `quality/` clean in `git status`.
+- **Driver deterministic checks (this job's check-0..8, logs inspected)**:
+  sync rc 0; ruff check "All checks passed"; ruff format "3618 files already
+  formatted"; batch 481 passed + 139 env-skips; audit-pagination 32 passed;
+  per-suite inventory ok ×4 (hive 4321 / canvas 633 / core 18863 / rsi 1797).
+
+**Inventory:** this round adds and changes no tests → no new
+`inventory-delta` owed; the 21-suite no-args run matches the recorded
+baseline at this head.
+
+### NEW post-dispatch fact: origin/develop advanced one commit (deferred, recorded)
+
+`origin/develop` moved `c83cb9961a` → `37c784c805` (#2450: anthropic
+1.11.0 → 2.9.0 + mutation trigger surfaces): touches `pyproject.toml` ×2,
+`uv.lock`, `mutation.yml`, `.trivyignore.yaml`,
+`tests/test_mutation_targets.py` (+82, covered by develop's own merged note
+`ci-2450-mutation-trigger-dependency-surfaces.md`) — **no P5a file, no
+`packages/*/src`, no `quality/` row** (numstat vs the new tip empty).
+`git merge-tree --write-tree HEAD origin/develop` → **rc 0, conflict-free**.
+Decision (recorded, not actioned): HEAD deliberately stays at the hosted PR
+head `9a610f4909` — merging now would re-break the three-way head alignment
+this dispatch's preflight depends on (precedent: `b80982bf`, `628befefe5`,
+`6496275370`; the `f6b002d103`/`a9ddfd7451` rounds completed such deferred
+syncs one snapshot later). The next snapshot round should fold `37c784c805`
+in; it is a trivial, conflict-free sync.
+
+**Residual (driver actions only, GitHub mutations prohibited in-lane):**
+(a) CI check-runs on `9a610f4909` pending at dispatch capture — every gate
+independently reproduced green at this exact head; (b) PR #2427 must be
+retargeted to `develop` before merge (ADR-095; the dirty mergeable_state is
+the stacked-base artifact, and the hosted P4b base head is an ancestor of
+this branch); (c) fold develop `37c784c805` in on the next snapshot round
+(conflict-free); (d) nothing pushed; the only change in this round is this
+notes section.
