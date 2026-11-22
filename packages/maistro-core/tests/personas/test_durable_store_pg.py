@@ -194,7 +194,15 @@ async def test_persona_migration_cascade_is_enforced_by_the_database_itself() ->
     """Deleting the Workspace row without any store code must still take the
     Persona with it — the foreign key of migration 064 is the durable cleanup
     path, so a store that forgets `delete_for_workspace` cannot strand a
-    Persona pointing at a deleted Workspace."""
+    Persona pointing at a deleted Workspace.
+
+    The raw-SQL delete must also meet the Workspace/Project fence (#37):
+    `canonical_projects.workspace_id` RESTRICT-references the Workspace
+    (migration 069), so a Workspace that still owns Projects cannot be deleted
+    at all — the refusal is the database's, not a store's. Purge the tree
+    first (what `PgWorkspaceStore.delete` does in one transaction, #1121) and
+    the Workspace row goes through, with 064's cascade taking the Persona.
+    """
     dsn = _require_pg_dsn()
     asyncpg = pytest.importorskip("asyncpg")
     from maistro.personas.pg_store import PgPersonaStore
@@ -214,14 +222,22 @@ async def test_persona_migration_cascade_is_enforced_by_the_database_itself() ->
         )
 
         async with pool.acquire() as conn:
+            # The fence first: deleting a Workspace that still owns Projects is
+            # refused outright, whatever the caller meant to cascade.
+            with pytest.raises(asyncpg.exceptions.RestrictViolationError):
+                await conn.execute(
+                    "DELETE FROM canonical_workspaces WHERE workspace_id = $1", workspace_id
+                )
+            # Projects before the Workspace row — the store delete's order —
+            # and 064's cascade takes the Persona with the Workspace.
+            await conn.execute(
+                "DELETE FROM canonical_projects WHERE workspace_id = $1", workspace_id
+            )
             await conn.execute(
                 "DELETE FROM canonical_workspaces WHERE workspace_id = $1", workspace_id
             )
             survivor = await conn.fetchval(
                 "SELECT persona_id FROM canonical_personas WHERE persona_id = $1", saved.id
-            )
-            await conn.execute(
-                "DELETE FROM canonical_projects WHERE workspace_id = $1", workspace_id
             )
 
         assert survivor is None

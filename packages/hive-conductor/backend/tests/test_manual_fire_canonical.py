@@ -507,6 +507,18 @@ def test_the_manual_fire_route_runs_the_canonical_spine_end_to_end(
     async def scenario() -> None:
         container = await create_container(AgentConfig(router_api_key="test-key"))
         projects = container.project_scope_store
+        # The scope store verifies Workspace existence before minting a Root
+        # (#37), so both stores are seeded before create_root, not after.
+        from services import workspace_authority as _wa
+
+        from maistro.workspaces.model import WorkspaceRole
+
+        await _wa.canonical_store_for_tests().create(
+            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
+        )
+        await container.workspace_store.create(
+            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
+        )
         root = await projects.create_root("ws-route")
         await container.template_store.put(
             GraphTemplate(
@@ -533,22 +545,11 @@ def test_the_manual_fire_route_runs_the_canonical_spine_end_to_end(
         # schedule's Workspace. Seed the Workspace with the seeded admin (id
         # "admin", username "testadmin") as its owner, or the route's
         # membership check refuses the fire before the spine is reached.
-        from services import workspace_authority
-
-        await workspace_authority.canonical_store_for_tests().create(
-            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
-        )
-        # The scheduler re-checks the schedule ACTOR's membership on the
-        # Container's own store (#1201 revocation gate). Production has one
-        # Container, so this and the route-facing seed above are the same
-        # instance there; the test's monkeypatched Container is a separate
-        # object and must carry the actor's membership for the fire to be
-        # judged as production would.
-        from maistro.workspaces.model import WorkspaceRole
-
-        await container.workspace_store.create(
-            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
-        )
+        # Seeded before create_root above (#37): the scope store verifies
+        # Workspace existence. The scheduler re-checks the schedule ACTOR's
+        # membership on the Container's own store (#1201 revocation gate);
+        # production has one Container, so this and the route-facing seed are
+        # the same instance there.
         await container.workspace_store.set_membership(
             "ws-route", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
         )
@@ -613,6 +614,18 @@ def test_an_idempotency_key_meets_the_fire_id_contract(
     async def scenario() -> None:
         container = await create_container(AgentConfig(router_api_key="test-key"))
         projects = container.project_scope_store
+        # The scope store verifies Workspace existence before minting a Root
+        # (#37), so both stores are seeded before create_root, not after.
+        from services import workspace_authority as _wa
+
+        from maistro.workspaces.model import WorkspaceRole
+
+        await _wa.canonical_store_for_tests().create(
+            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
+        )
+        await container.workspace_store.create(
+            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
+        )
         root = await projects.create_root("ws-idem")
         await container.template_store.put(
             GraphTemplate(
@@ -639,16 +652,6 @@ def test_an_idempotency_key_meets_the_fire_id_contract(
         # the route-facing store, and on the monkeypatched Container's own
         # store for the schedule ACTOR (row user "user-1"), which in
         # production are one instance (#1201 revocation gate).
-        from services import workspace_authority
-
-        from maistro.workspaces.model import WorkspaceRole
-
-        await workspace_authority.canonical_store_for_tests().create(
-            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
-        )
-        await container.workspace_store.create(
-            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
-        )
         await container.workspace_store.set_membership(
             "ws-idem", user_id="user-1", role=WorkspaceRole.CONTRIBUTOR
         )

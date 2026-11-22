@@ -7,6 +7,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScope
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
+    WorkspaceDeleted,
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
@@ -125,6 +126,15 @@ class InMemoryWorkspaceStore:
     ) -> None:
         self._workspaces: dict[str, Workspace] = {}
         self._memberships: dict[tuple[str, str], WorkspaceMembership] = {}
+        # Ids whose delete committed. A deleted Workspace's id is dead: no
+        # later `create` — a convergence import replaying a stale mirror, a
+        # provisioning helper that kept the id in configuration — may mint a
+        # new authority under it (#37). The durable stores carry the same rule
+        # in a `canonical_workspace_deletions` row written in the delete's
+        # transaction, so the reference must keep it too or the conformance
+        # suite would hold the durable stores to a contract the reference
+        # itself breaks.
+        self._deleted_workspace_ids: set[str] = set()
         self.project_store: ProjectScopeStore = project_store or InMemoryProjectScopeStore()
         # Pairing is the composition point: the Project store resolves scope
         # through this Workspace store, so binding here means a caller cannot
@@ -157,6 +167,8 @@ class InMemoryWorkspaceStore:
         if updated_at is not None:
             workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
+        if workspace.workspace_id in self._deleted_workspace_ids:
+            raise WorkspaceDeleted(workspace.workspace_id)
         if workspace.workspace_id in self._workspaces:
             raise ValueError(f"Workspace {workspace.workspace_id!r} already exists")
         owner = WorkspaceMembership(
@@ -248,6 +260,10 @@ class InMemoryWorkspaceStore:
             if persona is not None and self.persona_store is not None:
                 await self.persona_store.create(persona)
             raise
+        # Only a delete that fully committed tombstones the id. The
+        # compensation path above restores everything on a failed half, so
+        # recording there would bar an id whose Workspace still exists.
+        self._deleted_workspace_ids.add(workspace_id)
 
     async def _delete_workspace_row(
         self, workspace_id: str

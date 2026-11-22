@@ -243,6 +243,10 @@ async def _parked_run(container: Container, kind: str, *, workspace: str) -> str
     hand-made NodeRun and Attempt would let this suite agree with itself about
     what a pause looks like while disagreeing with the code that writes one.
     """
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     graph = Graph(
         workspace_id=workspace,
@@ -1399,6 +1403,10 @@ class TestAMultiNodeRunIsNotThisTicksToResume:
         from maistro.runs.consumption import resumable_by_consumer
 
         container = await _container()
+        if await container.workspace_store.get("multi-ws") is None:
+            await container.workspace_store.create(
+                creator_user_id="test", name="multi-ws", workspace_id="multi-ws"
+            )
         root = await container.project_scope_store.create_root("multi-ws")
         graph = Graph(
             workspace_id="multi-ws",

@@ -49,6 +49,7 @@ from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgra
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
+    WorkspaceDeleted,
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
@@ -98,6 +99,18 @@ CREATE INDEX IF NOT EXISTS idx_canonical_workspace_memberships_user
 CREATE INDEX IF NOT EXISTS idx_canonical_workspace_memberships_owner
     ON canonical_workspace_memberships(workspace_id)
     WHERE role = 'owner';
+
+-- Deletion is recorded, not forgotten (#37): a row here means the id was a
+-- canonical Workspace once and its delete committed. `create` refuses such
+-- an id inside the same write transaction that would mint it, so a stale
+-- convergence import cannot resurrect deleted authority even with its
+-- Hive-local journal lost or corrupt. Columns match migration 069's
+-- PostgreSQL table — the schema-parity suite holds the two dialects to one
+-- shape.
+CREATE TABLE IF NOT EXISTS canonical_workspace_deletions (
+    workspace_id TEXT PRIMARY KEY,
+    deleted_at TEXT NOT NULL
+);
 """
 
 
@@ -174,6 +187,17 @@ class SqliteWorkspaceStore:
         # Root Project is written last, inside the block, so a failure
         # anywhere rolls the Workspace and membership back with it.
         async with self._write_transaction() as conn:
+            # The tombstone check rides the same transaction as the insert,
+            # not a read before it: `BEGIN IMMEDIATE` holds SQLite's write
+            # lock across both statements, so a delete that commits in
+            # between is impossible and the refusal is the transaction's own
+            # answer, not a race (#37).
+            cursor = await conn.execute(
+                "SELECT 1 FROM canonical_workspace_deletions WHERE workspace_id = ?",
+                (workspace.workspace_id,),
+            )
+            if await cursor.fetchone() is not None:
+                raise WorkspaceDeleted(workspace.workspace_id)
             await self._insert_workspace(workspace)
             await self._write_membership(owner)
             await self._project_store.create_root_in(conn, workspace.workspace_id)
@@ -247,6 +271,14 @@ class SqliteWorkspaceStore:
             if self.persona_store is not None:
                 await self.persona_store.delete_for_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
+            # The tombstone commits with the delete or not at all (#37): a
+            # rolled-back delete leaves the id re-creatable, because the
+            # Workspace it names is still there.
+            await conn.execute(
+                "INSERT OR REPLACE INTO canonical_workspace_deletions"
+                " (workspace_id, deleted_at) VALUES (?, ?)",
+                (workspace_id, _iso(datetime.now(UTC))),
+            )
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""

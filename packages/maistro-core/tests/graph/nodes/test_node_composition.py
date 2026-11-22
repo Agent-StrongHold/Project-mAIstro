@@ -308,6 +308,12 @@ async def test_the_container_composed_node_admits_canonical_work(
     from maistro.runs.model import RunStatus
 
     container = await _production_container()
+    # The container's scope store verifies Workspace existence (#37), so the
+    # scratch Workspace is provisioned the way production composition does.
+    if await container.workspace_store.get("ws-composition") is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name="ws-composition", workspace_id="ws-composition"
+        )
     projects = container.project_scope_store
     root = await projects.create_root("ws-composition")
     # The parent is a real canonical Run with a NodeRun for the synth node,

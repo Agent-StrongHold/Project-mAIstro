@@ -138,11 +138,19 @@ def _no_inherited_database(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _isolate_workspace_authority():
     """Do not let the canonical fallback/presentation adapter leak across tests."""
+    from services import default_workspace
     from services.workspace_authority import reset_for_tests
 
     reset_for_tests()
+    # The claim ledger is process-local state bound to the authority's
+    # composition: `reset_for_tests` clears the presentation records a
+    # resolved default needs, so a claim that outlives them is exactly the
+    # "exists but its presentation is not loaded here" refusal — reset the
+    # claims with the same adapter state they belong to.
+    default_workspace.reset_for_tests()
     yield
     reset_for_tests()
+    default_workspace.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -274,8 +282,15 @@ def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
     """Give the engine a canonical Run spine, so model-reaching chat and voice
     turns are admitted as Runs rather than refused with a 503 (#1037).
 
-    Only the spine is exposed: the Container's Workspace store stays unbound so
-    Workspace authority keeps its per-test canonical fallback.
+    The Container's Workspace store is exposed alongside the spine (#37): the
+    admission fence verifies that a Workspace exists canonically before it
+    mints a Root, so the authorization authority and the Run spine must read
+    the same canonical store — the one-store-per-process rule the shipped
+    stack runs under (ADR-092326-97c4). The fixture used to withhold it, which
+    let Workspace authority and the spine compose two disjoint in-memory
+    stores: a default Workspace the authority created was invisible to the
+    spine's fence, and admission 503'd. That split is the defect, not the
+    fence.
     """
     from types import SimpleNamespace
 
@@ -286,6 +301,7 @@ def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
     spine = SimpleNamespace(
         run_store=c.run_store,
         project_scope_store=c.project_scope_store,
+        workspace_store=c.workspace_store,
         intent_registry=c.intent_registry,
         _close_chat_run=c._close_chat_run,
         _cancel_incomplete_admission=c._cancel_incomplete_admission,
@@ -388,6 +404,19 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
     from maistro.runs.store import InMemoryRunStore
 
     projects = workspace_authority.canonical_store_for_tests().project_store
+    # Provision the Workspace through the canonical authority before minting
+    # its Root (#37): the Project store verifies Workspace existence, so a
+    # fixture that skips this step no longer gets free scope for an id
+    # nothing owns.
+    authority = workspace_authority.canonical_store_for_tests()
+    if asyncio.run(authority.get("test-workspace")) is None:
+        asyncio.run(
+            authority.create(
+                creator_user_id="test-user",
+                name="test-workspace",
+                workspace_id="test-workspace",
+            )
+        )
     project = asyncio.run(projects.create_root("test-workspace"))
     runs = InMemoryRunStore(project_store=projects)
     providers = InMemoryProviderRegistry()

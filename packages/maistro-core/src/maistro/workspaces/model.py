@@ -104,6 +104,19 @@ class WorkspaceNotFound(KeyError):
     pass
 
 
+class WorkspaceDeleted(KeyError):
+    """The Workspace's id was deleted and can never be re-created (#37).
+
+    Deletion is the one irreversible fact the canonical store records: a
+    tombstone row joins the Workspace row's delete in the same transaction,
+    so no later caller — a convergence import replaying a stale mirror, a
+    provisioning helper that kept the id in configuration, a recovery tool —
+    can mint a new authority under a deleted id. A Workspace that never
+    existed raises :class:`WorkspaceNotFound`; only a deleted one raises
+    this.
+    """
+
+
 class WorkspaceAccessDenied(PermissionError):
     pass
 
@@ -115,6 +128,7 @@ class WorkspaceOwnershipError(ValueError):
 __all__ = [
     "Workspace",
     "WorkspaceAccessDenied",
+    "WorkspaceDeleted",
     "WorkspaceMember",
     "WorkspaceMembership",
     "WorkspaceNotFound",

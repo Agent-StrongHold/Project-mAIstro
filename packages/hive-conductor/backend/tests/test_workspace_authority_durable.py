@@ -567,3 +567,79 @@ async def test_interrupted_import_before_create_is_quarantined_without_blocking_
     assert workspace_authority.quarantine_store().get(blocked_id) is not None
     assert blocked_id in hive.mirror_rows()
     await hive.canonical.delete(fresh_id)
+
+
+@pytest.mark.parametrize(
+    ("journal_damage", "label"),
+    [
+        pytest.param("lost", "missing", id="lost-journal"),
+        pytest.param("corrupt", "corrupt", id="corrupt-journal"),
+    ],
+)
+@BACKENDS
+@pytest.mark.asyncio
+async def test_a_completed_import_that_loses_its_journal_still_cannot_resurrect_a_deleted_workspace(
+    hive: _HiveProcess, journal_damage: str, label: str
+) -> None:
+    """The journal is Hive-local evidence; the tombstone is the canonical one.
+
+    A completed import leaves a ``complete`` journal entry that suppresses
+    reimport. But that entry lives in Hive's own state file: it can be lost,
+    truncated, or rewritten by anything that owns the file. If deletion were
+    fenced only by the journal, deleting the entry would let the mirror row
+    mint the Workspace again on the next boot — deleted authority coming back
+    through legacy recovery, the exact outcome #37 forbids. The canonical
+    store's tombstone (written in the delete's transaction, #37) is what
+    holds: with the journal gone or unreadable, the import attempt refuses at
+    `create`, and the source is quarantined for the recovery owner instead of
+    resurrecting authority.
+    """
+    workspace_id = f"lostjournal-{label}-{uuid.uuid4().hex}"
+    legacy = _legacy(
+        workspace_id,
+        [
+            WorkspaceMember(user_id="alice", role="owner"),
+            WorkspaceMember(user_id="bob", role="editor"),
+        ],
+    )
+    persisted = hive.open_hive_state()
+    persisted.put("workspaces", workspace_id, legacy)
+    hive.close_hive_state()
+
+    await hive.boot()
+    # The mirror row imported once, canonically, with its roster.
+    assert await workspace_authority.is_member("bob", workspace_id)
+    assert workspace_authority._journal_status(workspace_id) == "complete"
+
+    # Another client deletes the canonical Workspace outright.
+    await hive.canonical.delete(workspace_id)
+    assert await hive.canonical.get(workspace_id) is None
+
+    # The Hive-local journal then becomes unusable: lost, or corrupt enough
+    # that no status can be read from it. Both leave `_migrate_one` unable to
+    # tell "never imported" from "imported, then deleted, journal lost".
+    workspace_authority.quarantine_store()  # Bind the journal to durable Hive state.
+    if journal_damage == "lost":
+        workspace_authority._migration_journal.pop(workspace_id, None)
+    else:
+        workspace_authority._migration_journal[workspace_id] = "not-a-journal-dict"
+
+    # Restart, twice: a resurrection must not depend on a warm process, and
+    # the first boot's refusal must be stable across the next one. The first
+    # boot names the tombstone refusal; the second sees the importing journal
+    # the first wrote before refusing, and names that — both are truthful
+    # quarantine evidence, and neither imports anything.
+    for attempt in range(2):
+        await hive.stop()
+        await hive.boot()
+        assert await hive.canonical.get(workspace_id) is None
+        assert not await workspace_authority.is_member("bob", workspace_id)
+        quarantine = workspace_authority.quarantine_store().get(workspace_id)
+        assert quarantine is not None, "the unusable-journal source must be held out, auditable"
+        if attempt == 0:
+            assert "deleted Workspace id" in quarantine["reason"]
+        else:
+            assert quarantine["reason"], "a quarantine entry without a reason is not evidence"
+        # The mirror row is preserved as migration input — never edited into
+        # authority, never silently dropped.
+        assert hive.mirror_rows()[workspace_id] == legacy

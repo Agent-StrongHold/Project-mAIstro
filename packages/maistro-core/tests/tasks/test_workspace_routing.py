@@ -24,6 +24,7 @@ from maistro.tasks.admission import (
 )
 from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue
+from maistro.workspaces.model import WorkspaceNotFound
 
 
 @pytest.fixture
@@ -250,3 +251,133 @@ async def test_the_router_resolves_a_task_receipt_through_the_default_binding(sp
     # A receipt id nobody admitted is a plain None, the same as lookup_run's.
     assert await router.find_task_run("task-never-was") is None
     assert found == await runs.get_run(task.run_id or "")
+
+
+# --- the canonical-authority fence (#37) ------------------------------------
+
+
+class _AuthorizedSpine:
+    """The routing spine with the canonical Workspace authority bound.
+
+    `InMemoryWorkspaceStore.__init__` binds its Project store, which is what
+    makes `create_root` — the router's every-call verification — able to
+    refuse a Workspace id nothing canonical owns.
+    """
+
+    def __init__(self) -> None:
+        from maistro.workspaces.store import InMemoryWorkspaceStore
+
+        self.projects = InMemoryProjectScopeStore()
+        self.workspaces = InMemoryWorkspaceStore(project_store=self.projects)
+        self.runs = InMemoryRunStore(project_store=self.projects)
+        self.router = WorkspaceRoutingAdmitter(
+            self.runs, self.projects, default_workspace_id="default"
+        )
+
+    async def provision(self, workspace_id: str) -> str:
+        workspace = await self.workspaces.create(
+            creator_user_id="owner", name=workspace_id, workspace_id=workspace_id
+        )
+        return workspace.workspace_id
+
+
+async def test_an_unknown_workspace_fails_before_any_write() -> None:
+    """A submission naming an id no canonical Workspace owns admits nothing.
+
+    This is the hole the 2026-11 recheck reproduced statically: the router
+    used to build a Root Project for whatever id it was handed. The refusal
+    now happens before the Project or Run store is touched, so a rejected
+    submission leaves zero rows behind.
+    """
+    spine = _AuthorizedSpine()
+    await spine.provision("w-real")
+    queue = TaskQueue(admitter=spine.router)
+
+    with pytest.raises(WorkspaceNotFound):
+        await queue.submit(TaskCreate(description="Ghost work"), workspace_id="w-ghost")
+
+    from maistro.projects.scope import ProjectNotFound
+
+    with pytest.raises(ProjectNotFound):
+        await spine.projects.root_for_workspace("w-ghost")
+    # The real Workspace was never touched either.
+    real_root = await spine.projects.root_for_workspace("w-real")
+    assert real_root.is_root
+    # The refusal minted no Run anywhere: the refusal happened in the router,
+    # before any Run write, so the spine is still empty.
+    assert await spine.runs.has_runs_in_project(real_root.project_id) is False
+
+
+async def test_a_cached_admitter_stops_admitting_once_the_workspace_is_deleted() -> None:
+    """Deletion fences the cache, not just the first build.
+
+    A Conductor process keeps one bound admitter per Workspace for the life of
+    the process. If the Workspace is deleted underneath it — by another
+    client, on a shared canonical store — the cached admitter must stop
+    admitting the moment the next verification runs, and the failed attempt
+    must leave no Run behind.
+    """
+    spine = _AuthorizedSpine()
+    workspace_id = await spine.provision("w-doomed")
+    queue = TaskQueue(admitter=spine.router)
+
+    first = await queue.submit(TaskCreate(description="Before"), workspace_id=workspace_id)
+    assert (await spine.runs.get_run(first.run_id or "")) is not None
+    # Warm the cache explicitly: the delete below must fence the *cached*
+    # admitter, not just a cold first build.
+    await spine.router.admitter_for(workspace_id)
+
+    await spine.workspaces.delete(workspace_id, principal_id="owner")
+
+    with pytest.raises(WorkspaceNotFound):
+        await spine.router.admitter_for(workspace_id)
+    with pytest.raises(WorkspaceNotFound):
+        await queue.submit(TaskCreate(description="After"), workspace_id=workspace_id)
+
+    # Exactly the runs admitted before the delete: nothing minted afterwards.
+    after = await spine.runs.get_run(first.run_id or "")
+    assert after is not None
+    from maistro.projects.scope import ProjectNotFound
+
+    with pytest.raises(ProjectNotFound):
+        await spine.projects.root_for_workspace(workspace_id)
+
+
+async def test_a_cached_admitter_is_stable_while_the_workspace_lives() -> None:
+    """Per-call verification must not rebuild the admitter every time.
+
+    The fence re-resolves the Root through `create_root` on every call, but
+    for a live Workspace that is create-or-return and the cache serves. A
+    router that dropped its cache on every admission would re-bind admitters
+    mid-flight — the loser's resolved project id thrown away under a task.
+    """
+    spine = _AuthorizedSpine()
+    workspace_id = await spine.provision("w-stable")
+
+    first = await spine.router.admitter_for(workspace_id)
+    second = await spine.router.admitter_for(workspace_id)
+    third = await spine.router.admitter_for(workspace_id)
+
+    assert first is second is third
+
+
+async def test_the_default_workspace_is_verified_like_any_other() -> None:
+    """`admitter_for(None)` resolves to the default and verifies it too.
+
+    The default Workspace is provisioned at composition, so its verification
+    passes in production; a deployment whose configured Workspace cannot be
+    provisioned fails at startup, not on the first submission. This pins the
+    verification itself: a default that vanishes canonically is refused, not
+    silently re-rooted.
+    """
+    spine = _AuthorizedSpine()
+    queue = TaskQueue(admitter=spine.router)
+
+    with pytest.raises(WorkspaceNotFound):
+        await queue.submit(TaskCreate(description="No default yet"))
+
+    await spine.provision("default")
+    task = await queue.submit(TaskCreate(description="Now there is"))
+    run = await spine.runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.workspace_id == "default"

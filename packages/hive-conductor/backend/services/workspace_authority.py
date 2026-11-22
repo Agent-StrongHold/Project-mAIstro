@@ -34,7 +34,13 @@ from models.workspace import (
 )
 
 from maistro.config.database import resolve_database_url
-from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
+from maistro.workspaces.model import (
+    WorkspaceDeleted,
+    WorkspaceNotFound,
+)
+from maistro.workspaces.model import (
+    WorkspaceRole as CanonicalWorkspaceRole,
+)
 from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
 from services.model_store import JsonStore, ModelStore
 
@@ -336,13 +342,24 @@ async def _migrate_one(
     if canonical is None:
         owner = _validate_import_source(legacy)
         _write_journal(legacy.id, status="importing", mode="legacy_import")
-        canonical = await store.create(
-            creator_user_id=owner.user_id,
-            name=legacy.name,
-            workspace_id=legacy.id,
-            created_at=legacy.created_at,
-            updated_at=legacy.updated_at,
-        )
+        try:
+            canonical = await store.create(
+                creator_user_id=owner.user_id,
+                name=legacy.name,
+                workspace_id=legacy.id,
+                created_at=legacy.created_at,
+                updated_at=legacy.updated_at,
+            )
+        except WorkspaceDeleted as exc:
+            # The canonical store tombstones deleted ids (#37): this id was a
+            # Workspace once, its delete committed, and no journal state can
+            # change that — not a lost journal, not a corrupt one, not one a
+            # concurrent client deleted the Workspace through. Quarantine the
+            # source for the recovery owner instead of minting authority.
+            raise LegacyWorkspaceQuarantined(
+                "canonical store refuses a deleted Workspace id; "
+                "legacy source is held out rather than resurrecting deleted authority"
+            ) from exc
         managed_import = True
         created = True
     elif managed_import:
@@ -352,7 +369,16 @@ async def _migrate_one(
     # membership. A canonical Workspace that pre-dated the migration remains
     # authoritative and stale legacy membership is ignored.
     if managed_import:
-        await _copy_import_roster(store, legacy)
+        try:
+            await _copy_import_roster(store, legacy)
+        except WorkspaceNotFound as exc:
+            # The Workspace was deleted by another client while this import
+            # was in flight. The canonical deletion outranks this journal;
+            # replaying the roster would revive revoked membership against a
+            # Workspace that no longer exists (#37).
+            raise LegacyWorkspaceQuarantined(
+                "canonical Workspace vanished during import; deletion outranks the journal"
+            ) from exc
 
     if legacy.id not in _presentations:
         _presentations[legacy.id] = _presentation_from_legacy(legacy)

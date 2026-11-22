@@ -97,6 +97,21 @@ async def test_an_authenticated_turn_admits_through_run_authorization() -> None:
     assert (run.workspace_id, run.project_id) == (workspace_id, project_id)
 
 
+async def _provisioned_root(container, workspace_id: str) -> str:
+    """A scratch Workspace provisioned through the canonical authority (#37).
+
+    The container's Project store verifies Workspace existence before minting
+    a Root, so test scaffolding provisions the Workspace the same way the
+    product does — through `workspace_store.create` — instead of asking the
+    scope store to mint scope for an id nothing owns.
+    """
+    if await container.workspace_store.get(workspace_id) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace_id, workspace_id=workspace_id
+        )
+    return (await container.project_scope_store.create_root(workspace_id)).project_id
+
+
 async def test_an_anonymous_turn_keeps_the_legacy_admission_path() -> None:
     container = await _container()
     assert await container._chat_run_authorization(ANONYMOUS_AUTH) is None
@@ -706,7 +721,7 @@ async def test_compensation_declines_a_run_already_past_queued() -> None:
     from maistro.graph import Graph, Node
 
     container = await _container()
-    project_id = (await container.project_scope_store.create_root("compensation")).project_id
+    project_id = await _provisioned_root(container, "compensation")
     graph = Graph(
         workspace_id="compensation",
         project_id=project_id,
@@ -861,7 +876,7 @@ async def test_a_stranded_admission_from_a_non_chat_source_is_left_alone() -> No
     from maistro.graph import Graph, Node
 
     container = await _container()
-    project_id = (await container.project_scope_store.create_root("non-chat")).project_id
+    project_id = await _provisioned_root(container, "non-chat")
     graph = Graph(
         workspace_id="non-chat",
         project_id=project_id,
@@ -1040,7 +1055,7 @@ async def test_a_store_that_ignores_the_source_filter_still_spares_a_foreign_run
     from maistro.graph import Graph, Node
 
     container = await _container()
-    project_id = (await container.project_scope_store.create_root("ignores-filter")).project_id
+    project_id = await _provisioned_root(container, "ignores-filter")
     graph = Graph(
         workspace_id="ignores-filter",
         project_id=project_id,

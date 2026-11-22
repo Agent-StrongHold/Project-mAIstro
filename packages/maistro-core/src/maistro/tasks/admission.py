@@ -499,7 +499,12 @@ class WorkspaceRoutingAdmitter:
         # One coordinator per process, shared by every bound admitter: it owns
         # the pool and the SQL, not any Workspace (#1845).
         self._coordinator = coordinator
-        self._by_workspace: dict[str, TaskRunAdmitter] = {}
+        # Workspace id -> (Root Project id the admitter was built for, admitter).
+        # The pair, not the admitter alone, because a cached admitter is only as
+        # valid as the Root it was resolved against: if the Root under the same
+        # Workspace id ever changes, the cached admitter must be rebuilt, not
+        # reused (#37).
+        self._by_workspace: dict[str, tuple[str, TaskRunAdmitter]] = {}
         # Two concurrent first submissions for one Workspace would otherwise
         # both create a Root Project. `create_root` is idempotent, so the
         # damage would be a wasted round-trip rather than two roots — but they
@@ -513,7 +518,18 @@ class WorkspaceRoutingAdmitter:
         return self._default_workspace_id
 
     async def admitter_for(self, workspace_id: str | None = None) -> TaskRunAdmitter:
-        """The bound admitter for one Workspace, building it on first use."""
+        """The bound admitter for one Workspace, building it on first use.
+
+        Every call — cache hit included — re-resolves the Workspace's Root
+        Project through ``create_root`` first (#37). ``create_root`` is
+        create-or-return, so for a live Workspace this is the read that keeps
+        the cache honest; for an unknown, deleted or otherwise unowned
+        Workspace id it refuses before anything is written, so a submission
+        that names a Workspace which does not exist canonically — including
+        one deleted after this process cached its admitter — fails BEFORE any
+        Project or Run row is minted, and the stale cached admitter is
+        dropped rather than served.
+        """
         # `is None`, not falsiness. An empty string is a *named* Workspace that
         # happens to be blank, and the API documents only None as meaning the
         # default — folding the two together let `?workspace_id=` file into the
@@ -527,12 +543,21 @@ class WorkspaceRoutingAdmitter:
             raise ValueError("workspace_id must be a non-empty string")
         cached = self._by_workspace.get(resolved)
         if cached is not None:
-            return cached
+            root = await self._projects.create_root(resolved)
+            if root.project_id == cached[0]:
+                return cached[1]
+            # The Root under this id changed while the admitter sat cached: a
+            # Workspace that was torn down and re-provisioned, or a scope store
+            # that lost its tree. The cached admitter points at a Root nothing
+            # else considers canonical — drop it and rebuild below.
+            async with self._lock:
+                self._by_workspace.pop(resolved, None)
+        else:
+            root = await self._projects.create_root(resolved)
         async with self._lock:
             cached = self._by_workspace.get(resolved)
-            if cached is not None:
-                return cached
-            root = await self._projects.create_root(resolved)
+            if cached is not None and cached[0] == root.project_id:
+                return cached[1]
             admitter = TaskRunAdmitter(
                 self._runs,
                 workspace_id=resolved,
@@ -540,7 +565,7 @@ class WorkspaceRoutingAdmitter:
                 intents=self._intents,
                 coordinator=self._coordinator,
             )
-            self._by_workspace[resolved] = admitter
+            self._by_workspace[resolved] = (root.project_id, admitter)
             return admitter
 
     async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
