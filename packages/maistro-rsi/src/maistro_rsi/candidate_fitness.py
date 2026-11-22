@@ -807,15 +807,28 @@ def _scenario_signal_items(
     return [_scenario_signal(scenario_eval, w)]
 
 
-def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
-    """Pure: assemble gates + priority-weighted scores into a Scorecard."""
-    w = weights or FitnessWeights()
-    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
-    # is a veto like any other, and its evaluation record rides on the
-    # Scorecard so the correctness verdict and the scalar objective are
-    # recorded separately from the work-signal composite.
-    scenario_eval = _scenario_objective_eval(inp)
-    gates = [
+def _quality_delta(inp: FitnessInputs) -> float | None:
+    """The refactor contract's measured composite delta, or ``None`` when
+    either side of the measurement is absent — ``fail_first_gate`` fails the
+    refactor contract closed on ``None``. (#1792 extraction.)"""
+    if inp.code_quality_composite is None or inp.baseline_quality_composite is None:
+        return None
+    return inp.code_quality_composite - inp.baseline_quality_composite
+
+
+def _reason_gate(name: str, ok: bool, reasons: list[str], pass_text: str) -> GateResult:
+    """A gate whose reason is the joined violation list, or the pass text when
+    there is nothing to report. (#1792: shared shape of the four negative
+    evidence gates.)"""
+    return GateResult(name, ok, "; ".join(reasons) or pass_text)
+
+
+def _scorecard_gates(
+    inp: FitnessInputs, scenario_eval: ScenarioEvaluation | None
+) -> list[GateResult]:
+    """The gate row of the scorecard, in audit order. (#1792: extracted from
+    ``compose_scorecard``; order and verdicts are load-bearing.)"""
+    return [
         # The oracle-immunity veto leads (#109): a candidate that mutated the
         # evaluator it is scored by is rejected on this gate before any other
         # signal is consulted, and its ``accepted`` can never come from the
@@ -828,36 +841,34 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
         ),
         coverage_gate(inp.baseline_coverage, inp.candidate_coverage),
         protected_inventory_gate(inp.test_inventory),
-        GateResult(
+        _reason_gate(
             "no_doc_regression",
             not inp.doc_regression_reasons,
-            "; ".join(inp.doc_regression_reasons) or "no docstring made vaguer",
+            inp.doc_regression_reasons,
+            "no docstring made vaguer",
         ),
-        GateResult(
+        _reason_gate(
             "valid_syntax",
             not inp.syntax_error_reasons,
-            "; ".join(inp.syntax_error_reasons) or "all changed .py files parse",
+            inp.syntax_error_reasons,
+            "all changed .py files parse",
         ),
-        GateResult(
+        _reason_gate(
             "tests_collectable",
             not inp.uncollectable_test_reasons,
-            "; ".join(inp.uncollectable_test_reasons) or "all changed test files are collectable",
+            inp.uncollectable_test_reasons,
+            "all changed test files are collectable",
         ),
-        GateResult(
+        _reason_gate(
             "test_exercises_change",
             not inp.vacuous_test_reasons,
-            "; ".join(inp.vacuous_test_reasons)
-            or "changed tests depend on the accompanying change",
+            inp.vacuous_test_reasons,
+            "changed tests depend on the accompanying change",
         ),
         fail_first_gate(
             resolve_contract(inp.declared_kind, inp.changed_src, inp.changed_tests),
             inp.fail_first,
-            quality_delta=(
-                inp.code_quality_composite - inp.baseline_quality_composite
-                if inp.code_quality_composite is not None
-                and inp.baseline_quality_composite is not None
-                else None
-            ),
+            quality_delta=_quality_delta(inp),
             net_new_tests=inp.net_new_tests,
             assertion_score=inp.assertion_score,
         ),
@@ -865,24 +876,29 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
         *_scenario_gate_items(scenario_eval),
         *_conditional_gates(inp),
     ]
-    scores: list[SignalScore] = [
-        red_green_signal(inp.tdd, w.red_green),
-        *_scenario_signal_items(scenario_eval, w),
-    ]
+
+
+def _new_test_score(inp: FitnessInputs, w: FitnessWeights) -> SignalScore | None:
+    """The net-new-test signal, or ``None`` when coverage itself was not
+    measured on both sides. (#1792 extraction.)"""
     cov_delta = (
         inp.candidate_coverage - inp.baseline_coverage
         if inp.candidate_coverage is not None and inp.baseline_coverage is not None
         else None
     )
-    nt = new_test_signal(
+    return new_test_signal(
         inp.net_new_tests,
         cov_delta,
         w.new_test,
         uncovered_new_lines=inp.uncovered_new_source_lines,
     )
-    if nt is not None:
-        scores.append(nt)
-    scores.extend(_ladder_signals(inp, w))
+
+
+def _objective_scores(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
+    """The externally-judged objective signals: second-opinion judge, timing,
+    capability, and changed-test assertion strength — each present only when
+    its evidence was supplied. (#1792 extraction.)"""
+    scores: list[SignalScore] = []
     if inp.feature_judge is not None:
         scores.append(
             judge_signal(
@@ -903,6 +919,14 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.assertion_detail or "changed-test assertion strength",
             )
         )
+    return scores
+
+
+def _work_scores(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
+    """The measured-work signals: mutation kill rate, coverage delta,
+    architecture fit, and the static code-quality composite — each present
+    only when its measurement exists. (#1792 extraction.)"""
+    scores: list[SignalScore] = []
     mut_signal = _mutation_signal(inp, w)
     if mut_signal is not None:
         scores.append(mut_signal)
@@ -920,9 +944,38 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
                 inp.code_quality_detail or "changed-source quality composite",
             )
         )
+    return scores
+
+
+def _scorecard_scores(
+    inp: FitnessInputs, w: FitnessWeights, scenario_eval: ScenarioEvaluation | None
+) -> list[SignalScore]:
+    """The reward row of the scorecard, in composite order. (#1792: extracted
+    from ``compose_scorecard``; order is load-bearing.)"""
+    scores: list[SignalScore] = [
+        red_green_signal(inp.tdd, w.red_green),
+        *_scenario_signal_items(scenario_eval, w),
+    ]
+    nt = _new_test_score(inp, w)
+    if nt is not None:
+        scores.append(nt)
+    scores.extend(_ladder_signals(inp, w))
+    scores.extend(_objective_scores(inp, w))
+    scores.extend(_work_scores(inp, w))
+    return scores
+
+
+def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None) -> Scorecard:
+    """Pure: assemble gates + priority-weighted scores into a Scorecard."""
+    w = weights or FitnessWeights()
+    # The proven-scenario objective (M5-B, #108) is evaluated first: its gate
+    # is a veto like any other, and its evaluation record rides on the
+    # Scorecard so the correctness verdict and the scalar objective are
+    # recorded separately from the work-signal composite.
+    scenario_eval = _scenario_objective_eval(inp)
     scorecard = Scorecard(
-        gates=gates,
-        scores=scores,
+        gates=_scorecard_gates(inp, scenario_eval),
+        scores=_scorecard_scores(inp, w, scenario_eval),
         scenario_objective=scenario_eval,
     )
     # Provenance (#109): the scorecard records the trusted evaluator digest it
@@ -1545,6 +1598,32 @@ def _attach_regression_judge(
         inputs.regression_judge = regression_judge_fn(diff, target)
 
 
+def _changed_py_partition(changed_files: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Partition the changed files into (changed source, changed tests, all
+    python). The source/tests split decides the evidence contract (#392), so
+    a test file is never counted as source there. (#1792 extraction.)"""
+    all_py = [f for f in changed_files if f.endswith(".py")]
+    src = [f for f in all_py if not _is_test(f)]
+    return src, changed_test_paths(changed_files), all_py
+
+
+def _baseline_derived(
+    cwd: Path, baseline_ref: str | None, src: list[str], tests: list[str]
+) -> tuple[int, list[str], list[str], dict[str, set[int]]]:
+    """The measurements that read the BASE revision, each defined away (to an
+    empty zero value) when there is no baseline or nothing to diff:
+    (net-new tests, doc regressions, new AC coverage, per-file new source
+    lines). All are read-only git probes, so their relative order is free.
+    (#1792 extraction.)"""
+    from maistro_rsi.spec_tracker import new_ac_coverage
+
+    net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
+    doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
+    new_acs = new_ac_coverage(cwd, baseline_ref, tests) if (baseline_ref and tests) else []
+    new_src_lines = new_source_lines(cwd, baseline_ref, src) if (baseline_ref and src) else {}
+    return net_new, doc_reasons, new_acs, new_src_lines
+
+
 def evaluate_candidate(
     candidate_dir: str | Path,
     changed_files: list[str],
@@ -1638,9 +1717,7 @@ def evaluate_candidate(
     # (``routing.quality_run_tool``).
     routing = _signal_routing(contained)
     run_tests = routing.test_run
-    src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]
-    tests = changed_test_paths(changed_files)
-    all_py = [f for f in changed_files if f.endswith(".py")]
+    src, tests, all_py = _changed_py_partition(changed_files)
     # The declared contract (#392): the slot's ImprovementKind decides whether
     # source-touching work owes fail-first evidence (default) or the refactor
     # alternative (declared refactor/doc polish).
@@ -1691,11 +1768,9 @@ def evaluate_candidate(
         tdd=tdd,
         executor=routing.probe_executor,
     )
-    net_new = count_net_new_tests(cwd, baseline_ref, tests) if (baseline_ref and tests) else 0
-    doc_reasons = _doc_regressions(cwd, baseline_ref, src) if baseline_ref else []
-    from maistro_rsi.spec_tracker import new_ac_coverage, proposed_specs
+    net_new, doc_reasons, new_acs, new_src_lines = _baseline_derived(cwd, baseline_ref, src, tests)
+    from maistro_rsi.spec_tracker import proposed_specs
 
-    new_acs = new_ac_coverage(cwd, baseline_ref, tests) if (baseline_ref and tests) else []
     new_specs = proposed_specs(cwd, changed_files)
 
     syntax_reasons = _syntax_check(cwd, all_py)
@@ -1708,7 +1783,6 @@ def evaluate_candidate(
         execute=routing.collect_execute,
         interpreter=routing.interpreter,
     )
-    new_src_lines = new_source_lines(cwd, baseline_ref, src) if (baseline_ref and src) else {}
     uncovered_new = uncovered_new_lines(new_src_lines, missing) if new_src_lines else {}
     vacuous_reasons = _vacuous_test_reasons(src, tests, tdd)
     # Protected test inventory (#306): always collected for the candidate —

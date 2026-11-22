@@ -32,6 +32,7 @@ from maistro.graph.concurrency import configure_graph_concurrency
 from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.http_contract import (
@@ -60,7 +61,11 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
-from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
+from maistro_server.api.auth import (
+    API_KEY_ENTRY_DOC,
+    ambiguous_api_key_entries,
+    invalid_api_key_entries,
+)
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -120,10 +125,11 @@ SHUTDOWN_DRAIN_TIMEOUT = 30.0
 
 def _validate_startup(settings: Settings) -> None:
     """Fail-fast startup checks. Raises RuntimeError if critical config is missing."""
-    if settings.require_auth and not settings.api_keys:
+    if settings.require_auth and not settings.api_keys and not settings.admin_api_keys:
         raise RuntimeError(
             "CRITICAL: No API keys configured and REQUIRE_AUTH is true. "
-            "Set API_KEYS env var or set REQUIRE_AUTH=false for local development."
+            "Set API_KEYS or ADMIN_API_KEYS env var, or set REQUIRE_AUTH=false "
+            "for local development."
         )
     # #843: fail closed at boot rather than serving a config where keys
     # silently share an invented identity. Descriptions never echo key
@@ -131,12 +137,26 @@ def _validate_startup(settings: Settings) -> None:
     invalid_entries = invalid_api_key_entries(settings)
     if invalid_entries:
         raise RuntimeError(
-            "CRITICAL: API_KEYS entries without an explicit canonical "
+            "CRITICAL: API key entries without an explicit canonical "
             f"principal (#843): {'; '.join(invalid_entries)}. Rewrite every "
-            f"entry as {API_KEY_ENTRY_DOC}. A legacy plain key keeps working "
+            f"entry as {API_KEY_ENTRY_DOC}; put administrator entries in "
+            "ADMIN_API_KEYS. A legacy plain key keeps working "
             "once prefixed with its principal — the same secret keeps "
             "authenticating, now attributed to the named principal. See "
             "docs/install/api-key-identity.md for the migration path."
+        )
+    # #1095: one bearer credential must resolve to exactly one principal and
+    # authority. A secret shared across entries made configuration order the
+    # tiebreaker for who a request authenticates as, so the collision itself
+    # is a startup failure. Descriptions never echo key material
+    # (ambiguous_api_key_entries guarantees that).
+    ambiguous_entries = ambiguous_api_key_entries(settings)
+    if ambiguous_entries:
+        raise RuntimeError(
+            "CRITICAL: API key credentials that resolve to more than one "
+            f"principal (#1095): {'; '.join(ambiguous_entries)}. Give each "
+            "principal its own secret — which identity a credential carries "
+            "must never depend on configuration order."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret
@@ -159,6 +179,37 @@ def _validate_startup(settings: Settings) -> None:
         )
 
 
+def _wire_canvas_assetinstance(app: FastAPI) -> bool:
+    """Mount the ADR-044 AssetInstance surface on the process (#2311 CONNECT).
+
+    LayerRecord ``canvas_store`` stays the design/persistence path (#851). This
+    binds ``AssetTool`` plus the asset ``/v2/canvas`` router (definitions,
+    instances, sheets, plan) so ``asset_*`` modules are process-reachable from
+    ``maistro_server.main``. Idempotent: an already-mounted surface is kept.
+    """
+    if getattr(app.state, "canvas_asset_tool", None) is not None:
+        return True
+    try:
+        from maistro_canvas.canvas.composition import build_asset_instance_surface
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        logger.error(
+            "canvas_assetinstance_unavailable",
+            detail=f"maistro-canvas AssetInstance surface missing ({exc})",
+        )
+        return False
+    surface = build_asset_instance_surface()
+    app.state.canvas_asset_tool = surface.tool
+    if not getattr(app.state, "canvas_asset_router_mounted", False):
+        app.include_router(surface.router)
+        app.state.canvas_asset_router_mounted = True
+    logger.info(
+        "canvas_assetinstance_wired",
+        backend="in_memory",
+        postgres_store=surface.postgres_store_cls.__name__,
+    )
+    return True
+
+
 def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     """Bind the shipped Canvas store to ``app.state.canvas_store`` (#851).
 
@@ -178,9 +229,14 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     An already-injected store is never replaced — deployments and tests that
     compose their own keep theirs.
 
+    When a store is (or becomes) present, also CONNECT the ADR-044
+    AssetInstance surface (#2311) so asset modules are process-reachable
+    alongside the LayerRecord path without deleting it.
+
     Returns whether a store is (now) present.
     """
     if getattr(app.state, "canvas_store", None) is not None:
+        _wire_canvas_assetinstance(app)
         return True
     if engine is None:
         logger.info(
@@ -198,6 +254,7 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
         return False
     app.state.canvas_store = PgCanvasStore(engine)
     logger.info("canvas_store_wired", backend="postgresql")
+    _wire_canvas_assetinstance(app)
     return True
 
 
@@ -235,6 +292,99 @@ def _router_api_key() -> str:
     return os.getenv("ROUTER_API_KEY", "")
 
 
+def _gateway_credential(settings: Settings) -> str:
+    """The credential the deployment's gateway actually authenticates (#1824).
+
+    The bundled proxy authenticates with its master key; an external gateway
+    (LITELLM_BASE_URL pointed off-stack) authenticates with the key the
+    operator states for it, `LITELLM_API_KEY` — the same derivation the
+    shipped compose file applies when it fills the containers' environment:
+    `LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY}}`. Server
+    construction used to read only the bundled `LITELLM_MASTER_KEY` setting,
+    so a stack switched to an external gateway kept presenting the bundled
+    proxy's key to it and every governed call came back 401. The physical key
+    registered as the scoped `model.chat` gateway credential and the one the
+    roster-facing endpoint carries are resolved here, once, together — the
+    two doors cannot disagree (and neither value is ever logged).
+    """
+    return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+
+
+async def _stop_canvas_job_runner(handle: Any) -> None:
+    """Stop the Canvas runner boundedly, or no-op when none was started."""
+    if handle is None:
+        return
+    from maistro_server.canvas_runtime import stop_canvas_job_runner
+
+    await stop_canvas_job_runner(handle)
+
+
+async def _start_canvas_job_runner(
+    app: FastAPI, settings: Settings, container: Any, spine_pool: Any
+) -> Any:
+    """Start the Canvas job runner on this process, or skip truthfully (#2311).
+
+    Start conditions are exactly the two the issue's composition owes: a
+    wired Canvas store (PostgreSQL configured — the same resolver the spine
+    reads) and a durable spine (``spine_pool`` is not None). Anything else is
+    a logged skip, not a degraded start: a runner claiming against an
+    in-process spine cannot see admitted Runs, and the worker service refuses
+    the same situation for the same reason.
+
+    An explicit opt-out precedes all of that: a deployment running the
+    supported ``maistro-canvas-worker`` service sets
+    ``CANVAS_SERVER_CONSUMER_ENABLED=false`` so this process never competes
+    for the shared ``generation_jobs`` queue. The server's governed image
+    egress cannot execute ``refine``, so a claim it wins against the external
+    worker would burn the job's attempts and terminalize it as failed —
+    supplying the external adapter alone does not prevent that race.
+
+    Returns the runner handle for the lifespan's shutdown, or None.
+    """
+    if not settings.canvas_server_consumer_enabled:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="disabled by configuration (CANVAS_SERVER_CONSUMER_ENABLED=false); "
+            "an externally managed maistro-canvas-worker owns the queue",
+        )
+        return None
+    store = getattr(app.state, "canvas_store", None)
+    if spine_pool is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no durable PostgreSQL spine; Canvas jobs cannot be claimed in-process",
+        )
+        return None
+    if store is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no Canvas store wired; /v2/canvas answers 503",
+        )
+        return None
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro_server.canvas_runtime import start_canvas_job_runner
+
+    try:
+        return await start_canvas_job_runner(
+            store=store,
+            container=container,
+            endpoint=GatewayEndpoint(
+                base_url=settings.litellm.base_url,
+                api_key=_gateway_credential(settings),
+            ),
+            workspace_id=settings.workspace_id,
+        )
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        # Same contract as `_wire_canvas_ability`: a leaner environment
+        # without maistro-canvas keeps a truthful no-runner log rather than
+        # failing startup — the Canvas surface there already answers 503.
+        await logger.awarning(
+            "canvas_runner_not_started",
+            detail=f"maistro-canvas is not installed ({exc})",
+        )
+        return None
+
+
 def _agents_dir() -> str:
     """`agents_dir`, from the same place, for the same reason."""
     yaml_config = settings_module.get_yaml_config()
@@ -262,7 +412,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
     return AgentConfig(
         router_api_key=_router_api_key(),
         litellm_url=settings.litellm.base_url,
-        litellm_key=settings.litellm.master_key,
+        litellm_key=_gateway_credential(settings),
         agents_dir=_agents_dir(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
@@ -391,7 +541,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
         router=container.llm_router,
         endpoint=GatewayEndpoint(
             base_url=settings.litellm.base_url,
-            api_key=settings.litellm.master_key,
+            api_key=_gateway_credential(settings),
         ),
     )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
@@ -440,13 +590,15 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(debug=settings.debug, json_output=not settings.debug)
 
-    # The worker loads the operator YAML itself (#1880): the entrypoint parent
-    # exec'd uvicorn away, taking any preload with it, and every consumer
-    # below — `_validate_startup` through `_router_api_key`, then
-    # `_agent_config` through `_security_config`/`_model_bindings` on the way
-    # into `create_container` — reads the singleton this sets. An invalid file
-    # stops startup here rather than bringing the server up as if the
-    # operator had declared nothing.
+    # The worker loads the operator YAML itself (#1880, carrying #1824): the
+    # entrypoint parent exec'd uvicorn away, taking any preload with it, and
+    # every consumer below — `_validate_startup` through `_router_api_key`,
+    # then `_agent_config` through `_security_config`/`_model_bindings` on the
+    # way into `create_container` — reads the singleton this sets. An invalid
+    # file stops startup here rather than bringing the server up as if the
+    # operator had declared nothing. Loading only in the entrypoint parent
+    # cannot work — `os.execvp` replaces that process — and tests injecting
+    # the singleton do not prove the shipped path.
     _load_operator_yaml()
 
     # Fail-fast startup validation
@@ -524,6 +676,12 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    # Route visibility answers through the same Workspace-membership boundary
+    # the Container's stores back (#1152): missing and foreign ids fail closed
+    # identically at the one seam.
+    runs.configure_run_boundary(
+        RunStoreBoundary(run_store, container.workspace_store, container.project_scope_store)
+    )
     a2a.configure_a2a_admission(
         run_store,
         container.project_scope_store,
@@ -566,6 +724,16 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         attempts=TaskAttemptExecutor(run_store),
     )
     await _runner.start()
+
+    # ADR-045 / #2311: start CanvasJobRunner in the default composition. The
+    # shipped server process owns a live claim/lease/reap loop over the same
+    # durable generation_jobs queue the Canvas surfaces write to, so admitted
+    # jobs have a reachable consumer with no external runner. Truthful skip
+    # (logged) when the deployment has no durable spine or no Canvas store —
+    # an in-process spine cannot see admitted Runs, the same refusal the
+    # maistro-canvas-worker service makes for the same reason.
+    canvas_runner = await _start_canvas_job_runner(app, settings, container, spine_pool)
+
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
     # No signal handler is installed here. Uvicorn owns SIGTERM/SIGINT for the
@@ -588,6 +756,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # FAILED, and shutdown continues to process exit either way.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        # The Canvas runner stops before the container closes: its poll loop
+        # holds no provider calls while idle, and a stuck tick gets the same
+        # bounded cancel-and-abandon ladder the composition seam uses.
+        await _stop_canvas_job_runner(canvas_runner)
         container = getattr(app.state, "container", None)
         if container is not None:
             try:
@@ -603,6 +775,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _drain_queue_singleton()
         reset_task_queue()
         runs.configure_run_store(None)
+        runs.configure_run_boundary(None)
         a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 

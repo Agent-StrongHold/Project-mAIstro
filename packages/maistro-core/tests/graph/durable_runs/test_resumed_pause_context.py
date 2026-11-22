@@ -33,7 +33,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.durable_runs.executor import _build_ctx
+from maistro.graph.durable_runs.executor import _build_ctx, _node_spec
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import (
     BaseNode,
@@ -640,7 +640,7 @@ async def test_thawed_carry_is_independent_of_the_frozen_record() -> None:
     assert isinstance(entry["metadata"]["items"], tuple)
 
     before = record.model_dump(mode="json")
-    ctx = _build_ctx(record, "probe")
+    ctx = _build_ctx(record, "probe", _node_spec(record.run.graph.materialize(), "probe"))
     carried = ctx.metadata[RESUMED_PAUSE_KEY]
     assert carried == {
         "nested": {"k": "v"},

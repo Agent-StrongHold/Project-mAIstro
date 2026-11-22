@@ -5,10 +5,10 @@
 
     # server/models/db.py
     DATABASE_URL = os.environ.get(
-        "DATABASE_URL", "postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders"
+        "DATABASE_URL", "postgresql+asyncpg://mcp:mcp@db.example.invalid:5441/mcp_orders"
     )
     # alembic.ini
-    sqlalchemy.url = postgresql+asyncpg://mcp:mcp@localhost:5441/mcp_orders
+    sqlalchemy.url = postgresql+asyncpg://mcp:mcp@db.example.invalid:5441/mcp_orders
 
 Port 5441 is published to the host by that package's Compose profile, so this
 was a working credential for a reachable service, published in this repository.

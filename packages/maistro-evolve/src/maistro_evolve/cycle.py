@@ -468,7 +468,8 @@ class EvolutionCycle:
 
         pairs_to_battle: list[tuple[PipelineGenome, PipelineGenome]] = []
         shuffled = list(scored)
-        random.shuffle(shuffled)
+        # Tournament pairing only — not a cryptographic use of randomness.
+        random.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         for i in range(0, len(shuffled) - 1, 2):
             pairs_to_battle.append((shuffled[i], shuffled[i + 1]))
 

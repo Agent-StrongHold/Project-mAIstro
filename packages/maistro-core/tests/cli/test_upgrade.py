@@ -653,6 +653,51 @@ def test_compose_runtime_resolution(
     assert " ".join(upgrade_mod._resolve_compose_runtime()) == expected
 
 
+@pytest.mark.parametrize(
+    ("which", "recorded", "expected"),
+    [
+        # #1820: the manifest's recorded runtime outranks the probe — the same
+        # front-end that started the stack finishes the upgrade. With both
+        # CLIs installed, a selected Podman install used to be silently
+        # handed to docker on the first upgrade.
+        ({"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}, "podman", "podman compose"),
+        ({"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}, "docker", "docker compose"),
+        ("podman-absent", "podman", "podman compose"),
+        # An unrecorded (pre-#1820 manifest) or auto selection keeps the
+        # documented docker-then-podman probe order.
+        ({"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}, None, "docker compose"),
+        ({"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}, "auto", "docker compose"),
+        ({"podman": "/usr/bin/podman"}, None, "podman compose"),
+    ],
+)
+def test_compose_runtime_resolution_honors_the_manifest_recording(
+    monkeypatch: pytest.MonkeyPatch,
+    which: dict[str, str] | str,
+    recorded: str | None,
+    expected: str,
+) -> None:
+    runtime_on_path = (
+        {"docker": "/usr/bin/docker", "podman": "/usr/bin/podman"}
+        if which == "podman-absent"
+        else which
+    )
+    monkeypatch.setattr(
+        upgrade_mod.shutil,
+        "which",
+        lambda name: runtime_on_path.get(name),  # type: ignore[arg-type,return-value]
+    )
+    manifest = (
+        InstallManifest(install_type="git", install_root="/tmp/x", container_runtime=recorded)
+        if recorded is not None
+        else InstallManifest(install_type="git", install_root="/tmp/x")
+    )
+    resolved = upgrade_mod._resolve_compose_runtime(manifest)
+    assert " ".join(resolved) == expected
+    # the resolved prefix names exactly the recorded runtime, even when the
+    # other CLI is the one on PATH — no silent switch
+    assert resolved[0] == expected.split()[0]
+
+
 # -- compose capability probe (#407) --------------------------------------------
 
 
