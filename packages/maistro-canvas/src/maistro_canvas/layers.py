@@ -242,6 +242,7 @@ class WorldStylePartial:
     vehicle_register: str | None = None
     palette_anchors: tuple[str, ...] | None = None
     fauna_realism: Literal["cute", "realistic"] | None = None
+    perspective: Literal["flat", "one_point", "two_point", "isometric"] | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,9 @@ class WorldStyle:
     vehicle_register: str
     palette_anchors: tuple[str, ...]
     fauna_realism: Literal["cute", "realistic"]
+    #: ADR-039 world-style perspective vocabulary; default keeps existing
+    #: construction sites and persisted rows valid.
+    perspective: Literal["flat", "one_point", "two_point", "isometric"] = "flat"
 
 
 @dataclass(frozen=True)
@@ -343,6 +347,7 @@ def merge_world_style(
     vehicle_register = base.vehicle_register
     palette_anchors = base.palette_anchors
     fauna_realism = base.fauna_realism
+    perspective = base.perspective
 
     for p in partials:
         if p is None:
@@ -359,6 +364,8 @@ def merge_world_style(
             palette_anchors = p.palette_anchors
         if p.fauna_realism is not None:
             fauna_realism = p.fauna_realism
+        if p.perspective is not None:
+            perspective = p.perspective
 
     return WorldStyle(
         era=era,
@@ -367,6 +374,7 @@ def merge_world_style(
         vehicle_register=vehicle_register,
         palette_anchors=palette_anchors,
         fauna_realism=fauna_realism,
+        perspective=perspective,
     )
 
 
