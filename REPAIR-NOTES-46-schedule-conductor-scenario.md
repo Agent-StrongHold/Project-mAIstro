@@ -83,3 +83,40 @@ remain deliberate strict-mode blockers owned by #51/#1064-66 and #463.
 - GH006 merge-queue enqueue is GitHub-side.
 - Strict-#459 scenarios 3/6 remain red until Evolve (#51/#1064-66) and the
   golden real-observation (#463) scenarios are executed for real.
+
+## Verification round @ 8dfe5ee62f (first-party re-validation, no tree changes)
+
+Re-executed the whole evidence chain at the branch head; every prior claim
+reproduced:
+
+- `uv run pytest tests/cross_product_parity/ -q` — **26 passed**.
+- `uv run python scripts/run-m1-closeout.py` —
+  `scheduler-occurrence-to-conductor {"executed": true, "status": "PASSED"}`;
+  only evolve/golden scaffold scenarios fail (by design, other issues' work).
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (3628 files).
+- `scripts/check-suite-inventory.py` ok (21 suites match);
+  `check-test-duplicates.py`, `check-doc-links.py`,
+  `check-backlog-consistency.py` all ok.
+- **Live PostgreSQL reproduction**: dedicated `pgvector:pgvector:pg18`
+  container on 127.0.0.1:16443, `alembic upgrade head` to migration 068,
+  `MAISTRO_TEST_PG_DSN` set — `packages/maistro-core/tests/scheduling/`
+  **327 passed, 0 skipped** (without the DSN, same head: 289 passed, 38
+  skipped, every skip a PostgreSQL leg); the eleven hive-conductor scheduling
+  suites (canonical admission/due, projection authority, workspace scope,
+  scope, manual fire, bounded tick, frequency floor, definitions, scheduler)
+  **258 passed, 0 skipped**; `test_schedule_winner_crash.py` **4 passed**
+  (mid-write crash + cursor serialization). SQLite-only runs at the same
+  head: those suites 91 passed / 17 skipped and 33 passed / 8 skipped.
+- **SAST reproduction** (the gate that failed at 83fb36e): CI-exact
+  `gitleaks git --redact --log-opts="e7bc894733..8dfe5ee62f"` (gitleaks
+  8.30.1, develop base unchanged at e7bc894733): 13 commits, **no leaks
+  found**; `bandit -r packages/maistro-core/src packages/hive-conductor/backend
+  packages/maistro-server/src -ll --confidence-level=medium` — Medium+ **0**
+  (strict gate).
+
+AC nuance recorded verbatim: the strict-#459 scenario-2 execution runs on the
+supported durable SQLite spine; the PostgreSQL-profile and crash-between-writes
+dimensions of that acceptance line are proven live by the PG-leg suites above
+(admission/due on `PgScheduleStore` over the real alembic schema, and the
+winner-crash SIGKILL suite) — the same composite the two prior rounds
+documented. AC7 and the GH006 queue enqueue remain GitHub-side residuals.
