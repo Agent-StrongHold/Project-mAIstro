@@ -61,7 +61,7 @@ the `_definition_for` contract test asserts the new read-first authority
 (stored definition stands; first put still belongs to a never-canonicalized
 row).
 
-## Exact-head revalidation (8b663aa30de2)
+## Exact-head revalidation (c2f1fbb12b2d)
 
 The earlier independent review called out that the canonical PostgreSQL leg did
 not also prove restart from a persisted Hive projection. That proof is present
