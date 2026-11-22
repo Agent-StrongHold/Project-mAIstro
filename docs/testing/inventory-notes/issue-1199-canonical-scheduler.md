@@ -158,3 +158,87 @@ state. The one-time/tombstone-aware migration and projection-repair work for
 that defect is owned by the reopened #1199 and #2467 lanes (heads
 1326ca7eb4 / c486fc806f, not ancestors of this branch); no test count moves
 here, so no `inventory-delta` is recorded for this addendum.
+
+## Develop-sync resolution and re-validation at 86adf48103 (2026-11-22)
+
+The lane's previous attempt (job c60c01cbb64b484cbf463e111c18a1d6) blocked
+mid develop-sync: it left a develop-content overlay in the working tree that
+blocked any `origin/develop` merge (1091 of 1096 untracked paths exist in
+develop; the driver salvage commit 3a9e9fc8d0 captured only the 588 tracked
+modifications). This round completed the sync as the lane brief directs:
+
+- every one of the 1109 untracked files (1091 files plus the 18 files inside
+  the 5 untracked directories) was verified byte-identical to
+  `origin/develop` blobs before staging, then committed as the overlay
+  commit e14ea64f3e — no unique local work is contained in it;
+- `git merge origin/develop` (ae1cb3b17e) predicted 20 content conflicts;
+  all 20 were verified to be salvage-overlay paths (each file's ours-side
+  came from the develop-content overlay, never unique lane work), so the
+  merge resolved them to develop's side, plus one modify/delete
+  (`test_registry.py`) resolved to develop's version; merge commit
+  538b1d5bc0;
+- the 3-way merge had also stitched stale overlay entries (browser-use,
+  google-api-*, ollama, openai, …) into `uv.lock`; because the merged
+  pyproject files are byte-identical to `origin/develop`'s, the lock was
+  reconciled to develop's wholesale in 86adf48103 (the stitched lock stays
+  reachable at 538b1d5bc0), and `uv sync --locked --extra dev` rebuilt the
+  environment from it;
+- post-sync tree check: `git diff origin/develop HEAD --name-only` is
+  exactly this note — every scheduling file (scheduler.py,
+  routes/schedules.py, scheduling/{store,admission,pg_store,model}.py) is
+  byte-identical to `origin/develop`.
+
+First-party re-validation at 86adf48103 (pgvector:pg18 container
+`auto-46-pg`, DSN on 127.0.0.1:16432):
+
+- `uv run ruff check .`: all checks passed; `uv run ruff format --check .`:
+  3619 files already formatted.
+- `uv run mypy` over the seven documented package srcs: no issues in 959
+  source files.
+- `scripts/check-suite-inventory.py` (uv run): ok, 21 suites match the
+  recorded inventory; `scripts/check-test-duplicates.py`: ok;
+  `scripts/check-doc-links.py`: ok.
+- Core scheduling with the PostgreSQL legs live
+  (`MAISTRO_TEST_PG_DSN=postgresql://maistro:auto46@127.0.0.1:16432/maistro`):
+  `packages/maistro-core/tests/scheduling/` 327 passed, 0 skipped (16s).
+- Hive-conductor scheduler/definition/scope/manual-fire suites
+  (`test_scheduler.py`, `test_scheduler_bounded_tick.py`,
+  `test_scheduler_canonical_admission.py`, `test_scheduler_canonical_due.py`,
+  `test_schedule_canonical_definitions.py`, `test_schedule_frequency_floor.py`,
+  `test_schedule_manual_fire_canonical.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_workspace_scope.py`) with the same live DSN: 204 passed,
+  0 skipped (30s). (Suite counts grew vs the pre-sync 311/195 because the
+  merge brought develop's newer scheduling tests and inventory baseline,
+  which the suite-inventory gate confirms as matching.)
+
+Reactivated-#46 status at 86adf48103 (unchanged by this sync, now with
+develop-exact line numbers):
+
+- the #2467 authority-inversion defect is still present and is now byte-
+  identical to `origin/develop`: `_ScheduleRunner.run` still calls
+  `backfill_canonical_definitions()` unconditionally on startup
+  (`services/scheduler.py:451`), and `_backfill_one`
+  (`services/scheduler.py:420`) puts a Hive-row-derived definition over the
+  canonical row whenever `_definition_drifted` disagrees — including
+  `enabled`, `name`, `cron`, `timezone`, `workspace_id`, `project_id`
+  (`services/scheduler.py:407-418`) — with no tombstone awareness
+  (`services/scheduler.py:442` put), while the routes still commit the
+  canonical write before the Hive projection (`routes/schedules.py:214`,
+  delete canonical at `routes/schedules.py:425` then projection). A crash
+  between those writes is still "repaired" at next startup by the stale
+  projection overwriting or resurrecting canonical state.
+- the strict-#459 scenario token `REAL_SCENARIO_EVIDENCE: schedule-conductor`
+  is still produced nowhere outside the parity harness
+  (`tests/cross_product_parity/harness.py:245`), so
+  `REAL_SCHEDULE_CONDUCTOR_SCENARIO` (`harness.py:233`) remains a
+  permanently-evidenced blocker for the real app-lifespan /
+  crash-between-writes criterion.
+- the reopened #1199/#2467 repair heads (1326ca7eb4 "repair the Hive
+  projection from canonical authority", c486fc806f "run the
+  projection-authority scenarios against the production PgScheduleStore")
+  remain NOT ancestors of this branch or of `origin/develop` — the repair
+  itself has not landed anywhere reachable from this lane.
+
+No suite count moves from this round's own delta (the merged tree's counts
+are develop's own, confirmed by the 21-suite inventory gate), so no
+`inventory-delta` is recorded for this addendum either.
