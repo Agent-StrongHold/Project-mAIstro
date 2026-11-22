@@ -405,9 +405,9 @@ max-complexity = 10
 
 [tool.pytest.ini_options]
 # --strict-markers (#391): an unregistered marker is a claim no gate can
-# read. `ac`, `contract`, and `scope` below are the registered set; anything
-# else a test carries is a typo or an undocumented axis, and both fail loudly
-# here rather than passing silently as inert decoration.
+# read. `ac`, `contract`, `scope`, and `timeout` below are the registered set;
+# anything else a test carries is a typo or an undocumented axis, and both
+# fail loudly here rather than passing silently as inert decoration.
 addopts = "--import-mode=importlib --strict-markers"
 testpaths = [
     "packages/maistro-core/tests",
@@ -443,6 +443,12 @@ markers = [
     "ac: Acceptance Criteria traceability (SPEC-NNN/AC-N)",
     "contract: ADR-032 contract axis (boundary | behavioral | cross-service)",
     "scope: test scope axis (unit | integration | e2e | property)",
+    # Registered even when pytest-timeout is absent: hive CI's system-python
+    # step installs backend/requirements.txt without the plugin, and
+    # --strict-markers would otherwise fail collection on @pytest.mark.timeout.
+    # With the plugin present (uv --extra dev / Coverage gate), the mark still
+    # sets the per-test ceiling.
+    "timeout: per-test wall-clock ceiling (pytest-timeout); inert without the plugin",
 ]
 pythonpath = [
     "packages/maistro-core/src",

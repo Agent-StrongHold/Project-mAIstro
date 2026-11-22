@@ -403,3 +403,41 @@ class TestRecoverOrphanedPgLockRefusals:
             await store.recover_orphaned_attempt(attempt_id, owning_run_id=run_id)
 
         assert pool.updates == []
+
+
+class TestRecoverOrphanedPgWriter:
+    """No-services arms the lock-refusal class leaves open: happy write,
+    missing attempt, and wrong-owner lineage (each an uncovered diff line
+    until pinned here — the writer's refusal arms must refuse without
+    writing, and its happy arm must persist exactly one Attempt row)."""
+
+    async def test_pg_writer_persists_cancelled_recovered_under_owning_run(self) -> None:
+        pool, attempt_id, run_id = await _orphan_pool()
+        store = _pg_store(pool)
+
+        settled = await store.recover_orphaned_attempt(attempt_id, owning_run_id=run_id)
+
+        assert settled.status is AttemptStatus.CANCELLED
+        assert settled.cancellation_cause is CancellationCause.RECOVERED
+        assert settled.error == ORPHANED_ATTEMPT_ERROR
+        # Exactly one Attempt row written; parent locks only read.
+        assert pool.updates == [("canonical_attempts", attempt_id)]
+
+    async def test_pg_missing_attempt_raises_attempt_not_found(self) -> None:
+        pool, attempt_id, run_id = await _orphan_pool()
+        del pool.attempt_nodes[attempt_id]
+        store = _pg_store(pool)
+
+        with pytest.raises(AttemptNotFound):
+            await store.recover_orphaned_attempt(attempt_id, owning_run_id=run_id)
+
+        assert pool.updates == []
+
+    async def test_pg_wrong_owning_run_is_refused_before_locks(self) -> None:
+        pool, attempt_id, _run_id = await _orphan_pool()
+        store = _pg_store(pool)
+
+        with pytest.raises(RunIntegrityError, match="belongs to Run"):
+            await store.recover_orphaned_attempt(attempt_id, owning_run_id="run-elsewhere")
+
+        assert pool.updates == []
