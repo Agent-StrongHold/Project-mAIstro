@@ -640,6 +640,7 @@ async def record_decision(
     decision: str,
     *,
     actor: str,
+    workspace_id: str = "",
 ) -> dict[str, Any]:
     """Record an accept/reject on a proposal. The decision itself flows
     back into outcome_store as a Signal #4-equivalent so the next
@@ -652,6 +653,13 @@ async def record_decision(
     (`promote_audited`) with the accepting user named as the approver. The
     payload's `apply_outcome` says what actually happened; `applied` is
     only ever true when a candidate version really promoted.
+
+    `workspace_id` is the canonical owning Workspace the caller's target
+    gate resolved (#2469) — the tenant the promotion commits into. When it
+    is supplied and contradicts the stored row's recording, the proposal is
+    refused (KeyError, the same non-disclosing answer as an unknown id): a
+    stale or forged Workspace field can never redirect a promotion to
+    another tenant.
     """
     if decision not in (DECISION_ACCEPTED, DECISION_REJECTED):
         raise ValueError(
@@ -664,6 +672,15 @@ async def record_decision(
     if payload is None:
         raise KeyError(proposal_id)
     payload = dict(payload)
+    authorized_workspace = str(workspace_id or "").strip()
+    if authorized_workspace:
+        recorded = str(payload.get("workspace_id", "") or "").strip()
+        if recorded and recorded != authorized_workspace:
+            # Aliasing row: its stored tenant contradicts the canonical one
+            # the gate authorized. Refuse without deciding, disclosing, or
+            # rehoming the proposal (#2469).
+            raise KeyError(proposal_id)
+        payload["workspace_id"] = authorized_workspace
     payload["decision"] = decision
     payload["decided_by"] = actor
     payload["decided_at"] = datetime.now(UTC).isoformat()
