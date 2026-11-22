@@ -211,3 +211,18 @@ The negative-before/positive-after CI-evidence closure-gate clause remains
 an integration-phase handoff item (this lane cannot trigger CI); everything
 else in this file is executed first-party evidence at the head recorded
 above.
+
+## Addendum — independent validation after the prior blocked result (head 50392cd1e5cb)
+
+The prior result's only failure was `pytest packages/maistro-core/tests/conftest.py`
+(exit 5, no tests collected): `conftest.py` is a fixture module, not a test
+suite. No product regression was identified. Re-ran actual acceptance suites
+against this exact committed head, using the already-running `auto-1199-r3-pg`
+(PostgreSQL 18 at `127.0.0.1:18995`, database `maistro_test`):
+
+- `MAISTRO_TEST_PG_DSN=postgresql://postgres:<redacted>@127.0.0.1:18995/maistro_test uv run pytest packages/maistro-core/tests/scheduling -x -q` — **327 passed**, covering store due/cursor and backend concurrency behavior with PostgreSQL enabled.
+- The same DSN with `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py -x -q` — **67 passed, 1 skipped** (memory-only leg requiring process-shared durable state); live tick due selection and canonical projection authority paths execute on PostgreSQL.
+- The same DSN plus `MAISTRO_PARITY_MODE=m1-closeout MAISTRO_PARITY_STRICT=1 uv run pytest tests/cross_product_parity/test_cross_product_parity.py -k 'schedule_required or schedule_fire or scaffold_only' -q -s` — **3 passed**; emits `executed=true`, `status=PASSED` for `scheduler-occurrence-to-conductor`.
+- `uv run ruff check .` — clean; `uv run ruff format --check .` — 3630 files formatted; CI-exact vulture baseline — 1221 reviewed identities match 1221 findings.
+
+No tests were added in this validation pass, so it has no inventory delta. The code path inspected at this head calls `container.schedule_store.due(now=now)` in `services/scheduler.py::_tick_due`; it is not enumerating Hive rows as scheduling authority. Remaining handoff limit: the integration-only negative-before/positive-after CI evidence cannot be produced from this lane.
