@@ -131,7 +131,10 @@ database:
 4. Create orphan, repeated/concurrent startup, truthful ack: executed
    (orphan, concurrent-startup, UPDATE/DELETE-outage tests). Independent-
    process import races and combined create-projection/compensation failure
-   remain UNVERIFIED, as recorded last round.
+   were recorded UNVERIFIED here; both were subsequently executed — see
+   `1199-independent-process-startup-race.md` (its reconciliation addendum
+   and the new two-process race test) and re-executed at the merged head
+   (addendum below).
 5. Cursors, uniqueness, SQLite/PG concurrency: executed (core store suite,
    canonical-due suite, two-runner claim tests) — 368 + 65 items this round.
 6. Strict #459 configured lifespan → due tick → canonical Run/Attempt →
@@ -151,3 +154,60 @@ integrated branch; this lane cannot push or trigger CI, so that evidence can
 only be produced post-integration. Everything else above was executed first-
 party in this worktree at the exact candidate head recorded in the commit
 that carries this note.
+
+## Addendum — merged-head re-validation (round 3, head 188f3df4c5e5)
+
+After the develop sync landed (`939363f33c`, `ce150065cd`, `d3fbcbce55`,
+`45ef9fd2d5`, `7f1b657eb8`, merge `188f3df4c5e5`; develop base
+`c87dd79acd2a`), every suite above was re-executed first-party against a
+fresh lane-owned pg18 (`auto-1199-r3-pg`, `pgvector/pgvector:pg18` at
+`127.0.0.1:18995`) migrated with `DATABASE_URL=<dsn> uv run alembic
+upgrade head` — chain applied clean through 069 — with
+`MAISTRO_TEST_PG_DSN` pointing at the migrated `maistro_test` database
+(CI's exact recipe per `.github/workflows/ci.yml:363,390`):
+
+- `test_scheduler_projection_authority.py` +
+  `test_schedule_projection_authority.py` +
+  `test_schedule_canonical_definitions.py`: **122 passed, 1 skipped** —
+  the one skip is the memory leg of the two-process race (`two processes
+  need durable state to share`, by design; both sqlite and postgres legs
+  PASSED). The previously reported "PostgreSQL legs skip when
+  MAISTRO_TEST_PG_DSN is unset" finding is closed by execution: with the
+  DSN set, every pg leg ran.
+- Nine adjacent Hive scheduler suites (canonical due, canonical admission,
+  manual fire canonical, scheduler, bounded tick, frequency floor, scope,
+  workspace scope, timezone health): **172 passed**, covering future-not-
+  due (`test_no_fire_persists_next_due_and_stops_selection`), one due
+  occurrence (`test_tick_executes_canonical_only_schedule_once`),
+  manual-vs-tick interleaving
+  (`test_tick_and_manual_fire_share_definition_lock_and_keep_both_counts`),
+  restart (`test_restart_consumes_queued_run_without_refiring`) and
+  backend parity (memory/sqlite/pg parametrizations).
+- Core scheduling
+  (`packages/maistro-core/tests/scheduling`, canonical due scan, due
+  continuations, schedule winner crash, schedule resume lease): **358
+  passed** on real PG, including the serialized concurrent `record_fire`
+  parametrizations.
+- Strict closeout: `tests/cross_product_parity` **26 passed**;
+  `MAISTRO_TEST_DATABASE_URL`/`MAISTRO_TEST_PG_DSN` migration suites
+  (chain, Goal installed-base upgrade, capability effect index): **28
+  passed** (previously 4 passed / 24 skipped without the URL).
+- Gates at `188f3df4c5e5`: `uv run ruff check .` clean; `uv run ruff
+  format --check .` (3630 files); canonical mypy over the seven library
+  `src` trees (no issues in 960 files); vulture CI-exact (`scripts/
+  check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) exit 0, 1221 reviewed identities = 1221 findings,
+  base `c87dd79acd2a` vs candidate `188f3df4c5e5`; suite inventory (21
+  suites match), test duplicates (0 groups), backlog consistency, durable
+  table inventory (125 tables), doc links — all pass.
+- Cold-start note, recorded for honesty: the very first execution of the
+  two-process race postgres leg on the just-booted server failed once
+  (child rc=1, stderr not preserved by the test harness) and then passed
+  5/5 consecutive re-runs at the same head, including a fresh cold run
+  against the unmigrated admin DSN. One unreproduced cold-start transient;
+  no code change made.
+
+The negative-before/positive-after CI-evidence closure-gate clause remains
+an integration-phase handoff item (this lane cannot trigger CI); everything
+else in this file is executed first-party evidence at the head recorded
+above.
