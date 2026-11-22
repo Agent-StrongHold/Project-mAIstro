@@ -225,6 +225,7 @@ class WorldStyleModel(BaseModel):
     vehicle_register: str
     palette_anchors: list[str]
     fauna_realism: str
+    perspective: str = "flat"
 
 
 class StyleVolumeModel(BaseModel):
@@ -385,6 +386,7 @@ def _world_style_in_to_dc(w: WorldStyleModel) -> WorldStyle:
         vehicle_register=w.vehicle_register,
         palette_anchors=tuple(w.palette_anchors),
         fauna_realism=w.fauna_realism,  # type: ignore[arg-type]
+        perspective=w.perspective,  # type: ignore[arg-type]
     )
 
 

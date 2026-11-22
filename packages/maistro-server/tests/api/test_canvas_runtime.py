@@ -29,6 +29,11 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import (
+    BindingDisabled,
+    BindingNotFound,
+    BindingScopeDenied,
+)
 from maistro.capabilities.image_generation import IMAGE_GENERATE_CAPABILITY
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 from maistro.http import override_transport
@@ -40,11 +45,20 @@ from maistro_server.canvas_runtime import (
     GatewayModelRegistry,
     GovernedGatewayImageClient,
     WardenPromptScan,
+    canvas_image_binding_id,
     start_canvas_job_runner,
     stop_canvas_job_runner,
 )
 
 ENDPOINT = GatewayEndpoint(base_url="http://gateway.test", api_key="key")
+
+#: The admission scope the fakes below authorize (the runner tests' fake chat
+#: admitter returns exactly this pair). Non-default on purpose: a scope that
+#: happens to equal the retired fabricated values would make the scope
+#: assertions in this module vacuous.
+ADMISSION_WORKSPACE = "ws-default"
+ADMISSION_PROJECT = "root-project"
+BINDING_ID = canvas_image_binding_id(ADMISSION_WORKSPACE, ADMISSION_PROJECT)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -53,6 +67,10 @@ ENDPOINT = GatewayEndpoint(base_url="http://gateway.test", api_key="key")
 
 
 class _FakeBindings:
+    """The BindingStore contract the client now goes through (#2464):
+    ``resolve`` re-checks scope against the registered record instead of
+    trusting a bare ``get``, mirroring ``BindingStore.resolve``."""
+
     def __init__(self) -> None:
         self.records: dict[str, Binding] = {}
         self.puts: list[Binding] = []
@@ -64,6 +82,41 @@ class _FakeBindings:
 
     async def get(self, binding_id: str) -> Binding | None:
         return self.records.get(binding_id)
+
+    async def resolve(
+        self,
+        binding_id: str,
+        *,
+        workspace_id: str,
+        project_id: str,
+        node_id: str,
+        capability: str,
+    ) -> Binding:
+        binding = self.records.get(binding_id)
+        if binding is None:
+            raise BindingNotFound(f"Binding {binding_id!r} is not registered")
+        if binding.disabled:
+            raise BindingDisabled(f"Binding {binding_id!r} is disabled")
+        if binding.workspace_id != workspace_id:
+            raise BindingScopeDenied(
+                f"Binding {binding_id!r} belongs to Workspace {binding.workspace_id!r}, "
+                f"not {workspace_id!r}"
+            )
+        if binding.project_id != project_id:
+            raise BindingScopeDenied(
+                f"Binding {binding_id!r} belongs to Project {binding.project_id!r}, "
+                f"not {project_id!r}"
+            )
+        if binding.node_id and binding.node_id != node_id:
+            raise BindingScopeDenied(
+                f"Binding {binding_id!r} is restricted to Node {binding.node_id!r}"
+            )
+        if binding.capability != capability:
+            raise BindingScopeDenied(
+                f"Binding {binding_id!r} authorizes Capability {binding.capability!r}, "
+                f"not {capability!r}"
+            )
+        return binding
 
 
 class _FakeEffects:
@@ -116,7 +169,12 @@ def _image_client(
     effects: _FakeEffects, egress: _FakeEgress | None = None
 ) -> GovernedGatewayImageClient:
     client = GovernedGatewayImageClient(
-        effects, endpoint=ENDPOINT, blobs=CanvasImageBlobStore(_FakeBlobStore())
+        effects,
+        endpoint=ENDPOINT,
+        blobs=CanvasImageBlobStore(_FakeBlobStore()),
+        workspace_id=ADMISSION_WORKSPACE,
+        project_id=ADMISSION_PROJECT,
+        binding_id=BINDING_ID,
     )
     if egress is not None:
         client._egress = egress  # test seam
@@ -125,9 +183,9 @@ def _image_client(
 
 def _registered_binding() -> Binding:
     return Binding(
-        binding_id=CANVAS_IMAGE_BINDING_ID,
-        workspace_id="ws",
-        project_id="default",
+        binding_id=BINDING_ID,
+        workspace_id=ADMISSION_WORKSPACE,
+        project_id=ADMISSION_PROJECT,
         capability=IMAGE_GENERATE_CAPABILITY,
         credential_refs=("litellm-gateway",),
     )
@@ -153,6 +211,79 @@ class TestGovernedImageClient:
         ):
             await client.generate(model_id="m", prompt="p", width=64, height=64)
 
+    async def test_generate_refuses_a_binding_registered_in_another_scope(self) -> None:
+        """Negative path (#2464): a registered Binding whose Workspace/Project
+        differ from the executing scope must fail closed BEFORE provider
+        dispatch — no egress call, no Invocation, no successful-looking
+        receipt. This is the mismatch the retired registration used to ship:
+        a Binding under a fabricated ``default`` Project while Runs executed
+        in their admission scope."""
+        effects = _FakeEffects()
+        await effects.bindings.put(
+            Binding(
+                binding_id=BINDING_ID,
+                workspace_id="another-workspace",
+                project_id="default",
+                capability=IMAGE_GENERATE_CAPABILITY,
+                credential_refs=("litellm-gateway",),
+            )
+        )
+        egress = _FakeEgress()
+        client = _image_client(effects, egress)
+        with (
+            bind_execution_context(run_id="r", node_run_id="nr", attempt_id="at"),
+            pytest.raises(BindingScopeDenied, match="Workspace"),
+        ):
+            await client.generate(model_id="m", prompt="p", width=64, height=64)
+        assert egress.calls == [], "a scope-mismatched Binding must never reach the provider"
+
+    async def test_generate_refuses_when_the_run_scope_differs_from_the_composition(
+        self,
+    ) -> None:
+        """Negative path (#2464): the executing Run's durable scope rides the
+        ambient context (the Canvas executor binds it from the Run row). A
+        client composed in one scope asked to generate for a Run admitted in
+        another — the cross-tenant claim — must refuse before dispatch even
+        though its own Binding resolves cleanly in the composition scope."""
+        effects = _FakeEffects()
+        await effects.bindings.put(_registered_binding())
+        egress = _FakeEgress()
+        client = _image_client(effects, egress)
+        with (
+            bind_execution_context(
+                run_id="r",
+                node_run_id="nr",
+                attempt_id="at",
+                workspace_id="tenant-b",
+                project_id="tenant-b-root",
+            ),
+            pytest.raises(BindingScopeDenied, match="Workspace"),
+        ):
+            await client.generate(model_id="m", prompt="p", width=64, height=64)
+        assert egress.calls == [], "a foreign-scope Run must never spend this scope's Binding"
+
+    async def test_generate_runs_under_the_run_scope_when_bound(self) -> None:
+        """The happy path resolves in the ambient scope: the same composition
+        serving a Run whose durable scope matches must dispatch (the retired
+        code resolved nothing and could not have told the two cases apart)."""
+        effects = _FakeEffects()
+        await effects.bindings.put(_registered_binding())
+        egress = _FakeEgress()
+        client = _image_client(effects, egress)
+        with bind_execution_context(
+            run_id="r",
+            node_run_id="nr",
+            attempt_id="at",
+            workspace_id=ADMISSION_WORKSPACE,
+            project_id=ADMISSION_PROJECT,
+            actor_id="principal-7",
+        ):
+            await client.generate(model_id="m", prompt="p", width=64, height=64)
+        assert len(egress.calls) == 1
+        # The Run's acting principal rides to the Invocation (#2464): quota
+        # and audit attribute the effect to the identity the Run acts for.
+        assert egress.calls[0]["actor_id"] == "principal-7"
+
     async def test_generate_crosses_the_governed_boundary_with_canonical_ids(self) -> None:
         effects = _FakeEffects()
         await effects.bindings.put(_registered_binding())
@@ -165,7 +296,7 @@ class TestGovernedImageClient:
             )
 
         call = egress.calls[0]
-        assert call["binding"].binding_id == CANVAS_IMAGE_BINDING_ID
+        assert call["binding"].binding_id == BINDING_ID
         assert call["run_id"] == "run-1"
         assert call["node_run_id"] == "node-1"
         assert call["attempt_id"] == "att-1"
@@ -207,6 +338,23 @@ class TestGovernedImageClient:
 
     async def test_list_image_models_is_empty_not_fabricated(self) -> None:
         assert await _image_client(_FakeEffects()).list_image_models() == []
+
+    async def test_a_client_cannot_exist_without_a_scope(self) -> None:
+        """There is no representable unscoped instance (#2464): a client that
+        could not name the scope it resolves its Binding against would be the
+        old bare-``get`` world back again."""
+        for kwargs in (
+            {"workspace_id": " ", "project_id": "p"},
+            {"workspace_id": "ws", "project_id": ""},
+        ):
+            with pytest.raises(ValueError, match="non-empty string"):
+                GovernedGatewayImageClient(
+                    _FakeEffects(),
+                    endpoint=ENDPOINT,
+                    blobs=CanvasImageBlobStore(_FakeBlobStore()),
+                    binding_id=BINDING_ID,
+                    **kwargs,
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -373,10 +521,12 @@ class TestWardenPromptScan:
 class _FakeCanvasStore:
     def __init__(self) -> None:
         self.blobs: dict[str, bytes] = {}
+        self.metadata: dict[str, dict[str, Any]] = {}
 
     async def store_blob(self, data: bytes, *, format: str, metadata: Any = None) -> str:
         ref = f"canvas-blob-{len(self.blobs) + 1}"
         self.blobs[ref] = data
+        self.metadata[ref] = metadata
         return ref
 
     async def get_blob(self, blob_id: str) -> bytes | None:
@@ -401,6 +551,20 @@ class TestCanvasImageBlobStore:
         ref = await blobs.put(b"\x89PNG", media_type="image/png")
         assert await blobs.get(ref) == b"\x89PNG"
         assert await blobs.get("unknown") is None
+        # Without scope, metadata only carries the source stamp.
+        assert store.metadata[ref] == {"source": "governed-image-egress"}
+
+    async def test_put_stamps_canonical_scope_when_configured(self) -> None:
+        store = _FakeCanvasStore()
+        blobs = CanvasImageBlobStore(store, workspace_id="ws-e2e", project_id="proj-root")
+        ref = await blobs.put(b"\x89PNG", media_type="image/png")
+        assert await blobs.get(ref) == b"\x89PNG"
+        # The metadata carries the scope that anchors the presentation route.
+        assert store.metadata[ref] == {
+            "source": "governed-image-egress",
+            "workspace_id": "ws-e2e",
+            "project_id": "proj-root",
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -449,10 +613,23 @@ class TestStartStopCanvasJobRunner:
             await asyncio.sleep(0)
             assert not handle.task.done()
             # The image Binding was registered before the runner started.
-            registered = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+            # The image Binding was registered before the runner started — in
+            # the admission scope the admitter authorizes, not the caller's
+            # settings value and never a fabricated "default" (#2464).
+            registered = await container.capability_effects.bindings.get(BINDING_ID)
             assert registered is not None
+            assert registered.binding_id == canvas_image_binding_id(
+                ADMISSION_WORKSPACE, ADMISSION_PROJECT
+            )
+            assert registered.workspace_id == ADMISSION_WORKSPACE
+            assert registered.project_id == ADMISSION_PROJECT
             assert registered.capability == IMAGE_GENERATE_CAPABILITY
             assert registered.credential_refs == ("litellm-gateway",)
+            # The runtime executes in exactly the scope the Binding registers.
+            assert handle.runtime.executor._canonical_execution._workspace_id == (
+                ADMISSION_WORKSPACE
+            )
+            assert handle.runtime.executor._canonical_execution._project_id == ADMISSION_PROJECT
         finally:
             await stop_canvas_job_runner(handle)
         assert handle.task.done()
@@ -497,7 +674,7 @@ class TestStartStopCanvasJobRunner:
             workspace_id="ws-default",
             worker_id="test-canvas-runner",
         )
-        persisted = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+        persisted = await container.capability_effects.bindings.get(BINDING_ID)
         assert persisted is not None
         puts_after_first_boot = len(container.capability_effects.bindings.puts)
         await stop_canvas_job_runner(first)
@@ -510,7 +687,7 @@ class TestStartStopCanvasJobRunner:
             worker_id="test-canvas-runner-2",
         )
         try:
-            reused = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+            reused = await container.capability_effects.bindings.get(BINDING_ID)
             assert reused == persisted, "the first boot's record must stay the authority"
             assert len(container.capability_effects.bindings.puts) == puts_after_first_boot, (
                 "a restart must not re-register the immutable binding"
@@ -530,9 +707,9 @@ class TestStartStopCanvasJobRunner:
         container = _FakeContainer(run_store)
         await container.capability_effects.bindings.put(
             Binding(
-                binding_id=CANVAS_IMAGE_BINDING_ID,
-                workspace_id="ws-default",
-                project_id="default",
+                binding_id=BINDING_ID,
+                workspace_id=ADMISSION_WORKSPACE,
+                project_id="an-older-project",
                 capability="image.edit",
                 credential_refs=("litellm-gateway",),
             )
@@ -545,6 +722,63 @@ class TestStartStopCanvasJobRunner:
                 workspace_id="ws-default",
                 worker_id="test-canvas-runner",
             )
+
+    async def test_settings_workspace_disagreeing_with_admission_refuses_to_start(self) -> None:
+        """A caller whose settings name a Workspace the wired admitter does not
+        authorize is a deployment fault (#2464): the image Binding must not
+        register in a scope no admitted Run belongs to, so the start refuses
+        before anything is written."""
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        run_store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+        container = _FakeContainer(run_store)
+        with pytest.raises(RuntimeError, match="chat admission authorizes"):
+            await start_canvas_job_runner(
+                store=_IdleQueueStore(),
+                container=container,
+                endpoint=ENDPOINT,
+                workspace_id="somewhere-else",
+                worker_id="test-canvas-runner",
+            )
+        assert container.capability_effects.bindings.puts == [], (
+            "a refused start must not have registered any Binding"
+        )
+
+    async def test_a_pre_scope_row_under_the_retired_id_does_not_collide(self) -> None:
+        """Upgrade path (#2464): a deployment that already persisted the old
+        bare-family Binding (fabricated ``default`` Project) restarts cleanly.
+        The scope-qualified id is a new identity — the changed contract's new
+        id, exactly what the immutability rule demands — and the stale row
+        stays in the store resolving nothing, neither mutated nor reused."""
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        run_store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+        container = _FakeContainer(run_store)
+        stale = Binding(
+            binding_id=CANVAS_IMAGE_BINDING_ID,
+            workspace_id="ws-default",
+            project_id="default",
+            capability=IMAGE_GENERATE_CAPABILITY,
+            credential_refs=("litellm-gateway",),
+        )
+        await container.capability_effects.bindings.put(stale)
+        handle = await start_canvas_job_runner(
+            store=_IdleQueueStore(),
+            container=container,
+            endpoint=ENDPOINT,
+            workspace_id="ws-default",
+            worker_id="test-canvas-runner",
+        )
+        try:
+            registered = await container.capability_effects.bindings.get(BINDING_ID)
+            assert registered is not None
+            assert registered.project_id == ADMISSION_PROJECT
+            untouched = await container.capability_effects.bindings.get(CANVAS_IMAGE_BINDING_ID)
+            assert untouched == stale, "the retired row must be left exactly as persisted"
+        finally:
+            await stop_canvas_job_runner(handle)
 
 
 class TestCanvasRunnerShutdown:
