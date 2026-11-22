@@ -372,8 +372,8 @@ _VULTURE_WHITELIST = (
     SqliteRunStore.compensate_unlaunched_attempt,
     PgRunStore.compensate_unlaunched_attempt,
     DurableRunExecutionStore.compensate_unlaunched_attempt,
-    # Recovered logical parking (#232 P4a). Protocol + three backends; the
-    # reconciler wire is P4b, so packages/*/src does not yet call the method.
+    # Recovered logical parking (#232 P4a). Protocol + three backends; parked
+    # from the reconciler wire (P4b) and the durable adapter mirror.
     RunStore.apply_recovered_attempt_disposition,
     InMemoryRunStore.apply_recovered_attempt_disposition,
     SqliteRunStore.apply_recovered_attempt_disposition,
@@ -385,12 +385,6 @@ _VULTURE_WHITELIST = (
     SqliteRunStore.recover_orphaned_attempt,
     PgRunStore.recover_orphaned_attempt,
     DurableRunExecutionStore.recover_orphaned_attempt,
-    # Recovered logical parking (#232 P4a). Protocol + three backends; the
-    # reconciler wire is P4b, so packages/*/src does not yet call the method.
-    RunStore.apply_recovered_attempt_disposition,
-    InMemoryRunStore.apply_recovered_attempt_disposition,
-    SqliteRunStore.apply_recovered_attempt_disposition,
-    PgRunStore.apply_recovered_attempt_disposition,
     EvalMethod.MODEL_JUDGE,
     EvalMethod.HUMAN,
     EvalJudge._validate_judge,
