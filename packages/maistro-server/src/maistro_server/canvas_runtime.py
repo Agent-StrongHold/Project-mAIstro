@@ -94,15 +94,37 @@ class CanvasImageBlobStore:
     ``canvas_blobs``, and this adapter is the server's bridge onto it. Writes
     commit before the reference is returned, so an Invocation row never names
     bytes that are not yet as durable as it is.
+
+    Each write is stamped with the canonical scope the calling runtime was
+    composed under (``workspace_id`` / ``project_id`` — the same
+    Workspace/Project every Canvas Run of this composition is admitted in).
+    The stamp is what makes the stored bytes authorizable later: the
+    ``/v2/canvas/blobs/{id}`` presentation route reads it as the Workspace
+    whose membership it must enforce (#2311), so bytes and the Runs that
+    produced them answer to one Workspace and Project. An unscoped write is
+    possible only by constructing the adapter without a scope, and a blob so
+    written can never be served — the route fails closed on the missing
+    anchor.
     """
 
-    def __init__(self, store: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        workspace_id: str = "",
+        project_id: str = "",
+    ) -> None:
         self._store = store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
 
     async def put(self, data: bytes, *, media_type: str) -> str:
-        ref: str = await self._store.store_blob(
-            data, format=media_type, metadata={"source": "governed-image-egress"}
-        )
+        metadata: dict[str, str] = {"source": "governed-image-egress"}
+        if self._workspace_id:
+            metadata["workspace_id"] = self._workspace_id
+        if self._project_id:
+            metadata["project_id"] = self._project_id
+        ref: str = await self._store.store_blob(data, format=media_type, metadata=metadata)
         return ref
 
     async def get(self, ref: str) -> bytes | None:
@@ -383,7 +405,12 @@ async def start_canvas_job_runner(
     image_client = GovernedGatewayImageClient(
         effects,
         endpoint=endpoint,
-        blobs=CanvasImageBlobStore(store),
+        # The blob writes carry the same canonical scope build_canvas_runtime
+        # binds below — the Workspace/Project every admitted Run lives in —
+        # so the durable bytes and the Runs that produced them are
+        # authorizable against one scope (#2311, with #2464 owning the
+        # Invocation row's own scope fidelity).
+        blobs=CanvasImageBlobStore(store, workspace_id=admission_workspace, project_id=project_id),
     )
     resolved_worker_id = worker_id or f"canvas-server-runner-{socket.gethostname()}-{os.getpid()}"
     runtime = build_canvas_runtime(
