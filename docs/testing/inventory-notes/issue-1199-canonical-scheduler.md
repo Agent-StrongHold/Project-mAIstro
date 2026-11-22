@@ -380,3 +380,25 @@ recorded for this addendum.
 Residual, owned outside this lane: strict-#459 real execution plus
 #1199/#2467 exact-head closure evidence (sibling lane, not ancestors here);
 the GH006 merge-queue enqueue itself.
+
+## Addendum — the scenario-token blocker is cleared on this branch (auto-46 @ issue-46 round)
+
+The two statements above are head-scoped and were true where written
+("at this tree", "at 6c33ee0111"). At the current branch head they are
+superseded: `_schedule_conductor_scenario`
+(`tests/cross_product_parity/test_cross_product_parity.py`) now executes the
+real schedule-firing -> admission -> consumption -> observation boundary — the
+production `_ScheduleRunner._tick` through the engine seam, against the
+durable SQLite spine, observed through Conductor's #1036 inspection seam — and
+carries the `REAL_SCENARIO_EVIDENCE: schedule-conductor` token by construction.
+`REAL_SCHEDULE_CONDUCTOR_SCENARIO` moved from the guard's "must stay blocked"
+list to its "must be available" list, and
+`scripts/run-m1-closeout.py` reports
+`scheduler-occurrence-to-conductor: executed=true, PASSED` (scenarios 3/6 —
+Evolve, golden observation — remain the only strict-mode reds, owned by
+#51/#1064-66 and #463). Details and the zero node-count delta:
+`docs/testing/inventory-notes/issue-46-schedule-conductor-scenario.md`.
+
+The residual items below are unchanged: #1199/#2467 exact-head closure
+evidence and the GH006 merge-queue enqueue are GitHub-side steps this lane
+cannot perform.

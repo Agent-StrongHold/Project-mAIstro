@@ -16,14 +16,26 @@ import sys
 import tempfile
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from maistro.container import Container, build_node_resolver
 from maistro.graph.definitions import Graph, Node
 from maistro.identity import Principal
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    SCHEDULE_CATCHUP_KEY,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_RECURRING,
+    SCHEDULED_FOR_KEY,
+)
+from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from tests.cross_product_parity.harness import (
     BUILDERS,
@@ -67,10 +79,6 @@ def _unavailable_real_seam(owner: str) -> ScenarioExecution:
     )
 
 
-def _scheduler_scenario() -> ScenarioExecution:
-    return _unavailable_real_seam("scheduler (#231)")
-
-
 def _evolve_scenario() -> ScenarioExecution:
     return _unavailable_real_seam("Evolve (#51/#1064/#1065/#1066)")
 
@@ -81,6 +89,8 @@ def _golden_scenario() -> ScenarioExecution:
 
 _PARITY_USER = "builders-parity-owner"
 _PARITY_FOREIGN_USER = "builders-parity-outsider"
+_SCHEDULE_PARITY_USER = "schedule-parity-owner"
+_SCHEDULE_PARITY_FOREIGN_USER = "schedule-parity-outsider"
 _HIVE_BACKEND = str(Path(__file__).resolve().parents[2] / "packages" / "hive-conductor" / "backend")
 
 
@@ -92,6 +102,37 @@ class _CompletedRunner:
 
     async def execute_turn(self, *, messages: list[dict[str, Any]]) -> dict[str, Any]:
         return {"content": self._content, "stop_reason": "end_turn"}
+
+
+class _ParityScheduleContainer:
+    """The Container surface the production scheduler tick reads.
+
+    Every store is the durable spine's own and the admission seam is the same
+    ``ScheduleRunAdmitter`` a configured Container constructs; the admitted-Run
+    consumer is the Container's *own method*, borrowed unbound, so the scenario
+    assembles no second consumer implementation -- the one canonical consumer
+    runs against the real durable stores. Only the collaborators a Container
+    builds from services this parity process does not boot (delegation, model
+    routing) are absent, and the borrowed consumer refuses work that needs
+    them rather than approximating it.
+    """
+
+    execute_admitted_runs_accounting = Container.execute_admitted_runs_accounting  # type: ignore[assignment]
+    _consume_or_skip = Container._consume_or_skip  # type: ignore[assignment]
+    _fail_unresolvable_run = Container._fail_unresolvable_run  # type: ignore[assignment]
+
+    def __init__(self, profile: Any, workspace_store: Any) -> None:
+        self.run_store = profile.run_store
+        self.template_store = profile.template_store
+        self.schedule_store = profile.schedule_store
+        self.project_scope_store = profile.project_store
+        self.workspace_store = workspace_store
+        self.schedule_admitter = ScheduleRunAdmitter(
+            profile.run_store, profile.template_store, profile.schedule_store
+        )
+
+    def node_resolver(self) -> Any:
+        return build_node_resolver(run_store=self.run_store)
 
 
 class _ParkedRunner:
@@ -358,6 +399,231 @@ def _validate_builders_observation(observation: Mapping[str, Any]) -> None:
     assert observation["cancelled_status"] == "cancelled"
 
 
+async def _schedule_conductor_scenario() -> ScenarioExecution:
+    """Scenario 2 as a real execution, not a source probe.
+
+    REAL_SCENARIO_EVIDENCE: schedule-conductor
+
+    The producer half is the shipped Hive scheduler tick itself:
+    ``_ScheduleRunner._tick`` resolved through the same engine seam production
+    reads (``get_engine()._agent_port.container``), against the supported
+    durable SQLite spine. The schedule is a real row in the durable
+    ``ScheduleStore``; the tick selects it through ``ScheduleStore.due()``
+    (#46), admits its one due occurrence through the Container-owned
+    ``ScheduleRunAdmitter`` -- a canonical Run carrying the schedule's
+    provenance on the Run, not beside it -- and consumes that Run through the
+    Container's own admitted-Run consumer, so the NodeRun/Attempt evidence is
+    physical records, not test doubles of the spine.
+
+    The observer half is Conductor's landed inspection seam (#1036), wired to
+    the same canonical stores through the engine bridge exactly as the app
+    wires it. The scenario requires: exactly one canonical Run for the firing,
+    the projection store never recorded it, list/detail answer by the
+    canonical id alone, the NodeRun/Attempt tree is readable through the
+    scoped seam, an observer outside the Workspace is refused indistinguishably
+    from a missing id, and a second production tick of the same schedule
+    creates no second Run -- the occurrence claim plus the persisted due
+    cursor (#46/#220), not a disable, is what keeps the firing singular.
+    """
+    _bind_hive_backend()
+
+    import services.engine as engine_mod
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.scheduler import _ScheduleRunner
+    from services.workspace_authority import canonical_store_for_tests, create_workspace
+
+    from maistro.graph.definitions import GraphTemplate
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.scheduling.model import Schedule
+
+    scratch = Path(tempfile.mkdtemp(prefix="schedule-conductor-parity-"))
+    profile = None
+    monkey = pytest.MonkeyPatch()
+    try:
+        # The schedule's actor is a member of a real canonical Workspace (the
+        # Conductor-side authority the tick re-checks at every fire and the
+        # observation half authorizes against).
+        ws_store = canonical_store_for_tests()
+        view = await create_workspace(
+            creator_user_id=_SCHEDULE_PARITY_USER,
+            name="Schedule parity",
+            persona_template_id="pm_fleet",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        profile = await open_durable_profile(scratch / "spine.sqlite3", workspace_id=view.id)
+        container = _ParityScheduleContainer(profile, ws_store)
+
+        template = GraphTemplate(
+            template_id="parity-scheduled-template",
+            workspace_id=profile.workspace_id,
+            version=1,
+            name="Parity scheduled template",
+            nodes=[
+                Node(
+                    node_id="only",
+                    node_type="transform.alias_keys",
+                    parameters={"mapping": {}},
+                )
+            ],
+            edges=[],
+            metadata={"entry_node": "only"},
+        )
+        await profile.template_store.put(template)
+
+        # One occurrence is due by construction: an hourly cron with the
+        # enumeration cursor 61 minutes back and a two-hour catchup horizon.
+        # Hour marks are 60 minutes apart, so an open 61-minute window always
+        # contains exactly one of them, whatever the wall clock reads, and it
+        # is always younger than the horizon -- zero-or-one flake windows are
+        # structurally impossible, not merely unlikely.
+        now = datetime.now(UTC)
+        sid = "parity-schedule-1"
+        await profile.schedule_store.put(
+            Schedule(
+                schedule_id=sid,
+                workspace_id=profile.workspace_id,
+                project_id=profile.project_id,
+                name="parity scheduled work",
+                cron="0 * * * *",
+                timezone="UTC",
+                graph_template_id=template.template_id,
+                template_version=template.version,
+                catchup_window_seconds=7200.0,
+                actor_principal_id=_SCHEDULE_PARITY_USER,
+                created_at=now - timedelta(hours=3),
+                last_fired_at=now - timedelta(minutes=61),
+            )
+        )
+
+        # -- Producer: the production tick fires the schedule. ---------------
+        # Patched at the same seam the observer reads, so the tick's
+        # `_canonical_container()` and Conductor's inspection both resolve the
+        # one engine view this scenario wires -- no side entry, no bypass:
+        # `run()` loops this very `_tick` in a configured deployment.
+        engine_double = SimpleNamespace(
+            _agent_port=SimpleNamespace(container=container),
+            agent_port=SimpleNamespace(container=container),
+            run_store=profile.run_store,
+            run_reader=ScopedRunReader(profile.run_store, ws_store, profile.project_store),
+        )
+        monkey.setattr(engine_mod, "_singleton", engine_double)
+
+        runner = _ScheduleRunner()
+        assert runner._canonical_container() is container
+        await runner._tick()
+
+        runs = await profile.run_store.list_recent_runs(profile.workspace_id, limit=25)
+        assert len(runs) == 1, (
+            f"one due occurrence must fire exactly one canonical Run, got {len(runs)}"
+        )
+        run = runs[0]
+        run_id = run.run_id
+        assert run.status is RunStatus.COMPLETED, f"fired Run ended {run.status}: {run.error}"
+
+        # The provenance lives on the Run (#46): source, schedule identity,
+        # the occurrence instant that was claimed, and the trigger kind.
+        provenance = dict(run.provenance)
+        assert provenance[ADMISSION_SOURCE] == SCHEDULE_SOURCE
+        assert provenance[SCHEDULE_ID_KEY] == sid
+        assert provenance[SCHEDULED_FOR_KEY]
+        assert provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_RECURRING
+        assert isinstance(provenance[SCHEDULE_CATCHUP_KEY], bool)
+
+        recorded = await profile.schedule_store.get(sid)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.last_run_id == run_id
+        assert recorded.last_fired_at is not None
+        assert recorded.enabled, "a bounded-by-nothing schedule must not disable on one fire"
+        assert recorded.next_due_at is not None and recorded.next_due_at > now, (
+            "the fire must persist the due cursor (#1199)"
+        )
+
+        # -- Observer: Conductor inspects the same canonical id. --------------
+        # The producer never recorded a projection row: the dag_run_store is
+        # not the discovery mechanism for another product's Run (#1036).
+        assert get_dag_run_store().get_run(run_id) is None
+
+        detail = await visible_run_detail(_SCHEDULE_PARITY_USER, run_id)
+        assert detail is not None
+        assert detail["id"] == detail["canonical_run_id"] == run_id
+        assert detail["workspace_id"] == view.id == profile.workspace_id
+        assert detail["project_id"] == profile.project_id
+        assert detail["status"] == "completed"
+        node_runs = detail.get("node_runs") or []
+        assert node_runs, "the fired Run must expose physical NodeRun evidence"
+        attempts = [attempt for node in node_runs for attempt in node.get("attempts", [])]
+        assert attempts, "the fired Run must expose physical Attempt evidence"
+        assert all(attempt["status"] == "completed" for attempt in attempts)
+        assert await can_inspect_run(_SCHEDULE_PARITY_USER, run_id)
+        assert await visible_run_ids(_SCHEDULE_PARITY_USER, [run_id, "no-such-run"]) == {run_id}
+        listed = await list_visible_runs(_SCHEDULE_PARITY_USER, limit=25)
+        assert run_id in {row["id"] for row in listed}
+
+        # A caller outside the producing Workspace is refused without learning
+        # the id exists -- the same answer a missing id gets (#1174).
+        assert await visible_run_detail(_SCHEDULE_PARITY_FOREIGN_USER, run_id) is None
+        assert not await can_inspect_run(_SCHEDULE_PARITY_FOREIGN_USER, run_id)
+        assert await visible_run_ids(_SCHEDULE_PARITY_FOREIGN_USER, [run_id]) == set()
+
+        # -- Singularity: the next production tick must not re-fire. ----------
+        # The occurrence is claimed by the Run that exists and the due cursor
+        # was persisted past it, so the same schedule under the same tick
+        # admits nothing new -- exactly-once by canonical state (#46/#220).
+        await runner._tick()
+        runs_after = await profile.run_store.list_recent_runs(profile.workspace_id, limit=25)
+        assert len(runs_after) == 1, (
+            "a second tick of the same schedule created a second Run: the firing was not singular"
+        )
+        assert runs_after[0].run_id == run_id
+
+        return ScenarioExecution(
+            {
+                "producer": "scheduler",
+                "observer": "conductor",
+                "schedule_id": sid,
+                "run_id": run_id,
+                "workspace_id": profile.workspace_id,
+                "project_id": profile.project_id,
+                "scheduled_for": str(provenance[SCHEDULED_FOR_KEY]),
+                "producer_status": detail["status"],
+                "physical_node_runs": len(node_runs),
+                "physical_attempts": len(attempts),
+                "projection_rows_for_run": 0,
+                "foreign_observer_visible": False,
+                "runs_after_second_tick": len(runs_after),
+            }
+        )
+    finally:
+        monkey.undo()
+        if profile is not None:
+            await profile.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _validate_schedule_observation(observation: Mapping[str, Any]) -> None:
+    """The strict invariant over the real producer/observer records (#46)."""
+    assert observation["producer"] == "scheduler"
+    assert observation["observer"] == "conductor"
+    for field in ("schedule_id", "run_id", "workspace_id", "project_id", "scheduled_for"):
+        assert observation[field], f"observation lacks canonical {field}"
+    assert observation["producer_status"] == "completed"
+    assert observation["physical_node_runs"] >= 1
+    assert observation["physical_attempts"] >= 1
+    assert observation["projection_rows_for_run"] == 0
+    assert observation["foreign_observer_visible"] is False
+    assert observation["runs_after_second_tick"] == 1
+
+
 def _required_golden_scenarios() -> tuple[tuple[str, str], ...]:
     """Every (product, scenario_id) the locked #463 manifest requires."""
     require_dependencies(GOLDEN_BASELINES)
@@ -408,8 +674,9 @@ BUILDERS_SCENARIO = ParityScenario(
 )
 SCHEDULER_SCENARIO = ParityScenario(
     name="scheduler-occurrence-to-conductor",
-    dependencies=(SCHEDULER, CONDUCTOR_INSPECTION),
-    execute=_scheduler_scenario,
+    dependencies=(SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO),
+    execute=_schedule_conductor_scenario,
+    validate_observation=_validate_schedule_observation,
 )
 EVOLVE_SCENARIO = ParityScenario(
     name="evolve-cycle-to-conductor",
@@ -530,15 +797,14 @@ def test_builders_required_scenario_emits_strict_closeout_evidence() -> None:
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
     """Scenario 2 activation contract for the live schedule fire path.
 
-    See ``REAL_SCHEDULE_CONDUCTOR_SCENARIO`` in harness.py: source-token checks
-    alone do not prove a real schedule occurrence was observed through Conductor.
+    The scaffold-era source checks below are still true, but they are no
+    longer the evidence: ``_schedule_conductor_scenario`` now executes the
+    real schedule firing -> admission -> consumption -> observation boundary
+    through the production tick, and
+    ``test_schedule_required_scenario_emits_strict_closeout_evidence`` runs it
+    through the closeout machinery.
     """
-    dependency = dependency_assessment(
-        SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO
-    )
-    if not dependency.ready:
-        assert dependency.blockers
-        return
+    require_dependencies(SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO)
 
     scheduler_source = (
         Path(__file__).resolve().parents[2]
@@ -553,10 +819,16 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
 
 
 def test_schedule_required_scenario_emits_strict_closeout_evidence() -> None:
-    """Scenario 2 through the closeout machinery (#1069); see scenario 1."""
+    """Scenario 2 through the closeout machinery (#1069); see scenario 1.
+
+    The schedule firing scenario is a real execution now, so it must record
+    PASSED evidence in development mode: a regression back to an abstaining
+    scaffold (or any parity break in the real firing/admission/observation
+    boundary) shows up here as BLOCKED/FAILED instead of a green check.
+    """
     evidence = execute_scenario_sync(SCHEDULER_SCENARIO)
-    if evidence.status == "BLOCKED":
-        assert evidence.blockers or evidence.error
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
@@ -853,8 +1125,8 @@ async def test_strict_closeout_reports_every_required_scenario() -> None:
         probes=(SourceProbe("tests/cross_product_parity/no-such-closeout-seam.py"),),
     )
     scenarios = (
-        ParityScenario("first-required", (missing,), _scheduler_scenario),
-        ParityScenario("second-required", (missing,), _evolve_scenario),
+        ParityScenario("first-required", (missing,), _evolve_scenario),
+        ParityScenario("second-required", (missing,), _golden_scenario),
     )
 
     with pytest.raises(CloseoutFailure) as raised:
@@ -965,22 +1237,22 @@ def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> No
 
     Codex review (PR #1641): once a scenario's named product dependency lands,
     an import/source-token check alone is not proof the scenario executed a
-    real cross-product Run through the product's own path. Scenarios 2, 3 and
+    real cross-product Run through the product's own path. Scenarios 3 and
     6 still carry their permanent, evidence-backed blockers (``REAL_*`` in
     harness.py) precisely so the compound ``dependency_assessment`` call stays
     unavailable -- and strict mode stays red -- until each scaffold is replaced
-    with a real execution. Scenario 1 (Builders -> Conductor) made that
-    replacement, so its ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` marker must now
-    read as available: its blocker is cleared by construction once the real
-    scenario exists, and the real execution itself is what
-    ``test_builders_required_scenario_emits_strict_closeout_evidence`` proves.
+    with a real execution. Scenario 1 (Builders -> Conductor) and scenario 2
+    (schedule firing -> Conductor, #46) made that replacement, so their markers
+    must now read as available: a blocker is cleared by construction once the
+    real scenario exists, and the real execution itself is what
+    ``test_builders_required_scenario_emits_strict_closeout_evidence`` and
+    ``test_schedule_required_scenario_emits_strict_closeout_evidence`` prove.
     """
-    assert REAL_BUILDERS_CONDUCTOR_SCENARIO.available(), (
-        "the Builders -> Conductor real-scenario marker regressed to unavailable: "
-        "the real scenario execution was lost"
-    )
+    for dependency in (REAL_BUILDERS_CONDUCTOR_SCENARIO, REAL_SCHEDULE_CONDUCTOR_SCENARIO):
+        assert dependency.available(), (
+            f"{dependency.key} regressed to unavailable: the real scenario execution was lost"
+        )
     for dependency in (
-        REAL_SCHEDULE_CONDUCTOR_SCENARIO,
         REAL_EVOLVE_CONDUCTOR_SCENARIO,
         REAL_GOLDEN_PRODUCT_OBSERVATION,
     ):
