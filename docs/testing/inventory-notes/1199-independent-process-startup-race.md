@@ -106,3 +106,29 @@ projection authority is the abstaining parity scenario plus the develop
 suite's own passing state (the delete/compensation fixes it covers landed
 on develop before this base). The worktree was removed after capture; no
 base tree file was modified.
+
+## Exact-head revalidation addendum (327f221a67)
+
+The verifier's prior targeted command, `uv run pytest
+packages/maistro-core/tests/conftest.py -q -x`, exited 5 because that file
+contains no tests. No production regression was exposed; the selector was
+invalid. Re-ran relevant acceptance checks at this exact head:
+
+- `uv run pytest packages/hive-conductor/backend/tests -k 'schedule or scheduler' -x -q`:
+  **264 passed, 46 skipped**.
+- `uv run pytest packages/maistro-core/tests -k schedul -x -q`:
+  **321 passed, 47 skipped**. PostgreSQL legs were skipped because
+  `MAISTRO_TEST_PG_DSN` is unset in this environment; current-head PG parity
+  remains **UNVERIFIED**.
+- Strict configured scheduler-to-Conductor evidence:
+  `MAISTRO_PARITY_MODE=m1-closeout MAISTRO_PARITY_STRICT=1 uv run pytest
+  tests/cross_product_parity/test_cross_product_parity.py -k
+  'schedule_required or schedule_fire or scaffold_only' -q -s`:
+  **3 passed**, with `executed=true`, `status=PASSED`.
+- `uv run python scripts/check-suite-inventory.py`: passed (21 suites).
+- `uv run ruff check . && uv run ruff format --check .`: passed (3630 files).
+
+No tests were added in this revalidation, so the existing `+3` inventory
+delta is unchanged. Complete PostgreSQL verification was not achievable without
+setting up `MAISTRO_TEST_PG_DSN`; this limitation is retained rather than
+assuming older-head evidence proves the merged candidate.
