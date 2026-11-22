@@ -10,6 +10,7 @@ means the crash window already healed.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
@@ -20,6 +21,7 @@ from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.runs.lifecycle import reclaimed_attempt_error
 from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
+from maistro.runs.recovered_disposition import RecoveredDispositionRefused
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -213,3 +215,129 @@ async def test_rediscovery_parks_only_its_own_node(
     assert healed is not None and healed.status is RunStatus.WAITING
     settled_sibling = await store.get_attempt(sibling.attempt_id)
     assert settled_sibling is not None and settled_sibling.status is AttemptStatus.CANCELLED
+
+
+async def _queued_leaf_and_midflight_rig(
+    container: Container, workspace: str, project_id: str, *, moment: datetime
+) -> tuple[str, str, str, str]:
+    """A RUNNING Run with a never-launched QUEUED leaf and a mid-flight node,
+    each carrying a stranded typed RECOVERED newest Attempt.
+
+    The QUEUED leaf is exactly the state the P4a refusal table exists for: the
+    physical reclaim (CANCELLED + RECOVERED) has committed, the NodeRun never
+    launched, and the disposition planner must refuse any parking. Returns
+    ``(run_id, queued_node_run_id, running_node_run_id, leaf_attempt_id)``.
+    """
+    store = container.run_store
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="queued-leaf scope",
+        nodes=[
+            Node(node_id="prelaunch", node_type="test"),
+            Node(node_id="midflight", node_type="test"),
+        ],
+    )
+    run = await store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    queued = await store.create_node_run(run.run_id, node_id="prelaunch")
+    await store.transition_node_run(queued.node_run_id, RunStatus.QUEUED)
+    running = await store.create_node_run(run.run_id, node_id="midflight")
+    await store.transition_node_run(running.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(running.node_run_id, RunStatus.RUNNING)
+    leaf_attempt = await _stranded_reclaim(container, queued.node_run_id, moment=moment)
+    await _stranded_reclaim(container, running.node_run_id, moment=moment)
+    return run.run_id, queued.node_run_id, running.node_run_id, leaf_attempt
+
+
+async def test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table(
+    recovery_container: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stranded typed RECOVERED under a never-launched QUEUED NodeRun is the
+    reclaim half's refusal-table row (#232 P4a D.1), not rediscovery scope:
+    the RUNNING-only selector gate skips it, so the planner's refusal is never
+    re-raised from the replay half, while a stranded RUNNING sibling on the
+    same Run still parks."""
+    container, workspace, project_id = recovery_container
+    store = container.run_store
+    moment = datetime.now(UTC) + timedelta(hours=1)
+    run_id, queued_id, running_id, leaf_attempt = await _queued_leaf_and_midflight_rig(
+        container, workspace, project_id, moment=moment
+    )
+    _forbid_dispatch(container, monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        assert await container.recover_abandoned_attempts(now=moment) == 0
+    assert [r for r in caplog.records if "could not be reconciled" in r.getMessage()] == []
+
+    leaf = await store.get_node_run(queued_id)
+    parked = await store.get_node_run(running_id)
+    parent = await store.get_run(run_id)
+    assert leaf is not None and leaf.status is RunStatus.QUEUED
+    assert parked is not None and parked.status is RunStatus.WAITING
+    assert parent is not None and parent.status is RunStatus.RUNNING
+    leaf_attempts = await store.list_attempts(queued_id)
+    assert leaf_attempts[-1].attempt_id == leaf_attempt
+    assert leaf_attempts[-1].cancellation_cause is CancellationCause.RECOVERED
+
+    # A second tick is a fixed point: the QUEUED leaf is still not selected and
+    # the parked sibling does not move again.
+    assert await container.recover_abandoned_attempts(now=moment) == 0
+    assert (await store.get_node_run(queued_id)) == leaf
+    assert (await store.get_node_run(running_id)) == parked
+
+
+async def test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick(
+    recovery_container: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Forcing the RUNNING gate open (the pre-``d4de14bdb8`` shape, where the
+    QUEUED leaf was selected and its refusal aborted the sweep tick) must end
+    at the replay loop's refusal catch: the planner refuses the QUEUED leaf,
+    the warning records the refusal with its cause, and the tick still parks
+    the mid-flight sibling instead of dying mid-sweep."""
+    container, workspace, project_id = recovery_container
+    store = container.run_store
+    moment = datetime.now(UTC) + timedelta(hours=1)
+    _run_id, queued_id, running_id, leaf_attempt = await _queued_leaf_and_midflight_rig(
+        container, workspace, project_id, moment=moment
+    )
+    _forbid_dispatch(container, monkeypatch)
+
+    real_replayable = container._replayable_terminal_attempt
+
+    async def gateless(
+        node_run_id: str, *, moment: datetime, allow_stranded_recovered: bool = True
+    ) -> Any:
+        # Reproduce the defect shape exactly: the selector runs, the gate does
+        # not. Everything downstream is production code.
+        return await real_replayable(node_run_id, moment=moment, allow_stranded_recovered=True)
+
+    monkeypatch.setattr(container, "_replayable_terminal_attempt", gateless)
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        assert await container.recover_abandoned_attempts(now=moment) == 0
+
+    refusals = [
+        record
+        for record in caplog.records
+        if record.getMessage() == f"terminal Attempt {leaf_attempt} could not be reconciled"
+    ]
+    assert len(refusals) == 1
+    assert refusals[0].exc_info is not None
+    assert isinstance(refusals[0].exc_info[1], RecoveredDispositionRefused)
+
+    leaf = await store.get_node_run(queued_id)
+    parked = await store.get_node_run(running_id)
+    assert leaf is not None and leaf.status is RunStatus.QUEUED
+    assert parked is not None and parked.status is RunStatus.WAITING
+    settled = await store.get_attempt(leaf_attempt)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
