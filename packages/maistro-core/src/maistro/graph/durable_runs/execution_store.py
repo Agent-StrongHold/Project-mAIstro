@@ -16,6 +16,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_leaseless_orphaned_attempt,
     recover_orphaned_attempt,
     renew_attempt_lease,
     renewed_lease,
@@ -490,6 +491,36 @@ class DurableRunExecutionStore:
         await self._mutate(update)
         assert settled is not None
         return settled.model_copy(deep=True)
+
+    async def recover_leaseless_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Stamp CANCELLED+RECOVERED for a lease-less orphan under explicit resume.
+
+        Durable-graph local writer for ADR-082826-08f0's leaseless-under-resume
+        row. Leased work uses ``reclaim_expired_attempt``; prelaunch CREATED uses
+        ``compensate_unlaunched_attempt``.
+        """
+        settled_local: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled_local
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled_local = recover_leaseless_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled_local
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(attempt_id)
+
+        await self._mutate(update)
+        assert settled_local is not None
+        return settled_local.model_copy(deep=True)
 
     async def recover_orphaned_attempt(
         self,

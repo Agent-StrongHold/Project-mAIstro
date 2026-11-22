@@ -992,8 +992,8 @@ async def test_recover_leaseless_skips_unrelated_attempts_then_settles_target() 
     orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
     assert orphan.execution_lease is None
 
-    settled = await execution_store.recover_orphaned_attempt(
-        orphan.attempt_id, owning_run_id=record.run_id, error="process lost"
+    settled = await execution_store.recover_leaseless_orphaned_attempt(
+        orphan.attempt_id, error="process lost"
     )
 
     assert settled.attempt_id == orphan.attempt_id
@@ -1009,12 +1009,10 @@ async def test_recover_leaseless_skips_unrelated_attempts_then_settles_target() 
 
 
 async def test_recover_leaseless_missing_attempt_raises() -> None:
-    _store, execution_store, record, _node_run_id = await _local_only_store()
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
 
     with pytest.raises(AttemptNotFound):
-        await execution_store.recover_orphaned_attempt(
-            "no-such-attempt", owning_run_id=record.run_id
-        )
+        await execution_store.recover_leaseless_orphaned_attempt("no-such-attempt")
 
 
 async def test_local_recovered_disposition_missing_attempt_raises() -> None:
@@ -1029,9 +1027,7 @@ async def test_local_recovered_disposition_missing_node_run_raises(
 ) -> None:
     store, execution_store, record, node_run_id = await _local_only_store()
     orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
-    recovered = await execution_store.recover_orphaned_attempt(
-        orphan.attempt_id, owning_run_id=record.run_id
-    )
+    recovered = await execution_store.recover_leaseless_orphaned_attempt(orphan.attempt_id)
     assert recovered.cancellation_cause is CancellationCause.RECOVERED
 
     current = await store.get(record.run_id)
