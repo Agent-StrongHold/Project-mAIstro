@@ -139,3 +139,47 @@ exist):
   this machine's stale **gitignored** `quality/ac-state.json` artifact
   (`.gitignore:88`, absent from every fresh CI checkout, where the same
   step passed).
+
+## Develop-sync round (merge 204f292488 into auto-1036, head ec78da65f2)
+
+develop landed the parallel #2471 WIP of this same repair. The merge
+resolution keeps both sides' semantics in `cancel_run`: the wired
+reader-triple gate with the degraded embedded-authority bridge and the
+`EmbeddedRuntimeUnavailable` → 503 translation (this branch), plus develop's
+unstarted-engine guard (`get_engine()` `RuntimeError` → 503) and its
+gate-resolved cancel target (`run.run_id`). The merged docstring flows into
+the OpenAPI description, so `types.gen.ts` was regenerated from the merged
+backend. No test was removed: this branch's
+`test_dag_run_cancel_route.py` scenarios and develop's
+`test_dag_run_cancel_authorization.py` (+6, the delta recorded above) both
+run unchanged — 21 cancel-route tests, all green.
+
+Evidence at head ec78da65f2 (CI's exact arguments where they exist):
+
+- `uv run pytest packages/hive-conductor/backend/tests --timeout=30 -q` →
+  **4307 passed, 28 skipped**; re-run three times, same result (one earlier
+  local run flaked once in
+  `test_registration_policy.py::TestInvitations::test_concurrent_open_registration_claims_username_once`,
+  a pre-existing develop test that passes 10/10 in isolation — same
+  overloaded-host signature CI's own green runs annotate as
+  `PytestUnhandledThreadExceptionWarning` noise, not a branch defect).
+- `uv run coverage run --branch --source=packages/hive-conductor/backend -m
+  pytest packages/hive-conductor/backend/tests --timeout=30 -q` (4307 passed)
+  then `coverage xml` + `uv run python scripts/check-diff-coverage.py
+  coverage.xml --base origin/develop` → **ok**; scope report: 1 measured
+  (`routes/dag_runs.py`, file totals 97.25% lines / 93.75% branch arcs over
+  the whole file — the changed-line audit passed the 90/80 floors), 1 exempt
+  (`test_dag_run_cancel_route.py`, test code is evidence).
+- `uv run python scripts/check-suite-inventory.py` → **ok: 21 suite(s)
+  match the recorded inventory** (hive backend suite: 4335).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → **1221 reviewed
+  identities → 1221 findings** (ledger unchanged).
+- `uv run ruff check .` → clean; `uv run ruff format --check .` → 3622 files
+  already formatted.
+- gen:api parity (CI's exact three commands): `dump-hive-openapi.py` +
+  `npm run gen:api` + `git diff --exit-code -- types.gen.ts` → **no diff**.
+- `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest
+  packages/maistro-server/tests/api/test_task_workspace_scope.py -q` →
+  **13 passed** (the canonical `require_run_mutation` rule this route
+  answers through, unchanged).

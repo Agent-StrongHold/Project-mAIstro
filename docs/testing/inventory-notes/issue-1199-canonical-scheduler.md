@@ -87,3 +87,213 @@ down `coverage-gate` and `gates-ran` with it. See
 for the CI-log-derived root cause, the atomic-publish + tolerant-poll fix, and
 the regression proof (new test reproduces the exact CI error against the
 unfixed helper, then passes; a2a directory 281 passed).
+
+## Re-validation at the #46-reactivation head 4dd5c94af8 (2026-11-22)
+
+First-party re-run of the acceptance-relevant suites at this exact head
+(`auto-46` = 4dd5c94af835b86e71325da7ffac0a261f7d0623, base 33ac30c5):
+
+- `uv run ruff check .` and `uv run ruff format --check .`: clean.
+- `uv run mypy` over the seven documented package srcs: no issues in 905 files.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match;
+  `scripts/check-test-duplicates.py`: ok, no byte-identical test files.
+- Core scheduling with the PostgreSQL legs live (dedicated pgvector:pg18
+  container on the real `alembic upgrade head` chain, 063 at this head):
+  `packages/maistro-core/tests/scheduling/` 311 passed, 0 skipped
+  (`MAISTRO_TEST_PG_DSN`); without the DSN the same suite is 274 passed,
+  37 skipped — every skip is a PostgreSQL leg, and every one goes green live.
+- Hive-conductor scheduler/definition/scope suites
+  (`test_scheduler*.py`, `test_schedule_*.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_manual_fire_canonical.py`): 181 passed / 14 skipped without
+  PG; 195 passed / 0 skipped with the same live DSN.
+
+Re-validation at the exact assigned head b27d0accab (2026-11-22, verifier
+round): every number above was re-run first-party in a detached clean
+worktree at b27d0accab (the assigned worktree carries uncommitted other-lane
+residue, so the committed tree was validated in isolation):
+
+- `uv run ruff check .`: all checks passed; `uv run ruff format --check .`:
+  3360 files already formatted.
+- `uv run mypy` over the seven documented package srcs: no issues in 905
+  source files.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match;
+  `scripts/check-test-duplicates.py`: ok; `scripts/check-doc-links.py`: ok.
+- Core scheduling with `MAISTRO_TEST_PG_DSN` (dedicated pgvector:pg18
+  container, the suites' own `alembic upgrade head` scratch databases):
+  `packages/maistro-core/tests/scheduling/` 311 passed, 0 skipped (13.1s).
+- Hive-conductor scheduler/definition/scope/manual-fire suites
+  (`test_scheduler.py`, `test_scheduler_bounded_tick.py`,
+  `test_scheduler_canonical_admission.py`, `test_scheduler_canonical_due.py`,
+  `test_schedule_canonical_definitions.py`, `test_schedule_frequency_floor.py`,
+  `test_schedule_manual_fire_canonical.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_workspace_scope.py`) with the same live DSN: 195 passed,
+  0 skipped (22.5s).
+- Strict-#459 scenario re-check: `REAL_SCHEDULE_CONDUCTOR_SCENARIO`
+  (`tests/cross_product_parity/harness.py:230`) is still a
+  permanently-evidenced blocker — its `REAL_SCENARIO_EVIDENCE:
+  schedule-conductor` token exists nowhere outside the parity harness —
+  consistent with the reactivated issue reserving the real
+  app-lifespan/crash-between-writes scenario for the reopened #1199/#2467
+  lanes.
+- At this head the branch's scheduling code is byte-identical to its
+  develop merge parent fad17a87c3; the branch's only unique delta is this
+  note, so nothing here can regress the develop base's scheduler behavior.
+  The assigned worktree additionally holds an uncommitted, partial develop
+  sync of the scheduling subtree (nine modified/untracked scheduling files
+  verified byte-identical to develop base ae1cb3b); it is left untouched for
+  the integration develop-sync step and was excluded from this validation.
+
+No suite count moves (docs-only addendum), so no `inventory-delta` is
+recorded.
+
+Reactivated-#46 status at this head: the #2467 projection-authority defect is
+still present — `services/scheduler.py::run` calls
+`backfill_canonical_definitions()` unconditionally on every startup (line 363)
+and `_backfill_one` puts a Hive-row-derived definition whenever the canonical
+row is missing or drifted (lines 332–344), while `routes/schedules.py`
+commits canonical writes before the Hive projection (update: lines 402→406;
+delete: lines 425–426). A crash between those writes is therefore "repaired"
+at next startup by the stale projection overwriting or resurrecting canonical
+state. The one-time/tombstone-aware migration and projection-repair work for
+that defect is owned by the reopened #1199 and #2467 lanes (heads
+1326ca7eb4 / c486fc806f, not ancestors of this branch); no test count moves
+here, so no `inventory-delta` is recorded for this addendum.
+
+## Develop-sync resolution and re-validation at 86adf48103 (2026-11-22)
+
+The lane's previous attempt (job c60c01cbb64b484cbf463e111c18a1d6) blocked
+mid develop-sync: it left a develop-content overlay in the working tree that
+blocked any `origin/develop` merge (1091 of 1096 untracked paths exist in
+develop; the driver salvage commit 3a9e9fc8d0 captured only the 588 tracked
+modifications). This round completed the sync as the lane brief directs:
+
+- every one of the 1109 untracked files (1091 files plus the 18 files inside
+  the 5 untracked directories) was verified byte-identical to
+  `origin/develop` blobs before staging, then committed as the overlay
+  commit e14ea64f3e — no unique local work is contained in it;
+- `git merge origin/develop` (ae1cb3b17e) predicted 20 content conflicts;
+  all 20 were verified to be salvage-overlay paths (each file's ours-side
+  came from the develop-content overlay, never unique lane work), so the
+  merge resolved them to develop's side, plus one modify/delete
+  (`test_registry.py`) resolved to develop's version; merge commit
+  538b1d5bc0;
+- the 3-way merge had also stitched stale overlay entries (browser-use,
+  google-api-*, ollama, openai, …) into `uv.lock`; because the merged
+  pyproject files are byte-identical to `origin/develop`'s, the lock was
+  reconciled to develop's wholesale in 86adf48103 (the stitched lock stays
+  reachable at 538b1d5bc0), and `uv sync --locked --extra dev` rebuilt the
+  environment from it;
+- post-sync tree check: `git diff origin/develop HEAD --name-only` is
+  exactly this note — every scheduling file (scheduler.py,
+  routes/schedules.py, scheduling/{store,admission,pg_store,model}.py) is
+  byte-identical to `origin/develop`.
+
+First-party re-validation at 86adf48103 (pgvector:pg18 container
+`auto-46-pg`, DSN on 127.0.0.1:16432):
+
+- `uv run ruff check .`: all checks passed; `uv run ruff format --check .`:
+  3619 files already formatted.
+- `uv run mypy` over the seven documented package srcs: no issues in 959
+  source files.
+- `scripts/check-suite-inventory.py` (uv run): ok, 21 suites match the
+  recorded inventory; `scripts/check-test-duplicates.py`: ok;
+  `scripts/check-doc-links.py`: ok.
+- Core scheduling with the PostgreSQL legs live
+  (`MAISTRO_TEST_PG_DSN=postgresql://maistro:auto46@127.0.0.1:16432/maistro`):
+  `packages/maistro-core/tests/scheduling/` 327 passed, 0 skipped (16s).
+- Hive-conductor scheduler/definition/scope/manual-fire suites
+  (`test_scheduler.py`, `test_scheduler_bounded_tick.py`,
+  `test_scheduler_canonical_admission.py`, `test_scheduler_canonical_due.py`,
+  `test_schedule_canonical_definitions.py`, `test_schedule_frequency_floor.py`,
+  `test_schedule_manual_fire_canonical.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_workspace_scope.py`) with the same live DSN: 204 passed,
+  0 skipped (30s). (Suite counts grew vs the pre-sync 311/195 because the
+  merge brought develop's newer scheduling tests and inventory baseline,
+  which the suite-inventory gate confirms as matching.)
+
+Reactivated-#46 status at 86adf48103 (unchanged by this sync, now with
+develop-exact line numbers):
+
+- the #2467 authority-inversion defect is still present and is now byte-
+  identical to `origin/develop`: `_ScheduleRunner.run` still calls
+  `backfill_canonical_definitions()` unconditionally on startup
+  (`services/scheduler.py:451`), and `_backfill_one`
+  (`services/scheduler.py:420`) puts a Hive-row-derived definition over the
+  canonical row whenever `_definition_drifted` disagrees — including
+  `enabled`, `name`, `cron`, `timezone`, `workspace_id`, `project_id`
+  (`services/scheduler.py:407-418`) — with no tombstone awareness
+  (`services/scheduler.py:442` put), while the routes still commit the
+  canonical write before the Hive projection (`routes/schedules.py:214`,
+  delete canonical at `routes/schedules.py:425` then projection). A crash
+  between those writes is still "repaired" at next startup by the stale
+  projection overwriting or resurrecting canonical state.
+- the strict-#459 scenario token `REAL_SCENARIO_EVIDENCE: schedule-conductor`
+  is still produced nowhere outside the parity harness
+  (`tests/cross_product_parity/harness.py:245`), so
+  `REAL_SCHEDULE_CONDUCTOR_SCENARIO` (`harness.py:233`) remains a
+  permanently-evidenced blocker for the real app-lifespan /
+  crash-between-writes criterion.
+- the reopened #1199/#2467 repair heads (1326ca7eb4 "repair the Hive
+  projection from canonical authority", c486fc806f "run the
+  projection-authority scenarios against the production PgScheduleStore")
+  remain NOT ancestors of this branch or of `origin/develop` — the repair
+  itself has not landed anywhere reachable from this lane.
+
+No suite count moves from this round's own delta (the merged tree's counts
+are develop's own, confirmed by the 21-suite inventory gate), so no
+`inventory-delta` is recorded for this addendum either.
+
+## SAST/Gitleaks repair at 83fb36e049 (2026-11-22)
+
+CI at this head failed `SAST / Gitleaks` (the `sast` aggregate job red via
+`check_ci_job_results`). First-party reproduction with the CI-exact range
+(`gitleaks git --log-opts="9c02cfd7..83fb36e049"`, gitleaks 8.30.1) found
+exactly one leak: `generic-api-key` at line 261 of
+`docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md`,
+introduced to this branch's scan range by the develop-sync overlay commit
+e14ea64f3e.
+
+Root cause: the file's blob is byte-identical to `origin/develop`
+(f3587e1829). The existing `.gitleaksignore` entry covers the fixture at
+line 258 of the *older* blob (introduced by rebuild commit 2a46c7e008), but
+PR #2268's review round re-recorded the ceremony against webauthn==3.0.1,
+lengthened the JSON fixture line, and moved the detection to line 261 of
+blob f3587e1829 — a fingerprint (`465d8fd8fd8e:...:generic-api-key:261`, the
+#2268 squash on develop) that no ignore entry covered. The overlay commit
+then carried that blob into this branch's range, where gitleaks scans each
+commit's own patch, so the range scan saw it as a fresh introduction.
+
+Fix (`.gitleaksignore` only, same specimen rationale as the existing #1837
+block): two commit-scoped fingerprints for the new line — develop's own
+introducer `465d8fd8fd8e:...:261` (keeps post-merge full-history scans green)
+and this branch's range introducer `e14ea64f3e...:...:261`. The comment
+block is updated and paraphrased so it cannot trip the rule itself (the
+auto-115 self-trip precedent).
+
+Proof, first-party at the post-fix tree:
+
+- CI-exact range scan `9c02cfd7..83fb36e049`: `no leaks found` (was 1);
+- full-history `--all`: findings drop 10 → 8 with both ADR-101826 rows gone;
+  the 8 remaining are unreachable from this branch's scan range — 7 belong
+  to local worktree branches outside both `origin/develop` and this branch
+  (including stale-SHA rebuild artifacts), and 1 (`de8266eff9a8`,
+  `test_goal_reconciliation.py:835`) is a pre-existing develop-history
+  finding that no range scan of this branch can see, reported here for the
+  develop lane rather than silently ignored in this one;
+- the vulture gate with CI-exact args: 1221 reviewed identities, all banked,
+  0 unbanked — no ledger amendment needed this round;
+- `ruff check` / `ruff format --check` clean, `check-suite-inventory.py` ok
+  (21 suites), `check-doc-links.py` ok.
+
+Acceptance re-validation at the post-fix tree, first-party (dedicated
+pgvector:pgvector:pg18 container, `alembic upgrade head` to 068, DSN on
+127.0.0.1:16432):
+
+- `packages/maistro-core/tests/scheduling/` 327 passed, 0 skipped (was 327
+  at 86adf48103; 289 passed / 38 PG-leg skips without the DSN);
+- the hive-conductor scheduler/definition/scope/manual-fire suites 204
+  passed, 0 skipped — identical to the 86adf48103 numbers, confirming the
+  base merge (9c02cfd7) moved no scheduling behavior.
+
+No suite count moves (config/docs-only delta), so no `inventory-delta` is
+recorded for this repair either.
