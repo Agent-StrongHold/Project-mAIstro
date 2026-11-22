@@ -26,7 +26,11 @@ _MODEL = "model-tools-provider"
 
 @pytest.fixture
 async def container(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    shipped_deployment_security: Any,
+    host_user_actor: Any,
 ) -> AsyncIterator[Container]:
     providers = tmp_path / "providers.yaml"
     providers.write_text(
@@ -42,12 +46,18 @@ async def container(
     )
     project = await initial.project_scope_store.root_for_workspace(_WORKSPACE)
     await initial.aclose()
+    # The acting user is a host user with a role: the node adapter's Sentinel
+    # gate resolves the principal's roles from the host's user store, and the
+    # deployment states the graph-node grant (both are what a booted
+    # deployment has; see the `shipped_deployment_security` fixture).
+    host_user_actor(_ACTOR, role="user")
     owner = await create_container(
         AgentConfig(
             router_api_key="test-router-key",
             database_url=database_url,
             workspace_id=_WORKSPACE,
             provider_config_path=str(providers),
+            security=shipped_deployment_security,
             litellm_key="binding-scoped-test-key" if getattr(request, "param", True) else "",
             model_bindings=[
                 {
@@ -120,7 +130,11 @@ def _model_transport(monkeypatch: pytest.MonkeyPatch, *, content: str | None = N
 
     calls: list[dict[str, Any]] = []
 
-    async def execute(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def execute(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
+        # ``on_chunk`` is the shipped streaming observer seam (SPEC-285); a
+        # non-streaming tool call dispatches with it unset.
         calls.append({"payload": _chat_payload(provider, request), "endpoint": endpoint})
         return {
             "model": f"{_MODEL}-version",
@@ -345,7 +359,7 @@ async def test_failed_provider_is_unknown_evidence_and_a_failed_node(
 
     calls: list[str] = []
 
-    async def fail(provider: Any, request: Any, *, endpoint: Any) -> Any:
+    async def fail(provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None) -> Any:
         calls.append(provider.name)
         raise TimeoutError("provider completion unknown")
 
@@ -497,7 +511,9 @@ async def test_gateway_without_text_cannot_complete_the_tool(
 ) -> None:
     import maistro.capabilities.model_chat as model_chat
 
-    async def empty(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def empty(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
         return {"choices": choices}
 
     monkeypatch.setattr(model_chat, "execute_model_chat", empty)

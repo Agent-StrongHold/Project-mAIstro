@@ -1,5 +1,17 @@
 """PostgreSQL persistence for Canvas Studio (spec 1189).
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): the ``layers``/LayerRecord
+persistence this module serves is the legacy layer model, retained while
+consumers migrate to the ADR-039/044 AssetInstance model
+(``asset_store``/``asset_compositor``/``asset_routes``/``asset_tool``). It
+cannot regain authority: new layer-model work belongs on the AssetInstance
+path only. Deletion is gated on the ADR-044 Phase 2 bridge and Phase 3
+backfill (neither has landed) plus ADR-046 — deleting it now would strand
+persisted Canvas state, which ADR-045 forbids. The ``generation_jobs`` queue
+this module also hosts is NOT transitional: it is the SPEC-203 queue the
+shipped ``maistro-canvas-worker`` and the server-composed ``CanvasJobRunner``
+claim from, and its convergence is owned by #735.
+
 All queries use raw SQL via sqlalchemy text() — same pattern as
 pg_agents.py.  Z-index invariants are enforced inside transactions to
 prevent races; the DB schema uses a UNIQUE constraint on
@@ -38,6 +50,7 @@ from maistro_canvas.types import (
     JobLeaseLostError,
     JobNotFoundError,
     JobQueueStats,
+    JobStatus,
     LayerLimitExceededError,
     LayerNotFoundError,
     LayerRecord,
@@ -110,6 +123,24 @@ def _coerce_layer(row: Any) -> LayerRecord:
     )
 
 
+def _coerce_job_status(raw: object) -> str:
+    """Hydrate a receipt status as a :class:`JobStatus` member when possible.
+
+    The driver hands back the column as a plain ``str``. Identity comparisons
+    against ``JobStatus`` members (``status is JobStatus.RUNNING``) then fail
+    silently, so :meth:`CanvasCanonicalExecution.reconcile_admissions`'s
+    live-lease guard never fired for Postgres-hydrated receipts and a second
+    worker could claim a live-leased job (#93 live evidence). Coercing here
+    makes every consumer see the same shape the in-memory stores produce.
+    An unrecognized value is passed through untouched rather than crashing a
+    read path over a legacy row.
+    """
+    try:
+        return JobStatus(str(raw))
+    except ValueError:
+        return str(raw)
+
+
 def _coerce_job(row: Any) -> GenerationJobRecord:
     d = dict(row)
     result_paths_raw = d.get("result_paths", [])
@@ -123,7 +154,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         layer_id=str(d["layer_id"]),
         canvas_id=str(d["canvas_id"]),
         action=d.get("action", "generate"),
-        status=d.get("status", "pending"),
+        status=_coerce_job_status(d.get("status", JobStatus.PENDING)),
         model_id=d.get("model_id", ""),
         prompt=d.get("prompt", ""),
         params=params_raw or {},
@@ -1137,6 +1168,23 @@ class PgCanvasStore:
             return _coerce_composite(row) if row else None
 
     # ── Blobs ─────────────────────────────────────────────────────────
+
+    async def get_blob(self, blob_id: str) -> bytes | None:
+        """One stored blob's bytes, or None when the id is unknown (#2311).
+
+        The read side of :meth:`store_blob`, added so the governed image
+        egress can satisfy its ``ImageBlobStore`` contract over this table —
+        the durable home for generated image bytes that
+        ``maistro.capabilities.image_generation`` deliberately leaves to the
+        package owning ``canvas_blobs``.
+        """
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("SELECT data FROM canvas_blobs WHERE id = :id"),
+                {"id": blob_id},
+            )
+            row = result.first()
+            return bytes(row[0]) if row is not None else None
 
     async def store_blob(
         self,

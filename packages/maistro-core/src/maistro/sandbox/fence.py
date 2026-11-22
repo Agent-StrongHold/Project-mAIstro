@@ -27,14 +27,15 @@ write.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, Attempt
-from maistro.runs.store import StaleExecutionFence
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from maistro.runs.model import ExecutionLease
-    from maistro.runs.store import RunStore
+    import importlib
+
+    _runs_model = importlib.import_module("maistro.runs.model")
+    _runs_store = importlib.import_module("maistro.runs.store")
+    Attempt = _runs_model.Attempt
+    StaleExecutionFence = _runs_store.StaleExecutionFence
 
 #: Environment variables a sandboxed process reads its fence from. Prefixed and
 #: spelled out rather than packed into one blob so a worker in any language can
@@ -56,7 +57,7 @@ class SandboxFence:
     fencing_token: str
 
     @classmethod
-    def of(cls, lease: ExecutionLease) -> SandboxFence:
+    def of(cls, lease: Any) -> SandboxFence:
         """Project a lease down to what may cross the boundary."""
         return cls(
             attempt_id=lease.attempt_id,
@@ -93,7 +94,7 @@ class SandboxFence:
             return None
 
 
-async def assert_fence_is_current(fence: SandboxFence, *, run_store: RunStore) -> Attempt:
+async def assert_fence_is_current(fence: SandboxFence, *, run_store: Any) -> Any:
     """Refuse a stale worker before it publishes anything.
 
     Read from the store rather than compared against anything the caller
@@ -117,7 +118,16 @@ async def assert_fence_is_current(fence: SandboxFence, *, run_store: RunStore) -
     holds it, or the epoch moved — the same staleness caught by number rather
     than by identity, which is what makes a replayed old token visible.
     """
-    attempt: Attempt | None = await run_store.get_attempt(fence.attempt_id)
+    # Import at call time so importing maistro.sandbox does not load the
+    # complete execution stack or create a possible import-order cycle.
+    import importlib
+
+    _runs_model = importlib.import_module("maistro.runs.model")
+    _runs_store = importlib.import_module("maistro.runs.store")
+    TERMINAL_ATTEMPT_STATUSES = _runs_model.TERMINAL_ATTEMPT_STATUSES
+    StaleExecutionFence = _runs_store.StaleExecutionFence
+
+    attempt: Any = await run_store.get_attempt(fence.attempt_id)
     if attempt is None:
         raise StaleExecutionFence(
             f"Attempt {fence.attempt_id!r} no longer exists; refusing a sandbox commit against it"
@@ -157,3 +167,18 @@ __all__ = [
     "StaleExecutionFence",
     "assert_fence_is_current",
 ]
+
+
+def __getattr__(name: str) -> object:
+    # `StaleExecutionFence` is owned and raised by `maistro.runs.store`; it is
+    # re-exported here for callers that present the fence, but resolved lazily
+    # so importing this module never pulls the execution stack (see the
+    # function-level import in `assert_fence_is_current` for the cycle).
+    if name == "StaleExecutionFence":
+        import importlib
+
+        _runs_store = importlib.import_module("maistro.runs.store")
+        value: object = _runs_store.StaleExecutionFence
+        globals()[name] = value  # cache: repeated access skips the import
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

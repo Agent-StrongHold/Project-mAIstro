@@ -34,16 +34,19 @@ pyjwt[crypto]>=2.14,<3
 # environment (which already carries it). These versions are the cp312/cp313
 # wheel set used by the shipped Python 3.13 image; update them with the image
 # import smoke test, not as an unlocked transitive refresh.
-bip-utils==2.12.1
+bip-utils==2.12.2
 coincurve==21.0.0
 pynacl==1.6.2
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2
 structlog>=24.1.0,<26
-pytest>=9.0.3,<10
+# Cap below 9.2: pytest 9.2 moved FixtureManager storage to
+# _arg2node2fixturedefs, and pytest-bdd 9.0.0 still reads _arg2fixturedefs
+# (every step_defs scenario fails under the CI requirements.txt install).
+pytest>=9.0.3,<9.2
 pytest-asyncio>=0.25,<2
-pytest-bdd>=8.0.0,<9
+pytest-bdd>=8.0.0,<10
 hypothesis>=6.0.0,<7
 sqlalchemy[asyncio]>=2.0.0,<3
 # maistro-core is consumed via sys.path (conftest), not pip-installed, so its

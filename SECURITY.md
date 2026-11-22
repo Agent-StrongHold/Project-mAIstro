@@ -32,13 +32,55 @@ in **[ADR-072](docs/adr/ADR-072-threat-model.md)**. It is not duplicated here; t
 | **1. Gate** | Untrusted-input entry point into the Conduit pipeline | `maistro/conduit.py` |
 | **2. Warden** | Trust-boundary scanner: fast-tier heuristics (regex/pattern/anomaly, free) escalate only ambiguous input to an LLM judge (risk `0..1`). Scans user input, tool results, and — at the MCP boundary — both ingress and egress | `maistro/security/warden/detector.py`, `heuristics.py`, `semantic.py`, `llm_classifier.py`, `sanitizer.py`, `patterns.py` |
 | **3. Sentinel (AuthZ / elevation)** | Policy decision + enforcement point (PDP/PEP) at the tool-call boundary. Evaluates CLASSIFY → AUTHORIZE → BUDGET → GATE (ADR-068) in order, stopping at first deny | `maistro/security/sentinel/policy.py`, `validator.py`, `elevation.py`, `approver_graph.py`, `rlphd.py` |
-| **4. Skill / tool trust tiers** | Skill body size cap + `security_scan()` (exec/eval/subprocess/credential/injection patterns) at import; dangerous-command and dangerous-tool-name detection at call time. **Reversibility classification does NOT currently gate anything** — `ReversibilityRegistry` is never constructed and `Sentinel.resolve_tier` never consults it (#346). Skill scanning runs on the CRUD write paths and `POST /v1/skills/scan` (#347), but those are content-only: skills created that way do not pass `import_pipeline.import_skill`, so no signing, T3 sandboxing, or rescan-on-use binding applies to them | `maistro/skills/parser.py`, `skills/import_pipeline.py`, `security/dangerous_tools.py`, `tools/reversibility_registry.py` |
+| **4. Skill / tool trust tiers** | Skill body size cap + `security_scan()` (exec/eval/subprocess/credential/injection patterns) at import; dangerous-command and dangerous-tool-name detection at call time. Governed tool contracts construct `ReversibilityRegistry` and resolve host-owned classifications before canonical Invocation dispatch (`tools/contracts.py`); caller-supplied tier strings cannot override them. This does **not** establish reversibility-based approval gating: `Sentinel.resolve_tier` still does not consult the registry (#346). Skill scanning runs on the CRUD write paths and `POST /v1/skills/scan` (#347), but those are content-only: skills created that way do not pass `import_pipeline.import_skill`, so no signing, T3 sandboxing, or rescan-on-use binding applies to them | `maistro/skills/parser.py`, `skills/import_pipeline.py`, `security/dangerous_tools.py`, `tools/reversibility_registry.py` |
 | **5. Resource protection** | Quota tracking, per-key rate limiting, circuit breakers/retry/fallback, secret redaction on log output, result-size truncation (see inventory below) | `maistro/quota/tracker.py`, `security/rate_limiter.py`, `resilience/`, `security/redact.py` + `security/log_redaction.py`, `security/sentinel/token_optimizer.py` |
 | **6. Sandbox isolation** | Untrusted agent/tool code MUST run behind a hardware-VM boundary (microVM), not a shared-kernel container; the Docker-socket-mounting sandbox is deprecated for untrusted workloads (ADR-093) | `maistro/tools/sandbox/`, `maistro/sandbox/protocol.py` |
 
 This is the engine's version of Stronghold's Gate → Warden → Identity → Skill → Resource
 five-layer model, with sandbox isolation (ADR-093) called out as its own layer because it is a
 harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
+
+### Scan result states (#288)
+
+Every security scan surface (agent config scans, the skills content scan, the HITL answer
+gate) distinguishes four states, and a scan that did not run is never allowed to read as
+clean. The MCP server-record scan has no scanner wired and is the explicit-unsupported case
+(`501`, #389) rather than a fabricated verdict:
+
+- **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
+  on what: `scanner.name` / `scanner.policy_version` (Warden's `WARDEN_POLICY_VERSION` for the
+  agent and HITL scans; the skills content scanner's `SKILL_SECURITY_SCAN_VERSION` for
+  `POST /v1/skills/scan`), `target` (kind and id of the artifact walked), `scanned_at`
+  (completion timestamp), and `scanned_values` (how many strings the walk judged). Agent
+  definitions written through a scanned write path (CRUD, Forge, chat-tool) persist the same
+  stamp in `config["provenance"]["scan"]` — and Forge's artifact records it again in
+  `config["forge"]["scan"]` — so a stored `clean` row can always show the completed analysis
+  behind it. (Persona-spawn and canonical-roster materialization are not scanned write paths;
+  they project trusted internal content and carry no scan stamp rather than a fabricated one.)
+- **flagged (findings)** — the analysis completed and found patterns; each finding names the
+  path inside the target where it hit (`config.prompt: …`), so a human can act on it.
+- **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes
+  answer `503` with *no findings list* (a client must not be able to mistake a failed scan for
+  an empty one); each route also bounds the whole walk at `SCAN_TIMEOUT_SECONDS` (the same wall
+  the chat gate uses) and runs the synchronous Warden walk on a worker thread, so a CPU-bound
+  detector cannot starve the deadline: a detector that hangs produces the same explicit unknown
+  instead of a hung request. Definition writes fail closed with nothing stored
+  (`AgentScannerUnavailable`, surfaced as `503` on the Forge route); the chat gate refuses the
+  turn with its scanner-error / scanner-timeout reasons. Warden's per-pattern regex timeout
+  fails closed too: it becomes a `regex_error:` finding, i.e. flagged — never silently clean.
+- **unsupported** — no scanner is wired for the target, so the surface refuses with `501`
+  (the MCP server-record scan) instead of reporting a verdict it did not compute.
+- **over-budget** — the target exceeds the bounded walk (nesting depth, value count, string
+  size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated into a
+  partial — and therefore unearned — clean.
+
+The surface set itself is checked, not trusted:
+`packages/hive-conductor/backend/tests/test_scan_contract.py` enumerates every `POST …/scan`
+route from the live app and must find each one backed by its registered handler. A surface
+with no scanner wired is pinned to an explicit `501` refusal, never a `clean` result, and the
+test parses `routes/` and `services/` to forbid the unconditional
+`{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
+agent scan used to answer before #418 and the MCP server-record scan answered until #389.
 
 ### Account credential storage
 
@@ -329,6 +371,31 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
    establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
    against hostile code, which is what Tiers 1 and 2 are still for.
+   The Builder sandbox has the matching conformance evidence (#80, M2-B5, reconciled onto
+   M2-B1's canonical selector, #2241): the production `ContainerBuilderSandbox` no longer
+   carries a private Docker path — it asks the host-evidenced `maistro.sandbox` selector for
+   a backend satisfying `BUILDER_AGENT`'s vm-tier floor and **refuses**
+   (`NoSuitableBackendError`) without one. That fail-closed refusal is the lane-level proof
+   where no vm-tier backend is evidenced: CI's `sandbox-conformance` job executes exactly
+   that proof on a runner with none, then provisions a rootless userns daemon and runs the
+   real `maistro-builders` image contract on it — non-root uid, `--network=none`, enforced
+   `--memory`. `packages/maistro-bootstrap/tests/test_container_sandbox.py` instantiates the
+   production adapter everywhere: policy admission and the denylist seed boundary (proven
+   not to copy `.env`, `.git/config`, `.git/hooks` or key-shaped files, and never to
+   materialize what a worktree symlink points at), isolation until the explicit sync-back
+   (which never brings `.git` back), path escapes, exec bridging and teardown; where the
+   Kata profile is evidenced, that file's live lane asserts network default-deny and host
+   isolation against the real VM. Backend conformance and escape coverage itself lives in
+   `packages/maistro-core/tests/sandbox/` — filesystem, process, namespace, device,
+   host-socket, credential and privilege surfaces, memory/CPU/file-size exhaustion and
+   post-timeout cleanup against a real kernel, network default-deny against the namespace,
+   and the construction-level credential boundary — executed in CI by the `coverage
+   (no services)` producer with bubblewrap installed, and against the selected Kata VM by
+   its live conformance suite where that profile is evidenced. The supported-backend matrix
+   (including the builder adapter section) is
+   [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md); the
+   M2-B1 reconciliation of this lane is recorded in
+   [`docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md`](docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md).
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced

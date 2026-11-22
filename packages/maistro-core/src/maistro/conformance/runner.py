@@ -82,7 +82,11 @@ class _AuditServer:
     async def start(self) -> _AuditServer:
         # devskim: ignore DS137138 -- loopback-only fixture server on an
         # ephemeral port (0); lives only for the duration of this run.
-        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
+        self._server = await asyncio.start_server(
+            self._accept,
+            "127.0.0.1",  # DevSkim: ignore DS162092 until 2027-12-31
+            0,
+        )  # fmt: skip
         return self
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -253,7 +257,7 @@ class ConformanceRunner:
                 real_backend_executed = True
                 # devskim: ignore DS137138 -- same loopback-only audit
                 # fixture server as above; ephemeral, per-run lifetime.
-                probe_url = f"http://127.0.0.1:{audit.port}/conformance-probe"
+                probe_url = f"http://127.0.0.1:{audit.port}/conformance-probe"  # DevSkim: ignore DS162092 until 2027-12-31
                 results.append(
                     await _guarded(
                         CheckId.EGRESS_UNDECLARED_BLOCKED,

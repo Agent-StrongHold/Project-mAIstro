@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 _service: _EvolutionService | None = None
 
 
+def _public_failure(exc: BaseException) -> str:
+    """What /status and the browser may learn: the kind, never the message.
+
+    Exception text here carries import paths, Container diagnostics, and
+    provider replies; those stay in the server log (CodeQL py/stack-trace-exposure).
+    """
+    return f"{type(exc).__name__}: evolution failed; see server logs"
+
+
 class _GovernedModelCall:
     """Bind Evolve prompts to the execution and declared model authority it already has.
 
@@ -288,7 +297,8 @@ class _EvolutionService:
         except CanonicalExecutionUnavailable as exc:
             self._execution_available = False
             self._availability = exc.availability
-            self._availability_reason = str(exc)
+            logger.warning("Evolution execution unavailable: %s", exc, exc_info=True)
+            self._availability_reason = _public_failure(exc)
             return
         # A healthy engine is necessary, not sufficient: a cycle also needs the
         # domain state `initialize_domain_state` builds. Advertising
@@ -334,8 +344,8 @@ class _EvolutionService:
             # retention evaluation.
             self._archive = CandidateArchive()
         except Exception as exc:
-            self._last_cycle_error = str(exc)
-            logger.warning("Evolution population init failed: %s", exc)
+            logger.warning("Evolution population init failed: %s", exc, exc_info=True)
+            self._last_cycle_error = _public_failure(exc)
         self._refresh_execution_availability()
 
     def stop(self) -> None:
@@ -413,8 +423,8 @@ class _EvolutionService:
             try:
                 await self._run_one_cycle()
             except Exception as exc:
-                self._last_cycle_error = str(exc)
-                logger.warning("Evolution cycle failed: %s", exc)
+                logger.warning("Evolution cycle failed: %s", exc, exc_info=True)
+                self._last_cycle_error = _public_failure(exc)
 
     async def seed_population(self, count: int) -> tuple[int, int]:
         """Fence seeding against cycle planning, traversal, and finalization."""
@@ -434,8 +444,6 @@ class _EvolutionService:
             return await self._run_one_cycle_locked(actor_principal_id=actor_principal_id)
 
     async def _run_one_cycle_locked(self, *, actor_principal_id: str | None = None) -> str:
-        from maistro_evolve.cycle import EvolutionConfig
-        from maistro_evolve.harness import EvalHarness
         from services.evolution_graph import (
             CanonicalExecutionUnavailable,
             canonical_execution_owner,
@@ -447,14 +455,17 @@ class _EvolutionService:
         except CanonicalExecutionUnavailable as exc:
             self._execution_available = False
             self._availability = exc.availability
-            self._availability_reason = str(exc)
+            logger.warning("Evolution cycle refused: %s", exc, exc_info=True)
+            self._availability_reason = _public_failure(exc)
             raise EvolutionUnavailableError(
                 self._availability_reason,
                 availability=self._availability,
             ) from exc
         if self._population is None or self._tournament is None:
             # Same answer `/status` gives: unavailable, with the reason, as a
-            # 503 rather than a bare 500 from a RuntimeError.
+            # 503 rather than a bare 500 from a RuntimeError. Checked before
+            # importing maistro_evolve so a failed domain init (broken package
+            # import) still becomes EvolutionUnavailableError, not ImportError.
             self._execution_available = False
             self._availability = "unavailable"
             self._availability_reason = self._domain_state_reason()
@@ -464,6 +475,9 @@ class _EvolutionService:
         self._execution_available = True
         self._availability = "executable"
         self._availability_reason = None
+
+        from maistro_evolve.cycle import EvolutionConfig
+        from maistro_evolve.harness import EvalHarness
 
         config = EvolutionConfig(
             self_improve=True,

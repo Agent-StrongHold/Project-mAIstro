@@ -101,6 +101,15 @@ class InstallManifest(BaseModel):
     delivery_mode: str | None = Field(
         default=None, description="image_pull | source_build (from install answers)."
     )
+    container_runtime: str | None = Field(
+        default=None,
+        description=(
+            "Container runtime selection the install resolved (#1820): docker | podman | "
+            "auto as chosen by the operator/wizard; install.sh records what it honored so "
+            "upgrades and recovery name the same compose front-end. Absent on manifests "
+            "written before the field existed."
+        ),
+    )
     plan_dir: str | None = Field(
         default=None,
         description=(

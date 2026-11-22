@@ -32,6 +32,7 @@ from maistro.graph.types import (
 )
 from maistro.resilience.backoff import BackoffConfig, compute_backoff, jittered_backoff
 from maistro.resilience.classifier import ClassifiedError, classify_error
+from maistro.resilience.retry_policy import OperationStage, get_delay, should_retry
 
 logger = structlog.get_logger()
 
@@ -511,7 +512,15 @@ class NodeRun:
         self.error_classifications.append(classified)
         self.circuit.record_failure()
 
-        if not (classified.retryable and attempt < self.max_retries - 1):
+        # ADR-038 stage policy (#2318): model attempts are READ-stage — the
+        # stage helper may only refuse a retry the classifier already allowed,
+        # never expand the node's retry budget past ``max_retries``.
+        stage = OperationStage.READ
+        if not (
+            classified.retryable
+            and attempt < self.max_retries - 1
+            and should_retry(stage, attempt, exc)
+        ):
             await self._finish_failure(exc, classified)
             return False
 
@@ -520,6 +529,9 @@ class NodeRun:
         delay = compute_backoff(
             attempt + 1, backoff_config, retry_after=classified.retry_after_seconds
         )
+        stage_delay = get_delay(stage, attempt)
+        if stage_delay > delay:
+            delay = stage_delay
         if delay < 0:
             await self._finish_failure(exc, classified)
             return False

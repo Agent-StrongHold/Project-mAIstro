@@ -661,7 +661,7 @@ function Invoke-LinuxInstall {
 
     Write-OkMsg "Done. The Conductor UI should have opened automatically."
     Write-Host ""
-    Write-Host "If it didn't, open: http://localhost:8101" -ForegroundColor Cyan
+    Write-Host "If it didn't, open: http://localhost:8101" -ForegroundColor Cyan  # DevSkim: ignore DS162092 until 2027-12-31
 }
 
 function Invoke-Main {
