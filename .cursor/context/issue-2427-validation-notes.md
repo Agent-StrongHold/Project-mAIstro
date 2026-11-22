@@ -1472,3 +1472,102 @@ the stacked-base artifact, and the hosted P4b base head is an ancestor of
 this branch); (c) fold develop `37c784c805` in on the next snapshot round
 (conflict-free); (d) nothing pushed; the only change in this round is this
 notes section.
+
+## Round at `989fe20f04` — develop fold verified, full `test`-job reproduction (job `c3ab9a24`)
+
+Scope: verifier/writer re-validation only; no code or test changes. Starting
+head exactly `989fe20f040f8c0f7964da8ab754c69f1ea5bd42` (dispatch == hosted
+PR #2427 head == `origin/cursor/m1-b-p5a-recovered-rediscovery-8551` == local
+HEAD, verified by `git fetch`), worktree clean. HEAD is the previously
+deferred develop fold: one merge commit of `37c784c805` (#2450) over the
+validated `9a610f4909`; merge delta is exactly develop's #2450 content
+(`pyproject.toml` ×2, `uv.lock`, `mutation.yml`, `.trivyignore.yaml`,
+`tests/test_mutation_targets.py` +82) plus this notes file — **zero
+`packages/*/src` changes**; `git diff --numstat origin/develop -- quality/`
+→ empty (ledgers byte-identical); `37c784c805` proven
+`git merge-base --is-ancestor` of HEAD, as is the hosted base sha `a531f5d7`
+(the `mergeable_state: dirty` snapshot is the documented transient artifact).
+
+**Named-RED gate diagnosis (the lane brief's `pr-base`, `test`):**
+- **`pr-base`** — reproduced with CI's exact argv:
+  `check-pr-base.py --base cursor/m1-b-p4b-reconciler-recovered-disposition-8551`
+  → **rc 1**, "PR base 'cursor/…' violates branch policy … must be retargeted
+  to 'develop' before merge". Root cause read from source:
+  `.github/branch-protection.json` `topic_branch_policy.prefixes` =
+  feat/bug/fix/idea/doc/docs/chore — `cursor/` is *not* a topic prefix, so
+  `check()` falls through to the policy-violation branch
+  (`scripts/check-pr-base.py`). The remedy is the ADR-095 **PR base
+  retarget to `develop`** — a GitHub-side driver action, prohibited in-lane;
+  the branch-side prerequisite is already satisfied (develop tip is an
+  ancestor of HEAD, so the retargeted PR diff is the P5a work alone and the
+  develop base passes: `--base develop --labels ''` → **ok rc 0**).
+- **`test`** — hosted check-runs/statuses endpoints at `989fe20f04` were
+  captured **empty** (CI pending at fresh tip — the same
+  0-check-runs-at-fresh-head pattern diagnosed at `3a6c5152f5` /
+  `e4bf58a50f` / `0ca694d73491` / `9a610f4909`), so the hosted RED cannot be
+  read in-lane; the entire `test` job (ci.yml:557) was instead **reproduced
+  step-by-step with CI's exact commands at this head**:
+  - `uv sync --locked --extra dev --extra bootstrap` → rc 0;
+  - `RATCHET_BASE_REV=origin/cursor/m1-b-p4b-…` resolves (b6b7f864 = #2425
+    head);
+  - maistro-server/tests → **697 passed, 10 skipped**; maistro-turing/tests →
+    **225 passed**; maistro-turing/backend/tests → **138 passed**;
+    maistro-design/tests → **689 passed, 1 skipped**; maistro-ext-harness →
+    **273 passed**; maistro-ext-sdk → **147 passed** (all rc 0, REQUIRE_AUTH=
+    false / MAISTRO_DRY_RUN=1);
+  - root suite `pytest tests/ --ignore=tests/tools/registry` (with
+    RATCHET_BASE_REV env as the PR event resolves it) → **5909 passed,
+    140 skipped, rc 0** — includes develop's new `tests/test_mutation_targets.py`,
+    the only suite-adjacent content of the merge;
+  - hive-conductor frontend `npm run lint` (0 errors) + `npm run build` → rc 0;
+    generated-types check (`dump-hive-openapi.py` + `gen:api` +
+    `git diff --exit-code …/types.gen.ts`) → **clean rc 0**;
+  - canvas frontend `npm run test:ci` → **84 passed**; lint (0 errors) +
+    build → rc 0; `npm audit` + `npm_audit_gate.py` → **OK rc 0**;
+  - cross-suite leakage one-process step (`pytest tests/
+    packages/hive-conductor/backend/tests packages/maistro-design/tests
+    -q --timeout=60`) → **10984 passed, 169 skipped, rc 0**;
+  - `check-suite-inventory.py` (no args, ci.yml:744) → **21 suites ok rc 0**;
+    `check-test-duplicates.py` → ok rc 0. (`npm ci` and the system-requirements
+    pip install are environment plumbing; the merge delta touches no
+    package-lock/requirements file and the executed steps above run against
+    the current tree.)
+
+**Independently re-executed at this head (prior claims not trusted):**
+- **Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, private DB
+  `maistro_cr2427`, instance verified quiet, `alembic upgrade head` →
+  **068 (head)**, `MAISTRO_TEST_PG_DSN` plain `postgresql://`): driver's exact
+  13-file batch → **620 passed, 0 skipped in 26.6s** (reconciles driver
+  check-3's 481 + 139 env-skips exactly).
+  `test_interrupted_reclaim_rediscovery.py -v`: **24/24 PASSED** (8 fns ×
+  memory/sqlite/postgres) including the spoofed-prefix pin (:133),
+  newer-Attempt pin (:161), parks-own-node pin (:182), RUNNING-gate pin
+  `test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table`
+  (:257) and refusal-catch pin
+  `test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick`
+  (:296) — the P5a behavior proven on the live postgres leg at the folded
+  head.
+- **CI-exact ledger gates**: vulture `packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → **1221 == 1221, rc 0** under BOTH the
+  stacked ambient base (`origin/cursor/m1-b-p4b-…`) and `origin/develop`;
+  radon → **124 == 124, rc 0** under both bases; mypy ci.yml exact
+  10-package list → **Success, no issues in 1128 source files** (after
+  `uv sync --locked --extra dev` rc 0);
+  `verify-monorepo-layout.sh` → rc 0; `check-merge-markers.py` → ok rc 0.
+- **Driver deterministic checks (this job's check-0..8, logs inspected)**:
+  sync rc 0; ruff check "All checks passed"; ruff format "3618 files already
+  formatted"; batch 481 passed + 139 env-skips; audit-pagination 32 passed;
+  per-suite inventory ok ×4 (hive 4321 / canvas 633 / core 18863 /
+  rsi 1797).
+
+**Inventory:** this round adds and changes no tests → no new
+`inventory-delta` owed; the 21-suite no-args run matches the recorded
+baseline at this head.
+
+**Residual (driver actions only, GitHub mutations prohibited in-lane):**
+(a) CI check-runs on `989fe20f04` pending at dispatch capture — every
+`test`-job step and every ledger gate independently reproduced green at this
+exact head; (b) PR #2427 must be **retargeted to `develop`** before merge
+(ADR-095) — the sole root cause of the hosted `pr-base` RED (`cursor/` is
+not a topic prefix), not repairable by a branch edit; (c) nothing pushed;
+the only change in this round is this notes section.
