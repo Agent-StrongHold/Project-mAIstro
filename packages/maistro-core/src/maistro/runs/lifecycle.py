@@ -530,10 +530,6 @@ def compensate_unlaunched_attempt(
 #: Graph resume so durable disposition tests recognise the artefact by text
 #: without inventing a second spelling of the same leaf (#2417 / #232 P3b).
 ORPHANED_ATTEMPT_ERROR = "orphaned physical Attempt recovered after process loss"
-#: Default ``error`` for an explicit owning-record orphan recovery. Shared with
-#: Graph resume so durable disposition tests recognise the artefact by text
-#: without inventing a second spelling of the same leaf (#2417 / #232 P3b).
-ORPHANED_ATTEMPT_ERROR = "orphaned physical Attempt recovered after process loss"
 
 
 def recover_orphaned_attempt(

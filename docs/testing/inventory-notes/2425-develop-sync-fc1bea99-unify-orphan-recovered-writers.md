@@ -98,6 +98,16 @@ measured file at or above 90% lines / 80% branch arcs**. First run failed on
 three `TestRecoverOrphanedPgWriter` cases are the repair, and the battery
 re-run totals **9128 passed / 6 skipped** before the hive combine leg.
 
+## Erratum (repair round at head 7c87c7fdd8): ORPHANED_ATTEMPT_ERROR duplication
+
+The merge resolution above recorded `ORPHANED_ATTEMPT_ERROR` as kept singular
+(develop's spelling), but the committed merge result actually retained **two**
+byte-identical `#: comment + assignment` blocks (both sides' additions won),
+first flagged by the verify round at head 7c87c7fdd8. The repair round removed
+the second copy so the module defines the constant exactly once, as this note
+describes. No other lifecycle.py content changed; the constant's value,
+export, and call sites are unchanged.
+
 ## Independent verification at final head 543651fecf (follow-up round)
 
 Re-validated the same head with CI's exact producer invocations (no tree
