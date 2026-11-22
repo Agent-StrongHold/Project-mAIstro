@@ -1,8 +1,13 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +14
+  packages/hive-conductor/backend/tests: +17
 ---
-# auto-2465 — nested DAG failure results and Design exception responses projected at the public boundary
+# auto-2465 — nested DAG failure results and Design exception responses projected at the public boundary (round 2)
+
+Round 2: the CI diff-coverage gate failed the first cut — three of the six
+re-anchored Design generic-500 branches (skill listing, discovery form, render
+job creation) were bounded in code but not exercised by tests. Three more
+sentinel regressions cover those branches; the suite is +17 now.
 
 Issue #2465 (M2-A): `POST /v1/dags/{id}/run` sanitized its top-level `error`
 with `_public_failure` but returned `"result"` unfiltered, and
@@ -38,7 +43,10 @@ assert no public surface returns them in any nested field:
 - the projection seam itself (`canonical_dag_runner._project`) bounds failed
   node responses at the source so every transport inherits one policy (+1);
 - Design routes' generic 500s name the exception kind plus the operation
-  name, never the text (+2).
+  name, never the text (6 tests: project fetch, project listing, project
+  preparation, skill listing, discovery form, render job creation — every
+  re-anchored generic branch, one shared pytest fixture and request/store
+  doubles).
 
 ## Superseded M1-era pins (same suite, count-neutral edits)
 

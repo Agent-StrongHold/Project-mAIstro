@@ -473,6 +473,68 @@ class TestDesignRoutesNameTheKindNeverTheText:
         assert "RuntimeError" in str(raised.value.detail)
         _assert_no_sentinels(str(raised.value.detail))
 
+    async def test_skill_listing_500_names_the_kind_not_the_catalog_detail(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GET /design/skills' generic 500 bounds the exception text (#2465)."""
+        from routes import design as design_routes
+
+        class _Skills:
+            @staticmethod
+            def list_available(_filled: Any) -> list[Any]:
+                raise ValueError(f"catalog enumerate walked {PATH_SENTINEL}: {DIAGNOSTIC_SENTINEL}")
+
+        class _Engine:
+            _skills = _Skills()
+
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        monkeypatch.setattr(
+            design_routes,
+            "get_renderer_registry",
+            lambda: type("R", (), {"filled_slots": staticmethod(lambda: frozenset())})(),
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.list_design_skills()
+        assert raised.value.status_code == 500
+        assert "Skill listing failed" in str(raised.value.detail)
+        assert "ValueError" in str(raised.value.detail)
+        _assert_no_sentinels(str(raised.value.detail))
+
+    async def test_discovery_form_500_names_the_kind_not_the_engine_detail(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GET /design/skills/{slug}/discovery's generic 500 (distinct from the
+        classified 404 SkillNotFoundError branch, which keeps its message)."""
+        from routes import design as design_routes
+
+        class _Engine:
+            @staticmethod
+            async def run_discovery(_slug: str) -> Any:
+                raise RuntimeError(f"discovery probe failed: {PROVIDER_SENTINEL}")
+
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_skill_discovery_form("deck-builder")
+        assert raised.value.status_code == 500
+        assert "Discovery form unavailable" in str(raised.value.detail)
+        assert "RuntimeError" in str(raised.value.detail)
+        _assert_no_sentinels(str(raised.value.detail))
+
+    async def test_render_creation_500_names_the_kind_not_the_store_detail(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POST /design/projects/{id}/render's generic 500 (#2465); the 404
+        unknown-project and 501 capability branches keep their own shapes."""
+        from routes import design as design_routes
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: self._Store())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _DesignRequest())
+        assert raised.value.status_code == 500
+        assert "Render job creation failed" in str(raised.value.detail)
+        assert "RuntimeError" in str(raised.value.detail)
+        _assert_no_sentinels(str(raised.value.detail))
+
 
 class TestTheProjectionSeamIsTheSinglePolicy:
     async def test_node_results_project_failed_responses_at_the_source(
