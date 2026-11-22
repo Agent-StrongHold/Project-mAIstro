@@ -21,6 +21,7 @@ from maistro.observability.correlation import (
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import AttemptExecutionService, InMemoryRunStore, RunExecutionService
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -55,7 +56,7 @@ class TestAnExecutorRunsUnderItsOwnIds:
     @pytest.mark.ac("SPEC-083026-20b2/AC-5")
     async def test_the_executor_sees_run_node_run_and_attempt(self) -> None:
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
         seen: list[ExecutionContext] = []
 
@@ -76,7 +77,7 @@ class TestAnExecutorRunsUnderItsOwnIds:
         """The one question a retry raises is what the first try did. Before
         this, a retry named its NodeRun and no Run at all."""
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
         seen: list[ExecutionContext] = []
 
@@ -109,7 +110,7 @@ class TestTheContextDoesNotOutliveTheAttempt:
     @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     async def test_nothing_is_bound_after_the_call_returns(self) -> None:
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
 
         await service.execute_node(
@@ -121,7 +122,7 @@ class TestTheContextDoesNotOutliveTheAttempt:
     @pytest.mark.ac("SPEC-083026-20b2/AC-3")
     async def test_nothing_is_bound_after_the_executor_raises(self) -> None:
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
 
         async def failing(work_item: Any, context: Any) -> str:
@@ -138,7 +139,7 @@ class TestAnOuterBindingSurvives:
         """`execute_node` binds only the Run, deliberately. Whichever seam holds
         the Workspace binds it, and the executor sees both."""
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
         seen: list[ExecutionContext] = []
 
@@ -158,7 +159,7 @@ class TestTheAttemptIdIsBoundOnlyOnceItIsRunning:
         """Binding an id over work that has not started names an execution that
         has not happened."""
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         node_run = await store.create_node_run(run.run_id, node_id="node-1")
         service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
         during_prepare: list[ExecutionContext] = []
@@ -187,7 +188,7 @@ class TestTheNodeRunReadBackIsStillGuarded:
 
     async def test_a_node_run_that_vanishes_during_execution_raises(self) -> None:
         store, graph = await _store_and_graph()
-        run = await store.create_run(graph)
+        run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
         service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
 
         executed = False

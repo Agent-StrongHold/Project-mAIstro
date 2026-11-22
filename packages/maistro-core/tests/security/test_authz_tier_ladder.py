@@ -14,7 +14,9 @@ from maistro.security.warden.detector import Warden
 
 @pytest.fixture
 def sentinel() -> Sentinel:
-    return Sentinel(warden=Warden(), permission_table={})
+    # COMPATIBILITY (#1165): this suite exercises tier resolution/ladder
+    # semantics, not permission-table misses.
+    return Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
 
 
 def _human(principal_id: str = "u1", roles: tuple[str, ...] = ("user",)) -> Principal:
@@ -45,6 +47,7 @@ class TestResolveTier:
             warden=Warden(),
             permission_table={},
             tier_policy={("deploy", "team:2"): Tier.DELEGATED},
+            allow_on_miss=True,  # COMPATIBILITY (#1165)
         )
         tier = s.resolve_tier("deploy", _human(roles=()), reversibility="irreversible")
         # No scope match for team:2 on this principal -> falls back to default.
@@ -88,6 +91,7 @@ class TestAuthorize:
             warden=Warden(),
             permission_table={},
             tier_policy={("nuke", "user:u1"): Tier.ADMIN},
+            allow_on_miss=True,  # COMPATIBILITY (#1165): tests the admin tier, not misses
         )
         decision = await s.authorize(
             "nuke", _human(), reversibility="irreversible", within_budget=True
@@ -100,6 +104,7 @@ class TestAuthorize:
             warden=Warden(),
             permission_table={},
             tier_policy={("forbidden", "user:u1"): Tier.BLOCKED},
+            allow_on_miss=True,  # COMPATIBILITY (#1165): tests the BLOCKED tier, not misses
         )
         decision = await s.authorize(
             "forbidden", _human(), reversibility="irreversible", within_budget=True

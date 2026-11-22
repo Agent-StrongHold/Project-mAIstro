@@ -1,0 +1,26 @@
+# Code scanning configuration (referenced from .github/workflows/codeql.yml).
+#
+# Tests deliberately log secrets to prove redaction and compare URLs by
+# substring to build fixtures; vendored third-party code is not ours to fix in
+# place; build output is a copy of sources already scanned. None of them is a
+# shipped surface, so findings there are noise that hides real ones.
+#
+# Every entry names a *location* that holds only test or vendored material —
+# never a filename shape. A basename rule such as `**/test_*.py` reaches into
+# `packages/` and would drop shipped modules that merely start with `test_`
+# (`maistro_rsi/test_inventory.py` is one: runtime code imported by
+# `candidate_fitness.py` and `local_loop.py`, and it launches subprocesses
+# against candidate repositories, so it is exactly what the Python analysis
+# must keep looking at). `**/tests/**` and `formal/**` are whole trees that
+# contain no shipped code, which is the property that makes an exclusion safe.
+name: "maistro-engine"
+paths-ignore:
+  - "**/tests/**"
+  - "formal/**"
+  - "**/*.test.js"
+  - "**/*.test.jsx"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/third_party/**"
+  - "**/node_modules/**"
+  - "**/dist/**"

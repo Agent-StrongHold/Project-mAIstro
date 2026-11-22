@@ -326,6 +326,67 @@ async def test_create_sandbox_raises_on_docker_failure(tmp_path: Any) -> None:
         await create_sandbox(workspace, settings=settings)
 
 
+async def test_create_sandbox_times_out_stalled_docker_run(tmp_path: Any) -> None:
+    """A docker run that never returns must fail bounded, not hang the caller.
+
+    CI (#965 repair) died exactly here: a cold-runner registry stall left the
+    event loop parked behind an unbounded `docker run` and the 30s
+    pytest-timeout killed the evaluator test. The creation wait is capped, and
+    the cap surfaces as RuntimeError — the same failure shape as a refused
+    docker run, so fail-closed callers need no extra handling.
+    """
+
+    class _HangingProc:
+        returncode = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            return b"", b""
+
+    workspace = f"/tmp/maistro-workspace/{tmp_path.name}"
+    with (
+        patch(
+            "maistro.tools.sandbox.docker._LIFECYCLE_CLI_TIMEOUT_SECONDS",
+            0.01,
+        ),
+        patch(
+            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=_HangingProc()),
+        ) as mock_exec,
+        pytest.raises(RuntimeError, match="docker run did not complete within 0s"),
+    ):
+        await create_sandbox(workspace, settings=SandboxSettings())
+
+    assert mock_exec.call_args.args[:2] == ("docker", "run")
+
+
+async def test_destroy_survives_a_stalled_docker_rm_without_raising() -> None:
+    """destroy is best-effort cleanup: a stalled rm is logged and swallowed.
+
+    The async-context-manager exit path calls destroy, so a raising (or
+    hanging) rm would turn every caller's cleanup into a failure or a hang.
+    """
+    container = SandboxContainer("stalled01", "/host")
+
+    class _HangingProc:
+        returncode = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            return b"", b""
+
+    with (
+        patch("maistro.tools.sandbox.docker._LIFECYCLE_CLI_TIMEOUT_SECONDS", 0.01),
+        patch(
+            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=_HangingProc()),
+        ) as mock_exec,
+    ):
+        await container.destroy()  # must not raise
+
+    assert mock_exec.call_args.args[:2] == ("docker", "rm")
+
+
 async def test_create_sandbox_uses_default_settings_when_none_provided(tmp_path: Any) -> None:
     workspace = f"/tmp/maistro-workspace/{tmp_path.name}"
     fake_proc = _FakeProc(stdout=b"abc123\n", returncode=0)

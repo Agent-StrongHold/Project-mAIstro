@@ -145,7 +145,12 @@ class ContextBuilder:
                 )
 
         if learning_store and identity.memory_config.get("learnings") and budget_chars > 0:
-            promoted = await learning_store.get_promoted(org_id=org_id)
+            promoted = await learning_store.get_promoted(
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
             budget_chars = _apply_learnings(
                 promoted,
                 kind="promoted",
@@ -170,6 +175,8 @@ class ContextBuilder:
             relevant = await learning_store.find_relevant(
                 user_text,
                 agent_id=agent_id,
+                user_id=user_id,
+                team_id=team_id,
                 org_id=org_id,
             )
             budget_chars = _apply_learnings(
@@ -184,6 +191,7 @@ class ContextBuilder:
         budget_chars = await _apply_memory(
             context_assembly_policy,
             project_id=project_id,
+            org_id=org_id,
             run_id=run_id,
             agent_id=agent_id,
             session_id=session_id,
@@ -202,6 +210,7 @@ async def _apply_memory(
     policy: ContextAssemblyPolicy | None,
     *,
     project_id: str,
+    org_id: str,
     run_id: str,
     agent_id: str,
     session_id: str,
@@ -233,6 +242,7 @@ async def _apply_memory(
         project_id=project_id,
         run_id=run_id,
         agent_id=agent_id,
+        org_id=org_id,
         session_id=session_id,
         budget_tokens=budget_chars // _CHARS_PER_TOKEN,
         query=query,

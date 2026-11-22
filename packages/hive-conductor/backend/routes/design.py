@@ -1,11 +1,12 @@
-"""Design skill routes — project creation, discovery, artifact retrieval.
+"""Design skill routes — project preparation, discovery, artifact retrieval.
 
-POST /design/projects — generate design project
+POST /design/projects — prepare and persist a design project/prompt stack
 GET /design/projects/{id} — fetch project + outputs
 GET /design/projects — list org projects
 GET /design/skills — list available skills
 GET /design/skills/{slug}/discovery — get skill discovery form
 GET /design/systems — list registered design systems + catalog state
+GET /design/packs — list domain packs (one uniform selector listing; #793)
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ from services.design_service import (
     get_renderer_registry,
 )
 
+from maistro_design.consistency import (
+    CreativeProjectSnapshot,
+    evaluate_project_snapshot,
+)
+from maistro_design.packs import PackRegistry
 from maistro_design.systems.importer import ORIGIN_EXTERNAL
 from maistro_design.types import (
     DesignError,
@@ -91,9 +97,67 @@ def _get_org_id(request: Request) -> str:
     return str(org_id)
 
 
+def _require_store() -> Any:
+    """Require persistence for a route that reports or uses project state.
+
+    Design resources can remain available without a database, but an empty
+    project list would turn missing persistence into a false durable fact. The
+    service returns ``None`` for a disabled store during startup and older
+    callers can still expose its initialization ``RuntimeError``; normalize
+    both forms to the same explicit unavailable response.
+
+    When startup recorded a store cause (#1826), that sanitized failure is the
+    answer — a configured database whose engine would not build must not be
+    reported with the same words as one nobody named, and not as a durable
+    success either.
+    """
+    status = get_design_status()
+    try:
+        store = get_design_store()
+    except RuntimeError as exc:
+        # Startup degraded before it could build the store. Its recorded cause
+        # is the truth; a ready service with no cause is the deliberate
+        # no-database mode (#1826); anything else is a service that never
+        # started, and the initialization error is the honest answer for it.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            ) from None
+        if status.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence unavailable (no database URL configured)",
+            ) from None
+        raise HTTPException(
+            status_code=503,
+            detail=f"Design persistence unavailable: {exc}",
+        ) from None
+    if store is None:
+        # Two ways to be here (#1826): nothing configured -- the supported
+        # no-database mode -- or a URL that was configured and failed. The
+        # second carries its own recorded, sanitized cause, and answering it
+        # with "DATABASE_URL not set" is exactly the conflation that kept a
+        # broken deployment indistinguishable from a deliberate one.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            )
+        raise HTTPException(
+            status_code=503,
+            detail="Design persistence unavailable (no database URL configured)",
+        )
+    return store
+
+
 @router.post("/projects")
 async def create_design_project(request: Request, discovery: DiscoveryResult) -> dict[str, Any]:
-    """Generate a design project from discovery responses.
+    """Prepare and persist a design project from discovery responses.
+
+    This is project/prompt preparation, not visual generation: the DesignEngine
+    does not call an LLM or a renderer. A later canonical Run may consume the
+    persisted prompt stack to produce visual artifacts.
 
     Pipeline:
     1. Validate skill + design system exist
@@ -112,13 +176,18 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # Before the `try`, for the reason `_require_ready`'s own docstring gives:
     # each route ends in a blanket `except Exception` that turns whatever it
     # catches into a 500. A refused scope resolved inside it came back as
-    # "Generation failed: 403: No design scope resolved", which is a 500 for an
-    # authorization decision.
+    # "Project preparation failed: 403: No design scope resolved", hiding an
+    # authorization decision behind a 500.
     org_id = _get_org_id(request)
     try:
+        # A project preparation response is durable state, never a successful
+        # in-memory substitute when persistence is not configured.
+        _require_store()
         engine = get_design_engine()
         project = await engine.generate(discovery, org_id=org_id, team_id=None)
         return project.to_dict()
+    except HTTPException:
+        raise
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     except DesignSystemNotFoundError as e:
@@ -128,7 +197,7 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     except DesignError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e!s}") from None
+        raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
 
 
 @router.get("/projects/{project_id}")
@@ -145,12 +214,7 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        store = get_design_store()
-        if store is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Design persistence not configured (DATABASE_URL not set)",
-            )
+        store = _require_store()
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -180,9 +244,7 @@ async def list_design_projects(
     # Before the `try`, for the same reason as the create route above.
     org_id = _get_org_id(request)
     try:
-        store = get_design_store()
-        if store is None:
-            return []  # Graceful degradation: return empty list if persistence disabled
+        store = _require_store()
 
         if skill_slug:
             projects = await store.list_by_skill(skill_slug, org_id)
@@ -190,6 +252,8 @@ async def list_design_projects(
             projects = await store.list_by_org(org_id)
 
         return [p.to_dict() for p in projects]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from None
 
@@ -232,6 +296,24 @@ async def list_design_skills() -> list[dict[str, Any]]:
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
+@router.get("/packs")
+async def list_design_packs() -> list[dict[str, Any]]:
+    """List domain packs (M7-A4 #793) — the Design Studio selector payload.
+
+    One listing route over the one pack registry, one uniform entry shape per
+    pack: a pack is a registry entry, never a product identity, so there is
+    deliberately no per-pack route and no pack-specific fields here.
+    Product/game/book are three bundles of the same loop; `execute_backends`
+    is where canvas shows up (a binding), never in `pack_id`.
+
+    Unlike the engine-backed routes above, this does not call
+    `_require_ready()`: packs are in-repo manifests read through
+    `maistro_design.packs.PackRegistry`, not engine state, so the selector
+    renders before (or without) a started DesignEngine.
+    """
+    return [summary.model_dump(mode="json") for summary in PackRegistry.builtin().summaries()]
+
+
 @router.get("/systems")
 async def list_design_systems() -> dict[str, Any]:
     """List the registered design systems, each traceable to where it came from.
@@ -258,8 +340,8 @@ async def list_design_systems() -> dict[str, Any]:
 
     Returns:
       {systems: [{slug, name, description, origin, trust_tier, color_count,
-       spacing_count}], catalog: {available, cause, count}, ready, cause,
-       bundled_count}
+       spacing_count, personas}], catalog: {available, cause, count}, ready,
+       cause, bundled_count}
     """
     status = _require_ready()
     engine = get_design_engine()
@@ -272,6 +354,9 @@ async def list_design_systems() -> dict[str, Any]:
             "trust_tier": s.trust_tier.value,
             "color_count": len(s.colors),
             "spacing_count": len(s.spacing),
+            # The persona contract a first-party system advertises
+            # (ADR-091626-ba4f); None for the vendored brand systems.
+            "personas": s.metadata.get("personas"),
         }
         for s in sorted(engine.systems.list_all(), key=lambda s: s.slug)
     ]
@@ -302,82 +387,101 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-    """Request server-side rendering of a project output.
+    """Report that project rendering is unavailable until its canonical seam exists.
 
-    Validates code (for T3 artifacts), creates async render job.
-    Returns immediately with job_id for polling.
+    The former facade created an in-memory pending job, but no worker advanced
+    it or persisted an output. Returning that job made an execution-looking
+    state out of a capability that is not connected to Canvas or a canonical
+    Run. Keep the scoped existence check, then fail explicitly instead.
 
     Query params:
-      format: output format (pdf, pptx, docx, png)
-
-    Returns:
-      {job_id, status, created_at}
+      format: reserved output format (pdf, pptx, docx, png)
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        from services.design_preview import get_design_preview_service
+        store = _require_store()
 
-        from maistro_design.types import OutputFormat
-
-        store = get_design_store()
-        preview_svc = get_design_preview_service()
-
-        # Fetch project, within the caller's scope: rendering another org's
-        # project would return its content through a route that never asked
-        # whose it was.
+        # Check the project within the caller's scope before reporting the
+        # unavailable capability; another scope must remain indistinguishable.
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        # Validate format
-        try:
-            output_format = OutputFormat(format)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported format: {format}. Allowed: pdf, pptx, docx, png",
-            ) from None
-
-        # Create render job
-        job = preview_svc.create_render_job(project_id, output_format)
-        return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "format": output_format,
-            "created_at": job.created_at.isoformat(),
-        }
+        raise HTTPException(
+            status_code=501,
+            detail="Design rendering is unavailable until the canonical Canvas rendering seam is enabled",
+        )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
 
 
-@router.get("/projects/{project_id}/render/{job_id}")
-async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
-    """Poll render job status and get download URL when ready.
+@router.post("/projects/{project_id}/consistency")
+async def evaluate_project_consistency(
+    project_id: str, snapshot: CreativeProjectSnapshot
+) -> dict[str, Any]:
+    """Inspect one creative family for cross-artifact consistency (#779).
+
+    The Design Studio submits the project's frozen snapshot — brief, persona,
+    design system, shared decisions, artifacts and provided evidence as the
+    creative session holds them — and receives the evaluator's full result
+    contract back: per-dimension verdicts, evidence-backed findings, exact
+    brief/decision/artifact versions that were evaluated, and a refinement
+    proposal for the affected branches only. The evaluation is deliberately
+    read-only: it proposes work, it never rewrites the project — canonical
+    DAG/Run logic decides what actually runs, under the user's locks and
+    control mode. The same evaluation is available as the canonical graph node
+    ``design.consistency_eval`` (kind registered in ``maistro_design.nodes``)
+    when it must run inside a Run with NodeRun/Attempt provenance; this route
+    is the Design Studio's synchronous inspection surface over the identical
+    pure evaluator, so both surfaces cannot disagree.
+
+    Body: a ``CreativeProjectSnapshot``. A snapshot naming a different
+    project than the path is refused (400) instead of silently mis-filing the
+    result — the same canonical-provenance guard the graph node applies.
 
     Returns:
-      {job_id, status, url, error, created_at, updated_at}
-
-    Status: pending | rendering | completed | failed
+      The ``ConsistencyEvaluation`` result contract (passed, provenance,
+      dimension_results, findings, refinement).
     """
+    _require_ready()
+    if snapshot.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snapshot project_id {snapshot.project_id!r} does not match "
+                f"the requested project {project_id!r}"
+            ),
+        )
+    return evaluate_project_snapshot(snapshot).model_dump(mode="json")
+
+
+@router.get("/projects/{project_id}/render/{job_id}")
+async def get_render_job_status(project_id: str, job_id: str, request: Request) -> dict[str, Any]:
+    """Report that render-job polling is unavailable until Canvas is connected.
+
+    The old implementation polled a process-local ``DesignPreviewService``.
+    That state was neither durable nor backed by a worker, so it could not
+    truthfully describe execution after a restart. Keep the compatibility
+    endpoint scoped, but never expose its fabricated pending/completed state.
+    """
+    _require_ready()
+    org_id = _get_org_id(request)
     try:
-        from services.design_preview import get_design_preview_service
+        store = _require_store()
+        project = await store.get(project_id, org_id=org_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        preview_svc = get_design_preview_service()
-        job = preview_svc.get_render_job(job_id)
-
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Render job {job_id} not found")
-
-        if job.project_id != project_id:
-            raise HTTPException(
-                status_code=403, detail="Render job does not belong to this project"
-            )
-
-        return job.to_dict()
+        raise HTTPException(
+            status_code=501,
+            detail="Design render-job polling is unavailable until the canonical Canvas rendering seam is enabled",
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Render job status unavailable: {e!s}"
+        ) from None

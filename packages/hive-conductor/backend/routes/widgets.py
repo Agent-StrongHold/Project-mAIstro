@@ -9,12 +9,13 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from services.airtable_cache import (
     get_airtable_base_tables_json,
     get_airtable_bases_json,
     get_airtable_records_json,
 )
+from services.request_principal import request_principal
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
     JIRA_PROVIDER_IDS,
@@ -23,6 +24,13 @@ from services.tool_primitives import (
 )
 
 from maistro.http import shared_client
+
+
+def _public_failure(exc: BaseException) -> str:
+    """The exception kind, never its text: messages carry paths, hosts, and
+    provider replies, which belong in the server log with the traceback."""
+    return f"{type(exc).__name__}: request failed; see server logs"
+
 
 router = APIRouter(tags=["widgets"])
 logger = logging.getLogger("hive.widgets")
@@ -35,7 +43,7 @@ def _jira_headers(pat: str) -> dict[str, str]:
 
 
 def _tool_context(request: Request) -> ToolCallContext:
-    return ToolCallContext.from_request_state(getattr(request.state, "user", None))
+    return ToolCallContext.from_request_state(request_principal(request))
 
 
 def _user_id(request: Request) -> str:
@@ -168,8 +176,8 @@ async def widget_jira(  # noqa: C901  branchy per-display-mode rendering
                 "jql": jql,
             }
     except Exception as e:
-        logger.warning("Jira widget query failed: %s", e)
-        return {"error": str(e)[:200], "total": 0, "issues": [], "statuses": {}}
+        logger.warning("Jira widget query failed", exc_info=e)
+        return {"error": _public_failure(e), "total": 0, "issues": [], "statuses": {}}
 
 
 @router.get("/airtable")
@@ -191,21 +199,13 @@ async def widget_airtable(  # noqa: C901  branchy per-display-mode rendering
         store = cred_svc.get_credential_store()
         if not store:
             return {"error": "Credential store not available.", "records": []}
-        # Find token — try user_id then fallback to "user"
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"error": "Airtable not configured.", "records": []}
-        # Find base_id from config store
-        base_id = ""
-        for key in stores.user_provider_config:
-            if key.endswith(":airtable"):
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    base_id = val["base_id"].split("/")[0]
-                    break
+        # Provider config is owned by the authenticated principal; never scan it.
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        base_id = config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
     except Exception:
         return {"error": "Could not load Airtable credentials.", "records": []}
 
@@ -285,32 +285,78 @@ async def widget_airtable(  # noqa: C901  branchy per-display-mode rendering
                 "table": table,
             }
     except Exception as e:
-        return {"error": str(e)[:200], "records": []}
+        logger.warning("Airtable widget query failed", exc_info=e)
+        return {"error": _public_failure(e), "records": []}
 
 
 @router.get("/metrics")
 async def widget_metrics(
     request: Request,
-    metric: str = Query(..., description="latency|ttft|cost|tokens|invocations|errors"),
+    metric: str = Query(..., description="latency|ttft|cost|tokens|invocations"),
     period: str = "1h",
 ) -> dict[str, Any]:
-    """Return a specific metric value."""
-    from services.chat_completion import get_chat_metrics_summary
+    """One named metric as a KPI envelope, scoped to this principal.
 
-    summary = get_chat_metrics_summary()
-    # Map metric names to values
-    mapping: dict[str, Any] = {
-        "latency": {"value": summary.get("avg_latency_ms", 0), "unit": "ms"},
-        "ttft": {"value": summary.get("avg_ttft_ms", 0), "unit": "ms"},
-        "cost": {"value": summary.get("total_cost", 0), "unit": "$"},
-        "tokens": {"value": summary.get("total_tokens", 0), "unit": "tokens"},
-        "invocations": {"value": summary.get("total_requests", 0), "unit": "requests"},
-        "errors": {"value": summary.get("error_count", 0), "unit": "errors"},
+    The old mapping invented summary keys that did not exist
+    (`avg_latency_ms`, `avg_ttft_ms`, `error_count`) and read a hard 0 out of
+    them, so latency widgets rendered 0 ms on every deployment (#380). It now
+    serves the same envelopes the dashboard KPIs use: a measured value with
+    its provenance, or the state that says why there is no number. Asking for
+    a metric with no source is a 400, not a plausible-looking zero.
+    """
+    from services.dashboard_metrics import build_dashboard_metrics
+
+    uid = _user_id(request)
+    envelopes = build_dashboard_metrics(uid)
+
+    if metric == "tokens":
+        inv = envelopes["invocations"]
+        value = None
+        if inv["state"] in ("ok", "stale"):
+            value = inv["tokens_in_total"] + inv["tokens_out_total"]
+        return {
+            "metric": metric,
+            "period": period,
+            "state": inv["state"],
+            "value": value,
+            "unit": "tokens" if value is not None else inv["unit"],
+            "query": inv["query"],
+            "scope": inv["scope"],
+            "window": inv["window"],
+            "computed_at": inv["computed_at"],
+            "last_update": inv["last_update"],
+            "reason": inv["reason"],
+        }
+
+    field = {
+        "latency": "avg_latency",
+        "ttft": "ttft",
+        "cost": "total_cost",
+        "invocations": "invocations",
     }
-    result = mapping.get(metric, {"value": 0, "unit": "?"})
-    result["metric"] = metric
-    result["period"] = period
-    return result
+    if metric not in field:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unsupported metric {metric!r}; supported: latency, ttft, "
+                "cost, tokens, invocations. There is no errors metric — "
+                "nothing in this deployment counts per-request errors."
+            ),
+        )
+    env = envelopes[field[metric]]
+    return {
+        "metric": metric,
+        "period": period,
+        "state": env["state"],
+        "value": env["value"],
+        "unit": env["unit"],
+        "query": env["query"],
+        "scope": env["scope"],
+        "window": env["window"],
+        "computed_at": env["computed_at"],
+        "last_update": env["last_update"],
+        "reason": env["reason"],
+    }
 
 
 @router.get("/airtable/fields")
@@ -329,18 +375,11 @@ async def widget_airtable_fields(
         if not store:
             return {"fields": []}
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"fields": []}
-        base_id = ""
-        for key in stores.user_provider_config:
-            if key.endswith(":airtable"):
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    base_id = val["base_id"].split("/")[0]
-                    break
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        base_id = config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
         if not base_id:
             return {"fields": []}
     except Exception:
@@ -364,7 +403,7 @@ async def widget_airtable_fields(
 
 
 @router.get("/airtable/bases")
-async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict[str, Any]:  # noqa: C901  branchy per-display-mode rendering
+async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict[str, Any]:
     """Return configured Airtable bases for the current user."""
     uid = _user_id(request)
     try:
@@ -374,19 +413,15 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
         store = cred_svc.get_credential_store()
         if not store:
             return {"bases": []}
-        # Find all airtable configs with base_ids
+        # A configured base is a selection made by this principal only.
         bases = []
-        for key in stores.user_provider_config:
-            if "airtable" in key:
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    bid = val["base_id"].split("/")[0]
-                    bases.append({"id": bid, "name": val.get("name", bid)})
-        # Also check token
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        if isinstance(config, dict) and config.get("base_id"):
+            bid = config["base_id"].split("/")[0]
+            bases.append({"id": bid, "name": config.get("name", bid)})
+        # With no selection, ask Airtable for bases authorized by this token.
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not bases and token:
             # Try to get bases from metadata API
             try:
@@ -395,13 +430,6 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
                     bases.append({"id": b["id"], "name": b.get("name", b["id"])})
             except Exception:
                 pass
-        # Fallback: return the known base from config
-        if not bases:
-            for key in stores.user_provider_config:
-                if "airtable" in key:
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        bases.append({"id": val["base_id"].split("/")[0], "name": "Default Base"})
         return {"bases": bases}
     except Exception:
         return {"bases": []}
@@ -411,28 +439,42 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
 async def widget_airtable_tables(
     request: Request, base_id: str = Query(...), refresh: bool = False
 ) -> dict[str, Any]:
-    """Return tables for a specific Airtable base."""
+    """Return tables for the authenticated principal's configured Airtable base."""
     uid = _user_id(request)
     try:
+        import stores
         from services import user_credentials as cred_svc
 
         store = cred_svc.get_credential_store()
         if not store:
             return {"tables": []}
-        resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
+
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        configured_base_id = (
+            config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
         )
+        if not configured_base_id:
+            return {"tables": [], "error": "No base_id configured."}
+
+        # The query parameter is only a compatibility check. It cannot select a
+        # base outside the principal-owned provider configuration.
+        requested_base_id = base_id.split("/")[0]
+        if requested_base_id != configured_base_id:
+            return {"tables": [], "error": "Base is not configured for this principal."}
+
+        resolver = ToolCredentialResolver(store)
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"tables": []}
 
         data = await get_airtable_base_tables_json(
-            token=token, base_id=base_id, force_refresh=refresh
+            token=token, base_id=configured_base_id, force_refresh=refresh
         )
         tables = [{"id": t["id"], "name": t["name"]} for t in data.get("tables", [])]
-        return {"tables": tables, "base_id": base_id}
+        return {"tables": tables, "base_id": configured_base_id}
     except Exception as e:
-        return {"tables": [], "error": str(e)[:100]}
+        logger.warning("Airtable table listing failed", exc_info=e)
+        return {"tables": [], "error": _public_failure(e)}
 
 
 @router.post("/screenshot")
@@ -470,4 +512,5 @@ async def capture_screenshot(request: Request) -> dict[str, Any]:
     except ImportError:
         return {"error": "playwright not installed on backend"}
     except Exception as e:
-        return {"error": str(e)[:200]}
+        logger.warning("Dashboard screenshot failed", exc_info=e)
+        return {"error": _public_failure(e)}

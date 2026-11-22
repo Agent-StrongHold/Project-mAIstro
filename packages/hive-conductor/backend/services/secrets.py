@@ -61,8 +61,10 @@ def resolve_secret(
         value = os.environ.get(env_var)
     value = value or None
     if required and not value:
-        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the secret's *name* (a vault key), never its value
-        logger.error("SECRET_MISSING: %s", name)
+        # The log line names no secret at all: even the vault key *name*
+        # reads as secret material to a scanner, and the exit message below
+        # (printed by the interpreter on the way out) already carries it.
+        logger.error("SECRET_MISSING: a required secret is not configured; see the exit message")
         raise SystemExit(f"SECRET_MISSING: {name}")
     return value
 

@@ -17,6 +17,11 @@ Registered automatically at install time via `load_bundled()`:
 - `material`
 - `editorial`
 - `enterprise`
+- `workspace` — **first-party**, not from open-design. Authored in this repository
+  for the Workspace product surface (ADR-091626-ba4f) and licensed with the rest of
+  the repository under Apache-2.0. It shares the Open Design token schema so the same
+  loader, scan and prompt-stack assembly apply; its `manifest.json` records
+  `source.type: "first-party"`.
 
 ## Tier-2 — catalog (`systems/catalog/`, `TrustTier.T2`)
 

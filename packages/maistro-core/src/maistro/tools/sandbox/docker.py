@@ -23,6 +23,18 @@ from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspac
 
 logger = structlog.get_logger()
 
+# Upper bound on the docker CLI lifecycle subprocesses that have no timeout of
+# their own (``docker run`` at creation, ``docker rm -f`` at destroy; ``exec``
+# already carries a per-call timeout). Without it a stalled daemon — a slow
+# registry pull on a cold CI runner, a hung daemon mid-restart — blocks the
+# caller forever: every caller-visible timeout in this module keys off these
+# subprocesses completing, so an unbounded wait defeats them all. Observed in
+# CI (#965 repair, quality.yml coverage-unit): a swebench evaluator test died
+# on the 30s pytest-timeout with the event loop parked in selector.poll while
+# ``docker run`` never returned. 120s comfortably covers a cold registry pull
+# of the default image while still failing callers within bounded time.
+_LIFECYCLE_CLI_TIMEOUT_SECONDS = 120.0
+
 
 def _shell_quote(s: str) -> str:
     """Shell-quote a string for safe interpolation into bash commands."""
@@ -137,7 +149,22 @@ class SandboxContainer:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_LIFECYCLE_CLI_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            # Cleanup is best-effort: a daemon too stalled to answer rm must
+            # not turn the context-manager exit (or any caller's cleanup path)
+            # into a hang. The container is leaked by design here — the same
+            # stall would defeat any in-process retry — so record it and move
+            # on; the TTL/expired machinery and external reapers own the rest.
+            await logger.awarn(
+                "sandbox_destroy_timeout",
+                container_id=self.container_id[:12],
+                timeout_s=_LIFECYCLE_CLI_TIMEOUT_SECONDS,
+            )
+            return
         rc = proc.returncode or 0
         if rc != 0:
             err = stderr.decode() if stderr else ""
@@ -203,7 +230,19 @@ async def create_sandbox(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_LIFECYCLE_CLI_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        # RuntimeError so callers that already fail closed on a failed
+        # ``docker run`` (e.g. benchmarks/sandbox_exec.run_function_checks)
+        # treat an unresponsive daemon exactly like a refused one.
+        raise RuntimeError(
+            f"Failed to create sandbox: docker run did not complete within "
+            f"{_LIFECYCLE_CLI_TIMEOUT_SECONDS:.0f}s (daemon stalled or image "
+            f"{settings.image} pull too slow)"
+        ) from exc
 
     if proc.returncode != 0:
         error = stderr.decode() if stderr else "Unknown error"

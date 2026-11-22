@@ -44,6 +44,15 @@ queue re-spends the whole gate set on one merge.
   Unlike the requeue rate this does not condition on merging: the candidates
   of a PR ejected and never requeued count, so a queue that fails PRs outright
   gets a worse number, not a better one.
+- **Rebuilt behind a failure** — dequeued candidates whose entry sat behind
+  another PR's failed entry. GitHub builds one entry branch per queued PR on
+  top of the entry ahead of it (`pr-N-<sha>`, where the SHA is that entry's
+  head), so a batched group is a chain; under `ALLGREEN` the failing entry is
+  ejected and everything behind it is rebuilt. Each grouped PR keeps its own
+  entry and run set, so batching omits no PR from the per-PR rows; this figure
+  separates the share of the dequeue multiplier the batch itself pays from
+  the share bad heads pay. A parent outside the window reads as the base
+  head, so a candidate keeps its own failure rather than being excused.
 - **Boundary cohort** — the API pages individual workflow runs, so the oldest
   fetched runs can belong to a candidate cut by the page boundary. When the
   listing is truncated, every PR with a candidate near the old edge is

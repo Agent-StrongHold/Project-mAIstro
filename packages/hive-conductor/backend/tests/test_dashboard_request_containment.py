@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from services.dashboard_safety import (
     sanitize_dashboard_layout,
     sanitize_widget_config,
@@ -222,3 +223,34 @@ async def test_chat_widget_tool_rejects_non_declarative_config() -> None:
         None,
     )
     assert ok.get("created") is True
+
+
+class TestDemoDashboardIdsStayInsideTheDemoDirectory:
+    """`demo_id` is a URL segment that names a file (CodeQL py/path-injection)."""
+
+    @pytest.mark.parametrize(
+        "demo_id",
+        ["../../../etc/passwd", "..", "demo/../../secret", "/etc/passwd", "a b", "x" * 65],
+    )
+    async def test_a_path_shaped_id_is_not_found(self, demo_id: str) -> None:
+        from routes.dashboard_layout import get_demo_dashboard
+
+        assert await get_demo_dashboard(demo_id) == {"error": "not found"}
+
+    async def test_an_unknown_bare_id_is_not_found(self) -> None:
+        from routes.dashboard_layout import get_demo_dashboard
+
+        assert await get_demo_dashboard("no-such-demo") == {"error": "not found"}
+
+    async def test_a_real_demo_id_still_loads_and_is_sanitized(self) -> None:
+        """The containment check must refuse traversal without also refusing
+        the shipped demos -- a guard that returns "not found" for everything
+        passes every test above and breaks the feature."""
+        from routes.dashboard_layout import get_demo_dashboard
+
+        layout = await get_demo_dashboard("pm-operations")
+
+        assert "error" not in layout
+        assert layout
+        for widget in layout.get("widgets", []):
+            assert widget_config_violations(widget.get("type"), widget.get("config", {})) == []

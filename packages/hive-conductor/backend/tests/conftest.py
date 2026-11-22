@@ -60,6 +60,21 @@ def _init_engine() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_credential_store(tmp_path: Path):
+    """Give each backend test a fresh encrypted store.
+
+    The application store is a module-level dependency, so a credential saved
+    by one route test must not alter another user's assertions in a later test.
+    """
+    from services import user_credentials as cred_svc
+
+    previous = cred_svc._store
+    cred_svc.init_credential_store(tmp_path / "credentials")
+    yield
+    cred_svc._store = previous
+
+
+@pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Redirect wizard-authored persona templates to tmp_path."""
     import services.persona_authoring as persona_authoring
@@ -67,6 +82,30 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr(
         persona_authoring, "user_templates_dir", lambda: tmp_path / "persona_templates"
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_username_claims():
+    """Give each test its own username-claim index.
+
+    Account allocation (#1061) routes every user creation through the
+    process-global claim store, so an active claim left by one test makes a
+    later test's fresh-users setup observe the name as already taken. Snapshot
+    and restore the ORIGINAL store object in place: a test may have rebound
+    the module attribute to its own store, and this fixture must restore the
+    global regardless of what the attribute points at by teardown time.
+    """
+    import copy
+
+    import stores
+
+    claims_store = stores.username_claims
+    snapshot = copy.deepcopy(dict(claims_store.items()))
+    yield
+    for key in list(claims_store.keys()):
+        claims_store.pop(key)
+    for key, value in snapshot.items():
+        claims_store[key] = value
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +121,18 @@ def _isolate_dashboard_layouts():
         stores.dashboard_layouts.pop(key)
     for key, value in snapshot.items():
         stores.dashboard_layouts[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_database(monkeypatch: pytest.MonkeyPatch):
+    """The session engine is a stub, i.e. Hive with no database.
+
+    A CI job that exports DATABASE_URL/DB_* for other suites would otherwise
+    make the Workspace authority refuse its no-database fallback (#37).
+    Tests that want a database set one themselves.
+    """
+    for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +249,43 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
         registration_policy.reset()
 
 
+@pytest.fixture(scope="session")
+def _chat_spine_container():
+    from maistro.container import create_container
+    from maistro.types import AgentConfig
+
+    return asyncio.run(
+        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+    )
+
+
+@pytest.fixture
+def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
+    """Give the engine a canonical Run spine, so model-reaching chat and voice
+    turns are admitted as Runs rather than refused with a 503 (#1037).
+
+    Only the spine is exposed: the Container's Workspace store stays unbound so
+    Workspace authority keeps its per-test canonical fallback.
+    """
+    from types import SimpleNamespace
+
+    from services import chat_runs
+    from services.engine import get_engine
+
+    c = _chat_spine_container
+    spine = SimpleNamespace(
+        run_store=c.run_store,
+        project_scope_store=c.project_scope_store,
+        intent_registry=c.intent_registry,
+        _close_chat_run=c._close_chat_run,
+        _cancel_incomplete_admission=c._cancel_incomplete_admission,
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
+    chat_runs.reset_for_tests()
+    yield c
+    chat_runs.reset_for_tests()
+
+
 @pytest.fixture(autouse=True)
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
     """Keep older API tests' service-level LLM patches effective after #488."""
@@ -268,3 +356,43 @@ def _isolate_vault_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "_vault_paths",
         lambda: (str(tmp_path / "secrets.age"), str(tmp_path / "admin.key")),
     )
+
+
+@pytest.fixture
+def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
+    """Explicit canonical in-memory owners for hermetic Graph execution tests.
+
+    Test fixtures may use in-memory canonical stores. Product code must never
+    silently create a separate document-shaped lifecycle when the bridge is absent.
+    """
+    from types import SimpleNamespace
+
+    from services import workspace_authority
+    from services.engine import get_engine
+
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+    from maistro.runs.store import InMemoryRunStore
+
+    projects = workspace_authority.canonical_store_for_tests().project_store
+    project = asyncio.run(projects.create_root("test-workspace"))
+    runs = InMemoryRunStore(project_store=projects)
+    providers = InMemoryProviderRegistry()
+    container = SimpleNamespace(
+        run_store=runs,
+        graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
+        project_scope_store=projects,
+        project_id=project.project_id,
+        workspace_id=project.workspace_id,
+        a2a_delegator=None,
+        guest_peers=None,
+        harness_adapters={},
+        event_bus=None,
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=providers,
+        llm_router=CostAwareRouter(providers),
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
+    return container

@@ -16,19 +16,20 @@ dependencies = [
     # the Pydantic-backed PipelineGenome arrives through maistro-evolve,
     # and pydantic is a hard dependency of maistro-core besides (#514).
     "httpx>=0.27,<1",
-    "structlog>=24.0,<26",
+    "structlog>=24.0,<27",
 ]
 
 [project.scripts]
 maistro-rsi = "maistro_rsi.cli:main"
 maistro-rsi-autorun = "maistro_rsi.autorun:main"
+maistro-rsi-campaign = "maistro_rsi.campaign_cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3,<10",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
     "ruff>=0.9,<1",
-    "mypy>=1.14,<2",
+    "mypy>=1.14,<3",
 ]
 
 [build-system]

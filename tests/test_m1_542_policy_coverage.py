@@ -78,6 +78,8 @@ def _provenance(
         require_metric_version=lambda *_args, **_kwargs: None,
         load_authorizations=lambda *_args, **_kwargs: dict(authorizations or {}),
         head_sha=lambda *_args, **_kwargs: "candidate",
+        bundled_implementation_fingerprint=lambda *_args, **_kwargs: "bundled-sha256:fake",
+        installed_distribution_version=lambda _name: "9.9-fake",
     )
 
 
@@ -131,14 +133,29 @@ def test_citation_adapter_covers_success_failure_and_unreadable_oracle(
 
     problem = SimpleNamespace(source="doc", field_name="field", target="target")
     identity = "doc.field -> target"
+    matrix_problem = SimpleNamespace(
+        source="matrix#Demo", field_name="governing", target="matrix-target"
+    )
+    matrix_identity = "matrix#Demo.governing -> matrix-target"
     checker = SimpleNamespace(
         _corpus=lambda: [Path("doc.md")],
         check_citations=lambda _corpus: [problem],
-        _load_baseline=lambda: SimpleNamespace(entries={identity}),
+        _matrix_problems=lambda _corpus: [matrix_problem],
+        _load_baseline=lambda: SimpleNamespace(entries={identity, matrix_identity}),
         LEDGER=tmp_path / "citation.json",
     )
-    _wire_adapter(module, monkeypatch, checker, _provenance({"known": [identity]}))
+    _wire_adapter(
+        module,
+        monkeypatch,
+        checker,
+        _provenance({"known": [identity, matrix_identity]}),
+    )
     assert module.main() == 0
+
+    # A matrix finding must participate in the trusted-base comparison too;
+    # otherwise the adapter would silently omit the second governance surface.
+    _wire_adapter(module, monkeypatch, checker, _provenance({"known": [identity]}))
+    assert module.main() == 1
 
     _wire_adapter(module, monkeypatch, checker, _provenance({"known": []}))
     assert module.main() == 1
@@ -221,7 +238,9 @@ def test_contract_adapter_covers_success_failure_and_unreadable_oracle(
     candidate_marker = object()
 
     def checker_for(*, trusted_has_gap: bool) -> SimpleNamespace:
-        def compare(_findings: object, baseline: object):
+        def compare(
+            _findings: object, baseline: object
+        ) -> tuple[list[object], list[object], list[object]]:
             if baseline is candidate_marker:
                 return [], [], []
             return ([], [], []) if trusted_has_gap else ([finding], [], [])
@@ -510,7 +529,11 @@ def test_model_egress_main_covers_missing_success_and_unauthorized_paths(
     assert module.main() == 1
 
     inventory.write_text(json.dumps({"modules": ["m"]}), encoding="utf-8")
-    monkeypatch.setattr(module, "discover", lambda: {"m"})
+    monkeypatch.setattr(
+        module,
+        "discover_sites",
+        lambda: {"m": module.EgressFinding("m", "m", ())},
+    )
     monkeypatch.setattr(module.check_direct_effects, "main", lambda _argv: 0)
     monkeypatch.setattr(module, "_provenance", lambda: _provenance({"modules": ["m"]}))
     assert module.main() == 0
@@ -650,7 +673,7 @@ def test_mutation_main_covers_measurement_empty_and_write_candidate_paths(
     assert module._entry_rate({"kill_rate": "bad"}) is None
     assert module._measured_rate({}, "missing") is None
     assert module._new_candidate_entry_failures("m", {"kill_rate": 0.9}, None)
-    assert module._trusted_entry_failures("m", {}, {}, None)
+    assert module._base_entry_failures("m", {}, {}, None)
 
 
 def test_ratchet_provenance_error_edges_are_explicit(

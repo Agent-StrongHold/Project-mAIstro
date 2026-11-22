@@ -24,6 +24,14 @@ def _fake_container() -> SimpleNamespace:
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        # Governed-egress seams the #718 cutover reads off the Container and
+        # hands to the agent factory (create_agents wires GovernedLLMClient
+        # when all four effect/model authorities are present).
+        capability_effects=object(),
+        run_store=object(),
+        provider_registry=object(),
+        llm_router=object(),
+        a2a_delegator=object(),
         agents={},
     )
 
@@ -61,6 +69,11 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        capability_effects=object(),
+        run_store=object(),
+        provider_registry=object(),
+        llm_router=object(),
+        a2a_delegator=object(),
     )
     captured: dict[str, object] = {}
     # The real Container always initializes `agents` to an empty dict and
@@ -86,16 +99,62 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         Settings(
             maistro_agents_dir="agents",
             litellm_api_base="http://localhost:4000/v1",
+            provider_config_path="/etc/hive/providers.yaml",
+            maistro_model_bindings=[
+                {
+                    "binding_id": "canvas-quality",
+                    "project_id": "project-canvas",
+                    "provider_name": "quality-model",
+                }
+            ],
         )
     )
 
     assert captured["prompt_manager"] is selected_prompt_manager
+    config = captured["config"]
+    assert config.provider_config_path == "/etc/hive/providers.yaml"
+    assert config.model_bindings[0].binding_id == "canvas-quality"
     # Same requirement, one wiring later: the ADR-091 assembly the Container
     # selected has to be the one the agents get, or the Conductor's episodic
     # memories reach no prompt (#622).
     assert captured["context_assembly_policy"] is selected_assembly_policy
+    assert captured["a2a_delegator"] is container.a2a_delegator
     assert list(container.agents) == ["wired-agent"]
     assert bridge.container is container
+
+
+@pytest.mark.asyncio
+async def test_start_exposes_governed_egress_over_the_container_authorities(monkeypatch):
+    """The runtime keeps one canonical model-chat authority for off-roster
+    conductor work (#718).
+
+    The demo task backend runs `run_task` outside the agent roster; the
+    egress the bridge exposes must be built over the same Container effect
+    context, provider registry, router and gateway endpoint the roster's
+    model clients got, or that work would cross a second, unrecorded HTTP
+    path while quota rows presented as complete.
+    """
+    container = _fake_container()
+    captured = _capture_runtime_seams(monkeypatch, container)
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir="agents", litellm_api_base="http://gw.test/v1"))
+
+    egress = bridge.governed_egress
+    assert egress is not None
+    # The same canonical authorities the Container wired.
+    assert egress._effects is container.capability_effects
+    assert egress._registry is container.provider_registry
+    assert egress._router is container.llm_router
+    # One gateway endpoint, shared with the roster's model clients rather
+    # than rebuilt -- the two doors cannot drift onto different credentials.
+    assert egress._endpoint is captured["model_endpoint"]
+
+
+@pytest.mark.asyncio
+async def test_governed_egress_is_none_before_start() -> None:
+    """The seam states its unstarted truth rather than manufacturing one."""
+    assert MaistroCoreBridge().governed_egress is None
 
 
 @pytest.mark.asyncio
@@ -175,6 +234,11 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        capability_effects=object(),
+        run_store=object(),
+        provider_registry=object(),
+        llm_router=object(),
+        a2a_delegator=object(),
         agents=wired_agents,
     )
 
@@ -225,3 +289,111 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     assert source.llm is not None
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
+
+
+@pytest.mark.asyncio
+async def test_start_carries_the_permission_grants_onto_the_container_config(monkeypatch):
+    """The fail-closed Sentinel table (#1165) needs the operator's grants to
+    reach `AgentConfig.security`, or no Conductor can ever authorize a tool."""
+    container = _fake_container()
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config):
+        captured["config"] = config
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    await MaistroCoreBridge().start(
+        Settings(
+            maistro_agents_dir="agents",
+            maistro_permission_preset="dangerous_tools_admin",
+            maistro_permissions={"shell": ["admin"]},
+        )
+    )
+
+    config = captured["config"]
+    assert config.security.permission_preset == "dangerous_tools_admin"
+    assert config.security.permissions == {"shell": ["admin"]}
+
+
+@pytest.mark.asyncio
+async def test_start_carries_the_model_bindings_onto_the_container_config(monkeypatch):
+    """#1079 Finding 1: the operator's `model.chat` Binding declarations need
+    to reach `AgentConfig.model_bindings`, or `bootstrap_model_bindings()`
+    always authorizes nothing and every governed model-egress node refuses
+    every Binding in production."""
+    from maistro.types.config import ModelBindingConfig
+
+    container = _fake_container()
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config):
+        captured["config"] = config
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    await MaistroCoreBridge().start(
+        Settings(
+            maistro_agents_dir="agents",
+            maistro_model_bindings=[
+                ModelBindingConfig(binding_id="b1", project_id="p1", provider_name="gpt-4"),
+            ],
+        )
+    )
+
+    config = captured["config"]
+    assert [b.binding_id for b in config.model_bindings] == ["b1"]
+    assert config.model_bindings[0].provider_name == "gpt-4"
+
+
+@pytest.mark.asyncio
+async def test_start_parses_model_bindings_from_a_json_env_value(monkeypatch):
+    """`MAISTRO_MODEL_BINDINGS` is JSON, like `MAISTRO_PERMISSIONS` -- the real
+    `Settings` env parsing path, not a Python literal handed in directly."""
+    from maistro.types.config import ModelBindingConfig
+
+    monkeypatch.setenv(
+        "MAISTRO_MODEL_BINDINGS",
+        '[{"binding_id": "env-b1", "project_id": "env-p1", "provider_name": "gpt-4"}]',
+    )
+
+    settings = Settings(maistro_agents_dir="agents")
+
+    assert settings.maistro_model_bindings == [
+        ModelBindingConfig(binding_id="env-b1", project_id="env-p1", provider_name="gpt-4")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_route_passes_the_caller_identity_through_to_the_container() -> None:
+    """A caller's principal reaches `Container.route_request`; nothing else is
+    invented on the way (the Container itself substitutes anonymous for None)."""
+    captured: dict[str, object] = {}
+
+    class _Container:
+        async def route_request(self, messages, **kwargs):
+            captured.update(kwargs)
+            return {"content": "ok"}
+
+    bridge = MaistroCoreBridge()
+    bridge._container = _Container()
+    principal = object()
+
+    assert await bridge.route([{"role": "user", "content": "hi"}], auth=principal) == {
+        "content": "ok"
+    }
+    assert captured["auth"] is principal
+    assert await bridge.route([{"role": "user", "content": "hi"}]) == {"content": "ok"}
+    assert captured["auth"] is None

@@ -67,6 +67,45 @@ MARKED = {
 # --- collection -----------------------------------------------------------
 
 
+def test_contained_collection_transport_failure_is_recorded_not_raised(
+    tmp_path: Path,
+) -> None:
+    """The containment seam (#614): a sandbox that dies mid-collection makes
+    the inventory UNVERIFIABLE (the gate vetoes on it) — an ordinary refused
+    measurement, never a host fallback and never an exception."""
+
+    def _dead_sandbox(argv: list[str]) -> tuple[int, str, str]:
+        raise RuntimeError("container removed mid-collection")
+
+    inv = collect_inventory(_make_project(tmp_path, TWO_TESTS), [], execute=_dead_sandbox)
+
+    assert inv.collected == set()
+    assert inv.collection_ok is False
+    assert inv.collection_error is not None
+    assert "container removed mid-collection" in inv.collection_error
+
+
+def test_contained_collection_parses_the_same_node_ids_from_streams(
+    tmp_path: Path,
+) -> None:
+    """A contained collection feeds the SAME parser from the sandbox's
+    separated streams, so a contained run cannot drift from the host one."""
+    project = _make_project(tmp_path, TWO_TESTS)
+    host = collect_inventory(project, [])
+    seen: list[list[str]] = []
+
+    def _contained(argv: list[str]) -> tuple[int, str, str]:
+        seen.append(list(argv))
+        return 0, "\n".join(sorted(host.collected)) + "\n", ""
+
+    inv = collect_inventory(project, [], execute=_contained, interpreter="python")
+
+    assert inv.collected == host.collected
+    assert inv.servable == host.servable
+    assert seen, "the contained executor must run both passes"
+    assert all(argv[0] == "python" for argv in seen)
+
+
 def test_collect_inventory_parses_node_ids(tmp_path: Path) -> None:
     inv = collect_inventory(_make_project(tmp_path, TWO_TESTS), [])
     assert inv.collection_ok is True

@@ -15,7 +15,7 @@ from maistro.capabilities.approval_store import (
     approval_request_digest,
     redact_approval_value,
 )
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
     InvocationApprovalPending,
@@ -74,7 +74,7 @@ async def _allow_policy(
     return PolicyVerdict(Decision.ALLOW, reason="allowed", rule="allow")
 
 
-async def _must_not_execute(_provider: _Provider, _request: Any) -> None:
+async def _must_not_execute(_provider: ResolvedCapabilityProvider, _request: Any) -> None:
     raise AssertionError("approval-gated effect must not reach provider")
 
 
@@ -105,7 +105,7 @@ async def test_approved_effect_resumes_on_later_attempt_without_second_request()
     events = InMemoryEventStore()
     calls = 0
 
-    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+    async def execute(_provider: ResolvedCapabilityProvider, request: Any) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         return {"committed": request}
@@ -200,7 +200,7 @@ async def test_approved_effect_is_committed_to_stateful_policy_before_execution(
 
     await approvals.resolve(pending.value.request_id, approved=True, actor="alice")
 
-    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+    async def execute(_provider: ResolvedCapabilityProvider, request: Any) -> dict[str, Any]:
         return {"committed": request}
 
     await service.invoke(
@@ -440,6 +440,239 @@ def test_redact_approval_value_preserves_path_but_redacts_pat() -> None:
     }
 
 
+def test_redact_approval_value_covers_key_synonyms() -> None:
+    """#1159 — private/ssh/signing key material and bare `key` cannot bypass
+    approval persistence merely because their argument key spells the family
+    differently. camelCase `apiKey` has no separator to split on and is
+    spelled out in the shared segment policy."""
+    redacted = redact_approval_value(
+        {
+            "private_key": "PK",
+            "ssh_key": "SK",
+            "signing_key": "GK",
+            "key": "K",
+            "apiKey": "AK",
+            "KEY2": "upper",
+        }
+    )
+
+    assert redacted == {
+        "private_key": "[REDACTED]",
+        "ssh_key": "[REDACTED]",
+        "signing_key": "[REDACTED]",
+        "key": "[REDACTED]",
+        "apiKey": "[REDACTED]",
+        # A trailing digit names the same family (`key2` -> `key`).
+        "KEY2": "[REDACTED]",
+    }
+
+
+def test_redact_approval_value_preserves_identifier_names() -> None:
+    """#1159 — an identifier is not a reusable credential: the segment policy
+    deliberately keeps `aws_access_key_id`, `key_arn`, and `token_id" readable
+    so approval evidence can still say WHAT was accessed."""
+    evidence = {
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "key_arn": "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234",
+        "token_id": "tok-123",
+        "region": "us-east-1",
+    }
+    assert redact_approval_value(evidence) == evidence
+
+
+def test_redact_approval_value_walks_nested_mappings_lists_and_tuples() -> None:
+    redacted = redact_approval_value(
+        {
+            "steps": [
+                {"signing_key": "GK", "keep": 1},
+                ("plain", {"ssh_key": "SK"}),
+                {"deeper": {"key": "K"}},
+            ],
+            "values": ["password", "not-a-field-name"],
+        }
+    )
+
+    assert redacted == {
+        "steps": [
+            {"signing_key": "[REDACTED]", "keep": 1},
+            # Tuples are walked but normalized to lists (pre-existing,
+            # JSON-oriented evidence shaping).
+            ["plain", {"ssh_key": "[REDACTED]"}],
+            {"deeper": {"key": "[REDACTED]"}},
+        ],
+        # List *values* are not field names; only mapping keys classify.
+        "values": ["password", "not-a-field-name"],
+    }
+
+
+def test_redact_approval_value_handles_attacker_controlled_names() -> None:
+    """Hostile key shapes must fail toward redaction, not around it."""
+    redacted = redact_approval_value(
+        {
+            "weird key !@#": "v",
+            "Authorization": "Bearer abc",
+            "x": {"secret\n": "s"},
+            "": "nameless survives: it names no family",
+        }
+    )
+
+    assert redacted["weird key !@#"] == "[REDACTED]"
+    assert redacted["Authorization"] == "[REDACTED]"
+    assert redacted["x"]["secret\n"] == "[REDACTED]"
+    assert redacted[""] == "nameless survives: it names no family"
+
+
+def test_redact_approval_value_covers_camelcase_synonyms() -> None:
+    """#1159 repair: the canonical classifier split camel case on the lowered
+    name, so these synonyms of covered families bypassed approval redaction."""
+    redacted = redact_approval_value(
+        {
+            "privateKey": "PRIV",
+            "SigningKey": "GK",
+            "clientToken": "TOK",
+            "userPassword": "PW",
+            # camelCase identifiers keep the identifier escape.
+            "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        }
+    )
+
+    assert redacted == {
+        "privateKey": "[REDACTED]",
+        "SigningKey": "[REDACTED]",
+        "clientToken": "[REDACTED]",
+        "userPassword": "[REDACTED]",
+        "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sqlite_find_effect_resolves_by_explicit_effect_scope(tmp_path) -> None:
+    """Scoped effect claims (the #1194 replay scope) resolve through the
+    scope-aware query: the same binding/effect key under two scopes is two
+    independent approvals, and an unclaimed scope resolves to None."""
+
+    def _scoped(request_id: str, effect_scope: str) -> DurableApproval:
+        approval = _durable_approval(request_id=request_id)
+        return approval.model_copy(update={"effect_scope": effect_scope})
+
+    async with aiosqlite.connect(tmp_path / "scoped.db") as conn:
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+        await store.create(_scoped("req-a", "scope-a"))
+        await store.create(_scoped("req-b", "scope-b"))
+
+        found = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-a",
+        )
+        assert found is not None
+        assert found.request.request_id == "req-a"
+        assert found.effect_scope == "scope-a"
+
+        other = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-b",
+        )
+        assert other is not None
+        assert other.request.request_id == "req-b"
+
+        unclaimed = await store.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+            effect_scope="scope-never-claimed",
+        )
+        assert unclaimed is None
+
+
+@pytest.mark.asyncio
+async def test_sqlite_ensure_schema_upgrades_a_legacy_table_without_effect_scope(
+    tmp_path,
+) -> None:
+    """A database created before effect scoping must upgrade in place: the
+    column is added, the legacy row survives, and it stays resolvable through
+    the legacy (scope-less) read that matches how it was written."""
+    path = tmp_path / "legacy.db"
+    approval = _durable_approval()
+
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("""
+CREATE TABLE capability_approvals (
+    request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_run_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    effect_key TEXT NOT NULL,
+    payload TEXT NOT NULL
+)
+""")
+        await conn.execute(
+            "INSERT INTO capability_approvals VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                approval.request.request_id,
+                approval.run_id,
+                approval.node_run_id,
+                approval.binding_id,
+                approval.effect_key,
+                approval.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+
+        cursor = await conn.execute("PRAGMA table_info(capability_approvals)")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        assert "effect_scope" in columns
+
+        legacy = await store.find_effect(
+            run_id=approval.run_id,
+            node_run_id=approval.node_run_id,
+            binding_id=approval.binding_id,
+            effect_key=approval.effect_key,
+        )
+        assert legacy is not None
+        assert legacy.request.request_id == approval.request.request_id
+
+
+@pytest.mark.asyncio
+async def test_sqlite_concurrent_creation_reconciles_one_logical_approval(tmp_path) -> None:
+    path = tmp_path / "approvals-create-race.db"
+    async with (
+        aiosqlite.connect(path) as first_conn,
+        aiosqlite.connect(path) as second_conn,
+    ):
+        first = SqliteApprovalStore(first_conn)
+        second = SqliteApprovalStore(second_conn)
+        await first.ensure_schema()
+        await second.ensure_schema()
+        first_approval = _durable_approval(request_id="approval-create-a")
+        second_approval = _durable_approval(request_id="approval-create-b")
+
+        first_result, second_result = await asyncio.gather(
+            first.create(first_approval),
+            second.create(second_approval),
+        )
+
+        assert first_result.request.request_id == second_result.request.request_id
+        persisted = await first.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+        )
+        assert persisted is not None
+        assert persisted.request.request_id == first_result.request.request_id
+
+
 @pytest.mark.asyncio
 async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) -> None:
     path = tmp_path / "approvals-race.db"
@@ -503,6 +736,34 @@ async def test_sqlite_resolve_without_an_actor_is_refused(tmp_path) -> None:
 
         with pytest.raises(TypeError):
             await store.resolve(approval.request.request_id, approved=True)  # type: ignore[call-arg]
+
+        untouched = await store.get(approval.request.request_id)
+        assert untouched is not None
+        assert untouched.status is ApprovalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_in_memory_resolve_with_blank_actor_is_refused() -> None:
+    store = InMemoryApprovalStore()
+    approval = await store.create(_durable_approval())
+
+    with pytest.raises(ValueError, match="verified principal"):
+        await store.resolve(approval.request.request_id, approved=True, actor=" ")
+
+    untouched = await store.get(approval.request.request_id)
+    assert untouched is not None
+    assert untouched.status is ApprovalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_sqlite_resolve_with_blank_actor_is_refused(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "approvals-blank-actor.db") as conn:
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+        approval = await store.create(_durable_approval())
+
+        with pytest.raises(ValueError, match="verified principal"):
+            await store.resolve(approval.request.request_id, approved=True, actor="\t")
 
         untouched = await store.get(approval.request.request_id)
         assert untouched is not None

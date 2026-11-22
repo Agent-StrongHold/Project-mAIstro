@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.types.config import AgentConfig
 from maistro.types.errors import ConfigError
 from maistro.types.memory import Learning, Outcome
@@ -68,8 +69,14 @@ def _require_postgres() -> str:
 
 
 def _alembic_env(url: str) -> dict[str, str]:
-    """`DB_*` for alembic's `DatabaseSettings`, pointed at the scratch database."""
+    """Point every database spelling at this suite's scratch database.
+
+    The shared resolver gives `DATABASE_URL` precedence over `DB_*`; retaining
+    the service URL would apply the chain outside the scratch database this
+    fixture returns.
+    """
     parts = urlsplit(url)
+    scratch = urlsplit(url)._replace(path=f"/{SCRATCH_DB}").geturl()
     return {
         **os.environ,
         "DB_HOST": parts.hostname or "127.0.0.1",
@@ -77,6 +84,8 @@ def _alembic_env(url: str) -> dict[str, str]:
         "DB_NAME": SCRATCH_DB,
         "DB_USER": parts.username or "postgres",
         "DB_PASSWORD": parts.password or "",
+        "DATABASE_URL": scratch,
+        "MAISTRO_DATABASE_URL": scratch,
     }
 
 
@@ -150,7 +159,9 @@ async def container(migrated_url):
         AgentConfig(router_api_key="test-key", database_url=migrated_url)
     )
     try:
-        await wired.pg_pool.execute("TRUNCATE learnings, outcomes, sessions, quota_usage")
+        await wired.pg_pool.execute(
+            "TRUNCATE learnings, outcomes, sessions, quota_usage_events, quota_usage"
+        )
         yield wired
     finally:
         await close_pool()
@@ -318,8 +329,10 @@ class TestStoresRunAgainstTheMigratedSchema:
         ]
 
     async def test_quota_accumulates_across_calls(self, container) -> None:
-        await container.quota_tracker.record_usage("openai", "2026-08", 10, 5)
-        totals = await container.quota_tracker.record_usage("openai", "2026-08", 1, 2)
+        # `record_usage` takes a billing cycle from the validated vocabulary
+        # (#1205) and derives the cycle key itself.
+        await container.quota_tracker.record_usage("openai", "monthly", 10, 5)
+        totals = await container.quota_tracker.record_usage("openai", "monthly", 1, 2)
         assert totals["total_tokens"] == 18
         assert totals["request_count"] == 2
 
@@ -481,7 +494,7 @@ class TestTheDurableStoreMatchesTheInMemoryOne:
     async def test_the_experience_narrative_is_byte_identical(self, container) -> None:
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
-        reference = InMemoryOutcomeStore()
+        reference = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         rows = [
             Outcome(
                 request_id="f1",

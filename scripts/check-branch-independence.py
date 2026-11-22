@@ -324,7 +324,7 @@ def base_registry(root: Path, explicit_base: str | None = None) -> dict[str, Any
     return _registry_object_at(merge_base.stdout.strip(), root)
 
 
-def trusted_base_errors(registry: dict[str, Any], base: dict[str, Any] | None) -> list[str]:
+def base_registry_errors(registry: dict[str, Any], base: dict[str, Any] | None) -> list[str]:
     """Forbid growing the legacy set relative to a trusted base registry."""
     if base is None:
         return []
@@ -350,7 +350,7 @@ def check_repository(
         return errors
     paths = discover_quality_json(root, registry)
     errors.extend(coverage_errors(registry, paths))
-    errors.extend(trusted_base_errors(registry, base))
+    errors.extend(base_registry_errors(registry, base))
     return errors
 
 

@@ -88,6 +88,17 @@ MEASURED_ROOTS = (
     "packages/maistro-turing/src/maistro_turing",
     "packages/maistro-turing/backend",
     "packages/maistro-design/src/maistro_design",
+    # #1096: the registry linker's caller-influenced GitHub fetch is exactly
+    # the kind of change this gate exists to score, so the last producer-less
+    # package joins here alongside the quality.yml producer that measures it.
+    "packages/maistro-registry/src/maistro_registry",
+    # The extension host harness (#974): third-party CI runs this code, so a
+    # change that lowers its coverage is exactly what the diff gate exists to
+    # name. Measured by its own quality.yml producer over its own suite.
+    "packages/maistro-ext-harness/src/maistro_ext_harness",
+    # The extension SDK (#949): the manifest contract an external author
+    # codes against is exactly the code an uncovered bug would bite hardest.
+    "packages/maistro-ext-sdk/src/maistro_ext_sdk",
     "packages/hive-conductor/backend",
     # The gates themselves (#257). Every one of #160's five mandates is
     # enforced by a file in here, and until this entry they were the only

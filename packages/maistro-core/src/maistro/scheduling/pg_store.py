@@ -17,12 +17,17 @@ other implementation so the three backends cannot drift on what "fired" means.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.scheduling.model import Schedule
-from maistro.scheduling.store import _advance
+from maistro.scheduling.store import (
+    _advance,
+    _merged,
+    _reserve,
+    _settle_pending,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -39,7 +44,18 @@ class PgScheduleStore:
         self._pool = pool
 
     async def put(self, schedule: Schedule) -> Schedule:
-        async with self._pool.acquire() as conn:
+        """Write the definition over the recorded cursors, under the row lock.
+
+        The same `FOR UPDATE` as `record_fire`, so the cursors this keeps are
+        the ones a concurrent `record_fire` has finished writing, never the
+        ones it is about to.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule.schedule_id,
+            )
+            stored = _merged(_schedule_of(payload) if payload is not None else None, schedule)
             await conn.execute(
                 """INSERT INTO schedules
                        (schedule_id, workspace_id, project_id, enabled, next_due_at, payload)
@@ -50,14 +66,14 @@ class PgScheduleStore:
                            enabled      = EXCLUDED.enabled,
                            next_due_at  = EXCLUDED.next_due_at,
                            payload      = EXCLUDED.payload""",
-                schedule.schedule_id,
-                schedule.workspace_id,
-                schedule.project_id,
-                schedule.enabled,
-                schedule.next_due_at,
-                json_of(schedule),
+                stored.schedule_id,
+                stored.workspace_id,
+                stored.project_id,
+                stored.enabled,
+                stored.next_due_at,
+                json_of(stored),
             )
-        return schedule
+        return stored
 
     async def get(self, schedule_id: str) -> Schedule | None:
         async with self._pool.acquire() as conn:
@@ -89,45 +105,21 @@ class PgScheduleStore:
             )
         return [_schedule_of(row["payload"]) for row in rows]
 
-    async def list_all(self) -> list[Schedule]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT payload FROM schedules ORDER BY schedule_id")
-        return [_schedule_of(row["payload"]) for row in rows]
-
-    async def record_evaluation(
-        self, schedule_id: str, *, next_due_at: datetime | None
-    ) -> Schedule | None:
-        async with self._pool.acquire() as conn, conn.transaction():
-            payload = await conn.fetchval(
-                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
-                schedule_id,
-            )
-            if payload is None:
-                return None
-            evaluated = _schedule_of(payload).model_copy(
-                update={"next_due_at": next_due_at, "updated_at": datetime.now(UTC)}
-            )
-            await conn.execute(
-                """UPDATE schedules SET next_due_at = $2, payload = $3::text::jsonb
-                   WHERE schedule_id = $1""",
-                schedule_id,
-                next_due_at,
-                json_of(evaluated),
-            )
-        return evaluated
-
     async def due(self, *, now: datetime) -> list[Schedule]:
-        """Enabled schedules whose cursor has arrived, plus those with none.
+        """Enabled schedules needing recurrence evaluation or manual recovery.
 
         `next_due_at IS NULL` is included deliberately, matching the protocol:
         an unknown cursor must be evaluated. A schedule written by `put` before
         its first tick has one, and treating it as not-due would mean a brand
-        new schedule never fires.
+        new schedule never fires. Pending manual-fire markers are selected
+        independently of the recurrence cursor, so a crashed manual fire is
+        reconciled on the next tick; admission still checks the marker lease.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT payload FROM schedules
-                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1)
+                   WHERE enabled AND (next_due_at IS NULL OR next_due_at <= $1
+                       OR jsonb_array_length(COALESCE(payload->'pending_fires', '[]'::jsonb)) > 0)
                    ORDER BY schedule_id""",
                 now,
             )
@@ -137,13 +129,14 @@ class PgScheduleStore:
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
-        fires: int = 1,
+        fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
-        """Advance the cursor under a row lock, so a concurrent tick cannot lose it."""
+        """Advance the cursors under a row lock, so a concurrent tick cannot lose them."""
         async with self._pool.acquire() as conn, conn.transaction():
             payload = await conn.fetchval(
                 "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
@@ -158,6 +151,7 @@ class PgScheduleStore:
                 next_due_at=next_due_at,
                 fires=fires,
                 disable=disable,
+                recovered=recovered,
             )
             await conn.execute(
                 """UPDATE schedules
@@ -169,6 +163,50 @@ class PgScheduleStore:
                 json_of(advanced),
             )
         return advanced
+
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
+    ) -> Schedule | None:
+        """Hold under the row lock, so two manual fires cannot both take the last run."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            reserved = _reserve(_schedule_of(payload), fires=fires, fire_id=fire_id)
+            await self._write(conn, reserved)
+        return reserved
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        """Close one marker under the row lock; None when there is nothing to close."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            settled = _settle_pending(_schedule_of(payload), fire_id, run_id=run_id)
+            if settled is None:
+                return None
+            await self._write(conn, settled)
+        return settled
+
+    @staticmethod
+    async def _write(conn: Any, schedule: Schedule) -> None:
+        await conn.execute(
+            """UPDATE schedules
+                   SET enabled = $2, next_due_at = $3, payload = $4::text::jsonb
+               WHERE schedule_id = $1""",
+            schedule.schedule_id,
+            schedule.enabled,
+            schedule.next_due_at,
+            json_of(schedule),
+        )
 
 
 __all__ = ["PgScheduleStore"]

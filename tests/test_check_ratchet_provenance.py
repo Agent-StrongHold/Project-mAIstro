@@ -110,7 +110,7 @@ def test_documented_candidate_authored_specification_is_allowed(
         "CANDIDATE_AUTHORED",
         {("gate.py", "quality/policy.json"): "the file is the reviewed specification"},
     )
-    monkeypatch.setattr(checker, "TRUSTED_ADAPTERS", {})
+    monkeypatch.setattr(checker, "DELEGATED_ADAPTERS", {})
 
     assert checker.violations(root) == []
 
@@ -126,7 +126,7 @@ def test_delegated_consumer_requires_a_real_trusted_adapter(
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
     monkeypatch.setattr(
         checker,
-        "TRUSTED_ADAPTERS",
+        "DELEGATED_ADAPTERS",
         {("gate.py", "quality/debt.json"): "adapter.py"},
     )
 
@@ -150,7 +150,7 @@ def test_delegated_adapter_may_use_tooling_stem_identity(
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
     monkeypatch.setattr(
         checker,
-        "TRUSTED_ADAPTERS",
+        "DELEGATED_ADAPTERS",
         {("gate.py", "quality/debt.json"): "adapter"},
     )
 
@@ -169,7 +169,7 @@ def test_delegated_adapter_must_use_shared_resolver(
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
     monkeypatch.setattr(
         checker,
-        "TRUSTED_ADAPTERS",
+        "DELEGATED_ADAPTERS",
         {("gate.py", "quality/debt.json"): "adapter.py"},
     )
 
@@ -195,7 +195,7 @@ def test_delegated_adapter_is_executed(
     monkeypatch.setattr(checker, "CANDIDATE_AUTHORED", {})
     monkeypatch.setattr(
         checker,
-        "TRUSTED_ADAPTERS",
+        "DELEGATED_ADAPTERS",
         {("gate.py", "quality/debt.json"): "adapter.py"},
     )
 

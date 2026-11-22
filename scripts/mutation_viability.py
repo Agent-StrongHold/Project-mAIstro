@@ -56,7 +56,24 @@ Deliberately *not* excluded:
   - mutants whose diff could not be reconstructed (`undetermined`). A parsing
     failure in this script must never loosen the gate.
 
-Only `non_viable` is ever subtracted.
+Subtracted alongside `non_viable`:
+
+  - mutants the pre-exec filter already excluded (`skipped`), recorded by
+    cosmic-ray as ``worker_outcome = SKIPPED``. `mutation_filter_annotations.py`
+    marks these before `exec`, having proved by AST *span* that the mutation
+    lies wholly inside an annotation -- the same property this module proves by
+    AST *comparison* after the fact. Such a mutant never ran, so it has no diff
+    to reconstruct and used to land in `undetermined`, which kept it in the
+    denominator: a file whose annotation mutants were all correctly filtered
+    scored worse than one where the filter had not run. `security/task_policy.py`
+    measured 110/209 = 52.6% that way, against 110/110 = 100% for the mutants
+    that were actually executed.
+
+    This exclusion is subtracted only when the future import is present, for
+    the same reason `non_viable` is: without it an annotation is a live
+    expression and a mutation there is killable.
+
+Only `non_viable` and `skipped` are ever subtracted.
 
 Usage:
     python scripts/mutation_viability.py SESSION.sqlite MODULE_PATH \\
@@ -211,7 +228,7 @@ class Verdict:
     row: int
     col: int
     operator: str
-    category: str  # "non_viable" | "viable" | "invalid" | "undetermined"
+    category: str  # "non_viable" | "skipped" | "viable" | "invalid" | "undetermined"
     source_line: str
     mutated_line: str = ""
 
@@ -238,6 +255,11 @@ class Report:
         return self._of("non_viable")
 
     @property
+    def skipped(self) -> list[Verdict]:
+        """Excluded before execution by the annotation filter (#419)."""
+        return self._of("skipped")
+
+    @property
     def viable(self) -> list[Verdict]:
         return self._of("viable")
 
@@ -249,15 +271,26 @@ class Report:
     def undetermined(self) -> list[Verdict]:
         return self._of("undetermined")
 
+    @property
+    def excluded(self) -> int:
+        """Mutants proven not to be evidence about the tests.
+
+        Both halves require the future import: `non_viable` proves it here by
+        comparing stripped ASTs, `skipped` was proven by span before `exec`.
+        """
+        if not self.future_annotations:
+            return len(self.non_viable)
+        return len(self.non_viable) + len(self.skipped)
+
     def adjusted(self) -> tuple[int, int, float]:
-        """(killed, adjusted_total, rate) with only non-viable mutants removed.
+        """(killed, adjusted_total, rate) with proven exclusions removed.
 
         `invalid` and `undetermined` stay in the denominator. A mutant that
         does not compile is killable by any test that imports the module, and a
         mutant this script failed to reconstruct has been proven nothing at
         all. Subtracting either would let a parse failure loosen the gate.
         """
-        denominator = self.total - len(self.non_viable)
+        denominator = self.total - self.excluded
         rate = self.killed / denominator if denominator else 0.0
         return self.killed, denominator, rate
 
@@ -288,7 +321,7 @@ def classify(session_path: Path, module_key: str, source_path: Path) -> Report:
 
     rows = conn.execute(
         """SELECT s.job_id, s.start_pos_row, s.start_pos_col, s.operator_name,
-                  r.test_outcome, r.diff
+                  r.test_outcome, r.diff, r.worker_outcome
              FROM mutation_specs s JOIN work_results r ON s.job_id = r.job_id
             WHERE s.module_path = ?
             ORDER BY s.start_pos_row, s.start_pos_col""",
@@ -303,10 +336,17 @@ def classify(session_path: Path, module_key: str, source_path: Path) -> Report:
     report.pending = initialized - len(rows)
 
     src_lines = pristine.splitlines()
-    for job_id, row, col, operator, outcome, diff in rows:
+    for job_id, row, col, operator, outcome, diff, worker_outcome in rows:
         if outcome == "KILLED":
             continue
         line_text = src_lines[row - 1].strip() if 0 < row <= len(src_lines) else ""
+        # Filtered before `exec`, so there is no diff to reconstruct. This is a
+        # proven exclusion, not a failure to classify one: keeping it in
+        # `undetermined` penalised a file for having its annotation mutants
+        # correctly removed (#419).
+        if str(worker_outcome).upper().endswith("SKIPPED"):
+            report.verdicts.append(Verdict(job_id, row, col, operator, "skipped", line_text))
+            continue
         mutated = _apply_diff(pristine, diff or "")
         if mutated is None:
             report.verdicts.append(Verdict(job_id, row, col, operator, "undetermined", line_text))
@@ -342,11 +382,14 @@ def _emit(report: Report, json_out: Path | None) -> int:
     print(f"  raw       : {report.killed}/{report.total} = {raw_rate:.1%}")
     print(f"  survivors : {report.total - report.killed}")
     print(f"    non-viable (annotation-only, provably unkillable) : {len(report.non_viable)}")
+    print(f"    skipped    (filtered before exec; annotation-only) : {len(report.skipped)}")
     print(f"    invalid    (does not compile; kept in denominator): {len(report.invalid)}")
     print(f"    undetermined (kept in denominator)                : {len(report.undetermined)}")
     print(f"    viable     (real coverage gaps)                   : {len(report.viable)}")
     print(f"  adjusted  : {killed}/{denominator} = {rate:.1%}")
-    print("  (only non-viable is subtracted; invalid and undetermined are not)")
+    if report.skipped and not report.future_annotations:
+        print("  -> skipped mutants are NOT subtracted here: no future import.")
+    print("  (non-viable and skipped are subtracted; invalid and undetermined are not)")
     print()
 
     if report.non_viable:
@@ -390,7 +433,7 @@ def _emit(report: Report, json_out: Path | None) -> int:
                     }
                     for v in getattr(report, name)
                 ]
-                for name in ("non_viable", "viable", "invalid", "undetermined")
+                for name in ("non_viable", "skipped", "viable", "invalid", "undetermined")
             },
         }
         json_out.write_text(json.dumps(payload, indent=2))
@@ -431,7 +474,8 @@ def gate(pairs: list[tuple[Path, str]], threshold: float, json_out: Path | None)
     properties from that version are preserved deliberately:
 
       - no mutants at all is a configuration error, not a pass
-      - only `non_viable` leaves the denominator
+      - only proven-unkillable mutants leave the denominator:
+        `non_viable`, and `skipped` where the filter proved it first
       - every exclusion is named, mirroring this workflow's existing promise
         that a skipped file is "named explicitly in the log"
 
@@ -453,17 +497,21 @@ def gate(pairs: list[tuple[Path, str]], threshold: float, json_out: Path | None)
         return 1
 
     killed = sum(r.killed for r in reports)
-    excluded = sum(len(r.non_viable) for r in reports)
+    excluded = sum(r.excluded for r in reports)
     denominator = total - excluded
     if denominator == 0:
-        print("::error::Every mutant was classified non-viable — that is not a pass.")
+        print("::error::Every mutant was excluded as unkillable — that is not a pass.")
         return 1
     rate = killed / denominator
     raw_rate = killed / total
 
     print(f"Mutation kill rate: {killed}/{denominator} = {rate:.1%} (gate: {threshold:.0%})")
     print(f"  raw, before exclusions: {killed}/{total} = {raw_rate:.1%}")
-    print(f"  excluded as non-viable: {excluded}")
+    print(f"  excluded as proven-unkillable: {excluded}")
+    print(
+        f"    of which filtered before exec: "
+        f"{sum(len(r.skipped) for r in reports if r.future_annotations)}"
+    )
     print()
     for r in reports:
         r_killed, r_denom, r_rate = r.adjusted()
@@ -551,6 +599,7 @@ def _write_gate_json(
                         "killed": r.killed,
                         "total": r.total,
                         "non_viable": len(r.non_viable),
+                        "skipped": len(r.skipped),
                         "viable": len(r.viable),
                     }
                     for r in reports

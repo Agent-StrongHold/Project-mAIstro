@@ -20,6 +20,7 @@ async def tool_run_workflow(
     """Execute a DAG by ID or name."""
     from stores import dags as dag_store
 
+    from services.dag_execution_scope import authorize_hive_dag_scope
     from services.graph_runner import execute_dag
 
     dag_id = args.get("dag_id") or args.get("id", "")
@@ -33,8 +34,11 @@ async def tool_run_workflow(
         return {"error": f"Workflow '{dag_id or name}' not found."}
 
     dag_data = dag_store[dag_id]
+    scope = await authorize_hive_dag_scope(
+        workspace_id=str(args.get("workspace_id") or ""), user_id=user_id
+    )
     start = time.monotonic()
-    result = await execute_dag(dag_data, user_id=user_id)
+    result = await execute_dag(dag_data, scope=scope)
     elapsed = int((time.monotonic() - start) * 1000)
     nr = result.get("node_results", {})
     return {
@@ -161,6 +165,7 @@ async def tool_hill_climb(
     """Real hill climbing: run -> eval -> inject critique -> re-run."""
     from stores import dags as dag_store
 
+    from services.dag_execution_scope import authorize_hive_dag_scope
     from services.graph_runner import execute_dag
 
     dag_id = args.get("dag_id", "")
@@ -169,12 +174,15 @@ async def tool_hill_climb(
     if dag_id not in dag_store:
         return {"error": "DAG not found"}
     dag_data = dag_store[dag_id]
+    scope = await authorize_hive_dag_scope(
+        workspace_id=str(args.get("workspace_id") or ""), user_id=user_id
+    )
     if not dag_data.get("eval_rubric", {}).get("criteria"):
         return {"error": "No eval rubric. Use update_eval first."}
 
     best_score, best_result, attempts = 0, None, []
     for attempt in range(1, max_attempts + 1):
-        result = await execute_dag(dag_data, user_id=user_id)
+        result = await execute_dag(dag_data, scope=scope)
         output = "\n".join(
             r.get("response", "")
             for r in result.get("node_results", {}).values()

@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+from services.dag_execution_scope import DagExecutionScope
 
 
 def _safe_node(node_id: str) -> dict[str, Any]:
@@ -77,12 +76,9 @@ def test_natural_language_with_an_operator_is_not_mistaken_for_a_predicate() -> 
 @pytest.mark.asyncio
 async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_spine,
 ) -> None:
     import services.canonical_dag_runner as runner
-
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
-    monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
         {
@@ -99,6 +95,11 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
             ],
         },
         llm_builder=_fake_llm_builder,
+        scope=DagExecutionScope(
+            workspace_id="test-workspace",
+            project_id=canonical_graph_spine.project_id,
+            user_id="test-user",
+        ),
     )
 
     assert result["status"] == "completed"

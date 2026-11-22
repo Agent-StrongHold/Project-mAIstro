@@ -36,6 +36,8 @@ from typing import Any, Protocol
 
 from fastapi import HTTPException
 
+from services.request_principal import require_actor_id
+
 #: The `user_id` a record written before #312 carries. Not a sentinel anyone
 #: writes deliberately — it is the field default, which is exactly why it must
 #: never compare equal to a real owner.
@@ -66,18 +68,12 @@ def owner_of(request: Any) -> Owner:
     """The principal `AuthMiddleware` attached, or 401.
 
     The middleware rejects an unauthenticated `/v1/` request before any handler
-    runs, so reaching here without `request.state.user` means the route escaped
+    runs, so reaching here without `request.state.principal` means the route escaped
     it — a new public prefix, a router mounted outside `/v1/`. Failing closed
     keeps that mistake from silently handing one caller's records to whoever
     asks first.
     """
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, dict):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    user_id = str(user.get("id") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return Owner(id=user_id)
+    return Owner(id=require_actor_id(request))
 
 
 class OwnedStore:
@@ -125,16 +121,30 @@ class OwnedStore:
         self._store[key] = stamped
         return stamped
 
-    def discard(self, key: str) -> None:
+    def update(self, key: str, record: Any) -> Any:
+        """Replace one of this owner's records, preserving the owner boundary."""
+        self.require(key)
+        return self.create(key, record)
+
+    def delete(self, key: str) -> Any:
+        """Remove one of this owner's records, or raise the scoped 404."""
+        record = self.require(key)
+        self._store.pop(key)
+        return record
+
+    def discard(self, key: str) -> bool:
         """Remove the record if it is this owner's; otherwise do nothing.
 
         Silence in both directions, for the same reason `require` raises the
         same 404: a delete that reported whether something was there is an
-        oracle even when it refuses to act.
+        oracle even when it refuses to act. The boolean lets non-HTTP callers
+        retain the old success/error result without reaching around this view.
         """
         record = self._store.get(key)
         if record is not None and self.owns(record):
             self._store.pop(key, None)
+            return True
+        return False
 
     def persist(self, key: str) -> None:
         """Flush a record this owner holds; 404 if they do not hold it."""
@@ -162,3 +172,15 @@ def owned_chat_sessions(owner: Owner) -> OwnedStore:
 def chat_sessions_for(request: Any) -> OwnedStore:
     """The chat store, scoped to whoever is making this request."""
     return owned_chat_sessions(owner_of(request))
+
+
+def owned_memory_entries(owner: Owner) -> OwnedStore:
+    """The memory-entry store, scoped to one authenticated owner."""
+    import stores
+
+    return OwnedStore(stores.memory_entries, owner)
+
+
+def memory_entries_for(request: Any) -> OwnedStore:
+    """The memory-entry store, scoped to whoever is making this request."""
+    return owned_memory_entries(owner_of(request))

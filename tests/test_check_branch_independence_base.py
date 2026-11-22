@@ -245,7 +245,7 @@ class TestMain:
         """End-to-end: a candidate cannot authorize a new shared aggregate by
         editing its own frozen list, because `main()` reads the trusted base's
         list through `base_registry()` and compares against it -- not just the
-        pure `trusted_base_errors()` helper in isolation."""
+        pure `base_registry_errors()` helper in isolation."""
         registry = {
             "version": 1,
             "quality_roots": ["quality"],

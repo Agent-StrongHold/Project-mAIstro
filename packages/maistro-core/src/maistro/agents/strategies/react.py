@@ -7,10 +7,16 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.quota.usage_report import reported_usage
+from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
+from maistro.types.tool import ToolCall
+
+_TOOL_CONTEXT_MAX_TURNS = 8
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
@@ -64,6 +70,11 @@ class ReactStrategy:
         # stores one summed pair, so without the count a turn whose providers
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
+        security_pipeline = bool(kwargs.get("security_pipeline", False))
+        # Keep the analysis context separate from the model message list. Tool
+        # output is untrusted; assistant/system messages must not become part of
+        # the detector's authority-labelled input.
+        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -110,7 +121,11 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    context=list(tool_context),
+                    security_pipeline=security_pipeline,
+                    tool_round=round_num,
                 )
+                tool_context.append(WardenContext(tool_result_str))
 
                 tool_history.append(
                     {
@@ -195,15 +210,19 @@ class ReactStrategy:
         tool_args: dict[str, Any],
         tool_executor: Any,
         trace: Trace | None,
+        *,
+        tool_call_id: str = "",
+        tool_round: int = 0,
     ) -> Any:
         """Invoke the tool executor, recording a trace span when tracing is on."""
         if not (tool_executor and callable(tool_executor)):
             return f"Tool '{tool_name}' not available"
+        call = ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args)
         if not trace:
-            return await tool_executor(tool_name, tool_args)
+            return await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
         with trace.span(f"tool.{tool_name}") as ts:
             ts.set_input(tool_args)
-            tool_result = await tool_executor(tool_name, tool_args)
+            tool_result = await dispatch_tool_call(tool_executor, call, tool_round=tool_round)
             preview = str(tool_result)[:300]
             tool_success = not preview.startswith("Error") and "error" not in preview[:50].lower()
             ts.set_output({"success": tool_success, "result_preview": preview})
@@ -217,14 +236,26 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        context: list[WardenContext] | None = None,
+        security_pipeline: bool = False,
     ) -> str:
-        """Apply sentinel post-call (or warden scan + PII redaction) to a result."""
+        """Apply the shared output gate with bounded prior tool context.
+
+        Inside the Agent security pipeline the governed executor has already
+        scanned the result with its own bounded context and redacted it, so
+        this gate only serves standalone strategy callers.
+        """
+        if security_pipeline:
+            return tool_result_str
+        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
-            sanitized: str = await sentinel.post_call(tool_name, tool_result_str, auth)
+            sanitized: str = await sentinel.post_call(
+                tool_name, tool_result_str, auth, **scan_kwargs
+            )
             return sanitized
 
         if warden is not None:
-            verdict = await warden.scan(tool_result_str, "tool_result")
+            verdict = await warden.scan(tool_result_str, "tool_result", **scan_kwargs)
             if not verdict.clean:
                 tool_result_str = (
                     f"[BLOCKED: tool result contained suspicious content: "
@@ -248,6 +279,9 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        context: list[WardenContext] | None = None,
+        security_pipeline: bool = False,
+        tool_round: int = 0,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -257,11 +291,17 @@ class ReactStrategy:
 
         # NOTE: a parse error sets a placeholder result but does NOT block — the
         # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only a sentinel denial blocks execution.
+        # parsed args. Only an authorization denial blocks execution.
         tool_result: Any = error_result
         tool_blocked = False
 
-        if sentinel is not None and auth is not None:
+        if not security_pipeline and (sentinel is None or auth is None):
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            tool_result = f"Error: Permission denied for tool '{tool_name}'"
+            tool_blocked = True
+        elif not security_pipeline:
             tool_schema = _find_tool_schema(tools, tool_name)
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
@@ -271,7 +311,14 @@ class ReactStrategy:
                 tool_args = sentinel_verdict.repaired_data
 
         if not tool_blocked:
-            tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)
+            tool_result = await self._run_tool(
+                tool_name,
+                tool_args,
+                tool_executor,
+                trace,
+                tool_call_id=tc.get("id", ""),
+                tool_round=tool_round,
+            )
 
         tool_result_str = str(tool_result)
         if len(tool_result_str) > 16384:
@@ -286,5 +333,7 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
+            context=context,
+            security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str

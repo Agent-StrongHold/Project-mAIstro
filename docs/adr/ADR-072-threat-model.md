@@ -32,7 +32,7 @@ history:
 
 # ADR-072: Threat Model
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 
 ---

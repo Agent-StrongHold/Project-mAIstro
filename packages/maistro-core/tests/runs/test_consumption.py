@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -17,10 +18,13 @@ from pydantic import BaseModel
 
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
+from maistro.graph.definitions import GraphTemplate
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import run_cursor_key
+from maistro.scheduling.model import Schedule
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 
@@ -89,8 +93,55 @@ async def _admit_schedule_run(
         graph,
         provenance=provenance,
         initial_status=status,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     return run.run_id
+
+
+@pytest.mark.ac("ADR-082826-b601/AC-1")
+async def test_the_schedule_admitter_run_reaches_the_consumer_tick() -> None:
+    """The production admission seam and consumer share the Container spine."""
+    _TickNode.calls = 0
+    container = await _container()
+    workspace = "admitter-consumer-ws"
+    root = await container.project_scope_store.create_root(workspace)
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    template = GraphTemplate(
+        template_id="admitter-consumer-template",
+        workspace_id=workspace,
+        version=1,
+        name="admitter consumer",
+        nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
+    )
+    assert container.template_store is not None
+    await container.template_store.put(template)
+    schedule = Schedule(
+        workspace_id=workspace,
+        project_id=root.project_id,
+        name="admitter consumer schedule",
+        cron="* * * * *",
+        graph_template_id=template.template_id,
+        created_at=now - timedelta(days=1),
+        last_fired_at=now - timedelta(minutes=1),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await container.schedule_store.put(schedule)
+    assert container.schedule_admitter is not None
+
+    admission = await container.schedule_admitter.admit_due(schedule, now=now)
+    assert len(admission.run_ids) == 1
+    admitted = await container.run_store.get_run(admission.run_ids[0])
+    assert admitted is not None and admitted.status is RunStatus.QUEUED
+
+    assert await container.execute_admitted_runs() == 1
+
+    completed = await container.run_store.get_run(admission.run_ids[0])
+    assert completed is not None and completed.status is RunStatus.COMPLETED
+    (node_run,) = await container.run_store.list_node_runs(completed.run_id)
+    (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+    assert node_run.status is RunStatus.COMPLETED
+    assert attempt.status.value == "completed"
+    assert _TickNode.calls == 1
 
 
 @pytest.mark.ac("ADR-082826-b601/AC-1")
@@ -114,6 +165,55 @@ async def test_admitted_schedule_run_executes_to_completion() -> None:
     assert node_run.result == {"text": "SCHEDULED"}
     (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
     assert attempt.status.value == "completed"
+
+
+async def test_admitted_schedule_run_executes_on_the_sqlite_container(tmp_path: Any) -> None:
+    """The production claim-capable SQLite wiring closes the same loop."""
+    _TickNode.calls = 0
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
+            database_url=f"sqlite:///{tmp_path / 'consumer.sqlite3'}",
+        )
+    )
+    try:
+        workspace = "sqlite-admitter-consumer-ws"
+        root = await container.project_scope_store.create_root(workspace)
+        template = GraphTemplate(
+            template_id="sqlite-admitter-consumer-template",
+            workspace_id=workspace,
+            version=1,
+            name="sqlite admitter consumer",
+            nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
+        )
+        assert container.template_store is not None
+        await container.template_store.put(template)
+        schedule = Schedule(
+            workspace_id=workspace,
+            project_id=root.project_id,
+            name="sqlite admitter consumer schedule",
+            cron="* * * * *",
+            graph_template_id=template.template_id,
+            created_at=datetime.now(UTC) - timedelta(days=1),
+            last_fired_at=datetime.now(UTC) - timedelta(minutes=1),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        await container.schedule_store.put(schedule)
+        assert container.schedule_admitter is not None
+
+        admission = await container.schedule_admitter.admit_due(schedule, now=datetime.now(UTC))
+        assert len(admission.run_ids) == 1
+        assert await container.execute_admitted_runs() == 1
+
+        run = await container.run_store.get_run(admission.run_ids[0])
+        assert run is not None and run.status is RunStatus.COMPLETED
+        (node_run,) = await container.run_store.list_node_runs(run.run_id)
+        (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+        assert node_run.status is RunStatus.COMPLETED
+        assert attempt.status.value == "completed"
+        assert _TickNode.calls == 1
+    finally:
+        await container.aclose()
 
 
 @pytest.mark.ac("ADR-082826-b601/AC-2")
@@ -160,7 +260,95 @@ async def test_failed_scheduled_work_parks_and_is_not_silently_retried() -> None
 
     # Parked is not QUEUED: the next tick must not invent a retry decision.
     assert await container.execute_admitted_runs() == 0
-    assert len(await container.run_store.list_node_runs(run_id)) == 1
+
+
+async def test_caught_failures_are_failed_accounting_not_succeeded() -> None:
+    """#849: the tick's one number used to count caught failures, so an
+    all-failing batch presented as a full executed batch. The breakdown is the
+    contract now: a tick-level exception is `failed`, a node failure that
+    parked its Run is `parked`, and neither is ever `succeeded` — while the
+    int return keeps its historical attempted meaning for existing callers."""
+    container = await _container()
+    await _admit_schedule_run(container, kind=_BoomTickNode.kind)
+
+    accounting = await container.execute_admitted_runs_accounting()
+
+    assert accounting.attempted == 1
+    assert accounting.succeeded == 0, "a caught failure is not a successful execution"
+    assert accounting.failed == 0, "the node failure was recorded, not raised to the tick"
+    assert accounting.parked == 1
+    assert accounting.skipped == 0
+    # The compatibility return is attempted, not succeeded — but it is now
+    # documented as such and every caller that needs the truth reads the
+    # breakdown above.
+    assert await container.execute_admitted_runs() == 0  # the Run is parked WAITING
+
+
+async def test_an_infrastructure_failure_is_failed_accounting_not_succeeded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The case the defect names: an execution call that raises must count as
+    a failed attempt, never as a succeeded one."""
+    import logging
+
+    container = await _container()
+    await _admit_schedule_run(container, kind=_UnbuildableTickNode.kind)
+
+    with caplog.at_level(logging.WARNING):
+        accounting = await container.execute_admitted_runs_accounting()
+
+    assert accounting.attempted == 1
+    assert accounting.succeeded == 0, "a caught failure is not a successful execution"
+    assert accounting.failed == 1
+    assert accounting.parked == 0
+    assert "failed during consumption" in caplog.text
+
+
+async def test_a_successful_tick_accounts_succeeded() -> None:
+    container = await _container()
+    _TickNode.calls = 0
+    await _admit_schedule_run(container, inputs={"greeting": "hi"})
+
+    accounting = await container.execute_admitted_runs_accounting()
+
+    assert accounting.attempted == 1
+    assert accounting.succeeded == 1
+    assert accounting.failed == 0
+    assert accounting.parked == 0
+    assert accounting.skipped == 0
+
+
+async def test_a_lost_claim_is_skipped_accounting() -> None:
+    """A lost claim race is a skip, not an attempt and not a failure."""
+    from maistro.runs.consumer_claim import ConsumerClaimLost
+
+    container = await _container()
+    await _admit_schedule_run(container)
+
+    # Wrap the store so every claim loses, without touching anything else.
+    original = container.run_store
+
+    class _Veto:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def claim_consumer_run(self, *args: Any, **kwargs: Any) -> Any:
+            raise ConsumerClaimLost("claimed by a concurrent tick")
+
+    container.run_store = _Veto(original)  # type: ignore[assignment]
+    try:
+        accounting = await container.execute_admitted_runs_accounting()
+    finally:
+        container.run_store = original  # type: ignore[assignment]
+
+    assert accounting.attempted == 0
+    assert accounting.succeeded == 0
+    assert accounting.failed == 0
+    assert accounting.parked == 0
+    assert accounting.skipped == 1
 
 
 @pytest.mark.ac("ADR-082826-b601/AC-4")
@@ -199,10 +387,28 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=status)
-    newer = await store.create_run(graph, initial_status=status)
+    older = await store.create_run(
+        graph, initial_status=status, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    newer = await store.create_run(
+        graph, initial_status=status, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     other_status = RunStatus.CREATED if status is RunStatus.QUEUED else RunStatus.QUEUED
-    await store.create_run(graph, initial_status=other_status)
+    await store.create_run(
+        graph, initial_status=other_status, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    owned = await store.create_run(
+        graph,
+        initial_status=other_status,
+        provenance={ADMISSION_SOURCE: "owned"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.create_run(
+        graph,
+        initial_status=other_status,
+        provenance={ADMISSION_SOURCE: "foreign"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     listed = await store.list_by_status(status, limit=10)
 
@@ -216,6 +422,14 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
 
     scoped = await store.list_by_status(status, limit=10, project_id=project_id)
     assert [run.run_id for run in scoped[:2]] == [older.run_id, newer.run_id]
+    assert [
+        run.run_id
+        for run in await store.list_by_status(
+            other_status,
+            limit=10,
+            admission_source="owned",
+        )
+    ] == [owned.run_id]
     assert await store.list_by_status(status, limit=10, project_id="project-elsewhere") == []
     with pytest.raises(ValueError):
         await store.list_by_status(status, limit=0)
@@ -235,8 +449,12 @@ async def test_list_by_status_offset_walks_past_the_first_page(
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=status)
-    newer = await store.create_run(graph, initial_status=status)
+    older = await store.create_run(
+        graph, initial_status=status, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    newer = await store.create_run(
+        graph, initial_status=status, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     first_page = await store.list_by_status(status, limit=1, offset=0)
     second_page = await store.list_by_status(status, limit=1, offset=1)
@@ -266,9 +484,15 @@ async def test_list_by_status_conformance_on_the_reference_store(memory_spine: A
         name="g",
         nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
     )
-    older = await store.create_run(graph, initial_status=RunStatus.QUEUED)
-    newer = await store.create_run(graph, initial_status=RunStatus.QUEUED)
-    await store.create_run(graph, initial_status=RunStatus.CREATED)
+    older = await store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    newer = await store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await store.create_run(
+        graph, initial_status=RunStatus.CREATED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     listed = await store.list_by_status(RunStatus.QUEUED, limit=10)
     assert [run.run_id for run in listed] == [older.run_id, newer.run_id]

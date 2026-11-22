@@ -14,8 +14,8 @@ holds exactly `max_series_per_metric` series with the rest counted in
 `metrics_series_overflow_total`; a capped metric still updates its admitted
 series without counting those updates as overflow; the cap applies to gauges
 and histograms; the cap is per metric, not per registry;
-`max_series_per_metric=None` restores uncapped behaviour and renders no
-overflow counter; a cap below one is rejected; and the text exposition
+the default/`None` configuration caps at `DEFAULT_MAX_SERIES_PER_METRIC`
+and reports overflow; a cap below one is rejected; and the text exposition
 surfaces the overflow counter for alerting.
 
 **+2 `packages/maistro-server/tests`** — two new cases in `test_rate_limit.py`

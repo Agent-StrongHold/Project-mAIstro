@@ -1197,6 +1197,87 @@ class TestSupersededGrantsDirectly:
         assert gate._superseded_grants(notes, {"design_coverage": 15.0}, base_sha=base_sha) == {}
 
 
+class TestEventInvariantSupersession:
+    def test_pull_request_and_topic_push_share_superseders_and_retain_verdict(
+        self, gate, repo, monkeypatch, tmp_path
+    ) -> None:
+        """The same candidate must not manufacture its own third landing.
+
+        The branch note is present in a push event's ``before`` tip but is not
+        present at the PR merge base. The shared integration-base contract
+        makes every event payload read the same two independent notes, so the
+        grant is retained and all paths return the same verdict. The third leg
+        is the branch-creation push, whose ``before`` is git's null SHA -- the
+        resolver must treat "no previous tip" as no base at all and fall
+        through to the same integration base rather than judging against a
+        sentinel that names no revision.
+        """
+        root = repo(
+            20.0,
+            grant_at_base="design_coverage@15.0",
+            banked=20.0,
+            extra_base_notes={"other-one": 16.0, "other-two": 17.0},
+        )
+        branch_note_sha = _git("rev-parse", "HEAD", cwd=root)
+        grants_path = root / "quality" / "ratchet-authorizations.json"
+        grants_path.write_text("{}")
+        _git("add", str(grants_path), cwd=root)
+        _git("commit", "-qm", "candidate prunes the grant", cwd=root)
+        candidate_sha = _git("rev-parse", "HEAD", cwd=root)
+        before_sha = _git("rev-parse", "HEAD^", cwd=root)
+        develop_sha = _git("rev-parse", "origin/develop", cwd=root)
+        assert before_sha == branch_note_sha
+
+        pull_event = tmp_path / "pull-request.json"
+        pull_event.write_text(
+            json.dumps(
+                {
+                    "pull_request": {
+                        "base": {"ref": "develop", "sha": develop_sha},
+                    }
+                }
+            )
+        )
+        push_event = tmp_path / "push.json"
+        push_event.write_text(json.dumps({"before": before_sha, "ref": "refs/heads/fix/ac-state"}))
+        # GitHub sends `before` as git's null SHA (40 zeros, or 64 for sha256
+        # repos) on the push that CREATES a branch -- there is no previous tip.
+        creation_event = tmp_path / "push-creation.json"
+        creation_event.write_text(
+            json.dumps({"before": "0" * 40, "ref": "refs/heads/fix/ac-state"})
+        )
+
+        superseders: list[dict[str, list[str]]] = []
+        verdicts: list[int] = []
+        base_shas: list[str | None] = []
+        for event_name, event_path in (
+            ("pull_request", pull_event),
+            ("push", push_event),
+            ("push", creation_event),
+        ):
+            monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+            monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+            monkeypatch.delenv("RATCHET_BASE_REV", raising=False)
+            bound = gate.ac_state_notes.bounds()
+            base_shas.append(bound.base_sha)
+            notes, _, _ = gate.ac_state_notes.load_notes(base=bound.base_sha)
+            floors, _ = gate.authorized_floors(bound.base_sha)
+            superseders.append(gate._superseded_grants(notes, floors, base_sha=bound.base_sha))
+            verdicts.append(_run(gate, 20.0))
+
+        assert candidate_sha == _git("rev-parse", "HEAD", cwd=root)
+        assert base_shas == [develop_sha, develop_sha, develop_sha]
+        assert superseders == [{}, {}, {}]
+        assert verdicts == [1, 1, 1], "all three event paths retain the still-binding grant"
+
+        # The old push key (`before`) would have counted the branch's own note
+        # as the third independent landing and incorrectly allowed pruning.
+        before_notes, _, _ = gate.ac_state_notes.load_notes(base=before_sha)
+        assert gate._superseded_grants(
+            before_notes, {"design_coverage": 15.0}, base_sha=before_sha
+        ) == {"design_coverage": ["branch.json", "other-one.json", "other-two.json"]}
+
+
 class TestASupersededGrantCanBePruned:
     """SPEC-083026-fcc9.
 

@@ -118,9 +118,11 @@ class TestThresholdStore:
 class TestSentinelIntegration:
     async def test_rlphd_not_invoked_when_not_opted_in(self) -> None:
         store = InMemoryRlphdThresholdStore()
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("deploy", "team:1"): Tier.DELEGATED},
             approver_graph=ApproverGraph([]),
             rlphd_model=RlphdModel(feature_weights={"risk": 5.0}),
@@ -136,9 +138,11 @@ class TestSentinelIntegration:
     async def test_rlphd_auto_acts_when_opted_in_and_p_above_theta(self) -> None:
         store = InMemoryRlphdThresholdStore()
         store.opt_ins.add(("agent-1", "deploy"))
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("deploy", "team:1"): Tier.DELEGATED},
             approver_graph=ApproverGraph([]),
             rlphd_model=RlphdModel(feature_weights={"risk": 5.0}),
@@ -157,9 +161,11 @@ class TestSentinelIntegration:
     async def test_rlphd_surfaces_low_confidence_without_auto_acting(self) -> None:
         store = InMemoryRlphdThresholdStore()
         store.opt_ins.add(("agent-1", "deploy"))
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("deploy", "team:1"): Tier.DELEGATED},
             approver_graph=ApproverGraph([]),
             rlphd_model=RlphdModel(feature_weights={"risk": -5.0}),
@@ -178,9 +184,11 @@ class TestSentinelIntegration:
     async def test_rlphd_never_invoked_for_admin_tier(self) -> None:
         store = InMemoryRlphdThresholdStore()
         store.opt_ins.add(("agent-1", "destroy_db"))
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("destroy_db", "team:1"): Tier.ADMIN},
             rlphd_model=RlphdModel(feature_weights={"risk": 5.0}),
             rlphd_threshold_store=store,
@@ -195,9 +203,11 @@ class TestSentinelIntegration:
     async def test_rlphd_never_invoked_for_blocked_tier(self) -> None:
         store = InMemoryRlphdThresholdStore()
         store.opt_ins.add(("agent-1", "wipe_disk"))
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("wipe_disk", "team:1"): Tier.BLOCKED},
             rlphd_model=RlphdModel(feature_weights={"risk": 5.0}),
             rlphd_threshold_store=store,
@@ -213,9 +223,11 @@ class TestSentinelIntegration:
     async def test_rlphd_never_invoked_before_budget_check(self) -> None:
         store = InMemoryRlphdThresholdStore()
         store.opt_ins.add(("agent-1", "deploy"))
+        # COMPATIBILITY (#1165): suite tests RLPHD auto-acting, not misses
         sentinel = Sentinel(
             warden=Warden(),
             permission_table={},
+            allow_on_miss=True,
             tier_policy={("deploy", "team:1"): Tier.DELEGATED},
             rlphd_model=RlphdModel(feature_weights={"risk": 5.0}),
             rlphd_threshold_store=store,

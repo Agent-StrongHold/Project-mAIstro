@@ -22,6 +22,7 @@ from maistro.memory.context_assembly import (
 from maistro.memory.episodic.ranking import keyword_overlap, score
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
 from maistro.projects.store import InMemoryProjectStore
@@ -83,6 +84,7 @@ def _outcome(error: str, project_id: str) -> Outcome:
         task_type="",
         success=False,
         error_type=error,
+        org_id="org-1",
         project_id=project_id,
     )
 
@@ -90,8 +92,8 @@ def _outcome(error: str, project_id: str) -> Outcome:
 @pytest.fixture
 def policy() -> DefaultContextAssemblyPolicy:
     return DefaultContextAssemblyPolicy(
-        episodic_store=InMemoryEpisodicStore(),
-        outcome_store=InMemoryOutcomeStore(),
+        episodic_store=InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
         project_store=InMemoryProjectStore(),
     )
 
@@ -161,6 +163,29 @@ class TestRankingGoesThroughTheProtocol:
         assert call["team_id"] == "t1"
         assert call["org_id"] == "o1"
         assert call["min_weight"] == 0.3
+
+    @pytest.mark.parametrize("query", ["", "deploy"])
+    async def test_layer1_sends_the_project_to_the_store(self, query: str) -> None:
+        """#1047: both recall paths ask the store for this Project's memories only."""
+        store = _ListOnlyEpisodicStore([_mem("deploy script", 0.4, "a")])
+        policy = DefaultContextAssemblyPolicy(
+            episodic_store=store,
+            outcome_store=InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+            project_store=InMemoryProjectStore(),
+        )
+
+        await policy.assemble(
+            project_id="p1",
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=10_000,
+            query=query,
+        )
+
+        layer1_call = store.scope_calls[0]
+        assert layer1_call["agent_id"] == "agent-1"
+        assert layer1_call["project_id"] == "p1"
 
 
 class TestTheBudgetDropsWholeMemories:
@@ -272,7 +297,7 @@ class TestOneFormula:
         """Weaker than the above and still worth having: the store ranks by the
         same shared function, so a store that stopped dropping non-matches, or
         sorted ascending, is caught here rather than in production."""
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         for row in (
             _mem("kubernetes ingress routing", 0.5, "irrelevant"),
             _mem("deploy the script", 0.5, "relevant"),
@@ -306,6 +331,8 @@ class TestAssembledMemoryReachesThePrompt:
             prompt_manager=_EmptyPromptManager(),
             context_assembly_policy=policy,
             agent_id="agent-1",
+            org_id="org-1",
+            project_id="p1",
         )
         return str(messages[0]["content"]) if messages[0].get("role") == "system" else ""
 
@@ -347,8 +374,8 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
             _outcome("the deploy needs a database migration first", "p1")
         )
 
-        generous = await policy.layer3("p1", budget_tokens=10_000)
-        stingy = await policy.layer3("p1", budget_tokens=1)
+        generous = await policy.layer3("p1", budget_tokens=10_000, org_id="org-1")
+        stingy = await policy.layer3("p1", budget_tokens=1, org_id="org-1")
 
         assert "migration" in generous
         assert stingy == ""
@@ -363,7 +390,7 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
         await policy.outcome_store.record(_outcome("some experience", "p1"))
         await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
 
-        text = await policy.layer3("p1", budget_tokens=2)
+        text = await policy.layer3("p1", budget_tokens=2, org_id="org-1")
 
         assert "never deploy on a Friday" in text
 
@@ -376,7 +403,7 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
         await policy.outcome_store.record(_outcome("some experience", "p1"))
         await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
 
-        text = await policy.layer3("p1")
+        text = await policy.layer3("p1", org_id="org-1")
 
         assert "some experience" in text
         assert "never deploy on a Friday" in text

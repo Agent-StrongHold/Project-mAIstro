@@ -51,7 +51,7 @@ owners:
 
 # SPEC-081226-69ee: Graph and Node Execution Model
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Date:** 2026-08-14 revision
 - **ADR:** `ADR-081226-69ee`
 

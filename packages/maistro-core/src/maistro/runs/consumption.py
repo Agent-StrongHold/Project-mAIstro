@@ -38,6 +38,7 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.consumer_claim import ConsumerClaimStore
 from maistro.runs.execution import AttemptExecutionService, ExecutionYielded
+from maistro.runs.lifecycle import is_reclaimed_attempt
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
@@ -490,6 +491,26 @@ def _pause_from_attempt(node_run: NodeRun, attempt: Attempt) -> ParkedPause | No
     )
 
 
+def _pause_behind_recovery(node_run: NodeRun, attempts: list[Attempt]) -> ParkedPause | None:
+    """The newest recorded pause, read past Attempts crash recovery reclaimed.
+
+    A resumed physical try whose worker dies leaves the newest row a CANCELLED
+    Attempt the recovery sweep reclaimed, and the sweep parks the NodeRun
+    WAITING again without inventing a retry (ADR-082526-b36a). The pause is
+    still the one the YIELDED Attempt before it recorded, and re-entering a
+    polling node re-reads the world exactly as the first resume did -- so a
+    schedule whose resume crashed is not parked forever behind its own
+    recovery artefact (#1112). Only *reclaimed* rows are looked past: a FAILED,
+    TIMED_OUT, or requested-CANCELLED Attempt still says a decision is owed to
+    whoever owns retries.
+    """
+    for attempt in reversed(attempts):
+        if is_reclaimed_attempt(attempt):
+            continue
+        return _pause_from_attempt(node_run, attempt)
+    return None
+
+
 def resumable_pause(
     node_run: NodeRun,
     attempts: list[Attempt],
@@ -512,12 +533,38 @@ def resumable_pause(
         return None
     if not attempts:
         return None
-    pause = _pause_from_attempt(node_run, attempts[-1])
+    pause = _pause_behind_recovery(node_run, attempts)
     if pause is None:
         return None
     if pause.reason not in TIMER_RESUMABLE_PAUSE_REASONS:
         return None
     return pause if pause.elapsed(now) else None
+
+
+@dataclass(frozen=True)
+class TickAccounting:
+    """What one operator-scheduled consumer tick did, distinguished (#849).
+
+    An all-failing batch used to present as a full executed batch because the
+    tick's only output was one number that counted caught failures. The
+    breakdown is the contract now:
+
+    - `attempted` — claimed and driven to a disposition by execution;
+    - `succeeded` — reached its intended successful terminal state;
+    - `failed` — attempted and the execution call raised; a caught failure is
+      never a success;
+    - `parked` — attempted and settled non-terminal (a failed Attempt's park
+      or a re-entry's re-yield): durable evidence, owned by recovery, and
+      deliberately not called a success;
+    - `skipped` — not attempted (a lost claim race, an ineligible or
+      unresolvable Run).
+    """
+
+    attempted: int
+    succeeded: int
+    failed: int
+    parked: int
+    skipped: int
 
 
 __all__ = [
@@ -528,6 +575,7 @@ __all__ = [
     "ParkedPause",
     "ScheduleAttemptExecutor",
     "ScheduleExecutionFailed",
+    "TickAccounting",
     "consumer_owns",
     "executable_by_consumer",
     "parked_by_consumer",

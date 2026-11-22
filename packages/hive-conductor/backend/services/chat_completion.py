@@ -18,6 +18,7 @@ from typing import Any
 from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
+from fastapi import HTTPException
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 from routes.audit import log_audit
@@ -35,11 +36,13 @@ from services.agent_materialization import (
 )
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
 from services.chat_gate import (
+    _workflow_request_digest,
     gate_tool_dispatch,
     gate_untrusted,
     new_gate_id,
     refusal_content,
 )
+from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
@@ -147,45 +150,53 @@ def _get_jira_pat(user_id: str) -> str | None:
         return None
 
 
-def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:  # noqa: C901  layered credential fallbacks
-    """Pull Airtable token + base_id from env (CI/CD) or credential store."""
+def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:
+    """Pull Airtable credentials for exactly ``user_id``.
+
+    ``AIRTABLE_*`` environment credentials are retained only for an explicitly
+    enabled, single-user deployment with at most one stored principal. They are
+    never a fallback on an authenticated multi-user request.
+    """
     import os
 
-    env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
-    env_base = os.environ.get("AIRTABLE_BASE_ID")
-    if env_token:
-        return env_token, env_base or ""
     try:
         import stores
 
         from services import user_credentials as cred_svc
+
+        if _single_user_airtable_env_enabled(user_id):
+            env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
+            if env_token:
+                return env_token, os.environ.get("AIRTABLE_BASE_ID", "")
 
         store = cred_svc.get_credential_store()
         if store is None:
             return None, None
         context = ToolCallContext(user_id)
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS, include_dev_fallback=True)
+        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS)
         if not token:
             return None, None
-        # base_id is in user_provider_config — try multiple user_id patterns
-        base_id = ""
-        for uid in context.candidate_user_ids(include_dev_fallback=True):
-            config_raw = stores.user_provider_config.get(f"{uid}:airtable")
-            if isinstance(config_raw, dict) and config_raw.get("base_id"):
-                base_id = config_raw["base_id"]
-                break
-        # If still not found, scan all keys for any airtable config
-        if not base_id:
-            for key in stores.user_provider_config:
-                if key.endswith(":airtable"):
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        base_id = val["base_id"]
-                        break
+        config_raw = stores.user_provider_config.get(f"{user_id}:airtable")
+        base_id = config_raw.get("base_id") if isinstance(config_raw, dict) else ""
         return token, base_id.split("/")[0] if base_id else ""
     except Exception:
         return None, None
+
+
+def _single_user_airtable_env_enabled(user_id: str) -> bool:
+    """Gate legacy process-wide Airtable env vars to an explicit one-user mode."""
+    import os
+
+    if os.environ.get("AIRTABLE_SINGLE_USER_MODE", "").lower() not in {"1", "true", "yes"}:
+        return False
+    try:
+        import stores
+
+        principals = tuple(stores.users.keys())
+        return len(principals) <= 1 and (not principals or user_id in principals)
+    except Exception:
+        return False
 
 
 def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prompt sections
@@ -461,7 +472,7 @@ PM_TOOLS: list[dict[str, Any]] = [
                     "size": {"type": "string", "description": "Column span: 1, 2, 3, 4, 5, or 6"},
                     "config": {
                         "type": "object",
-                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub}. For custom: {source, table, filter_formula} or {endpoint, params}.",
+                        "description": "Widget config. For jira: {project, status, days, assignee, jql_extra, jira_display}. For kpi: {field, sub} — fields approval_rate and ttft currently render N/A (no source measures them). For custom metrics source: {source: 'metrics', metric: 'latency'|'ttft'|'cost'|'tokens'|'invocations'} — there is no errors metric. For custom: {source, table, filter_formula} or {endpoint, params}.",
                     },
                     "tab": {
                         "type": "string",
@@ -623,12 +634,16 @@ PM_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "dag_id": {"type": "string", "description": "The DAG workflow ID to run"},
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "The authorized Workspace in which to run the workflow",
+                    },
                     "goal": {
                         "type": "string",
                         "description": "Optional goal/context to pass to the DAG nodes",
                     },
                 },
-                "required": ["dag_id"],
+                "required": ["dag_id", "workspace_id"],
             },
         },
     },
@@ -747,6 +762,70 @@ PM_TOOLS: list[dict[str, Any]] = [
             "name": "list_workflows",
             "description": "List all available DAG workflows.",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compose_home_adaptive",
+            "description": "Fill the Workspace Home's adaptive (unpinned) space (#1048). Pass the regions to show; the user's pinned regions are never touched, and a payload that tries to pin, unpin, move or drop one is refused. Each region: {id, kind, position, size?, resource_type?, resource_id?, reason?}. kind: goals, backlog, runs, chat, sessions, design, attention, note.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "regions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "kind": {
+                                    "type": "string",
+                                    "description": "goals, backlog, runs, chat, sessions, design, attention, note",
+                                },
+                                "position": {"type": "integer"},
+                                "size": {"type": "string"},
+                                "resource_type": {
+                                    "type": "string",
+                                    "description": "goal, backlog_item, run, chat_session, design_surface, attention_item, or none",
+                                },
+                                "resource_id": {"type": "string"},
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Why this region earns its place, from the user's own evidence",
+                                },
+                            },
+                            "required": ["id", "kind"],
+                        },
+                        "description": "The adaptive regions to show in unpinned space",
+                    },
+                    "expected_revision": {
+                        "type": "integer",
+                        "description": "The layout revision this composition was built against",
+                    },
+                },
+                "required": ["regions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dismiss_home_adaptive",
+            "description": "Record that the user does not want one adaptive Home candidate surfaced (#1048). Backend-side and durable: the candidate stops being offered in this Workspace, and the count is visible to the user. item_type: goal, backlog_item, run, chat_session, design_surface, attention_item.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_type": {
+                        "type": "string",
+                        "description": "goal, backlog_item, run, chat_session, design_surface, attention_item",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "The canonical id of the item not to surface",
+                    },
+                },
+                "required": ["item_type", "item_id"],
+            },
         },
     },
 ]
@@ -1249,9 +1328,7 @@ async def _tool_memory_add(
         created_at=t,
         updated_at=t,
     )
-    import stores
-
-    stores.memory_entries[eid] = entry
+    owned_memory_entries(Owner(id=user_id)).create(eid, entry)
     return {"saved": True, "id": eid, "content": content}
 
 
@@ -1291,10 +1368,8 @@ async def _tool_memory_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Search memories."""
-    import stores
-
     query = args.get("query", "").lower()
-    entries = [e for e in stores.memory_entries.values() if e.user_id == user_id]
+    entries = owned_memory_entries(Owner(id=user_id)).values()
     if query:
         entries = [
             e
@@ -1316,13 +1391,10 @@ async def _tool_memory_delete(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Delete a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     if not entry_id:
         return {"error": "entry_id required"}
-    if entry_id in stores.memory_entries and stores.memory_entries[entry_id].user_id == user_id:
-        del stores.memory_entries[entry_id]
+    if owned_memory_entries(Owner(id=user_id)).discard(entry_id):
         return {"deleted": True, "id": entry_id}
     return {"error": "not found"}
 
@@ -1331,21 +1403,21 @@ async def _tool_memory_edit(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Edit a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     value = args.get("value", "")
     if not entry_id or not value:
         return {"error": "entry_id and value required"}
-    if entry_id not in stores.memory_entries or stores.memory_entries[entry_id].user_id != user_id:
+    owned = owned_memory_entries(Owner(id=user_id))
+    try:
+        entry = owned.require(entry_id)
+    except HTTPException:
         return {"error": "not found"}
     from datetime import UTC, datetime
 
-    entry = stores.memory_entries[entry_id]
     updates: dict[str, Any] = {"value": value, "key": value[:60], "updated_at": datetime.now(UTC)}
     if "tags" in args:
         updates["tags"] = args["tags"]
-    stores.memory_entries[entry_id] = entry.model_copy(update=updates)
+    owned.update(entry_id, entry.model_copy(update=updates))
     return {"updated": True, "id": entry_id, "value": value}
 
 
@@ -1390,10 +1462,6 @@ async def _tool_create_dashboard_widget(
             "violations": violations,
         }
 
-    # `effective`, not `load`: before a first save the route hands the user their
-    # preset without storing it, so editing the empty record and saving it
-    # replaced every preset widget with the one just added (#340).
-    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,
@@ -1402,27 +1470,25 @@ async def _tool_create_dashboard_widget(
         "config": config,
     }
 
-    if layout.get("tabs"):
-        tabs = [dict(tab) for tab in layout["tabs"]]
-        target_idx = layout.get("activeTab", 0)
-        if tab_name:
-            for i, tab in enumerate(tabs):
-                if tab.get("name", "").lower() == tab_name.lower():
-                    target_idx = i
-                    break
-            else:
-                tabs.append({"name": tab_name, "widgets": []})
-                target_idx = len(tabs) - 1
-        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
-        layout["tabs"] = tabs
-    else:
-        existing = layout.get("widgets", [])
-        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
-        layout["activeTab"] = 0
-        layout.pop("widgets", None)
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340). The save is
+    # against the revision read, so a UI save in between is re-read, not erased.
+    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
+        layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
+        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
 
     try:
-        dashboard_layouts.save(user_id, layout)
+        try:
+            add_to(dashboard_layouts.effective(user_id))
+        except dashboard_layouts.LayoutConflictError:
+            add_to(dashboard_layouts.effective(user_id))
+    except dashboard_layouts.LayoutConflictError as exc:
+        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
+        return {
+            "created": False,
+            "error": f"the layout kept changing while the widget was added: {exc}",
+        }
     except dashboard_layouts.LayoutError as exc:
         logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
         return {"created": False, "error": f"the widget was not saved: {exc}"}
@@ -1506,6 +1572,106 @@ async def _tool_list_workflows(
     }
 
 
+async def _canonical_run_was_cancelled(canonical_run_id: str) -> bool:
+    """Whether the canonical spine recorded this Run as CANCELLED.
+
+    The projection mirrors canonical truth or says nothing; when the spine is
+    unreachable there is nothing to mirror, so the answer is no (#1332).
+    """
+    try:
+        from maistro.runs.model import RunStatus
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            return False
+        run = await run_store.get_run(canonical_run_id)
+    except Exception:
+        return False
+    return run is not None and run.status is RunStatus.CANCELLED
+
+
+class _ChatDagRunScoreAdapter:
+    """The run shape the eval judge scores a chat-launched DAG through."""
+
+    def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
+        self.run_id = exec_id
+        self.dag_id = dag_id
+        self.project_id = ""
+        self.status = "completed"
+        self.node_records = []
+        for nid, nr in result.get("node_results", {}).items():
+
+            class _NR:
+                pass
+
+            n = _NR()
+            n.node_id = nid
+            n.kind = nr.get("role", "llm")
+            n.phase = "completed"
+            n.latency_ms = nr.get("latency_ms", 0)
+            n.tokens_in = nr.get("tokens_in", 0)
+            n.tokens_out = nr.get("tokens_out", 0)
+            n.error_code = None
+            n.error_message = None
+            n.response_preview = nr.get("response", "")[:500]
+            self.node_records.append(n)
+
+
+async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Score a chat-launched DAG through the eval judge.
+
+    The scorer is commentary on a run, not part of it: its failure has the
+    same standing as a failed history write and must not change the outcome
+    the caller sees.
+    """
+    try:
+        from services.eval_judge import score_run
+
+        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+    except Exception as e:
+        return {"score": 0, "error": str(e)[:100]}
+
+
+def _chat_dag_output_preview(result: dict[str, Any]) -> dict[str, str]:
+    """The first few node responses, at the preview length the tool serves."""
+    return {
+        nid: nr.get("response", "")[:200]
+        for nid, nr in list(result.get("node_results", {}).items())[:3]
+    }
+
+
+async def _cancellation_answer(
+    cancelled: asyncio.CancelledError, exec_id: str, dag_id: str
+) -> dict[str, Any]:
+    """The turn's answer when the canonical spine cancelled this DAG run.
+
+    `RunExecutionService.cancel_run` fences the canonical Run CANCELLED, stops
+    its Attempts, and the durable walk persists that truth and re-raises the
+    cancellation into this awaiter (#1332). The same exception also arrives
+    when THIS task is torn down (a chat disconnect) with the canonical Run
+    untouched, so an answer -- and the cancelled row it stamps -- follows only
+    a cancellation the spine actually recorded; otherwise the original
+    cancellation is re-raised, as asyncio's contract requires.
+    """
+    if asyncio.current_task().cancelling():
+        raise cancelled
+    from services.dag_run_store import get_dag_run_store
+
+    record = get_dag_run_store().get_run(exec_id) or {}
+    canonical_run_id = str(record.get("canonical_run_id") or "")
+    if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
+        raise cancelled
+    with contextlib.suppress(Exception):
+        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+    return {
+        "run_id": exec_id,
+        "dag_id": dag_id,
+        "status": "cancelled",
+        "cancelled": True,
+    }
+
+
 async def _tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
@@ -1519,6 +1685,7 @@ async def _tool_run_workflow(
         return {"error": f"DAG '{dag_id}' not found. Use list_workflows to see available DAGs."}
 
     dag_data = stores.dags[dag_id]
+    workspace_id = str(args.get("workspace_id") or "").strip()
     goal = args.get("goal", "")
     if goal:
         dag_data = {**dag_data, "description": goal}
@@ -1533,21 +1700,28 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from services.canonical_dag_runner import resolve_execution_scope
+        from services.dag_execution_scope import authorize_hive_dag_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        # The projection row opens before execution, so it must already carry
-        # the scope the execution will resolve -- resolved here by the same
-        # resolver `execute_dag` uses, never a second mapping (#1174).
-        workspace_id, project_id = await resolve_execution_scope(dag_data)
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
+        project_id = scope.project_id
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, user_id=user_id)
+
+        async def _record_admission(canonical_run_id: str) -> None:
+            # Persist the projection -> canonical Run correlation at canonical
+            # admission, not after execution settles (#1332). The canonical
+            # executor awaits this before any physical node work, so a live
+            # Recent Runs entry cancels through the exact canonical Run while
+            # the DAG is still running instead of 404-ing the projection id.
+            await store.record_canonical_run(exec_id, canonical_run_id=canonical_run_id)
+
+        result = await execute_dag(dag_data, scope=scope, on_admitted=_record_admission)
         executed = True
 
         # Store events
@@ -1561,37 +1735,7 @@ async def _tool_run_workflow(
             )
 
         # Trigger eval-judge
-        score_result = {}
-        try:
-            from services.eval_judge import score_run
-
-            class _Adapter:
-                def __init__(self):
-                    self.run_id = exec_id
-                    self.dag_id = dag_id
-                    self.project_id = ""
-                    self.status = "completed"
-                    self.node_records = []
-                    for nid, nr in result.get("node_results", {}).items():
-
-                        class _NR:
-                            pass
-
-                        n = _NR()
-                        n.node_id = nid
-                        n.kind = nr.get("role", "llm")
-                        n.phase = "completed"
-                        n.latency_ms = nr.get("latency_ms", 0)
-                        n.tokens_in = nr.get("tokens_in", 0)
-                        n.tokens_out = nr.get("tokens_out", 0)
-                        n.error_code = None
-                        n.error_message = None
-                        n.response_preview = nr.get("response", "")[:500]
-                        self.node_records.append(n)
-
-            score_result = await score_run(_Adapter())
-        except Exception as e:
-            score_result = {"score": 0, "error": str(e)[:100]}
+        score_result = await _eval_judge_score(exec_id, dag_id, result)
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1610,11 +1754,14 @@ async def _tool_run_workflow(
             "score": score_result.get("score", 0),
             "rationale": score_result.get("rationale", ""),
             "topology_proposal": score_result.get("topology_proposal"),
-            "output_preview": {
-                nid: nr.get("response", "")[:200]
-                for nid, nr in list(result.get("node_results", {}).items())[:3]
-            },
+            "output_preview": _chat_dag_output_preview(result),
         }
+    except asyncio.CancelledError as cancelled:
+        # Cancellation that works (#1332): the durable walk re-raises the
+        # canonical cancel fence into this awaiter; `_cancellation_answer`
+        # answers only a cancellation the spine actually recorded -- never a
+        # task teardown, which it re-raises unchanged.
+        return await _cancellation_answer(cancelled, exec_id, dag_id)
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
@@ -1804,6 +1951,95 @@ async def _tool_update_eval(
     return {"updated": True, "dag_id": dag_id, "rubric_length": len(rubric)}
 
 
+async def _tool_compose_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Compose the Workspace Home's unpinned space (#1048), without a browser.
+
+    Goes through the same `services.home_layouts.compose_adaptive` the
+    `POST /v1/workspaces/{id}/home/adaptive/compose` route serves, so a
+    composition made in chat and one made over the API land in the same
+    durable row under the same authority rule: pinned regions are refused to
+    both. The Workspace comes from the turn's workspace context — the same
+    `_chat_workspace_id` the agent-button tools read — never from a model
+    argument, so the model cannot aim the tool at a Workspace the turn is
+    not about.
+    """
+    from services import home_layouts
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "composed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    raw_regions = args.get("regions")
+    if not isinstance(raw_regions, list):
+        return {"composed": False, "error": "regions must be a list"}
+    regions: list[home_layouts.HomeRegion] = []
+    try:
+        for raw in raw_regions:
+            if not isinstance(raw, dict):
+                raise ValueError("each region must be an object")
+            # The model never gets a `pinned` field to send (see the tool
+            # schema), but a proxying client could attach one. Validate the
+            # payload as-is and let compose_adaptive refuse it: a pinned
+            # payload must fail loudly (PinnedRegionWriteError), not be
+            # silently rewritten into an unpinned compose.
+            regions.append(home_layouts.HomeRegion.model_validate(raw))
+    except Exception as exc:
+        return {"composed": False, "error": f"region payload rejected: {exc}"}
+    expected = args.get("expected_revision")
+    try:
+        record = home_layouts.compose_adaptive(
+            workspace_id,
+            regions,
+            expected_revision=int(expected) if isinstance(expected, int) else None,
+        )
+    except home_layouts.PinnedRegionWriteError as exc:
+        return {"composed": False, "error": str(exc)}
+    except home_layouts.LayoutConflictError as exc:
+        return {
+            "composed": False,
+            "error": f"the layout moved to revision {exc.stored.revision} while composing",
+            "revision": exc.stored.revision,
+        }
+    except home_layouts.LayoutError as exc:
+        return {"composed": False, "error": f"the composition was not saved: {exc}"}
+    return {
+        "composed": True,
+        "workspace_id": workspace_id,
+        "revision": record.revision,
+        "region_count": len(record.layout.regions),
+    }
+
+
+async def _tool_dismiss_home_adaptive(
+    args: dict[str, Any], user_id: str, jira_pat: str | None
+) -> dict[str, Any]:
+    """Record one adaptive-Home dismissal (#1048) through the same service the
+    API route serves — one store, one count, whichever door the user takes."""
+    from services import home_projections
+
+    workspace_id = _chat_workspace_id.get()
+    if not workspace_id:
+        return {
+            "dismissed": False,
+            "error": "no Workspace context for this turn; Home is Workspace-scoped",
+        }
+    item_type = str(args.get("item_type") or "")
+    item_id = str(args.get("item_id") or "")
+    try:
+        record = home_projections.record_dismissal(workspace_id, item_type, item_id, actor=user_id)
+    except ValueError as exc:
+        return {"dismissed": False, "error": str(exc)}
+    return {
+        "dismissed": True,
+        "count": record["count"],
+        "key": f"{item_type}:{item_id}",
+    }
+
+
 _TOOL_HANDLERS: dict[str, Any] = {
     "poll_jira": _tool_poll_jira,
     "fetch_program_state": _tool_poll_jira,
@@ -1837,6 +2073,10 @@ _TOOL_HANDLERS: dict[str, Any] = {
     "suggest_widgets": _tool_suggest_widgets,
     "suggest_workflows": _tool_suggest_workflows,
     "analyze_dashboard": _tool_analyze_dashboard,
+    # Workspace Home (#1048): the Agent's two doors into its own surface, both
+    # through the same services the HTTP routes serve.
+    "compose_home_adaptive": _tool_compose_home_adaptive,
+    "dismiss_home_adaptive": _tool_dismiss_home_adaptive,
 }
 
 # Add hill-climbing and structural mutation from substrate tools
@@ -1846,29 +2086,197 @@ _TOOL_HANDLERS["hill_climb"] = tool_hill_climb
 _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
-async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+def _serialize_tool_result(result: object) -> str:
+    """Serialize exactly the payload that the next model turn receives."""
+    return json.dumps(result)
+
+
+async def _execute_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
+    approval_request: Any | None = None,
+    approval_decision: Any | None = None,
+) -> dict[str, Any]:
     """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
 
     The #315 dispatch policy is enforced here rather than in each caller, so
     every path that reaches a handler has crossed the same authorization:
     privileged effects (destroy/mutate) need an approval the model cannot
-    mint, and networked effects need a principal. Handler-level tests that
-    monkeypatch this function replace the policy with the fake, exactly as
-    they replaced the dispatch before.
+    mint, and networked effects need a principal. ``approved`` and its evidence
+    are trusted caller inputs, never model arguments; approval covers this
+    dispatch only, not effects a workflow may initiate downstream.
     """
-    refusal = gate_tool_dispatch(tool_name, user_id)
+    workflow_id = (
+        str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
+    )
+    request_digest = _workflow_request_digest(args) if tool_name == "run_workflow" else None
+    approval_record = (
+        {
+            "request_id": approval_request.request_id,
+            "action": approval_request.action,
+            "principal": approval_request.requester,
+            "workflow_id": approval_request.params.get("workflow_id"),
+            "request_digest": approval_request.params.get("request_digest"),
+            "actor": approval_decision.actor,
+            "authority_kind": (
+                approval_decision.authority.kind if approval_decision.authority else None
+            ),
+            "authority_scope": (
+                approval_decision.authority.scope if approval_decision.authority else None
+            ),
+            "source": "capability_approval",
+        }
+        if approval_request is not None and approval_decision is not None
+        else (dict(approval_evidence) if approval_evidence else None)
+    )
+    refusal = gate_tool_dispatch(
+        tool_name,
+        user_id,
+        approved=approved,
+        approval_evidence=approval_evidence,
+        approval_request=approval_request,
+        approval_decision=approval_decision,
+        workflow_id=workflow_id or None,
+        request_digest=request_digest,
+    )
     if refusal is not None:
         return {
             "error": f"tool '{tool_name}' was not run: {refusal.reason}",
             "blocked": True,
+            **({"workflow_id": workflow_id} if workflow_id else {}),
         }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
-    return await handler(args, user_id, jira_pat)
+    result = await handler(args, user_id, jira_pat)
+    if tool_name == "run_workflow":
+        # This records the canonical execution identity without granting its
+        # approval to any node-level effect inside the graph.
+        log_audit(
+            "chat_workflow_execution",
+            user_id or "anonymous",
+            target=str(result.get("run_id") or workflow_id or ""),
+            detail={
+                "workflow_id": workflow_id,
+                "run_id": result.get("run_id"),
+                "principal": user_id or "anonymous",
+                "approval_evidence": approval_record,
+                "approval_scope": "tool_dispatch_only",
+                "status": result.get("status"),
+                "refusal_reason": result.get("error"),
+            },
+            severity="warning" if result.get("error") else "info",
+        )
+    return result
+
+
+async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Request workflow approval through the canonical capability provider.
+
+    The request remains pending in the shared approval inbox while the caller
+    waits. Resolving it through the capabilities API supplies the typed,
+    cryptographically bound decision used by the chat dispatch gate; no
+    chat-local approval store or execution authority is involved.
+    """
+    from maistro.capabilities.approval_store import redact_approval_value
+    from maistro.capabilities.slots.approval import ApprovalRequest
+    from services.engine import get_engine
+
+    workflow_id = str(args.get("dag_id") or args.get("id") or "")
+    request_digest = _workflow_request_digest(args)
+    provider = await get_engine().capabilities.resolve("approval")
+    if provider is None or not hasattr(provider, "request"):
+        # Refusal must be observable even when the canonical capability is not
+        # installed; otherwise an operator cannot distinguish a denied action
+        # from a wiring outage.
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "refusal_reason": "approval_capability_unavailable",
+                "effect": "mutate",
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow approval capability unavailable",
+            "blocked": True,
+            "workflow_id": workflow_id,
+        }
+    approval_request = ApprovalRequest(
+        action="run_workflow",
+        params={
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "request": redact_approval_value(args),
+        },
+        tier="policy",
+        requester=user_id,
+        rationale="Chat requested durable workflow execution",
+    )
+    log_audit(
+        "chat_workflow_approval_requested",
+        user_id or "anonymous",
+        target=workflow_id,
+        detail={
+            "request_id": approval_request.request_id,
+            "principal": user_id or "anonymous",
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "effect": "mutate",
+        },
+    )
+    decision = await provider.request(approval_request)
+    if not decision.approved or not decision.actor:
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "request_id": approval_request.request_id,
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "actor": decision.actor,
+                "authority_kind": (decision.authority.kind if decision.authority else None),
+                "refusal_reason": (
+                    "approval_denied"
+                    if not decision.approved
+                    else ("missing_authority" if decision.authority is None else "missing_actor")
+                ),
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow execution refused by approval",
+            "blocked": True,
+            "workflow_id": workflow_id,
+            "approval_request_id": approval_request.request_id,
+        }
+    return await _execute_tool(
+        "run_workflow",
+        args,
+        user_id,
+        approval_request=approval_request,
+        approval_decision=decision,
+    )
 
 
 async def _gated_execute_tool(
-    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    gate_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """One model-authored tool call through the #315 boundaries.
 
@@ -1894,13 +2302,29 @@ async def _gated_execute_tool(
         )
 
     try:
-        result = await _execute_tool(tool_name, args, user_id)
+        if tool_name == "run_workflow" and not approved and approval_evidence is None:
+            result = await _execute_workflow_with_approval(args, user_id)
+        elif approved or approval_evidence is not None:
+            result = await _execute_tool(
+                tool_name,
+                args,
+                user_id,
+                approved=approved,
+                approval_evidence=approval_evidence,
+            )
+        else:
+            # Keep the ordinary loop's narrow call seam compatible with
+            # trusted test/internal adapters that replace the executor.
+            result = await _execute_tool(tool_name, args, user_id)
     except Exception as tool_exc:
         logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
         result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
 
+    # Scan the exact JSON representation appended below. This makes mapping
+    # keys and values share one canonical model-visible representation.
+    serialized_result = _serialize_tool_result(result)
     result_gate = await gate_untrusted(
-        result,
+        serialized_result,
         boundary="tool_result",
         surface="chat_tool_result",
         user_id=user_id,
@@ -1937,9 +2361,28 @@ def _record_chat_metric(
         _chat_metrics.pop(0)
 
 
-def get_chat_metrics_summary() -> dict[str, Any]:
-    """Aggregate chat metrics for the dashboard."""
-    if not _chat_metrics:
+def get_chat_metrics_summary(
+    user_id: str | None = None, window_seconds: float | None = None
+) -> dict[str, Any]:
+    """Aggregate chat metrics for the dashboard.
+
+    `user_id` scopes the aggregation to one principal's observations: the
+    dashboard serves per-principal KPI envelopes, and the unscoped default
+    would pool every account's latency and spend into each of them (#380).
+    `window_seconds` keeps only observations newer than that; `None` (the
+    default, and every pre-#380 caller) aggregates the whole ring.
+
+    `last_observation_ts` — the newest observation in the filtered set, or
+    `None` — is how a caller tells fresh data from a set nobody has added to
+    since before its window began.
+    """
+    rows = _chat_metrics
+    if user_id is not None:
+        rows = [m for m in rows if m.get("user") == user_id]
+    if window_seconds is not None:
+        cutoff = __import__("time").time() - window_seconds
+        rows = [m for m in rows if m.get("ts", 0) >= cutoff]
+    if not rows:
         return {
             "count": 0,
             "latency_ms_p50": 0,
@@ -1947,19 +2390,21 @@ def get_chat_metrics_summary() -> dict[str, Any]:
             "tokens_in_total": 0,
             "tokens_out_total": 0,
             "cost_usd_total": 0.0,
+            "last_observation_ts": None,
         }
-    lats = sorted(m["latency_ms"] for m in _chat_metrics)
+    lats = sorted(m["latency_ms"] for m in rows)
     n = len(lats)
     return {
         "count": n,
         "latency_ms_p50": lats[n // 2] if n else 0,
         "latency_ms_p95": lats[int(n * 0.95)] if n else 0,
         "latency_ms_mean": sum(lats) / n if n else 0,
-        "tokens_in_total": sum(m["tokens_in"] for m in _chat_metrics),
-        "tokens_out_total": sum(m["tokens_out"] for m in _chat_metrics),
+        "tokens_in_total": sum(m["tokens_in"] for m in rows),
+        "tokens_out_total": sum(m["tokens_out"] for m in rows),
         "cost_usd_total": sum(
-            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in _chat_metrics
+            m["tokens_out"] * 0.000003 + m["tokens_in"] * 0.000001 for m in rows
         ),  # rough estimate
+        "last_observation_ts": max(m["ts"] for m in rows),
     }
 
 
@@ -1967,10 +2412,14 @@ async def run_chat_completion(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PM Fleet chat — real tools, real data, real LLM synthesis."""
     try:
-        return await _run_chat_completion_inner(req, user_id, _llm)
+        return await _run_chat_completion_inner(
+            req, user_id, _llm, approval_evidence=approval_evidence
+        )
     except Exception as exc:
         logger.exception("run_chat_completion crashed: %s", exc)
         return {
@@ -1985,6 +2434,8 @@ async def _run_chat_completion_inner(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inner implementation."""
     import time as _time
@@ -2052,7 +2503,13 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            result, _summary = await _gated_execute_tool(
+                name,
+                args,
+                user_id,
+                gate_id,
+                approval_evidence=approval_evidence,
+            )
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2063,7 +2520,7 @@ async def _run_chat_completion_inner(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2239,6 +2696,8 @@ def _registered_tool_names(tools: list[dict[str, Any]]) -> tuple[str, ...]:
 async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     req: ChatCompletionRequest,
     user_id: str = "",
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
@@ -2405,14 +2864,20 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 # policy, executes, and scans the result at the tool_result
                 # boundary (#315) — indirect injection in a tool result is
                 # withheld before it reaches the next model turn.
-                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+                result, summary = await _gated_execute_tool(
+                    name,
+                    args,
+                    user_id,
+                    gate_id,
+                    approval_evidence=approval_evidence,
+                )
             yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2510,8 +2975,9 @@ async def _tool_profile_set(
     if not field or not value:
         return {"error": "field and value required"}
     try:
-        # Off the loop: a profile write waits in `State.flush()` for the writer
-        # thread, and this runs inside the chat request's own task.
+        # Off the loop: a profile write waits inside the acknowledged `put_raw`
+        # (a `State.submit_sync`) for the writer thread to commit, and this
+        # runs inside the chat request's own task.
         await asyncio.to_thread(profile_store.set_field, user_id, field, value)
     except profile_store.ProfilePersistenceError as exc:
         # Reported, not swallowed. The old path suppressed the write failure

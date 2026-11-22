@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from maistro.workspaces.authorization import (
+    WorkspaceAction,
+    WorkspaceAuthorizationDenied,
+    WorkspaceAuthorizer,
+)
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
@@ -37,6 +42,9 @@ __all__ = [
     "InMemoryWorkspaceStore",
     "Workspace",
     "WorkspaceAccessDenied",
+    "WorkspaceAction",
+    "WorkspaceAuthorizationDenied",
+    "WorkspaceAuthorizer",
     "WorkspaceMember",
     "WorkspaceMembership",
     "WorkspaceNotFound",

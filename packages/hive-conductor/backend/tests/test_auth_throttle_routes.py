@@ -164,7 +164,15 @@ class TestRegistrationIsBoundedSeparately:
 
     def test_it_is_throttled_before_the_availability_check(self) -> None:
         """Checking first would let an attacker walk the user list at zero
-        cost, since a 409 is a definitive "this account exists"."""
+        cost, since a 409 is a definitive "this account exists".
+
+        #1061 moved the availability authority into the atomic claim
+        transaction, so the definitive 409 is no longer an in-route
+        `_username_taken` scan but the `UsernameTakenError` branch around
+        `username_registry.create_users`. The ordering property survives
+        unchanged: the throttle runs before the allocation that can answer
+        409, and the taken path is charged to the budget.
+        """
         from pathlib import Path
 
         source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
@@ -173,7 +181,8 @@ class TestRegistrationIsBoundedSeparately:
         register = source[source.index('@router.post("/register")') :]
         register = register[: register.index('@router.post("/login")')]
 
-        assert register.index("_enforce(") < register.index("_username_taken(")
+        assert register.index("_enforce(") < register.index("username_registry.create_users(")
+        assert "_REGISTER_THROTTLE.record_failure" in register
 
 
 class TestElevationIsBoundedOnTheSession:

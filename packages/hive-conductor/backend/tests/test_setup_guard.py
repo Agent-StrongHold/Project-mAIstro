@@ -194,6 +194,68 @@ def test_requested_identity_failure_aborts_before_creating_accounts(
     assert "user" not in fresh_users
 
 
+def test_requested_identity_persistence_failure_aborts_before_creating_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A selected identity cannot report setup success without a durable seed."""
+    import stores
+    from fastapi import HTTPException
+    from models.schemas import HiveUser
+    from routes.setup import complete_setup
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser)
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("routes.setup._init_vault_best_effort", lambda: True)
+    monkeypatch.setattr("routes.setup._persist_identity_root", lambda words: False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        complete_setup(
+            {
+                "hardware_preset": "auto",
+                "admin_username": "newadmin",
+                "admin_password": "s3cret-admin",
+                "user_username": "newuser",
+                "user_password": "s3cret-user",
+                "optional_modules": ["crypto_identity"],
+            }
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "persisted" in exc_info.value.detail
+    assert "admin" not in fresh_users
+    assert "user" not in fresh_users
+
+
+def test_identity_provision_returns_persisted_root_when_vault_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success arc of _maybe_generate_identity: when the vault reports the
+    encrypted seed persisted, the generated DID and once-shown mnemonic reach
+    the caller (and only then the setup response). CI's coverage job has no
+    age binary, so the real-vault end-to-end test skips there; this pins the
+    arc deterministically — a successfully persisted root must be returned,
+    never silently dropped."""
+    try:
+        from maistro.identity import ConductorSeed
+
+        probe = ConductorSeed.generate()
+        probe.zero()
+    except ImportError:
+        pytest.skip("identity extra (bip_utils/pynacl) not installed")
+
+    from routes.setup import _maybe_generate_identity
+
+    monkeypatch.setattr("routes.setup._persist_identity_root", lambda words: True)
+
+    user_did, mnemonic_words, persisted = _maybe_generate_identity(["crypto_identity"])
+
+    assert persisted is True
+    assert isinstance(user_did, str) and user_did.startswith("did:key:z")
+    assert isinstance(mnemonic_words, list) and len(mnemonic_words) >= 12
+
+
 def test_first_run_provisions_vault_and_persists_seed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -247,6 +309,63 @@ def test_first_run_provisions_vault_and_persists_seed(
         "CONDUCTOR_SEED_MNEMONIC", lambda s: s
     )
     assert stored == " ".join(out["mnemonic"])
+
+
+def test_identical_admin_and_user_usernames_are_rejected_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review finding 1 (PR #1528): identical usernames must be refused
+    by validation, before the admin write can land and make the request
+    unretryable (the second, colliding user write would raise ValueError from
+    the store's uniqueness enforcement, and the exception handler retains the
+    durable setup claim once any account exists)."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+    from models.schemas import HiveUser
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser, unique_fields=("username",))
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+
+    response = TestClient(app).post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "auto",
+            "admin_username": "sameuser",
+            "admin_password": "s3cret-admin",
+            "user_username": "SameUser",
+            "user_password": "s3cret-user",
+        },
+    )
+
+    assert response.status_code == 422
+    assert any("must differ" in error["msg"] for error in response.json()["detail"])
+    # Nothing was written, and setup remains retryable.
+    assert len(fresh_users) == 0
+    assert "__hive_setup_claim__" not in stores.sessions
+
+
+def test_identical_usernames_rejected_on_direct_call_too() -> None:
+    """The direct-Python-call path (`_validate_direct_setup_body`) must reject
+    identical usernames the same way the HTTP boundary does."""
+    from fastapi import HTTPException
+    from routes.setup import complete_setup
+
+    with pytest.raises(HTTPException) as exc_info:
+        complete_setup(
+            {
+                "hardware_preset": "auto",
+                "admin_username": "dup",
+                "admin_password": "s3cret-admin",
+                "user_username": "dup",
+                "user_password": "s3cret-user",
+            }
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "must differ" in str(exc_info.value.detail)
 
 
 def test_empty_hardware_preset_is_rejected() -> None:

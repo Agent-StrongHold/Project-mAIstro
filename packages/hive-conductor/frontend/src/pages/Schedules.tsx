@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import type { Schedule } from "../api/models";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { useWorkspaces } from "../context/WorkspaceContext";
+import { Switch } from "../components/Switch";
+import { TabList, TabPanel } from "../components/TabList";
 
-type Schedule = {
-  id: string; name: string; description: string; cron_expression: string;
-  mission_template_id: string | null; enabled: boolean;
-  last_run: string | null; next_run: string | null;
-  created_at: string; updated_at: string;
-};
 
 const CRON_PRESETS = [
   { label: "Every hour", cron: "0 * * * *" },
@@ -18,11 +16,23 @@ const CRON_PRESETS = [
   { label: "Monthly 1st", cron: "0 0 1 * *" },
 ];
 
+// `.hex-badge` clip-path would cut away the global focus-visible outline at its usual offset.
+const PRESET_STYLE = { cursor: "pointer", boxShadow: "none", transform: "none", outlineOffset: -4 } as const;
+
+const TABS = [{ id: "schedules", label: "Schedules" }, { id: "history", label: "History" }] as const;
+
 export default function Schedules() {
   const toast = useToast();
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tab, setTab] = useState<"schedules" | "history">("schedules");
   const [creating, setCreating] = useState(false);
+  const createNameRef = useRef<HTMLInputElement>(null);
+  // Focus only when opening the form. Returning from History remounts its
+  // content, but must leave focus on the keyboard-operated view tab.
+  useEffect(() => {
+    if (creating) createNameRef.current?.focus();
+  }, [creating]);
   const [editing, setEditing] = useState<Schedule | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Schedule | null>(null);
   const [form, setForm] = useState({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
@@ -33,29 +43,36 @@ export default function Schedules() {
 
   async function createSchedule() {
     if (!form.name.trim()) return;
+    if (!workspacesReady || !activeWorkspaceId) {
+      toast("Select a Workspace before creating a schedule", "error");
+      return;
+    }
     try {
-      await apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      const created = await apiPost<Schedule>("/v1/schedules", { workspace_id: activeWorkspaceId, name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      setSchedules((prev) => [...prev, created]);
       setCreating(false);
       setForm({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
-      await load();
       toast("Schedule created", "ok");
     } catch { toast("Failed to create schedule", "error"); }
   }
 
+  // One mutation, one request (matches WorkspaceContext.tsx's #1422 fix): the
+  // response is the changed record, so it is patched into local state rather
+  // than followed by a refetch of the whole collection.
   async function updateSchedule() {
     if (!editing) return;
     try {
-      await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      const updated = await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      setSchedules((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
       setEditing(null);
-      await load();
       toast("Schedule updated", "ok");
     } catch { toast("Failed to update schedule", "error"); }
   }
 
   async function toggleSchedule(s: Schedule) {
     try {
-      await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
-      await load();
+      const updated = await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
+      setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast(s.enabled ? "Disabled" : "Enabled", "ok");
     } catch { toast("Failed to toggle", "error"); }
   }
@@ -63,7 +80,7 @@ export default function Schedules() {
   async function deleteSchedule(id: string) {
     try {
       await apiDelete(`/v1/schedules/${id}`);
-      await load();
+      setSchedules((prev) => prev.filter((s) => s.id !== id));
       toast("Schedule deleted", "ok");
     } catch { toast("Failed to delete", "error"); }
     setDeleteTarget(null);
@@ -71,8 +88,8 @@ export default function Schedules() {
 
   async function runNow(s: Schedule) {
     try {
-      await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
-      await load();
+      const updated = await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
+      setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast("Schedule triggered", "ok");
     } catch { toast("Failed to trigger", "error"); }
   }
@@ -90,37 +107,33 @@ export default function Schedules() {
         title="Schedules"
         subtitle={`${schedules.filter((s) => s.enabled).length}/${schedules.length} active — run tasks automatically on a timer`}
         helpHref="/docs#schedules"
-        actions={<button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setCreating(true)}>+ new</button>}
+        actions={<button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setCreating(true)}>+ new</button>}
       />
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: -8 }}>
-        {(["schedules", "history"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
-        ))}
-      </div>
+      <TabList label="Schedule views" idPrefix="schedules" tabs={TABS} selected={tab} onSelect={setTab} style={{ marginBottom: -8 }} />
 
-      {tab === "schedules" && (
+      <TabPanel idPrefix="schedules" id="schedules" selected={tab === "schedules"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 14 }}>
           {creating && (
             <div className="card" style={{ borderLeft: "3px solid var(--accent)" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <input className="input-field" placeholder="schedule name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
+                <input ref={createNameRef} className="input-field" placeholder="schedule name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
                 <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
                 <div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>
+                  <div role="group" aria-label="Cron presets" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {CRON_PRESETS.map((p) => (
-                      <span key={p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={{ cursor: "pointer" }} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</span>
+                      <button key={p.cron} type="button" aria-pressed={form.cron_expression === p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={PRESET_STYLE} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</button>
                     ))}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>CRON</span>
-                  <input className="input-field" style={{ flex: 1, fontFamily: "var(--mono)" }} value={form.cron_expression} onChange={(e) => setForm((f) => ({ ...f, cron_expression: e.target.value }))} />
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>CRON</span>
+                  <input className="input-field" aria-label="Cron expression" style={{ flex: 1, fontFamily: "var(--mono)" }} value={form.cron_expression} onChange={(e) => setForm((f) => ({ ...f, cron_expression: e.target.value }))} />
                 </div>
                 <input className="input-field" placeholder="mission template ID (optional)" value={form.mission_template_id} onChange={(e) => setForm((f) => ({ ...f, mission_template_id: e.target.value }))} />
                 <div style={{ display: "flex", gap: 4 }}>
-                  <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void createSchedule()} disabled={!form.name.trim()}>create</button>
-                  <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => setCreating(false)}>cancel</button>
+                  <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void createSchedule()} disabled={!form.name.trim()}>create</button>
+                  <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setCreating(false)}>cancel</button>
                 </div>
               </div>
             </div>
@@ -128,17 +141,17 @@ export default function Schedules() {
 
           {editing && (
             <div className="card" style={{ borderLeft: "3px solid var(--warn)" }}>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--warn)", marginBottom: 6, fontWeight: 600 }}>EDITING: {editing.name}</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--warn)", marginBottom: 6, fontWeight: 600 }}>EDITING: {editing.name}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <input className="input-field" value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
                 <input className="input-field" value={editForm.description} onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))} />
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>CRON</span>
-                  <input className="input-field" style={{ flex: 1, fontFamily: "var(--mono)" }} value={editForm.cron_expression} onChange={(e) => setEditForm((f) => ({ ...f, cron_expression: e.target.value }))} />
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>CRON</span>
+                  <input className="input-field" aria-label="Cron expression" style={{ flex: 1, fontFamily: "var(--mono)" }} value={editForm.cron_expression} onChange={(e) => setEditForm((f) => ({ ...f, cron_expression: e.target.value }))} />
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
-                  <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void updateSchedule()}>save</button>
-                  <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => setEditing(null)}>cancel</button>
+                  <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void updateSchedule()}>save</button>
+                  <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               </div>
             </div>
@@ -150,19 +163,19 @@ export default function Schedules() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontFamily: "var(--hand)", fontSize: 17, fontWeight: 600 }}>{s.name}</div>
                   <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "2px 0 4px" }}>{s.description}</div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)", fontWeight: 600 }}>{s.cron_expression}</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>{s.cron_expression}</div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 6, marginTop: 8 }}>
                     <StatCard label="Last Run" value={s.last_run ? new Date(s.last_run).toLocaleString() : "never"} />
                     <StatCard label="Next Run" value={s.next_run ? new Date(s.next_run).toLocaleString() : "pending"} />
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, marginLeft: 12 }}>
-                  <div className={`toggle${s.enabled ? " on" : ""}`} onClick={() => void toggleSchedule(s)} style={{ cursor: "pointer" }} />
+                  <Switch checked={s.enabled} onChange={() => void toggleSchedule(s)} label={`Enable schedule ${s.name}`} />
                   <Hex variant={s.enabled ? "ok" : "muted"}>{s.enabled ? "active" : "off"}</Hex>
                   <div style={{ display: "flex", gap: 3 }}>
-                    <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => void runNow(s)}>run now</button>
-                    <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => startEdit(s)}>edit</button>
-                    <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>delete</button>
+                    <button className="btn" style={{ fontSize: 12, padding: "1px 6px" }} onClick={() => void runNow(s)}>run now</button>
+                    <button className="btn" style={{ fontSize: 12, padding: "1px 6px" }} onClick={() => startEdit(s)}>edit</button>
+                    <button className="btn" style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>delete</button>
                   </div>
                 </div>
               </div>
@@ -170,13 +183,13 @@ export default function Schedules() {
           ))}
           {schedules.length === 0 && !creating && <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>no schedules configured</div>}
         </div>
-      )}
+      </TabPanel>
 
-      {tab === "history" && (
+      <TabPanel idPrefix="schedules" id="history" selected={tab === "history"}>
         <div style={{ marginTop: 14, fontFamily: "var(--hand)", fontSize: 14, color: "var(--pencil)", padding: 20 }}>
           execution history will appear here when runs complete
         </div>
-      )}
+      </TabPanel>
     </div>
   );
 }

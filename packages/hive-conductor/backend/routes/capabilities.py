@@ -13,14 +13,21 @@ routes reach it via `get_engine().capabilities` rather than a route-local global
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from middleware.auth import principal_has_permission
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
 from starlette.concurrency import run_in_threadpool
 
+from maistro.capabilities.authority import (
+    ApprovalAuthority,
+    approval_signing_secret,
+    sign_approval_authority,
+)
 from routes.audit import log_audit
 
 logger = logging.getLogger("hive.capabilities")
@@ -265,18 +272,85 @@ class ResolveApprovalBody(BaseModel):
 
 
 @router.post("/approvals/{request_id}")
-def resolve_approval(request_id: str, body: ResolveApprovalBody) -> dict[str, Any]:
+def resolve_approval(
+    request_id: str,
+    body: ResolveApprovalBody,
+    request: Request,
+) -> dict[str, Any]:
     inbox = _approval_inbox()
     if inbox is None:
         raise HTTPException(status_code=503, detail="no approval inbox available")
-    resolved = inbox.resolve(request_id, approved=body.approved, actor=body.actor)
+    pending = next((item for item in inbox.pending() if item.request_id == request_id), None)
+    if pending is None:
+        raise HTTPException(status_code=404, detail=f"no pending approval '{request_id}'")
+
+    # HTTP callers cannot choose the audit actor. Direct provider tests may
+    # omit Request, but production resolution always uses the authenticated
+    # session principal that AuthMiddleware already verified.
+    user = getattr(getattr(request, "state", None), "user", None) or {}
+    if request is not None:
+        actor = str(user.get("id") or user.get("username") or "")
+        if not actor:
+            raise HTTPException(status_code=401, detail="Authentication required")
+    else:
+        actor = body.actor
+
+    authority: ApprovalAuthority | None = None
+    if pending.action == "run_workflow":
+        # `config.write` protects the capability API, but it is not an
+        # approver grant. Workflow execution requires an admin or an explicitly
+        # elevated approval permission, so a config editor cannot self-approve.
+        authorized = bool(
+            actor
+            and (user.get("role") == "admin" or principal_has_permission(user, "approvals.resolve"))
+        )
+        if not authorized:
+            log_audit(
+                "approval_resolve_refused",
+                actor or "anonymous",
+                target=request_id,
+                detail={
+                    "action": pending.action,
+                    "requester": pending.requester,
+                    "principal": actor or "anonymous",
+                    "refusal_reason": "approver_not_authorized",
+                },
+                severity="warning",
+            )
+            raise HTTPException(
+                status_code=403, detail="Approver is not authorized for this action"
+            )
+        unsigned_authority = ApprovalAuthority(
+            kind="human",
+            principal=actor,
+            scope=pending.action,
+            evidence_id=pending.request_id,
+        )
+        authority = replace(
+            unsigned_authority,
+            signature=sign_approval_authority(unsigned_authority, approval_signing_secret()),
+        )
+
+    resolved = inbox.resolve(
+        request_id,
+        approved=body.approved,
+        actor=actor,
+        authority=authority,
+    )
     if not resolved:
         raise HTTPException(status_code=404, detail=f"no pending approval '{request_id}'")
     log_audit(
         "approval_resolve",
-        body.actor or "system",
+        actor or "system",
         target=request_id,
-        detail={"approved": body.approved},
+        detail={
+            "approved": body.approved,
+            "principal": actor or "unverified",
+            "action": pending.action,
+            "requester": pending.requester,
+            "authority_kind": authority.kind if authority else None,
+            "authority_scope": authority.scope if authority else None,
+        },
         severity="warning",
     )
     return {"resolved": True, "request_id": request_id, "approved": body.approved}

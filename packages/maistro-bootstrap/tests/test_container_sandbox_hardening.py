@@ -217,3 +217,47 @@ def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: 
         assert all(e == f"HOME={csbx_mod._AGENT_HOME}" for e in envs), argv
         if argv[1] == "run":
             assert envs == [f"HOME={csbx_mod._AGENT_HOME}"], argv
+
+
+def test_run_argv_streams_keeps_the_hardened_exec_and_separated_streams(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#614's parsing channel: ``run_argv_streams`` serves callers that PARSE a
+    stream (tool reports, pytest collectors). It must carry the SAME
+    unprivileged exec prefix as every other agent-facing exec (#77 — a parsing
+    convenience must not silently re-root the exec), return the exit status
+    intact, and keep stdout/stderr SEPARATED — a merged stream would let one
+    stderr line corrupt a JSON report and silently erase a real finding — with
+    missing streams normalized to empty strings, never None."""
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        calls.append(list(argv))
+        if argv[0] == "tar":  # host-side seed archive: binary pipe
+            return subprocess.CompletedProcess(argv, 0, stdout=b"seed", stderr=b"")
+        if argv[1] == "run":  # create: text mode, prints the cid
+            return subprocess.CompletedProcess(argv, 0, stdout="fake-cid\n", stderr="")
+        if "chown" in argv or "tar" in argv:  # root bootstrap + seed extract
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        # the exec under test: streams arrive split, stderr absent
+        return subprocess.CompletedProcess(argv, 3, stdout="to-stdout", stderr=None)
+
+    monkeypatch.setattr(csbx_mod.subprocess, "run", _fake_run)
+
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, out, err = sb.run_argv_streams(["python", "-m", "pytest", "-q"])
+
+    assert (rc, out, err) == (3, "to-stdout", "")
+    execs = [a for a in calls if a[:2] == ["docker", "exec"] and "pytest" in a]
+    assert len(execs) == 1
+    exec_argv = execs[0]
+    assert exec_argv[:6] == [
+        "docker",
+        "exec",
+        "-u",
+        _AGENT_UID_GID,
+        "-e",
+        f"HOME={csbx_mod._AGENT_HOME}",
+    ]
+    assert exec_argv[6] == "fake-cid"  # the created container, not a shell
+    assert exec_argv[7:] == ["python", "-m", "pytest", "-q"]

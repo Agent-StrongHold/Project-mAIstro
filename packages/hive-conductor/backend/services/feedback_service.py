@@ -32,6 +32,7 @@ import logging
 from typing import Any
 
 from maistro.constants import THUMB_WINDOW_DAYS
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
@@ -41,8 +42,9 @@ ALLOWED_THUMBS = ("up", "down")
 
 # Hive-local default. The maistro bridge can replace this with the
 # container's outcome_store via set_outcome_store() so all feedback flows
-# into the same place the optimizer reads from.
-_store: Any = InMemoryOutcomeStore()
+# into the same place the optimizer reads from. The mode declaration is
+# explicit (ADR-057): a bare store would refuse to record at all.
+_store: Any = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
 
 
 def get_outcome_store() -> Any:
@@ -63,6 +65,7 @@ async def record_thumb(
     *,
     user_id: str,
     project_id: str,
+    org_id: str = "",
     run_id: str,
     thumb: str,
     comment: str = "",
@@ -82,11 +85,14 @@ async def record_thumb(
         raise ValueError("user_id is required")
     if not run_id:
         raise ValueError("run_id is required")
+    if not project_id:
+        raise ValueError("project_id is required")
 
     store = get_outcome_store()
     outcome = Outcome(
         task_type=task_type,
         success=True,
+        org_id=org_id,
         user_id=user_id,
         project_id=project_id,
         dag_run_id=run_id,
@@ -116,6 +122,8 @@ async def collect_thumbs(
     dag_id: str = "",
     *,
     days: int = THUMB_WINDOW_DAYS,
+    org_id: str = "",
+    project_id: str = "",
 ) -> dict[str, dict[str, Any]]:
     """`{node_id: {up, down, comments}}` for one DAG, from the bound store.
 
@@ -129,8 +137,14 @@ async def collect_thumbs(
     the optimizer scores it as a baseline against the DAG.
     """
     store = get_outcome_store()
+    # The in-memory store is an explicitly ephemeral, single-process test/dev
+    # adapter. Durable stores require both axes; otherwise this read fails
+    # closed instead of issuing an implicit global query.
+    if (not org_id or not project_id) and not isinstance(store, InMemoryOutcomeStore):
+        return {}
     by_node: dict[str, dict[str, Any]] = {}
-    for outcome in await store.list_thumbs(dag_id=dag_id, days=days):
+    scope = {"org_id": org_id, "project_id": project_id} if org_id and project_id else {}
+    for outcome in await store.list_thumbs(dag_id=dag_id, days=days, **scope):
         slot = by_node.setdefault(outcome.node_id or "", {"up": 0, "down": 0, "comments": []})
         if outcome.thumb == "up":
             slot["up"] += 1

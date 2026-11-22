@@ -19,6 +19,7 @@ from maistro.graph.nodes.base import (
     PAUSE_WAITING_ON_JIRA_SUBTASKS,
 )
 from maistro.runs import GraphSnapshot, NodeRun, Run
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 def _record(*, status: RunStatus = RunStatus.WAITING, answered: bool = False) -> DurableRunRecord:
@@ -36,6 +37,7 @@ def _record(*, status: RunStatus = RunStatus.WAITING, answered: bool = False) ->
             project_id=graph.project_id,
             graph=GraphSnapshot.from_graph(graph),
             status=status,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         ),
         graph_state=GraphExecutionState(
             run_id="answer-recovery-run",
@@ -55,7 +57,7 @@ def _pause(reason: str, *, resume_at: datetime | None) -> NodeResult:
     )
 
 
-def test_system_owned_answer_wait_redispatches_when_durable_answer_exists() -> None:
+def test_remote_answer_wait_redispatches_when_durable_answer_exists() -> None:
     paused = _pause(
         PAUSE_AWAITING_REMOTE_DELEGATION,
         resume_at=datetime.now(UTC) + timedelta(hours=1),
@@ -66,7 +68,7 @@ def test_system_owned_answer_wait_redispatches_when_durable_answer_exists() -> N
     )
 
 
-def test_system_owned_answer_wait_does_not_redispatch_on_elapsed_time_alone() -> None:
+def test_remote_answer_wait_does_not_redispatch_on_elapsed_time_alone() -> None:
     paused = _pause(
         PAUSE_AWAITING_REMOTE_DELEGATION,
         resume_at=datetime.now(UTC) - timedelta(seconds=1),
@@ -100,7 +102,7 @@ def test_elapsed_timer_wait_still_redispatches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due() -> None:
+async def test_remote_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due() -> None:
     record = _record(status=RunStatus.RUNNING)
     store = InMemoryDurableRunStore()
     await store.create(record)
@@ -123,7 +125,10 @@ async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due(
         store=store,
     )
 
-    assert checkpointed.run.status is RunStatus.WAITING
+    # A remote response is answer-gated. Its deadline remains evidence for
+    # the timeout authority, not a timer that may re-enter the node and issue
+    # a second delegation request.
+    assert checkpointed.run.status is RunStatus.PAUSED
     assert checkpointed.resume_at is None
     assert checkpointed.graph_state.metadata["pauses"]["wait-step"]["resume_at"] == (
         deadline.isoformat()

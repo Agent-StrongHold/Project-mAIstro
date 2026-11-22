@@ -17,9 +17,10 @@ alone. The [Anti-patterns](#anti-patterns--what-not-to-do) section is the part t
 ## 1. The mental model
 
 `maistro-engine` is a **consolidation monorepo** that is both a **library** (`maistro-core`,
-imported by downstream products) and an **app host** (it contains `hive-conductor` and the
-canvas ability). Downstream products — **Stronghold** (planned) and **Fantasia** (enterprise
-distribution) — *import or track* the engine; they do not live here.
+imported by downstream products) and an **app host** (it ships the **Workspaces** product in
+`packages/hive-conductor` and the canvas ability). Downstream products — **Stronghold**
+(planned, engine v1.5) and **Fantasia** (enterprise distribution) — *import or track* the
+engine; they do not live here.
 
 The single most important consequence: **product-specific work does not belong in the
 engine.** See [ADR-019](adr/ADR-019-canonical-source-split.md) (canonical source split) —
@@ -34,8 +35,8 @@ live in the importing product.
 |-----------------|-------------|-------|
 | Shared runtime code | `packages/maistro-core/src/maistro/<subsystem>/` | The library. See subsystem map in [CLAUDE.md](../CLAUDE.md). |
 | HTTP API surface | `packages/maistro-server/src/maistro_server/` | Thin wrapper over core. Don't reintroduce a root `maistro.main`. |
-| The Conductor app | `packages/hive-conductor/` | Ships here (it's the homelab/personal product). |
-| Canvas ability | `packages/maistro-canvas/` | Standalone; needs no Conductor. |
+| Workspaces product | `packages/hive-conductor/` | v1.0 homelab/personal product; cutover: [WORKSPACE-CUTOVER-PLAN.md](architecture/WORKSPACE-CUTOVER-PLAN.md) |
+| Canvas ability | `packages/maistro-canvas/` | Standalone; needs no Workspaces shell. |
 | An architectural decision | `docs/adr/ADR-NNN-kebab-title.md` | Copy `ADR-000-template.md`. Front-matter per [ADR-031](adr/ADR-031-front-matter-and-registry.md). |
 | A spec (with acceptance criteria) | `docs/specs/SPEC-NNN-kebab-title.md` | Engine-level only. Product specs go *with the product*. |
 | A reusable agent skill | `.claude/skills/` / `.agents/skills/` | Mirror the existing skill layout. |
@@ -87,7 +88,7 @@ Four tiers, work flows **upward**, every promotion is a PR (never a direct push)
 detail in [ADR-095](adr/ADR-095-four-tier-branch-model.md):
 
 ```
-feat/* bug/* idea/* doc/* chore/* fix/*  →  develop  →  integration  →  main
+feat/* bug/* idea/* doc/* docs/* chore/* fix/*  →  develop  →  integration  →  main
 ```
 
 - **Branch off `develop`**, PR into `develop`. Not `main`, not `integration`.

@@ -651,18 +651,26 @@ async def test_closing_the_container_closes_the_sqlite_connections_it_opened(
     assert container.holds_db_pool is True
     conn = container.db_pool
     session_conn = container.session_conn
+    schedule_conn = container.schedule_conn
     assert conn is not None
     assert session_conn is not None
+    assert schedule_conn is not None
+    assert len({id(conn), id(session_conn), id(schedule_conn)}) == 3
+    # The schedule store writes on its own connection (#1199), not the spine's.
+    assert container.schedule_store._conn is schedule_conn  # type: ignore[attr-defined]
 
     await container.aclose()
 
     assert container.db_pool is None
     assert container.session_conn is None
+    assert container.schedule_conn is None
     assert container.holds_db_pool is False
     with pytest.raises(ValueError, match="no active connection"):
         await conn.execute("SELECT 1")
     with pytest.raises(ValueError, match="no active connection"):
         await session_conn.execute("SELECT 1")
+    with pytest.raises(ValueError, match="no active connection"):
+        await schedule_conn.execute("SELECT 1")
 
 
 @pytest.mark.asyncio

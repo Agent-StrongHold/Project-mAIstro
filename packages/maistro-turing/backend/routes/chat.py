@@ -19,19 +19,19 @@ isn't faked.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from maistro.graph.durable_runs import DurableRunRecord
+from maistro.identity import Principal
 from maistro.runs.model import RunStatus
-from maistro_turing.runtime import TuringChatSession
 
 from ..execution import TuringAdmissionUnavailable, get_execution_plane
 from ..middleware.auth import require_user
+from ..security import TuringSecurityContext
 from ..state import get_state
 
 logger = logging.getLogger(__name__)
@@ -39,12 +39,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 _PUBLIC_CHAT_FAILURE = "Turing chat execution failed"
-
-# (user_id, session_id) -> TuringChatSession. Lives for the process; a
-# production version persists history through the memory bridge. Keying by
-# user_id too prevents one authenticated caller from attaching to another
-# user's session (and its prior _history) by reusing/guessing a session id.
-_SESSIONS: dict[tuple[str, str], TuringChatSession] = {}
 
 
 class ChatBody(BaseModel):
@@ -62,44 +56,60 @@ def _reply_from_record(record: DurableRunRecord) -> str:
     return str(result["reply"])
 
 
-async def _unrecorded_reply(session: TuringChatSession, message: str) -> str:
-    """Preserve chat availability when only canonical audit admission failed."""
-    try:
-        return await session.handle_message(message)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.warning("unrecorded Turing chat execution failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
-
-
 @router.post("")
-async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
+async def chat(
+    body: ChatBody,
+    request: Request,
+    user: Principal = Depends(require_user),
+) -> dict:
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
     session_id = body.session_id or str(uuid4())
-    key = (user["id"], session_id)
-    session = _SESSIONS.get(key)
-    if session is None:
-        session = get_state().new_chat_session()
-        _SESSIONS[key] = session
+    # Cognitive state is scoped to the authenticated principal and bounded in
+    # cardinality/lifetime (#27/#859): the session key includes the caller's
+    # canonical principal id, so a client-supplied session id alone — or one
+    # guessed from another user — never selects someone else's conversation.
+    session = get_state().chat_sessions.get_or_create(user.actor_id(), session_id)
 
+    plane = get_execution_plane()
     try:
-        record = await get_execution_plane().run_chat(
+        record = await plane.run_chat(
             session=session,
-            user_id=str(user["id"]),
+            user_id=user.user_id,
             session_id=session_id,
             message=message,
         )
-    except TuringAdmissionUnavailable:
-        logger.warning(
-            "Turing chat audit admission unavailable; executing turn without run_id",
-            exc_info=True,
-        )
-        reply = await _unrecorded_reply(session, message)
-        return {"session_id": session_id, "run_id": None, "reply": reply}
+    except TuringAdmissionUnavailable as exc:
+        # Admission is the security boundary for the canonical execution
+        # spine. Never dispatch a turn when its Run evidence is unavailable.
+        logger.warning("Turing chat canonical admission unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
+
+    # The middleware scans before Run admission, but chat audit correlation is
+    # deferred until the canonical Run supplies Workspace/Project/Run identity.
+    # This also records the ingress verdict when execution later fails.
+    inbound_verdict = getattr(request.state, "turing_inbound_verdict", None)
+    if inbound_verdict is not None:
+        try:
+            root = await plane.project_store.root_for_workspace(record.run.workspace_id)
+            await get_state().inbound_security.audit_verdict(
+                inbound_verdict,
+                message,
+                boundary="user_input",
+                context=TuringSecurityContext(
+                    principal=user.user_id,
+                    route="/v1/chat",
+                    action="chat",
+                    workspace_id=record.run.workspace_id,
+                    project_id=root.project_id,
+                    run_id=record.run_id,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("canonical Turing chat security audit failed", exc_info=True)
+            raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
 
     if record.run.status is not RunStatus.COMPLETED:
         logger.warning(

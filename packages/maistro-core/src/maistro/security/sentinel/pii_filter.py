@@ -4,7 +4,14 @@ Two families of detectors, and the module is only honestly named because both
 exist:
 
 - **Secrets** — API keys, tokens, JWTs, connection strings, private-key
-  headers, passwords, IPs, emails.
+  headers, passwords, IPs, emails, plus the credential shapes shared with
+  ``security/redact.py`` through ``security/secret_policy.py`` (#1159): the
+  Slack ``xox*`` token family, AWS secret access keys (validated; 40-char
+  single-case look-alikes such as git SHAs and 20-char ``AKIA...``
+  identifiers are rejected), and generic secret-named assignments
+  (``my_secret = '...'``), where more specific detectors keep overlapping
+  spans and identifier-valued names (``aws_access_key_id``, ``key_arn``)
+  stay readable by policy.
 - **Personal data** — payment card numbers (Luhn-validated), US Social
   Security numbers, and international-format phone numbers.
 
@@ -19,7 +26,11 @@ Known scope limits: national ID formats other than US SSN are not detected, and
 phone numbers are matched in E.164 international form only (a bare local
 "555-1234" is indistinguishable from ordinary numerics at acceptable
 false-positive rates). Postal addresses, names, and dates of birth need
-context-aware NER, not regex, and are out of scope here.
+context-aware NER, not regex, and are out of scope here. The shared
+secret-assignment shape deliberately does not claim an *unquoted* value
+containing a mid-value ``=`` (``key=abc=def12345``) — the bare-value guard
+that stops an outer ``prefix: name = value`` chain from swallowing the inner
+assignment cannot distinguish it from padding; quote such values.
 
 ``PIIMatch.value`` is a masked preview, never the plaintext: the match list is
 returned across API boundaries and routinely logged, and a redaction API that
@@ -36,6 +47,13 @@ from dataclasses import dataclass
 from urllib.parse import unquote, unquote_plus
 
 from maistro.security.normalize import fold_homoglyphs, normalize_for_redaction
+from maistro.security.secret_policy import (
+    AWS_SECRET_ACCESS_KEY_PATTERN,
+    SECRET_ASSIGNMENT_PATTERN,
+    SLACK_TOKEN_PATTERN,
+    is_secret_key_name,
+    looks_like_aws_secret_access_key,
+)
 
 
 @dataclass(frozen=True)
@@ -77,20 +95,41 @@ def _ssn_ok(candidate: str) -> bool:
     return group != "00" and serial != "0000"
 
 
+def _secret_assignment_name_ok(candidate: str) -> bool:
+    """Validate an assignment shape by its field name via the canonical policy."""
+    match = SECRET_ASSIGNMENT_PATTERN.match(candidate)
+    return match is not None and is_secret_key_name(match.group("name"))
+
+
 # (type, pattern, validator). A validator narrows a shape-match to a real hit;
 # None means the pattern alone is specific enough.
+#
+# Detector order is load-bearing for labels: when two detectors claim the same
+# or nested spans, the earlier one keeps the match and a later overlap is
+# dropped (never merged — see `_absorbable`). Specific prefix shapes sit above
+# the generic secret assignment so `key=AKIA...` stays typed `aws_key`, and
+# the assignment sits last so it only claims spans nothing more specific
+# covered. (#1159: slack_token / aws_secret_key / secret_assignment share
+# their compiled shapes with `security/redact.py` via `secret_policy.py`.)
 _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] = [
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}"), None),
+    # The 40-character secret paired with an AKIA access key ID (#1159).
+    # `looks_like_aws_secret_access_key` excludes the look-alikes that would
+    # make this shape unshippable: 40-char single-case hex (git commit SHAs)
+    # and the 20-character AKIA IDs themselves (identifiers, not secrets).
+    ("aws_secret_key", AWS_SECRET_ACCESS_KEY_PATTERN, looks_like_aws_secret_access_key),
     ("github_token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}"), None),
     ("github_token", re.compile(r"github_pat_[A-Za-z0-9_]{22,}"), None),
     ("gitlab_token", re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), None),
+    # Slack bot/app/user/refresh/session tokens (#1159), shared with redact().
+    ("slack_token", SLACK_TOKEN_PATTERN, None),
     ("api_key", re.compile(r"sk-[A-Za-z0-9_-]{20,}"), None),
     ("bearer_token", re.compile(r"Bearer\s+[A-Za-z0-9_-]{20,}"), None),
     (
         "api_key",
         re.compile(
             r"""(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)"""
-            r"""[\s]*[=:]\s*["']?[A-Za-z0-9_/+=.-]{16,}["']?""",
+            r"""[\s]*[=:]\s*["']?[^\s"']{16,}["']?""",
             re.IGNORECASE,
         ),
         None,
@@ -122,6 +161,24 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
     # character class, it is a literal `|`, so the old class matched TLDs
     # containing a pipe character.
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None),
+    # Full PEM block first (#1159 repair): the base64 body between the
+    # markers IS the reusable credential, and the base64-decode candidate
+    # path cannot catch it (a key body decodes to non-UTF-8 bytes), so the
+    # header-only detector below left entire key bodies readable in post-call
+    # output. Same shape the log redactor uses: the body class excludes `-`,
+    # which is what keeps an unterminated BEGIN marker from scanning to
+    # end-of-input (linear, bounded at 16 KiB). The earlier, longer span is
+    # kept and the header-only hit inside it is dropped by the overlap rule;
+    # the header-only detector remains as the fallback for truncated output
+    # whose END marker never arrives.
+    (
+        "private_key",
+        re.compile(
+            r"-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,16384}?"
+            r"-----END [A-Z ]{0,32}PRIVATE KEY-----"
+        ),
+        None,
+    ),
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), None),
     (
         "password",
@@ -142,6 +199,12 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
         re.compile(r"\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]?\d{2,4}){2,4}"),
         lambda s: 8 <= sum(c.isdigit() for c in s) <= 15,
     ),
+    # Generic secret assignment, LAST so any more specific detector that
+    # claimed the value (AKIA, JWT, sk- prefix, password, phone) keeps it and
+    # the overlap-drop rule leaves no partial span (#1159). The validator
+    # applies the canonical segment-based field-name policy, so
+    # `my_secret = '...'` fires while `tokenizer = ...` cannot.
+    ("secret_assignment", SECRET_ASSIGNMENT_PATTERN, _secret_assignment_name_ok),
 ]
 
 # Candidate encodings are deliberately broad, but never become findings merely

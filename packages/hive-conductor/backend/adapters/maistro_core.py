@@ -17,6 +17,10 @@ from maistro.http import shared_client
 if TYPE_CHECKING:
     from config import Settings
 
+#: The bundled compose stack's LiteLLM proxy: the documented default when a
+#: deployment configures no gateway, not debug code.
+_BUNDLED_GATEWAY_BASE = "http://localhost:4000/v1"  # DevSkim: ignore DS162092 until 2027-12-31
+
 
 class StubAgentPort:
     """Explicit degraded-mode port used when maistro-core is unavailable.
@@ -30,10 +34,11 @@ class StubAgentPort:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
-        del messages, session_id, intent_hint
+        del messages, auth, session_id, intent_hint
         raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
@@ -106,13 +111,18 @@ class EmbeddedRuntime(NamedTuple):
     see the read in ``_construct_runtime``). Runtime materialization (#840
     Slice 4) reuses all three so a definition materialized later stands behind
     exactly the construction and safety context the boot roster was seeded
-    with.
+    with. ``governed_egress`` is the one canonical model-chat authority this
+    composition built over the Container (#718) -- the same authorities the
+    roster's clients cross -- so callers that run conductor work outside the
+    roster (the demo task backend) cross the same Invocation/quota boundary
+    instead of a second, unrecorded HTTP path.
     """
 
     container: Any
     agents: dict[str, Any]
     llm: Any
     preamble: str
+    governed_egress: Any
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -129,12 +139,14 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     import os
 
     from services.secrets import maistro_llm_api_key
-    from services.tool_executor import dispatch_tool
+    from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
-    from maistro.types.config import AgentConfig
+    from maistro.types.config import AgentConfig, SecurityConfig
     from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
@@ -151,6 +163,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # default Workspace and a core that did not would then disagree
         # about where unscoped Runs live, silently.
         workspace_id=settings.hive_default_workspace_id,
+        provider_config_path=settings.provider_config_path,
         # Without this the container took the ephemeral branch and built
         # in-memory stores, however the deployment was configured -- the
         # bridge constructs `AgentConfig` directly, so it never passed
@@ -163,14 +176,44 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
+        # The Sentinel permission table is fail-closed (#1165): an empty table
+        # denies every tool, so the grants this deployment states must reach
+        # the config the Container is built from.
+        security=SecurityConfig(
+            permission_preset=settings.maistro_permission_preset,
+            permissions=settings.maistro_permissions,
+        ),
+        # Same reasoning, for the canonical `model.chat` Binding authority
+        # (#1079): `bootstrap_model_bindings()` authorizes nothing when
+        # `AgentConfig.model_bindings` is empty, so a Conductor's
+        # `MAISTRO_MODEL_BINDINGS` declarations must reach the config this
+        # embedded Container is built from, or every governed model-egress
+        # node refuses every Binding.
+        model_bindings=settings.maistro_model_bindings,
     )
 
     container = await create_container(config)
 
+    # The deployment's gateway base, resolved once for both the roster's
+    # model clients and this runtime's governed egress (#718) so the two
+    # doors cannot drift onto different credentials or bases.
+    gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
     llm_client = _HttpOpenAILLMClient(
-        base_url=llm_base or "http://localhost:4000/v1",
+        base_url=gateway_base,
         api_key=llm_key or "sk-noop",
         model=model,
+    )
+    model_endpoint = GatewayEndpoint(
+        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
+    )
+    admitted_calls = AdmittedModelCalls(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=model_endpoint,
+        run_store=container.run_store,
+        binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
+        adapters=getattr(container, "provider_adapter_catalog", None),
     )
     prompt_manager = container.prompt_manager
 
@@ -196,6 +239,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
+        capability_effects=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+        model_endpoint=model_endpoint,
+        workspace_id=config.workspace_id,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -204,7 +252,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=dispatch_tool,
+        tool_executor=admitted_tool_executor(admitted_calls),
+        # Project the same roster allow-lists into the Container-owned A2A
+        # receipt service. Without this, construction was wired but every
+        # in-process delegation still refused as "no capabilities" (#147).
+        a2a_delegator=container.a2a_delegator,
         require_agents=True,
     )
     # The template for runtime materialization. Tolerant on purpose: with
@@ -218,11 +270,25 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         preamble = _load_preamble(Path(agents_dir))
     except ConfigError:
         preamble = ""
+    # The one governed model-chat boundary this runtime exposes beyond the
+    # roster (#718): the same container authorities and the same deployment
+    # gateway endpoint the agents' clients got, so conductor work started
+    # outside the roster (demo task execution) records Invocation/quota
+    # evidence through the one canonical path instead of a private HTTP call.
+    from maistro.capabilities.model_chat import ModelChatEgress
+
+    governed_egress = ModelChatEgress(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=model_endpoint,
+    )
     return EmbeddedRuntime(
         container=container,
         agents=agents,
         llm=llm_client,
         preamble=preamble,
+        governed_egress=governed_egress,
     )
 
 
@@ -247,15 +313,28 @@ class MaistroCoreBridge:
 
     def __init__(self) -> None:
         self._container: Any = None
+        self._governed_egress: Any = None
 
     @property
     def container(self) -> Any:
         """The wired maistro-core Container (holds the CapabilityRegistry), or None."""
         return self._container
 
+    @property
+    def governed_egress(self) -> Any:
+        """The runtime's canonical model-chat authority, or None before start.
+
+        The engine's demo task backend runs conductor work outside the agent
+        roster; this is the seam that keeps that work on the same Invocation
+        and quota ledger the roster's clients record on (#718), rather than a
+        second unrecorded HTTP path.
+        """
+        return self._governed_egress
+
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
+        self._governed_egress = runtime.governed_egress
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves
@@ -281,13 +360,23 @@ class MaistroCoreBridge:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
+        """Route one turn through the Container, as the caller's identity.
+
+        `auth` is the `maistro.security.AuthContext` of the principal behind
+        the turn. Without one the Container evaluates the turn as the
+        role-less anonymous principal, whose every tool call the fail-closed
+        permission table denies (#1165) -- so a caller that wants its agents
+        to hold tool authority passes the principal it authenticated.
+        """
         if self._container is None:
             raise RuntimeError("MaistroCoreBridge.start() was not called")
         return await self._container.route_request(
             messages,
+            auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )

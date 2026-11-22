@@ -22,6 +22,9 @@ import yaml
 
 from maistro.agents.factory import create_agents, instantiate_agent
 from maistro.agents.strategies.react import ReactStrategy
+from maistro.security._types import AuthContext
+from maistro.security.sentinel.policy import Sentinel
+from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
 from maistro.types.agent import AgentIdentity
 
@@ -62,6 +65,13 @@ def _create_kwargs(agents_dir: Path, **overrides: Any) -> dict[str, Any]:
     return values
 
 
+_AUTH = AuthContext(user_id="u1", roles=frozenset({"operator"}))
+
+
+def _granting_sentinel() -> Sentinel:
+    return Sentinel(warden=Warden(), permission_table={"web_search": frozenset({"operator"})})
+
+
 class _PromptManager:
     async def upsert(self, name: str, body: str, label: str = "") -> None:
         del name, body, label
@@ -94,7 +104,12 @@ async def test_create_agents_threads_a_real_executor_into_the_agent(
     provider.seed(FauxResponse(content="answered from the tool"))
 
     agents = await create_agents(
-        **_create_kwargs(_write_tools_agent_dir(tmp_path), llm=provider, tool_executor=executor)
+        **_create_kwargs(
+            _write_tools_agent_dir(tmp_path),
+            llm=provider,
+            tool_executor=executor,
+            sentinel=_granting_sentinel(),
+        )
     )
 
     agent = agents["tooler"]
@@ -109,7 +124,7 @@ async def test_create_agents_threads_a_real_executor_into_the_agent(
         [{"role": "user", "content": "search"}],
         "m",
         _tools_for("web_search"),
-        {},
+        agent._build_strategy_kwargs(_AUTH, None, None, ""),
         None,
     )
 
@@ -125,7 +140,11 @@ async def test_declared_tools_without_an_executor_refuse_instead_of_executing(
     provider.seed_tool_call("web_search", {"query": "latest"})
     provider.seed(FauxResponse(content="answered without the tool"))
 
-    agents = await create_agents(**_create_kwargs(_write_tools_agent_dir(tmp_path), llm=provider))
+    agents = await create_agents(
+        **_create_kwargs(
+            _write_tools_agent_dir(tmp_path), llm=provider, sentinel=_granting_sentinel()
+        )
+    )
 
     agent = agents["tooler"]
     assert agent._tool_executor is None
@@ -134,7 +153,7 @@ async def test_declared_tools_without_an_executor_refuse_instead_of_executing(
         [{"role": "user", "content": "search"}],
         "m",
         _tools_for("web_search"),
-        {},
+        agent._build_strategy_kwargs(_AUTH, None, None, ""),
         None,
     )
 
