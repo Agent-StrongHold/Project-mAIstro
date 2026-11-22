@@ -1571,3 +1571,84 @@ exact head; (b) PR #2427 must be **retargeted to `develop`** before merge
 (ADR-095) — the sole root cause of the hosted `pr-base` RED (`cursor/` is
 not a topic prefix), not repairable by a branch edit; (c) nothing pushed;
 the only change in this round is this notes section.
+
+## Round at 7dc1a70f7fc4 (job ee1b77b73b9048149f4237a3bb8588ae, 2026-11-22): provider-error block resolved; REAL repair = develop sync — #2425 squash-merged as 33ac30c5f1; merge conflict resolved in place
+
+**Prior block:** recovery budget exhausted (provider 404, longcat free tier) AFTER the
+driver's deterministic checks all passed — job 80b7dbfa's result.json shows check-0..8
+all rc 0 (sync / ruff pair / 481+139 batch / audit 32p / inventory ok ×4) with
+`agent_exit: 0` and `failure_kind: provider_error`. Nothing was wrong with the tree at
+7dc1a70f; the block was the model provider, not the branch.
+
+**Snapshot delta found this round (the actual repair):** `origin/develop` moved past the
+dispatch base — #2425 (P4b) squash-merged as **33ac30c5f1** (single commit, PR head tree
+preserved byte-identical: `33ac30c5f1:<file>` == `b6b7f864163f:<file>` for all four
+conflicted paths). The hosted PR #2427 base is `develop` (the ADR-095 retarget from the
+previous round's residual list already happened driver-side), so GitHub flipped to
+`mergeable: false / mergeable_state: dirty` — reproduced locally:
+`git merge-tree --write-tree HEAD origin/develop` rc 1, exactly 4 conflicts:
+`_vulture_whitelist.py`, `container.py`,
+`tests/graph/durable_runs/test_canonical_execution_store.py`, and the
+`cursor-m1-b-p4b-reconciler-recovered-disposition-8551-2e2c.md` note (add/add).
+
+**Merge executed and committed (`205100cc6f`), resolutions evidence-backed:**
+- whitelist → **develop's** copy: single `apply_recovered_attempt_disposition` block
+  with P4b's final comment (the branch had a merge-replayed duplicate plus the base
+  copy; theirs dedupes to one — matching this branch's own P4a-precedent note
+  `2425-develop-sync-dc8c3e75-dedupe-recovered-writers.md`);
+- the inventory note → **develop's** 469-line P4b record (ours was an 11-line stub,
+  identical opening prose);
+- `container.py` + the durable-store test file → **branch's** copies: full
+  theirs→ours diff is exactly the P5a delta (typed `is_typed_recovered_attempt`
+  rediscovery superseding #1863's `is_reclaimed_attempt`, RUNNING-only
+  `allow_stranded_recovered` gate, `RecoveredDispositionRefused` catch,
+  `recover_leaseless_orphaned_attempt` API + deduped bound-disposition coverage) —
+  nothing develop-only is lost (verified post-merge: merged blob == ours blob for
+  both; merged whitelist == theirs blob);
+- `execution_store.py` auto-merge keeps BOTH writers: `recover_orphaned_attempt`
+  (develop/#2419, called by develop's attempt_executor comment-wiring) and
+  `recover_leaseless_orphaned_attempt` (#232 P5a). Post-merge tree vs develop: 13
+  files, all P5a-scoped.
+- Suite inventory: develop's arrivals net **+5** core node IDs
+  (`TestRecoverOrphanedPgWriter` ×3 + `test_sweep_catches_recovered_disposition_refused`
+  ×2 spine legs) — recorded per the gate's own `--update` path with prose in
+  `cursor-m1-b-p5a-recovered-rediscovery-8551-a8d1.md` (`4b1c057728`); gate green at
+  21 suites / 36044 IDs.
+
+**Pins proven load-bearing (at 7dc1a70f; `container.py` is byte-identical post-merge,
+so the evidence carries):** mutating `allow_stranded_recovered=node_run.status is
+RunStatus.RUNNING` → `True` turns
+`test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table[postgres]` RED
+(the QUEUED leaf's `RecoveredDispositionRefused` escapes the tick); removing
+`RecoveredDispositionRefused` from the replay-loop catch turns
+`test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick[postgres]` RED.
+Both mutations reverted byte-identical (edit-tool round-trips, no git destructive ops;
+`git status` clean before the merge).
+
+**Post-merge gates (all re-executed at 4b1c057728):**
+- ruff check "All checks passed" / format "3618 files already formatted"; mypy ci.yml
+  10-package list → Success (no merge-replayed duplicates); **vulture 1221 == 1221**
+  and **radon 124 == 124** (ratchet bases correctly read the new merge-base
+  33ac30c5f1); all 24 other quality-workflow scripts rc 0 (release-consistency,
+  doc-links, enumerations, workspace-retirement, route-permissions,
+  principal-identity, reachability(+dispositions), credential-authority,
+  wiring-reads, agent-store-writes, contract-markers, convergence-matrix,
+  security/image/workflow inventories, backlog-consistency, execution-lifecycles,
+  model/design/foreign egress, promotion-surface(+provenance));
+  `verify-monorepo-layout.sh` / `check-merge-markers.py` / `check-test-duplicates.py`
+  rc 0.
+- **Live-PG** (cr2427-verify-pg @15499, alembic 068, `MAISTRO_TEST_PG_DSN`
+  `postgresql://…`): the 11-file acceptance battery → **620 passed, 0 skipped**;
+  rediscovery file **24/24** (incl. both pins on the postgres leg); the two
+  newly-arrived develop files (`test_recover_orphaned_attempt.py`,
+  `test_recovery_completion_budget.py`) → **59 passed**; no-DSN same battery →
+  **481 passed, 139 env-skips** (== driver check-3); audit-pagination → **32 passed**.
+- **pr-base `--base develop` → ok rc 0**; `git merge-tree --write-tree HEAD
+  origin/develop` → **rc 0, clean tree** — the hosted `dirty` state is resolved by
+  this branch; `quality/` ledgers byte-identical to `origin/develop` (AGENTS.md
+  post-merge row-count rule checked: empty numstat).
+
+**Residual (driver actions only):** push the branch (`205100cc6f` + `4b1c057728`) —
+GitHub mutations are prohibited in-lane; after push, PR #2427 re-computes mergeable
+and CI runs on the merged head. No gate weakened; the only production-file content
+changes vs the validated 7dc1a70f tree are develop's own P4b squash content.
