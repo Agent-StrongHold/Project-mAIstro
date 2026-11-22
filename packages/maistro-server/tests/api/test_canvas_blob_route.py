@@ -251,8 +251,10 @@ class TestAuthorizedBlobBytes:
         assert response.status_code == 200
         assert response.content == PNG_BYTES
         assert response.headers["content-type"] == "image/png"
-        # Immutable bytes, but access is caller-scoped: the cache stays private.
-        assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+        # Byte immutability is not read authority: caching would let a
+        # revoked member (or a different bearer sharing the browser cache)
+        # keep loading past the membership check, so nothing is stored.
+        assert response.headers["cache-control"] == "no-store"
 
     async def test_workspace_member_gets_bytes_too(
         self, store: FakeCanvasStore, workspace: None

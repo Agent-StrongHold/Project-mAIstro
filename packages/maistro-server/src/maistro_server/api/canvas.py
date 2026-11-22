@@ -252,9 +252,10 @@ async def get_canvas_blob(request: Request, blob_id: str, auth: RequireAuth) -> 
         content=record.data,
         media_type=media_type,
         headers={
-            # The bytes are immutable (the store refuses overwrites of an id),
-            # but access is caller-scoped, so the cache stays private.
-            "Cache-Control": "private, max-age=31536000, immutable",
+            # Byte immutability is not read authority: every load must
+            # re-run the membership check on this route, so caching (even
+            # private, even per-principal via Vary) is disallowed entirely.
+            "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
     )
