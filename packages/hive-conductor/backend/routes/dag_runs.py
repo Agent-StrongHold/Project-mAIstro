@@ -110,21 +110,36 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     from maistro.runs.store_boundary import RunStoreBoundary
     from maistro.runtime import PythonExecutionRuntime
 
-    store = get_engine().run_store
+    engine = get_engine()
+    store = engine.run_store
+    reader = getattr(engine, "run_reader", None)
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
     canonical_run_id = str(detail.get("canonical_run_id") or run_id)
     try:
-        workspace_store = await canonical_workspace_store()
-        boundary = RunStoreBoundary(
-            store,
-            workspace_store,
-            # Production wires the Container's project scope store onto its
-            # Workspace store (`wire_workspace_store`), so the store's own
-            # bound project store is the same canonical authority the
-            # Container would hand `RunStoreBoundary` directly.
-            workspace_store.project_store,
-        )
+        if reader is None:
+            # Degraded bridge: a run store without its wired scoped reader.
+            # There is no wired truth to diverge from, so the #2466 mutation
+            # gate runs over the embedded fallback Workspace authority; its
+            # refusals stay fail-closed 404s (a projection row naming no
+            # canonical Run is not cancellable, and must not read as 503).
+            workspace_store = await canonical_workspace_store()
+            boundary = RunStoreBoundary(store, workspace_store, workspace_store.project_store)
+        else:
+            # The mutation gate resolves the target through exactly the wired
+            # stores the inspection read above answered from: the engine
+            # bridge's reader triple -- the same objects the Container wires
+            # (and maistro-server hands `RunStoreBoundary` directly).
+            # Re-deriving a second authority when a reader IS wired -- e.g.
+            # the embedded fallback Workspace store's default Project store,
+            # which has never heard of the spine-wired Projects -- would
+            # refuse an initiator the route had just authorized to read
+            # (#2466; pinned by the cross-product parity scenario, where the
+            # gate's re-derived Project store answered RunNotVisible for the
+            # producer's own Run).
+            boundary = RunStoreBoundary(
+                reader.run_store, reader.workspace_store, reader.project_store
+            )
         run = await boundary.require_run_mutation(canonical_run_id, principal_id=uid)
     except RunNotVisible as exc:
         # Absent, foreign, and initiator/admin-refused targets are the same

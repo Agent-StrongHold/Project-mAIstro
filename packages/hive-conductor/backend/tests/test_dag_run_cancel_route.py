@@ -302,13 +302,20 @@ async def test_cancel_route_answers_a_canonical_run_the_spine_never_saw_with_404
     import services.engine as engine_mod
     from routes.dag_runs import cancel_run as cancel_route
     from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
 
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
 
     view = await _owned_workspace()
-    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    projects = InMemoryProjectScopeStore()
+    empty = InMemoryRunStore(project_store=projects)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(empty, workspaces, projects)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=empty, run_reader=reader)
+    )
     await get_dag_run_store().start_run(
         run_id="dag-ghost-canonical",
         user_id=_USER_ID,
@@ -765,3 +772,59 @@ async def test_cancel_refusal_is_indistinguishable_across_foreign_and_unknown_id
 
     run_after = await store.get_run(run_id)
     assert run_after is not None and run_after.status is not RunStatus.CANCELLED
+
+
+async def test_cancel_gate_resolves_the_run_through_the_wired_reader_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: the mutation gate resolves through the stores the read used.
+
+    `visible_run_detail` authorized this initiator through the engine
+    bridge's wired reader (its own Workspace/Project authorities); the gate
+    must resolve the target through that same triple. Re-deriving a second
+    authority -- the embedded fallback Workspace store's default Project
+    store -- 404s the initiator's cancel whenever the execution spine wires
+    its own Project scope store (the cross-product parity profile): the
+    re-derived store has never heard of the Run's Project, so the gate's
+    scoped read answers RunNotVisible for a Run the same principal just
+    read.
+    """
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore, RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    # The spine's own Project store -- a distinct authority from the
+    # Workspace store's bound default, exactly as `wire_execution_spine`
+    # composes it for an embedded producer.
+    spine_projects = InMemoryProjectScopeStore()
+    root = await spine_projects.create_root(view.id)
+    project = await spine_projects.create(
+        workspace_id=view.id,
+        parent_project_id=root.project_id,
+        name="Parity turn",
+    )
+    store = InMemoryRunStore(project_store=spine_projects)
+    graph = Graph(
+        workspace_id=view.id,
+        project_id=project.project_id,
+        name="Parity turn",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run_id = (await store.create_run(graph, actor_principal_id=_USER_ID)).run_id
+    reader = ScopedRunReader(store, canonical_store_for_tests(), spine_projects)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+
+    # The initiator who can read the Run can cancel it: the gate answers
+    # from the spine's own truth, not from a store that cannot see it.
+    response = await cancel_route(run_id, _ScopedRequest(_USER_ID))
+    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    cancelled = await store.get_run(run_id)
+    assert cancelled is not None and cancelled.status is RunStatus.CANCELLED

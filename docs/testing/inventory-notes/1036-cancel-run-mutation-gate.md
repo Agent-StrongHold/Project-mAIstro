@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +6
+  packages/hive-conductor/backend/tests: +7
 ---
 # Inventory note — #1036/#2466 Conductor cancel-route mutation gate
 
-Six node IDs added to `packages/hive-conductor/backend/tests` (all in
+Seven node IDs added to `packages/hive-conductor/backend/tests` (all in
 `test_dag_run_cancel_route.py`); no test removed or renamed.
 
 - `test_same_workspace_peer_can_read_but_not_cancel_another_initiator_s_run` —
@@ -26,6 +26,13 @@ Six node IDs added to `packages/hive-conductor/backend/tests` (all in
 - `test_cancel_refusal_is_indistinguishable_across_foreign_and_unknown_ids` —
   foreign principal, forged canonical link, and absent id all answer the
   identical non-disclosing 404.
+- `test_cancel_gate_resolves_the_run_through_the_wired_reader_stores` — the
+  CI-repair regression: the mutation gate resolves the target through the
+  engine bridge's wired reader triple (the stores the inspection read just
+  used), not a re-derived authority; an initiator cancels a Run whose
+  Project lives in the spine-wired Project store (the cross-product parity
+  profile) instead of 404ing through the fallback Workspace store's default
+  Project store.
 
 Red-before evidence: the three negative tests failed against the pre-gate
 route at head `33ac30c5f1` (peer cancel returned 200 and terminalized the
