@@ -20,46 +20,46 @@ replaced by a real execution (`tests/cross_product_parity/
 test_cross_product_parity.py`, `_schedule_conductor_scenario`):
 
 - the producer half starts the shipped scheduler the way the app lifespan
-  does (`services.scheduler.start_scheduler`) against a configured core
-  `Container` on the durable SQLite spine: the real loop's startup
-  `backfill_canonical_definitions()` runs, the due tick admits one claimed
-  occurrence through the canonical `ScheduleRunAdmitter`, and the same
-  tick's canonical consumer executes it into real NodeRun/Attempt evidence
-  while `record_fire` advances the durable cursor
-  (`runs_so_far=1`, `last_run_id`, `next_due_at`);
+does (`services.scheduler.start_scheduler`) against a configured core
+`Container` on the durable SQLite spine: the real loop's startup
+`backfill_canonical_definitions()` runs, the due tick admits one claimed
+occurrence through the canonical `ScheduleRunAdmitter`, and the same
+tick's canonical consumer executes it into real NodeRun/Attempt evidence
+while `record_fire` advances the durable cursor
+(`runs_so_far=1`, `last_run_id`, `next_due_at`);
 - the observer half is Conductor's landed inspection seam
-  (`services.dag_run_inspection`) wired to the same canonical stores: the
-  tick recorded no projection row, the Run is discoverable (list), readable,
-  and evidence-complete by canonical id for a Workspace member, and a
-  foreign caller is refused indistinguishably from a missing id;
+(`services.dag_run_inspection`) wired to the same canonical stores: the
+tick recorded no projection row, the Run is discoverable (list), readable,
+and evidence-complete by canonical id for a Workspace member, and a
+foreign caller is refused indistinguishably from a missing id;
 - the restart leg closes and reopens the canonical database (real
-  `create_container` on the same SQLite file, not a process-local dict),
-  reseeds a stale Hive projection row, and starts the lifespan again: the
-  durable cursor admits no second occurrence and the stale row is repaired
-  from canonical truth — it can neither resurrect the schedule nor override
-  the acknowledged definition (#2467);
+`create_container` on the same SQLite file, not a process-local dict),
+reseeds a stale Hive projection row, and starts the lifespan again: the
+durable cursor admits no second occurrence and the stale row is repaired
+from canonical truth — it can neither resurrect the schedule nor override
+the acknowledged definition (#2467);
 - the observation carries a strict invariant (`_validate_schedule_observation`)
-  so strict closeout PASSED requires the real producer/observer records
-  (`cursor_runs_so_far=1`, `restart_new_runs=0`,
-  `stale_projection_repaired`).
+so strict closeout PASSED requires the real producer/observer records
+(`cursor_runs_so_far=1`, `restart_new_runs=0`,
+`stale_projection_repaired`).
 
 Supporting edits, deliberately minimal:
 
 - `packages/hive-conductor/backend/services/scheduler.py`: the tick cadence
-  literal `asyncio.sleep(30)` becomes the module constant `_TICK_INTERVAL_S
-  = 30.0` so a test can drive the real lifespan loop without waiting out the
-  production pause. Production behavior is identical (30.0 == 30).
+literal `asyncio.sleep(30)` becomes the module constant `_TICK_INTERVAL_S
+= 30.0` so a test can drive the real lifespan loop without waiting out the
+production pause. Production behavior is identical (30.0 == 30).
 - `SCHEDULER_SCENARIO` now declares `REAL_SCHEDULE_CONDUCTOR_SCENARIO` as a
-  dependency and its validator; the scenario's docstring carries the
-  `REAL_SCENARIO_EVIDENCE: schedule-conductor` marker, which is exactly what
-  clears the dependency's blocker probe.
+dependency and its validator; the scenario's docstring carries the
+`REAL_SCENARIO_EVIDENCE: schedule-conductor` marker, which is exactly what
+clears the dependency's blocker probe.
 - `test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands`
-  moves the schedule marker into the must-be-available group alongside the
-  Builders one (the same replacement the Builders scenario made), keeping
-  the evolve/golden scaffolds blocked.
+moves the schedule marker into the must-be-available group alongside the
+Builders one (the same replacement the Builders scenario made), keeping the
+evolve/golden scaffolds blocked.
 - One closeout-machinery unit reused the removed `_scheduler_scenario`
-  callable as a stand-in; it now uses the still-abstaining
-  `_evolve_scenario`, preserving that test's semantics.
+callable as a stand-in; it now uses the still-abstaining `_evolve_scenario`,
+preserving that test's semantics.
 
 No test function was added or removed (parity suite: 26 items before and
 after), so this note records no `inventory-delta`.
@@ -136,7 +136,7 @@ database:
    and the new two-process race test) and re-executed at the merged head
    (addendum below).
 5. Cursors, uniqueness, SQLite/PG concurrency: executed (core store suite,
-   canonical-due suite, two-runner claim tests) — 368 + 65 items this round.
+   canonical due suite, two-runner claim tests) — 368 + 65 items this round.
 6. Strict #459 configured lifespan → due tick → canonical Run/Attempt →
    Conductor, DB reopen, no stale restore: **now executed** — the parity
    scenario runs the real `start_scheduler` lifespan, observes through the
@@ -181,8 +181,8 @@ upgrade head` — chain applied clean through 069 — with
   occurrence (`test_tick_executes_canonical_only_schedule_once`),
   manual-vs-tick interleaving
   (`test_tick_and_manual_fire_share_definition_lock_and_keep_both_counts`),
-  restart (`test_restart_consumes_queued_run_without_refiring`) and
-  backend parity (memory/sqlite/pg parametrizations).
+  restart (`test_restart_consumes_queued_run_without_refiring`) and backend
+  parity (memory/sqlite/pg parametrizations).
 - Core scheduling
   (`packages/maistro-core/tests/scheduling`, canonical due scan, due
   continuations, schedule winner crash, schedule resume lease): **358
@@ -226,3 +226,30 @@ against this exact committed head, using the already-running `auto-1199-r3-pg`
 - `uv run ruff check .` — clean; `uv run ruff format --check .` — 3630 files formatted; CI-exact vulture baseline — 1221 reviewed identities match 1221 findings.
 
 No tests were added in this validation pass, so it has no inventory delta. The code path inspected at this head calls `container.schedule_store.due(now=now)` in `services/scheduler.py::_tick_due`; it is not enumerating Hive rows as scheduling authority. Remaining handoff limit: the integration-only negative-before/positive-after CI evidence cannot be produced from this lane.
+
+## Addendum — exact-head validation (65c5af76c95f, 2026-11-22)
+
+This pass reviewed ADR-046 (superseded by ADR-082126-f69c) and ADR-082426-82c7,
+then independently validated the committed candidate. No production or test
+files changed in this pass:
+
+- `uv run ruff check .` — passed; `uv run ruff format --check .` — passed
+  (3630 files formatted).
+- `uv run pytest tests/cross_product_parity/test_cross_product_parity.py
+  -k 'schedule_required or schedule_fire or scaffold_only' -q -s` — **3
+  passed**, emitting `executed=true`, `status=PASSED` for the canonical
+  scheduler-occurrence-to-Conductor scenario.
+- `uv run pytest packages/maistro-core/tests/scheduling
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  -x -q` — **328 passed, 67 skipped** without a PostgreSQL DSN; skipped
+  cases are backend-specific integration parametrizations.
+- Repeating with `MAISTRO_TEST_PG_DSN=postgresql://postgres:postgres@127.0.0.1:18995/maistro_test`
+  failed during setup with PostgreSQL `InvalidPasswordError` (91 passed
+  before failure). The PostgreSQL container is reachable and ready, but its
+  credentials are not available in this lane's environment; no production
+  failure is inferred from this setup error. Prior committed evidence above
+  records the PostgreSQL suites at the prior code-identical head.
+
+The open acceptance limit is still the integration-only negative-before/
+positive-after CI-evidence clause: this lane cannot push or trigger CI.
