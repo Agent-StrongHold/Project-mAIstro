@@ -19,9 +19,12 @@ Authentication happens in AuthMiddleware; it is not authorization.
 
 The routes hold no import of the projection storage at all (#65, the
 `Conductor canonical inspection plane` parity dependency): the list, the
-detail, the cancel control, the retention bounds, and the SSE subscription
-all go through the inspection seam, so there is exactly one authorization
-door and no second path a future handler could take around it.
+detail, the retention bounds, and the SSE subscription all go through the
+inspection seam, so there is exactly one authorization door and no second
+path a future handler could take around it. The cancel control additionally
+clears the canonical mutation boundary (`RunStoreBoundary.require_run_mutation`)
+over the same store triple: read visibility admits members, never lifecycle
+writes (#1152, #2466).
 """
 
 from __future__ import annotations
@@ -86,7 +89,19 @@ def retention() -> dict[str, Any]:
 
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Cancel through the canonical Run/Attempt execution seam."""
+    """Cancel through the canonical Run/Attempt execution seam.
+
+    Read visibility never admits a lifecycle write (#1152, #2466): before any
+    cancellation the resolved canonical Run must clear the shared mutation
+    boundary — `RunStoreBoundary.require_run_mutation`, the exact gate
+    maistro-server's cancel route answers through — so only the Run's
+    initiating principal or a Workspace administrator gets through, and a
+    projection row cannot delegate write authority across Workspaces (its
+    canonical link is honoured only when the Run is filed in the row's own
+    Workspace, the same attribution rule the read overlay applies). Every
+    refusal is the seam's one no-enumeration 404, raised before any
+    Run/NodeRun/Attempt state changes or provider work is signalled.
+    """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
     if detail is None:
@@ -94,17 +109,50 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
 
     from services.engine import get_engine
 
+    from maistro.runs.scoped_reads import RunNotVisible
     from maistro.runs.service import RunExecutionService
+    from maistro.runs.store_boundary import RunStoreBoundary
     from maistro.runtime import PythonExecutionRuntime
 
-    store = get_engine().run_store
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from None
+    store = getattr(engine, "run_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    # The mutation gate is built over the same canonical triple the Container
+    # wires into `run_reader` (run store, Workspace store, Project scope
+    # store), so this route and maistro-server answer one authorization rule.
+    # Without those parts there is no boundary to authorize through: fail
+    # closed on the seam's 404 rather than cancel on a read answer.
+    reader = getattr(engine, "run_reader", None)
+    workspace_store = getattr(reader, "workspace_store", None)
+    project_store = getattr(reader, "project_store", None)
+    if workspace_store is None or project_store is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        run = await RunStoreBoundary(store, workspace_store, project_store).require_run_mutation(
+            str(detail.get("canonical_run_id") or run_id),
+            principal_id=uid,
+        )
+    except RunNotVisible:
+        # Absent, foreign, or a read-only caller: one 404, decided before any
+        # cancellation state moves and nothing about existence disclosed.
+        raise HTTPException(status_code=404, detail="run not found") from None
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        # A projection row linked to a canonical Run filed in another Workspace
+        # is a cross-link (legacy or corrupt), not this row's lifecycle truth:
+        # the row cannot delegate write authority across Workspaces. The
+        # initiator's honest path is the Run's own canonical id.
+        raise HTTPException(status_code=404, detail="run not found") from None
     try:
         updated = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+        ).cancel_run(run.run_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
