@@ -521,10 +521,12 @@ class TestWardenPromptScan:
 class _FakeCanvasStore:
     def __init__(self) -> None:
         self.blobs: dict[str, bytes] = {}
+        self.metadata: dict[str, dict[str, Any]] = {}
 
     async def store_blob(self, data: bytes, *, format: str, metadata: Any = None) -> str:
         ref = f"canvas-blob-{len(self.blobs) + 1}"
         self.blobs[ref] = data
+        self.metadata[ref] = metadata
         return ref
 
     async def get_blob(self, blob_id: str) -> bytes | None:
@@ -549,6 +551,20 @@ class TestCanvasImageBlobStore:
         ref = await blobs.put(b"\x89PNG", media_type="image/png")
         assert await blobs.get(ref) == b"\x89PNG"
         assert await blobs.get("unknown") is None
+        # Without scope, metadata only carries the source stamp.
+        assert store.metadata[ref] == {"source": "governed-image-egress"}
+
+    async def test_put_stamps_canonical_scope_when_configured(self) -> None:
+        store = _FakeCanvasStore()
+        blobs = CanvasImageBlobStore(store, workspace_id="ws-e2e", project_id="proj-root")
+        ref = await blobs.put(b"\x89PNG", media_type="image/png")
+        assert await blobs.get(ref) == b"\x89PNG"
+        # The metadata carries the scope that anchors the presentation route.
+        assert store.metadata[ref] == {
+            "source": "governed-image-egress",
+            "workspace_id": "ws-e2e",
+            "project_id": "proj-root",
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────
