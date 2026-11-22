@@ -598,6 +598,142 @@ def test_manual_fire_defers_to_the_canonical_definition_not_the_stale_row(
         _drop_hive_row(sid)
 
 
+def test_a_create_whose_compensation_also_fails_is_resolved_at_restart(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC: the deep end of the create window — the Hive write failed AND the
+    canonical compensation died with the process. The restart projects the
+    committed canonical row: the schedule becomes visible with one identity,
+    never an enabled orphan only due() can see."""
+    import stores
+    from routes import schedules as routes
+    from services.schedule_projection import ledger
+
+    async def failing_delete(sid: str) -> None:
+        raise RuntimeError("simulated compensation crash")
+
+    monkeypatch.setattr("services.scheduler.delete_canonical_definition", failing_delete)
+
+    def failing_setitem(self: Any, key: str, value: Any) -> None:
+        raise RuntimeError("simulated persisted-store outage")
+
+    monkeypatch.setattr(type(stores.schedules), "__setitem__", failing_setitem)
+    with pytest.raises(RuntimeError, match="simulated persisted-store outage"):
+        asyncio.run(
+            routes.create_schedule(
+                routes.CreateScheduleBody(
+                    name="unprojected",
+                    cron_expression="0 3 * * *",
+                    mission_template_id=_TPL,
+                    workspace_id=configured.test_workspace,
+                ),
+                _request_as_admin(),
+            )
+        )
+    monkeypatch.undo()
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(configured.test_workspace))
+    sid = asyncio.run(
+        configured.schedule_store.list_for_project(
+            workspace_id=configured.test_workspace, project_id=root.project_id
+        )
+    )[0].schedule_id
+    assert stores.schedules.get(sid) is None, "the process died before the projection"
+
+    assert _reconcile(configured) >= 1
+    projected = stores.schedules.get(sid)
+    assert projected is not None and projected.name == "unprojected", (
+        "the restart repairs the projection from the committed canonical row"
+    )
+    listed = asyncio.run(
+        configured.schedule_store.list_for_project(
+            workspace_id=configured.test_workspace, project_id=root.project_id
+        )
+    )
+    assert [schedule.schedule_id for schedule in listed] == [sid], "still one identity"
+    assert not ledger().pending_creates()
+
+
+def test_a_create_succeeds_even_when_its_marker_clear_fails(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pending marker is best-effort on the happy path: a failing clear
+    must not fail the create, and the next reconciliation closes the marker
+    without touching the agreeing rows."""
+    import stores
+    from services.schedule_projection import ScheduleProjectionLedger, ledger
+
+    calls = 0
+
+    def failing_clear(self: Any, sid: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("simulated ledger outage")
+
+    monkeypatch.setattr(ScheduleProjectionLedger, "clear_pending_create", failing_clear)
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    monkeypatch.undo()
+    try:
+        assert calls >= 1, "the route tried to close its marker"
+        assert sid in ledger().pending_creates(), "the marker survives for the next startup"
+        assert stores.schedules.get(sid) is not None
+        assert _reconcile(configured) == 0, "the restart closes it without rewriting rows"
+        assert sid not in ledger().pending_creates()
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_a_delete_survives_a_failing_tombstone_write(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical delete is the commit: a failing tombstone write must not
+    fail the already-committed delete, and the restart degrades honestly
+    (the stale row, if any, is never reimported) rather than resurrecting."""
+    import stores
+    from routes import schedules as routes
+    from services.schedule_projection import ledger
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    try:
+        assert _reconcile(configured) >= 0
+
+        def failing_tombstone(sid_: str) -> None:
+            raise RuntimeError("simulated ledger outage")
+
+        monkeypatch.setattr("services.schedule_projection.record_tombstone", failing_tombstone)
+        request = _request_as_admin()
+        assert asyncio.run(routes.delete_schedule(sid, request)) is None
+        monkeypatch.undo()
+        assert asyncio.run(configured.schedule_store.get(sid)) is None, (
+            "the canonical delete stands"
+        )
+        assert stores.schedules.get(sid) is None
+        assert not ledger().is_tombstoned(sid), "the tombstone is honestly absent"
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_a_tombstoned_row_is_skipped_by_the_import_pass_itself(configured: Any) -> None:
+    """AC: the tombstone binds in every phase — a legacy row whose deletion
+    already committed cannot be imported by the one pass that imports."""
+    import stores
+    from services.schedule_projection import ledger, record_tombstone
+
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(configured.test_workspace))
+    sid = "s-legacy-tombstoned"
+    stores.schedules._data[sid] = _legacy_row(sid, configured.test_workspace, root.project_id)
+    record_tombstone(sid)
+    try:
+        assert not ledger().migrated(), "the import pass is still the one authorized"
+        assert _reconcile(configured) >= 0
+        assert asyncio.run(configured.schedule_store.get(sid)) is None, (
+            "the import pass must not reimport a tombstoned schedule"
+        )
+        assert stores.schedules.get(sid) is None, "the stale record is dropped instead"
+        assert ledger().migrated(), "the pass still completes and writes the marker"
+    finally:
+        _drop_hive_row(sid)
+
+
 def test_scheduler_status_reports_the_projection_state(configured: Any) -> None:
     """AC: the health surface says whether reconciliation ran and which rows
     it could not vouch for, instead of silently serving a stale flag (#290)."""

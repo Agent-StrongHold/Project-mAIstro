@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +22
+  packages/hive-conductor/backend/tests: +30
 ---
 
 # Startup reconciliation converges the schedule projection on canonical truth (#2467)
 
 `packages/hive-conductor/backend/tests/test_schedule_projection_authority.py`
-is new: 22 node IDs over the in-memory store and a SQLite store on a tmp file,
+is new: 30 node IDs over the in-memory store and a SQLite store on a tmp file,
 behind a real `create_container` Container swapped into the engine. The SQLite
 leg re-opens the store across the simulated restart, so the canonical rows
 under test are the persisted ones.
@@ -27,8 +27,13 @@ due state survive repeated and concurrent (two-replica) reconciliation
 unchanged; a post-marker startup never runs the import pass for a
 canonicalized id; and the fire path reads the definition it spends from
 canonical truth, so a stale projection cannot hand an exhausted schedule fresh
-quota. `scheduler_status` reports the reconciliation outcome and degraded rows
-(#290). Two existing tests were updated, not removed: the runner-startup
-orchestration patch targets `reconcile_schedule_projection`, and the
-`_definition_for` contract test asserts the new read-first authority (stored
-definition stands; first put still belongs to a never-canonicalized row).
+quota. The create route's compensation failure path is itself tested: a create
+whose Hive write and canonical compensation both fail leaves its marker
+standing, and the restart projects the committed row (one identity, no
+invisible orphan); a failing marker clear or tombstone write never fails the
+already-committed route. `scheduler_status` reports the reconciliation outcome
+and degraded rows (#290). Two existing tests were updated, not removed: the
+runner-startup orchestration patch targets `reconcile_schedule_projection`, and
+the `_definition_for` contract test asserts the new read-first authority
+(stored definition stands; first put still belongs to a never-canonicalized
+row).
