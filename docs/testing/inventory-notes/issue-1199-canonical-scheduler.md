@@ -87,3 +87,35 @@ down `coverage-gate` and `gates-ran` with it. See
 for the CI-log-derived root cause, the atomic-publish + tolerant-poll fix, and
 the regression proof (new test reproduces the exact CI error against the
 unfixed helper, then passes; a2a directory 281 passed).
+
+## Re-validation at the #46-reactivation head 4dd5c94af8 (2026-11-22)
+
+First-party re-run of the acceptance-relevant suites at this exact head
+(`auto-46` = 4dd5c94af835b86e71325da7ffac0a261f7d0623, base 33ac30c5):
+
+- `uv run ruff check .` and `uv run ruff format --check .`: clean.
+- `uv run mypy` over the seven documented package srcs: no issues in 905 files.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match;
+  `scripts/check-test-duplicates.py`: ok, no byte-identical test files.
+- Core scheduling with the PostgreSQL legs live (dedicated pgvector:pg18
+  container on the real `alembic upgrade head` chain, 063 at this head):
+  `packages/maistro-core/tests/scheduling/` 311 passed, 0 skipped
+  (`MAISTRO_TEST_PG_DSN`); without the DSN the same suite is 274 passed,
+  37 skipped — every skip is a PostgreSQL leg, and every one goes green live.
+- Hive-conductor scheduler/definition/scope suites
+  (`test_scheduler*.py`, `test_schedule_*.py`, `test_manual_fire_canonical.py`,
+  `test_schedule_manual_fire_canonical.py`): 181 passed / 14 skipped without
+  PG; 195 passed / 0 skipped with the same live DSN.
+
+Reactivated-#46 status at this head: the #2467 projection-authority defect is
+still present — `services/scheduler.py::run` calls
+`backfill_canonical_definitions()` unconditionally on every startup (line 363)
+and `_backfill_one` puts a Hive-row-derived definition whenever the canonical
+row is missing or drifted (lines 332–344), while `routes/schedules.py`
+commits canonical writes before the Hive projection (update: lines 402→406;
+delete: lines 425–426). A crash between those writes is therefore "repaired"
+at next startup by the stale projection overwriting or resurrecting canonical
+state. The one-time/tombstone-aware migration and projection-repair work for
+that defect is owned by the reopened #1199 and #2467 lanes (heads
+1326ca7eb4 / c486fc806f, not ancestors of this branch); no test count moves
+here, so no `inventory-delta` is recorded for this addendum.
