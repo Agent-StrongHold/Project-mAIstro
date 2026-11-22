@@ -196,7 +196,11 @@ def _print_details(result: Comparison) -> None:
 #: package while canvas, evolve, rsi and the rest carried every D and E block in
 #: production code -- the ledger read clean because nothing was looking. Vendored
 #: third-party source stays out: it is kept byte-faithful on purpose and is not
-#: this repository's complexity to ratchet.
+#: this repository's complexity to ratchet. packages/maistro-ext-harness is
+#: deliberately absent too: it is developer/CI tooling (the stdlib-only
+#: conformance runner a third-party CI installs), not shipped product source;
+#: tests/test_complexity_gate_scope.py encodes the same shipped set and will
+#: fail if a new package appears without a decision about which side it is on.
 DEFAULT_SCAN = [
     "-i",
     "third_party",
@@ -204,6 +208,7 @@ DEFAULT_SCAN = [
     "packages/maistro-canvas/src",
     "packages/maistro-core/src",
     "packages/maistro-design/src",
+    "packages/maistro-ext-sdk/src",
     "packages/maistro-evolve/src",
     "packages/maistro-registry/src",
     "packages/maistro-rsi/src",
