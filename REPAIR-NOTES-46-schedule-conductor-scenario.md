@@ -120,3 +120,43 @@ dimensions of that acceptance line are proven live by the PG-leg suites above
 (admission/due on `PgScheduleStore` over the real alembic schema, and the
 winner-crash SIGKILL suite) — the same composite the two prior rounds
 documented. AC7 and the GH006 queue enqueue remain GitHub-side residuals.
+
+## Verification round @ 3e5ec69724 (first-party re-validation, no code changes)
+
+Job 902f3d7e... supplied no check-*.log files, so the whole battery was
+re-executed at this head; every prior claim reproduced (fresh
+`pgvector/pgvector:pg18` container on 127.0.0.1:18446, `alembic upgrade head`
+to migration 068, `MAISTRO_TEST_PG_DSN` set):
+
+- `uv run pytest tests/cross_product_parity/ -q` — **26 passed**.
+- `uv run python scripts/run-m1-closeout.py` — `scheduler-occurrence-to-conductor`
+  `{"executed": true, "status": "PASSED"}`; only evolve/golden scaffold scenarios
+  fail (by design, other issues' work).
+- `uv run ruff check .` / `uv run ruff format --check .` — clean (3628 files).
+- `scripts/check-suite-inventory.py` ok (21 suites match); `check-test-duplicates.py`,
+  `check-doc-links.py`, `check-backlog-consistency.py` all ok;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI-exact) — 1221 reviewed identities -> 1221 findings.
+- SAST reproduction at the current head range (CI-exact): gitleaks 8.30.1
+  `git --redact --log-opts="e7bc894733..3e5ec69724"` — 14 commits, no leaks
+  found; bandit Medium+ on core/hive-backend/server — **0** (strict gate).
+- Live PostgreSQL legs: `packages/maistro-core/tests/scheduling/` **327 passed,
+  0 skipped** (without the DSN on the same head: 289 passed, 38 skipped — every
+  skip a PostgreSQL leg, proving the legs are conditional and live); the eleven
+  hive-conductor scheduling suites **259 passed, 0 skipped** (the prior round's
+  258 was bookkeeping; head-over-8dfe5ee62f is a docs-only diff, confirmed via
+  `git diff --stat`); `test_schedule_winner_crash.py` **4 passed** (SIGKILL
+  mid-write + cursor serialization on PG).
+- AC2 restart clause verified for real: `test_restart_consumes_queued_run_without_refiring`
+  (both `cursor_failure` parametrizations) closes the container (`aclose()`),
+  rebuilds it with `create_container` against the same URL — the postgres
+  parametrization creates a scratch database, runs the full alembic chain, and
+  asserts the store is a real `PgScheduleStore` — then re-ticks: the QUEUED run
+  is consumed exactly once, no refire on the third tick, exactly one Attempt.
+  Targeted run `test_scheduler_canonical_due.py` + `test_schedule_projection_authority.py`:
+  **83 passed**.
+
+Residuals unchanged: AC7 (#1199/#2467 exact-head closure evidence) and the
+GH006 merge-queue enqueue are GitHub-side mutations prohibited to this lane;
+strict-#459 scenarios 3/6 remain deliberate closeout blockers owned by other
+issues.
