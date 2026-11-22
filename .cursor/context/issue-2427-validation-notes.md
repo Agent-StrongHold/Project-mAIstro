@@ -1318,3 +1318,62 @@ retargeted to `develop` before merge (ADR-095); note GitHub reported
 `a531f5d7c02a` **is an ancestor** of this branch, so the dirty flag is a
 transient mergeability-cache artifact of the fresh push, not a conflict;
 (c) nothing pushed; the only change in this round is this notes section.
+
+## Round at `0ca694d73491` — independent re-verification, snapshot-complete dispatch (job `949d1be5`)
+
+Scope: verifier/writer re-validation only; no code or test changes. Starting
+head exactly `0ca694d73491ae5315e215c4dac2bba2e9d33b1d` (dispatch == hosted PR
+head == local HEAD), worktree clean.
+
+**Previous block resolved:** "Hosted PR snapshot incomplete or not the review
+head" — this dispatch's snapshot **is complete and exactly aligned**: sources
+28/29 are the check-runs and statuses endpoints **at `0ca694d73491`** (both
+captured, `count: 0` — CI had not posted on the docs-only tip yet, same
+0-check-runs-at-fresh-head diagnosis as prior rounds, not a mismatch), and
+`linked_pr_heads["2427"] == 0ca694d73491` matches. `git fetch` then confirmed
+`origin/cursor/m1-b-p5a-recovered-rediscovery-8551 == HEAD == 0ca694d73491`;
+0 commits behind `origin/develop`; `merge-base == c83cb9961a`; `git diff
+--numstat origin/develop -- quality/` empty (ledgers byte-identical).
+
+**Independently re-executed at this head (not trusted from prior rounds):**
+- `uv sync --locked --extra dev` rc 0; `ruff check .` green; `ruff format
+  --check .` → 3618 files already formatted.
+- **Live-PG acceptance** (`cr2427-verify-pg`, 127.0.0.1:15499, DB `maistro`,
+  `MAISTRO_TEST_PG_DSN=postgresql://…`): driver's exact 13-file batch →
+  **620 passed, 0 skipped in 30.5s** (reconciles check-3's 481 + 139 env-skips
+  exactly). `test_interrupted_reclaim_rediscovery` alone → **24 passed**
+  (3 backends × 8; 8 postgres-parametrized IDs confirmed via collect-only).
+- Production facts re-read at HEAD: `container.py` catch
+  `(RunIntegrityError, RecoveredDispositionRefused)` in both
+  `_reclaim_abandoned_attempts` and `_reconcile_run_terminal_attempts`; gate
+  `allow_stranded_recovered=node_run.status is RunStatus.RUNNING`;
+  `_stranded_recovered_attempt` refuses live leases and selects solely via
+  `is_typed_recovered_attempt`; `consumption.py:511` typed look-past;
+  `is_reclaimed_attempt` → definition `lifecycle.py:327` only, zero production
+  call sites. Gate pins from `e4b9e7416b` are inside the passing 24
+  (`test_rediscovery_leaves_queued_prelaunch_leaves_to_the_refusal_table`,
+  `test_a_disposition_refusal_from_rediscovery_does_not_abort_the_tick` — the
+  latter reproduces the pre-`d4de14bdb8` gateless shape and asserts the
+  refusal catch + tick survival).
+- CI-exact gates: vulture `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` with `RATCHET_BASE_REV=origin/cursor/m1-b-p4b-…` **and**
+  `origin/develop` → **1221 == 1221, rc 0** both; radon → **124 == 124, rc 0**;
+  mypy ci.yml exact 10-package list → **Success, no issues in 1128 source
+  files**; suite inventory no-args → **21 suites ok rc 0**; merge-markers /
+  monorepo-layout / backlog-consistency rc 0; `check-pr-base.py --base develop
+  --labels ''` → **ok rc 0**; hosted stacked base → FAIL with the ADR-095
+  retarget message ("a stacked PR … must be retargeted to 'develop' before
+  merge") — the PR body's documented expected state.
+- Driver check-logs 0–8 (this job): all green — sync rc 0, ruff pair green,
+  batch 481 passed + 139 skipped, audit-pagination 32 passed, per-suite
+  inventory ok ×4 (hive 4321 / canvas 633 / core 18863 / rsi 1797).
+
+**Inventory:** no test changes this round → no `inventory-delta` owed; 21
+suites match the recorded baseline.
+
+**Residual (driver actions only):** (a) CI check-runs on `0ca694d73491`
+pending at dispatch capture — every gate independently reproduced green at
+this exact head; (b) PR #2427 must be retargeted to `develop` before merge
+(ADR-095; GitHub `mergeable_state: dirty` at snapshot time is the transient
+cache artifact documented last round — the hosted P4b base head is an ancestor
+of this branch); (c) nothing pushed (GitHub mutations prohibited).
