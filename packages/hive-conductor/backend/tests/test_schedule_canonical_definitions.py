@@ -341,15 +341,15 @@ def test_backfill_is_a_noop_without_a_container() -> None:
     assert asyncio.run(backfill_canonical_definitions()) == 0
 
 
-def test_the_runner_backfills_once_before_its_first_tick(
+def test_the_runner_reconciles_once_before_its_first_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.scheduler as scheduler
 
     calls: list[str] = []
 
-    async def backfill() -> int:
-        calls.append("backfill")
+    async def reconcile() -> int:
+        calls.append("reconcile")
         return 0
 
     runner = scheduler._ScheduleRunner()
@@ -361,13 +361,13 @@ def test_the_runner_backfills_once_before_its_first_tick(
     async def no_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(scheduler, "backfill_canonical_definitions", backfill)
+    monkeypatch.setattr(scheduler, "reconcile_schedule_projection", reconcile)
     monkeypatch.setattr(runner, "_tick", tick)
     monkeypatch.setattr(runner, "_self_repair_tick", tick)
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
     asyncio.run(runner.run())
-    assert calls[:2] == ["backfill", "tick"]
-    assert calls.count("backfill") == 1
+    assert calls[:2] == ["reconcile", "tick"]
+    assert calls.count("reconcile") == 1
 
 
 def test_clearing_the_template_removes_the_canonical_row(
