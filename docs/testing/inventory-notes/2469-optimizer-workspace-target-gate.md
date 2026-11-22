@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +16
+  packages/hive-conductor/backend/tests: +18
 ---
 
 # Optimizer reads, decisions, and runs authorize their owning Workspace (#2469)
 
-Sixteen ASGI cases through the real middleware stack pin the shared
+Sixteen ASGI cases plus two durable-store legs pin the shared
 target-resolution gate (`services/optimizer_scope`) across the optimizer's
 five surfaces: global and per-DAG lists disclose only the caller's live
 canonical membership universe (an authenticated unprivileged principal sees
@@ -24,7 +24,13 @@ bypassed at its one seam, every endpoint answers the cross-tenant request.
 The per-tenant fixture chain (second principal, canonical workspaces, real
 route-driven proposals) rides the same session fixtures `test_hitl_door.py`
 uses; no service is stubbed except the validation gate's model execution,
-which the run cases disable with `validate=false`. The existing
+which the run cases disable with `validate=false`. The two durable legs
+boot the real `MaistroCoreBridge` against a real database (SQLite always;
+PostgreSQL wherever `MAISTRO_TEST_PG_DSN` names a migrated server, per the
+`test_workspace_authority_durable.py` convention) and prove the gate
+resolves the owning Workspace from the wired canonical Workspace/Project
+authority and template store across a full process restart and a
+revocation written before that restart. The existing
 `test_optimizer.py` route cases were moved onto real descriptors and
 workspace-claimed proposals — the gate refuses the descriptor-less bare-id
 runs they previously exercised, which is the missing-registered-ownership

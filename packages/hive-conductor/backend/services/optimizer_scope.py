@@ -148,23 +148,27 @@ def _recorded_proposal_workspaces(dag_id: str) -> set[str]:
 async def canonical_dag_workspace(dag_id: str) -> str:
     """The Workspace a DAG's optimizer surface is bound to, or ``''``.
 
-    Resolution order: the DAG's registered GraphTemplate Workspace (the
-    canonical registration), else the one Workspace recorded across its
-    proposals, else ``''`` — never bound, so the next authorized run claims
-    it. Registered versions under more than one Workspace, or a
-    registration that disagrees with a proposal recording, is an aliasing
-    fault: :class:`OptimizerTargetNotAuthorized`, never a guess.
-
-    ``''`` is the only claimable answer; every other refusal is fail-closed.
+    Resolution order: the DAG's registered GraphTemplate Workspace — the
+    canonical, immutable registration — wins whenever one exists, and any
+    proposal recording that contradicts it is refused per row (not
+    rehomed). Without a registration, the one Workspace recorded across
+    the DAG's proposals is the tenant of record; two recordings without a
+    registration is an unresolvable aliasing fault:
+    :class:`OptimizerTargetNotAuthorized`, never a guess. ``''`` is the
+    only claimable answer; every other refusal is fail-closed.
     """
     if not dag_id.strip():
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     registered = await _registered_template_workspaces(dag_id)
-    recorded = _recorded_proposal_workspaces(dag_id)
-    all_spaces = registered | recorded
-    if len(all_spaces) > 1:
+    if len(registered) > 1:
         raise OptimizerTargetNotAuthorized("optimizer target not found")
-    return next(iter(all_spaces)) if all_spaces else ""
+    registered_workspace = next(iter(registered)) if registered else ""
+    if registered_workspace:
+        return registered_workspace
+    recorded = _recorded_proposal_workspaces(dag_id)
+    if len(recorded) > 1:
+        raise OptimizerTargetNotAuthorized("optimizer target not found")
+    return next(iter(recorded)) if recorded else ""
 
 
 async def canonical_proposal_workspace(
