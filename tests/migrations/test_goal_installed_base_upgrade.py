@@ -75,10 +75,11 @@ GOAL_REVISION = "063"
 #: ``067_delegation_grants`` keep the identities develop already shipped — a
 #: landed trunk migration never moves, and redrawing them would leave a
 #: database stamped at develop's ``066`` treated as past revisions it never
-#: ran. The new revision therefore takes the next unused id, ``068``.
+#: ran. The new revision therefore takes the next unused id, ``068``;
+#: #1064's Evolve domain store later appends as ``069``.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "068"
+CHAIN_HEAD = "069"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -443,14 +444,16 @@ class TestTheMergedIdentities:
         # The Goal revision took the fresh id off the integrated head when it
         # landed; develop's landed `064` personas, `065` replay cursors, `066`
         # receipts and `067` delegation grants follow with those merged
-        # identities verbatim, and #1095's legacy-principal ownership
-        # revision parents on that tip as `068`, so the head is CHAIN_HEAD
+        # identities verbatim, #1095's legacy-principal ownership
+        # revision parents on that tip as `068`, and #1064's Evolve domain
+        # publications append after that as `069`, so the head is CHAIN_HEAD
         # while 063 stays parented on 062.
         assert revisions["064"].down_revision == GOAL_REVISION
         assert revisions["065"].down_revision == "064"
         assert revisions["066"].down_revision == "065"
         assert revisions["067"].down_revision == "066"
-        assert revisions[CHAIN_HEAD].down_revision == "067"
+        assert revisions["068"].down_revision == "067"
+        assert revisions[CHAIN_HEAD].down_revision == "068"
         assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.

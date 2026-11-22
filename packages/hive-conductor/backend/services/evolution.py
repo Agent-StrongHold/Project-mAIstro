@@ -218,10 +218,51 @@ def get_evolution_service() -> _EvolutionService:
     return _service
 
 
+def select_domain_store() -> Any | None:
+    """Pick the durable Evolve domain store this deployment can honestly back (#1064).
+
+    PostgreSQL when the canonical engine's container carries an asyncpg pool;
+    sqlite when the canonical spine itself is a sqlite file; ``None`` when the
+    deployment is memory-backed — where every canonical Run is memory-backed
+    too, so a cross-process durable domain ledger would silently pretend a
+    durability the spine doesn't have. The recovery contract stays honest:
+    a restart of a memory-backed deployment refuses recovery exactly as
+    before, via ``EvolveRecoveryBlocked``.
+    """
+    from services.evolution_graph import CanonicalExecutionUnavailable, canonical_execution_owner
+
+    try:
+        owner = canonical_execution_owner()
+    except CanonicalExecutionUnavailable:
+        return None
+    pool = getattr(owner, "db_pool", None) or getattr(owner, "pg_pool", None)
+    if pool is not None:
+        from services.evolve_domain_store import PgEvolveDomainStore
+
+        return PgEvolveDomainStore(pool)
+    # Owner doubles in tests (and owners of degraded engines) may carry no
+    # config at all; a missing config is just not-sqlite-backed, not an error.
+    config = getattr(owner, "config", None)
+    database_url = str(getattr(config, "database_url", "") or "") if config else ""
+    if database_url.startswith("sqlite:"):
+        path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ""
+        if path and path != ":memory:":
+            from services.evolve_domain_store import SqliteEvolveDomainStore
+
+            return SqliteEvolveDomainStore(path)
+    return None
+
+
 async def start_evolution() -> None:
     global _service
     _service = _EvolutionService()
-    _service.initialize_domain_state()
+    # Durable domain first (#1064): attach the store this deployment can
+    # honestly back, then restore-or-initialize through it. A deployment with
+    # durable state reconstructs the exact population/tournament a stranded
+    # Run was admitted against; a memory-backed one keeps the historical
+    # fresh init (and its honest recovery refusal).
+    _service.attach_domain_store(select_domain_store())
+    await _service.restore_or_initialize_domain_state()
     # A degraded/stub engine retains Evolve's domain projection for inspection,
     # but must not start a cadence that is guaranteed to fail admission.
     if _service.execution_available:
@@ -273,6 +314,14 @@ class _EvolutionService:
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
         self._archive: Any = None
+        # Durable Evolve domain store (#1064): the snapshot + publication
+        # ledger that lets a genuinely new process reconstruct the exact
+        # population/tournament this Run was admitted against. ``None`` keeps
+        # the historical process-local behavior for deployments without a
+        # durable backend; ``attach_domain_store``/``select_domain_store``
+        # wire the production store before the first cycle.
+        self._domain_store: Any = None
+        self._domain_restore: dict[str, Any] | None = None
         # Manual requests and the cadence task share one admission lock. This
         # serializes cycle planning/finalization without making the population
         # store a second execution authority.
@@ -281,6 +330,21 @@ class _EvolutionService:
         self._availability = "unavailable"
         self._availability_reason: str | None = "canonical engine execution has not been checked"
         self._refresh_execution_availability()
+
+    @property
+    def domain_store(self) -> Any:
+        """The durable domain snapshot/publication store, or ``None`` (#1064)."""
+        return self._domain_store
+
+    @property
+    def domain_restore(self) -> dict[str, Any] | None:
+        """What the last durable domain restore reconstructed, or ``None`` (#1064).
+
+        Honest restart observability: ``/evolution/status`` reports which
+        snapshot a restarted process restored (run_id, kind, counts) instead
+        of silently presenting a rebuilt population as if it were fresh.
+        """
+        return self._domain_restore
 
     @property
     def execution_available(self) -> bool:
@@ -348,6 +412,145 @@ class _EvolutionService:
             self._last_cycle_error = _public_failure(exc)
         self._refresh_execution_availability()
 
+    async def restore_or_initialize_domain_state(self) -> bool:
+        """Reconstruct the exact domain from the durable store, or fabricate fresh (#1064).
+
+        This is the seam that makes Evolve recovery honest across a genuine
+        process restart: a restarted process must not present a fabricated
+        fresh population as the domain a stranded Run was admitted against.
+        When a durable snapshot exists, this restores the exact serialized
+        population/tournament/markers and replays the battle journal rows
+        published after that snapshot (deterministic Elo math, so replay is
+        exact); the committed finalize markers come back with the snapshot so
+        a recovered finalize returns idempotently and a faulted one fails
+        closed across the restart. ``False`` means no durable state was
+        found (or no store is attached) and the historical fresh-init path
+        ran instead.
+        """
+        if self._population is not None and self._tournament is not None:
+            # Already restored or initialized this process; never rebuild a
+            # live domain out from under the cycle lock holder.
+            return self._domain_restore is not None
+        store = self._domain_store
+        if store is None:
+            # No durable backend this deployment can honestly back: the
+            # historical fresh init, recovery refusing as it always has.
+            self.initialize_domain_state()
+            return False
+        workspace_id = self.workspace_id
+        if not workspace_id:
+            # No durable ledger key: same honest fallback.
+            self.initialize_domain_state()
+            return False
+        try:
+            from maistro_evolve.population import PopulationStore
+            from maistro_evolve.tournament import EloTournament
+
+            await store.ensure_schema()
+            snapshot = await store.latest_snapshot(workspace_id, kind="committed")
+            snapshot_kind = "committed"
+            if snapshot is None:
+                snapshot = await store.latest_snapshot(workspace_id)
+                snapshot_kind = "admission"
+        except Exception as exc:
+            # A broken durable store must not silently downgrade to a fresh
+            # fabricated population that recovery would then trust: surface
+            # the failure and keep the historical fresh init, which recovery
+            # membership verification will refuse against anyway.
+            logger.warning("Evolve durable domain restore failed: %s", exc, exc_info=True)
+            self._last_cycle_error = _public_failure(exc)
+            self.initialize_domain_state()
+            return False
+        if snapshot is None:
+            self.initialize_domain_state()
+            return False
+        population = PopulationStore()
+        tournament = EloTournament()
+        population.restore_genomes_snapshot(snapshot.genomes)
+        population.restore_cycle_markers(snapshot.cycle_markers)
+        tournament.restore_snapshot(snapshot.tournament)
+        # Replay exactly the battles published after this snapshot. The
+        # journal rows carry their (NodeRun, benchmark) identity, so the
+        # rebuilt tournament's publication index answers the idempotency
+        # question for a recovered battle Attempt without a second battle.
+        replayed = 0
+        for publication in await store.list_battle_publications(
+            workspace_id, after_seq=snapshot.last_battle_seq
+        ):
+            payload = publication.payload
+            tournament.record_battle(
+                benchmark=publication.benchmark,
+                genome_a_id=str(payload.get("genome_a_id", "")),
+                genome_b_id=str(payload.get("genome_b_id", "")),
+                score_a=float(payload.get("score_a", 0.0)),
+                score_b=float(payload.get("score_b", 0.0)),
+                node_run_id=publication.node_run_id,
+                attempt_id=publication.attempt_id,
+            )
+            replayed += 1
+        # Durable finalize markers overlay the snapshot's embedded ones (a
+        # faulted finalize has no committed snapshot, so the admission
+        # snapshot's markers predate the fault) — the fail-closed disposition
+        # must survive the restart.
+        for marker in await store.list_finalize_markers(workspace_id):
+            population.record_cycle_marker(f"finalize:{marker.node_run_id}", dict(marker.payload))
+        self._population = population
+        self._tournament = tournament
+        self._cycle_count = snapshot.completed_cycles
+        self._domain_restore = {
+            "run_id": snapshot.run_id,
+            "kind": snapshot_kind,
+            "population_size": len(population.list_all()),
+            "total_battles": tournament.get_stats().get("total_battles", 0),
+            "replayed_battles": replayed,
+            "completed_cycles": snapshot.completed_cycles,
+        }
+        logger.info(
+            "evolve_domain_restored store=%s run=%s kind=%s population=%d battles=%d replayed=%d",
+            store.backend,
+            snapshot.run_id,
+            snapshot_kind,
+            len(population.list_all()),
+            tournament.get_stats().get("total_battles", 0),
+            replayed,
+        )
+        self._refresh_execution_availability()
+        return True
+
+    @property
+    def workspace_id(self) -> str | None:
+        """The canonical workspace this service's domain state belongs to."""
+        from services.evolution_graph import (
+            CanonicalExecutionUnavailable,
+            canonical_execution_owner,
+        )
+
+        try:
+            owner = canonical_execution_owner()
+        except CanonicalExecutionUnavailable:
+            return None
+        # Owner doubles may carry no config; an unresolvable workspace simply
+        # means no durable ledger key, which callers handle by not restoring.
+        owner_config = getattr(owner, "config", None)
+        return (
+            str(getattr(owner_config, "workspace_id", "") or "") or None if owner_config else None
+        )
+
+    def attach_domain_store(self, store: Any) -> None:
+        """Attach the durable domain store before the first domain init (#1064).
+
+        Called once at startup, before ``restore_or_initialize_domain_state``.
+        Attaching after population/tournament exist would let the durable
+        truth and the live memory drift apart, so this refuses instead.
+        """
+        if self._domain_store is not None:
+            return
+        if self._population is not None or self._tournament is not None:
+            raise RuntimeError(
+                "the Evolve domain store must be attached before initialize_domain_state"
+            )
+        self._domain_store = store
+
     def stop(self) -> None:
         self._running = False
 
@@ -405,7 +608,7 @@ class _EvolutionService:
             self._last_cycle_error = error or f"canonical Run ended {status.value}"
 
     async def run_loop(self) -> None:
-        self.initialize_domain_state()
+        await self.restore_or_initialize_domain_state()
         if self._population is None or self._tournament is None:
             return
         self._refresh_execution_availability()
@@ -493,6 +696,7 @@ class _EvolutionService:
             actor_principal_id=actor_principal_id,
             cycle_number=self._cycle_count + 1,
             archive=self._archive,
+            domain_store=self._domain_store,
         )
         self._last_run_id = record.run_id
         self._last_run_status = record.run.status
@@ -573,4 +777,17 @@ class _EvolutionService:
             "last_run_id": self._last_run_id,
             "last_run_status": self._last_run_status.value if self._last_run_status else None,
             "tournament": tournament_stats,
+            # Honest restart observability (#1064): what durable backend backs
+            # the domain (``None`` = process-local only) and, after a
+            # restart, exactly which snapshot was restored. A rebuilt
+            # population is never presented as a fresh one. getattr, not the
+            # attribute: service doubles (and instances built before this
+            # change) carry neither field, which reports honestly as
+            # process-local/no restore.
+            "domain_store_backend": (
+                getattr(self._domain_store, "backend", None)
+                if getattr(self, "_domain_store", None)
+                else None
+            ),
+            "domain_restore": getattr(self, "_domain_restore", None),
         }

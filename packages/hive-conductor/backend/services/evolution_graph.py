@@ -34,6 +34,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from services.evolve_domain_store import EvolveDomainPublication, EvolveDomainSnapshot
 from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,9 @@ class _TournamentWork:
         population: Any,
         membership_ids: Sequence[str] | None = None,
         battle_slots: int | None = None,
+        domain_store: Any = None,
+        workspace_id: str | None = None,
+        pair_seed: str | None = None,
     ) -> None:
         self._cycle = cycle
         self._population = population
@@ -304,6 +308,15 @@ class _TournamentWork:
             else (str(genome.id) for genome in population.list_all())
         )
         self._battle_slots = battle_slots
+        # Durable publication ledger (#1064). ``None`` keeps the historical
+        # process-local behavior for library/test callers that never attach
+        # one; the production resolver always supplies the service's store.
+        self._domain_store = domain_store
+        self._workspace_id = workspace_id
+        # Deterministic pairing seed (#1064): a function of the logical
+        # cycle identity, identical in every process that executes this
+        # cycle, so planning is reconstructible.
+        self._pair_seed = pair_seed
 
     def prepare(self) -> _PairPlanOutput:
         scored = []
@@ -317,7 +330,17 @@ class _TournamentWork:
                 scored.append(genome)
         shuffled = list(scored)
         # Tournament pairing only — not a cryptographic use of randomness.
-        random.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
+        # Seeded from the logical cycle identity when one was supplied
+        # (#1064): the same logical cycle plans the same pairing in any
+        # process, so a pair-planning Attempt killed before its output
+        # commits re-plans identically on resume instead of silently
+        # re-pairing the cycle, and an uninterrupted execution is
+        # byte/semantically comparable to a kill+resume of the same logical
+        # cycle. Different cycles (different workspace/cycle/membership)
+        # still vary; library callers without a seed keep process-local
+        # variety.
+        rng = random.Random(self._pair_seed) if self._pair_seed else random.Random()
+        rng.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         pairs = [
             (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
         ]
@@ -328,7 +351,13 @@ class _TournamentWork:
             has_battles=bool(pairs),
         )
 
-    def run_pair(self, inputs: _BattleInput, ctx: NodeContext | None = None) -> _BattleOutput:
+    def _validate_pair_plan(self, inputs: _BattleInput) -> tuple[Any, Any, list[str]]:
+        """Shared plan/capacity validation for both battle publication paths.
+
+        Every guard here runs BEFORE any battle is recorded: a malformed plan
+        must fail the canonical Attempt rather than leave an un-routable or
+        half-applied domain side effect.
+        """
         if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
                 "tournament graph requested a battle outside its persisted pair plan"
@@ -340,8 +369,6 @@ class _TournamentWork:
             and inputs.pair_index == self._battle_slots - 1
             and inputs.pair_index + 1 < len(inputs.pairs)
         ):
-            # Do this before recording a battle: a malformed plan must fail the
-            # canonical Attempt rather than leave an un-routable side effect.
             raise RuntimeError(
                 "tournament pair plan has_more=True but the immutable graph has no successor"
             )
@@ -351,10 +378,14 @@ class _TournamentWork:
         genome_b = self._population.get(genome_b_id)
         if genome_a is None or genome_b is None:
             raise ValueError("a tournament genome disappeared after pair selection")
+        common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
+        return genome_a, genome_b, common
+
+    def run_pair(self, inputs: _BattleInput, ctx: NodeContext | None = None) -> _BattleOutput:
+        genome_a, genome_b, common = self._validate_pair_plan(inputs)
 
         node_run_id = ctx.node_run_id if ctx is not None else None
         attempt_id = ctx.attempt_id if ctx is not None else None
-        common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
         for benchmark in common:
             # Idempotent per (node_run_id, benchmark): a recovered Attempt for
             # the same logical NodeRun that already published this
@@ -382,6 +413,78 @@ class _TournamentWork:
             benchmarks=common,
             has_more=next_index < len(inputs.pairs),
             battle_node_run_id=node_run_id or "",
+        )
+
+    async def run_pair_durable(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
+        """Publish one pair's battles through the durable effect ledger (#1064).
+
+        Journal-first, per benchmark: the durable row is the exactly-once
+        authority, its primary key is the fence two concurrent publishers
+        race on, and the in-memory mutation only happens for the benchmark
+        this call actually inserted. A process that dies after the durable
+        insert but before mutating its in-memory tournament loses nothing:
+        on restart the tournament is rebuilt by replaying the journal, and a
+        recovered Attempt for the same NodeRun finds every already-published
+        benchmark's row and records no second battle, second counter update,
+        or second Elo update.
+        """
+        if self._domain_store is None or not self._workspace_id:
+            return self.run_pair(inputs, ctx)
+        genome_a, genome_b, common = self._validate_pair_plan(inputs)
+        for benchmark in common:
+            inserted = await self._domain_store.record_battle_publication(
+                self._workspace_id,
+                EvolveDomainPublication(
+                    effect_kind="battle",
+                    node_run_id=ctx.node_run_id,
+                    benchmark=benchmark,
+                    attempt_id=ctx.attempt_id,
+                    run_id=ctx.run_id,
+                    payload={
+                        "genome_a_id": genome_a.id,
+                        "genome_b_id": genome_b.id,
+                        "score_a": genome_a.eval_scores[benchmark],
+                        "score_b": genome_b.eval_scores[benchmark],
+                    },
+                ),
+            )
+            if not inserted:
+                # Another worker (or a prior Attempt of this process) already
+                # durably published this logical battle. Mirror it into the
+                # local tournament exactly once so this process's in-memory
+                # ratings converge on the journal, and never re-apply it.
+                find_published = getattr(self._cycle.tournament, "find_published_battle", None)
+                already = find_published(ctx.node_run_id, benchmark) if find_published else None
+                if already is None:
+                    self._cycle.tournament.record_battle(
+                        benchmark=benchmark,
+                        genome_a_id=genome_a.id,
+                        genome_b_id=genome_b.id,
+                        score_a=genome_a.eval_scores[benchmark],
+                        score_b=genome_b.eval_scores[benchmark],
+                        node_run_id=ctx.node_run_id,
+                        attempt_id=ctx.attempt_id,
+                    )
+                continue
+            self._cycle.tournament.record_battle(
+                benchmark=benchmark,
+                genome_a_id=genome_a.id,
+                genome_b_id=genome_b.id,
+                score_a=genome_a.eval_scores[benchmark],
+                score_b=genome_b.eval_scores[benchmark],
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+            )
+
+        next_index = inputs.pair_index + 1
+        return _BattleOutput(
+            pairs=list(inputs.pairs),
+            pair_index=next_index,
+            genome_a_id=genome_a.id,
+            genome_b_id=genome_b.id,
+            benchmarks=common,
+            has_more=next_index < len(inputs.pairs),
+            battle_node_run_id=ctx.node_run_id,
         )
 
 
@@ -429,7 +532,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
             )
         # Validate graph capacity before recording tournament evidence so a
         # malformed immutable graph cannot leave a domain battle half-applied.
-        return self._tournament_work.run_pair(inputs, ctx)
+        return await self._tournament_work.run_pair_durable(inputs, ctx)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -479,12 +582,203 @@ def _finalize_marker_id(node_run_id: str) -> str:
     return f"finalize:{node_run_id}"
 
 
+def _exportable(population: Any, tournament: Any) -> bool:
+    """True when both domain objects can serialize for a durable snapshot (#1064).
+
+    A snapshot with a partial export would restore a corrupted domain, so a
+    store of doubles (which lack the export surface) captures no snapshot at
+    all rather than a lie. The production service always supplies real
+    ``PopulationStore``/``EloTournament`` objects, which both support it.
+    """
+    return bool(
+        getattr(population, "export_genomes_snapshot", None)
+        and getattr(tournament, "export_snapshot", None)
+    )
+
+
+async def _capture_domain_snapshot(
+    *,
+    domain_store: Any,
+    workspace_id: str,
+    run_id: str,
+    kind: str,
+    population: Any,
+    tournament: Any,
+    membership_ids: Sequence[str],
+    completed_cycles: int,
+) -> EvolveDomainSnapshot:
+    """Serialize the full domain at a publication boundary into the durable store (#1064).
+
+    ``kind`` is ``admission`` (pre-cycle: the compensation reference a
+    restart falls back to when the cycle's finalize never durably committed)
+    or ``committed`` (post-finalize: the state the next cycle starts from).
+    ``last_battle_seq`` pins the journal head at capture so a restore replays
+    exactly the battle rows published after this snapshot, never the ones it
+    already carries.
+    """
+    markers = (
+        population.export_cycle_markers() if hasattr(population, "export_cycle_markers") else {}
+    )
+    head = await domain_store.battle_journal_head(workspace_id)
+    snapshot = EvolveDomainSnapshot(
+        workspace_id=workspace_id,
+        run_id=run_id,
+        kind=kind,
+        membership_ids=list(membership_ids),
+        membership_hash=_membership_hash(membership_ids),
+        completed_cycles=completed_cycles,
+        genomes=population.export_genomes_snapshot(),
+        tournament=tournament.export_snapshot(),
+        cycle_markers=markers,
+        last_battle_seq=head,
+    )
+    await domain_store.save_snapshot(snapshot)
+    return snapshot
+
+
+def _durable_store_or_none(domain_store: Any, workspace_id: str | None) -> Any:
+    """The active durable domain seam for this cycle, or ``None`` (#1064).
+
+    A no-store caller keeps the historical process-local publication path;
+    a store without a workspace cannot key its ledger and is equally inert.
+    """
+    return domain_store if domain_store is not None and workspace_id else None
+
+
+async def _reconcile_finalize_marker(
+    *,
+    domain_store: Any,
+    workspace_id: str | None,
+    population: Any,
+    ctx: NodeContext,
+    marker_id: str,
+) -> _FinalizeOutput | None:
+    """Decide this finalize NodeRun's disposition before any mutation (#1064).
+
+    Returns the already-committed output when this logical NodeRun has
+    durably (or process-locally) committed; ``None`` when it is fresh and
+    may proceed to mutate. Raises ``FinalizeReconciliationRequired`` when a
+    prior Attempt faulted partway through: blind retry would double-apply
+    whatever already committed, and silent success would fake canonical
+    evidence.
+    """
+    durable = _durable_store_or_none(domain_store, workspace_id)
+    if durable is not None:
+        # Durable evidence outranks this process's memory (#1064): a prior
+        # process may have committed or faulted this finalize and died
+        # before anything landed here. The marker's durable payload is the
+        # cross-process truth; the in-memory marker below remains the
+        # process-local cache for the no-store path.
+        committed = await durable.get_finalize_marker(workspace_id, ctx.node_run_id)
+        if committed is not None:
+            status = str(committed.payload.get("status"))
+            if status == "committed":
+                return _FinalizeOutput.model_validate(committed.payload.get("output"))
+            raise FinalizeReconciliationRequired(
+                f"finalize NodeRun {ctx.node_run_id!r} previously {status} after "
+                "partially mutating domain state; refusing to retry automatically"
+            )
+    prior = population.get_cycle_marker(marker_id)
+    if prior is not None:
+        status = prior.get("status")
+        if status == "committed":
+            return _FinalizeOutput.model_validate(prior["output"])
+        raise FinalizeReconciliationRequired(
+            f"finalize NodeRun {ctx.node_run_id!r} previously faulted after "
+            "partially mutating domain state; refusing to retry automatically"
+        )
+    population.record_cycle_marker(marker_id, {"status": "in_progress"})
+    if durable is not None:
+        await durable.upsert_finalize_marker(
+            workspace_id,
+            ctx.node_run_id,
+            {"status": "in_progress"},
+            run_id=ctx.run_id,
+        )
+    return None
+
+
+async def _record_finalize_faulted(
+    *,
+    domain_store: Any,
+    workspace_id: str | None,
+    population: Any,
+    ctx: NodeContext,
+    marker_id: str,
+) -> None:
+    """Mark this finalize faulted everywhere evidence lives (#1064).
+
+    The fault path of the mutation sequence: the domain may be partially
+    mutated, so every later Attempt for this NodeRun — in this process or a
+    restarted one — must see "faulted" rather than a missing marker that
+    reads as retryable work.
+    """
+    population.record_cycle_marker(marker_id, {"status": "faulted"})
+    durable = _durable_store_or_none(domain_store, workspace_id)
+    if durable is not None:
+        await durable.upsert_finalize_marker(
+            workspace_id,
+            ctx.node_run_id,
+            {"status": "faulted"},
+            run_id=ctx.run_id,
+        )
+
+
+async def _publish_finalize_committed(
+    *,
+    domain_store: Any,
+    workspace_id: str,
+    population: Any,
+    cycle: Any,
+    ctx: NodeContext,
+    output: _FinalizeOutput,
+) -> None:
+    """Persist committed finalize evidence to the durable ledger (#1064).
+
+    Committed domain *snapshot* first, committed *marker* second: if the
+    snapshot cannot be written durably, this finalize's success is
+    unprovable across a restart (a restore would fall back to the pre-cycle
+    admission snapshot while the marker claimed completion), so the store
+    records faulted-with-uncertain-state and the caller fails closed — the
+    compensation reference plus that honest marker is exactly the explicit
+    reconciliable disposition the recovery contract requires.
+    """
+    try:
+        await _capture_domain_snapshot(
+            domain_store=domain_store,
+            workspace_id=workspace_id,
+            run_id=ctx.run_id,
+            kind="committed",
+            population=population,
+            tournament=cycle.tournament,
+            membership_ids=_population_membership(population),
+            completed_cycles=getattr(cycle, "_cycle_count", 0),
+        )
+    except Exception:
+        await domain_store.upsert_finalize_marker(
+            workspace_id,
+            ctx.node_run_id,
+            {"status": "faulted", "reason": "committed snapshot capture failed"},
+            run_id=ctx.run_id,
+        )
+        raise
+    await domain_store.upsert_finalize_marker(
+        workspace_id,
+        ctx.node_run_id,
+        {"status": "committed", "output": output.model_dump()},
+        run_id=ctx.run_id,
+    )
+
+
 async def _finalize_cycle(
     cycle: Any,
     population: Any,
     config: Any,
     llm_call: Any,
     ctx: NodeContext | None = None,
+    *,
+    domain_store: Any = None,
+    workspace_id: str | None = None,
 ) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle.
 
@@ -503,23 +797,29 @@ async def _finalize_cycle(
     marker_id = _finalize_marker_id(ctx.node_run_id) if ctx is not None else None
     if marker_id is not None:
         assert ctx is not None
-        marker = population.get_cycle_marker(marker_id)
-        if marker is not None:
-            status = marker.get("status")
-            if status == "committed":
-                return _FinalizeOutput.model_validate(marker["output"])
-            raise FinalizeReconciliationRequired(
-                f"finalize NodeRun {ctx.node_run_id!r} previously faulted after "
-                "partially mutating domain state; refusing to retry automatically"
-            )
-        population.record_cycle_marker(marker_id, {"status": "in_progress"})
+        committed = await _reconcile_finalize_marker(
+            domain_store=domain_store,
+            workspace_id=workspace_id,
+            population=population,
+            ctx=ctx,
+            marker_id=marker_id,
+        )
+        if committed is not None:
+            return committed
 
     try:
         with _model_call_context(llm_call, ctx) as bound_llm:
             new_ids = await _apply_finalize_mutations(cycle, population, config, bound_llm)
     except Exception:
         if marker_id is not None:
-            population.record_cycle_marker(marker_id, {"status": "faulted"})
+            assert ctx is not None
+            await _record_finalize_faulted(
+                domain_store=domain_store,
+                workspace_id=workspace_id,
+                population=population,
+                ctx=ctx,
+                marker_id=marker_id,
+            )
         raise
 
     output = _FinalizeOutput(
@@ -529,6 +829,17 @@ async def _finalize_cycle(
     if marker_id is not None:
         population.record_cycle_marker(
             marker_id, {"status": "committed", "output": output.model_dump()}
+        )
+    durable = _durable_store_or_none(domain_store, workspace_id)
+    if durable is not None:
+        assert ctx is not None
+        await _publish_finalize_committed(
+            domain_store=durable,
+            workspace_id=str(workspace_id),
+            population=population,
+            cycle=cycle,
+            ctx=ctx,
+            output=output,
         )
     return output
 
@@ -598,11 +909,15 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         population: Any,
         config: Any,
         llm_call: Any,
+        domain_store: Any = None,
+        workspace_id: str | None = None,
     ) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
         self._llm_call = llm_call
+        self._domain_store = domain_store
+        self._workspace_id = workspace_id
 
     async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _FinalizeOutput:
         return await _finalize_cycle(
@@ -611,6 +926,8 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             self._config,
             self._llm_call,
             ctx,
+            domain_store=self._domain_store,
+            workspace_id=self._workspace_id,
         )
 
 
@@ -763,6 +1080,20 @@ def _build_graph(
     )
 
 
+def _pair_seed(workspace_id: str, cycle_number: Any, membership_ids: Sequence[str]) -> str:
+    """The deterministic pairing identity of one logical cycle (#1064).
+
+    A function only of facts every process that executes this cycle can
+    reconstruct from durable state (workspace, cycle number, frozen
+    membership), so pair planning is identical uninterrupted vs kill+resume
+    and a planning Attempt killed before its output commits re-plans
+    identically instead of silently re-pairing the cycle.
+    """
+    return (
+        f"evolve-pairs:{workspace_id}:{int(cycle_number or 1)}:{_membership_hash(membership_ids)}"
+    )
+
+
 def _resolver(
     *,
     cycle: Any,
@@ -771,12 +1102,18 @@ def _resolver(
     llm_call: Any,
     membership_ids: Sequence[str] | None = None,
     battle_slots: int | None = None,
+    domain_store: Any = None,
+    workspace_id: str | None = None,
+    pair_seed: str | None = None,
 ) -> NodeResolver:
     tournament_work = _TournamentWork(
         cycle=cycle,
         population=population,
         membership_ids=membership_ids,
         battle_slots=battle_slots,
+        domain_store=domain_store,
+        workspace_id=workspace_id,
+        pair_seed=pair_seed,
     )
     evaluate = _EvaluateNode(
         cycle=cycle,
@@ -790,6 +1127,8 @@ def _resolver(
         population=population,
         config=config,
         llm_call=llm_call,
+        domain_store=domain_store,
+        workspace_id=workspace_id,
     )
 
     def resolve(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -876,6 +1215,7 @@ async def run_canonical_evolution_cycle(
     cycle_number: int | None = None,
     container: Any | None = None,
     archive: Any | None = None,
+    domain_store: Any = None,
 ) -> DurableRunRecord:
     """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work.
 
@@ -883,6 +1223,13 @@ async def run_canonical_evolution_cycle(
     domain state like the population/tournament: when supplied, the cycle's
     finalize step archives culled genomes and snapshots created children, so
     candidate lineage and retirement survive population turnover (M4-A6).
+
+    ``domain_store`` (an ``EvolveDomainStore``) is the durable publication
+    ledger (#1064): admission captures a pre-cycle domain snapshot here, and
+    battle/finalize publication keys become durable so a genuinely new
+    process can reconstruct the exact domain references and recover this
+    Run instead of refusing it. ``None`` keeps the historical process-local
+    behavior for library/test callers.
     """
     from maistro_evolve.cycle import EvolutionCycle
 
@@ -925,6 +1272,24 @@ async def run_canonical_evolution_cycle(
         provenance=provenance,
         initial_status=RunStatus.QUEUED,
     )
+    if domain_store is not None and _exportable(population, tournament):
+        # Admission boundary (#1064): durably capture the exact pre-cycle
+        # domain this Run was admitted against, before its first mutation.
+        # A restart that finds no committed post-finalize snapshot restores
+        # THIS state — the compensation reference — and this Run's frozen
+        # membership is verified against it, so recovery can never resume
+        # against a fabricated population. Only real domain objects (which
+        # support export) produce one; doubles capture none, unchanged.
+        await _capture_domain_snapshot(
+            domain_store=domain_store,
+            workspace_id=workspace_id,
+            run_id=admitted.run_id,
+            kind="admission",
+            population=population,
+            tournament=tournament,
+            membership_ids=membership_ids,
+            completed_cycles=max((cycle_number or 1) - 1, 0),
+        )
     return await run_durable_graph(
         graph,
         store=owner.graph_run_store,
@@ -935,6 +1300,9 @@ async def run_canonical_evolution_cycle(
             llm_call=llm_call,
             membership_ids=membership_ids,
             battle_slots=battle_slots,
+            domain_store=domain_store,
+            workspace_id=workspace_id,
+            pair_seed=_pair_seed(workspace_id, cycle_number, membership_ids),
         ),
         actor_principal_id=actor_principal_id,
         run_id=admitted.run_id,
@@ -1061,6 +1429,9 @@ def _recovery_resolver(run: Run) -> NodeResolver:
     archive = getattr(service, "archive", None)
     cycle = EvolutionCycle(harness=harness, tournament=tournament, archive=archive)
     llm_call = service.build_llm_call()
+    workspace_id = str(
+        getattr(run, "workspace_id", None) or getattr(graph, "workspace_id", "") or ""
+    )
 
     return _resolver(
         cycle=cycle,
@@ -1069,6 +1440,13 @@ def _recovery_resolver(run: Run) -> NodeResolver:
         llm_call=llm_call,
         membership_ids=membership_ids,
         battle_slots=battle_slots,
+        domain_store=getattr(service, "domain_store", None),
+        workspace_id=workspace_id,
+        # The same logical-cycle pairing seed admission used (#1064),
+        # derived from the durable Run facts — never from this process's
+        # memory — so a pair plan re-planned under recovery is identical to
+        # the one the killed process was computing.
+        pair_seed=_pair_seed(workspace_id, run.provenance.get("cycle_number"), membership_ids),
     )
 
 

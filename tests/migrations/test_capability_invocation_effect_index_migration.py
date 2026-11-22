@@ -214,13 +214,15 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # merged identities develop already shipped — a landed trunk migration
     # never moves, and redrawing them would leave databases stamped at
     # develop's `066` never executing the new revision — so it takes `068`,
-    # one linear head.
-    assert directory.get_heads() == ["068"]
+    # one linear head. #1064's Evolve domain store appends after that as
+    # `069`.
+    assert directory.get_heads() == ["069"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
     assert directory.get_revision("067").down_revision == "066"
     assert directory.get_revision("068").down_revision == "067"
+    assert directory.get_revision("069").down_revision == "068"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",

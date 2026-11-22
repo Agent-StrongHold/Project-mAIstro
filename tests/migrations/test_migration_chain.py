@@ -147,6 +147,12 @@ EXPECTED_TABLES = frozenset(
         # agent-to-agent handoff. Lives at the end of the chain (067; the
         # merged identity develop shipped, kept verbatim).
         "delegation_grants",
+        # The durable Evolve domain snapshot + effect-publication ledger
+        # (#1064, 069): versioned population/tournament reconstruction
+        # snapshots and the exactly-once battle/finalize publication fence,
+        # both keyed to canonical Run/NodeRun identities.
+        "evolve_domain_publications",
+        "evolve_domain_snapshots",
         "episodic_memories",
         "event_log",
         # The durable legacy replay acknowledgement (#836, 065): one row per
