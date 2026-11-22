@@ -253,3 +253,23 @@ files changed in this pass:
 
 The open acceptance limit is still the integration-only negative-before/
 positive-after CI-evidence clause: this lane cannot push or trigger CI.
+
+## Addendum — repair round at the renumbered chain (this round)
+
+A full-battery re-validation at starting head `aba6fe1365ce` caught one
+genuine candidate regression the earlier renumber round missed:
+`tests/migrations/test_legacy_principal_ownership_live.py` still pinned the
+chain tip at `{"068"}`, so all three of its live-PG tests failed once the
+schedule-deletion `069` appended past the landed 068. The pin moved to
+`{"069"}` under the same convention the other three migration suites
+recorded; the suite and the whole `tests/migrations` tree then passed
+(3/173) on the lane pg18. Everything else re-ran green at the exact
+candidate head: 122+1s projection/definitions, 172 adjacent scheduler,
+368 core `-k schedul`, 26 parity including strict closeout
+(`executed=true, PASSED`), ruff/format, mypy (960 files), and all six
+gates. Full negative-before/positive-after detail in
+`1199-repair-legacy-principal-chain-tip.md`. The prior addendum's
+`InvalidPasswordError` was this lane's credential gap; with the lane
+server's actual credentials every PostgreSQL leg executed this round. The
+integration-only negative-before/positive-after CI-evidence clause remains
+the sole handoff limit.
