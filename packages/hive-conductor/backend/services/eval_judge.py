@@ -30,6 +30,7 @@ verdict with status='error' rather than raising. The Daily Report path
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -195,6 +196,9 @@ async def score_run(
     llm_call: Callable[..., Awaitable[str]] | None = None,
     persist: bool = True,
     now: datetime | None = None,
+    actor_id: str = "",
+    workspace_id: str = "",
+    canonical_run_id: str = "",
 ) -> dict[str, Any]:
     """Run the eval-judge on a finished DurableRunRecord.
 
@@ -210,10 +214,105 @@ async def score_run(
         returning a string. If None, builds via graph_runner._build_llm_call.
     persist : if True, writes the verdict to stores.eval_verdicts
     now : test seam for the timestamp
+    actor_id : canonical principal that authorized this scoring effect
+        (empty when the caller — e.g. the Daily Report scheduler — is not
+        acting for an HTTP principal). Persisted as the verdict's
+        `scored_by` provenance (#2470).
+    workspace_id : canonical Workspace the scored Run is filed in
+    canonical_run_id : the canonical Run id the evidence is about; recorded
+        on the verdict so improvement evidence is tied to the canonical Run
+        identity, not a projection alias (#2470).
+
+    Dedupe (#2470): concurrent authorized score requests for one logical run
+    share a single in-flight invocation (one paid model effect); a restart
+    resets the in-flight registry implicitly, and the persisted verdict's
+    evidence guard below is what makes a post-restart retry free. Callers on
+    a different event loop than the in-flight leader issue their own
+    invocation — the store-level guard, not the registry, decides what lands.
     """
     if run_record is None:
         raise ValueError("run_record is required")
 
+    if not persist:
+        return await _score_run_once(
+            run_record,
+            feedback_outcomes=feedback_outcomes,
+            llm_call=llm_call,
+            persist=False,
+            now=now,
+            actor_id=actor_id,
+            workspace_id=workspace_id,
+            canonical_run_id=canonical_run_id,
+        )
+
+    run_id = str(getattr(run_record, "run_id", "") or "")
+    leader = _score_inflight.get(run_id) if run_id else None
+    if leader is not None and leader.get_loop() is asyncio.get_running_loop():
+        # One logical scoring effect per run: joiners await the leader's
+        # invocation instead of issuing a second paid model call.
+        return await leader
+    if leader is None and run_id:
+        task = asyncio.create_task(
+            _score_run_once(
+                run_record,
+                feedback_outcomes=feedback_outcomes,
+                llm_call=llm_call,
+                persist=True,
+                now=now,
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                canonical_run_id=canonical_run_id,
+            )
+        )
+        _score_inflight[run_id] = task
+        try:
+            return await task
+        finally:
+            if _score_inflight.get(run_id) is task:
+                _score_inflight.pop(run_id, None)
+    return await _score_run_once(
+        run_record,
+        feedback_outcomes=feedback_outcomes,
+        llm_call=llm_call,
+        persist=True,
+        now=now,
+        actor_id=actor_id,
+        workspace_id=workspace_id,
+        canonical_run_id=canonical_run_id,
+    )
+
+
+#: One in-flight scoring invocation per run id (#2470). Process memory: a
+#: restart drops it, which is exactly the chosen semantics — after a restart
+#: the persisted-verdict guard (not the registry) dedupes.
+_score_inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
+
+
+def reset_score_dedupe_for_tests() -> None:
+    """Clear the single-flight registry (test seam for restart simulation)."""
+    _score_inflight.clear()
+
+
+def is_valid_verdict(verdict: Any) -> bool:
+    """A scored verdict that may serve as improvement evidence.
+
+    Only `status == "ok"` rows count: error rows are a scoring attempt's
+    receipt, not evidence about the run.
+    """
+    return isinstance(verdict, dict) and verdict.get("status") == "ok"
+
+
+async def _score_run_once(
+    run_record: Any,
+    *,
+    feedback_outcomes: list[Any] | None,
+    llm_call: Callable[..., Awaitable[str]] | None,
+    persist: bool,
+    now: datetime | None,
+    actor_id: str,
+    workspace_id: str,
+    canonical_run_id: str,
+) -> dict[str, Any]:
     if llm_call is None:
         # Import lazily so tests can override without the heavy settings hop.
         try:
@@ -227,7 +326,14 @@ async def score_run(
                 "detail": f"LLM client unavailable: {type(exc).__name__}",
             }
             if persist:
-                _persist(run_record, verdict, now=now)
+                _persist(
+                    run_record,
+                    verdict,
+                    now=now,
+                    actor_id=actor_id,
+                    workspace_id=workspace_id,
+                    canonical_run_id=canonical_run_id,
+                )
             return verdict
 
     evidence = _build_evidence_payload(run_record, feedback_outcomes)
@@ -244,27 +350,62 @@ async def score_run(
             "detail": f"LLM call raised: {type(exc).__name__}",
         }
         if persist:
-            _persist(run_record, verdict, now=now)
+            _persist(
+                run_record,
+                verdict,
+                now=now,
+                actor_id=actor_id,
+                workspace_id=workspace_id,
+                canonical_run_id=canonical_run_id,
+            )
         return verdict
 
     parsed = _parse_verdict(raw)
     verdict = _validate_verdict(parsed)
     if persist:
-        _persist(run_record, verdict, now=now)
+        _persist(
+            run_record,
+            verdict,
+            now=now,
+            actor_id=actor_id,
+            workspace_id=workspace_id,
+            canonical_run_id=canonical_run_id,
+        )
     return verdict
 
 
-def _persist(run_record: Any, verdict: dict[str, Any], *, now: datetime | None = None) -> None:
+def _persist(
+    run_record: Any,
+    verdict: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    actor_id: str = "",
+    workspace_id: str = "",
+    canonical_run_id: str = "",
+) -> None:
     import stores
 
     run_id = str(getattr(run_record, "run_id", "") or "")
     if not run_id:
+        return
+    if is_valid_verdict(stores.eval_verdicts.get(run_id)) and not is_valid_verdict(verdict):
+        # Evidence protection (#2470): a valid verdict is terminal evidence
+        # for this Run's evaluation. A later failing, unparseable or
+        # unavailable scoring attempt must never replace it with an error or
+        # unknown row — the optimizer ranks improvement proposals on this
+        # store, so a silent downgrade would poison shared evidence.
         return
     payload = dict(verdict)
     payload["run_id"] = run_id
     payload["dag_id"] = str(getattr(run_record, "dag_id", "") or "")
     payload["project_id"] = str(getattr(run_record, "project_id", "") or "")
     payload["evaluator_version"] = EVAL_JUDGE_VERSION
+    if canonical_run_id:
+        payload["canonical_run_id"] = canonical_run_id
+    if workspace_id:
+        payload["workspace_id"] = workspace_id
+    if actor_id:
+        payload["scored_by"] = actor_id
     payload["scored_at"] = (now or datetime.now(UTC)).isoformat()
     stores.eval_verdicts[run_id] = payload
 

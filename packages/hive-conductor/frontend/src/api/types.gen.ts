@@ -2197,15 +2197,17 @@ export interface paths {
         put?: never;
         /**
          * Trigger Score
-         * @description Score the run captured in dag_run_store. For Phase 5 we score off
-         *     the dag_run_store's run-record-shaped summary (DurableRunRecord
-         *     integration lands when the executor publishes the durable record
-         *     into dag_run_store; until then, this endpoint accepts whatever
-         *     dag_run_store returns and gracefully scores it).
+         * @description Score a terminal canonical Run.
          *
-         *     Scoped like every other run reader (#1174): the projection is read
-         *     through the inspection service, so an out-of-scope run gets the same
-         *     404 a missing one gets — and is never scored.
+         *     Read visibility never admits a scoring effect (#2470): the POST first
+         *     resolves the canonical target through the mutation gate (initiator or
+         *     Workspace administrator — membership alone refuses like a missing run),
+         *     then requires terminality, then honors the evidence contract — an
+         *     existing valid verdict IS the score and is returned verbatim without a
+         *     second model effect. Only then does the governed scorer run, writing the
+         *     verdict under the canonical Run id with its canonical actor/scope
+         *     provenance; a successful score is audited. Every refusal above happens
+         *     before any model call, verdict write, proposal, usage or audit mutation.
          */
         post: operations["trigger_score_v1_eval_judge__run_id__post"];
         delete?: never;

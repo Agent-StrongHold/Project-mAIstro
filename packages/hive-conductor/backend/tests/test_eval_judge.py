@@ -28,17 +28,23 @@ These tests verify:
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+
+from fastapi.testclient import TestClient  # noqa: E402
+from main import app  # noqa: E402
 
 
 @dataclass
@@ -82,6 +88,90 @@ def _wipe_verdicts():
     _wipe_store(stores.eval_verdicts)
     yield
     _wipe_store(stores.eval_verdicts)
+    from services.eval_judge import reset_score_dedupe_for_tests
+
+    reset_score_dedupe_for_tests()
+
+
+def _scorer_client(tag: str) -> tuple[str, Any]:
+    """A fresh role=user account holding the assigned-and-elevated eval.score
+    capability (#2470), with a logged-in TestClient for it: scoring is no
+    longer reachable on the bare session read permission."""
+    from datetime import UTC, datetime
+
+    import stores
+
+    from maistro.security.passwords import hash_password
+
+    uid = f"scorer-{tag}-{uuid4().hex[:8]}"
+    stores.users[uid] = stores.users._model_class(
+        id=uid,
+        username=uid,
+        password_hash=hash_password("pw"),
+        role="user",
+        is_active=True,
+        permissions=["eval.score"],
+        created_at=datetime.now(UTC),
+    )
+    c = TestClient(app)
+    r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
+    assert r.status_code == 200, r.text
+    e = c.post(
+        "/v1/auth/elevate",
+        json={"password": "pw", "permissions": ["eval.score"], "task_id": f"t-{uid}"},
+    )
+    assert e.status_code == 200, e.text
+    return uid, c
+
+
+def _wire_canonical_spine(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    """Wire the engine bridge to a real InMemoryRunStore + ScopedRunReader
+    over the test canonical Workspace authority (the #2466 cancel-suite
+    rig): the #2470 scoring gate resolves the target through exactly these
+    objects, so the trigger must run against a real canonical Run."""
+    from services import engine as engine_mod
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    workspaces = canonical_store_for_tests()
+    store = InMemoryRunStore(project_store=workspaces.project_store)
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    return store, reader
+
+
+def _seed_terminal_canonical_run(store: Any, workspace_id: str, actor: str) -> str:
+    """A terminal canonical Run initiated by `actor`, through the store's own
+    legal transitions."""
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph import Graph, Node
+    from maistro.runs import RunStatus
+
+    project_store = canonical_store_for_tests().project_store
+    root = asyncio.run(project_store.root_for_workspace(workspace_id))
+    project = asyncio.run(
+        project_store.create(
+            workspace_id=workspace_id,
+            parent_project_id=root.project_id,
+            name="Scored",
+        )
+    )
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id=project.project_id,
+        name="Scored DAG",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = asyncio.run(store.create_run(graph, actor_principal_id=actor))
+    asyncio.run(store.transition_run(run.run_id, RunStatus.QUEUED))
+    asyncio.run(store.transition_run(run.run_id, RunStatus.RUNNING))
+    asyncio.run(store.transition_run(run.run_id, RunStatus.COMPLETED))
+    return run.run_id
 
 
 # --- _build_evidence_payload --------------------------------------------
@@ -464,15 +554,21 @@ def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
     assert len(r.json()) == 100
 
 
-def test_trigger_score_endpoint_runs_against_dag_run_store(
-    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+def test_trigger_score_endpoint_runs_against_a_terminal_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Seed a scoped fake run into dag_run_store, stub the LLM, hit POST.
+    """Seed a scoped projection row over a real terminal canonical Run, stub
+    the LLM, hit POST (#2470).
 
-    The run is seeded inside a Workspace the caller is a member of (#1174):
-    the trigger reads the projection through the scoped inspection service,
-    so an unscoped row would be refused like a missing one.
+    The run lives in a Workspace the scorer owns and the scorer holds the
+    assigned-and-elevated eval.score capability, so the request clears the
+    middleware gate, the canonical initiator/administrator mutation gate and
+    the terminality gate — then the verdict is written under the CANONICAL
+    Run id (never a projection alias) with its provenance.
     """
+    import asyncio
+
+    import routes.eval_judge as routes_ej
     import services.eval_judge as ej
     from services.dag_run_store import get_dag_run_store
 
@@ -483,45 +579,42 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
         return await ej.score_run(run_record, llm_call=_stub_llm, **kw)
 
     # Patch route's score_run import to use our stubbed LLM
-    import routes.eval_judge as routes_ej
-
     monkeypatch.setattr(routes_ej, "score_run", _patched_score)
 
-    # A Workspace the caller (the session user) owns, so the run seeded into
-    # it is inside the caller's canonical Workspace universe (#1174).
-    workspace_id = authed_client.post(
+    # A Workspace the caller owns, so the canonical Run is inside the
+    # caller's Workspace universe (#1174) and the caller is its initiator
+    # (#2470 mutation gate).
+    uid, scorer = _scorer_client("terminal-run")
+    workspace_id = scorer.post(
         "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Eval Scope"}
     ).json()["id"]
 
-    # Seed a fake run via dag_run_store's public start_run + append_event
-    import asyncio
+    store, _reader = _wire_canonical_spine(monkeypatch)
+    canonical_run_id = _seed_terminal_canonical_run(store, workspace_id, uid)
 
-    store = get_dag_run_store()
-
-    async def _seed() -> str:
-        run = await store.start_run(
-            user_id="testuser",
+    # Seed the projection row via dag_run_store's public start_run,
+    # correlated to the canonical Run like the producer writes it.
+    asyncio.run(
+        get_dag_run_store().start_run(
             run_id="r-trigger",
+            user_id=uid,
             workspace_id=workspace_id,
+            canonical_run_id=canonical_run_id,
         )
-        await store.append_event(
-            "r-trigger",
-            event_type="pm_node_completed",
-            role="filter",
-            capability="transform.filter_by_type",
-            payload={"node_id": "filter", "latency_ms": 200, "tokens_in": 5, "tokens_out": 10},
-        )
-        await store.finish_run("r-trigger")
-        return run.id
+    )
 
-    # asyncio.run() uses a fresh loop — robust regardless of prior async tests
-    # (get_event_loop() can return a closed loop under pytest-asyncio auto mode).
-    rid = asyncio.run(_seed())
-    assert rid == "r-trigger"
-
-    r = authed_client.post(f"/v1/eval-judge/{rid}")
+    r = scorer.post("/v1/eval-judge/r-trigger")
     assert r.status_code == 200
     assert r.json()["score"] == 91
+
+    # Evidence is keyed by the canonical identity (#2470) and carries its
+    # actor/scope provenance.
+    import stores
+
+    verdict = stores.eval_verdicts[canonical_run_id]
+    assert verdict["status"] == "ok"
+    assert verdict["scored_by"] == uid
+    assert verdict["workspace_id"] == workspace_id
 
 
 def test_trigger_score_out_of_scope_run_is_not_scored(
@@ -532,9 +625,9 @@ def test_trigger_score_out_of_scope_run_is_not_scored(
     The run exists — the admin seeded it into THEIR workspace — but the
     caller gets the same 404 a missing run gets, so the response confirms no
     run beyond the boundary. The projection record itself is untouched.
+    The caller holds the eval.score capability, so the refusal below is the
+    route's read-scope answer, not the middleware gate.
     """
-    import asyncio
-
     from services.dag_run_store import get_dag_run_store
 
     workspace_id = admin_client.post(
@@ -553,14 +646,18 @@ def test_trigger_score_out_of_scope_run_is_not_scored(
 
     monkeypatch.setattr(routes_ej, "score_run", _must_not_score)
 
-    r = authed_client.post("/v1/eval-judge/r-foreign")
+    _uid, scorer = _scorer_client("out-of-scope")
+    r = scorer.post("/v1/eval-judge/r-foreign")
     assert r.status_code == 404
     assert r.json() == {"detail": "run not found"}
     assert called is False
 
 
-def test_trigger_score_missing_run_returns_404(authed_client: Any) -> None:
-    r = authed_client.post("/v1/eval-judge/never-existed")
+def test_trigger_score_missing_run_returns_404() -> None:
+    # The caller holds eval.score, so the 404 below is the route's own
+    # unknown-id answer (#2470), not the middleware's capability refusal.
+    _uid, scorer = _scorer_client("missing-run")
+    r = scorer.post("/v1/eval-judge/never-existed")
     assert r.status_code == 404
 
 
