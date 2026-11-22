@@ -104,6 +104,40 @@ on:
       # file does change.
       - 'requirements-dev-tools.txt'
       - 'REPAIR-NOTES-*.md'
+      # Python dependency metadata is a recurring non-Python PR surface
+      # (every dependabot uv bump): the bump edits uv.lock and one or more
+      # packages/*/pyproject.toml, neither of which 'packages/**/*.py' can
+      # match, so such PRs never triggered this workflow and the required-set
+      # row has no check-run on the candidate head and gates-ran stays pending
+      # forever. Measured on #2450's head 62ce6f87a9 (anthropic 1.11.0 ->
+      # 2.9.0) with the CI-exact evaluator (check-gates-ran.py
+      # --require-complete --base-branch develop --event-name pull_request
+      # --changed-files <measured envelope>): 73/74 required checks present,
+      # "Mutation gate (changed critical lines)" absent -> PENDING (the same
+      # failure mode #2120 fixed for image pins, #2371 for grant ledgers and
+      # inventory notes, #2432 for gate scripts and #2345 for dev-tool
+      # requirements; every producer had completed, so no later publisher run
+      # could ever flip the verdict). Both paths are class-motivated: every
+      # workspace dependency bump touches the root uv.lock, and dependabot
+      # edits the package manifest's version constraint in
+      # packages/**/pyproject.toml. Listing them here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence: every entry in
+      # quality/mutation-critical-files.json is a .py source under packages/,
+      # so lock/manifest diffs are zero-overlap by construction, and the job
+      # still fails closed whenever a critical file does change.
+      - 'uv.lock'
+      - 'packages/**/pyproject.toml'
+      # Security-suppression triage is governance, not mutation-critical
+      # code: a dependency bump whose scan flags upstream docstring fixtures
+      # (exactly #2450, .trivyignore.yaml + anthropic 2.9.0's
+      # gcp-service-account example text) never matched this filter, so the
+      # same required row had no check-run and gates-ran stayed pending
+      # forever. Like quality/image-pins.json above, listing the suppression
+      # registry produces real zero-overlap evidence instead of permanent
+      # absence; the job still fails closed whenever a critical file does
+      # change.
+      - '.trivyignore.yaml'
   workflow_dispatch:
 
 concurrency:
