@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +11
   packages/maistro-server/tests: +4
 ---
 # 1242 two-worker and receipt-surface regressions
@@ -22,6 +22,10 @@ process, and the public receipt surfaces.
   `STOP_CONFIRMED`; a restarted worker sees the fence, not a fresh Run.
   Requires Docker compose PG plus `uv run alembic upgrade head`; it does not
   run in the default CI leg without `MAISTRO_TEST_PG_DSN`.
+- `runs/test_cancellation_receipt_1242.py` (+2): the receipt's completion-race
+  semantics — a fence that loses to a completing Run reports the winner's own
+  status (`COMPLETION_WON`, `fenced=False`), and an already-completed Run's
+  repeat cancellation claims no stop and no fence.
 - `tasks/test_cancel_receipt_1242.py` (+6): `TaskQueue.cancel_receipt` — the
   task receipt agrees with the Run receipt (queued cancel proves no physical
   try existed; in-flight under a remote lease reports `STOP_PENDING` and
