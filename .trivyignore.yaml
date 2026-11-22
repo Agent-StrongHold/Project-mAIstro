@@ -93,3 +93,29 @@ secrets:
       of this repository. Scope is limited to moto_proxy's directory so any
       other private key still fails the gate. Remove this entry if moto drops
       the fixtures or the dependency.
+  - id: gcp-service-account
+    paths:
+      - "**/site-packages/anthropic/**"
+    expired_at: 2027-01-31
+    statement: >-
+      anthropic 2.9.0 (the research image's locked version since #2450, which
+      bumped the builders extra from 1.11.0) ships generated docstrings for its
+      beta managed-agents API whose example text contains the literal JSON type
+      discriminator `{"type": "service_account"}` (anthropic/types/beta/
+      agent_create_params.py:39, agent_update_params.py:27,
+      beta_managed_agents_agent.py:44,
+      beta_managed_agents_session_agent.py:40,
+      beta_managed_agents_session_thread_agent.py:39 and
+      anthropic/resources/beta/agents/agents.py — 9 rule matches, all
+      documentation, verified against the uv.lock-pinned wheel
+      sha256:410281f4b9fa6422ccc465e5e531a00d69c6f589c743134e77c23fefc3e5cb4f
+      with this gate's pinned trivy v0.73.0). Trivy 0.73.0's
+      gcp-service-account rule keys on that JSON shape; there is no key
+      material — the strings ship in the upstream wheel wherever it ships,
+      exactly the moto/ precedent above. The glob (trivy's ignore schema is
+      `paths`, not the singular `path` used by the moto entries above, whose
+      paths therefore never narrow) is anchored to the SDK's installed tree,
+      so a real service-account key anywhere else still fails the gate.
+      Remove this entry when anthropic stops shipping the example text or
+      leaves the dependency set; re-triage on any anthropic version bump that
+      changes the flagged files.
