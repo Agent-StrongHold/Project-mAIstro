@@ -436,3 +436,332 @@ async def test_list_resolves_the_page_through_one_batched_reader_call(
     # name more than this test's two runs -- but never in more than one call.
     assert len(batches) == 1
     assert {first, second} <= set(batches[0])
+
+
+# ─── #2466/#1036: view permission never confers cancellation ────────────────
+# Cancellation is a lifecycle mutation. The canonical mutation gate
+# (`RunStoreBoundary.require_run_mutation`) admits only the Run's initiating
+# principal or a Workspace administrator, after enforcing visibility; a
+# projection row may not delegate write authority across Workspaces.
+
+
+async def _member_view(user_id: str, *, role: str = "viewer") -> Any:
+    """The suite's owned Workspace with `user_id` added at `role`."""
+    from services.workspace_authority import set_member
+
+    view = await _owned_workspace()
+    await set_member(view.id, user_id=user_id, role=role)
+    return view
+
+
+def _created_run_store() -> tuple[Any, Any]:
+    """A fresh canonical Run store over the shared canonical test Workspace store."""
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs import InMemoryRunStore
+
+    workspaces = canonical_store_for_tests()
+    return InMemoryRunStore(project_store=workspaces.project_store), workspaces
+
+
+async def _created_canonical_run(
+    store: Any, workspaces: Any, workspace_id: str, initiator: str
+) -> str:
+    """A CREATED canonical Run filed in `workspace_id` by `initiator`."""
+    from maistro.graph import Graph, Node
+
+    root = await workspaces.project_store.root_for_workspace(workspace_id)
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id=root.project_id,
+        name="cancel-authority",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    return (await store.create_run(graph, actor_principal_id=initiator)).run_id
+
+
+async def test_same_workspace_peer_can_read_but_not_cancel_another_initiator_s_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466 P0 / #1036 AC: a same-Workspace peer may GET but not cancel.
+
+    Workspace membership admits reads (#1152), never lifecycle mutation: only
+    the Run's initiating principal or a Workspace administrator may cancel.
+    The peer's refusal is the seam's one non-disclosing 404 -- identical to a
+    missing run -- with no Run/NodeRun/Attempt write and no physical provider
+    stop signal.
+    """
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from routes.dag_runs import get_run as get_run_route
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs import AttemptStatus, RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    peer = "peer-member"
+    view = await _member_view(peer)
+    store, run_id, worker, release, provider_exits = await _long_running_canonical_run(view.id)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-peer-cancel",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id=run_id,
+    )
+
+    # The read seam is unchanged: the peer can open the initiator's run.
+    detail = await get_run_route("dag-peer-cancel", _ScopedRequest(peer))
+    assert detail["id"] == "dag-peer-cancel"
+    assert detail["canonical_run_id"] == run_id
+
+    # ...and must not control it. Same 404 a missing id gets, no disclosure.
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("dag-peer-cancel", _ScopedRequest(peer))
+    assert refused.value.status_code == 404
+    assert refused.value.detail == "run not found"
+
+    # No state moved anywhere: the Run is not terminal, the Attempt is still
+    # RUNNING, and the provider coroutine never unwound (no stop signal).
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is not RunStatus.CANCELLED
+    node_runs = await store.list_node_runs(run_id)
+    attempts = await store.list_attempts(node_runs[0].node_run_id)
+    assert attempts and attempts[-1].status is AttemptStatus.RUNNING
+    assert provider_exits == []
+    assert not worker.done()
+
+    # Deterministic teardown: release the parked provider and unwind.
+    release.set()
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+
+async def test_workspace_administrator_can_cancel_a_run_the_initiator_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: the initiator is not the only canceller. A Workspace
+    administrator who did not start the Run may cancel it through the same
+    canonical mutation gate maistro-server's route uses -- and the physical
+    work still stops."""
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    admin = "admin-member"
+    view = await _member_view(admin, role="owner")
+    store, run_id, worker, _release, provider_exits = await _long_running_canonical_run(view.id)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-admin-cancel",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id=run_id,
+    )
+
+    response = await cancel_route("dag-admin-cancel", _ScopedRequest(admin))
+    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert provider_exits == ["provider-stopped"]
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is RunStatus.CANCELLED
+
+
+async def test_cross_workspace_projection_link_cannot_delegate_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: a projection row filed in Workspace X linked to a live canonical
+    Run filed in Workspace Y gives an X-only caller no mutation authority over
+    Y. The row is visible to the X member -- the read seam says so -- but the
+    cancel is the seam's one 404 and the Y Run keeps its state."""
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from routes.dag_runs import get_run as get_run_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    peer = "peer-member"
+    x_view = await _member_view(peer)
+    store, workspaces = _created_run_store()
+    linked = await workspaces.create(creator_user_id="y-owner", name="Linked Workspace")
+    run_id = await _created_canonical_run(store, workspaces, linked.workspace_id, "y-owner")
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-cross-link",
+        user_id=_USER_ID,
+        workspace_id=x_view.id,
+        canonical_run_id=run_id,
+    )
+
+    # The read seam shows the X member the row (its own stale presentation).
+    detail = await get_run_route("dag-cross-link", _ScopedRequest(peer))
+    assert detail["workspace_id"] == x_view.id
+
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("dag-cross-link", _ScopedRequest(peer))
+    assert refused.value.status_code == 404
+    assert refused.value.detail == "run not found"
+
+    # The linked Y Run never moved: no fence, no terminal state.
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is RunStatus.CREATED
+
+
+async def test_cross_workspace_link_refuses_even_an_admin_of_the_run_s_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: the projection-to-Run association is enforced even when the
+    caller could authorize the mutation against the canonical Run directly.
+    A Workspace X row linked to a Workspace Y Run cannot delegate mutation of
+    Y -- not even to a principal who administrates Y -- because the route was
+    asked through a row whose lifecycle truth the read seam itself refuses to
+    attribute (#1152's overlay rule). By the canonical id, the same principal
+    gets the ordinary gate answer: allowed."""
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.workspaces import WorkspaceRole as CanonicalWorkspaceRole
+
+    admin = "peer-member"
+    x_view = await _owned_workspace()
+    # The caller is an X member, so the read seam serves the row: the refusal
+    # below is the mutation gate's, not the read boundary's.
+    from services.workspace_authority import set_member
+
+    await set_member(x_view.id, user_id=admin, role="viewer")
+    store, workspaces = _created_run_store()
+    linked = await workspaces.create(creator_user_id="y-owner", name="Linked Workspace")
+    await workspaces.set_membership(
+        linked.workspace_id, user_id=admin, role=CanonicalWorkspaceRole.OWNER
+    )
+    run_id = await _created_canonical_run(store, workspaces, linked.workspace_id, "y-owner")
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-cross-admin",
+        user_id=_USER_ID,
+        workspace_id=x_view.id,
+        canonical_run_id=run_id,
+    )
+
+    # Through the X row: refused with the seam's one 404.
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("dag-cross-admin", _ScopedRequest(admin))
+    assert refused.value.status_code == 404
+    assert refused.value.detail == "run not found"
+    run_after_refused = await store.get_run(run_id)
+    assert run_after_refused is not None and run_after_refused.status is RunStatus.CREATED
+
+    # By the canonical id itself: the same principal's Y administration
+    # admits the mutation, and the Run settles CANCELLED.
+    response = await cancel_route(run_id, _ScopedRequest(admin))
+    assert response["cancelled"] is True
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is RunStatus.CANCELLED
+
+
+async def test_cancel_by_direct_canonical_id_matches_the_projection_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: direct canonical and valid projection IDs behave identically.
+    The initiator cancels the same Run once by its canonical id (no projection
+    row) and once through a same-Workspace projection row linked to it."""
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    view = await _owned_workspace()
+    store, workspaces = _created_run_store()
+    run_id = await _created_canonical_run(store, workspaces, view.id, _USER_ID)
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+
+    direct = await cancel_route(run_id, _ScopedRequest(_USER_ID))
+    assert direct == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert (await store.get_run(run_id)).status is RunStatus.CANCELLED
+
+    second = await _created_canonical_run(store, workspaces, view.id, _USER_ID)
+    await get_dag_run_store().start_run(
+        run_id="dag-via-projection",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id=second,
+    )
+    via_projection = await cancel_route("dag-via-projection", _ScopedRequest(_USER_ID))
+    assert via_projection == {"run_id": second, "status": "cancelled", "cancelled": True}
+    assert (await store.get_run(second)).status is RunStatus.CANCELLED
+
+
+async def test_cancel_refusal_is_indistinguishable_across_foreign_and_unknown_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2466: foreign, forged and absent ids answer the identical 404.
+    A stranger who can read nothing, a peer pointed at a forged canonical id,
+    and a missing run all get the same non-disclosing refusal."""
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    stranger = "stranger-user"
+    view = await _owned_workspace()
+    store, workspaces = _created_run_store()
+    run_id = await _created_canonical_run(store, workspaces, view.id, _USER_ID)
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
+    await get_dag_run_store().start_run(
+        run_id="dag-foreign-forged",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id="canonical-forged-id",
+    )
+
+    refusals = []
+    for caller, target in (
+        (stranger, "dag-foreign-forged"),  # foreign principal on a real row
+        (_USER_ID, "dag-never-was"),  # unknown id
+        (_USER_ID, "dag-foreign-forged"),  # forged canonical link, valid row
+    ):
+        with pytest.raises(HTTPException) as refused:
+            await cancel_route(target, _ScopedRequest(caller))
+        refusals.append((refused.value.status_code, refused.value.detail))
+
+    assert refusals == [(404, "run not found"), (404, "run not found"), (404, "run not found")]
+    # The real Run behind the forged link was never touched.
+    from maistro.runs import RunStatus
+
+    run_after = await store.get_run(run_id)
+    assert run_after is not None and run_after.status is not RunStatus.CANCELLED

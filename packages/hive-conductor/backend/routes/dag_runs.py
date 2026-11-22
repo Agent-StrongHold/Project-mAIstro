@@ -86,25 +86,67 @@ def retention() -> dict[str, Any]:
 
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Cancel through the canonical Run/Attempt execution seam."""
+    """Cancel through the canonical Run/Attempt execution seam.
+
+    View-level membership admits reads, never lifecycle mutation (#2466):
+    before any cancellation state change or physical work, the canonical
+    target Run is resolved through the shared `RunStoreBoundary`
+    mutation gate -- the same owner/administrator rule maistro-server's
+    cancel route applies -- and the projection-to-Run association is
+    enforced. Absent, foreign, unadministered and mismatched-link targets
+    all answer the seam's one non-disclosing 404 with no Run/NodeRun/Attempt
+    write and no provider stop signal.
+    """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
 
     from services.engine import get_engine
+    from services.workspace_authority import EmbeddedRuntimeUnavailable, canonical_workspace_store
 
+    from maistro.runs.scoped_reads import RunNotVisible
     from maistro.runs.service import RunExecutionService
+    from maistro.runs.store_boundary import RunStoreBoundary
     from maistro.runtime import PythonExecutionRuntime
 
     store = get_engine().run_store
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    canonical_run_id = str(detail.get("canonical_run_id") or run_id)
+    try:
+        workspace_store = await canonical_workspace_store()
+        boundary = RunStoreBoundary(
+            store,
+            workspace_store,
+            # Production wires the Container's project scope store onto its
+            # Workspace store (`wire_workspace_store`), so the store's own
+            # bound project store is the same canonical authority the
+            # Container would hand `RunStoreBoundary` directly.
+            workspace_store.project_store,
+        )
+        run = await boundary.require_run_mutation(canonical_run_id, principal_id=uid)
+    except RunNotVisible as exc:
+        # Absent, foreign, and initiator/admin-refused targets are the same
+        # non-disclosing 404 the read seam answers with (#1152).
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except EmbeddedRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    # Projection-to-Run association (#2466): a row filed in one Workspace
+    # cannot delegate mutation of a canonical Run filed in another, even when
+    # the caller is authorized against that Run's own Workspace -- the read
+    # seam already refuses to attribute a cross-link's lifecycle to this row,
+    # so the control route must not act on it either. The direct canonical
+    # route remains open to whoever the mutation gate admits.
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        raise HTTPException(status_code=404, detail="run not found")
     try:
         updated = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+        ).cancel_run(canonical_run_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
