@@ -186,10 +186,6 @@ class GovernedGatewayImageClient:
         asset_sheet: Any = None,
     ) -> list[ImageData]:
         del seed, negative_prompt, world_style, render_style, asset_sheet  # documented above
-        # ``BindingResolutionError`` (not registered / disabled / wrong scope)
-        # surfaces as itself: the composition's negative tests and the durable
-        # job record must see the authorization failure, not a sanitized
-        # provider failure, so the stage fails before any spend.
         context = current_execution_context()
         if not (context.run_id and context.node_run_id and context.attempt_id):
             msg = (

@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-canvas/tests: +1
-  packages/maistro-server/tests: +9
+  packages/maistro-canvas/tests: +2
+  packages/maistro-server/tests: +10
 ---
 # 2464-canvas-image-scope
 
@@ -10,17 +10,18 @@ attribution to the owning canonical Run's scope.
 
 ## What moved
 
-**`packages/maistro-server/tests` +9** — six land in
+**`packages/maistro-server/tests` +10** — seven land in
 `test_canvas_runtime.py`, four in the new `test_canvas_scope_postgres.py`
 (collected here; it runs only with `MAISTRO_TEST_PG_DSN`):
 
 - The governed image client now resolves its Binding through
   `BindingStore.resolve` in the executing Run's durable scope instead of a
-  bare `get`. Four unit tests pin the two edges of that: a Binding registered
-  in another scope and a Run whose bound scope differs from the composition's
-  both refuse with `BindingScopeDenied` before any egress call (the negative
-  criterion: no provider invocation, no misleading receipt), and the
-  scope-matched Run still dispatches.
+  bare `get`, and cannot be constructed without a scope. Five unit tests pin
+  the edges: a Binding registered in another scope and a Run whose bound
+  scope differs from the composition's both refuse with `BindingScopeDenied`
+  before any egress call (the negative criterion: no provider invocation, no
+  misleading receipt), the scope-matched Run still dispatches, and an
+  unscoped construction is refused.
 - `start_canvas_job_runner` registers the image Binding under a
   scope-qualified id in the chat admission scope. Three runner tests pin the
   registration scope (never the caller's settings value, never a fabricated
@@ -35,9 +36,11 @@ attribution to the owning canonical Run's scope.
   own scopes, and a foreign-scope Run claimed by another tenant's runner
   refused with zero provider requests and zero Invocation rows.
 
-**`packages/maistro-canvas/tests` +1** — the executor's error sanitizer
+**`packages/maistro-canvas/tests` +2** — the executor's error sanitizer
 classifies a Binding authorization refusal as governed-boundary machinery
-(truthful fixed message, retryable) rather than a provider fault.
+(truthful fixed message, retryable) rather than a provider fault; and the
+stage projection guard refuses a yielded Attempt (Canvas has no pause
+semantics) instead of projecting an empty receipt.
 
 ## Why the counts moved the way they did
 

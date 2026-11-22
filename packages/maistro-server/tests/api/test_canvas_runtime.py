@@ -335,6 +335,23 @@ class TestGovernedImageClient:
     async def test_list_image_models_is_empty_not_fabricated(self) -> None:
         assert await _image_client(_FakeEffects()).list_image_models() == []
 
+    async def test_a_client_cannot_exist_without_a_scope(self) -> None:
+        """There is no representable unscoped instance (#2464): a client that
+        could not name the scope it resolves its Binding against would be the
+        old bare-``get`` world back again."""
+        for kwargs in (
+            {"workspace_id": " ", "project_id": "p"},
+            {"workspace_id": "ws", "project_id": ""},
+        ):
+            with pytest.raises(ValueError, match="non-empty string"):
+                GovernedGatewayImageClient(
+                    _FakeEffects(),
+                    endpoint=ENDPOINT,
+                    blobs=CanvasImageBlobStore(_FakeBlobStore()),
+                    binding_id=BINDING_ID,
+                    **kwargs,
+                )
+
 
 # ─────────────────────────────────────────────────────────────────────
 # GatewayModelRegistry

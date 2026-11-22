@@ -282,8 +282,7 @@ class TestErrorSanitisation:
         from maistro.capabilities.binding_store import BindingScopeDenied
 
         refusal = BindingScopeDenied(
-            "Binding 'canvas-image-gateway@a/b/c' belongs to Workspace 'tenant-a', "
-            "not 'tenant-b'"
+            "Binding 'canvas-image-gateway@a/b/c' belongs to Workspace 'tenant-a', not 'tenant-b'"
         )
         message = _sanitise_error(refusal)
         assert "provider error" not in message
