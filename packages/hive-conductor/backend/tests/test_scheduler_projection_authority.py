@@ -51,6 +51,72 @@ _TPL = "projection-authority-template"
 _FAR_FUTURE = datetime(2999, 1, 1, tzinfo=UTC)
 _WORKSPACE = "projection-authority"
 
+# The body of an independent OS process that runs the shipped startup
+# reconciliation against one shared durable state — the cross-process twin of
+# ``test_repeated_and_concurrent_startup_is_idempotent``, whose concurrent
+# callers stay in one interpreter. Barriers make the two processes genuinely
+# overlap (both are alive and past their own wiring before either reconcile
+# starts), so the import pass, the marker write, and the repair pass race for
+# real. Results are reported through a file per worker: the parent asserts on
+# final durable state, never on a mid-race view.
+_WORKER_SCRIPT = """
+import asyncio
+import json
+import pathlib
+import sys
+import time
+
+backend, hive_path, database_url, workspace_id, ready_file, start_file, result_file = sys.argv[1:8]
+sys.path.insert(0, backend)
+
+import stores
+from maistro.state import PersistedStore, State
+
+persisted = PersistedStore(State(db_path=hive_path))
+persisted.initialize()
+stores.configure_persistence(persisted)
+
+from maistro.container import create_container
+from maistro.types.config import AgentConfig
+from models.schemas import Schedule as HiveSchedule
+from services.model_store import ModelStore
+
+projection = ModelStore("schedules", HiveSchedule, persisted)
+projection.initialize()
+stores.schedules = projection
+import services.schedule_projection  # noqa: F401  (registers its ledger store)
+
+ready = pathlib.Path(ready_file)
+ready.write_text("wired", encoding="utf-8")
+deadline = time.monotonic() + 60.0
+while not pathlib.Path(start_file).exists() and time.monotonic() < deadline:
+    time.sleep(0.02)
+
+
+async def main() -> None:
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
+            workspace_id=workspace_id,
+            database_url=database_url,
+        )
+    )
+    try:
+        from services.scheduler import _ScheduleRunner, reconcile_schedule_projection
+
+        _ScheduleRunner._canonical_container = staticmethod(lambda: container)
+        changed = await reconcile_schedule_projection()
+        identities = [s.schedule_id for s in await container.schedule_store.list_all()]
+        pathlib.Path(result_file).write_text(
+            json.dumps({"changed": changed, "identities": identities}), encoding="utf-8"
+        )
+    finally:
+        await container.aclose()
+
+
+asyncio.run(main())
+"""
+
 
 @pytest.fixture(scope="module")
 def postgres_database() -> Iterator[str]:
@@ -618,6 +684,118 @@ async def test_repeated_and_concurrent_startup_is_idempotent(
         again = await container.schedule_store.list_all()
         assert [s.schedule_id for s in again] == [row.id], "still exactly one identity"
     finally:
+        _drop_row(row.id)
+
+
+async def test_independent_processes_racing_startup_converge_on_canonical_truth(
+    configured: Harness, database_url: str, tmp_path: pathlib.Path
+) -> None:
+    """AC: two OS processes booting one deployment converge without loss.
+
+    The same-process ``asyncio.gather`` twins prove the reconciliation is
+    idempotent within an interpreter; replicas in a real deployment are
+    independent processes sharing the durable state. Both processes here run
+    the shipped ``reconcile_schedule_projection`` against the same canonical
+    database and the same Hive file, genuinely overlapped by a ready/start
+    barrier, and the durable end state must be: exactly one canonical
+    identity, the projection repaired from it, and a single-winner migration
+    marker — whatever interleaving the two imports took.
+    """
+    if database_url == "":
+        pytest.skip("two processes need durable state to share")
+
+    import json as json_mod
+    import time
+
+    import stores
+    from services.scheduler import reconcile_schedule_projection
+
+    container = configured.container
+    root = await container.project_scope_store.root_for_workspace(container.test_workspace)
+    row = _legacy_row(container.test_workspace, root.project_id)
+    _install_row(row)
+
+    driver = tmp_path / "startup_worker.py"
+    driver.write_text(_WORKER_SCRIPT, encoding="utf-8")
+    workers: list[subprocess.Popen[bytes]] = []
+    paths: list[dict[str, pathlib.Path]] = []
+    try:
+        for i in range(2):
+            worker_paths = {
+                "ready": tmp_path / f"ready-{i}",
+                "start": tmp_path / "start",
+                "result": tmp_path / f"result-{i}.json",
+            }
+            paths.append(worker_paths)
+            workers.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(driver),
+                        str(_BACKEND),
+                        str(configured.projection.path),
+                        database_url,
+                        container.test_workspace,
+                        str(worker_paths["ready"]),
+                        str(worker_paths["start"]),
+                        str(worker_paths["result"]),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+        deadline = time.monotonic() + 60.0
+        while not all(p["ready"].exists() for p in paths) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert all(p["ready"].exists() for p in paths), (
+            "both workers finished wiring their own persistence before the race"
+        )
+        paths[0]["start"].write_text("go", encoding="utf-8")
+
+        for worker in workers:
+            stdout, stderr = worker.communicate(timeout=180)
+            assert worker.returncode == 0, (
+                f"an independent startup process crashed (rc={worker.returncode}): "
+                f"{stderr.decode(errors='replace') or stdout.decode(errors='replace')}"
+            )
+        reports = [json_mod.loads(p["result"].read_text()) for p in paths]
+        for report in reports:
+            assert isinstance(report["changed"], int) and report["changed"] >= 0, report
+
+        # Converged durable truth, whatever interleaving the two imports took:
+        # exactly one canonical identity carrying the legacy row's definition,
+        # and the durable projection agreeing with it.
+        identities = await container.schedule_store.list_all()
+        assert [s.schedule_id for s in identities] == [row.id], "no duplicate identity"
+        canonical = await container.schedule_store.get(row.id)
+        assert canonical is not None
+        assert canonical.enabled is True and canonical.name == "legacy"
+        assert canonical.cron == "0 3 * * *" and canonical.timezone == "UTC"
+        assert canonical.workspace_id == container.test_workspace
+
+        configured.projection.reopen()
+        projected = stores.schedules.get(row.id)
+        assert projected is not None, "the projection exists on the shared Hive disk"
+        assert projected.name == "legacy" and projected.enabled is True
+        assert projected.cron_expression == "0 3 * * *"
+
+        # The migration marker is single-winner across processes and durable
+        # in the shared ledger store — the next boot of either replica runs
+        # the repair pass, never a second import.
+        marker_raw = stores.schedules._persisted.get_raw("schedule_migration", "migration")
+        assert marker_raw is not None, "the marker is durable, not a per-process memory"
+        assert json_mod.loads(marker_raw).get("version") == 1
+
+        # The race left the reconciliation idempotent: a further startup in
+        # this interpreter changes nothing and keeps exactly one identity.
+        assert await reconcile_schedule_projection() == 0
+        again = await container.schedule_store.list_all()
+        assert [s.schedule_id for s in again] == [row.id]
+    finally:
+        for worker in workers:
+            if worker.poll() is None:  # pragma: no cover - only on earlier failure
+                worker.kill()
+                worker.communicate(timeout=30)
         _drop_row(row.id)
 
 

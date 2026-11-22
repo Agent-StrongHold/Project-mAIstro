@@ -116,3 +116,31 @@ triggered and no negative-before/positive-after remote CI claim is made.
 Progress checkpoint: checked 1 issue, focused repair committed locally;
 strict product-lifespan acceptance remains next. No ledger change and no
 unrelated production edits.
+
+## Reconciliation update (head 9a86d3e35e, 2026-11-22)
+
+Two statements above are superseded by later executed evidence at the
+candidate head; kept here so the history stays honest:
+
+- "The strict #459 scheduler closeout scenario remains explicitly
+  abstaining" — superseded by `dee0ba3280` and
+  `1199-schedule-conductor-closeout-scenario.md`: the scenario now executes
+  the real configured lifespan (startup backfill → due tick → canonical
+  Run/Attempt → Conductor inspection → restart) and strict mode records
+  `executed=true, status=PASSED` for scenario 2. Re-confirmed at the
+  candidate head this round (3 passed under
+  `MAISTRO_PARITY_MODE=m1-closeout MAISTRO_PARITY_STRICT=1`). The remaining
+  strict reds (Evolve, golden observation) are owned by other issues.
+- "independent-process import races and combined
+  create-projection/compensation failure remain UNVERIFIED" — the combined
+  failure was already executed by
+  `test_schedule_projection_authority.py::test_a_create_whose_compensation_also_fails_is_resolved_at_restart`
+  (present since this note's own base), and the independent-process race is
+  now executed by
+  `test_scheduler_projection_authority.py::test_independent_processes_racing_startup_converge_on_canonical_truth`
+  (two OS processes against one shared durable state; see
+  `1199-independent-process-startup-race.md`, +3 items). Both re-executed
+  on the real PostgreSQL leg at the candidate head.
+
+This note's final "this is NEEDS-REPAIR, not issue completion" verdict
+applied to the round that wrote it, not to the branch state described above.
