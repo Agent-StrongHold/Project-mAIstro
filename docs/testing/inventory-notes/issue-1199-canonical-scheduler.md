@@ -242,3 +242,58 @@ develop-exact line numbers):
 No suite count moves from this round's own delta (the merged tree's counts
 are develop's own, confirmed by the 21-suite inventory gate), so no
 `inventory-delta` is recorded for this addendum either.
+
+## SAST/Gitleaks repair at 83fb36e049 (2026-11-22)
+
+CI at this head failed `SAST / Gitleaks` (the `sast` aggregate job red via
+`check_ci_job_results`). First-party reproduction with the CI-exact range
+(`gitleaks git --log-opts="9c02cfd7..83fb36e049"`, gitleaks 8.30.1) found
+exactly one leak: `generic-api-key` at line 261 of
+`docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md`,
+introduced to this branch's scan range by the develop-sync overlay commit
+e14ea64f3e.
+
+Root cause: the file's blob is byte-identical to `origin/develop`
+(f3587e1829). The existing `.gitleaksignore` entry covers the fixture at
+line 258 of the *older* blob (introduced by rebuild commit 2a46c7e008), but
+PR #2268's review round re-recorded the ceremony against webauthn==3.0.1,
+lengthened the JSON fixture line, and moved the detection to line 261 of
+blob f3587e1829 — a fingerprint (`465d8fd8fd8e:...:generic-api-key:261`, the
+#2268 squash on develop) that no ignore entry covered. The overlay commit
+then carried that blob into this branch's range, where gitleaks scans each
+commit's own patch, so the range scan saw it as a fresh introduction.
+
+Fix (`.gitleaksignore` only, same specimen rationale as the existing #1837
+block): two commit-scoped fingerprints for the new line — develop's own
+introducer `465d8fd8fd8e:...:261` (keeps post-merge full-history scans green)
+and this branch's range introducer `e14ea64f3e...:...:261`. The comment
+block is updated and paraphrased so it cannot trip the rule itself (the
+auto-115 self-trip precedent).
+
+Proof, first-party at the post-fix tree:
+
+- CI-exact range scan `9c02cfd7..83fb36e049`: `no leaks found` (was 1);
+- full-history `--all`: findings drop 10 → 8 with both ADR-101826 rows gone;
+  the 8 remaining are unreachable from this branch's scan range — 7 belong
+  to local worktree branches outside both `origin/develop` and this branch
+  (including stale-SHA rebuild artifacts), and 1 (`de8266eff9a8`,
+  `test_goal_reconciliation.py:835`) is a pre-existing develop-history
+  finding that no range scan of this branch can see, reported here for the
+  develop lane rather than silently ignored in this one;
+- the vulture gate with CI-exact args: 1221 reviewed identities, all banked,
+  0 unbanked — no ledger amendment needed this round;
+- `ruff check` / `ruff format --check` clean, `check-suite-inventory.py` ok
+  (21 suites), `check-doc-links.py` ok.
+
+Acceptance re-validation at the post-fix tree, first-party (dedicated
+pgvector:pgvector:pg18 container, `alembic upgrade head` to 068, DSN on
+127.0.0.1:16432):
+
+- `packages/maistro-core/tests/scheduling/` 327 passed, 0 skipped (was 327
+  at 86adf48103; 289 passed / 38 PG-leg skips without the DSN);
+- the hive-conductor scheduler/definition/scope/manual-fire suites 204
+  passed, 0 skipped — identical to the 86adf48103 numbers, confirming the
+  base merge (9c02cfd7) moved no scheduling behavior.
+
+No suite count moves (config/docs-only delta), so no `inventory-delta` is
+recorded for this repair either.
