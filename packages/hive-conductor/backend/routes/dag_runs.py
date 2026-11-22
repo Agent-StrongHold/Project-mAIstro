@@ -86,7 +86,18 @@ def retention() -> dict[str, Any]:
 
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Cancel through the canonical Run/Attempt execution seam."""
+    """Cancel through the canonical Run/Attempt execution seam.
+
+    The response separates two facts that used to be collapsed into
+    ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+    fence — the authority that refuses a late provider success. ``stop_confirmed``
+    is the physical one, and it is False whenever the Attempt is live under a
+    worker this replica cannot signal: Conductor then reports ``stop_pending``
+    with a diagnosis instead of a stop nobody observed.
+
+    Authorization for this mutation is #2466's contract, tracked separately;
+    this route resolves the canonical target and reports truthfully about it.
+    """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
     if detail is None:
@@ -101,16 +112,21 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
     try:
-        updated = await RunExecutionService(
+        cancellation = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+        ).cancel_run_receipt(str(detail.get("canonical_run_id") or run_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
-        "run_id": updated.run_id,
-        "status": updated.status.value,
-        "cancelled": updated.status.value == "cancelled",
+        "run_id": cancellation.run_id,
+        "status": cancellation.run_status.value,
+        "cancelled": cancellation.fenced,
+        "stop_confirmed": cancellation.stop_confirmed,
+        "disposition": cancellation.disposition.value,
+        "cause": cancellation.cause.value,
+        "diagnosis": cancellation.diagnosis,
+        "attempts": [row.model_dump(mode="json") for row in cancellation.attempts],
     }
 
 

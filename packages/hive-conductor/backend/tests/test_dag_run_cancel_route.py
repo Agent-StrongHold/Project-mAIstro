@@ -163,7 +163,9 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     )
 
     response = await cancel_route("dag-cancel-e2e", _ScopedRequest(_USER_ID))
-    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
 
     # The physical work is over: the provider coroutine unwound (its finally
     # ran), and the AttemptExecutionService task settled as cancelled rather

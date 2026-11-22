@@ -195,6 +195,22 @@ async def _active_run_attempts(store: AttemptExecutionStore, run_id: str) -> lis
     ]
 
 
+async def _all_run_attempts(store: AttemptExecutionStore, run_id: str) -> list[Attempt]:
+    """Every Attempt row under one Run, terminal or not.
+
+    Cancellation receipts read this rather than `_active_run_attempts` because
+    the honest answer needs the *settled* rows too: an Attempt that reached
+    `COMPLETED` inside the cancellation race is the race's actual winner, and a
+    receipt that only looked at live rows would report `STOP_CONFIRMED` for it
+    (#1242).
+    """
+    return [
+        attempt
+        for node_run in await store.list_node_runs(run_id)
+        for attempt in await store.list_attempts(node_run.node_run_id)
+    ]
+
+
 async def _cancel_settled_node_runs(store: AttemptExecutionStore, run_id: str) -> None:
     """Cancel node runs whose Attempts have all settled (queue-only Nodes)."""
     for node_run in await store.list_node_runs(run_id):
@@ -659,6 +675,23 @@ class AttemptExecutionService:
             return False
         return await service._cancel_local_attempt(attempt_id)
 
+    @classmethod
+    async def cancel_registered_evidence(cls, attempt_id: str) -> bool | None:
+        """Like :meth:`cancel_registered`, but ``None`` means "not ours".
+
+        The bool return of `cancel_registered` collapses two very different
+        facts — "this process owns no Runtime handle for that Attempt" and
+        "this process owns it and the cancel did not take" — into one False.
+        A truthful cancellation receipt has to tell them apart: only the first
+        leaves a live try that some *other* worker may still be running
+        (#1242). `False` here keeps its old meaning, so callers that only ask
+        "did this process stop it" are unaffected.
+        """
+        service = cls._active_services.get(attempt_id)
+        if service is None:
+            return None
+        return await service._cancel_local_attempt(attempt_id)
+
     async def cancel(self, attempt_id: str) -> bool:
         return await self.cancel_registered(attempt_id)
 
@@ -687,16 +720,29 @@ class AttemptExecutionService:
     @classmethod
     async def cancel_registered_run(cls, run_id: str) -> bool:
         """Cancel the local owner of a Run, including its durable projection."""
+        owners, _ = await cls.cancel_registered_run_evidence(run_id)
+        return owners
+
+    @classmethod
+    async def cancel_registered_run_evidence(cls, run_id: str) -> tuple[bool, dict[str, bool]]:
+        """Cancel locally and report per-Attempt evidence of what this process did.
+
+        Returns ``(owner_found, {attempt_id: runtime_answer})``. The mapping is
+        only this process's own signal results — it is never a claim about a
+        worker in another replica, which is the confusion #1242 removes.
+        """
         owners: set[AttemptExecutionService] = set()
         for service in set(cls._active_services.values()):
             run = await service._store.get_run(run_id)
             if run is not None:
                 owners.add(service)
+        evidence: dict[str, bool] = {}
         for service in owners:
-            await service._cancel_local_run(run_id)
-        return bool(owners)
+            evidence.update(await service._cancel_local_run(run_id))
+        return bool(owners), evidence
 
-    async def _cancel_local_run(self, run_id: str) -> None:
+    async def _cancel_local_run(self, run_id: str) -> dict[str, bool]:
+        """Cancel this service's live tries for a Run; map each to its answer."""
         async with self._launch_lock:
             active = await _active_run_attempts(self._store, run_id)
             current_run = await self._store.get_run(run_id)
@@ -706,8 +752,11 @@ class AttemptExecutionService:
                 await self._store.transition_run(
                     run_id, RunStatus.CANCELLED, error="execution cancelled"
                 )
-            await asyncio.gather(*(self._runtime.cancel(attempt.attempt_id) for attempt in active))
+            answers = await asyncio.gather(
+                *(self._runtime.cancel(attempt.attempt_id) for attempt in active)
+            )
             await _cancel_settled_node_runs(self._store, run_id)
+        return {attempt.attempt_id: answer for attempt, answer in zip(active, answers, strict=True)}
 
     async def _terminalize_if_open(
         self,

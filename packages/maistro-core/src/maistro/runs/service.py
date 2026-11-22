@@ -2,22 +2,31 @@
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.access import RunAuthorization
+from maistro.runs.cancellation import (
+    AttemptCancellation,
+    CancellationDisposition,
+    CancellationReceipt,
+    aggregate_disposition,
+    classify_attempt,
+)
 from maistro.runs.execution import (
     AttemptContextFactory,
     AttemptExecutionService,
     AttemptReconciler,
     _active_run_attempts,
+    _all_run_attempts,
     _cancel_settled_node_runs,
 )
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -234,39 +243,173 @@ class RunExecutionService:
         the cancellation race is converted to a cancelled Attempt by
         ``AttemptExecutionService`` rather than being allowed to publish
         ordinary success. This method never edits a product projection.
+
+        The returned ``Run`` states the *logical fence* only. Callers that
+        answer a human or another replica must not read `RunStatus.CANCELLED`
+        as "the provider stopped": use :meth:`cancel_run_receipt`, which
+        separates the durable fence from provable physical cessation (#1242).
+        """
+        await self.cancel_run_receipt(run_id, error=error)
+        cancelled = await self._store.get_run(run_id)
+        if cancelled is None:  # pragma: no cover - store contract violation
+            raise ValueError(f"Run {run_id!r} disappeared during cancellation")
+        return cancelled
+
+    async def cancel_run_receipt(
+        self,
+        run_id: str,
+        *,
+        error: str = "execution cancelled",
+    ) -> CancellationReceipt:
+        """Fence one Run and report what the cancellation actually proved.
+
+        Two facts come back separately, because conflating them is the defect:
+        ``run_status`` is the canonical fence (authority, unchanged from
+        `cancel_run`), and ``disposition`` is the physical evidence *this
+        process* holds. A Run fenced `CANCELLED` whose Attempt is still live
+        under another replica's lease is `STOP_PENDING`, not a confirmed stop.
         """
         run = await self._store.get_run(run_id)
         if run is None:
             raise ValueError(f"Run {run_id!r} does not exist")
         if run.status in TERMINAL_RUN_STATUSES:
-            return run
+            # A repeat request cannot re-prove anything, but the durable rows
+            # still say whether physical work is outstanding. Report that
+            # rather than an unconditional second "cancelled".
+            active = await _active_run_attempts(self._store, run_id)
+            active_ids = frozenset(attempt.attempt_id for attempt in active)
+            rows = _classify(active, signals={}, known=frozenset(), live=active_ids)
+            return _receipt(
+                run.run_id,
+                run.status,
+                rows,
+                race_lost=run.status is not RunStatus.CANCELLED,
+            )
 
-        active_attempts = await _active_run_attempts(self._store, run_id)
+        before = await _all_run_attempts(self._store, run_id)
+        known = frozenset(attempt.attempt_id for attempt in before)
+        live = frozenset(
+            attempt.attempt_id
+            for attempt in before
+            if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        )
         # Another canceller or normal completion may win this durable fence
         # after the initial read. Only cancellation is idempotent; a completed
         # or failed outcome remains authoritative.
         fenced = await self._fence_cancelled_run(run_id, error=error)
         if fenced.status is not RunStatus.CANCELLED:
-            return fenced
-        owner_found = await AttemptExecutionService.cancel_registered_run(run_id)
-        if not owner_found:
-            # No in-process owner exists. Do not claim an external worker
-            # stopped; persisted recovery remains responsible for that record.
-            await asyncio.gather(
-                *(
-                    AttemptExecutionService.cancel_registered(attempt.attempt_id)
-                    for attempt in active_attempts
-                )
+            # The completion race had a winner and it was not the cancellation.
+            # Report the actual winner instead of a stop nobody proved.
+            rows = _classify(
+                await _all_run_attempts(self._store, run_id), signals={}, known=known, live=live
             )
+            return _receipt(run_id, fenced.status, rows, race_lost=True)
 
+        signals = await _signal_local_owners(run_id, before)
         # Queue-only Nodes have no Attempt owner to notify. Terminalize those
         # logical records directly; active Attempts must settle themselves so
         # an unreachable owner is never represented as stopped work.
         await _cancel_settled_node_runs(self._store, run_id)
-        cancelled = await self._store.get_run(run_id)
-        if cancelled is None:  # pragma: no cover - store contract violation
-            raise ValueError(f"Run {run_id!r} disappeared during cancellation")
-        return cancelled
+        # Re-read after the fence: an Attempt a competing dispatch claimed
+        # during cancellation is part of the answer too, and the durable fence
+        # is what refuses the next claim.
+        rows = _classify(
+            await _all_run_attempts(self._store, run_id), signals=signals, known=known, live=live
+        )
+        return _receipt(run_id, RunStatus.CANCELLED, rows)
+
+
+async def _signal_local_owners(run_id: str, before: Sequence[Attempt]) -> dict[str, bool]:
+    """Deliver the cancellation as far as this process can, recording evidence.
+
+    The Run-level probe reaches a registered owner's whole Run; the per-Attempt
+    probe covers tries that owner did not enumerate. Neither is a claim about
+    another replica: an Attempt no local owner answers for simply gets no
+    entry, and the classifier reads that absence off the durable row.
+    """
+    _, signals = await AttemptExecutionService.cancel_registered_run_evidence(run_id)
+    for attempt in before:
+        if attempt.status in TERMINAL_ATTEMPT_STATUSES or attempt.attempt_id in signals:
+            continue
+        answer = await AttemptExecutionService.cancel_registered_evidence(attempt.attempt_id)
+        if answer is not None:
+            signals[attempt.attempt_id] = answer
+    return signals
+
+
+def _classify(
+    attempts: Sequence[Attempt],
+    *,
+    signals: dict[str, bool],
+    known: frozenset[str],
+    live: frozenset[str],
+) -> tuple[AttemptCancellation, ...]:
+    """Classify the Attempts this cancellation is answerable for.
+
+    Subjects are the tries that were live when the request arrived plus any
+    that appeared during it. Tries already terminal beforehand settled on
+    their own terms and are not this cancellation's business — including them
+    would report a long-finished node as the race winner.
+    """
+    return tuple(
+        classify_attempt(attempt, local_signal=signals.get(attempt.attempt_id))
+        for attempt in attempts
+        if attempt.attempt_id in live or attempt.attempt_id not in known
+    )
+
+
+def _receipt(
+    run_id: str,
+    run_status: RunStatus,
+    rows: tuple[AttemptCancellation, ...],
+    *,
+    race_lost: bool = False,
+) -> CancellationReceipt:
+    """Assemble the receipt, forcing the race-lost reading when the fence lost."""
+    disposition = aggregate_disposition(rows)
+    if race_lost and disposition is CancellationDisposition.STOP_CONFIRMED:
+        disposition = CancellationDisposition.COMPLETION_WON
+    return CancellationReceipt(
+        run_id=run_id,
+        run_status=run_status,
+        disposition=disposition,
+        attempts=rows,
+        diagnosis=_diagnosis(run_status, disposition, rows),
+    )
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _diagnosis(
+    run_status: RunStatus,
+    disposition: CancellationDisposition,
+    rows: tuple[AttemptCancellation, ...],
+) -> str:
+    """One operator-readable sentence for the aggregate disposition."""
+    if not rows:
+        if run_status is RunStatus.CANCELLED:
+            return (
+                "the Run owned no physical try; the durable CANCELLED fence is what refuses "
+                "a competing consumer claim, so no invocation can start afterwards"
+            )
+        return (
+            f"the Run was already {run_status.value} when cancellation arrived; the actual "
+            "winner is reported and no stop is claimed"
+        )
+    if disposition is CancellationDisposition.STOP_CONFIRMED:
+        return (
+            f"all {_plural(len(rows), 'physical try')} are durably terminal; the stop is confirmed"
+        )
+    unresolved = tuple(
+        row for row in rows if row.disposition is not CancellationDisposition.STOP_CONFIRMED
+    )
+    lead = unresolved[0] if unresolved else rows[0]
+    return (
+        f"{len(unresolved)} of {_plural(len(rows), 'physical try')} are not confirmed stopped; "
+        f"{lead.attempt_id}: {lead.diagnosis}"
+    )
 
 
 __all__ = ["RunExecutionService"]
