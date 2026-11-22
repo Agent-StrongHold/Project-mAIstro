@@ -383,6 +383,9 @@ async def _reconcile_orphaned_attempts(
         if attempt.execution_lease is not None:
             # Live leases were refused above; expired leases are the reclaim path.
             continue
+        # Dedicated leaseless orphan writer stamps CANCELLED+RECOVERED;
+        # generic transition_attempt must not carry RECOVERED (#2417 / #232 P3b,
+        # disposition wire P4b). Canonical RunStore stays the write authority.
         terminal = await execution_store.recover_orphaned_attempt(
             attempt.attempt_id,
             owning_run_id=record.run_id,

@@ -1650,33 +1650,6 @@ class SqliteRunStore:
             )
             return settled
 
-    async def recover_orphaned_attempt(
-        self,
-        attempt_id: str,
-        *,
-        owning_run_id: str,
-        at: datetime | None = None,
-        error: str | None = None,
-    ) -> Attempt:
-        """Settle a leaseless active Attempt under explicit owning-record resume."""
-        async with self._write_lock:
-            attempt = await self._require_attempt(attempt_id)
-            node_run = await self._require_node_run(attempt.node_run_id)
-            if node_run.run_id != owning_run_id:
-                raise RunIntegrityError(
-                    f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
-                    f"not owning_run_id={owning_run_id!r}"
-                )
-            settled = recover_orphaned_attempt(attempt, at=at, error=error)
-            await self._update_payload(
-                "canonical_attempts",
-                "attempt_id",
-                attempt_id,
-                settled.status.value,
-                json_of(settled),
-            )
-            return settled
-
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -1747,6 +1720,33 @@ class SqliteRunStore:
                 await self._conn.rollback()
                 raise
             return settled_node, settled_run
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            node_run = await self._require_node_run(attempt.node_run_id)
+            if node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
