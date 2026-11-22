@@ -307,7 +307,7 @@ def test_backfill_repairs_a_drifted_projection_without_touching_the_canonical_ro
     exactly the failure #2467 filed against the any-drift startup put.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     store = configured.schedule_store
     workspace_id = configured.test_workspace
@@ -316,7 +316,7 @@ def test_backfill_repairs_a_drifted_projection_without_touching_the_canonical_ro
     stores.schedules._data[row.id] = row
     fired_at = datetime(2026, 9, 26, 3, 0, tzinfo=UTC)
     try:
-        assert asyncio.run(backfill_canonical_definitions()) >= 1
+        assert asyncio.run(reconcile_schedule_projection()) >= 1
         asyncio.run(
             store.record_fire(
                 row.id,
@@ -330,7 +330,7 @@ def test_backfill_repairs_a_drifted_projection_without_touching_the_canonical_ro
         stores.schedules._data[row.id] = row.model_copy(
             update={"enabled": False, "name": "renamed"}
         )
-        assert asyncio.run(backfill_canonical_definitions()) >= 1, "the projection is repaired"
+        assert asyncio.run(reconcile_schedule_projection()) >= 1, "the projection is repaired"
         canonical = asyncio.run(store.get(row.id))
         assert canonical is not None
         assert canonical.enabled is True, "the canonical definition is not reverted"
@@ -340,7 +340,7 @@ def test_backfill_repairs_a_drifted_projection_without_touching_the_canonical_ro
         assert canonical.next_due_at == fired_at + timedelta(days=1)
         repaired = stores.schedules._data[row.id]
         assert repaired.enabled is True and repaired.name == "legacy"
-        assert asyncio.run(backfill_canonical_definitions()) == 0
+        assert asyncio.run(reconcile_schedule_projection()) == 0
     finally:
         _drop_hive_row(row.id)
 
@@ -351,15 +351,15 @@ def test_backfill_is_a_noop_without_a_container() -> None:
     assert asyncio.run(backfill_canonical_definitions()) == 0
 
 
-def test_the_runner_backfills_once_before_its_first_tick(
+def test_the_runner_reconciles_once_before_its_first_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.scheduler as scheduler
 
     calls: list[str] = []
 
-    async def backfill() -> int:
-        calls.append("backfill")
+    async def reconcile() -> int:
+        calls.append("reconcile")
         return 0
 
     runner = scheduler._ScheduleRunner()
@@ -371,13 +371,13 @@ def test_the_runner_backfills_once_before_its_first_tick(
     async def no_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(scheduler, "backfill_canonical_definitions", backfill)
+    monkeypatch.setattr(scheduler, "reconcile_schedule_projection", reconcile)
     monkeypatch.setattr(runner, "_tick", tick)
     monkeypatch.setattr(runner, "_self_repair_tick", tick)
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
     asyncio.run(runner.run())
-    assert calls[:2] == ["backfill", "tick"]
-    assert calls.count("backfill") == 1
+    assert calls[:2] == ["reconcile", "tick"]
+    assert calls.count("reconcile") == 1
 
 
 def test_clearing_the_template_removes_the_canonical_row(

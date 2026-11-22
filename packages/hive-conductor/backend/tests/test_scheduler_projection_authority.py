@@ -3,7 +3,7 @@
 Issue #1199's reactivation and #2467 demonstrated the source-level failure
 path the original tick migration left open: the ``/v1/schedules`` routes
 commit the canonical ``ScheduleStore`` write *before* the Hive
-``stores.schedules`` write, and startup ``backfill_canonical_definitions``
+``stores.schedules`` write, and startup ``reconcile_schedule_projection``
 used to push Hive drift back INTO the canonical store. A crash in the
 routes' two-write window therefore reverted an acknowledged canonical edit
 or resurrected a deleted schedule on the next restart — from a stale
@@ -347,7 +347,7 @@ async def test_restart_retains_a_canonical_edit_and_repairs_the_stale_row(
     never the reverse.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     created = await _create_via_route(container)
@@ -371,7 +371,7 @@ async def test_restart_retains_a_canonical_edit_and_repairs_the_stale_row(
         assert hive.cron_expression == "0 3 * * *"
 
         container = (await configured.restart(monkeypatch)).container
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
 
         assert moved >= 1, "the stale projection is repaired"
         kept = await container.schedule_store.get(sid)
@@ -389,7 +389,7 @@ async def test_restart_retains_a_canonical_edit_and_repairs_the_stale_row(
             "Asia/Tokyo",
         )
         # Repeated startup is a no-op once the projection agrees.
-        assert await backfill_canonical_definitions() == 0
+        assert await reconcile_schedule_projection() == 0
         served = await _get_via_route(sid)
         assert served.enabled is False
     finally:
@@ -414,7 +414,7 @@ async def test_the_retired_any_drift_push_reverts_an_acknowledged_edit(
     from services.scheduler import (
         _ScheduleRunner,
         _scoped_definition,
-        backfill_canonical_definitions,
+        reconcile_schedule_projection,
         definition_lock,
     )
 
@@ -454,7 +454,7 @@ async def test_the_retired_any_drift_push_reverts_an_acknowledged_edit(
         # Restore the crash-window state the shipped policy must handle.
         await container.schedule_store.put(stored.model_copy(update={"enabled": False}))
         _install_row(hive)
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
         assert moved >= 1
         final = await container.schedule_store.get(sid)
         assert final is not None and final.enabled is False, (
@@ -479,7 +479,7 @@ async def test_a_deleted_schedule_is_not_resurrected_and_its_stale_row_is_remove
     """
     import stores
     from fastapi import HTTPException
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     created = await _create_via_route(container)
@@ -487,17 +487,20 @@ async def test_a_deleted_schedule_is_not_resurrected_and_its_stale_row_is_remove
     try:
         # The canonical delete commits; the Hive pop never lands.
         assert await container.schedule_store.delete(sid) is True
+        from services.schedule_projection import record_tombstone
+
+        record_tombstone(sid)
         assert stores.schedules.get(sid) is not None, "the crash left the row behind"
 
         container = (await configured.restart(monkeypatch)).container
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
 
         assert moved >= 1, "the stale row is retired"
         assert await container.schedule_store.get(sid) is None, "no resurrection"
         assert stores.schedules.get(sid) is None, "the stale projection row is removed"
         due = await container.schedule_store.due(now=_FAR_FUTURE)
         assert sid not in {schedule.schedule_id for schedule in due}, "nothing re-armed"
-        assert await backfill_canonical_definitions() == 0, "startup is idempotent"
+        assert await reconcile_schedule_projection() == 0, "startup is idempotent"
         with pytest.raises(HTTPException) as gone:
             await _get_via_route(sid)
         assert gone.value.status_code == 404, gone.value
@@ -515,7 +518,7 @@ async def test_a_tombstoned_historical_row_cannot_override_canonical_authority(
     the row, decides.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     created = await _create_via_route(container)
@@ -524,15 +527,18 @@ async def test_a_tombstoned_historical_row_cannot_override_canonical_authority(
         historical = stores.schedules.get(sid)
         assert historical is not None
         assert await container.schedule_store.delete(sid) is True
+        from services.schedule_projection import record_tombstone
+
+        record_tombstone(sid)
         # The deletion's Hive pop "never happened", and worse: the row comes
         # back enabled, as a restored historical copy would.
         _install_row(historical.model_copy(update={"enabled": True}))
 
-        await backfill_canonical_definitions()
+        await reconcile_schedule_projection()
 
         assert await container.schedule_store.get(sid) is None
         assert stores.schedules.get(sid) is None, "the historical row is retired, not imported"
-        assert await backfill_canonical_definitions() == 0
+        assert await reconcile_schedule_projection() == 0
     finally:
         _drop_row(sid)
 
@@ -548,14 +554,14 @@ async def test_a_never_imported_legacy_row_migrates_exactly_once(
     and can never re-derive it from a stale Hive copy.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     root = await container.project_scope_store.root_for_workspace(container.test_workspace)
     row = _legacy_row(container.test_workspace, root.project_id, enabled=False)
     _install_row(row)
     try:
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
         assert moved >= 1
         imported = await container.schedule_store.get(row.id)
         assert imported is not None
@@ -564,7 +570,7 @@ async def test_a_never_imported_legacy_row_migrates_exactly_once(
         assert imported.project_id == root.project_id
         assert imported.cron == "0 3 * * *"
 
-        assert await backfill_canonical_definitions() == 0, "the import happens exactly once"
+        assert await reconcile_schedule_projection() == 0, "the import happens exactly once"
 
         # The imported row is now canonical authority: a later Hive-only edit
         # (a pre-canonical PUT's residue) cannot revert it.
@@ -575,7 +581,7 @@ async def test_a_never_imported_legacy_row_migrates_exactly_once(
             next_due_at=datetime(2026, 11, 22, 4, 0, tzinfo=UTC),
         )
         _install_row(row.model_copy(update={"enabled": True, "name": "renamed-legacy"}))
-        await backfill_canonical_definitions()
+        await reconcile_schedule_projection()
         still = await container.schedule_store.get(row.id)
         assert still is not None
         assert still.enabled is False, "the already-imported row cannot override canonical"
@@ -594,21 +600,21 @@ async def test_repeated_and_concurrent_startup_is_idempotent(
 ) -> None:
     """AC: repeated/concurrent startups preserve exactly one schedule identity."""
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     root = await container.project_scope_store.root_for_workspace(container.test_workspace)
     row = _legacy_row(container.test_workspace, root.project_id)
     _install_row(row)
     try:
-        await asyncio.gather(backfill_canonical_definitions(), backfill_canonical_definitions())
+        await asyncio.gather(reconcile_schedule_projection(), reconcile_schedule_projection())
         assert await container.schedule_store.get(row.id) is not None
         identities = await container.schedule_store.list_all()
         assert [s.schedule_id for s in identities] == [row.id]
         assert row.id in stores.schedules._data  # type: ignore[attr-defined]
 
-        await asyncio.gather(backfill_canonical_definitions(), backfill_canonical_definitions())
-        assert await backfill_canonical_definitions() == 0
+        await asyncio.gather(reconcile_schedule_projection(), reconcile_schedule_projection())
+        assert await reconcile_schedule_projection() == 0
         again = await container.schedule_store.list_all()
         assert [s.schedule_id for s in again] == [row.id], "still exactly one identity"
     finally:
@@ -624,7 +630,7 @@ async def test_a_create_orphan_is_surfaced_by_startup(configured: Harness) -> No
     routes that own it, instead of an enabled row only the tick could see.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     root = await container.project_scope_store.root_for_workspace(container.test_workspace)
@@ -643,7 +649,7 @@ async def test_a_create_orphan_is_surfaced_by_startup(configured: Harness) -> No
     await container.schedule_store.put(definition)
     assert stores.schedules.get("s-create-orphan") is None
     try:
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
         assert moved >= 1
         surfaced = stores.schedules.get("s-create-orphan")
         assert surfaced is not None
@@ -764,7 +770,7 @@ async def test_delete_projection_failure_reports_committed_truth_and_heals_on_re
     """A failed durable Hive delete must not obscure a committed canonical delete."""
     import stores
     from fastapi import HTTPException
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     created = await _create_via_route(configured.container)
     sid = str(created.id)
@@ -785,7 +791,7 @@ async def test_delete_projection_failure_reports_committed_truth_and_heals_on_re
 
         container = (await configured.restart(monkeypatch)).container
         assert stores.schedules.get(sid) is not None, "stale row reloaded from Hive disk"
-        await backfill_canonical_definitions()
+        await reconcile_schedule_projection()
         assert stores.schedules.get(sid) is None
         assert await container.schedule_store.get(sid) is None
         assert sid not in {
@@ -809,7 +815,7 @@ async def test_startup_projection_leaves_recorded_cursors_stable(
     cursor a fire has not yet mirrored is tick timing, not drift to repair.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     container = configured.container
     created = await _create_via_route(container)
@@ -830,7 +836,7 @@ async def test_startup_projection_leaves_recorded_cursors_stable(
             stale.model_copy(update={"last_run": None, "last_run_id": None, "next_run": None})
         )
 
-        moved = await backfill_canonical_definitions()
+        moved = await reconcile_schedule_projection()
 
         assert moved == 0, "cursor-only differences are the tick's timing, not drift"
         kept = await container.schedule_store.get(sid)

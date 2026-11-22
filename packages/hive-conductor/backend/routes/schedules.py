@@ -348,26 +348,58 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         created_at=t,
         updated_at=t,
     )
-    await _write_canonical(schedule)
+    # The create spans two writes with no shared commit (canonical store,
+    # then the Hive projection). The durable pending marker (#2467) is what
+    # lets a crash between them be *resolved* at restart — projection rebuilt
+    # from the committed canonical row, or the create closed as
+    # never-committed — instead of leaving an enabled orphan schedule that
+    # only the canonical due() can see.
+    from services.schedule_projection import clear_pending_create, mark_pending_create
+
+    def _close_marker() -> None:
+        try:
+            clear_pending_create(sid)
+        except Exception:
+            logger.warning("Failed to clear the pending-create marker for schedule %s", sid)
+
+    mark_pending_create(sid)
+    try:
+        await _write_canonical(schedule)
+    except Exception:
+        # The canonical put itself failed: nothing was committed, so the
+        # window closed empty.
+        _close_marker()
+        raise
     try:
         stores.schedules[sid] = schedule
     except Exception:
         # The canonical write above already committed (Codex, #1199): a
         # failed second write must not leave an enabled canonical row behind
         # that no Hive-keyed route can reach -- creation failed, so there is
-        # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
-        # only ever adds rows, never removes one. Best-effort compensation;
-        # its own failure is logged and swallowed so the caller sees the real
-        # failure below, not this cleanup's.
+        # no Hive row for GET/PUT/DELETE to find it by. Best-effort
+        # compensation; its own failure is logged and swallowed so the caller
+        # sees the real failure below, not this cleanup's.
         from services.scheduler import delete_canonical_definition
 
         try:
             await delete_canonical_definition(sid)
+            # Compensated: the create never committed canonically, so the
+            # window closed empty and the marker goes with it.
+            _close_marker()
         except Exception:
+            # The compensation itself died with the process-equivalent
+            # failure: the canonical row is committed and unprojected — the
+            # crash state, reached without a crash. The marker STANDS so the
+            # next startup resolves it (#2467), rebuilding the projection
+            # from the committed row.
             logger.warning(
-                "Failed to compensate canonical schedule %s after a failed Hive write", sid
+                "Failed to compensate canonical schedule %s after a failed Hive write; "
+                "its pending-create marker stays so startup reconciliation resolves "
+                "the committed-but-unprojected row",
+                sid,
             )
         raise
+    _close_marker()
     return schedule
 
 
@@ -460,17 +492,20 @@ async def _delete_canonical(schedule_id: str) -> None:
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
+    from services.schedule_projection import record_tombstone
     from services.scheduler import definition_lock
 
     async with definition_lock(schedule_id):
         await _delete_canonical(schedule_id)
+        # Canonical deletion is authoritative. Persist the tombstone before
+        # removing the Hive projection so restart cannot resurrect a stale row.
+        try:
+            record_tombstone(schedule_id)
+        except Exception:
+            logger.warning("Failed to record the deletion tombstone for schedule %s", schedule_id)
         try:
             stores.schedules.pop(schedule_id, None)
         except Exception as exc:
-            # As for UPDATE, the canonical commit is authoritative. Its
-            # tombstone prevents the stale projection from re-arming work;
-            # tell the caller what persisted instead of returning an opaque
-            # failure that suggests the schedule may still be active (#2467).
             logger.warning(
                 "Canonical schedule %s deleted but its Hive projection removal failed; "
                 "projection repair pending",

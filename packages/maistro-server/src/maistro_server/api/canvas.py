@@ -71,6 +71,11 @@ from maistro.capabilities.governed_invocation import (
 )
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.workspace_access import (
+    get_workspace_store,
+    require_workspace_membership,
+    user_id,
+)
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 
@@ -179,6 +184,83 @@ def _design_dict(record: _DesignRecord) -> dict[str, Any]:
     return record.to_dict()
 
 
+def _layer_presentation(layer: dict[str, Any]) -> dict[str, Any]:
+    """Map stored image references to browser-resolvable URLs (#2311).
+
+    Durable storage keeps internal ``canvas_blobs`` references; this is the
+    boundary where they become ``GET /v2/canvas/blobs/{id}`` presentation
+    paths an ``<img src>`` can actually load. The conversion is a pass-through
+    for data URLs / remote URLs / paths, so a layer written by any producer
+    serializes the same way. The raw reference never leaves the boundary as a
+    URL-shaped value.
+    """
+    from maistro_canvas.canvas.blob_presentation import to_presentation_url
+
+    for field in ("image_path", "image_url"):
+        value = layer.get(field)
+        if value is not None:
+            layer[field] = to_presentation_url(str(value))
+    return layer
+
+
+# ── Authorized blob bytes (ADR-045 presentation surface, #2311) ───────
+
+
+@router.get("/blobs/{blob_id}")
+async def get_canvas_blob(request: Request, blob_id: str, auth: RequireAuth) -> Response:
+    """Serve one generated image's bytes, authorized, at a real HTTP URL.
+
+    This is the browser-resolvable half of the governed image path: storage
+    keeps internal ``canvas_blobs`` references, and this route is the only
+    bytes door — the same ``/v2/canvas`` boundary, the same bearer
+    authentication as every other route, and the Workspace membership the
+    write-time scope stamp names. There is deliberately no unscoped variant.
+
+    Authorization anchors on the canonical scope the governed egress stamped
+    into the blob's metadata (Workspace + Project — the scope its Runs were
+    admitted in, one scope for asset and Run). A caller must hold at least a
+    VIEW membership in that Workspace: a member of a foreign Workspace, a
+    revoked member and a guessed id all read as absent (404), exactly like
+    the other scoped reads on this surface; a principal the Workspace store
+    cannot vouch for is a refusal, not a leak.
+
+    No anchor (metadata without a Workspace stamp — possible only from an
+    adapter constructed without a scope) fails closed: bytes that cannot name
+    their authority are not served.
+    """
+    store = _store(request)
+    read_blob = getattr(store, "read_blob", None)
+    if read_blob is None:
+        # A store without the whole-row read cannot authorize anything; that
+        # is a wiring gap, answered truthfully like every other missing
+        # dependency on this surface rather than as a fabricated 404.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Canvas store does not support authorized blob reads (read_blob missing)",
+        )
+    record = await read_blob(blob_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+    metadata = getattr(record, "metadata", None) or {}
+    scope_workspace = str(metadata.get("workspace_id") or "")
+    if not scope_workspace:
+        # Fail closed: no recorded scope, no authority to read under.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+    await require_workspace_membership(get_workspace_store(), scope_workspace, user_id(auth))
+    media_type = str(getattr(record, "format", "") or "application/octet-stream")
+    return Response(
+        content=record.data,
+        media_type=media_type,
+        headers={
+            # Byte immutability is not read authority: every load must
+            # re-run the membership check on this route, so caching (even
+            # private, even per-principal via Vary) is disallowed entirely.
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 # ── Request bodies ────────────────────────────────────────────────────
 
 
@@ -231,7 +313,7 @@ async def get_design(request: Request, design_id: str, auth: RequireAuth) -> JSO
     record = await _require_design(store, design_id, _owner_id(auth))
     body = _design_dict(record)
     body["layers"] = [
-        layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer)
+        _layer_presentation(layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer))
         for layer in await store.list_layers(design_id, org_id=_owner_id(auth))
         if hasattr(layer, "to_dict") or is_dataclass(layer)
     ]
@@ -619,6 +701,7 @@ __all__ = [
     "create_design",
     "delete_design",
     "export_design",
+    "get_canvas_blob",
     "get_design",
     "get_design_export",
     "list_assets",
