@@ -231,6 +231,10 @@ class GovernedGatewayImageClient:
             attempt_id=context.attempt_id,
             effect_key=effect_key,
             request=request,
+            # The executing Run's acting principal (#2464): quota and audit
+            # attribute this physical effect to the identity the Run was
+            # admitted for, not to the worker process (blank reads "system").
+            actor_id=context.actor_id,
         )
         from maistro_canvas.protocols import ImageData
 

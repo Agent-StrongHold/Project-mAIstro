@@ -74,6 +74,17 @@ def _node_id(job_id: str, stage: str) -> str:
     return f"canvas:{job_id}:{stage}"
 
 
+def _acting_principal_id(run: Run) -> str:
+    """The principal the Run acts for (#2464).
+
+    ``acting_principal_id`` is what accounting attributes to; the model
+    backfills it from ``actor_principal_id`` on rows that only carried the
+    latter. Blank means the Run named no principal, and the effect files as
+    "system" rather than guessing an identity.
+    """
+    return run.acting_principal_id or run.actor_principal_id or ""
+
+
 class CanvasCanonicalExecution:
     """Record Canvas physical execution in one bound canonical scope.
 
@@ -518,9 +529,14 @@ class CanvasCanonicalExecution:
         # worker then cannot attribute its provider effects to the worker's
         # scope: the governed image client resolves its Binding against this
         # context and refuses a mismatch before any provider dispatch. The
-        # same fields `RunExecutionService` deliberately leaves to whichever
-        # seam holds them (#707) are the fields this seam holds in hand.
-        with bind_execution_context(workspace_id=run.workspace_id, project_id=run.project_id):
+        # Run's acting principal rides along for the same reason: quota and
+        # audit attribute the physical effect to the identity the Run was
+        # admitted for, not to the worker process.
+        with bind_execution_context(
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+            actor_id=_acting_principal_id(run),
+        ):
             await self._resume_for_execution(run_id)
             captured: list[T] = []
 

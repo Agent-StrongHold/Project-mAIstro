@@ -276,9 +276,13 @@ class TestGovernedImageClient:
             attempt_id="at",
             workspace_id=ADMISSION_WORKSPACE,
             project_id=ADMISSION_PROJECT,
+            actor_id="principal-7",
         ):
             await client.generate(model_id="m", prompt="p", width=64, height=64)
         assert len(egress.calls) == 1
+        # The Run's acting principal rides to the Invocation (#2464): quota
+        # and audit attribute the effect to the identity the Run acts for.
+        assert egress.calls[0]["actor_id"] == "principal-7"
 
     async def test_generate_crosses_the_governed_boundary_with_canonical_ids(self) -> None:
         effects = _FakeEffects()

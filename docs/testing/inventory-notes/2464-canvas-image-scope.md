@@ -42,6 +42,14 @@ classifies a Binding authorization refusal as governed-boundary machinery
 stage projection guard refuses a yielded Attempt (Canvas has no pause
 semantics) instead of projecting an empty receipt.
 
+Also asserted inside the counted tests above: the image Invocation now files
+the Run's acting principal (`actor_id`) beside its scope, so quota and audit
+attribute the physical effect to the identity the Run was admitted under —
+a new canonical correlation field (`ExecutionContext.actor_id`) bound by the
+Canvas stage seam from the durable Run row and forwarded through the
+governed egress. The correlation suite's field-drift check adapts itself to
+the added field.
+
 ## Why the counts moved the way they did
 
 No tests were removed: the existing suite's assertions were updated in place

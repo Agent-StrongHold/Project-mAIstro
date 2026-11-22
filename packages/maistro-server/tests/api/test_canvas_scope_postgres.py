@@ -403,6 +403,9 @@ async def test_run_attempt_binding_and_invocation_share_one_scope(
         payload = invocation["payload"]
         assert payload["workspace_id"] == run.workspace_id
         assert payload["project_id"] == run.project_id
+        # The same principal the Run was admitted under (#2464): quota and
+        # audit attribute the physical effect to that identity, not "system".
+        assert payload["actor_id"] == DEFAULT_TEST_ACTOR_PRINCIPAL_ID
         snapshot = payload["binding"]
         assert snapshot["binding_id"] == expected_binding_id
         assert snapshot["workspace_id"] == run.workspace_id
