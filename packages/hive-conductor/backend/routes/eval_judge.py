@@ -41,10 +41,13 @@ Evidence semantics (#2470): the verdict is keyed by the canonical Run id and
 protected by services.eval_judge — a valid verdict is terminal evidence, so
 retrying returns it verbatim (no second model effect, no restart double-fire),
 and a later failing/unparseable/unavailable attempt can never downgrade it.
-There is deliberately no automatic re-score or supersede here: replacing a
-valid verdict is a governed decision the M2 policy owns, not a side effect of
-calling POST again. Audit records the successful scoring effect with its
-canonical actor; refused requests mutate nothing.
+A valid verdict a producer recorded before canonical keying lives under the
+projection alias this same authorized read resolved; honoring it verbatim
+keeps one paid model effect per logical score across the upgrade and writes
+nothing. There is deliberately no automatic re-score or supersede here:
+replacing a valid verdict is a governed decision the M2 policy owns, not a
+side effect of calling POST again. Audit records the successful scoring
+effect with its canonical actor; refused requests mutate nothing.
 """
 
 from __future__ import annotations
@@ -201,6 +204,15 @@ async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
     existing = get_verdict(canonical_run_id)
     if is_valid_verdict(existing):
         return existing
+    if run_id != canonical_run_id:
+        # Evidence recorded before canonical keying lives under the
+        # projection alias this same authorized read resolved (#2470).
+        # Honoring it verbatim keeps one paid model effect per logical
+        # score across the upgrade — and mutates nothing: the durable row
+        # stays exactly as recorded, no canonical-keyed duplicate appears.
+        alias_evidence = get_verdict(run_id)
+        if is_valid_verdict(alias_evidence):
+            return alias_evidence
 
     class _Adapter:
         def __init__(self, d: dict[str, Any]) -> None:

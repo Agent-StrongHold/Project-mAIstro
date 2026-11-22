@@ -696,3 +696,154 @@ def test_concurrent_authorized_scores_share_one_model_invocation(
     assert len(invocations) == 1
     assert stores.eval_verdicts["race-run"]["score"] == 70
     assert stores.eval_verdicts["race-run"]["scored_by"] in ("a-1", "a-2")
+
+
+# --- 6. One logical score across producers ---------------------------------
+
+
+def _chat_result(canonical_run_id: str) -> dict[str, Any]:
+    """The facade result the chat producer scores from: it names the canonical
+    Run (`run_id`), which is the same value `record_outcome` correlates the
+    projection row with (#35/#1332)."""
+    return {
+        "status": "completed",
+        "run_id": canonical_run_id,
+        "node_results": {"node-1": {"role": "llm", "response": "done", "latency_ms": 5}},
+    }
+
+
+def _patch_producer_llm(monkeypatch: pytest.MonkeyPatch, payload: str) -> list[str]:
+    """Let the chat producer run the REAL service through a stub model.
+
+    `_eval_judge_score` passes no `llm_call`, so the service takes its lazy
+    `graph_runner._build_llm_call` branch — the production path — and each
+    built call records that one model effect happened.
+    """
+    import services.graph_runner as gr
+
+    invocations: list[str] = []
+
+    async def _stub_llm(messages: list[dict], **kw: Any) -> str:
+        invocations.append("producer")
+        return payload
+
+    monkeypatch.setattr(gr, "_build_llm_call", lambda: _stub_llm)
+    return invocations
+
+
+def test_automatic_chat_score_and_manual_retry_are_one_logical_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chat producer's automatic score and a later authorized POST are ONE
+    logical score, so both must key their evidence by the canonical Run.
+
+    `services.chat_completion._eval_judge_score` scores the projection alias
+    the producer minted, while the #2470 route scores — and guards
+    idempotency by — the canonical Run that alias correlates to. The split
+    leaves one Run with two evidence rows the optimizer counts twice
+    (`_collect_eval_verdicts` matches on dag_id, not identity), and makes the
+    route blind to a score that already exists, so the "retry" pays for a
+    second model call.
+    """
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    invocations = _patch_producer_llm(monkeypatch, '{"score": 88, "rationale": "automatic"}')
+
+    from services.chat_completion import _eval_judge_score
+
+    scored = asyncio.run(
+        _eval_judge_score(scene["row_id"], "dag-chat", _chat_result(scene["canonical_run_id"]))
+    )
+    assert scored["status"] == "ok" and scored["score"] == 88
+    assert invocations == ["producer"]
+
+    import stores
+
+    # One evidence row, under the canonical identity the mutation gate admits
+    # — never under the alias.
+    assert scene["row_id"] not in stores.eval_verdicts
+    verdict = stores.eval_verdicts[scene["canonical_run_id"]]
+    assert verdict["status"] == "ok"
+    assert verdict["canonical_run_id"] == scene["canonical_run_id"]
+
+    # The authorized POST for the same logical Run is a retry: it returns the
+    # producer's verdict verbatim and pays for no second model effect.
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _stubbed_scorer(monkeypatch, '{"score": 12, "rationale": "must not run"}')
+    retry = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert retry.status_code == 200, retry.text
+    assert calls == []
+    assert retry.json()["score"] == 88
+    assert len(stores.eval_verdicts) == 1
+
+
+def test_durable_alias_keyed_verdict_is_honored_without_a_second_paid_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence recorded before canonical keying still counts (#2470).
+
+    `stores.eval_verdicts` is durable — SQLite-backed whenever persistence is
+    configured — so an upgraded deployment still holds valid verdicts under
+    the projection alias a producer minted. A guard that reads only the
+    canonical key scores (and bills) such a Run a second time for evidence
+    that already exists. The alias the same authorized read resolved names
+    the same logical Run, so honoring its valid verdict keeps one paid model
+    effect per logical score across the upgrade — and leaves the durable row
+    byte-identical.
+    """
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    import stores
+
+    legacy = {
+        "run_id": scene["row_id"],
+        "dag_id": "dag-chat",
+        "status": "ok",
+        "score": 73,
+        "rationale": "recorded before canonical keying",
+        "evaluator_version": "eval-judge/1",
+        "scored_at": "2026-11-22T00:00:00+00:00",
+    }
+    stores.eval_verdicts[scene["row_id"]] = legacy
+
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _stubbed_scorer(monkeypatch, '{"score": 12, "rationale": "must not run"}')
+    r = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert r.status_code == 200, r.text
+    assert calls == []
+    assert r.json()["score"] == 73
+    assert stores.eval_verdicts[scene["row_id"]] == legacy
+    assert len(stores.eval_verdicts) == 1
+
+
+def test_chat_producer_records_the_canonical_actor_and_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The automatic score is attributable evidence, not an anonymous row.
+
+    A chat-launched score is a real scoring effect with a real principal
+    behind it (the turn's initiator) inside a real Workspace. A verdict that
+    names neither is unattributable in the store the optimizer ranks
+    improvement proposals on, so the producer seam has to carry the canonical
+    actor and scope through to `_persist` exactly as the route does.
+    """
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    _patch_producer_llm(monkeypatch, '{"score": 61, "rationale": "attributed"}')
+
+    from services.chat_completion import _eval_judge_score
+
+    asyncio.run(
+        _eval_judge_score(
+            scene["row_id"],
+            "dag-chat",
+            _chat_result(scene["canonical_run_id"]),
+            actor_id=scene["initiator"],
+            workspace_id=scene["workspace_id"],
+        )
+    )
+
+    import stores
+
+    verdict = stores.eval_verdicts[scene["canonical_run_id"]]
+    assert verdict["status"] == "ok"
+    assert verdict["scored_by"] == scene["initiator"]
+    assert verdict["workspace_id"] == scene["workspace_id"]
+    assert verdict["evaluator_version"]

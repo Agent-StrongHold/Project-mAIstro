@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +17
+  packages/hive-conductor/backend/tests: +20
 ---
 # 2470 eval-judge scoring permission
 
@@ -42,3 +42,23 @@ gate the fix installs, at the layer that owns it:
 The route-level happy path in `test_eval_judge.py` additionally asserts the
 verdict is keyed by the canonical Run id — not a projection alias — which is
 what makes the idempotency and cross-id read guarantees above hold.
+
+## Follow-up (+3): one logical score across producers
+
+Three further node IDs pin the seam where the automatic score meets the
+manual one — the chat producer's `_eval_judge_score` and the route's
+evidence guard — because a logical score must be one paid model effect and
+one evidence row whoever triggers it:
+
+- The chat producer's automatic score keys its evidence by the canonical
+  Run the facade result names (`run_id`, #35/#1332) — never a second
+  alias-keyed row the optimizer would count twice — and the route's retry
+  honors it verbatim with zero further model calls.
+- A durable verdict recorded before canonical keying (stored under the
+  projection alias) is honored by the POST verbatim after the same
+  mutation gate: no second paid score across the upgrade, no rewrite, no
+  duplicate row.
+- The automatic score carries the same canonical actor/Workspace/
+  evaluator-version provenance a manual score records — the turn's
+  initiator rides through to `_persist`, so the shared evidence the
+  optimizer ranks on is attributable.
