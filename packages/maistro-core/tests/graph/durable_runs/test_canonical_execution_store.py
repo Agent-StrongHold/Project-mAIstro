@@ -1086,3 +1086,35 @@ async def test_bound_recovered_disposition_mirrors_canonical_parking() -> None:
     assert durable is not None
     assert durable.node_runs[0].status is RunStatus.WAITING
     assert durable.run.status is RunStatus.WAITING
+
+
+async def test_local_recovered_disposition_happy_path_parks_record() -> None:
+    """No-RunStore path: _apply_local_recovered_disposition parks NodeRun+Run in-record."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-L", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+    reclaimed = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+
+    parked_node, parked_run = await execution_store.apply_recovered_attempt_disposition(
+        reclaimed[0].attempt_id
+    )
+
+    assert parked_node.status is RunStatus.WAITING
+    assert parked_run.status is RunStatus.WAITING
+    durable = await store.get(record.run_id)
+    assert durable is not None
+    assert durable.node_runs[0].status is RunStatus.WAITING
+    assert durable.run.status is RunStatus.WAITING

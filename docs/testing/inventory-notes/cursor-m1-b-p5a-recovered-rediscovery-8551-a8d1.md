@@ -20,6 +20,12 @@ only the two pieces the branch had never carried — all in
   `RecoveredDispositionRefused` catch pinned on develop; the same catch this
   branch's P5a replay loop pins from the other side.
 
-No test was removed or renamed; the branch's own P5a additions (rediscovery
-file, leaseless-orphan writer tests, gate/refusal pins) were already counted
-by prior notes on this branch, so their deltas do not re-apply here.
+Correction (repair round): "No test was removed or renamed" was wrong as
+originally written. The merge resolution dropped one test develop carries
+inside the same conflicted block — `test_local_recovered_disposition_happy_path_parks_record`
+from the P4b squash — and a follow-up commit restores it byte-for-byte from
+`33ac30c5f1`, with its own note and delta
+(`m1-232-p5a-restore-local-recovered-happy-path.md`, `+1`). The branch's own
+P5a additions (rediscovery file, leaseless-orphan writer tests, gate/refusal
+pins) were already counted by prior notes on this branch, so their deltas do
+not re-apply here.
