@@ -409,7 +409,9 @@ class TestTheMergedIdentities:
         assert revisions["060"].down_revision == "059"
         assert revisions["061"].down_revision == "060"
         assert revisions[GOAL_REVISION].down_revision == "062"
-        assert script_directory.get_heads() == [GOAL_REVISION]
+        # The Schedule deletion-marker table (#2467) appends past the Goal
+        # revision as `064`, so the Goal id is no longer the chain head.
+        assert script_directory.get_heads() == ["064"]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
         assert (VERSIONS / "056_user_model_facts.py").is_file()

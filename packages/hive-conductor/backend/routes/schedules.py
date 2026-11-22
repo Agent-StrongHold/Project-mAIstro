@@ -163,14 +163,34 @@ def _actor(request: Request) -> str:
     return actor
 
 
+async def _canonical_projection(schedule_id: str) -> Schedule | None:
+    """The row canonical truth projects, or None when truth has none (#2467).
+
+    GET/PUT/DELETE must obey canonical schedule definition truth after a
+    restart, so the row a route serves is the canonical row repaired from —
+    not the Hive copy a crash may have left stale. A configured-but-
+    unreadable canonical authority is a 503: falling back to the stale Hive
+    row would silently serve an outdated enabled flag, exactly what #2467
+    forbids.
+    """
+    from services.scheduler import ScheduleAdmissionUnavailable, canonical_projection
+
+    try:
+        return await canonical_projection(schedule_id)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 async def _visible_schedule(request: Request, schedule_id: str) -> Schedule:
     """The row, if the caller is a member of its Workspace; else one 404.
 
     Missing, ownerless and foreign rows share the refusal so this route is
-    not an existence oracle for other Workspaces' schedules.
+    not an existence oracle for other Workspaces' schedules. The row read
+    here is canonical truth projected (#2467), so a definition edit or
+    delete that committed before a crash is what every route answers with.
     """
     actor = _actor(request)
-    schedule = stores.schedules.get(schedule_id)
+    schedule = await _canonical_projection(schedule_id)
     if schedule is None or not await workspace_authority.is_member(actor, schedule.workspace_id):
         raise HTTPException(status_code=404, detail="schedule not found")
     # Re-read after the await: a concurrent delete or fire may have landed,
@@ -403,7 +423,28 @@ async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: R
         # Re-read after the await: a tick may have projected newer cursors.
         latest = stores.schedules.get(schedule_id) or current
         updated: Schedule = latest.model_copy(update=updates)
-        stores.schedules[schedule_id] = updated
+        try:
+            stores.schedules[schedule_id] = updated
+        except Exception as exc:
+            # The canonical write above already committed (#2467): the edit is
+            # authoritative even though its projection write failed, so this
+            # is a degraded acknowledgment, not a rollback — compensating
+            # would revert an acknowledged definition because a response-only
+            # row hiccupped. The client is told the canonical update persisted
+            # and the projection is behind; the next read (or startup) repairs
+            # the projection from canonical truth.
+            logger.warning(
+                "Canonical schedule %s updated but its Hive projection write failed; "
+                "projection repair pending",
+                schedule_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"schedule {schedule_id} canonical update persisted; its Hive projection "
+                    "write failed, so the served row is stale until repair"
+                ),
+            ) from exc
     return updated
 
 

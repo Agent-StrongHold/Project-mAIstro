@@ -17,6 +17,7 @@ other implementation so the three backends cannot drift on what "fired" means.
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -73,6 +74,12 @@ class PgScheduleStore:
                 stored.next_due_at,
                 json_of(stored),
             )
+            # A live definition is authority saying this id is not deleted:
+            # a create after a delete replaces the tombstone, never sits
+            # behind it (#2467).
+            await conn.execute(
+                "DELETE FROM schedule_deletions WHERE schedule_id = $1", stored.schedule_id
+            )
         return stored
 
     async def get(self, schedule_id: str) -> Schedule | None:
@@ -86,13 +93,24 @@ class PgScheduleStore:
         """True when a row was removed.
 
         asyncpg reports a command tag ("DELETE 1"), not a rowcount, so the
-        count is the last field of that string.
+        count is the last field of that string. The deletion also leaves a
+        durable tombstone (#2467): the marker and the removal commit in one
+        transaction, so no crash can leave a deleted schedule unmarked while
+        its Hive projection survives, and startup reads the marker to refuse
+        re-importing what a deliberate delete removed.
         """
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
             tag: str = await conn.execute(
                 "DELETE FROM schedules WHERE schedule_id = $1", schedule_id
             )
-        return tag.rsplit(" ", 1)[-1] != "0"
+            deleted = tag.rsplit(" ", 1)[-1] != "0"
+            if deleted:
+                await conn.execute(
+                    """INSERT INTO schedule_deletions (schedule_id, deleted_at)
+                       VALUES ($1, NOW()) ON CONFLICT (schedule_id) DO NOTHING""",
+                    schedule_id,
+                )
+        return deleted
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         async with self._pool.acquire() as conn:
@@ -104,6 +122,18 @@ class PgScheduleStore:
                 project_id,
             )
         return [_schedule_of(row["payload"]) for row in rows]
+
+    async def list_all(self) -> list[Schedule]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT payload FROM schedules ORDER BY schedule_id",
+            )
+        return [_schedule_of(row["payload"]) for row in rows]
+
+    async def tombstoned_ids(self) -> AbstractSet[str]:  # noqa: V105
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT schedule_id FROM schedule_deletions")
+        return frozenset(row["schedule_id"] for row in rows)
 
     async def due(self, *, now: datetime) -> list[Schedule]:
         """Enabled schedules needing recurrence evaluation or manual recovery.

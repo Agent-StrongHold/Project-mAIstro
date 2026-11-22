@@ -208,7 +208,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # develop's #358 audit cursor indexes follow that landed revision as
     # `062`. The Goal migration appends as `063`; installed-base upgrade
     # tests cover the preserved 056/057/061 identities and forward upgrade.
-    assert directory.get_heads() == ["063"]
+    # The Schedule deletion-marker table (#2467) appends as `064`.
+    assert directory.get_heads() == ["064"]
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
@@ -253,6 +254,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     assert Path(directory.get_revision("062").path).name == "062_audit_cursor_indexes.py"
     assert directory.get_revision("063").down_revision == "062"
     assert Path(directory.get_revision("063").path).name == "063_canonical_goals.py"
+    assert directory.get_revision("064").down_revision == "063"
+    assert Path(directory.get_revision("064").path).name == "064_schedule_deletions.py"
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
     # the exact collision the 55be1459 resolution removed them for. Develop's

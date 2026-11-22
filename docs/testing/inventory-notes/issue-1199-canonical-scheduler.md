@@ -107,3 +107,9 @@ clean. This branch's file content is now identical to origin/develop for every
 path it touched (the merge queue landed it); the runs above are the head-level
 evidence the lane brief asked to re-confirm after the GH006 queue block
 cleared. No suite count moves, so no inventory delta is recorded.
+
+The #2467 reactivation (canonical write authority across restart) is a later,
+separate round on this lane: its implementation and evidence live in
+[issue-1199-projection-authority.md](issue-1199-projection-authority.md)
+(startup and read-path projection repair from canonical, durable tombstones,
+degraded projection-failure semantics) with its own inventory delta.
