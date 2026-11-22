@@ -414,8 +414,8 @@ async def test_the_retired_any_drift_push_reverts_an_acknowledged_edit(
     from services.scheduler import (
         _ScheduleRunner,
         _scoped_definition,
-        reconcile_schedule_projection,
         definition_lock,
+        reconcile_schedule_projection,
     )
 
     container = configured.container
