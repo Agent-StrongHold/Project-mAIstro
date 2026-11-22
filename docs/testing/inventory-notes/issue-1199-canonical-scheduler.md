@@ -297,3 +297,86 @@ pgvector:pgvector:pg18 container, `alembic upgrade head` to 068, DSN on
 
 No suite count moves (config/docs-only delta), so no `inventory-delta` is
 recorded for this repair either.
+
+## Re-validation and #2467 status supersession at the assigned head 6c33ee0111 (2026-11-22)
+
+This is the repair lane's assigned head (auto-46 = 6c33ee0111, a merge of
+develop e7bc894733 into the branch; the branch's only unique delta vs its
+base is `.gitleaksignore` and this note, confirmed by
+`git diff --stat e7bc894733..HEAD`). Two status corrections against the
+sections above, both verified first-party at this exact tree:
+
+- **The stale-projection defect (#2467) is fixed at this head, superseding
+  the "still present" status recorded at 86adf48103 and at the SAST-repair
+  tree.** Develop's head e7bc894733 — "[M1-B6][P1] Prevent stale Hive
+  schedule projection from resurrecting canonical updates/deletes
+  (#2476)" — is the projection-authority repair squash-merged onto develop,
+  and this branch's head merges it. At this tree
+  `services/scheduler.py::backfill_canonical_definitions`
+  (`services/scheduler.py:422`) no longer re-derives definitions from Hive
+  rows: a durable migration marker bounds legacy import to one pass, and
+  every later startup repairs the projection *from* canonical truth with
+  tombstone awareness (deleted stays deleted via `finish_tombstoned_row`,
+  drifted rows are rewritten toward the definition, never the reverse). The
+  issue's third and fourth acceptance bullets hold:
+  `packages/hive-conductor/backend/tests/test_schedule_projection_authority.py`
+  (17 scenarios: projection-behind-edit repaired not resurrected, canonical
+  delete survives any Hive remnant, interrupted-create resolution, one-pass
+  legacy import, cursor/run-id survival, post-marker no-reimport and
+  fire-defers-to-canonical guards) passes 17/17 with the other scheduling
+  suites below.
+- **The strict-#459 scenario remains a deliberately guarded permanent
+  blocker.** `REAL_SCHEDULE_CONDUCTOR_SCENARIO`
+  (`tests/cross_product_parity/harness.py:233`) still requires the
+  `REAL_SCENARIO_EVIDENCE: schedule-conductor` token, which is produced
+  nowhere at this tree — and
+  `test_cross_product_parity.py::test_real_dependency_markers_are_accurate`
+  actively asserts it must NOT read as available, so a scaffold-only pass
+  cannot masquerade as closure. The real-scenario execution exists on the
+  sibling #2467 lane (`dee0ba3280` "execute the strict #459
+  schedule->Conductor closeout scenario for real", `5338343ff6`,
+  `739e23191b`) but is not an ancestor of develop or of this branch; its
+  landing, and the #1199/#2467 issue closures with exact-head
+  failing-before/passing-after evidence (the issue's seventh bullet), are
+  integration steps this lane cannot perform (GitHub mutations prohibited;
+  the branch was last blocked in the GH006 merge queue).
+
+First-party acceptance re-validation at 6c33ee0111 (fresh dedicated
+pgvector:pgvector:pg18 container `auto-46-pg2`, DSN on 127.0.0.1:16441,
+`DATABASE_URL=... uv run alembic upgrade head` to migration 068 before the
+suite, matching CI's migrated-database precondition):
+
+- `uv run ruff check .` all checks passed; `uv run ruff format --check .`
+  3628 files already formatted; `uv run mypy` over the seven documented
+  package srcs: no issues in 960 source files;
+- `scripts/check-suite-inventory.py` ok (21 suites match);
+  `scripts/check-test-duplicates.py` ok; `scripts/check-doc-links.py` ok;
+- CI-exact merge-queue SAST range scan
+  `gitleaks git --redact --log-opts="e7bc894733..6c33ee0111"` (gitleaks
+  8.30.1, CI's pinned version): 10 commits scanned, `no leaks found` — the
+  fingerprints added at 57deb2c50a hold for the range CI will scan at
+  enqueue time;
+- `MAISTRO_TEST_PG_DSN` set: `packages/maistro-core/tests/scheduling/`
+  **327 passed, 0 skipped** (without the DSN: 289 passed, 38 skipped — every
+  skip is a PostgreSQL leg, all green live); canonical due-tick legs run on
+  both `SqliteScheduleStore` and the production `PgScheduleStore` on the
+  real alembic schema;
+- hive-conductor scheduling suites (`test_scheduler.py`,
+  `test_scheduler_bounded_tick.py`, `test_scheduler_canonical_admission.py`,
+  `test_scheduler_canonical_due.py`, `test_schedule_canonical_definitions.py`,
+  `test_schedule_frequency_floor.py`, `test_schedule_manual_fire_canonical.py`,
+  `test_manual_fire_canonical.py`, `test_schedule_workspace_scope.py`,
+  `test_schedule_projection_authority.py`, `test_schedule_scope.py`) with the
+  same live DSN: **258 passed, 0 skipped**;
+- real-PG cursor-crash durability
+  (`packages/maistro-core/tests/persistence/test_schedule_winner_crash.py`):
+  4 passed — the winner-loser cursor serialization and mid-write SIGKILL
+  scenarios the due-cursor acceptance rests on.
+
+No suite count moves at this head (the merged tree's counts are develop's
+own, confirmed by the 21-suite inventory gate), so no `inventory-delta` is
+recorded for this addendum.
+
+Residual, owned outside this lane: strict-#459 real execution plus
+#1199/#2467 exact-head closure evidence (sibling lane, not ancestors here);
+the GH006 merge-queue enqueue itself.
