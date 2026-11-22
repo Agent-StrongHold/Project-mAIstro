@@ -786,23 +786,6 @@ class RunStore(Protocol):
         """
         ...
 
-    async def recover_orphaned_attempt(
-        self,
-        attempt_id: str,
-        *,
-        owning_run_id: str,
-        at: datetime | None = None,
-        error: str | None = None,
-    ) -> Attempt:
-        """Settle a leaseless active Attempt under explicit owning-record resume (#2417).
-
-        Re-reads under authoritative mutation protection, checks
-        ``owning_run_id`` lineage, then commits ``CANCELLED`` + ``RECOVERED``
-        via ``recover_orphaned_attempt``. Leased / terminal / wrong-run /
-        already-caused winners refuse. The sweep must not call this seam.
-        """
-        ...
-
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -818,6 +801,23 @@ class RunStore(Protocol):
         including no-op preserves. Raises ``RecoveredDispositionRefused`` for
         requested/unknown/CREATED-QUEUED refusals; ``AttemptNotFound`` when the
         id is absent. Events stay outside this commit.
+        """
+        ...
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume (#2417).
+
+        Re-reads under authoritative mutation protection, checks
+        ``owning_run_id`` lineage, then commits ``CANCELLED`` + ``RECOVERED``
+        via ``recover_orphaned_attempt``. Leased / terminal / wrong-run /
+        already-caused winners refuse. The sweep must not call this seam.
         """
         ...
 
@@ -1910,26 +1910,6 @@ class InMemoryRunStore:
         self._attempts[attempt_id] = settled
         return settled.model_copy(deep=True)
 
-    async def recover_orphaned_attempt(
-        self,
-        attempt_id: str,
-        *,
-        owning_run_id: str,
-        at: datetime | None = None,
-        error: str | None = None,
-    ) -> Attempt:
-        """Settle a leaseless active Attempt under explicit owning-record resume."""
-        attempt = self._require_attempt(attempt_id)
-        node_run = self._require_node_run(attempt.node_run_id)
-        if node_run.run_id != owning_run_id:
-            raise RunIntegrityError(
-                f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
-                f"not owning_run_id={owning_run_id!r}"
-            )
-        settled = recover_orphaned_attempt(attempt, at=at, error=error)
-        self._attempts[attempt_id] = settled
-        return settled.model_copy(deep=True)
-
     async def apply_recovered_attempt_disposition(
         self,
         attempt_id: str,
@@ -1961,6 +1941,26 @@ class InMemoryRunStore:
         if plan.park_run:
             self._runs[settled_run.run_id] = settled_run
         return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        attempt = self._require_attempt(attempt_id)
+        node_run = self._require_node_run(attempt.node_run_id)
+        if node_run.run_id != owning_run_id:
+            raise RunIntegrityError(
+                f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                f"not owning_run_id={owning_run_id!r}"
+            )
+        settled = recover_orphaned_attempt(attempt, at=at, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
