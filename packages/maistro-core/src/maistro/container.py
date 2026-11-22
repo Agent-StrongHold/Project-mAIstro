@@ -102,6 +102,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
@@ -481,6 +482,15 @@ class Container:
     # projects each inserted Event onto `event_bus`, so the durable log bridge
     # and legacy triggers/subscribers keep observing recovery facts.
     canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
+    # Recovery dispositions (#2468) announce through the same canonical
+    # authority: the sink `create_container` builds over
+    # `canonical_event_publisher`, injected into the abandoned-Attempt and
+    # terminal-Attempt replay reconcilers so their dispositions persist
+    # through the backend-selected EventEnvelope store before the legacy bus
+    # observes them as a downstream projection. `None` only on a hand-built
+    # Container with no canonical publisher; those sweeps keep the
+    # legacy-only projection (`_recovery_events`), never a second authority.
+    recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -1421,13 +1431,16 @@ class Container:
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            # The Container's bus, so the sweep's dispositions land on the
-            # canonical Event stream rather than only in Run state (#462). A
-            # Container built without one still sweeps; the events are how the
-            # decision becomes inspectable, not how it is made.
+            # The canonical sink `create_container` wired (#2468): the sweep's
+            # dispositions persist through the backend-selected EventEnvelope
+            # store first and only then reach the legacy bus as a downstream
+            # projection of the persist-first publisher. A Container built
+            # without a canonical publisher still sweeps, projecting on its
+            # bare bus; the events are how the decision becomes inspectable,
+            # not how it is made.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=self._recovery_events(),
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
@@ -1445,6 +1458,36 @@ class Container:
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
+
+    def _recovery_events(self) -> RecoveryEventSink | None:
+        """The authority the recovery reconcilers announce dispositions through (#2468).
+
+        The composition root's `CanonicalRecoveryEventSink` persists each
+        disposition through the one backend-selected EventEnvelope store and
+        only then projects it onto the legacy bus, so repeated sweeps cannot
+        mint a second canonical identity for the same logical recovery fact.
+        A hand-built Container with no canonical publisher keeps its
+        legacy-only projection: there is no canonical store behind it to
+        persist through, and none is invented here.
+        """
+        sink = self.recovery_event_sink
+        # A sink captured at composition time can go stale when a recovery
+        # replica swaps ``run_store`` (crash-window harnesses do this to model
+        # a restart on an independent pool). Re-bind to the live store through
+        # the canonical publisher when that happens, so the Run lookup and the
+        # persisted disposition agree with the store being recovered. The
+        # publisher is the one durable authority; the sink is only its adapter.
+        if sink is not None:
+            runs = getattr(sink, "_runs", None)
+            if runs is None or runs is self.run_store:
+                return sink
+        if self.canonical_event_publisher is not None:
+            from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+            return CanonicalRecoveryEventSink(self.run_store, self.canonical_event_publisher)
+        if sink is not None:
+            return sink
+        return self.event_bus
 
     async def _latest_reconcilable_completed_attempt(
         self, node_run_id: str, *, moment: datetime
@@ -1561,7 +1604,7 @@ class Container:
         moment = now if now is not None else datetime.now(UTC)
         reconciler = AttemptLifecycleReconciler(
             self.run_store,
-            events=self.event_bus,
+            events=self._recovery_events(),
             source="maistro.container.recover_abandoned_attempts",
         )
         reconciled = 0
@@ -3140,6 +3183,7 @@ async def create_container(
             resilience_policies=resilience_policies,
             event_bus=event_bus,
             canonical_event_publisher=canonical_event_publisher,
+            recovery_event_sink=recovery_event_sink,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
