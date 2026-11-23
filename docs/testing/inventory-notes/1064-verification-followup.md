@@ -75,9 +75,22 @@ The close-only gaps are unchanged by this head (docs-only delta):
   (`test_evolution_recovery.py:460-505`), which does not satisfy the
   criterion requiring an explicit terminal/recovery-blocked disposition for
   prerequisites that never become durable.
-- `_recovery_resolver` still refuses genuine new-process recovery
-  (`EvolveRecoveryBlocked`), the exact contradiction the 2026-11-22 reopen
-  documented.
+- The production service restores its Evolve domain from the durable store at
+  startup (`services/evolution.py::restore_or_initialize_domain_state`), so
+  the earlier claim that `_recovery_resolver` categorically refuses genuine
+  new-process recovery was overstated. What remains unproven is end-to-end
+  Run-level recovery from a distinct OS process using the production startup
+  path; the current replay test reconstructs a service object in-process.
 - #947 P1 threads show no explicit disposition in the snapshot; remote
   exact-head CI remains UNVERIFIED (rollup empty at capture). Branch commits
   and the #2497 body carry no fixes/closes/resolves keywords.
+
+## Re-check at `53a4c4d8a55d7c2c9b882e2a09c280c547c2827d` (2026-11-23)
+
+- Re-ran the restart replay suites: `16 passed, 10 skipped`; PostgreSQL was
+  unavailable in this environment, so skipped PG cases are not acceptance
+  evidence.
+- Targeted `ruff check` for the replay implementation/tests passed.
+- No test or production-code change in this round. The remaining distinct
+  process, publication-boundary, production-harness parity, queued disposition,
+  #947 review-disposition, and exact-head CI gaps above are not repaired here.
