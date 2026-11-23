@@ -104,10 +104,10 @@
       "reason": "The evolution tournament is the self-improvement loop's other door; GET and POST require rsi.execute."
     },
     "/v1/eval-judge": {
-      "exempt_reason": "authenticated-only",
+      "permission": "eval.score",
       "owner": "@BlakeMatthews-dev",
       "disposition": "permanent",
-      "reason": "Verdict reads and the trigger POST are scoped in-route through the same dag_run_inspection door as /v1/dag-runs; elevation adds no boundary (#1174)."
+      "reason": "Method split (#2470): the scoring POST is an evaluated-effect mutation - it launches a billed model call and writes the shared verdict evidence the optimizer ranks on - so it requires the eval.score capability in _PROTECTED_OPS plus the in-route canonical initiator/administrator gate and terminality check in routes/eval_judge. Verdict reads stay the #1174 in-route Workspace-scoped read (the GET carve-out in authorization.required_permission), like /v1/dag-runs."
     },
     "/v1/harness": {
       "permission": "harness.execute",

@@ -518,6 +518,36 @@ async def canonical_runs_for(user_id: str, run_ids: Iterable[str]) -> dict[str, 
     return await _readable_canonical_runs([str(run_id) for run_id in run_ids if run_id], user_id)
 
 
+async def visible_aliases_for_canonical_run(
+    user_id: str, canonical_run_id: str, workspace_id: str
+) -> list[str]:
+    """The projection aliases this caller may reach one canonical Run under.
+
+    Evidence recorded before canonical keying (#2470) lives under the alias a
+    producer minted — an id the caller may not hold when they address the Run
+    by its canonical id. Discovery walks the retained projection for rows
+    correlating to that Run and returns only aliases that pass the same
+    boundary every read uses (#1174): the row is filed in the canonical Run's
+    own Workspace, which must itself sit inside the caller's Workspace
+    universe — the same association rule the POST gate and the read-side
+    canonical fallback apply, so a cross-linked row can never name evidence
+    across a boundary. The canonical id itself is never returned: it is not
+    an alias.
+    """
+    canonical_run_id = str(canonical_run_id)
+    workspace_id = str(workspace_id)
+    if not canonical_run_id or not workspace_id:
+        return []
+    if workspace_id not in await authorized_workspace_ids(user_id):
+        return []
+    return [
+        str(row.get("id") or "")
+        for row in _fresh_store().rows_for_canonical(canonical_run_id)
+        if str(row.get("workspace_id") or "") == workspace_id
+        and str(row.get("id") or "") not in ("", canonical_run_id)
+    ]
+
+
 def retention_bounds() -> dict[str, Any]:
     """What this deployment keeps, and whether it keeps it across a restart.
 
