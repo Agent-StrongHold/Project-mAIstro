@@ -498,3 +498,79 @@ all re-executed and passed at this exact SHA with real PostgreSQL, #947 P1
 disposition met, no premature closure keywords; but the close-only
 exact-SHA/CI criterion now fails concretely at the head (coverage gate FAILURE,
 branch-attributable vs a green develop base).
+
+## Round 5 — head `0389a4797f99` (2026-11-23T23:4xZ, independent verifier re-run)
+
+The assigned head is one docs commit past the round-4 head: `git diff --stat
+31c38337db1d..0389a4797f99` = this note only (+89 lines). No production or
+test code changed, so the round-4 hosted findings below carry over at equal
+code content.
+
+Re-executed at this exact head (not trusted from prior rounds):
+
+- Driver deterministic checks (job check-*.log, all rc=0): `uv sync --locked
+  --extra dev`; `ruff check .`; `ruff format --check` clean (3,652 files);
+  maistro-evolve replay suites 11 passed; conductor subset 46 passed /
+  19 skipped without DSN; suite-inventory gates ok (hive-conductor backend
+  4540, maistro-evolve 1017).
+- **PG acceptance legs re-run by this verifier with
+  `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:5570/maistro_test`
+  (PG18 container `maistro-1064-pg`, alembic `069`): 65 passed, 0 skipped**
+  (`test_evolution_restart_replay.py` + `_pg.py` + startup wiring + domain
+  retention + domain store), including the distinct-OS-process recovery leg
+  (`test_evolution_restart_replay_pg.py:486`), the per-boundary finalize fault
+  parametrization, the concurrent-publisher fence legs
+  (`test_evolve_domain_store.py:198,218`), and the fresh-cycle leg asserting a
+  new NodeRun still publishes a new battle
+  (`test_evolution_restart_replay.py:830-851`).
+- `packages/maistro-evolve/tests/test_domain_reconstruction.py +
+  test_durable_snapshot.py` — 11 passed.
+- `tests/cross_product_parity/test_cross_product_parity.py::
+  test_evolve_required_scenario_emits_strict_closeout_evidence` — 1 passed in
+  1.19s at this head.
+- **#947 P1 disposition re-checked live** (GraphQL reviewThreads): 7 threads,
+  6 resolved; the only open thread is the P2 residual "Record the durable
+  executor" — unchanged, outside this issue's P1-specific criterion.
+- **Closure-keyword scan**: `git log a6a0969ca1..0389a4797f99` commit subjects
+  and bodies contain no fixes/closes/resolves #N; live PR #2497 body
+  (headRefOid == this exact SHA) contains only "Refs #1064".
+
+Hosted exact-head CI this round (`gh pr view 2497`, 2026-11-23T23:33Z):
+
+- Rollup at `0389a4797f99`: 81 checks — 71 COMPLETED with **0 failures**
+  (2 SKIPPED by design: MinIO, durable-events), 9 IN_PROGRESS (`test`,
+  coverage PostgreSQL / no-services, integration-scope, Container scan+SBOM,
+  postgres pg18, hive-conductor e2e/e2e-ui, docker-build), 1 null context.
+  The Coverage gate has not started (its producer jobs are still running), so
+  the pending run cannot be called green either way.
+- The prior head's settled reds stand at equal code content:
+  quality run `45282026375` (Coverage gate — publish-set 83 < floor 87,
+  branch-attributable) and CI run `45282026328` (`test` job, which carries the
+  6 pre-existing "Event loop is closed" annotations also failing on
+  develop@a6a0969ca1, plus one `test_builders_required_scenario_emits_strict_
+  closeout_evidence` parity assert failure in-job).
+- **Local exact reproduction of the hosted one-process step** at this head
+  (`.github/workflows/ci.yml:747`: `uv run pytest tests/
+  packages/hive-conductor/backend/tests packages/maistro-design/tests -q
+  --timeout=60`, `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1
+  RATCHET_BASE_REV=origin/develop`): 11,221 passed / 207 skipped / **1
+  failed** — `tests/test_branch_independence_repository.py::
+  test_every_quality_json_state_surface_is_classified_once` with
+  `unclassified quality state: quality/ac-state.json`. That file is an
+  **untracked, gitignored runtime artifact** (`.gitignore:88`, 619 KB written
+  by a driver's check run in this shared worktree), not branch content: the
+  same check against an artifact-free copy of `quality/` in a temp root
+  returns `[]`, and re-adding the artifact reproduces exactly the observed
+  violation. The hosted parity failure did not reproduce locally on identical
+  test content under CI's exact command; it is recorded as hosted-run
+  instability in a job that is already red on the develop base with the same
+  event-loop flake family.
+
+Verdict for this round: **NEEDS-REPAIR** — every locally executable acceptance
+leg re-executed and passed at this exact SHA with real PostgreSQL; #947 P1
+disposition met; no premature closure keywords. The single open criterion
+remains close-only hosted exact-SHA CI: the last settled run at this code
+content failed the branch-attributable coverage floor gate, the current head's
+run is still in flight with that gate unstarted, and the repair recorded in
+round 4 (covered arcs, floor grant under the two-merge process, or producer
+scoping — a repair-lane decision) has not landed in any commit.
