@@ -94,3 +94,41 @@ The close-only gaps are unchanged by this head (docs-only delta):
 - No test or production-code change in this round. The remaining distinct
   process, publication-boundary, production-harness parity, queued disposition,
   #947 review-disposition, and exact-head CI gaps above are not repaired here.
+
+## Independent verification at `3e2c77c65f05c53c70dae9cb78800502d78cc682` (2026-11-23)
+
+Corrects the previous section: PostgreSQL **was** reachable this round
+(`maistro-1064-pg`, migrated `alembic_version=069`), so the PG legs executed
+for real. Executed by the verifier, not inferred:
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test
+  uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  packages/hive-conductor/backend/tests/test_evolution_startup_wiring.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_retention.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_store.py
+  packages/hive-conductor/backend/tests/test_evolution_recovery.py -q`
+  -> **67 passed, 0 skipped**. Includes the Run-level PostgreSQL legs, the
+  sqlite restart-replay legs, and the genuine-subprocess publication-ledger
+  fence (`test_evolve_domain_store.py`: a distinct OS process INSERTED a
+  battle publication and the parent process observed exactly one row and got
+  FENCED on re-publication).
+- Without the DSN the same five conductor files give 40 passed / 13 skipped
+  (matches the driver's deterministic check), and the two replay files alone
+  give the 16 passed / 10 skipped recorded above.
+- `uv run ruff check .` -> passed; suite-inventory gates for
+  `packages/hive-conductor/backend/tests` (4528 node IDs) and
+  `packages/maistro-evolve/tests` (1017 node IDs) -> ok.
+- Remote exact-head CI refresh (`gh pr view 2497`, read-only): 65 checks
+  COMPLETED, 14 IN_PROGRESS (`test`, `coverage (PostgreSQL)`,
+  `integration-scope`, `Gate C`, e2e, postgres pg17/pg18, container scan),
+  0 observed failures -> exact-head CI remains **UNVERIFIED** until the
+  rollup settles green at this SHA.
+- `pulls/947/reviews` snapshot: 7/7 COMMENTED, none APPROVED -> the
+  close-only review-disposition criterion is still unmet.
+
+The delta `53a4c4d8a55d..3e2c77c65f05c` is docs-only (this note). None of the
+enumerated close-only gaps — distinct-OS-process Run-level launch,
+publication-boundary fault injection breadth, production-harness parity,
+explicit terminal disposition for never-durable prerequisites, approved
+design + #947 disposition, exact-head CI — is repaired at this head.
