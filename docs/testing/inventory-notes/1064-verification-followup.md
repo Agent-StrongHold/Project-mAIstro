@@ -391,16 +391,18 @@ Newly verified this round (read-only live GitHub):
   `docker-build`, `Quality / Acceptance state`) and 1 not-yet-started. Pending
   CI is not green; the close-only exact-SHA/CI criterion is unmet until the
   rollup settles with no failures at this SHA.
-- **The `#459` strict-scenario criterion has no in-tree evidence.** The issue's
-  acceptance bullet "Exact-head strict Evolve→Conductor #459 scenario runs with
-  real durable store" has no test or doc naming #459 in the branch diff; no
-  coverage claim is possible.
+- **The `#459` strict-scenario criterion has in-tree evidence at this head.**
+  `tests/cross_product_parity/test_cross_product_parity.py::test_evolve_required_scenario_emits_strict_closeout_evidence`
+  runs the shipped canonical evolution cycle through the durable graph with the
+  durable Evolve domain store, then checks Conductor inspection evidence,
+  exactly-once publication, and foreign-reference refusal. The test/harness
+  name `#459` (`tests/cross_product_parity/harness.py:250`);
+  abstention fails closed. This exact-head test passed in 1.13s. This supersedes
+  the earlier statement above that no such evidence exists.
 
-Verdict carried at this head: **NEEDS-REPAIR** — all locally executable
-acceptance criteria pass with real PostgreSQL at this exact SHA (including
-distinct-process recovery, per-boundary finalize fault injection, exactly-once
-publication fences, and honest refusal windows), the #947 P1 disposition is
-newly resolved, but hosted exact-head CI has not settled and the #459
-strict-scenario criterion remains without evidence. Both require actions
-outside this worktree: CI settlement on PR #2497 and an in-tree (or explicitly
-waived with evidence) #459 strict-scenario demonstration.
+Verdict carried at this head: **NEEDS-REPAIR** — locally executable acceptance
+criteria pass with real PostgreSQL at this exact SHA (including distinct-process
+recovery, per-boundary finalize fault injection, exactly-once publication
+fences, honest refusal windows, and the #459 strict scenario); the #947 P1
+disposition is met. Hosted exact-head CI remains unverified and requires
+settlement on PR #2497 outside this worktree.
