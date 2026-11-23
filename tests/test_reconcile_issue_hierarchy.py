@@ -127,7 +127,10 @@ def test_already_linked_is_idempotent_and_never_posts(repair, monkeypatch) -> No
     monkeypatch.setattr(
         repair, "_request", lambda *args, **kwargs: pytest.fail("unexpected API POST")
     )
-    assert repair.apply_one("o/r", "token", row(2, parent=1), {1: row(1)}) == "already_linked"
+    assert (
+        repair.apply_one("o/r", "token", row(2, parent=1), {1: row(1)})
+        == "already_linked"
+    )
 
 
 def test_stale_parent_line_blocks_native_mutation(repair, monkeypatch) -> None:
@@ -161,4 +164,7 @@ def test_offline_dry_run_and_apply_requires_explicit_confirmation(
     assert repair.main(["--manifest", str(manifest)]) == 0
     assert '"candidates": 1' in capsys.readouterr().out
     assert repair.main(["--manifest", str(manifest), "--apply"]) == 1
-    assert repair.main(["--manifest", str(manifest), "--apply", "--confirm", "APPLY"]) == 1
+    assert (
+        repair.main(["--manifest", str(manifest), "--apply", "--confirm", "APPLY"])
+        == 1
+    )
