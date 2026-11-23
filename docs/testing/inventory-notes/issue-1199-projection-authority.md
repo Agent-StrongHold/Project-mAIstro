@@ -259,10 +259,16 @@ which is not an executable test module and exits 5 (`no tests ran`). Replaced
 that invalid target with actual suites on this exact head:
 
 - `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py -q -x`
-  → **39 passed, 29 skipped**. The PostgreSQL-specific cases were skipped;
-  this round did not configure a PostgreSQL DSN.
+  → **39 passed, 29 skipped** in the optional-backend run.
+- Repeated the same Hive suites with `MAISTRO_REQUIRE_PG_LEGS=1` against the
+  lane's pg18 service (`127.0.0.1:18995`) → **67 passed, 1 skipped**; the
+  sole skip is the intentionally inapplicable in-memory independent-process
+  scenario. The first connection attempt used an incorrect local password and
+  failed during fixture setup; corrected the DSN from the container's local
+  configuration and reran the complete selection successfully.
 - `uv run pytest packages/maistro-core/tests -k schedul -x -q`
-  → **321 passed, 47 skipped**.
+  → **321 passed, 47 skipped** without a PostgreSQL DSN; repeating with
+  `MAISTRO_REQUIRE_PG_LEGS=1` against that service → **368 passed, 0 skipped**.
 - `uv run pytest packages/hive-conductor/backend/tests -k 'scheduler or schedule' -x -q`
   → **264 passed, 46 skipped**.
 - Strict configured scheduler-to-Conductor parity selector
@@ -274,6 +280,6 @@ that invalid target with actual suites on this exact head:
   formatted).
 
 This resolves the invalid test target as a validation issue, not a product
-regression. PostgreSQL-specific acceptance legs were not rerun in this round;
-previous executed evidence is recorded above. No tests or suite counts were
-added or removed, so the existing inventory delta is unchanged.
+regression. Real PostgreSQL acceptance legs were rerun successfully as recorded
+above. No tests or suite counts were added or removed, so the existing
+inventory delta is unchanged.
