@@ -53,12 +53,20 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           APPLY: ${{ inputs.apply }}
+          ACTOR: ${{ github.actor }}
           CONFIRM: ${{ inputs.confirm }}
           MAX_WRITES: ${{ inputs.max_writes }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           REPORT_PATH: ${{ runner.temp }}/issue-hierarchy-reconciliation.json
         run: |
           set -euo pipefail
+          # This Issues-write maintenance action is restricted to the
+          # repository's designated operator; a collaborator cannot bypass
+          # review by simply choosing apply=true on a manual dispatch.
+          if [[ "$APPLY" == "true" && "$ACTOR" != "BlakeMatthews-dev" ]]; then
+            echo "::error::native hierarchy mutation requires the designated operator"
+            exit 1
+          fi
           args=(--report "$REPORT_PATH")
           if [[ "$APPLY" == "true" ]]; then
             args+=(--apply --confirm "$CONFIRM" --max-writes "$MAX_WRITES")
