@@ -342,3 +342,27 @@ reused DB also failed before its subprocess checkpoint. Re-running the full
 suite on a fresh migrated database passed 368/368, demonstrating scratch-DB
 contamination rather than a scheduler acceptance failure. No tests or suite
 counts were changed; inventory delta remains unchanged.
+
+## Independent assigned-head acceptance revalidation at beb759beb51e (2026-11-23)
+
+Executed on the assigned head with the live PostgreSQL 18 service at port
+18995; the Postgres fixture created and migrated its own scratch database:
+
+- `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest
+  packages/maistro-core/tests/scheduling
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  -x -q` → **413 passed, 1 skipped**. This executes the due tick against
+  SQLite and real PostgreSQL, cursor updates, canonical Run/Attempt admission,
+  and projection edit/delete/restart cases with PostgreSQL legs required. The
+  single skip is the explicitly inapplicable memory-only process test.
+- Hive scheduler, projection, and bounded-tick suites → **105 passed, 17
+  skipped**; database-dependent skips were not counted as PG evidence above.
+- Strict scheduler-to-Conductor parity selector → **3 passed**, emitted
+  `M1_PARITY_EVIDENCE` with `executed=true`, `status=PASSED`, and
+  `scenario=scheduler-occurrence-to-conductor`.
+- `uv run ruff check . && uv run ruff format --check .` passed (3642 files);
+  `uv run python scripts/check-suite-inventory.py` passed (21 suites match).
+
+No tests or suite counts were added or removed; inventory delta is unchanged.
