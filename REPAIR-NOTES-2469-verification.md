@@ -243,3 +243,38 @@ The merge-queue evaluation of 48bf0bc9a29d failed two checks:
   gate removal fails the suite, endpoint by endpoint).
 - `uv run python scripts/check-workspace-retirement.py` — OK: 89 entries
   match the tree; importer lists unchanged (78 -> 78).
+
+## Round 4 — salvage reconciliation of the per-request registration cache
+
+Verify job `1e32b42cee9245a7933f821a34b99f41` found the worktree carrying an
+uncommitted, unformatted edit to `services/optimizer_scope.py` and rejected
+its evidence on provenance grounds. The edit is salvaged here (patch first
+preserved at `jobs/1e32b42cee9245a7933f821a34b99f41/incoming-2469-uncommitted-delta.patch`):
+a per-request `registration_cache` in `_visible_rows`, threaded into
+`canonical_proposal_workspace(..., registered_workspaces=...)` so
+`_registered_template_workspaces` is walked once per DAG per request instead
+of once per row. It is purely a memoization: the `is not None` sentinel keeps
+an empty registration set distinct from "caller did not precompute", and the
+refusal semantics (contradiction, aliasing fault, tenancy mismatch) are
+unchanged — the same 91-pass battery proves it.
+
+Reconciliation performed: `ruff format` on the file (repo line-length 100
+allowed the collapsed call the previous 88-default style could not), full
+gate re-run below. No tests were added or removed, so the recorded suite
+inventory is untouched and no inventory note is required.
+
+### Executed evidence (this round)
+
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 3632 files already formatted.
+- 4-suite optimizer battery — 91 passed, 1 skipped (identical to round 3).
+- `MAISTRO_TEST_PG_DSN=...127.0.0.1:18997/maistro uv run pytest
+  test_optimizer_scope_durable.py` — 2 passed against the lane's real
+  pgvector:pg18 server (SQLite + PostgreSQL legs, restart and pre-restart
+  revocation included).
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/hive-conductor/backend/tests` — ok: matches the recorded
+  inventory (4418 unique node IDs, 0 duplicate evidence).
+- `uv run python scripts/check-workspace-retirement.py` — OK: 89 entries,
+  importer lists unchanged (78 -> 78); the cached call still goes through
+  the tolerated `_registered_template_workspaces` seam.

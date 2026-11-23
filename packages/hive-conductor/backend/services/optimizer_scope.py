@@ -192,6 +192,7 @@ async def canonical_proposal_workspace(
     payload: dict[str, Any],
     *,
     dag_tenancy: str | None = None,
+    registered_workspaces: set[str] | None = None,
 ) -> str:
     """The canonical owning Workspace of one stored proposal payload.
 
@@ -199,14 +200,18 @@ async def canonical_proposal_workspace(
     proposal recordings) is the target of record; a row that names a
     different tenant — or a row on a DAG whose tenancy is an aliasing
     fault — resolves to nothing and discloses itself to no one.
-    `dag_tenancy` may be precomputed by the caller (one union walk per
-    request, not per row).
+    `dag_tenancy` and `registered_workspaces` may be precomputed by the
+    caller (one registration/union walk per request, not per row).
     """
     dag_id = str(payload.get("dag_id", "") or "").strip()
     recorded = str(payload.get("workspace_id", "") or "").strip()
     if not dag_id:
         raise OptimizerTargetNotAuthorized("optimizer target not found")
-    registered = await _registered_template_workspaces(dag_id)
+    registered = (
+        registered_workspaces
+        if registered_workspaces is not None
+        else await _registered_template_workspaces(dag_id)
+    )
     if len(registered) > 1:
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     registered_workspace = next(iter(registered)) if registered else ""
@@ -262,6 +267,7 @@ async def _visible_rows(
     wanted_dag = dag_id.strip()
     visible: list[dict[str, Any]] = []
     tenancy_cache: dict[str, str] = {}
+    registration_cache: dict[str, set[str]] = {}
     from services.optimizer import proposal_rows
 
     for stored in proposal_rows():
@@ -276,8 +282,12 @@ async def _visible_rows(
         try:
             if row_dag not in tenancy_cache:
                 tenancy_cache[row_dag] = await canonical_dag_workspace(row_dag)
+            if row_dag not in registration_cache:
+                registration_cache[row_dag] = await _registered_template_workspaces(row_dag)
             workspace = await canonical_proposal_workspace(
-                payload, dag_tenancy=tenancy_cache[row_dag]
+                payload,
+                dag_tenancy=tenancy_cache[row_dag],
+                registered_workspaces=registration_cache[row_dag],
             )
         except OptimizerTargetNotAuthorized:
             continue
