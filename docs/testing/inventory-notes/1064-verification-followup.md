@@ -383,14 +383,17 @@ Newly verified this round (read-only live GitHub):
   Evolve runs" — executor provenance marker). The issue's disposition criterion
   is P1-specific and is met; the open P2 is recorded as residual, outside this
   issue's close-only text.
-- **Exact-head hosted CI remains UNVERIFIED.** `gh pr view 2497` at this exact
-  head: 80 checks — 66 COMPLETED/SUCCESS, 2 SKIPPED, **11 IN_PROGRESS**
-  (`test`, `coverage (PostgreSQL)`, `coverage (no services)`,
-  `integration-scope`, `Container scan + SBOM + cosign`, `postgres (pg17)`,
-  `postgres (pg18)`, `hive-conductor-e2e-ui`, `hive-conductor-e2e`,
-  `docker-build`, `Quality / Acceptance state`) and 1 not-yet-started. Pending
-  CI is not green; the close-only exact-SHA/CI criterion is unmet until the
-  rollup settles with no failures at this SHA.
+- **Exact-head hosted CI remains UNVERIFIED.** Two earlier rollup readings were
+  taken while the PR head still moved: 66 COMPLETED/SUCCESS + **11 IN_PROGRESS**
+  at `15941a6e22`, then 69 COMPLETED + 10 IN_PROGRESS + 1 null-status at
+  `9ef6fb4e14` — neither was the final head, so neither counts as exact-head
+  evidence. Fresh live reading this round: `gh pr view 2497` headRefOid now
+  equals the final head `4d9ef50dd1`; its run (started 2026-11-23T22:32:41Z,
+  80 checks) shows **58 SUCCESS, 18 IN_PROGRESS, 2 SKIPPED, 1 NEUTRAL
+  (CodeQL), 0 failures** at last refresh. The run is at the exact SHA but
+  still in flight: pending CI is not green, and the close-only exact-SHA/CI
+  criterion stays UNVERIFIED until this rollup settles with no failures at
+  this SHA.
 - **The `#459` strict-scenario criterion has in-tree evidence at this head.**
   `tests/cross_product_parity/test_cross_product_parity.py::test_evolve_required_scenario_emits_strict_closeout_evidence`
   runs the shipped canonical evolution cycle through the durable graph with the
