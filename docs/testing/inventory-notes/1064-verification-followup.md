@@ -320,3 +320,22 @@ by itself prove live hosted exact-head CI or an explicit disposition of the
 #947 review threads. Those close-only items remain **UNVERIFIED**. No tests
 were added during this verification update, so suite inventory counts did not
 change.
+
+## Writer validation at assigned head `595ea0f4fe84` (2026-11-23)
+
+Revalidated locally rather than relying on the prior attempt's report. The
+focused PostgreSQL-enabled restart/replay command
+`MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test
+uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py -x -q`
+passed (**38 passed, 0 skipped**), including the distinct-subprocess PG
+recovery and finalize-boundary tests. `uv run ruff check .`,
+`uv run ruff format --check .`, and `uv run python
+scripts/check-suite-inventory.py` passed; inventory reports 21 suites with no
+delta. No test was added in this update.
+
+The design/recovery contract and local behavioral evidence are in-tree, but
+this does not satisfy the full close-only contract: hosted exact-head CI still
+has pending/in-progress checks, and dispatch evidence shows no explicit
+#947 review disposition. Both are **UNVERIFIED** and cannot be manufactured by
+local code edits. Verdict: **NEEDS-REPAIR**.
