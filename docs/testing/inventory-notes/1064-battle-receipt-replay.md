@@ -59,3 +59,14 @@ finalize read-then-upsert path has not been proven safe against competing
 recoverers. Missing-prerequisite permanently-QUEUED behavior also remains
 unverified. No claim is made about remote exact-head CI, persistence-design
 approval, or #947 review disposition; no remote mutations were performed.
+
+## Follow-up verification at `10c7c6122bdf`
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py -x -q` -> **16 passed, 10 skipped**. The PostgreSQL legs skipped because this run had no `MAISTRO_TEST_PG_DSN`; this does not satisfy the real-PostgreSQL acceptance criteria.
+- `uv run ruff check . && uv run ruff format --check .` -> passed.
+- CI-exact Vulture scan (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) -> 1221 reviewed identities, no unbanked identities.
+- `uv run python scripts/check-ac-state.py --run-tests --ratchet --mandate 88ca7a1ccb5cc1fca7f0d2fa51f2527b1a2b918f` -> **failed**: design coverage 39.7781% below the base floor 44.4608%. This is not authorized to be banked in this repair, so remains a blocking acceptance failure.
+
+The tests still do not launch a new OS process for resumed Run-level recovery or
+exercise each finalize mutation boundary; these remain unresolved and are not
+promoted to acceptance evidence by the passing same-process suite.
