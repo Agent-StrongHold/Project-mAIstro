@@ -21,8 +21,13 @@ So this suite starts a **second OS process** as the owning worker:
 * the second test SIGKILLs the owning worker instead. The durable Attempt
   stays `RUNNING` under a lease nobody renews, the receipt keeps reporting
   `STOP_PENDING` (never a stop nobody observed), and lease reclaim — the
-  worker-death path of #232 — settles the Attempt terminally, after which a
-  *restarted* worker's receipt can honestly say `STOP_CONFIRMED`.
+  worker-death path of #232 — settles the Attempt terminally. Even then the
+  settled receipt refuses to claim a stop nobody observed: reclaim wrote
+  CANCELLED+RECOVERED from lease expiry alone and cannot distinguish a dead
+  worker from a partitioned one that kept executing, so the answer stays
+  `UNCERTAIN` with that diagnosis (859eeb1a79; only a local owner that joined
+  the stop upgrades the row to `STOP_CONFIRMED`, which is the first test's
+  tail).
 
 Skipped unless `MAISTRO_TEST_PG_DSN` names a migrated PostgreSQL database;
 the `coverage (PostgreSQL)` leg runs it against the real chain.
@@ -281,7 +286,10 @@ async def test_remote_owner_cannot_publish_success_after_the_canonical_fence(
             owner.kill()
             owner.wait(timeout=30)
 
-    # A restarted worker now sees a durably terminal try and may say so.
+    # A restarted worker now sees a durably terminal try and may say so —
+    # legitimately: the owner itself terminalized the row when it learned of
+    # the fence (CANCELLED, not the RECOVERED reclaim bookkeeping), which is
+    # the owner joining the stop, not expiry-only bookkeeping.
     restarted = await RunExecutionService(
         store=store, runtime=PythonExecutionRuntime()
     ).cancel_run_receipt(run.run_id)
@@ -293,12 +301,15 @@ async def test_remote_owner_cannot_publish_success_after_the_canonical_fence(
 async def test_a_killed_owner_leaves_the_receipt_pending_until_reclaim_settles_it(
     pg_pool: Any, tmp_path: Path
 ) -> None:
-    """A dead owner is not a stopped one; reclaim settles it, and only then.
+    """A dead owner is not a stopped one; reclaim settles the row, not the proof.
 
     The process kill is the worker-death case of #232: the Attempt stays
     `RUNNING` under a lease nobody renews, so the honest receipt is still
-    `STOP_PENDING`. Lease expiry then settles the try terminally, and only
-    after that does a receipt claim a confirmed stop.
+    `STOP_PENDING`. Lease expiry then settles the try terminally — but
+    reclaim writes CANCELLED+RECOVERED without ever contacting or joining
+    the worker, so even the settled receipt must not claim a stop nobody
+    observed: `UNCERTAIN`, with a diagnosis naming reclaim as the only
+    evidence it holds.
     """
     dsn = _require_pg()
     if pg_pool is None:
@@ -350,12 +361,23 @@ async def test_a_killed_owner_leaves_the_receipt_pending_until_reclaim_settles_i
     assert settled is not None
     assert settled.status is AttemptStatus.CANCELLED
 
-    # Now, and only now, a receipt may claim a confirmed stop.
+    # Even the reclaimed row cannot stand in for proof: reclaim wrote
+    # CANCELLED+RECOVERED from lease expiry alone, never contacting or
+    # joining the worker, so the settled receipt still refuses the stop a
+    # lapsed lease cannot prove and names why it refuses
+    # (`classify_attempt` upgrades it only with independent evidence — a
+    # local owner that joined the stop, which this canceller does not hold).
     after = await RunExecutionService(
         store=store, runtime=PythonExecutionRuntime()
     ).cancel_run_receipt(run.run_id)
-    assert after.stop_confirmed is True
-    assert after.disposition is CancellationDisposition.STOP_CONFIRMED
+    assert after.fenced is True
+    assert after.stop_confirmed is False
+    assert after.disposition is CancellationDisposition.UNCERTAIN
+    [row] = after.attempts
+    assert row.attempt_id == attempt.attempt_id
+    assert row.disposition is CancellationDisposition.UNCERTAIN
+    assert "RECOVERED" in row.diagnosis
+    assert "reclaim" in after.diagnosis
 
 
 @pytest.mark.asyncio

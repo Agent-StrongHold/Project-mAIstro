@@ -18,8 +18,13 @@ process, and the public receipt surfaces.
   must report `STOP_PENDING` — the fence is durable, the stop is not — while
   the owner's late success is refused by the durable fence (Attempt ends
   `CANCELLED`, never `COMPLETED`). A SIGKILLed owner stays `STOP_PENDING`
-  until lease reclaim settles it, and only then may a receipt say
-  `STOP_CONFIRMED`; a restarted worker sees the fence, not a fresh Run.
+  until lease reclaim settles the row terminally; even the settled receipt
+  refuses to claim a stop nobody observed — reclaim wrote CANCELLED+RECOVERED
+  from lease expiry alone, which cannot distinguish a dead worker from a
+  partitioned one that kept executing — so it answers `UNCERTAIN` with that
+  diagnosis (859eeb1a79 upgrades the row only with independent evidence: a
+  local owner that joined the stop). A restarted worker sees the fence, not
+  a fresh Run.
   Requires Docker compose PG plus `uv run alembic upgrade head`; it does not
   run in the default CI leg without `MAISTRO_TEST_PG_DSN`.
 - `runs/test_cancellation_receipt_1242.py` (+2): the receipt's completion-race
