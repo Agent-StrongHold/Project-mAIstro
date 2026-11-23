@@ -227,3 +227,27 @@ self-improve boundary, never-durable-prerequisite disposition, harness-parity,
 approved-design/#947-disposition, and exact-head-CI criteria remain unmet
 (as itemized above). Repair budget for this campaign is exhausted; these
 findings are handed off unresolved.
+
+## Re-check at assigned head `2238ef039c44b471813114af983a35acae62974b` (2026-11-23)
+
+The job directory supplied no `check-*.log` files, so there was no driver log
+set to inspect. Re-ran the directly relevant suite rather than relying on
+prior claims:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py -x -q`
+  -> **16 passed, 10 skipped** (the skip is the optional PostgreSQL legs
+  without `MAISTRO_TEST_PG_DSN`).
+- With `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test`,
+  the same command -> **26 passed, 0 skipped** against the configured
+  `maistro-1064-pg` service.
+- Targeted `uv run ruff check` over the touched replay service/test modules
+  -> passed.
+
+This establishes the current replay tests locally, including their live-PG
+legs, but does not remedy their stated limits: PostgreSQL recovery is still
+same-OS-process, the test harness is proxy/pre-scored, cull/migrate/self-
+improve boundaries are not faulted, and queued resolver failures are not
+terminalized. No production or test code was changed in this round. The
+approved design/#947 disposition and hosted exact-head CI are also outside
+this local evidence; exact-head CI remains **UNVERIFIED**. Verdict remains
+**NEEDS-REPAIR**.
