@@ -342,6 +342,11 @@ container at `127.0.0.1:18995`):
   — **101 passed, 0 skipped**. The DSN was constructed from the lane container
   environment at execution time; secrets are not recorded here. This exercises
   the PostgreSQL cursor-concurrency case as well as shared store cases.
+- PostgreSQL multi-admitter occurrence uniqueness and backend admission parity:
+  `MAISTRO_TEST_PG_DSN=<lane DSN> uv run pytest
+  packages/maistro-core/tests/scheduling/test_pg_admission.py
+  packages/maistro-core/tests/scheduling/test_admission_backend_parity.py -x
+  -q` — **14 passed, 0 skipped**.
 - Canonical Hive scheduler/projection/admission/manual-fire suites — **138
   passed, 46 skipped** (no PostgreSQL DSN supplied to these Hive suites).
 - Strict real scheduler-lifespan → canonical Run/Attempt → Conductor and
