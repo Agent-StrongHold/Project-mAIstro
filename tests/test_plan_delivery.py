@@ -329,6 +329,12 @@ def test_new_frontier_is_capped_and_deterministic():
     assert report == run(value, wip=2)
 
 
+def test_unknown_work_kind_is_not_silently_classified():
+    """A slice outside the implement/integrate/verify/decision kinds is refused."""
+    with pytest.raises(planner.PlanError, match="unknown kind"):
+        run(snapshot(task(kind="refactor")))
+
+
 def test_unknown_issue_state_is_not_a_closed_issue():
     value = snapshot()
     value["issues"][0]["state"] = None
