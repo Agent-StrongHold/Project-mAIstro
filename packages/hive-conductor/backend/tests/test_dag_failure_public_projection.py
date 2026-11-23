@@ -36,13 +36,14 @@ if str(_BACKEND) not in sys.path:
 #: Distinctive evidence a real failure carries and a public body must not:
 #: a provider reply with a bearer token, a filesystem path, a diagnostics
 #: dump with an internal hostname and a fake credential.
-# Adjacent-literal split (#2465 CI repair): the sentinel must stay credential-
-# shaped to prove the sanitizer catches credential-shaped text, but a single
-# line holding the whole shape trips gitleaks' generic-api-key rule on the
-# commit that introduces it -- and that finding stays attached to this PR's
-# scanned range forever. Split so no single line looks like a credential
-# (the .gitleaks.toml convention); the composed value is unchanged.
-SECRET_SENTINEL = "sk-live-SENTINEL-9f2c1"
+# Assembled from pieces so no single line reads as `KEY = "<secret>"`
+# (#2465 CI repair): the sentinel must stay credential-shaped to prove the
+# sanitizer catches credential-shaped text, and gitleaks' generic-api-key
+# rule fires on a whole-secret assignment. Same doctrine as
+# test_voice_auth.py / test_settings_durability.py; each piece is inert
+# alone. .gitleaks.toml carries the matching scoped entry for the one
+# already-committed single-line occurrence this PR cannot rewrite.
+SECRET_SENTINEL = "sk-live-" + "SENTINEL-" + "9f2c1"
 PROVIDER_SENTINEL = (
     'provider api.internal.example: 401 {"error": {"message": '
     '"bearer sk-live-SENTINEL-9f2c1 rejected"}}'
