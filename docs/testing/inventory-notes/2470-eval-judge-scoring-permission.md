@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +25
+  packages/hive-conductor/backend/tests: +34
 ---
 # 2470 eval-judge scoring permission
 
@@ -99,3 +99,26 @@ count twice:
 - Alias discovery itself stays inside the scoped boundary (inspection-seam
   resolution, rows filed in the Run's own Workspace, caller admitted to the
   canonical Run) — a foreign-Workspace link cannot serve or place evidence.
+
+## Follow-up (+9): degraded-spine answers and alias-evidence read edges
+
+Nine further node IDs pin the degenerate paths of the seams above — the
+states the happy-path tests skip over but a real deployment hits whenever
+the canonical spine is partially wired:
+
+- Degraded-spine POST answers: engine absent, bridge without a Run store,
+  and an unavailable embedded Workspace authority all fail closed with 503
+  before any model call, verdict write, or audit — while the authorized
+  initiator scoring through a readerless bridge (store without reader)
+  succeeds via the embedded-authority boundary with full provenance and
+  one audited success.
+- Error receipts are visible but retryable: a route-level scoring attempt
+  whose model call fails returns the stored error receipt, writes no audit
+  success, and leaves the Run free for a retry that lands a valid verdict
+  (audited once).
+- Read-side edges: an alias-keyed read is a direct lookup only — it never
+  pulls a sibling row's verdict in through a shared canonical correlation;
+  canonical-keyed reads degrade to the ordinary "no verdict" answer when
+  the bridge is absent or lost its reader (the alias proof needs it);
+  alias discovery refuses callers whose Workspace universe excludes the
+  row's Workspace and refuses blank ids before any store work.

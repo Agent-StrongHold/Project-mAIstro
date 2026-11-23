@@ -1007,3 +1007,287 @@ def test_chat_producer_records_the_canonical_actor_and_scope(
     assert verdict["scored_by"] == scene["initiator"]
     assert verdict["workspace_id"] == scene["workspace_id"]
     assert verdict["evaluator_version"]
+
+
+# --- 7. Degraded-spine answers and alias-evidence discovery edges ------------
+
+
+def test_alias_keyed_read_is_direct_lookup_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A projection alias serves only the evidence recorded under ITSELF.
+
+    Alias discovery exists for a caller who holds the canonical id and no
+    alias at all (#2470); it must not become a side channel between sibling
+    rows: a row read by its own alias never pulls a twin row's verdict in,
+    even when both rows correlate to the same Run in the same Workspace and
+    the caller may read both. The twin's evidence stays reachable through
+    the twin's own id — that direct lookup is the proven read.
+    """
+    initiator, _ = _elevated_scorer("alias-direct-initiator")
+    view = asyncio.run(_workspace("Alias Direct", initiator))
+    store, _reader = _wire_spine(monkeypatch)
+    run_id = asyncio.run(_canonical_run(store, view.id, initiator))
+    asyncio.run(
+        _projection_row(
+            "alias-direct-row", canonical_run_id=run_id, workspace_id=view.id, user_id=initiator
+        )
+    )
+    asyncio.run(
+        _projection_row(
+            "alias-twin-row", canonical_run_id=run_id, workspace_id=view.id, user_id=initiator
+        )
+    )
+    import stores
+
+    stores.eval_verdicts["alias-twin-row"] = {
+        "status": "ok",
+        "score": 55,
+        "run_id": "alias-twin-row",
+        "scored_at": "2020-01-01T00:00:00+00:00",
+    }
+
+    client = _client_for(initiator)
+    # The twin's alias-keyed verdict is NOT pulled in through the sibling
+    # row: alias-addressed reads are direct lookups, never discovery.
+    refused = client.get("/v1/eval-judge/alias-direct-row")
+    assert refused.status_code == 404
+    assert refused.json() == {"detail": "no verdict for run_id"}
+    # ... while the twin's own id still serves exactly what it holds.
+    direct = client.get("/v1/eval-judge/alias-twin-row")
+    assert direct.status_code == 200
+    assert direct.json()["score"] == 55
+    assert stores.eval_verdicts["alias-twin-row"]["score"] == 55
+
+
+def test_canonical_keyed_read_degrades_to_no_verdict_without_a_spine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no engine bridge at all, a canonical-keyed read of a projection
+    row degrades to the ordinary no-verdict answer (#2470): the alias is not
+    honored (its proof needs the reader), and nothing about the canonical
+    Run is confirmed."""
+    initiator, _ = _elevated_scorer("nospine-read-initiator")
+    view = asyncio.run(_workspace("No Spine Read", initiator))
+    from services import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_singleton", None)
+    asyncio.run(
+        _projection_row(
+            "nospine-read-row", canonical_run_id="gone-run", workspace_id=view.id, user_id=initiator
+        )
+    )
+    client = _client_for(initiator)
+    answer = client.get("/v1/eval-judge/nospine-read-row")
+    assert answer.status_code == 404
+    assert answer.json() == {"detail": "no verdict for run_id"}
+
+
+def test_canonical_keyed_read_degrades_to_no_verdict_with_a_readerless_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bridge that kept its store but lost its reader cannot prove the
+    alias either: the read degrades to the same non-disclosing answer
+    instead of trusting the row's unproven canonical_run_id."""
+    initiator, _ = _elevated_scorer("readerless-read-initiator")
+    view = asyncio.run(_workspace("Readerless Read", initiator))
+    from services import engine as engine_mod
+
+    store, _reader = _wire_spine(monkeypatch)
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=None))
+    asyncio.run(
+        _projection_row(
+            "readerless-read-row",
+            canonical_run_id="unreadable-run",
+            workspace_id=view.id,
+            user_id=initiator,
+        )
+    )
+    client = _client_for(initiator)
+    answer = client.get("/v1/eval-judge/readerless-read-row")
+    assert answer.status_code == 404
+    assert answer.json() == {"detail": "no verdict for run_id"}
+
+
+def test_scoring_a_visible_run_without_a_spine_answers_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row is visible, the caller authorized — but the canonical spine
+    that owns terminality and the mutation gate is not running: the POST
+    answers 503 instead of scoring through a seam that cannot prove
+    anything. A read-only answer would be a silent unjudged run."""
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    from services import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_singleton", None)
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _score_spy(monkeypatch)
+
+    refused = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert refused.status_code == 503
+    assert refused.json() == {"detail": "canonical execution spine unavailable"}
+    assert calls == []
+    import stores
+
+    assert dict(stores.eval_verdicts.items()) == {}
+    assert _eval_score_audits() == []
+
+
+def test_scoring_refuses_with_503_when_the_bridge_has_no_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-wired bridge (a reader without a Run store) cannot answer the
+    mutation gate's questions: 503, before any effect."""
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    from services import engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_store=None, run_reader=scene["store"]),
+    )
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _score_spy(monkeypatch)
+
+    refused = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert refused.status_code == 503
+    assert refused.json() == {"detail": "canonical execution spine unavailable"}
+    assert calls == []
+
+
+def test_readerless_bridge_scores_through_the_embedded_workspace_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The degraded-bridge path stays open to the authorized initiator: with
+    a store but no reader, the gate wires the embedded Workspace authority
+    into the store boundary and the terminal Run scores normally — one
+    invocation, provenance intact, audited."""
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    from services import engine as engine_mod
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_store=scene["store"], run_reader=None),
+    )
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _stubbed_scorer(monkeypatch, '{"score": 77, "rationale": "degraded"}')
+
+    scored = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert scored.status_code == 200, scored.text
+    assert scored.json()["score"] == 77
+    assert calls == [scene["canonical_run_id"]]
+
+    import stores
+
+    verdict = stores.eval_verdicts[scene["canonical_run_id"]]
+    assert verdict["status"] == "ok"
+    assert verdict["workspace_id"] == scene["workspace_id"]
+    audits = _eval_score_audits()
+    assert len(audits) == 1
+    assert audits[0]["target"] == scene["canonical_run_id"]
+
+
+def test_scoring_refuses_with_503_when_the_embedded_authority_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When even the embedded Workspace authority cannot answer, the
+    degraded path fails closed: 503, no model call, no evidence."""
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    from services import engine as engine_mod
+    from services import workspace_authority as wa
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_store=scene["store"], run_reader=None),
+    )
+
+    def _unavailable() -> Any:
+        raise wa.EmbeddedRuntimeUnavailable("embedded authority offline")
+
+    monkeypatch.setattr(wa, "canonical_workspace_store", _unavailable)
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _score_spy(monkeypatch)
+
+    refused = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert refused.status_code == 503
+    assert refused.json() == {"detail": "canonical execution spine unavailable"}
+    assert calls == []
+    import stores
+
+    assert dict(stores.eval_verdicts.items()) == {}
+    assert _eval_score_audits() == []
+
+
+def test_route_level_error_receipt_is_returned_and_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route-level scoring attempt whose model call fails returns the
+    error receipt it produced (the caller sees what the evidence path
+    holds), writes no audit success, and leaves the canonical Run free for
+    a real retry — which then lands a valid verdict and audits once."""
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+
+    failed = _stubbed_scorer(monkeypatch, "this is not json")
+    first = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "error"
+    assert failed == [scene["canonical_run_id"]]
+
+    import stores
+
+    receipt = stores.eval_verdicts[scene["canonical_run_id"]]
+    assert receipt["status"] == "error"
+    assert _eval_score_audits() == []
+
+    retried = _stubbed_scorer(monkeypatch, '{"score": 80, "rationale": "recovered"}')
+    second = initiator_client.post(f"/v1/eval-judge/{scene['row_id']}")
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "ok"
+    assert second.json()["score"] == 80
+    assert retried == [scene["canonical_run_id"]]
+    assert stores.eval_verdicts[scene["canonical_run_id"]]["score"] == 80
+    assert len(_eval_score_audits()) == 1
+
+
+def test_alias_discovery_refuses_workspaces_outside_the_callers_universe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery answers [] for a caller whose Workspace universe does not
+    contain the row's Workspace — the #1174 boundary guard in
+    ``visible_aliases_for_canonical_run`` — and the same caller after
+    joining sees the alias. The guard, not merely emptiness, is the pin:
+    both calls run against the same seeded row."""
+    from services.dag_run_inspection import visible_aliases_for_canonical_run
+
+    initiator, _ = _elevated_scorer("alias-universe-initiator")
+    outsider = _seed_user("alias-universe-outsider")
+    view = asyncio.run(_workspace("Alias Universe", initiator))
+    store, _reader = _wire_spine(monkeypatch)
+    run_id = asyncio.run(_canonical_run(store, view.id, initiator))
+    asyncio.run(
+        _projection_row(
+            "alias-universe-row", canonical_run_id=run_id, workspace_id=view.id, user_id=initiator
+        )
+    )
+    import stores
+
+    stores.eval_verdicts["alias-universe-row"] = {
+        "status": "ok",
+        "score": 61,
+        "run_id": "alias-universe-row",
+        "scored_at": "2020-01-01T00:00:00+00:00",
+    }
+
+    assert asyncio.run(visible_aliases_for_canonical_run(outsider, run_id, view.id)) == []
+
+    from maistro.workspaces.model import WorkspaceRole
+
+    asyncio.run(_grant_member(view.id, outsider, WorkspaceRole.MEMBER))
+    assert asyncio.run(visible_aliases_for_canonical_run(outsider, run_id, view.id)) == [
+        "alias-universe-row"
+    ]
+    # Blank keys refuse before any store or authority work: discovery is
+    # defined for a real canonical Run in a real Workspace only.
+    assert asyncio.run(visible_aliases_for_canonical_run(outsider, "", view.id)) == []
+    assert asyncio.run(visible_aliases_for_canonical_run(outsider, run_id, "")) == []
