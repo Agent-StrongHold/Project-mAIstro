@@ -323,3 +323,35 @@ prior first-party evidence at code-identical scheduler implementation heads,
 but is **not re-executed at this exact head** because all PostgreSQL DSN
 variables are unset. The post-integration negative-before/positive-after CI
 evidence remains unverified and outside this lane's authority.
+
+## Addendum — exact assigned head `ef9aa9b1d3460c08f8d732ce9fdcad20553cbed5`
+
+Revalidated the current assigned head independently (the preceding addendum's
+DSN claim was stale; this worktree has a reachable lane-owned PostgreSQL
+container at `127.0.0.1:18995`):
+
+- Core scheduling and process-loss coverage:
+  `uv run pytest packages/maistro-core/tests/scheduling
+  packages/maistro-core/tests/persistence/test_schedule_winner_crash.py -x
+  -q` — **289 passed, 42 skipped**. This run was backend-default and the
+  skipped PG legs are not counted as evidence.
+- Both schedule-store backends against live PostgreSQL and SQLite:
+  `MAISTRO_TEST_PG_DSN=postgresql://<lane postgres credentials>@127.0.0.1:18995/postgres
+  uv run pytest packages/maistro-core/tests/scheduling/test_store.py
+  packages/maistro-core/tests/scheduling/test_pg_schedule_scope.py -x -q`
+  — **101 passed, 0 skipped**. The DSN was constructed from the lane container
+  environment at execution time; secrets are not recorded here. This exercises
+  the PostgreSQL cursor-concurrency case as well as shared store cases.
+- Canonical Hive scheduler/projection/admission/manual-fire suites — **138
+  passed, 46 skipped** (no PostgreSQL DSN supplied to these Hive suites).
+- Strict real scheduler-lifespan → canonical Run/Attempt → Conductor and
+  restart/projection scenario — **3 passed**, with
+  `executed=true`, `status=PASSED` for `scheduler-occurrence-to-conductor`.
+- `uv run ruff check .`, `uv run ruff format --check .` (3642 files), and the
+  CI-exact vulture baseline (1221 reviewed identities match 1221 findings) all
+  passed.
+
+No tests were added; suite inventory is unchanged. The issue's separate
+post-integration negative-before/positive-after CI evidence is still
+**UNVERIFIED** and is not producible by this local lane. This does not claim
+integration approval.
