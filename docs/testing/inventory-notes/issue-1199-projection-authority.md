@@ -366,3 +366,29 @@ Executed on the assigned head with the live PostgreSQL 18 service at port
   `uv run python scripts/check-suite-inventory.py` passed (21 suites match).
 
 No tests or suite counts were added or removed; inventory delta is unchanged.
+
+## Repair-round exact-head acceptance revalidation at 09a8dfec1b9e (2026-11-23)
+
+The prior verifier command `uv run pytest packages/maistro-core/tests/conftest.py
+-q -x` collected no tests and exited 5; this was a validation-target error,
+not a product failure. Replaced it with actual scheduler test modules and ran
+against the assigned head:
+
+- `uv run pytest packages/maistro-core/tests/scheduling
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -x -q`
+  without a DSN → **328 passed, 67 skipped** (backend-dependent legs skipped).
+- Against the live pg18 service (`auto-1199-r3-pg`, port 18995), with
+  `MAISTRO_REQUIRE_PG_LEGS=1`, projection-authority and canonical-due suites
+  → **67 passed, 1 skipped**; the sole skip is the memory-only independent-
+  process scenario. The fixture creates its own scratch database and applies
+  Alembic through head before the tests.
+- On the same real PostgreSQL service, required-PG core scheduling suite
+  (`packages/maistro-core/tests/scheduling`) → **327 passed, 0 skipped**.
+- Strict scheduler-to-Conductor closeout selector
+  (`schedule_required or schedule_fire or scaffold_only`) → **3 passed**.
+- `uv run ruff check .`, `uv run ruff format --check .`, suite inventory,
+  durable-table inventory, and the exact CI vulture command all passed (21
+  suites match; 125 declared durable tables; 1221/1221 reviewed identities).
+
+No tests or suite counts were added or removed; inventory delta is unchanged.
