@@ -1734,9 +1734,16 @@ async def recover_stranded_evolution_runs(*, limit: int = 100) -> int:
 
     Mirrors ``services.canonical_dag_runner.recover_stranded_dag_runs``: bring
     a Run stranded around checkpoint 1 (admitted QUEUED, never reached
-    RUNNING) back onto the executor. A Run this process cannot honestly
-    resume terminalizes FAILED via ``_recovery_resolver`` rather than staying
-    stuck (see its docstring).
+    RUNNING) back onto the executor. Dispositions split along the documented
+    ``_recovery_resolver`` seam (see its docstring): a RUNNING/WAITING Run
+    this process cannot honestly resume terminalizes FAILED with a stable
+    sanitized diagnostic, while a QUEUED candidate the resolver cannot yet
+    satisfy here (e.g. the frozen population lives on another replica) is
+    isolated as a candidate-local failure and stays QUEUED for a later
+    tick -- the same bounded, observable retry contract
+    ``recover_queued_graph_runs`` already gives the legacy DAG adapter.
+    Such a candidate is never silently resumed, never corrupted into a
+    false COMPLETED, and logged on every tick it is skipped (#1064).
     """
     try:
         owner = canonical_execution_owner()

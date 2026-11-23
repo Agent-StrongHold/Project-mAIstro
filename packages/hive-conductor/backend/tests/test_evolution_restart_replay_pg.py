@@ -135,6 +135,7 @@ def cycle_double(monkeypatch: pytest.MonkeyPatch) -> _ReplayCycle:
         double.tournament = kwargs.get("tournament")
         double.archive = kwargs.get("archive")
         double._child_bred = False
+        double._improved = False
         double._cycle_count = 0
         double.at_finalize_population = None
         double.at_finalize_tournament = None
@@ -388,3 +389,228 @@ async def test_pg_committed_finalize_is_idempotent_across_restart(
     finally:
         await restarted.purge_domain()
         await restarted.close()
+
+
+#: The driver executed by the genuinely distinct OS process (#1064). It runs
+#: inside a fresh interpreter — no pytest, no shared in-memory state, only the
+#: DSN and the workspace/run ids passed on argv — restores the domain from the
+#: durable rows, resumes the killed Run through the shipped recovery seam, and
+#: prints one JSON result line for the parent to compare against its own
+#: in-process reference leg. The attempt lease TTL is compressed here exactly
+#: like the parent's ``compressed_leases`` fixture does: the restarted child
+#: models a restart that happens after the real 30s lease TTL, without the
+#: test sleeping it out.
+_CHILD_DRIVER = r"""
+import asyncio
+import json
+import os
+import sys
+from datetime import UTC, datetime, timedelta
+
+workspace, run_id = sys.argv[1], sys.argv[2]
+
+import maistro.graph.durable_runs.attempt_executor as attempt_executor
+
+attempt_executor.GRAPH_ATTEMPT_LEASE_TTL = timedelta(milliseconds=1)
+
+import test_evolution_restart_replay_pg as pg  # noqa: E402  (inserts the tests dir)
+
+
+async def main() -> int:
+    import pytest
+
+    import maistro_evolve.cycle as cycle_module
+    from maistro.graph.durable_runs import resume_due_graph_runs
+    from maistro.runs.model import RunStatus
+    from services.evolution_graph import _admitted_by_evolve, _recovery_resolver
+
+    # Bind the same deterministic cycle double the parent's ``cycle_double``
+    # fixture binds: a child process running the REAL EvolutionCycle would
+    # breed real LLM-shaped children and could never match the reference.
+    double = pg._ReplayCycle()
+
+    def _factory(**kwargs: object) -> pg._ReplayCycle:
+        double.harness = kwargs.get("harness")
+        double.tournament = kwargs.get("tournament")
+        double.archive = kwargs.get("archive")
+        double._child_bred = False
+        double._improved = False
+        double._cycle_count = 0
+        double.at_finalize_population = None
+        double.at_finalize_tournament = None
+        return double
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _factory)
+
+    spine = await pg._start_leg(os.environ["MAISTRO_TEST_PG_DSN"], workspace)
+    try:
+        service = await pg._restore_process(spine, monkeypatch)
+        resumed = await resume_due_graph_runs(
+            store=spine.graph_run_store,
+            run_store=spine.run_store,
+            node_resolver_factory=_recovery_resolver,
+            eligible=_admitted_by_evolve,
+            limit=5,
+            now=datetime.now(UTC) + timedelta(hours=2),
+        )
+        run = await spine.run_store.get_run(run_id)
+        if run is None:
+            print(json.dumps({"error": "run not found"}))
+            return 3
+        print(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "resumed": resumed,
+                    "status": str(run.status),
+                    "restore_kind": (service.domain_restore or {}).get("kind"),
+                    "ids": sorted(g.id for g in service.population.list_all()),
+                    "population": service.population.export_genomes_snapshot(),
+                    "signature": pg._domain_signature(service.tournament),
+                    "battles": len(await spine.domain_store.list_battle_publications(workspace)),
+                }
+            )
+        )
+        return 0 if run.status is RunStatus.COMPLETED else 2
+    finally:
+        await spine.purge_domain()
+        await spine.close()
+
+
+raise SystemExit(asyncio.run(main()))
+"""
+
+
+@pytest.mark.asyncio
+async def test_pg_distinct_os_process_recovers_killed_run(
+    monkeypatch: pytest.MonkeyPatch,
+    cycle_double: _ReplayCycle,
+    compressed_leases: None,
+) -> None:
+    """A genuinely distinct OS process completes the killed Run (#1064).
+
+    Every other restart leg in this lane restarts *within* the pytest OS
+    process (fresh pool, fresh stores, fresh service object). This leg is
+    the issue's close-only distinct-process launch: the recovery half runs
+    in a child interpreter that shares nothing with the parent but the
+    PostgreSQL server itself, and must land the killed Run on exactly the
+    uninterrupted reference's battle/Elo/lineage outcome.
+    """
+    import subprocess
+    import sys
+
+    import asyncpg
+
+    dsn = _pg_dsn()
+    if not dsn:
+        pytest.skip(
+            "MAISTRO_TEST_PG_DSN is not set; the distinct-process PostgreSQL leg needs a server"
+        )
+    workspace = f"{_WS_BASE}-subprocess-{uuid.uuid4().hex[:10]}"
+    import json
+
+    from services.evolution_graph import run_canonical_evolution_cycle
+
+    from maistro.runs.model import RunStatus
+    from maistro_evolve.tournament import EloTournament
+
+    # -- Leg 1: the in-process reference on its own fresh pool. --------------
+    reference_spine = await _start_leg(dsn, workspace)
+    try:
+        population = _seed_population()
+        tournament = EloTournament()
+        record = await run_canonical_evolution_cycle(
+            population=population,
+            tournament=tournament,
+            config=_config(),
+            harness=SimpleNamespace(fidelity="proxy"),
+            llm_call=None,
+            actor_principal_id=_ACTOR,
+            cycle_number=1,
+            container=reference_spine.container(),
+            domain_store=reference_spine.domain_store,
+        )
+        assert record.run.status is RunStatus.COMPLETED
+        reference_ids = sorted(g.id for g in population.list_all())
+        reference_export = population.export_genomes_snapshot()
+        reference_signature = _domain_signature(tournament)
+    finally:
+        await reference_spine.purge_domain()
+        await reference_spine.close()
+
+    # -- Leg 2: the killed process (this interpreter), own fresh pool. -------
+    crash_spine = await _start_leg(dsn, workspace)
+    run_id: str | None = None
+    try:
+        population = _seed_population()
+        tournament = EloTournament()
+        killing_store = _KillingDomainStore(crash_spine.domain_store, kill_after_inserts=2)
+        with pytest.raises(_ProcessKilled):
+            await run_canonical_evolution_cycle(
+                population=population,
+                tournament=tournament,
+                config=_config(),
+                harness=SimpleNamespace(fidelity="proxy"),
+                llm_call=None,
+                actor_principal_id=_ACTOR,
+                cycle_number=1,
+                container=crash_spine.container(),
+                domain_store=killing_store,
+            )
+        assert killing_store.killed_node_run_id is not None
+        journaled = await crash_spine.domain_store.list_battle_publications(workspace)
+        assert len(journaled) == 2
+        run_id = journaled[0].run_id
+    finally:
+        # The crash leg's durable rows MUST survive for the child process;
+        # only the dead pool is closed here.
+        await crash_spine.close()
+    assert run_id is not None
+
+    # -- Leg 3: the distinct OS process. -------------------------------------
+    backend_dir = Path(__file__).resolve().parents[1]
+    tests_dir = Path(__file__).resolve().parent
+    # The workspace packages resolve through pytest's ``pythonpath`` ini, not
+    # site-packages, so the child inherits THIS process's fully configured
+    # ``sys.path`` (backend dir first, tests dir next, then every entry the
+    # running session itself resolved).
+    child_pythonpath = os.pathsep.join(
+        [str(backend_dir), str(tests_dir)] + [entry for entry in sys.path if entry]
+    )
+    child_env = {
+        **os.environ,
+        "MAISTRO_TEST_PG_DSN": dsn,
+        "PYTHONPATH": child_pythonpath,
+    }
+    proc = subprocess.run(
+        [sys.executable, "-c", _CHILD_DRIVER, workspace, run_id],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"child recovery process failed rc={proc.returncode}\n"
+        f"stdout={proc.stdout}\nstderr={proc.stderr[-4000:]}"
+    )
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["pid"] != os.getpid(), "the recovery leg must be a distinct OS process"
+    assert result["resumed"] == 1
+    assert result["restore_kind"] == "admission"
+    assert result["status"] == str(RunStatus.COMPLETED)
+    assert result["ids"] == reference_ids
+    assert result["population"] == reference_export
+    assert result["signature"] == reference_signature
+    assert result["battles"] == 2
+
+    # The child purged this workspace's durable rows; nothing may outlive it.
+    drain_pool = await asyncpg.create_pool(dsn, min_size=1)
+    try:
+        remaining = await drain_pool.fetchval(
+            "SELECT count(*) FROM evolve_domain_snapshots WHERE workspace_id = $1", workspace
+        )
+        assert remaining == 0
+    finally:
+        await drain_pool.close()

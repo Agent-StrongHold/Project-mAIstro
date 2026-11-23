@@ -131,6 +131,36 @@ class _KillBeforeEvaluationJournal:
         return await self._inner.record_evaluation_publication(workspace_id, publication)
 
 
+class _KillAfterCommittedSnapshot:
+    """Kills the process after the committed snapshot persists, before the
+    committed finalize marker is written (#1064).
+
+    The one sub-window ``_publish_finalize_committed`` leaves between its
+    two durable writes. Recovery keys finalize completion off markers alone,
+    so this Run cannot transparently complete -- but it must equally never
+    re-apply the sequence over the committed domain or false-complete: the
+    honest landing is an explicit terminal failed/recovery-blocked
+    disposition over the intact committed domain.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.killed = False
+
+    @property
+    def backend(self) -> str:
+        return self._inner.backend
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._inner, item)
+
+    async def save_snapshot(self, snapshot: Any) -> None:
+        await self._inner.save_snapshot(snapshot)
+        if str(getattr(snapshot, "kind", "")) == "committed" and not self.killed:
+            self.killed = True
+            raise _ProcessKilled("process died between committed snapshot and finalize marker")
+
+
 class _KillAfterCommittedFinalizeMarker:
     """Kills the process after the committed finalize marker is durable (#1064).
 
@@ -250,9 +280,10 @@ class _ReplayCycle:
 
     All genomes arrive pre-scored, so the canonical graph is
     plan-pairs → battles → finalize and the harness/llm seams never fire.
-    Finalize computes fitness, breeds one child from g1xg2, and advances the
-    cycle counter — real PopulationStore mutations whose durability the
-    committed snapshot must capture.
+    Finalize computes fitness, culls the weakest quarter, breeds one child
+    from g1xg2, self-improves the top genome, migrates islands (2 islands,
+    interval 1), and advances the cycle counter — real PopulationStore
+    mutations whose durability the committed snapshot must capture.
     """
 
     fidelity = "proxy"
@@ -271,9 +302,17 @@ class _ReplayCycle:
         # compensated re-run must be able to finish.
         self.finalize_hard_kill = False
         self._hard_kill_fired = False
+        # A named finalize-mutation boundary the process dies AFTER (#1064):
+        # "breed" or "self_improve" (the double-owned mutations; cull and
+        # migrate are killed through their own seams in the tests). Injected
+        # like finalize_hard_kill and latched the same way: the restarted
+        # process's compensated re-run must be able to finish.
+        self.finalize_kill_boundary: str | None = None
+        self._boundary_kill_fired = False
         self.at_finalize_population: list[str] | None = None
         self.at_finalize_tournament: dict[str, Any] | None = None
         self._child_bred = False
+        self._improved = False
 
     @staticmethod
     def _fold_score(genome: Any, benchmark: str, score: float, stub: bool, alpha: float) -> None:
@@ -304,21 +343,82 @@ class _ReplayCycle:
         child.parent_a_id = "g1"
         child.parent_b_id = "g2"
         population.add(child)
+        self._kill_at_boundary("breed")
 
     async def _self_improve_top(self, population: Any, config: Any, llm_call: Any) -> None:
-        return None
+        """A real deterministic self-improvement mutation, not a stub (#1064).
+
+        Self-improvement is one of the issue's finalize fault boundaries, so
+        the double must actually mutate the population there: one improved
+        genome derived from g1, identical on every (re)application.
+        """
+        if self._improved:
+            return
+        self._improved = True
+        improved = _genome("improved-1", 0.95)
+        improved.parent_a_id = "g1"
+        population.add(improved)
+        self._kill_at_boundary("self_improve")
+
+    def _kill_at_boundary(self, boundary: str) -> None:
+        if self.finalize_kill_boundary == boundary and not self._boundary_kill_fired:
+            self._boundary_kill_fired = True
+            raise _ProcessKilled(f"process died after the {boundary} mutation")
 
 
 def _config() -> SimpleNamespace:
+    """Every finalize mutation boundary ACTIVE, not configured away (#1064).
+
+    The issue demands fault injection after each cull/breed/migrate/
+    self-improve publication boundary; a double with cull_pct=0.0,
+    one island, and a distant migration interval would make those
+    boundaries dead code in every parity and crash leg.
+    """
     return SimpleNamespace(
         eval_batch_size=4,
         target_benchmarks=[_BENCHMARK],
         eval_ema_alpha=0.5,
-        cull_pct=0.0,
-        island_count=1,
+        cull_pct=0.25,
+        island_count=2,
         population_size=4,
-        migration_interval=1000,
+        migration_interval=1,
     )
+
+
+def _kill_after_cull(population: Any) -> None:
+    """Kill the process right after this leg's cull mutation applies (#1064).
+
+    Instance-level seam: only the crashing leg's store is wrapped, so the
+    restarted process's compensated re-run culls normally.
+    """
+    real = population.cull_bottom
+
+    def _wrapped(pct: float, archive: Any | None = None) -> int:
+        removed = real(pct, archive=archive)
+        raise _ProcessKilled(f"process died after culling {removed} genome(s)")
+
+    population.cull_bottom = _wrapped
+
+
+def _kill_after_migrate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kill the process right after island migration runs (#1064).
+
+    ``_apply_finalize_mutations`` imports ``migrate_islands`` from the
+    population module at call time, so patching the module attr covers it.
+    One-shot: the restarted process's re-run migrates normally.
+    """
+    import maistro_evolve.population as population_module
+
+    real = population_module.migrate_islands
+    state = {"fired": False}
+
+    def _wrapped(island_pop: Any, store: Any) -> None:
+        real(island_pop, store)
+        if not state["fired"]:
+            state["fired"] = True
+            raise _ProcessKilled("process died after island migration")
+
+    monkeypatch.setattr(population_module, "migrate_islands", _wrapped)
 
 
 class _Spine:
@@ -604,6 +704,7 @@ def cycle_double(monkeypatch: pytest.MonkeyPatch) -> _ReplayCycle:
         # reset: they are the test's injected faults, not process state (the
         # hard kill is latched, so the restarted finalize can finish).
         double._child_bred = False
+        double._improved = False
         double._cycle_count = 0
         double.at_finalize_population = None
         double.at_finalize_tournament = None
@@ -1415,4 +1516,240 @@ async def test_hard_kill_mid_finalize_retries_transparently_after_compensated_re
     assert committed is not None
     assert committed.payload["status"] == "committed"
     assert len(await recovered_spine.domain_store.list_battle_publications(_WS)) == 2
+    await recovered_spine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    ["cull", "breed", "self_improve", "migrate"],
+)
+async def test_hard_kill_after_each_finalize_boundary_recovers_exactly_once(
+    boundary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cycle_double: _ReplayCycle,
+    compressed_leases: None,
+    restart_spine_factory: Any,
+) -> None:
+    """Process death right after each finalize mutation boundary (#1064).
+
+    The issue requires a fault after EACH cull/breed/migrate/self-improve
+    publication boundary, with restart applying that mutation neither twice
+    nor losing committed work. Every boundary kill lands mid-sequence with
+    only the in_progress marker durable, so the restarted process restores
+    the admission base (the dying process's partial mutations die with it)
+    and the compensated re-run applies the whole sequence exactly once,
+    landing byte-identically with the uninterrupted reference.
+    """
+    from maistro_evolve.tournament import EloTournament
+
+    reference_spine = await restart_spine_factory("reference")
+    reference_population = _seed_population()
+    reference_tournament = EloTournament()
+    reference = await run_canonical_evolution_cycle(
+        population=reference_population,
+        tournament=reference_tournament,
+        config=_config(),
+        harness=SimpleNamespace(fidelity="proxy"),
+        llm_call=None,
+        actor_principal_id=_ACTOR,
+        cycle_number=1,
+        container=reference_spine.container(),
+        domain_store=reference_spine.domain_store,
+    )
+    assert reference.run.status is RunStatus.COMPLETED
+    reference_ids = sorted(g.id for g in reference_population.list_all())
+    reference_export = reference_population.export_genomes_snapshot()
+    reference_signature = _domain_signature(reference_tournament)
+    # Legs share one durable domain on PG: the reference's rows are purged
+    # before the crash leg is admitted, so the restarted process's journal
+    # is exactly the crash run's own history.
+    await reference_spine.purge_domain()
+    await reference_spine.close()
+
+    crash_spine = await restart_spine_factory("crash")
+    population = _seed_population()
+    tournament = EloTournament()
+    if boundary == "cull":
+        _kill_after_cull(population)
+    elif boundary == "migrate":
+        _kill_after_migrate(monkeypatch)
+    else:
+        cycle_double.finalize_kill_boundary = boundary
+    with pytest.raises(_ProcessKilled):
+        await run_canonical_evolution_cycle(
+            population=population,
+            tournament=tournament,
+            config=_config(),
+            harness=SimpleNamespace(fidelity="proxy"),
+            llm_call=None,
+            actor_principal_id=_ACTOR,
+            cycle_number=1,
+            container=crash_spine.container(),
+            domain_store=crash_spine.domain_store,
+        )
+    journaled = await crash_spine.domain_store.list_battle_publications(_WS)
+    assert len(journaled) == 2
+    run_id = journaled[0].run_id
+    node_runs = await crash_spine.run_store.list_node_runs(run_id)
+    finalize_node_run_id = next(
+        item.node_run_id for item in node_runs if item.node_id == "evolve-finalize"
+    )
+    # No fault handler ran for a hard kill: the durable marker is in_progress,
+    # and the latest durable snapshot is still the admission one -- nothing
+    # the dying process mutated survived it.
+    marker = await crash_spine.domain_store.get_finalize_marker(_WS, finalize_node_run_id)
+    assert marker is not None
+    assert marker.payload["status"] == "in_progress"
+    latest = await crash_spine.domain_store.latest_snapshot(_WS)
+    assert latest is not None
+    assert latest.kind == "admission"
+    await crash_spine.close()
+
+    recovered_spine = await restart_spine_factory("crash")
+    service = await _restore_process(recovered_spine, monkeypatch)
+    # The compensation base is the admission population, not half a sequence.
+    assert sorted(g.id for g in service.population.list_all()) == ["g1", "g2", "g3", "g4"]
+    assert service.domain_restore is not None
+
+    resumed = await resume_due_graph_runs(
+        store=recovered_spine.graph_run_store,
+        run_store=recovered_spine.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=_admitted_by_evolve,
+        limit=5,
+        now=datetime.now(UTC) + timedelta(hours=2),
+    )
+    assert resumed == 1
+    run = await recovered_spine.run_store.get_run(run_id)
+    assert run is not None and run.status is RunStatus.COMPLETED
+
+    # One logical application of every mutation: exactly the reference.
+    assert sorted(g.id for g in service.population.list_all()) == reference_ids
+    assert service.population.export_genomes_snapshot() == reference_export
+    assert _domain_signature(service.tournament) == reference_signature
+    assert len(await recovered_spine.domain_store.list_battle_publications(_WS)) == 2
+    committed = await recovered_spine.domain_store.get_finalize_marker(_WS, finalize_node_run_id)
+    assert committed is not None
+    assert committed.payload["status"] == "committed"
+    await recovered_spine.close()
+
+
+@pytest.mark.asyncio
+async def test_death_between_committed_snapshot_and_marker_refuses_honestly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cycle_double: _ReplayCycle,
+    compressed_leases: None,
+    restart_spine_factory: Any,
+) -> None:
+    """The snapshot-persisted/marker-pending crash window (#1064).
+
+    ``_publish_finalize_committed`` writes the committed snapshot, then the
+    committed marker. A death strictly between them leaves full durable
+    effect evidence with no completion marker: recovery keys finalize
+    completion off markers, so this Run must NOT transparently complete --
+    and must equally never re-apply the sequence over the committed domain
+    (which would double-cull and re-breed) nor present false success. The
+    honest landing is an explicit terminal failed/recovery-blocked
+    disposition over the intact committed domain, with the committed
+    snapshot left as the durable owner-decidable evidence.
+    """
+    from maistro_evolve.tournament import EloTournament
+
+    reference_spine = await restart_spine_factory("reference")
+    reference_population = _seed_population()
+    reference_tournament = EloTournament()
+    reference = await run_canonical_evolution_cycle(
+        population=reference_population,
+        tournament=reference_tournament,
+        config=_config(),
+        harness=SimpleNamespace(fidelity="proxy"),
+        llm_call=None,
+        actor_principal_id=_ACTOR,
+        cycle_number=1,
+        container=reference_spine.container(),
+        domain_store=reference_spine.domain_store,
+    )
+    assert reference.run.status is RunStatus.COMPLETED
+    reference_ids = sorted(g.id for g in reference_population.list_all())
+    reference_export = reference_population.export_genomes_snapshot()
+    reference_signature = _domain_signature(reference_tournament)
+    await reference_spine.purge_domain()
+    await reference_spine.close()
+
+    crash_spine = await restart_spine_factory("crash")
+    population = _seed_population()
+    tournament = EloTournament()
+    killing_store = _KillAfterCommittedSnapshot(crash_spine.domain_store)
+    with pytest.raises(_ProcessKilled):
+        await run_canonical_evolution_cycle(
+            population=population,
+            tournament=tournament,
+            config=_config(),
+            harness=SimpleNamespace(fidelity="proxy"),
+            llm_call=None,
+            actor_principal_id=_ACTOR,
+            cycle_number=1,
+            container=crash_spine.container(),
+            domain_store=killing_store,
+        )
+    assert killing_store.killed
+    journaled = await crash_spine.domain_store.list_battle_publications(_WS)
+    assert len(journaled) == 2
+    run_id = journaled[0].run_id
+    node_runs = await crash_spine.run_store.list_node_runs(run_id)
+    finalize_node_run_id = next(
+        item.node_run_id for item in node_runs if item.node_id == "evolve-finalize"
+    )
+    # The crash window's exact fingerprint: committed effects ARE durable
+    # (the committed snapshot), while the completion marker is not.
+    latest = await crash_spine.domain_store.latest_snapshot(_WS)
+    assert latest is not None
+    assert latest.kind == "committed"
+    assert latest.run_id == run_id
+    marker = await crash_spine.domain_store.get_finalize_marker(_WS, finalize_node_run_id)
+    assert marker is not None
+    assert marker.payload["status"] == "in_progress"
+    await crash_spine.close()
+
+    recovered_spine = await restart_spine_factory("crash")
+    service = await _restore_process(recovered_spine, monkeypatch)
+    # The restore rebuilt the committed post-finalize domain.
+    assert service.domain_restore is not None
+    assert service.domain_restore["kind"] == "committed"
+    assert sorted(g.id for g in service.population.list_all()) == reference_ids
+
+    resumed = await resume_due_graph_runs(
+        store=recovered_spine.graph_run_store,
+        run_store=recovered_spine.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=_admitted_by_evolve,
+        limit=5,
+        now=datetime.now(UTC) + timedelta(hours=2),
+    )
+    run = await recovered_spine.run_store.get_run(run_id)
+    assert run is not None
+    # Explicit terminal disposition: never indefinitely QUEUED/RUNNING, and
+    # never a false COMPLETED -- with no completion marker, recovery refuses
+    # instead of transparently completing.
+    assert resumed == 1
+    assert run.status is RunStatus.FAILED
+    assert run.error, "the refusal must carry an observable diagnostic"
+    node_runs = await recovered_spine.run_store.list_node_runs(run_id)
+    finalize_status = {
+        item.node_id: item.status for item in node_runs if item.node_id == "evolve-finalize"
+    }
+    assert finalize_status["evolve-finalize"] is not RunStatus.COMPLETED
+
+    # The refusal mutated nothing: the committed domain is intact, nothing
+    # re-applied (no double cull, no second child, no extra battles).
+    assert sorted(g.id for g in service.population.list_all()) == reference_ids
+    assert service.population.export_genomes_snapshot() == reference_export
+    assert _domain_signature(service.tournament) == reference_signature
+    assert len(await recovered_spine.domain_store.list_battle_publications(_WS)) == 2
+    reread = await recovered_spine.domain_store.get_finalize_marker(_WS, finalize_node_run_id)
+    assert reread is not None
+    assert reread.payload["status"] == "in_progress"
     await recovered_spine.close()
