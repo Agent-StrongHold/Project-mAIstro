@@ -75,7 +75,7 @@ def project_agui_run_start(*, thread_id: str, run_id: str) -> dict[str, str]:
 
 def project_agui_run_terminal(
     *, thread_id: str, run_id: str,
-    status: Literal["completed", "failed", "cancelled", "created", "queued", "running", "waiting", "paused"],
+    status: Literal["completed", "failed", "cancelled", "timed_out", "created", "queued", "running", "waiting", "paused"],
 ) -> dict[str, Any] | None:
     """Only canonical terminal Run statuses can close the AG-UI run stream.
 
@@ -100,6 +100,8 @@ def project_agui_run_terminal(
             "message": "The run failed.",
             "code": "maistro.run.failed",
         }
+    if status == "timed_out":
+        return {"type": "RUN_ERROR", "message": "The run timed out.", "code": "maistro.run.timed_out"}
     if status in {"created", "queued", "running", "waiting", "paused"}:
         return None
     raise ValueError("unrecognized canonical run status")
