@@ -123,7 +123,7 @@ def test_canonical_publisher_without_run_lookup_never_falls_back_to_legacy() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entry_point", ["recover", "wake"])
+@pytest.mark.parametrize("entry_point", ["recover", "wake", "polled_completion"])
 async def test_registered_dag_production_recovery_persists_canonical_event(
     monkeypatch: pytest.MonkeyPatch, entry_point: str
 ) -> None:
@@ -140,8 +140,23 @@ async def test_registered_dag_production_recovery_persists_canonical_event(
     if entry_point == "recover":
         monkeypatch.setattr(recovery, "recover_queued_graph_runs", emit_disposition)
         assert await recovery.recover_stranded_registered_dag_runs() == 1
-    else:
+    elif entry_point == "wake":
         monkeypatch.setattr(recovery, "resume_due_graph_runs", emit_disposition)
+        assert await recovery.wake_due_registered_dag_runs() == 1
+    else:
+        # The external poll writes a completion, then same-tick QUEUED
+        # recovery must also preserve the canonical Event publisher.
+        owner.guest_peers = object()
+
+        async def delivered(**kwargs: Any) -> int:
+            return 1
+
+        async def no_timed_wake(**kwargs: Any) -> int:
+            return 0
+
+        monkeypatch.setattr(recovery, "poll_external_results", delivered)
+        monkeypatch.setattr(recovery, "recover_queued_graph_runs", emit_disposition)
+        monkeypatch.setattr(recovery, "resume_due_graph_runs", no_timed_wake)
         assert await recovery.wake_due_registered_dag_runs() == 1
 
     await _assert_canonical_receipt(store, observed)
