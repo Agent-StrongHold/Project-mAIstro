@@ -26,7 +26,10 @@ def recovery_events_for(owner: Any) -> RecoveryEventSink | None:
     if publisher is not None:
         # A thin product owner may expose canonical stores but not the
         # Container helper. Never substitute the legacy bus in this case.
-        return CanonicalRecoveryEventSink(owner.run_store, publisher)
+        run_store = getattr(owner, "run_store", None)
+        if run_store is None:
+            raise RuntimeError("canonical RunStore unavailable for recovery event publication")
+        return CanonicalRecoveryEventSink(run_store, publisher)
 
     saved_sink = getattr(owner, "recovery_event_sink", None)
     if saved_sink is not None:
