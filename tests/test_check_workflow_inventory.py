@@ -175,11 +175,11 @@ class TestDispositions:
             disposition="MANUAL_MAINTENANCE",
             triggers=["workflow_dispatch"],
         )
-        workflow = "name: d\\non: workflow_dispatch\\njobs: {}\\n"
+        workflow = "name: d\non: workflow_dispatch\njobs: {}\n"
         _write(root, _inventory([manual]), {"demo.yml": workflow})
         failures = gate.check(root)
-        assert any("requires \`mutation_scope\`" in f for f in failures)
-        assert any("requires \`operator_control\`" in f for f in failures)
+        assert any("requires `mutation_scope`" in f for f in failures)
+        assert any("requires `operator_control`" in f for f in failures)
 
     def test_reviewed_manual_maintenance_can_be_dispatch_only(self, gate, repo):
         root, _ = repo
@@ -193,7 +193,7 @@ class TestDispositions:
         _write(
             root,
             _inventory([manual]),
-            {"demo.yml": "name: d\\non: workflow_dispatch\\njobs: {}\\n"},
+            {"demo.yml": "name: d\non: workflow_dispatch\njobs: {}\n"},
         )
         assert gate.check(root) == []
 
