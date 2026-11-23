@@ -251,3 +251,20 @@ terminalized. No production or test code was changed in this round. The
 approved design/#947 disposition and hosted exact-head CI are also outside
 this local evidence; exact-head CI remains **UNVERIFIED**. Verdict remains
 **NEEDS-REPAIR**.
+
+## Writer re-check at assigned head `586a60696248` (2026-11-23)
+
+No `check-*.log` files were present in the assigned job directory. Re-ran the
+local replay/recovery suites without a PostgreSQL DSN:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py packages/hive-conductor/backend/tests/test_evolution_recovery.py -x -q`
+  -> **30 passed, 10 skipped**. The skipped PostgreSQL cases do not establish
+  PG crash/restart behavior.
+- `MAISTRO_TEST_PG_DSN` was unset; no PostgreSQL acceptance claim is made.
+
+No production or test change was made: the prior evidence still identifies
+unresolved actual-process Run recovery, finalization boundary coverage,
+production harness parity, and the queued prerequisite disposition. This
+verification-only entry adds no tests and makes no inventory-count claim.
+The approved design/#947 disposition and exact-head hosted CI remain
+unverified. Verdict: **NEEDS-REPAIR**.
