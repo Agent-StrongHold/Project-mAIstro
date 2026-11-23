@@ -212,3 +212,17 @@ candidate head:
 
 This repairs the failed validation target; it required no production or test
 changes. No tests were added and the existing inventory delta is unchanged.
+
+## Follow-up repair round at 85a7c708c67e (2026-11-23)
+
+The verifier's attempt to run `packages/maistro-core/tests/conftest.py` again
+returned exit 5 (`no tests ran`): a conftest is setup, not an executable test
+module. Ran instead:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py packages/hive-conductor/backend/tests/test_scheduler_bounded_tick.py packages/hive-conductor/backend/tests/test_schedule_canonical_definitions.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py -q -x`
+  → **98 passed, 29 skipped** in 14.59s. PostgreSQL-dependent cases were
+  explicitly skipped because this command had no PostgreSQL test DSN configured.
+
+No production or test code changed and no tests were added; the inventory
+delta above remains unchanged. The skipped database legs remain unverified in
+this round; prior PostgreSQL evidence is recorded above but was not re-run.
