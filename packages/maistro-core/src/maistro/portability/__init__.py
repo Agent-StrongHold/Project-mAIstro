@@ -7,6 +7,12 @@ single widely-compatible target (MCP manifest + SKILL.md).
 
 from __future__ import annotations
 
+from maistro.portability.agent_skills import (
+    AgentSkillPackage,
+    AgentSkillValidationError,
+    export_agent_skill_directory,
+    load_agent_skill_directory,
+)
 from maistro.portability.agents import (
     AgentImporter,
     AgentImporterRegistry,
@@ -24,6 +30,8 @@ from maistro.portability.skills import (
 
 __all__ = [
     "AgentImporter",
+    "AgentSkillPackage",
+    "AgentSkillValidationError",
     "AgentImporterRegistry",
     "ClaudeCodeAgentImporter",
     "ClaudeCodeSkillImporter",
@@ -33,5 +41,7 @@ __all__ = [
     "SkillImporter",
     "SkillImporterRegistry",
     "export_agent",
+    "export_agent_skill_directory",
+    "load_agent_skill_directory",
     "sanitize_skill_name",
 ]
