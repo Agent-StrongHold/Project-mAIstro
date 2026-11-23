@@ -339,3 +339,68 @@ this does not satisfy the full close-only contract: hosted exact-head CI still
 has pending/in-progress checks, and dispatch evidence shows no explicit
 #947 review disposition. Both are **UNVERIFIED** and cannot be manufactured by
 local code edits. Verdict: **NEEDS-REPAIR**.
+
+## Independent verification at exact head `ce5a1502b366abbcf46be119d91bd76c22e0a5bf` (2026-11-23)
+
+Re-derived from the issue text, not inherited from prior summaries. Executed by
+the verifier at this head (`maistro-1064-pg` on `127.0.0.1:5570`,
+`alembic_version=069`):
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test
+  uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  packages/hive-conductor/backend/tests/test_evolution_startup_wiring.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_retention.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_store.py
+  packages/hive-conductor/backend/tests/test_evolution_recovery.py
+  packages/maistro-evolve/tests/test_domain_reconstruction.py
+  packages/maistro-evolve/tests/test_durable_snapshot.py
+  tests/cross_product_parity/test_cross_product_parity.py -q`
+  -> **116 passed, 0 skipped in 39s**, including the distinct-OS-process
+  PostgreSQL recovery leg (`test_evolution_restart_replay_pg.py:486` child
+  interpreter, `pid != parent`, battle/Elo/population snapshot equality vs the
+  uninterrupted reference) and the per-boundary finalize fault parametrization
+  (`test_evolution_restart_replay.py:1524` cull/breed/self_improve/migrate with
+  every boundary active: `_config()` cull_pct=0.25, island_count=2,
+  migration_interval=1; self-improve mutates before its kill seam).
+- `uv run ruff check .` -> passed. Driver deterministic checks at this head
+  (job check-*.log): `ruff format --check` clean (3,652 files), maistro-evolve
+  replay suites 11 passed, conductor subset 46 passed / 19 skipped without DSN,
+  suite-inventory gates ok (hive-conductor backend 4540, maistro-evolve 1017).
+- Delta `595ea0f4fe84..ce5a1502b366` is docs-only (the previous section below);
+  no production or test code changed since the last validated head.
+- Closure-keyword scan: `git log a6a0969ca1..ce5a1502b366 --format='%s%n%b'`
+  -> no fixes/closes/resolves #N (34 commits); live PR #2497 body also clean
+  ("Refs #1064" only). PR headRefOid equals this exact SHA.
+
+Newly verified this round (read-only live GitHub):
+
+- **#947 P1 review disposition now exists.** All 7 review threads checked via
+  GraphQL: 6/7 RESOLVED, and the resolved set includes **all four P1 threads**
+  ("Register a restart path", "Make tournament battle ...", "Make cycle
+  finalization ...", "Preserve evolution when ..."). One **P2** thread remains
+  unresolved (`PRRT_kwDOT-he_M6d9dTY`, "Record the durable executor on admitted
+  Evolve runs" — executor provenance marker). The issue's disposition criterion
+  is P1-specific and is met; the open P2 is recorded as residual, outside this
+  issue's close-only text.
+- **Exact-head hosted CI remains UNVERIFIED.** `gh pr view 2497` at this exact
+  head: 80 checks — 66 COMPLETED/SUCCESS, 2 SKIPPED, **11 IN_PROGRESS**
+  (`test`, `coverage (PostgreSQL)`, `coverage (no services)`,
+  `integration-scope`, `Container scan + SBOM + cosign`, `postgres (pg17)`,
+  `postgres (pg18)`, `hive-conductor-e2e-ui`, `hive-conductor-e2e`,
+  `docker-build`, `Quality / Acceptance state`) and 1 not-yet-started. Pending
+  CI is not green; the close-only exact-SHA/CI criterion is unmet until the
+  rollup settles with no failures at this SHA.
+- **The `#459` strict-scenario criterion has no in-tree evidence.** The issue's
+  acceptance bullet "Exact-head strict Evolve→Conductor #459 scenario runs with
+  real durable store" has no test or doc naming #459 in the branch diff; no
+  coverage claim is possible.
+
+Verdict carried at this head: **NEEDS-REPAIR** — all locally executable
+acceptance criteria pass with real PostgreSQL at this exact SHA (including
+distinct-process recovery, per-boundary finalize fault injection, exactly-once
+publication fences, and honest refusal windows), the #947 P1 disposition is
+newly resolved, but hosted exact-head CI has not settled and the #459
+strict-scenario criterion remains without evidence. Both require actions
+outside this worktree: CI settlement on PR #2497 and an in-tree (or explicitly
+waived with evidence) #459 strict-scenario demonstration.
