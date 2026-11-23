@@ -71,7 +71,9 @@ def plan(data: dict[str, Any]) -> tuple[list[dict[str, Any]], Counter[str]]:
         declared = issue.get("declared_parent")
         native = issue.get("native_parent")
         if declared is not None and declared not in by_number:
-            raise HierarchyError(f"#{number}: declared parent #{declared} not inventoried")
+            raise HierarchyError(
+                f"#{number}: declared parent #{declared} not inventoried"
+            )
         if declared is not None and native not in (None, declared):
             raise HierarchyError(f"#{number}: declared #{declared}, native #{native}")
         if not declared or native == declared:
@@ -79,7 +81,9 @@ def plan(data: dict[str, Any]) -> tuple[list[dict[str, Any]], Counter[str]]:
         if issue.get("ambiguous_parent_line"):
             skipped["multiple_refs_on_parent_line"] += 1
             continue
-        if not issue.get("parent_line_verified") or not issue.get("declared_parent_line"):
+        if not issue.get("parent_line_verified") or not issue.get(
+            "declared_parent_line"
+        ):
             skipped["unverified_source_line"] += 1
             continue
         if issue["issue_id"] <= 0 or number == declared:
@@ -122,7 +126,9 @@ def plan(data: dict[str, Any]) -> tuple[list[dict[str, Any]], Counter[str]]:
                 f"#{number} would exceed {MAX_DIRECT_CHILDREN} direct children"
             )
 
-    proposed.sort(key=lambda row: (depths[row["number"]], row["declared_parent"], row["number"]))
+    proposed.sort(
+        key=lambda row: (depths[row["number"]], row["declared_parent"], row["number"])
+    )
     return proposed, skipped
 
 
@@ -176,7 +182,9 @@ def apply_one(
     if native == parent_number:
         return "already_linked"
     if native is not None:
-        raise HierarchyError(f"#{number}: now parented to #{native}, expected #{parent_number}")
+        raise HierarchyError(
+            f"#{number}: now parented to #{native}, expected #{parent_number}"
+        )
     if issue.get("id") != row["issue_id"]:
         raise HierarchyError(f"#{number}: issue identity changed")
 
@@ -186,15 +194,21 @@ def apply_one(
         if row["declared_parent_line"].strip() not in [
             line.strip() for line in (issue.get("body") or "").splitlines()
         ]:
-            raise HierarchyError(f"#{number}: parent declaration changed since snapshot")
+            raise HierarchyError(
+                f"#{number}: parent declaration changed since snapshot"
+            )
 
     snapshot_ms = row.get("native_milestone")
     live_ms = (issue.get("milestone") or {}).get("number")
     if snapshot_ms != live_ms:
         raise HierarchyError(f"#{number}: child milestone changed since snapshot")
     expected_parent = by_number[parent_number]
-    if (parent.get("milestone") or {}).get("number") != expected_parent.get("native_milestone"):
-        raise HierarchyError(f"#{parent_number}: parent milestone changed since snapshot")
+    if (parent.get("milestone") or {}).get("number") != expected_parent.get(
+        "native_milestone"
+    ):
+        raise HierarchyError(
+            f"#{parent_number}: parent milestone changed since snapshot"
+        )
     if (parent.get("sub_issues_summary") or {}).get("total", 0) >= MAX_DIRECT_CHILDREN:
         raise HierarchyError(f"#{parent_number}: direct-child limit reached")
 
@@ -213,7 +227,9 @@ def apply_one(
     if not isinstance(children, list) or not any(
         isinstance(child, dict) and child.get("number") == number for child in children
     ):
-        raise HierarchyError(f"#{parent_number}: native child verification failed for #{number}")
+        raise HierarchyError(
+            f"#{parent_number}: native child verification failed for #{number}"
+        )
     return "linked"
 
 
@@ -243,11 +259,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.apply:
             if args.confirm != "APPLY" or not (1 <= args.max_writes <= 50):
-                raise HierarchyError("--apply requires --confirm APPLY and 1-50 max writes")
+                raise HierarchyError(
+                    "--apply requires --confirm APPLY and 1-50 max writes"
+                )
             token = os.environ.get("GITHUB_TOKEN", "")
             if not token:
                 raise HierarchyError("GITHUB_TOKEN is required for --apply")
-            if os.environ.get("GITHUB_REPOSITORY", data["repository"]) != data["repository"]:
+            if (
+                os.environ.get("GITHUB_REPOSITORY", data["repository"])
+                != data["repository"]
+            ):
                 raise HierarchyError("connected repository differs from manifest")
             by_number = {row["number"]: row for row in data["issues"]}
             writes = 0
@@ -260,7 +281,9 @@ def main(argv: list[str] | None = None) -> int:
                     break
         print(json.dumps(result, indent=2, sort_keys=True))
         if args.report:
-            args.report.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            args.report.write_text(
+                json.dumps(result, indent=2) + "\n", encoding="utf-8"
+            )
         return 0
     except (HierarchyError, OSError, ValueError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
