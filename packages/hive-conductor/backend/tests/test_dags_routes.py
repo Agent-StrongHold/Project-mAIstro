@@ -245,10 +245,20 @@ def test_run_dag_canonical_failure_stays_failed(
     assert body["execution_id"] == "run-failed-1"
     assert body["run_id"] == "run-failed-1"
     # Top-level error is the exception kind only (CodeQL py/stack-trace-exposure);
-    # node detail remains on the durable result for operators who fetch the run.
+    # and since #2465 the SAME policy bounds every nested field: the receipt's
+    # result carries failure kinds, not the node error text, which remains on
+    # the canonical Run for authorized inspection (GET /v1/dag-runs/{id}).
+    # This supersedes the M1-era pin that asserted the raw nested text here
+    # ("node detail remains on the durable result"); the disclosure regression
+    # is owned by the M2-A surface inventory (#465/#446), not silently widened.
     assert body["error"] == "CanonicalDagExecutionError: execution failed; see server logs"
     assert "node failed" not in body["error"]
-    assert body["result"]["error"] == "node failed"
+    assert body["result"]["error"] == "run failed; see server logs"
+    assert body["result"]["node_results"]["n1"]["response"] == "node failed; see server logs"
+    assert body["result"]["node_results"]["n1"]["success"] is False
+    assert "node failed" not in response.text.replace(
+        "node failed; see server logs", ""
+    )  # the raw text itself never crosses
 
     from services.dag_run_store import get_dag_run_store
 
