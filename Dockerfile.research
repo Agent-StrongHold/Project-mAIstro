@@ -180,6 +180,19 @@ RUN apk add --no-cache git && \
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag. Same base line as the builder — see the #2430 rejection note above:
 # 3.15 is unbuildable for this image's locked install set.
+#
+# 2026-11-23 (#1629 CI repair): `--no-cache-filter` alone cannot keep this
+# stage's freshness propagating — buildx keys are computed pre-execution
+# from the instruction string and the parent key chain, so the final
+# `FROM production-apt` vertex keeps replaying its last cached manifest no
+# matter how often apt re-executes. The rsi-runner-r2 scope demonstrated
+# the residual class that day: linux-libc-dev scanned at 6.12.117-1 while
+# the same run's apt fetched 6.12.118-1, and the #1152 pin-bump remedy had
+# no headroom (python:3.12-slim still resolved to sha256:5e2bdb1b…). This
+# stage's key is therefore mutated per run: both CI workflows pass
+# --build-arg OS_REFRESH=<run_id>-<attempt>, and the builder stage above
+# stays on the stable pinned base so the venv keeps its cross-run cache.
+# Local builds default to 0 and keep today's stable-key behaviour.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
@@ -198,7 +211,11 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 # The libnss3…fonts-liberation block is the Chromium runtime surface for the
 # RESEARCH browser tool. It is isolated to THIS image; the main API image is
 # Wolfi/browser-free.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# The no-op `:` word carries OS_REFRESH into the RUN's instruction so the
+# per-run value is part of the cache key without writing anything to the
+# layer.
+ARG OS_REFRESH=0
+RUN : "os-refresh=$OS_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
     libbrotli1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
