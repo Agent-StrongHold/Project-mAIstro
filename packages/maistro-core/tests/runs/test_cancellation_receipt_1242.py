@@ -164,7 +164,7 @@ async def test_reclaim_racing_the_cancellation_preserves_uncertainty() -> None:
     that this cancellation reached the worker.
     """
     projects = InMemoryProjectScopeStore()
-    service, store, run_id, attempt_id = await _service_with_running_attempt(
+    service, _store, run_id, attempt_id = await _service_with_running_attempt(
         "worker-b",
         store=_ReclaimingFenceStore(project_store=projects),
         projects=projects,
