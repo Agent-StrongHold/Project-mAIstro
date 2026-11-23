@@ -278,3 +278,51 @@ inventory is untouched and no inventory note is required.
 - `uv run python scripts/check-workspace-retirement.py` — OK: 89 entries,
   importer lists unchanged (78 -> 78); the cached call still goes through
   the tolerated `_registered_template_workspaces` seam.
+
+## Round 5 — CI `test` gate repair: committed the OpenAPI-derived frontend types
+
+CI at the exact head (`f9b0e95f10b0`, run 45095174787, job 137433299110) failed
+the `test` job on **step 16** — "Generated API types match the backend's
+OpenAPI document (#1048)" — not on any pytest step. The gate regenerates
+`packages/hive-conductor/frontend/src/api/types.gen.ts` from the backend's
+OpenAPI document and fails when the committed file diverges. This PR added
+optimizer endpoint docstrings and a new `project_id` query parameter to
+`POST /v1/optimizer/{dag_id}/run`, but the round-2/3 writers never regenerated
+the committed types. Steps 1-13 (including every pytest tree) passed; steps
+17+ were skipped behind the failed step.
+
+Repair: regenerated `types.gen.ts` through the CI-exact sequence
+(`uv run python scripts/dump-hive-openapi.py`, then `npm --prefix
+packages/hive-conductor/frontend run gen:api`) and committed it. The resulting
+diff is exactly this PR's API surface: the two optimizer list endpoints'
+`@description` docstrings and the added `project_id?: string | null` run
+parameter — nothing else. Regeneration is idempotent (byte-identical on a
+second pass). No backend or test files changed, so no inventory delta exists.
+
+### Executed evidence (this round)
+
+- Reproduced the CI failure locally before the fix: the regenerated file
+  diverged from HEAD by the 16-line diff above (`git diff --exit-code` exits 1,
+  matching the CI step).
+- After committing the regenerated types, the CI-exact step-16 sequence exits 0.
+- `npm run lint` (hive-conductor frontend) — 0 errors (48 pre-existing
+  warnings, unchanged).
+- `npm run build` (hive-conductor frontend) — built clean against the new
+  types.
+- Full `uv run pytest packages/hive-conductor/backend/tests -q` — **4372
+  passed, 46 skipped** (= the recorded 4418 node IDs) in 202s: the first
+  full-suite execution at the post-merge head (earlier rounds ran only the
+  4-suite optimizer battery).
+- `uv run python scripts/check-suite-inventory.py` (full, all suites) — ok:
+  21 suites match, 4418 hive node IDs, 0 duplicate evidence. (A bare-system
+  `python` invocation shows 107 collection errors because the script documents
+  it must run under `uv run`; CI's step resolves the uv shim.)
+- `uv run pytest packages/maistro-server/tests -q` (CI env
+  REQUIRE_AUTH=false MAISTRO_DRY_RUN=1) — 719 passed, 18 skipped. The CI log's
+  four "RuntimeError: Event loop is closed" annotations reproduce locally
+  (exactly 4) inside this **passing** step; they are swallowed teardown noise,
+  not the job failure, and this PR touches no maistro-server code.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — 1221 reviewed identities,
+  no delta.
+- `uv run ruff check .` / `uv run ruff format --check .` — pass.
