@@ -360,3 +360,49 @@ No tests were added; suite inventory is unchanged. The issue's separate
 post-integration negative-before/positive-after CI evidence is still
 **UNVERIFIED** and is not producible by this local lane. This does not claim
 integration approval.
+
+## Addendum — develop-sync repair head `fce56cf3feb993d26ed40e5e1eb3ac5c452ced26`
+
+The branch's earlier merge of the WIP #2507 head (`88ca7a1ccb`) had resolved
+in favor of a stale side, silently reverting two landed develop commits this
+base postdates: the acceptance-based delivery planner (#1640: `tools/plan_delivery.py`,
+`tests/test_plan_delivery.py`, `docs/planning/`, the skill file, and their
+inventory notes) and the CI cache-scope/OS_REFRESH hardening (#2510: `ci.yml`,
+`security.yml`, both research Dockerfiles). Merged `origin/develop` (two
+commits, neither touching scheduling) and restored every affected path to
+byte-identical `origin/develop` state; the #1199 scheduler work carries no
+develop-side commits to reconcile. This addendum records validation at the
+merged head:
+
+- Full core scheduling suite with live PostgreSQL legs (store parity, PG
+  admission, backend parity, SQLite write-failure paths):
+  `MAISTRO_TEST_PG_DSN=<lane scratch DB, migrated to head via alembic>
+  uv run pytest packages/maistro-core/tests/scheduling
+  packages/maistro-core/tests/persistence/test_schedule_winner_crash.py -q`
+  — **331 passed, 0 skipped**. This is the first-party real-PG evidence for
+  the SQLite/PG cursor-concurrency equivalence and occurrence-claim
+  uniqueness criteria at this exact head.
+- Canonical Hive scheduler/projection/admission suites with PG legs enabled:
+  the three canonical suites — **122 passed, 1 skipped** — and together with
+  the cross-product parity module, **148 passed, 1 skipped** (the skip is
+  the documented two-process durability case at
+  `test_scheduler_projection_authority.py:705`); the PG parametrization runs
+  against a scratch database migrated with `alembic upgrade head`,
+  exercising migration `069` on real PostgreSQL.
+- Strict real scheduler-lifespan scenario re-executed at this head:
+  `tests/cross_product_parity/test_cross_product_parity.py -k 'schedule_required or
+  schedule_fire or scaffold_only' -s` — **3 passed**, with
+  `M1_PARITY_EVIDENCE executed=true status=PASSED` for
+  `scheduler-occurrence-to-conductor`.
+- Gates: `ruff check .`, `ruff format --check .` (3644 files), mypy strict
+  across all seven packages (961 files), CI-exact vulture per-identity ledger
+  (1221 reviewed identities match 1221 findings at `packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`),
+  `scripts/check-durable-table-inventory.py` (125 tables),
+  `scripts/check-suite-inventory.py` (21 suites match), and
+  `scripts/check-backlog-consistency.py` all pass at the merged head.
+
+No tests were added or removed in the repair; suite inventory is unchanged.
+The post-integration negative-before/positive-after CI evidence remains
+**UNVERIFIED** and outside this lane's authority. This does not claim
+integration approval.
