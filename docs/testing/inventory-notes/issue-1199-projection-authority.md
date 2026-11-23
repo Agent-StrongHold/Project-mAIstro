@@ -251,3 +251,29 @@ fixture that passes `MAISTRO_TEST_PG_DSN` to psycopg and failed during fixture
 setup (`missing "="`); corrected the test DSN to standard `postgresql://` and
 the complete required-PG test selection passed. No tests or suite counts were
 added or removed in this validation; the existing inventory delta is unchanged.
+
+## Repair-round revalidation at 631ca81c6424 (2026-11-23)
+
+The dispatched verifier again targeted `packages/maistro-core/tests/conftest.py`,
+which is not an executable test module and exits 5 (`no tests ran`). Replaced
+that invalid target with actual suites on this exact head:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py -q -x`
+  → **39 passed, 29 skipped**. The PostgreSQL-specific cases were skipped;
+  this round did not configure a PostgreSQL DSN.
+- `uv run pytest packages/maistro-core/tests -k schedul -x -q`
+  → **321 passed, 47 skipped**.
+- `uv run pytest packages/hive-conductor/backend/tests -k 'scheduler or schedule' -x -q`
+  → **264 passed, 46 skipped**.
+- Strict configured scheduler-to-Conductor parity selector
+  (`uv run pytest tests/cross_product_parity/test_cross_product_parity.py -k
+  'schedule_required or schedule_fire or scaffold_only' -q -s`) → **3 passed**;
+  emitted `M1_PARITY_EVIDENCE` with `executed=true`, `status=PASSED`, and
+  `scenario=scheduler-occurrence-to-conductor`.
+- `uv run ruff check . && uv run ruff format --check .` → passed (3630 files
+  formatted).
+
+This resolves the invalid test target as a validation issue, not a product
+regression. PostgreSQL-specific acceptance legs were not rerun in this round;
+previous executed evidence is recorded above. No tests or suite counts were
+added or removed, so the existing inventory delta is unchanged.
