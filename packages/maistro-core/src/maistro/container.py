@@ -3445,12 +3445,8 @@ def _sqlite_database_path(database_url: str) -> str:
 
 def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
     """Register recovery as an admin-only Sentinel tier policy."""
-    import importlib
-
     from maistro.security.sentinel.authz_types import Tier
-
-    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
-    StrikeRecoveryService = strike_recovery.StrikeRecoveryService
+    from maistro.security.strike_recovery import StrikeRecoveryService
 
     actions = tuple(
         f"{StrikeRecoveryService.ACTION}.{operation}"
@@ -3463,10 +3459,9 @@ def _wire_strike_recovery(*, tracker: Any, sentinel: Any, audit_log: Any) -> Any
     """Build the authorized recovery layer beside the canonical tracker."""
     if tracker is None:
         return None
-    import importlib
+    from maistro.security.strike_recovery import StrikeRecoveryService
 
-    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
-    return strike_recovery.StrikeRecoveryService(
+    return StrikeRecoveryService(
         tracker=tracker,
         sentinel=sentinel,
         audit_log=audit_log,

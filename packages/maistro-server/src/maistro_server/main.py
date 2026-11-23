@@ -55,6 +55,7 @@ from maistro_server.api import (
     metrics,
     models,
     runs,
+    strikes,
     tasks,
     user_model,
     webhooks,
@@ -956,6 +957,14 @@ app.include_router(a2a.router)
 API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
+app.include_router(strikes.router, prefix=API_V1_PREFIX)
+# Keep the admin handlers reachable for static analysis: include_router alone
+# does not count as a use of the decorated callables (#2315).
+_ = (
+    strikes.unlock_strikes,
+    strikes.enable_strikes,
+    strikes.remove_strikes,
+)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
 # Governed extension install lifecycle (#953): inspect → authorize → install.
 # Every route is authenticated; Workspace-scoped writes require ADMINISTER.
