@@ -1496,6 +1496,15 @@ export interface paths {
          *     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
          *     no provider stop signal; an unreachable canonical authority answers the
          *     spine-unavailable 503 instead.
+         *
+         *     The response separates two facts that used to be collapsed into
+         *     ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+         *     fence -- the authority that refuses a late provider success --
+         *     ``stop_confirmed`` is the physical one, and it is False whenever the
+         *     Attempt is live under a worker this replica cannot signal: Conductor then
+         *     reports ``stop_pending`` with a diagnosis instead of a stop nobody
+         *     observed. The mutation gate above is #2466's contract; the receipt below
+         *     reports truthfully about what the fence did and did not stop.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
