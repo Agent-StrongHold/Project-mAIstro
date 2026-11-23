@@ -418,3 +418,15 @@ Executed acceptance behavior at this head instead:
   reviewed identities.
 
 No tests or suite counts were added or removed; inventory delta is unchanged.
+
+## Writer exact-head revalidation at 6de36e84bf8a (2026-11-23)
+
+The dispatched verifier's `pytest packages/maistro-core/tests/conftest.py` exited 5 (`no tests ran`); a conftest is fixture setup, not an executable test module. Re-ran acceptance suites on the assigned committed tree:
+
+- `uv run pytest packages/maistro-core/tests/scheduling packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -q -x` → **328 passed, 67 skipped** without PostgreSQL.
+- With `MAISTRO_REQUIRE_PG_LEGS=1` and the running lane-owned pg18 service (`auto-1199-r3-pg`, port 18995), the same three suites → **394 passed, 1 skipped**; the sole skip is the inapplicable memory-only independent-process scenario. PostgreSQL fixtures create isolated scratch databases and migrate them through Alembic head.
+- The projection-authority, canonical-due, and schedule-projection-authority suites with mandatory PostgreSQL legs → **118 passed, 1 skipped**.
+- Strict #459 scheduler-to-Conductor selector (`schedule_required or schedule_fire or scaffold_only`) with mandatory PostgreSQL configuration → **3 passed**.
+- `uv run ruff check .` and `uv run ruff format --check .` passed (3644 files).
+
+These runs exercise canonical due ticking, cursor persistence/concurrency, canonical Run/Attempt behavior, persisted projection reconciliation and restart cases. No tests or suite counts were added or removed; inventory delta is unchanged.
