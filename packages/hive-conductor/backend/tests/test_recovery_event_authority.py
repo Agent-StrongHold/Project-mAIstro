@@ -16,8 +16,8 @@ from maistro.events.bus import EventBus
 from maistro.events.envelope import InMemoryEventStore
 from maistro.events.publisher import CANONICAL_EVENT_METADATA, CanonicalEventPublisher
 from maistro.runs.recovery_events import (
-    RECOVERY_EVENT_TYPE,
     CanonicalRecoveryEventSink,
+    RECOVERY_EVENT_TYPE,
     RecoveryDispositionEvent,
     _recovery_event_id,
 )
