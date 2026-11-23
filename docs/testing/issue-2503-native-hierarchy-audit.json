@@ -52,7 +52,8 @@
         "epic:M1-E",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2503,
@@ -62,8 +63,8 @@
       "created_at": "2026-11-23T04:41:23Z",
       "updated_at": "2026-11-23T04:41:23Z",
       "declared_parent": 160,
-      "declared_parent_line": "Parent program: #160",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent program: #160 (cross-milestone CI/governance). Canonical roadmap authority: #453. Related historical reconciliation: #412. This issue is cross-milestone by design and does **not** inherit a single milestone. Native parent relationship to #160 must be established as part of the repair; a prose link alone is not completion.",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": null,
       "native_milestone_title": null,
@@ -73,7 +74,8 @@
         "area:governance",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2501,
@@ -83,8 +85,8 @@
       "created_at": "2026-11-23T04:37:39Z",
       "updated_at": "2026-11-23T04:38:43Z",
       "declared_parent": 21,
-      "declared_parent_line": "Parent epic: #21",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent epic: #21 (M4 candidate/evaluation/promotion). Related closed #861 (candidate promotion correctness), #116 (versioned promotion), #854 (independent evidence floor), #2469 (M2 optimizer target authorization). **Do not move this future improvement work into M1.**",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 5,
       "native_milestone_title": "M4 — Governed continual improvement",
@@ -95,7 +97,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2500,
@@ -116,7 +119,8 @@
         "milestone:M9",
         "epic:M9-D"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2499,
@@ -134,7 +138,8 @@
       "labels": [
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2470,
@@ -144,8 +149,8 @@
       "created_at": "2026-11-22T04:08:34Z",
       "updated_at": "2026-11-23T04:45:32Z",
       "declared_parent": 17,
-      "declared_parent_line": "Parent: #17",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #17 (M2-A), cross-references #1174 (read-scope-only inspection), #1088/#56 (raw evaluator model egress M1), #2469 (separate optimizer proposal mutation permission), #60/#845 (human mutation/approval policy), #861 (M4 candidate-evidence use).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 3,
       "native_milestone_title": "M2 — Security cage, durability, unattended isolation",
@@ -156,7 +161,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2469,
@@ -166,8 +172,8 @@
       "created_at": "2026-11-22T04:07:13Z",
       "updated_at": "2026-11-23T04:34:44Z",
       "declared_parent": 17,
-      "declared_parent_line": "Parent: #17",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #17 (M2-A security); related #364 (store-boundary tenant noninterference), #60/#845 (mutation/approval authority), #861 (M4 candidate/promotion correctness), #766 (DAG scope), #459 (strict cross-product negative evidence).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 3,
       "native_milestone_title": "M2 — Security cage, durability, unattended isolation",
@@ -178,7 +184,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2468,
@@ -188,8 +195,8 @@
       "created_at": "2026-11-22T03:50:35Z",
       "updated_at": "2026-11-23T04:45:31Z",
       "declared_parent": 61,
-      "declared_parent_line": "Parent: #61",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #61 (canonical Event-envelope convergence), related #62 (Run recovery), #232 (worker-death/Attempt reconciliation), #459/#1069 (strict cross-product parity), #1133 (backend-selected durable effect Event store).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -200,7 +207,8 @@
         "epic:M1-E",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2467,
@@ -210,8 +218,8 @@
       "created_at": "2026-11-22T03:48:26Z",
       "updated_at": "2026-11-23T04:34:51Z",
       "declared_parent": 46,
-      "declared_parent_line": "Parent: #46",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #46 (canonical schedule authority), direct implementation owner #1199 (canonical due-state and restart authority). Related #92 (M3 routine scheduling durability), #459/#1069 strict release proof, #333 generic write acknowledgment (M3).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -222,7 +230,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2466,
@@ -232,8 +241,8 @@
       "created_at": "2026-11-22T03:35:57Z",
       "updated_at": "2026-11-22T10:31:43Z",
       "declared_parent": 53,
-      "declared_parent_line": "Parent: #53",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #53 (Conductor/Hive convergence); related #1036 (Run inspection/control), #1152 (Workspace membership read vs mutation rule), #459 (strict product parity), #1242 (cancellation correctness).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -245,7 +254,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2465,
@@ -255,8 +265,8 @@
       "created_at": "2026-11-22T03:24:53Z",
       "updated_at": "2026-11-23T01:53:57Z",
       "declared_parent": 17,
-      "declared_parent_line": "Parent: #17",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #17 (M2-A operative security controls). Related: #53/#1036 (canonical execution and projection truth), #465 (shipped surface inventory), #333 (durability failure truth). Preserve canonical internal error evidence; constrain only user-facing disclosure.",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 3,
       "native_milestone_title": "M2 — Security cage, durability, unattended isolation",
@@ -267,7 +277,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2464,
@@ -277,8 +288,8 @@
       "created_at": "2026-11-22T03:24:51Z",
       "updated_at": "2026-11-22T05:44:43Z",
       "declared_parent": 735,
-      "declared_parent_line": "Parent: #735",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #735 (Canvas shipped execution integration). Related authority owners: #55 (Binding/Invocation), #52, #2311, #1084. This is an M1 canonical-effect identity defect, not a request for a new effect registry or a Canvas-private authorization model.",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -289,7 +300,8 @@
         "type:issue",
         "area:canvas"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2421,
@@ -299,8 +311,8 @@
       "created_at": "2026-11-20T03:10:02Z",
       "updated_at": "2026-11-23T04:36:01Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P3c requested propagation**). Depends on: P1a cause model (#1884). Parallel-friendly with P3b (#2417) / P4a. Canvas recovered-writer integration remains DESIGN_BLOCKED (#735).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -312,7 +324,8 @@
         "type:issue",
         "area:persistence"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2417,
@@ -322,8 +335,8 @@
       "created_at": "2026-11-20T02:08:34Z",
       "updated_at": "2026-11-23T04:36:03Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P3b Graph orphan**). Depends on: P2-lock (#1888 landed), P2a/P2b (#2354/#2358), P3a (#2366). Parallel-friendly with typed logical commit (section D); this unit is the **physical** orphan writer + already-marked terminal replay, not the full `apply_recovered_attempt_disposition` parking transaction.",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -335,7 +348,8 @@
         "type:issue",
         "area:persistence"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2405,
@@ -345,8 +359,8 @@
       "created_at": "2026-11-04T05:59:37Z",
       "updated_at": "2026-11-23T04:36:09Z",
       "declared_parent": 48,
-      "declared_parent_line": "Parent: #48",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #48. Related: #1898 (pause continuation), #1109/#244 (discovery fairness), #329 (approval binding, M2).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -357,7 +371,8 @@
         "type:issue",
         "area:hitl"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2401,
@@ -376,7 +391,8 @@
         "area:security",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2398,
@@ -386,8 +402,8 @@
       "created_at": "2026-11-04T04:59:38Z",
       "updated_at": "2026-11-23T04:35:07Z",
       "declared_parent": 2311,
-      "declared_parent_line": "Parent: #2311",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #2311 (RETIRE) / #52 (Canvas convergence).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -397,7 +413,8 @@
         "area:products",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2396,
@@ -419,7 +436,8 @@
         "area:persistence",
         "area:installer"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2369,
@@ -429,8 +447,8 @@
       "created_at": "2026-10-26T06:11:49Z",
       "updated_at": "2026-11-23T04:36:05Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P2d owned prelaunch**). Depends on: #2354 (P2a) / P2-lock (#1888 landed). Parallel-friendly with #2366 (P3a).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -444,7 +462,8 @@
         "autonomous-merge",
         "automerge-agent"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2366,
@@ -454,8 +473,8 @@
       "created_at": "2026-10-26T05:28:28Z",
       "updated_at": "2026-11-23T04:36:07Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P3a Graph lease**). Depends on: #2358 (P2b).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -469,7 +488,8 @@
         "autonomous-merge",
         "automerge-agent"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2358,
@@ -479,8 +499,8 @@
       "created_at": "2026-10-26T03:31:19Z",
       "updated_at": "2026-11-20T02:05:44Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P2b canonical lease**). Depends on: #2354 (P2a).",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -495,7 +515,8 @@
         "autonomous-merge",
         "automerge-agent"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2354,
@@ -505,8 +526,8 @@
       "created_at": "2026-10-26T03:05:50Z",
       "updated_at": "2026-11-17T07:05:11Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (staged unit **P2a lease construction**). Depends on: #1884 (P1a, completed), #1885 (P1b, completed).",
+      "ambiguous_parent_line": true,
       "native_parent": 232,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -517,7 +538,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2324,
@@ -538,7 +560,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2323,
@@ -559,7 +582,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2322,
@@ -581,7 +605,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2321,
@@ -602,7 +627,8 @@
         "area:quality",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2320,
@@ -623,7 +649,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2319,
@@ -644,7 +671,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2318,
@@ -666,7 +694,8 @@
         "area:capabilities",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2317,
@@ -688,7 +717,8 @@
         "area:products",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2316,
@@ -710,7 +740,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2315,
@@ -733,7 +764,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2314,
@@ -755,7 +787,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2313,
@@ -777,7 +810,8 @@
         "area:events",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2312,
@@ -799,7 +833,8 @@
         "area:capabilities",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2311,
@@ -821,7 +856,8 @@
         "area:products",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2310,
@@ -842,7 +878,8 @@
         "milestone:M3",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2309,
@@ -863,7 +900,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2280,
@@ -884,7 +922,8 @@
         "priority:P3",
         "type:issue"
       ],
-      "native_child_count": 1
+      "native_child_count": 1,
+      "parent_line_verified": true
     },
     {
       "number": 2279,
@@ -906,7 +945,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2278,
@@ -928,7 +968,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2277,
@@ -951,7 +992,8 @@
         "area:conductor",
         "area:ui"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2276,
@@ -973,7 +1015,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2275,
@@ -995,7 +1038,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2274,
@@ -1017,7 +1061,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 1
+      "native_child_count": 1,
+      "parent_line_verified": true
     },
     {
       "number": 2273,
@@ -1039,7 +1084,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 1
+      "native_child_count": 1,
+      "parent_line_verified": true
     },
     {
       "number": 2272,
@@ -1057,7 +1103,8 @@
       "labels": [
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2250,
@@ -1079,7 +1126,8 @@
         "area:governance",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2249,
@@ -1101,7 +1149,8 @@
         "type:issue",
         "area:recovery"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2247,
@@ -1124,7 +1173,8 @@
         "area:llm",
         "area:credentials"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 2121,
@@ -1146,7 +1196,8 @@
         "milestone:M8",
         "epic:M8-F"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1898,
@@ -1169,7 +1220,8 @@
         "type:issue",
         "area:recovery"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1897,
@@ -1191,7 +1243,8 @@
         "type:issue",
         "area:recovery"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1893,
@@ -1201,7 +1254,7 @@
       "created_at": "2026-10-03T23:49:07Z",
       "updated_at": "2026-10-23T22:39:02Z",
       "declared_parent": 1845,
-      "declared_parent_line": "Parent: [#1845",
+      "declared_parent_line": "Parent: [#1845](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1845).",
       "ambiguous_parent_line": false,
       "native_parent": 1845,
       "native_milestone": 2,
@@ -1212,7 +1265,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1892,
@@ -1222,7 +1276,7 @@
       "created_at": "2026-10-03T23:48:32Z",
       "updated_at": "2026-10-23T22:39:00Z",
       "declared_parent": 1845,
-      "declared_parent_line": "Parent: [#1845",
+      "declared_parent_line": "Parent: [#1845](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1845).",
       "ambiguous_parent_line": false,
       "native_parent": 1845,
       "native_milestone": 2,
@@ -1233,7 +1287,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1888,
@@ -1243,8 +1298,8 @@
       "created_at": "2026-10-03T23:39:09Z",
       "updated_at": "2026-10-23T22:38:41Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232. Shared prerequisite for #1151.",
+      "ambiguous_parent_line": true,
       "native_parent": 232,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -1254,7 +1309,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1885,
@@ -1264,8 +1320,8 @@
       "created_at": "2026-10-03T20:23:56Z",
       "updated_at": "2026-10-23T22:38:39Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (textual reference; native parent link pending). Related: #1151. This independently reviewed contract unit P1b is DEPENDENCY_BLOCKED on #1884's tested implementation; no activation or recovery proof is claimed.",
+      "ambiguous_parent_line": true,
       "native_parent": 232,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -1275,7 +1331,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1884,
@@ -1285,8 +1342,8 @@
       "created_at": "2026-10-03T20:23:31Z",
       "updated_at": "2026-10-26T03:06:07Z",
       "declared_parent": 232,
-      "declared_parent_line": "Parent: #232",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #232 (textual reference; native parent link pending). Related: #1151 / #43. This is independently reviewed contract unit P1a, not a recovery implementation parent. Scope: bounded model/default-invariance implementation planning, including the inherited R12 disposition of the new field; no activation or recovery proof is claimed.",
+      "ambiguous_parent_line": true,
       "native_parent": 232,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -1297,7 +1354,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1883,
@@ -1318,7 +1376,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1882,
@@ -1339,7 +1398,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1881,
@@ -1349,7 +1409,7 @@
       "created_at": "2026-10-03T19:50:56Z",
       "updated_at": "2026-10-26T02:37:17Z",
       "declared_parent": 88,
-      "declared_parent_line": "Parent: #88",
+      "declared_parent_line": "Parent: #88. This is a finite defect in the existing backup/restore verifier, not a replacement backup product or a change to release scope.",
       "ambiguous_parent_line": false,
       "native_parent": 88,
       "native_milestone": 4,
@@ -1363,7 +1423,8 @@
         "area:recovery",
         "area:persistence"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1880,
@@ -1384,7 +1445,8 @@
         "area:llm",
         "area:installer"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1879,
@@ -1407,7 +1469,8 @@
         "area:conductor",
         "area:llm"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1878,
@@ -1429,7 +1492,8 @@
         "type:issue",
         "area:installer"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1877,
@@ -1449,7 +1513,8 @@
         "type:issue",
         "area:conductor"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1874,
@@ -1459,8 +1524,8 @@
       "created_at": "2026-10-03T18:36:14Z",
       "updated_at": "2026-10-23T22:40:07Z",
       "declared_parent": 449,
-      "declared_parent_line": "Parent initiative: #449",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent initiative: #449. Related capability/service owners: #1046, #1036/#65, #49/#1068, #51, #50, #59; executable cross-feature proof: #459. This is a bounded inventory/traceability task, not a second implementation epic or a release reschedule.",
+      "ambiguous_parent_line": true,
       "native_parent": null,
       "native_milestone": 4,
       "native_milestone_title": "M3 — Release and product completion",
@@ -1470,7 +1535,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1867,
@@ -1492,7 +1558,8 @@
         "area:evolve",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1866,
@@ -1514,7 +1581,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1865,
@@ -1536,7 +1604,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1864,
@@ -1558,7 +1627,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1863,
@@ -1578,7 +1648,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1862,
@@ -1598,7 +1669,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1861,
@@ -1608,8 +1680,8 @@
       "created_at": "2026-10-03T15:29:44Z",
       "updated_at": "2026-10-23T22:38:57Z",
       "declared_parent": 1151,
-      "declared_parent_line": "Parent: #1151",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #1151. Existing owners: #1626 open/conflicting draft at 4de97682; #1373 open/conflicting draft at 533c101c. No new recovery owner or parallel PR lane.",
+      "ambiguous_parent_line": true,
       "native_parent": 1151,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -1620,7 +1692,8 @@
         "area:recovery",
         "area:persistence"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1860,
@@ -1641,7 +1714,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1859,
@@ -1662,7 +1736,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1858,
@@ -1683,7 +1758,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1857,
@@ -1704,7 +1780,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1856,
@@ -1725,7 +1802,8 @@
         "area:capabilities",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1852,
@@ -1748,7 +1826,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1851,
@@ -1770,7 +1849,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1850,
@@ -1794,7 +1874,8 @@
         "area:persistence",
         "source:adversarial-review"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1845,
@@ -1804,8 +1885,8 @@
       "created_at": "2026-10-03T04:03:24Z",
       "updated_at": "2026-11-22T04:04:56Z",
       "declared_parent": 41,
-      "declared_parent_line": "Parent: #41",
-      "ambiguous_parent_line": false,
+      "declared_parent_line": "Parent: #41. Related closed #1176 stays closed. Shared owners: #1182 root ceilings; #1690/#91/#849 receipts and cross-replica visibility; #1114 recovery; #1175/#325 retention. Preserve issue state, assignees, labels and milestone.",
+      "ambiguous_parent_line": true,
       "native_parent": 41,
       "native_milestone": 2,
       "native_milestone_title": "M1 — Full architecture convergence",
@@ -1817,7 +1898,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 6
+      "native_child_count": 6,
+      "parent_line_verified": true
     },
     {
       "number": 1840,
@@ -1839,7 +1921,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1839,
@@ -1861,7 +1944,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1838,
@@ -1871,7 +1955,7 @@
       "created_at": "2026-10-03T03:19:33Z",
       "updated_at": "2026-10-26T02:38:02Z",
       "declared_parent": 329,
-      "declared_parent_line": "Parent: [#329",
+      "declared_parent_line": "Parent: [#329](https://github.com/Agent-StrongHold/Project-mAIstro/issues/329)",
       "ambiguous_parent_line": false,
       "native_parent": 329,
       "native_milestone": 3,
@@ -1883,7 +1967,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1837,
@@ -1893,7 +1978,7 @@
       "created_at": "2026-10-03T03:19:29Z",
       "updated_at": "2026-10-26T02:38:05Z",
       "declared_parent": 329,
-      "declared_parent_line": "Parent: [#329",
+      "declared_parent_line": "Parent: [#329](https://github.com/Agent-StrongHold/Project-mAIstro/issues/329)",
       "ambiguous_parent_line": false,
       "native_parent": 329,
       "native_milestone": 3,
@@ -1905,7 +1990,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1836,
@@ -1915,7 +2001,7 @@
       "created_at": "2026-10-03T03:19:20Z",
       "updated_at": "2026-11-18T12:41:47Z",
       "declared_parent": 329,
-      "declared_parent_line": "Parent: [#329",
+      "declared_parent_line": "Parent: [#329](https://github.com/Agent-StrongHold/Project-mAIstro/issues/329)",
       "ambiguous_parent_line": false,
       "native_parent": 329,
       "native_milestone": 3,
@@ -1928,7 +2014,8 @@
         "type:issue",
         "area:hitl"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1829,
@@ -1950,7 +2037,8 @@
         "type:issue",
         "area:llm"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1828,
@@ -1972,7 +2060,8 @@
         "epic:M2-A",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1827,
@@ -1995,7 +2084,8 @@
         "type:issue",
         "area:llm"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1826,
@@ -2017,7 +2107,8 @@
         "area:design",
         "area:persistence"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1825,
@@ -2039,7 +2130,8 @@
         "type:issue",
         "area:canvas"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1824,
@@ -2062,7 +2154,8 @@
         "area:llm",
         "area:installer"
       ],
-      "native_child_count": 1
+      "native_child_count": 1,
+      "parent_line_verified": true
     },
     {
       "number": 1823,
@@ -2084,7 +2177,8 @@
         "area:product",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1822,
@@ -2106,7 +2200,8 @@
         "type:issue",
         "area:ui"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1821,
@@ -2128,7 +2223,8 @@
         "type:issue",
         "area:installer"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1820,
@@ -2149,7 +2245,8 @@
         "type:issue",
         "area:installer"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1802,
@@ -2167,7 +2264,8 @@
       "labels": [
         "bug"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1801,
@@ -2185,7 +2283,8 @@
       "labels": [
         "bug"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1798,
@@ -2207,7 +2306,8 @@
         "area:testing",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1796,
@@ -2228,7 +2328,8 @@
         "area:quality",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1792,
@@ -2246,7 +2347,8 @@
       "labels": [
         "enhancement"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1791,
@@ -2268,7 +2370,8 @@
         "type:issue",
         "area:design"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1790,
@@ -2286,7 +2389,8 @@
       "labels": [
         "enhancement"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1772,
@@ -2304,7 +2408,8 @@
       "labels": [
         "bug"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1762,
@@ -2322,7 +2427,8 @@
       "labels": [
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1759,
@@ -2343,7 +2449,8 @@
         "area:capabilities",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1690,
@@ -2366,7 +2473,8 @@
         "area:persistence",
         "area:tasks"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1682,
@@ -2384,7 +2492,8 @@
       "labels": [
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1629,
@@ -2405,7 +2514,8 @@
         "type:issue",
         "area:governance"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1616,
@@ -2429,7 +2539,8 @@
         "source:user-requirement",
         "milestone:M7"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1615,
@@ -2455,7 +2566,8 @@
         "milestone:M7",
         "epic:M7-A"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1614,
@@ -2480,7 +2592,8 @@
         "milestone:M7",
         "epic:M7-A"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1613,
@@ -2504,7 +2617,8 @@
         "type:issue",
         "source:user-requirement"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1612,
@@ -2529,7 +2643,8 @@
         "area:hitl",
         "source:user-requirement"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1611,
@@ -2553,7 +2668,8 @@
         "area:recovery",
         "source:user-requirement"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1605,
@@ -2574,7 +2690,8 @@
         "type:issue",
         "area:ci"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1572,
@@ -2595,7 +2712,8 @@
         "area:runtime",
         "type:issue"
       ],
-      "native_child_count": 0
+      "native_child_count": 0,
+      "parent_line_verified": true
     },
     {
       "number": 1437,
@@ -20374,5 +20492,17 @@
     "no_labels": 0,
     "ambiguous_declared_parent_lines": 0,
     "duplicate_issue_numbers": 0
-  }
+  },
+  "parent_line_recheck_pages": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ]
 }
