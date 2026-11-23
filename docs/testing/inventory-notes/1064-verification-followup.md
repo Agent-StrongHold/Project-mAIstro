@@ -132,3 +132,54 @@ enumerated close-only gaps — distinct-OS-process Run-level launch,
 publication-boundary fault injection breadth, production-harness parity,
 explicit terminal disposition for never-durable prerequisites, approved
 design + #947 disposition, exact-head CI — is repaired at this head.
+
+## Independent re-check at merged head `026cad5db51f` (2026-11-23)
+
+Lane re-verification after `origin/develop` was merged in (`8e7d7d3165`,
+delivery-planner tooling; no #1064 code in that side). Delta
+`3e2c77c65f05c..026cad5db51f` is docs-only for #1064 plus the unrelated
+develop merge, so every gap above carries over unchanged. Re-executed, not
+inferred:
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test
+  uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  packages/hive-conductor/backend/tests/test_evolution_startup_wiring.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_retention.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_store.py
+  packages/hive-conductor/backend/tests/test_evolution_recovery.py -q`
+  -> **67 passed, 0 skipped** at `026cad5db51f` (`maistro-1064-pg` still up,
+  migrated to `alembic_version=069`). Matches the `3e2c77c65f05c` result.
+- Driver deterministic checks at this head: `uv run ruff check .` and
+  `ruff format --check` clean; maistro-evolve replay suites 11 passed;
+  conductor suites without DSN 40 passed / 13 skipped; suite-inventory gates
+  ok (hive-conductor backend 4528 node IDs, maistro-evolve 1017).
+- Closure-keyword scan of `git log 8e7d7d3165..HEAD --format='%s%n%b'`: no
+  `fixes/closes/resolves #N` (conventional `fix(#1064):` prefixes only).
+- Live CI refresh at this exact SHA (`gh pr view 2497`, read-only): 63
+  COMPLETED/SUCCESS + 2 SKIPPED, but **14 IN_PROGRESS** (`test`,
+  `coverage (PostgreSQL)`, `coverage (no services)`, `coverage (MinIO)`,
+  `integration-scope`, `Container scan + SBOM + cosign`,
+  `docker-rebuild-compare`, `postgres (pg17)`, `postgres (pg18)`,
+  `hive-conductor-e2e-ui`, `hive-conductor-e2e`,
+  `hive-conductor-compose-durability`, `docker-build`,
+  `Quality / Acceptance state`) -> exact-head CI still **UNVERIFIED**.
+- Prior-finding evidence re-confirmed at this head:
+  `test_evolution_restart_replay.py` `:57-58` (`_ProcessKilled` BaseException,
+  in-interpreter), `:307-309` (`_self_improve_top` no-op), `:315-317`
+  (`cull_pct=0.0`, `migration_interval=1000`), `:377-380` (`_restore_process`
+  docstring admits the missing subprocess Run-level test), `:445-456`
+  (`_bind_deterministic_harness` replaces `EvalHarness`);
+  `test_evolution_restart_replay_pg.py:4-9` (same-OS-process admission) and
+  `:207,237,331` (`fidelity="proxy"`); `test_evolution_recovery.py:460-505`
+  (never-durable prerequisites stay QUEUED by design); no `docs/adr` or
+  `docs/specs` path in `git diff 8e7d7d3165..HEAD`; `pulls/947/reviews`
+  snapshot 7/7 COMMENTED.
+
+Verdict carried at this head: **NEEDS-REPAIR** — the implementation and its
+PG legs are genuinely green locally, but the issue's close-only contract
+(distinct-OS-process Run-level launch, cull/migrate/self-improve boundary
+fault injection, production-harness parity, explicit terminal disposition for
+never-durable QUEUED prerequisites, approved persistence/replay design +
+#947 review disposition, exact-head green CI, #459 strict-scenario coverage)
+is not yet satisfied.
