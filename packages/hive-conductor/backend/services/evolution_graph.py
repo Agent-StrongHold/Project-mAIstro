@@ -1486,21 +1486,22 @@ def _recovery_resolver(run: Run) -> NodeResolver:
     persisted Run at startup/recovery. This is the shipped resolver that
     closes that gap.
 
-    What it can honestly reconstruct: the frozen membership/battle-capacity
-    plan (durable Run provenance, #1065) and the *default* config/harness this
-    app always uses for a cycle (``services.evolution._run_one_cycle_locked``
-    hardcodes both, so replaying them here is not a guess). What it cannot
-    reconstruct: the live ``PopulationStore``/``EloTournament`` themselves --
-    this app's ``PopulationStore`` is in-memory only (no ``db_path``), so
-    there is no durable cross-process domain state to rebuild from. A
-    genuinely different process (or this process before
-    ``services.evolution.start_evolution`` has run) has nothing to resume
-    against.
+    What it reconstructs: the frozen membership/battle-capacity plan (durable
+    Run provenance, #1065), the *default* config/harness this app always uses
+    for a cycle (``services.evolution._run_one_cycle_locked`` hardcodes both),
+    and the live ``PopulationStore``/``EloTournament`` restored by the Evolve
+    service from its durable domain snapshot and publication journal. Startup
+    wires the configured durable store and calls
+    ``restore_or_initialize_domain_state`` before recovery. A process with no
+    durable store/snapshot may initialize a fresh domain, but that domain
+    cannot satisfy a stranded Run's frozen membership and recovery fails
+    closed; the resolver does not treat fresh state as reconstructed state.
 
     Rather than silently resuming against a *fabricated* fresh population/
     tournament (which would corrupt the domain with a different logical
     population under the same Run), this raises :class:`EvolveRecoveryBlocked`
-    whenever the prerequisites are not durably available *in this process*.
+    whenever the required restored state or exact membership is unavailable
+    in this process.
     What the shared recovery seam (``maistro.graph.durable_runs.recovery``)
     does with that failure depends on which half of recovery called it:
 
