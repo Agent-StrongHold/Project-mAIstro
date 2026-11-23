@@ -1363,7 +1363,9 @@ jobs:
       # nothing every time. `docker-build` is the longest job in the suite --
       # the wall-clock floor under how fast any candidate can go green -- and
       # every build below ran with zero cache before this. Scopes are per
-      # image (`engine`, `hive-conductor`, `engine-research`, `rsi-runner`) so
+      # image (`engine`, `hive-conductor`, `engine-research-r2`,
+      # `rsi-runner-r2` -- the `-r2` suffixes mark scopes rotated off stale
+      # cached vertices, #2283 and the krb5 replay above) so
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
@@ -1581,12 +1583,18 @@ jobs:
       # build under a second tag. A tag alias proves exactly as much as a
       # second `docker build` would and costs nothing.
       - run: docker tag maistro-engine:test maistro-engine:ci
+      # Scope rotated with security.yml's identical step (CI runs 45129507410
+      # and 45191845177): the old scope's cached vertices predate the krb5
+      # 1.21.3-5+deb13u2 security update, and a stale read out of it is the
+      # only state source that can put the pre-advisory 1.21.3-5+deb13u1 dpkg
+      # layer into a freshly built image (the build's own apt log unpacked
+      # deb13u2; the scan read deb13u1). A cache miss just rebuilds cold.
       - name: Build maistro-engine-research (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t maistro-engine-research:ci
-          --load --cache-from type=gha,scope=engine-research
-          --cache-to type=gha,scope=engine-research,mode=max .
+          --load --cache-from type=gha,scope=engine-research-r2
+          --cache-to type=gha,scope=engine-research-r2,mode=max .
       # #346 gap (b): the research image's whole purpose is the browser
       # surface, and a green build says the layers assemble, not that Chromium
       # is present or loadable. The smoke resolves the browser through

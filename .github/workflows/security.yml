@@ -349,13 +349,28 @@ jobs:
       # single largest remaining CVE source". Being the reason the API image
       # could go near-zero-CVE is not the same as being clean; it is the
       # opposite, and it went unmeasured because nothing enumerated the images.
+      # The scope carries an `-r2` rotation (CI runs 45129507410 on develop
+      # and 45191845177 on PR #2510, jobs 137544432893 / 137751947753): both
+      # runs' own build logs show this stage re-executing and unpacking krb5
+      # 1.21.3-5+deb13u2 -- the FIXED version, fetched from trixie-security
+      # minutes earlier in the same job -- yet their Trivy scans read
+      # installed=1.21.3-5+deb13u1 out of the loaded image, a version those
+      # builds never had. The installed-version column is read from the
+      # image's dpkg status (a deliberate dpkg=deb13u1 fixture reproduces the
+      # 56-finding report byte-for-byte, and the same scanner+DB on the true
+      # deb13u2 content scans clean), so the scanned image was not the
+      # freshly built one and the week-old `engine-research` scope is the
+      # only cross-run state that can carry that stale dpkg layer -- the
+      # same replay class the rsi-runner rotation below closed (#2283).
+      # Rotation severs every cached vertex under the old scope; a cache
+      # miss rebuilds, so the worst case is one cold build per workflow.
       - name: Build maistro-engine-research image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}"
           --no-cache-filter production-apt
-          --load --cache-from type=gha,scope=engine-research
-          --cache-to type=gha,scope=engine-research,mode=max .
+          --load --cache-from type=gha,scope=engine-research-r2
+          --cache-to type=gha,scope=engine-research-r2,mode=max .
 
       # The scope carries a `-r2` rotation (PR #2283, CI run 40091186336 job
       # 120864018186): `--no-cache-filter runtime-apt` forces the apt stage to
