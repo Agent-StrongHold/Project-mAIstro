@@ -15,6 +15,7 @@ from maistro.runs.cancellation import (
     CancellationReceipt,
     aggregate_disposition,
     classify_attempt,
+    is_reclaim_settled,
 )
 from maistro.runs.execution import (
     AttemptContextFactory,
@@ -274,11 +275,16 @@ class RunExecutionService:
             raise ValueError(f"Run {run_id!r} does not exist")
         if run.status in TERMINAL_RUN_STATUSES:
             # A repeat request cannot re-prove anything, but the durable rows
-            # still say whether physical work is outstanding. Report that
-            # rather than an unconditional second "cancelled".
+            # still say whether physical work is outstanding. A try reclaim
+            # terminalized (CANCELLED+RECOVERED) is *not* a settled stop — it
+            # is lease bookkeeping written without contacting the worker — so
+            # it stays a subject here instead of vanishing into an empty
+            # (and therefore "confirmed") aggregate.
             active = await _active_run_attempts(self._store, run_id)
+            all_rows = await _all_run_attempts(self._store, run_id)
+            subjects = [*active, *(row for row in all_rows if is_reclaim_settled(row))]
             active_ids = frozenset(attempt.attempt_id for attempt in active)
-            rows = _classify(active, signals={}, known=frozenset(), live=active_ids)
+            rows = _classify(subjects, signals={}, known=frozenset(), live=active_ids)
             return _receipt(
                 run.run_id,
                 run.status,
@@ -347,14 +353,19 @@ def _classify(
     """Classify the Attempts this cancellation is answerable for.
 
     Subjects are the tries that were live when the request arrived plus any
-    that appeared during it. Tries already terminal beforehand settled on
-    their own terms and are not this cancellation's business — including them
-    would report a long-finished node as the race winner.
+    that appeared during it, plus any reclaim-settled (CANCELLED+RECOVERED)
+    row: reclaim terminalization is not proof of a physical stop, so those
+    tries stay reported as unaccounted rather than silently excluded. Tries
+    already terminal beforehand on their own terms are not this
+    cancellation's business — including them would report a long-finished
+    node as the race winner.
     """
     return tuple(
         classify_attempt(attempt, local_signal=signals.get(attempt.attempt_id))
         for attempt in attempts
-        if attempt.attempt_id in live or attempt.attempt_id not in known
+        if attempt.attempt_id in live
+        or attempt.attempt_id not in known
+        or is_reclaim_settled(attempt)
     )
 
 

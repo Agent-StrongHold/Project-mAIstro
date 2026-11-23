@@ -23,11 +23,14 @@ from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 async def _service_with_running_attempt(
     lease_holder: str,
+    *,
+    store: InMemoryRunStore | None = None,
+    projects: InMemoryProjectScopeStore | None = None,
 ) -> tuple[RunExecutionService, InMemoryRunStore, str, str]:
     """A Run whose single Attempt is RUNNING under `lease_holder`'s lease."""
-    projects = InMemoryProjectScopeStore()
+    projects = projects if projects is not None else InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
-    store = InMemoryRunStore(project_store=projects)
+    store = store if store is not None else InMemoryRunStore(project_store=projects)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
     graph = Graph(
         graph_id="graph-1242",
@@ -91,6 +94,118 @@ async def test_repeat_cancel_keeps_reporting_outstanding_physical_work() -> None
     assert repeat.run_status is RunStatus.CANCELLED
     assert repeat.disposition is first.disposition is CancellationDisposition.STOP_PENDING
     assert repeat.stop_confirmed is False
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_try_is_not_reported_as_a_confirmed_stop() -> None:
+    """A reclaim-settled try is uncertainty, not proof of a physical stop.
+
+    `reclaim_expired_attempts` writes CANCELLED+RECOVERED after lease expiry
+    alone: nobody contacted or joined the worker, and a lapsed heartbeat does
+    not cancel the provider coroutine. A repeat cancellation over that row
+    must therefore not report `stop_confirmed` — the reviewer's P2: the
+    terminal row used to be excluded as "already settled" and the empty
+    aggregate read as a confirmed stop nobody proved.
+    """
+    service, store, run_id, attempt_id = await _service_with_running_attempt("worker-b")
+    await service.cancel_run_receipt(run_id)
+    attempt = await store.get_attempt(attempt_id)
+    assert attempt is not None and attempt.execution_lease is not None
+    reclaimed = await store.reclaim_expired_attempt(
+        attempt_id, now=attempt.execution_lease.expires_at + timedelta(seconds=1)
+    )
+    assert reclaimed is not None and reclaimed.status is AttemptStatus.CANCELLED
+
+    repeat = await service.cancel_run_receipt(run_id)
+
+    assert repeat.run_status is RunStatus.CANCELLED
+    assert repeat.stop_confirmed is False
+    assert repeat.disposition is CancellationDisposition.UNCERTAIN
+    [row] = repeat.attempts
+    assert row.attempt_id == attempt_id
+    assert "RECOVERED" in row.diagnosis
+    assert "reclaim" in repeat.diagnosis
+
+
+class _ReclaimingFenceStore(InMemoryRunStore):
+    """Reclaim every lapsed try inside the fence's write path, racing the cancel.
+
+    Models the remote worker whose heartbeat renewals failed: its lease
+    expires and the reclaim sweep terminalizes the row while a cancellation
+    of the Run is in flight.
+    """
+
+    def __init__(self, *, project_store: InMemoryProjectScopeStore) -> None:
+        super().__init__(project_store=project_store)
+
+    async def transition_run(self, run_id: str, target: RunStatus, **kwargs: object):
+        if target is RunStatus.CANCELLED:
+            for node_run in await self.list_node_runs(run_id):
+                for attempt in await self.list_attempts(node_run.node_run_id):
+                    lease = attempt.execution_lease
+                    if (
+                        attempt.status is AttemptStatus.RUNNING
+                        and lease is not None
+                        and lease.expires_at is not None
+                    ):
+                        await self.reclaim_expired_attempt(
+                            attempt.attempt_id, now=lease.expires_at + timedelta(seconds=1)
+                        )
+        return await super().transition_run(run_id, target, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_reclaim_racing_the_cancellation_preserves_uncertainty() -> None:
+    """Reclaim landing inside the cancel race cannot mint a confirmed stop.
+
+    The try is live when the request arrives and reclaim terminalizes it
+    (CANCELLED+RECOVERED) between the fence and the post-fence re-read. The
+    row is classified from what it is — reclaim bookkeeping — never as proof
+    that this cancellation reached the worker.
+    """
+    projects = InMemoryProjectScopeStore()
+    service, store, run_id, attempt_id = await _service_with_running_attempt(
+        "worker-b",
+        store=_ReclaimingFenceStore(project_store=projects),
+        projects=projects,
+    )
+
+    receipt = await service.cancel_run_receipt(run_id)
+
+    assert receipt.run_status is RunStatus.CANCELLED
+    assert receipt.stop_confirmed is False
+    assert receipt.disposition is CancellationDisposition.UNCERTAIN
+    [row] = receipt.attempts
+    assert row.attempt_id == attempt_id
+    assert row.status is AttemptStatus.CANCELLED
+    assert row.disposition is CancellationDisposition.UNCERTAIN
+
+
+@pytest.mark.asyncio
+async def test_recovered_row_with_a_joined_owner_still_confirms_the_stop() -> None:
+    """Independent stop evidence upgrades a reclaim record to confirmed.
+
+    A CANCELLED+RECOVERED row alone proves only that a lease lapsed. When a
+    local Runtime owner also joined the stop, that join is the independent
+    physical evidence the reclaim lacks, so the receipt may confirm.
+    """
+    from maistro.runs.cancellation import CancellationDisposition as D
+    from maistro.runs.cancellation import classify_attempt
+
+    service, store, run_id, attempt_id = await _service_with_running_attempt("worker-b")
+    await service.cancel_run_receipt(run_id)
+    attempt = await store.get_attempt(attempt_id)
+    assert attempt is not None and attempt.execution_lease is not None
+    reclaimed = await store.reclaim_expired_attempt(
+        attempt_id, now=attempt.execution_lease.expires_at + timedelta(seconds=1)
+    )
+    assert reclaimed is not None
+
+    unjoined = classify_attempt(reclaimed)
+    joined = classify_attempt(reclaimed, local_signal=True)
+
+    assert unjoined.disposition is D.UNCERTAIN
+    assert joined.disposition is D.STOP_CONFIRMED
 
 
 @pytest.mark.asyncio

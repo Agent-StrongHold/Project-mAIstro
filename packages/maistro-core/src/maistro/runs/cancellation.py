@@ -154,6 +154,21 @@ def _lease_diagnosis(lease: ExecutionLease | None) -> tuple[CancellationDisposit
     )
 
 
+def is_reclaim_settled(attempt: Attempt) -> bool:
+    """True when the row was terminalized by reclaim, not by a proven stop.
+
+    `reclaim_expired_attempts` writes CANCELLED+RECOVERED after lease expiry
+    alone: it never contacts or joins the worker, and a heartbeat that lost
+    its renewals does not cancel the provider coroutine. Such a row is
+    durable bookkeeping about a lapsed lease — it is not evidence that the
+    physical execution stopped, so a receipt must never read it as one.
+    """
+    return (
+        attempt.status is AttemptStatus.CANCELLED
+        and attempt.cancellation_cause is CancellationCause.RECOVERED
+    )
+
+
 def classify_attempt(
     attempt: Attempt,
     *,
@@ -176,6 +191,26 @@ def classify_attempt(
         "runtime_id": attempt.runtime_id or None,
     }
     if attempt.status is AttemptStatus.CANCELLED:
+        if is_reclaim_settled(attempt):
+            if local_signal:
+                return AttemptCancellation(
+                    **base,
+                    disposition=CancellationDisposition.STOP_CONFIRMED,
+                    diagnosis=(
+                        "the row is a RECOVERED reclaim record, but a local Runtime owner "
+                        "joined the stop — independent physical evidence the reclaim alone "
+                        "cannot provide"
+                    ),
+                )
+            return AttemptCancellation(
+                **base,
+                disposition=CancellationDisposition.UNCERTAIN,
+                diagnosis=(
+                    "durably CANCELLED only by lease-expiry reclaim (RECOVERED): the row was "
+                    "terminalized without contacting or joining the worker, and a lapsed "
+                    "lease does not prove the provider stopped executing"
+                ),
+            )
         return AttemptCancellation(
             **base,
             disposition=CancellationDisposition.STOP_CONFIRMED,
@@ -224,4 +259,5 @@ __all__ = [
     "CancellationReceipt",
     "aggregate_disposition",
     "classify_attempt",
+    "is_reclaim_settled",
 ]
