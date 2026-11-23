@@ -291,3 +291,32 @@ or real self-improvement. No claim of distinct-process or actual PostgreSQL
 acceptance is made. The approved persistence/replay design, #947 P1 disposition,
 and exact-head hosted CI remain unverified. No test was added and no inventory
 count changed. Verdict: **NEEDS-REPAIR**.
+
+## Writer validation at assigned head `bf53e2d40b44` (2026-11-23)
+
+No `check-*.log` files were present in the job directory. Inspected the new
+accepted operational recovery contract in `docs/adr/ADR-088-maistro-evolve-experimental.md`
+and the new boundary-fault / distinct-process test cases rather than relying
+on earlier verification claims. Executed:
+
+- With `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test`,
+  `uv run pytest` on the Evolve restart/replay, startup wiring, retention,
+  durable-store, recovery, package snapshot/reconstruction, and cross-product
+  parity suites -> **116 passed, 0 skipped**. This includes the PG restart and
+  child-process legs against the local `maistro-1064-pg` service.
+- `uv run ruff check .` -> passed; `uv run ruff format --check .` -> passed
+  (3,652 files).
+- `uv run python scripts/check-suite-inventory.py` -> passed (21 suites).
+- `uv run python scripts/check-ac-state.py --run-tests --ratchet --mandate
+  88ca7a1ccb5cc1fca7f0d2fa51f2527b1a2b918f` with the PG DSN -> passed; design
+  coverage 44.4608% at the mandated floor, all declared criteria proven.
+- `uv run pytest tests/migrations/test_migration_chain.py -x -q` -> 18
+  skipped; migration-chain acceptance was not exercised by this command.
+
+The added ADR resolves the previously noted missing in-tree design record;
+the new tests address snapshot-before-marker, real finalization mutation
+boundaries, and a distinct child-process PG recovery leg. The suite does not
+by itself prove live hosted exact-head CI or an explicit disposition of the
+#947 review threads. Those close-only items remain **UNVERIFIED**. No tests
+were added during this verification update, so suite inventory counts did not
+change.
