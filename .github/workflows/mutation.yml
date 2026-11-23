@@ -24,24 +24,120 @@ permissions:
   contents: read
 
 on:
-  # No `paths:` filter. "Mutation gate (changed critical lines)" is a required
-  # check for every pull request (#262 AC-2), and a check that cannot report on
-  # a branch must not be required there (docs/ci/REQUIRED-CHECKS.md). A
-  # paths-filtered trigger left PRs that touch no listed path with no check run
-  # at all, so the gates-ran publisher waited forever for execution evidence
-  # that could never exist and the merge queue read the pending aggregate as
-  # "commit status not successful". The job below is self-scoping: it computes
-  # critical ∩ changed and exits green when nothing mutation-critical changed,
-  # so firing on every PR adds evidence, never a new failure mode.
-  #
-  # This subsumes develop's #2120 trigger row for 'quality/image-pins.json'
-  # (measured on #2120's head fc525a8d86 with the CI-exact check-gates-ran
-  # evaluator: 71/72 required checks present, "Mutation gate (changed critical
-  # lines)" absent -> PENDING). Instead of listing one registry path, firing on
-  # every PR yields that same zero-overlap evidence ("No mutation-critical file
-  # changed") for image-pins.json and every other non-listed path, while the
-  # job itself keeps failing closed whenever a critical file does change.
   pull_request:
+    paths:
+      - 'packages/**/*.py'
+      - 'quality/mutation-critical-files.json'
+      - 'quality/mutation-baseline.json'
+      # The image-pin registry is a recurring non-Python integrity surface
+      # (#93, #1152, #1373, #2120): with no matching path such a PR never
+      # triggers this workflow, so the required-set row that
+      # scripts/check-required-checks.py derives from it has no check-run on
+      # the candidate head and gates-ran stays pending forever. Measured on
+      # #2120's head fc525a8d86 with the CI-exact check-gates-ran evaluator:
+      # 71/72 required checks present, "Mutation gate (changed critical
+      # lines)" absent -> PENDING. Listing the registry here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence; the job itself fails closed whenever a critical
+      # file does change.
+      - 'quality/image-pins.json'
+      # Ratchet grant ledgers and the testing-inventory notes are governance
+      # and evidence surfaces, not mutation-critical code, but PRs that touch
+      # exactly them never trigger this workflow, so the required-set row that
+      # scripts/check-required-checks.py derives from it has no check-run on
+      # the candidate head and gates-ran stays pending forever. Measured on
+      # #2371's head ca2feefd1d9b with the CI-exact evaluator
+      # (check-gates-ran.py --require-complete --base-branch develop
+      # --event-name pull_request): 71/72 required checks present, "Mutation
+      # gate (changed critical lines)" absent -> PENDING (the same failure
+      # mode #2120 fixed for image pins; every producer had completed, so no
+      # later publisher run could ever flip the verdict). Both paths are
+      # class-motivated: grant-only PRs (recurring under the two-merge ratchet
+      # protocol) touch exactly quality/ratchet-authorizations.json;
+      # verification-note PRs touch exactly docs/testing/inventory-notes/**
+      # (this PR's remaining diff is one; the @tool/plan_delivery grant it
+      # once carried was withdrawn as moot — see the branch's inventory
+      # note). Listing these paths here produces real zero-overlap evidence
+      # instead of permanent absence; the job still fails closed whenever a
+      # critical file does change.
+      - 'quality/ratchet-authorizations.json'
+      - 'docs/testing/inventory-notes/**'
+      # Python tooling under scripts/ (the gate scripts this contract system
+      # runs on every PR) is a recurring PR surface that 'packages/**/*.py'
+      # cannot match, so gate-script PRs never triggered this workflow and
+      # the required-set row that scripts/check-required-checks.py derives
+      # from it has no check-run on the candidate head and gates-ran stays
+      # pending forever. Measured on #2432's head 632d5dbaa6 (a
+      # scripts/js_dependency_gate.py + frontend lockfile bump) with the
+      # CI-exact evaluator (check-gates-ran.py --require-complete
+      # --base-branch develop --event-name pull_request --changed-files
+      # <measured envelope>): 73/74 required checks present, "Mutation gate
+      # (changed critical lines)" absent -> PENDING (the same failure mode
+      # #2120 fixed for image pins and #2371 for grant ledgers and inventory
+      # notes; every producer had completed, so no later publisher run could
+      # ever flip the verdict). Listing this class here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence — every mutation-critical source lives under
+      # packages/, and the job's changed-file pathspec stays `-- packages`,
+      # so scripts/ diffs are zero-overlap by construction; the job still
+      # fails closed whenever a critical file does change.
+      - 'scripts/**/*.py'
+      - '.github/workflows/mutation.yml'
+      # Dev-tool linter/security-scanner requirements and the campaign's
+      # root-level repair-note evidence files are governance/dependency
+      # surfaces, not mutation-critical code, but PRs that touch exactly
+      # them never trigger this workflow, so the required-set row that
+      # scripts/check-required-checks.py derives from it has no check-run on
+      # the candidate head and gates-ran stays pending forever. Measured on
+      # #2345's head 720aaa2500 with the CI-exact evaluator
+      # (check-gates-ran.py --require-complete --base-branch develop
+      # --event-name pull_request --changed-files <envelope>): 71/72 required
+      # checks present, "Mutation gate (changed critical lines)" absent ->
+      # PENDING (the same failure mode #2120 fixed for image pins and #2371
+      # fixed for grant ledgers and inventory notes; every producer had
+      # completed, so no later publisher run could ever flip the verdict).
+      # Both paths are class-motivated: dev-tool bump PRs (dependabot and
+      # manual) touch exactly requirements-dev-tools.txt, and repair-round
+      # PRs record their evidence in exactly REPAIR-NOTES-*.md at the repo
+      # root. Listing them here produces real zero-overlap evidence instead
+      # of permanent absence; the job still fails closed whenever a critical
+      # file does change.
+      - 'requirements-dev-tools.txt'
+      - 'REPAIR-NOTES-*.md'
+      # Python dependency metadata is a recurring non-Python PR surface
+      # (every dependabot uv bump): the bump edits uv.lock and one or more
+      # packages/*/pyproject.toml, neither of which 'packages/**/*.py' can
+      # match, so such PRs never triggered this workflow and the required-set
+      # row has no check-run on the candidate head and gates-ran stays pending
+      # forever. Measured on #2450's head 62ce6f87a9 (anthropic 1.11.0 ->
+      # 2.9.0) with the CI-exact evaluator (check-gates-ran.py
+      # --require-complete --base-branch develop --event-name pull_request
+      # --changed-files <measured envelope>): 73/74 required checks present,
+      # "Mutation gate (changed critical lines)" absent -> PENDING (the same
+      # failure mode #2120 fixed for image pins, #2371 for grant ledgers and
+      # inventory notes, #2432 for gate scripts and #2345 for dev-tool
+      # requirements; every producer had completed, so no later publisher run
+      # could ever flip the verdict). Both paths are class-motivated: every
+      # workspace dependency bump touches the root uv.lock, and dependabot
+      # edits the package manifest's version constraint in
+      # packages/**/pyproject.toml. Listing them here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence: every entry in
+      # quality/mutation-critical-files.json is a .py source under packages/,
+      # so lock/manifest diffs are zero-overlap by construction, and the job
+      # still fails closed whenever a critical file does change.
+      - 'uv.lock'
+      - 'packages/**/pyproject.toml'
+      # Security-suppression triage is governance, not mutation-critical
+      # code: a dependency bump whose scan flags upstream docstring fixtures
+      # (exactly #2450, .trivyignore.yaml + anthropic 2.9.0's
+      # gcp-service-account example text) never matched this filter, so the
+      # same required row had no check-run and gates-ran stayed pending
+      # forever. Like quality/image-pins.json above, listing the suppression
+      # registry produces real zero-overlap evidence instead of permanent
+      # absence; the job still fails closed whenever a critical file does
+      # change.
+      - '.trivyignore.yaml'
   workflow_dispatch:
 
 concurrency:

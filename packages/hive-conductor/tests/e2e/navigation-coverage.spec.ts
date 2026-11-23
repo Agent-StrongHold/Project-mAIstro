@@ -44,10 +44,9 @@ let adminNarrowPage: Page;
  * principal holding the grant — the setup wizard's admin (every permission)
  * and not the daily user (see DAILY_USER_ENTRIES below). */
 const NAV_ENTRIES: Array<{ label: string; path: string; scope?: string; probe: (p: Page) => Locator }> = [
-  // #1048: Home is the default landing; keep Dashboard reachable until retirement.
+  // #1048 / #2274: Home is the default landing; legacy Dashboard deleted.
   { label: "Home", path: "/home", probe: (p) => p.getByRole("heading", { name: "Home", exact: true }) },
   { label: "Chat", path: "/chat", probe: (p) => p.getByLabel("Chat messages") },
-  { label: "Dashboard", path: "/dashboard", probe: (p) => p.getByRole("heading", { name: "Live Operations", exact: true }) },
   // #65: the Goal-centric inspection surface. Its reachability is asserted
   // here like every other shipped destination; goals-navigation.spec.ts owns
   // the surface's own deep-link behavior so this row stays a chrome check.

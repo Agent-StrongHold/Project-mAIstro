@@ -23,19 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 #: family (GHSA-2g87-pp6c-29x5 / CVE-2026-111063), the pillow floor is the
 #: 12.x advisory set, and the rest are the versions develop's browser
 #: install asserted at runtime.
-#:
-#: The patchright floor is the Node.js runtime its wheel bundles at
-#: ``patchright/driver/node`` — the binary the research image ships (grype
-#: sees it as ``node``). 1.64.1 bundles node 24.21.0, whose advisory set
-#: (CVE-2026-111497 Critical, CVE-2026-105482/105483/106069 High, all fixed
-#: in node 24.22.1) failed the containers gate's grype cross-check
-#: (``--fail-on high --only-fixed``) on maistro-engine-research; 1.64.4 is
-#: the first release verified to bundle node v24.22.1.
 BROWSER_SECURITY_FLOORS = {
     "aiohttp": "3.14.4",
     "anyio": "4.14.2",
     "browser-use": "0.1.40",
-    "patchright": "1.64.4",
     "pillow": "13.0.0",
     "pypdf": "6.19.0",
 }

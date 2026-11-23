@@ -85,6 +85,31 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 @pytest.fixture(autouse=True)
+def _isolate_schedule_projection_ledger():
+    """Give each test a fresh schedule-projection ledger (#2467).
+
+    The migration marker, tombstones, and pending-create markers are
+    process-global product state (``services.schedule_projection``'s
+    ``schedule_migration`` store), so a test that completes the legacy import
+    would otherwise flip every later test's startup reconciliation into repair
+    mode and silently change what its direct ``backfill`` calls mean. Snapshot
+    and restore in place, the same way the username-claim index is isolated.
+    """
+    import copy
+
+    from services import schedule_projection
+
+    ledger_store = schedule_projection.schedule_migration
+    snapshot = copy.deepcopy(dict(ledger_store.items()))
+    schedule_projection.reset_projection_health()
+    yield
+    ledger_store.clear()
+    for key, value in snapshot.items():
+        ledger_store[key] = value
+    schedule_projection.reset_projection_health()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_username_claims():
     """Give each test its own username-claim index.
 

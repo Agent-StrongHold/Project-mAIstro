@@ -1,6 +1,6 @@
 ---
 name: security-scan
-description: Comprehensive local security scan using the full permissively-licensed (MIT/Apache/BSD) OSS toolchain to reach Google Artifact Registry / Wiz parity — SAST (bandit, ruff-S, dlint, semgrep), secrets (gitleaks, detect-secrets, trivy), Python+npm supply-chain/SCA (pip-audit, osv-scanner, grype+syft, guarddog, npm audit), container IMAGE scanning (trivy image, grype, dockle), IaC/config (checkov, trivy misconfig), and malware (guarddog, yara). Includes the base-image + VEX/triage guidance needed to truthfully claim "zero Medium+". Mirrors the real CI gate in .github/workflows/security.yml. Argument-driven: pass a path/package/image, or omit to scan the whole repo.
+description: "Comprehensive local security scan using the full permissively-licensed (MIT/Apache/BSD) OSS toolchain to reach Google Artifact Registry / Wiz parity — SAST (bandit, ruff-S, dlint, semgrep), secrets (gitleaks, detect-secrets, trivy), Python+npm supply-chain/SCA (pip-audit, osv-scanner, grype+syft, guarddog, npm audit), container IMAGE scanning (trivy image, grype, dockle), IaC/config (checkov, trivy misconfig), and malware (guarddog, yara). Includes the base-image + VEX/triage guidance needed to truthfully claim \"zero Medium+\". Mirrors the real CI gate in .github/workflows/security.yml. Argument-driven: pass a path/package/image, or omit to scan the whole repo."
 ---
 
 The user wants a deep security scan. The argument is $ARGUMENTS (an optional path/package to scope; default: repo root `.`). This runs the full permissive-license OSS security stack — far beyond bandit alone — and mirrors `.github/workflows/security.yml` so a clean run here predicts a green CI security job.
@@ -104,9 +104,9 @@ Locally, scan the **actual built tags** when possible; otherwise scan the real b
 ```bash
 # Actual base images in use (grep '^FROM' across Dockerfile, Dockerfile.research,
 # Dockerfile.rsi-runner, packages/hive-conductor/Dockerfile):
-#   python:3.13.18-slim-bookworm (Dockerfile), python:3.12-slim (Dockerfile.research, Dockerfile.rsi-runner),
-#   node:26-alpine, golang:1.27.3-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
-for img in python:3.13.18-slim-bookworm python:3.12-slim node:26-alpine golang:1.27.3-alpine cgr.dev/chainguard/python:latest; do
+#   python:3.13.16-slim-bookworm (Dockerfile), python:3.12-slim (Dockerfile.research, Dockerfile.rsi-runner),
+#   node:26-alpine, golang:1.27.4-alpine, cgr.dev/chainguard/python:latest[-dev] (hive-conductor)
+for img in python:3.13.16-slim-bookworm python:3.12-slim node:26-alpine golang:1.27.4-alpine cgr.dev/chainguard/python:latest; do
   echo "### trivy image $img ###"
   trivy image --scanners vuln,secret,misconfig --severity MEDIUM,HIGH,CRITICAL --no-progress -q \
     --ignorefile .trivyignore.yaml "$img" > /tmp/trivy-image.out 2>&1; rc=$?
@@ -121,7 +121,7 @@ tail -20 /tmp/dockle.out; echo "dockle rc=$rc"
 ```
 
 **Reality check — what it takes to truthfully say "zero Medium+":** the Debian-based images
-(`python:3.12-slim`, `python:3.13.18-slim-bookworm`) carry HIGH/CRITICAL OS-package CVEs at any given
+(`python:3.12-slim`, `python:3.13.16-slim-bookworm`) carry HIGH/CRITICAL OS-package CVEs at any given
 time that you often cannot fix (they wait on upstream). This repo already adopted the mitigations —
 `packages/hive-conductor/Dockerfile` builds on **`cgr.dev/chainguard/python`** (Wolfi, scans near-zero),
 and the rest are gated by CI's nightly trivy/grype job. To *mean* the claim you need one of:

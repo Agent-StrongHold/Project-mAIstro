@@ -128,7 +128,7 @@ wait forever for an `Expected` result.
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
-| mutation | `Mutation gate (changed critical lines)` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |
@@ -172,6 +172,7 @@ wait forever for an `Expected` result.
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
+| security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `SAST / Bandit` | every PR |
 | security | `SAST / Gitleaks` | every PR |
