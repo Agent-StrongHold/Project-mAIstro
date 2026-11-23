@@ -392,3 +392,29 @@ against the assigned head:
   suites match; 125 declared durable tables; 1221/1221 reviewed identities).
 
 No tests or suite counts were added or removed; inventory delta is unchanged.
+
+## Repair-round exact-head acceptance revalidation at 0b1a32c4a9c8 (2026-11-23)
+
+The dispatched command `uv run pytest packages/maistro-core/tests/conftest.py
+-q -x` exited 5 because a conftest is not a test module (`no tests ran`).
+Executed acceptance behavior at this head instead:
+
+- Against the lane's real PostgreSQL 18 service (`auto-1199-r3-pg`, port
+  18995), with `MAISTRO_REQUIRE_PG_LEGS=1`, projection-authority, canonical-
+  due, and schedule-projection-authority suites → **118 passed, 1 skipped**.
+  The skip is the intentionally inapplicable memory-only independent-process
+  scenario; PostgreSQL fixtures create and migrate scratch databases.
+- Required-PG core scheduling selection (`uv run pytest
+  packages/maistro-core/tests -k schedul -x -q`) → **368 passed**, including
+  due-cursor persistence and serialized SQLite/PostgreSQL `record_fire`.
+- The strict scheduler-to-Conductor closeout test
+  (`test_schedule_required_scenario_emits_strict_closeout_evidence`) → **1
+  passed**, emitting `M1_PARITY_EVIDENCE` with `executed=true`,
+  `status=PASSED`, and `scenario=scheduler-occurrence-to-conductor`.
+- `uv run ruff check .`, `uv run ruff format --check .`,
+  `uv run python scripts/check-suite-inventory.py`,
+  `uv run python scripts/check-test-duplicates.py`, and the exact CI vulture
+  command all passed: 21 suites match, no duplicate test files, and 1221/1221
+  reviewed identities.
+
+No tests or suite counts were added or removed; inventory delta is unchanged.
