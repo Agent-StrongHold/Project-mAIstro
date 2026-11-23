@@ -174,3 +174,60 @@ def test_offline_dry_run_and_apply_requires_explicit_confirmation(
         repair.main(["--manifest", str(manifest), "--apply", "--confirm", "APPLY"])
         == 1
     )
+
+
+
+def test_depth_limit_refuses_unrepresentable_native_hierarchy(repair) -> None:
+    rows = [row(1)]
+    rows.extend(row(number, parent=number - 1) for number in range(2, 11))
+    with pytest.raises(repair.HierarchyError, match="nested hierarchy exceeds"):
+        repair.plan({"issues": rows})
+
+
+def test_native_parent_capacity_refuses_overflow(repair) -> None:
+    rows = [row(1), row(2, parent=1)]
+    rows[0]["native_child_count"] = 100
+    with pytest.raises(repair.HierarchyError, match="direct children"):
+        repair.plan({"issues": rows})
+
+
+def test_changed_live_labels_refuse_backfill(repair, monkeypatch) -> None:
+    parent = {"number": 1, "id": 1001, "milestone": {"number": 2}}
+    child = {
+        "number": 2,
+        "id": 1002,
+        "state": "open",
+        "labels": [{"name": "milestone:M2"}],
+        "milestone": {"number": 2},
+        "body": "Parent: #1",
+        "parent_issue_url": None,
+    }
+    monkeypatch.setattr(
+        repair, "_live_issue", lambda repo, token, number: {1: parent, 2: child}[number]
+    )
+    with pytest.raises(repair.HierarchyError, match="labels changed"):
+        repair.apply_one("o/r", "token", row(2, parent=1), {1: row(1)})
+
+
+def test_failed_apply_writes_error_report(repair, monkeypatch, tmp_path) -> None:
+    doc = {
+        "schema_version": 1,
+        "repository": "o/r",
+        "summary": {"issues_total": 2},
+        "issues": [row(1), row(2, parent=1)],
+    }
+    manifest = tmp_path / "manifest.json"
+    report = tmp_path / "error-report.json"
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert (
+        repair.main(
+            [
+                "--manifest", str(manifest),
+                "--apply", "--confirm", "APPLY",
+                "--report", str(report),
+            ]
+        )
+        == 1
+    )
+    assert "GITHUB_TOKEN" in json.loads(report.read_text())["error"]
