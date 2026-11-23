@@ -509,7 +509,7 @@ jobs:
         run: |
           uv pip install -r packages/hive-conductor/backend/requirements.txt
           uv run coverage run --append --branch \
-            --source=packages/hive-conductor/backend \
+            --source=packages/hive-conductor/backend/services \
             -m pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py \
               packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py \
               packages/hive-conductor/backend/tests/test_evolve_domain_retention.py \

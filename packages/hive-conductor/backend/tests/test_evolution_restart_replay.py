@@ -556,8 +556,10 @@ async def restart_spine_factory(request: pytest.FixtureRequest, tmp_path: Path):
 
         pool = await asyncpg.create_pool(dsn, min_size=1)
         try:
-            for table in ("evolve_domain_publications", "evolve_domain_snapshots"):
-                await pool.execute(f"DELETE FROM {table} WHERE workspace_id = $1", _WS)
+            await pool.execute(
+                "DELETE FROM evolve_domain_publications WHERE workspace_id = $1", _WS
+            )
+            await pool.execute("DELETE FROM evolve_domain_snapshots WHERE workspace_id = $1", _WS)
         finally:
             await pool.close()
 
