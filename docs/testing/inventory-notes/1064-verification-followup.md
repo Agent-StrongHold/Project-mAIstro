@@ -35,3 +35,49 @@ that remain visible in production code.
 The SQLite passing cases show the narrower receipt behavior exercised by those
 tests only. This note does not upgrade that evidence to the issue's close-only
 bar or assert remote exact-head CI / #947 review disposition.
+
+## Re-verification at `f264d5eeb392cb698ac5dae9e03ef7042e4a9623` (2026-11-23)
+
+Corrects the ratchet record above: the earlier acceptance-state "failure" was
+an environment artifact, not a branch defect. CI's `Quality / Acceptance state`
+job runs with a pgvector service and `MAISTRO_TEST_PG_DSN`/`DATABASE_URL` set
+(quality.yml:2367-2392) before invoking the gate; the earlier run reused CI's
+command without CI's service, so the PostgreSQL legs did not execute and
+design coverage landed at `39.7781%`.
+
+Executed this round (postgres `pgvector/pgvector:pg18` on `127.0.0.1:5570`,
+`alembic upgrade head` applied first):
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py -q`
+  -> **26 passed** (16 same-interpreter legs + 10 PostgreSQL legs against the
+  real server). The PG recovery/idempotency legs pass; they were never seen
+  running in earlier rounds.
+- CI-exact `uv run python scripts/check-ac-state.py --run-tests --ratchet
+  --mandate 88ca7a1ccb5cc1fca7f0d2fa51f2527b1a2b918f` with CI's PG env
+  -> **exit 0**; design coverage sits exactly on the banked floor `44.4608%`,
+  every declared criterion proven, no chain regressions. Run twice, ~2 min.
+- `ruff check` / `ruff format` / suite-inventory gates: passed (driver logs).
+
+The close-only gaps are unchanged by this head (docs-only delta):
+
+- No distinct-OS-process Run-level launch: kills are in-interpreter
+  `_ProcessKilled` and `_restore_process` re-enters the same interpreter;
+  `test_evolution_restart_replay_pg.py:7-11` states this is not evidence for
+  the distinct-process requirement.
+- PG legs run `harness=SimpleNamespace(fidelity="proxy")` (lines 207, 237,
+  331) and populations arrive pre-scored, so production-harness byte/semantic
+  parity is not established.
+- `_config()` pins `cull_pct=0.0` / `migration_interval=1000` and
+  `_self_improve_top` is a no-op, so no fault is injected after the cull,
+  migrate, or self-improve publication boundaries.
+- The stranded-QUEUED disposition stays QUEUED by design
+  (`test_evolution_recovery.py:460-505`), which does not satisfy the
+  criterion requiring an explicit terminal/recovery-blocked disposition for
+  prerequisites that never become durable.
+- `_recovery_resolver` still refuses genuine new-process recovery
+  (`EvolveRecoveryBlocked`), the exact contradiction the 2026-11-22 reopen
+  documented.
+- #947 P1 threads show no explicit disposition in the snapshot; remote
+  exact-head CI remains UNVERIFIED (rollup empty at capture). Branch commits
+  and the #2497 body carry no fixes/closes/resolves keywords.
