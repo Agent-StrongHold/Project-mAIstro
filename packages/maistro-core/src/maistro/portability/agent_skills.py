@@ -82,8 +82,11 @@ def _parse_skill_md(raw: bytes, *, directory_name: str) -> tuple[dict, str]:
     if not source.startswith("---\n"):
         raise AgentSkillValidationError("SKILL.md must start with YAML frontmatter")
     separator = source.find("\n---\n", 4)
+    closing_at_eof = separator == -1 and source.endswith("\n---")
     if separator == -1:
-        raise AgentSkillValidationError("SKILL.md is missing the closing frontmatter delimiter")
+        if not closing_at_eof:
+            raise AgentSkillValidationError("SKILL.md is missing the closing frontmatter delimiter")
+        separator = len(source) - len("\n---")
     try:
         metadata = yaml.load(source[4:separator], Loader=_StrictSkillLoader)
     except yaml.YAMLError as exc:
@@ -97,18 +100,19 @@ def _parse_skill_md(raw: bytes, *, directory_name: str) -> tuple[dict, str]:
     if not _valid_name(name) or name != directory_name:
         raise AgentSkillValidationError("invalid skill name or directory/name mismatch")
     description = metadata.get("description")
-    if not isinstance(description, str) or not 1 <= len(description.strip()) <= 1024:
+    if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise AgentSkillValidationError("description must be 1-1024 characters")
     for field, limit in (("license", 1024), ("compatibility", 500), ("allowed-tools", 4096)):
         value = metadata.get(field, "")
-        if not isinstance(value, str) or len(value) > limit:
+        if (not isinstance(value, str) or len(value) > limit or
+                (field == "compatibility" and field in metadata and not value)):
             raise AgentSkillValidationError(f"invalid {field} metadata")
     extra = metadata.get("metadata", {})
     if not isinstance(extra, dict) or not all(
         isinstance(key, str) and isinstance(value, str) for key, value in extra.items()
     ):
         raise AgentSkillValidationError("metadata must map strings to strings")
-    return metadata, source[separator + 5 :]
+    return metadata, source[separator + (4 if closing_at_eof else 5) :]
 
 
 def load_agent_skill_directory(directory: Path) -> AgentSkillPackage:
@@ -173,6 +177,10 @@ def export_agent_skill_directory(package: AgentSkillPackage, destination: Path) 
     """
     if not _valid_name(package.name) or not package.files:
         raise AgentSkillValidationError("invalid export package")
+    if len(package.files) > MAX_PACKAGE_FILES or sum(len(data) for _, data in package.files) > MAX_PACKAGE_BYTES:
+        raise AgentSkillValidationError("export package exceeds resource bounds")
+    if len(dict(package.files).get("SKILL.md", b"")) > MAX_SKILL_BYTES:
+        raise AgentSkillValidationError("export SKILL.md exceeds size limit")
     filenames: set[str] = set()
     for relative, _data in package.files:
         path = Path(relative)
