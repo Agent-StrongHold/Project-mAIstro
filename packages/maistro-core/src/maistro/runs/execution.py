@@ -718,12 +718,6 @@ class AttemptExecutionService:
         return True
 
     @classmethod
-    async def cancel_registered_run(cls, run_id: str) -> bool:
-        """Cancel the local owner of a Run, including its durable projection."""
-        owners, _ = await cls.cancel_registered_run_evidence(run_id)
-        return owners
-
-    @classmethod
     async def cancel_registered_run_evidence(cls, run_id: str) -> tuple[bool, dict[str, bool]]:
         """Cancel locally and report per-Attempt evidence of what this process did.
 

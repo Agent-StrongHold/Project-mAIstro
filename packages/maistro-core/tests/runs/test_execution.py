@@ -820,11 +820,12 @@ async def test_cancelling_an_active_attempt_without_a_lease_is_an_integrity_erro
 
 @pytest.mark.asyncio
 async def test_cancelling_a_registered_run_transitions_a_still_open_run() -> None:
-    """`cancel_registered_run` is the owner-visible leg of cancellation.
+    """`cancel_registered_run_evidence` is the owner-visible leg of cancellation.
 
     When the Run is not fenced CANCELLED yet (the spine asks for cancellation
     before any fence is written), the owning service must transition it, not
-    assume someone else did.
+    assume someone else did. The evidence tuple is #1242's contract: the
+    owner answer and this process's own signal results come back separately.
     """
     from datetime import timedelta
 
@@ -840,7 +841,12 @@ async def test_cancelling_a_registered_run_transitions_a_still_open_run() -> Non
     )
     service._active_services[attempt.attempt_id] = service
     try:
-        assert await AttemptExecutionService.cancel_registered_run(run_id) is True
+        owners, signals = await AttemptExecutionService.cancel_registered_run_evidence(run_id)
+        assert owners is True
+        # The try was created but never launched through the runtime, so the
+        # signal could not reach it: the evidence says False rather than
+        # claiming a physical stop nobody observed (#1242).
+        assert signals == {attempt.attempt_id: False}
         run = await store.get_run(run_id)
         assert run is not None
         assert run.status is RunStatus.CANCELLED
