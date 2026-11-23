@@ -280,7 +280,11 @@ async def test_the_initiator_and_an_administrator_cancel_while_the_peer_cannot(
 
     # The initiating principal cancels through the projection id.
     response = await cancel_route("auth-row-a", _ScopedRequest(_INITIATOR))
-    assert response == {"run_id": run_a, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_a
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
+    assert response["stop_confirmed"] is True  # the owner settled in-process (#1242)
+    assert response["disposition"] == "stop_confirmed"
     with pytest.raises(asyncio.CancelledError):
         await worker_a
     assert exits_a == ["provider-stopped"]
@@ -290,7 +294,11 @@ async def test_the_initiator_and_an_administrator_cancel_while_the_peer_cannot(
     # The Workspace administrator — who never initiated — cancels through the
     # direct canonical id: same gate, same physical outcome, no projection row.
     response = await cancel_route(run_b, _ScopedRequest(_ADMIN))
-    assert response == {"run_id": run_b, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_b
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
+    assert response["stop_confirmed"] is True
+    assert response["disposition"] == "stop_confirmed"
     with pytest.raises(asyncio.CancelledError):
         await worker_b
     assert exits_b == ["provider-stopped"]
@@ -347,7 +355,11 @@ async def test_a_projection_row_cannot_delegate_cancellation_across_workspaces(
 
     # The same initiator's DIRECT canonical id is the honest path and works.
     response = await cancel_route(run_y, _ScopedRequest(_Y_OWNER))
-    assert response == {"run_id": run_y, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_y
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
+    assert response["stop_confirmed"] is True
+    assert response["disposition"] == "stop_confirmed"
     with pytest.raises(asyncio.CancelledError):
         await worker_y
     assert exits_y == ["provider-stopped"]
