@@ -23,6 +23,8 @@ disposition, checked in both directions like `quality/image-inventory.json`:
 - MANUAL_DIAGNOSTIC workflow_dispatch-only: an on-demand measurement an
                    operator or an agent invokes deliberately. It must declare
                    no other trigger, or it is an ACTIVE file dodging review.
+- MANUAL_MAINTENANCE workflow_dispatch-only privileged repository repair,
+                   with explicit mutation scope and operator authorization.
 - RETIRED          removed. Names `replaced_by`, `removal_owner` and
                    `removal_issue`. A retirement is a decision, not permission
                    to resurrect: a RETIRED entry whose file reappears fails,
@@ -77,7 +79,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "workflow-inventory.json"
 WORKFLOWS = ROOT / ".github" / "workflows"
 
-DISPOSITIONS = ("ACTIVE", "MANUAL_DIAGNOSTIC", "RETIRED")
+DISPOSITIONS = ("ACTIVE", "MANUAL_DIAGNOSTIC", "MANUAL_MAINTENANCE", "RETIRED")
 
 #: A swallow: the command's exit code is discarded in favour of a constant.
 #: (`:` has no word char to bound, so it is anchored to whitespace or EOL.)
@@ -325,16 +327,16 @@ def check_entry_triggers(
         )
     disposition = str(entry.get("disposition", ""))
     non_manual = [t for t in actual if t != "workflow_dispatch"]
-    if disposition == "MANUAL_DIAGNOSTIC" and non_manual:
+    if disposition in {"MANUAL_DIAGNOSTIC", "MANUAL_MAINTENANCE"} and non_manual:
         failures.append(
-            f"{ident}: MANUAL_DIAGNOSTIC must be workflow_dispatch-only, but "
+            f"{ident}: {disposition} must be workflow_dispatch-only, but "
             f"the file also declares {sorted(non_manual)}; an event-triggered "
             "workflow is ACTIVE and needs review as one"
         )
     if disposition == "ACTIVE" and not non_manual:
         failures.append(
             f"{ident}: ACTIVE but the file declares no trigger beyond "
-            "workflow_dispatch; a dispatch-only workflow is MANUAL_DIAGNOSTIC"
+            "workflow_dispatch; use a reviewed MANUAL disposition"
         )
 
 
@@ -418,6 +420,13 @@ def check_entry(
         return None, failures
     if not entry.get("rationale"):
         failures.append(f"{ident}: `rationale` is empty; say what the workflow is for")
+    if disposition == "MANUAL_MAINTENANCE":
+        for required in ("mutation_scope", "operator_control"):
+            if not str(entry.get(required, "")).strip():
+                failures.append(
+                    f"{ident}: MANUAL_MAINTENANCE requires `{required}` for "
+                    "review of who can write what and under which approval"
+                )
     if not rel.startswith(".github/workflows/"):
         failures.append(f"{ident}: `file` {rel!r} is not under .github/workflows/")
         return None, failures
@@ -428,7 +437,7 @@ def check_entry(
             failures.append(
                 f"{ident}: RETIRED but {rel} exists on disk -- a retirement "
                 "is a decision, not permission to resurrect; reclassify "
-                "ACTIVE/MANUAL_DIAGNOSTIC or delete the file"
+                "ACTIVE/MANUAL_DIAGNOSTIC/MANUAL_MAINTENANCE or delete the file"
             )
         check_retired(entry, ident, failures)
         return rel, failures
@@ -488,7 +497,7 @@ def check(root: Path) -> list[str]:
         failures.append(
             f"{rel}: no entry in quality/workflow-inventory.json -- every "
             "workflow carries a reviewed disposition (ACTIVE, "
-            "MANUAL_DIAGNOSTIC or RETIRED); a workflow nobody dispositioned "
+            "MANUAL_DIAGNOSTIC, MANUAL_MAINTENANCE or RETIRED); a workflow nobody dispositioned "
             "is how stream1-diagnostic.yml stayed always-green (#400)"
         )
     return failures
