@@ -163,7 +163,9 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     )
 
     response = await cancel_route("dag-cancel-e2e", _ScopedRequest(_USER_ID))
-    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
 
     # The physical work is over: the provider coroutine unwound (its finally
     # ran), and the AttemptExecutionService task settled as cancelled rather
@@ -641,7 +643,15 @@ async def test_workspace_administrator_can_cancel_a_run_the_initiator_started(
     )
 
     response = await cancel_route("dag-admin-cancel", _ScopedRequest(admin))
-    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
+    # The owner was signalled and settled in-process, so this receipt may say
+    # the stop is confirmed (#1242) — the fields are part of the contract.
+    assert response["stop_confirmed"] is True
+    assert response["disposition"] == "stop_confirmed"
+    assert response["cause"] == "requested"
+    assert response["diagnosis"]
     assert provider_exits == ["provider-stopped"]
     with pytest.raises(asyncio.CancelledError):
         await worker
@@ -774,7 +784,10 @@ async def test_cancel_by_direct_canonical_id_matches_the_projection_route(
     )
 
     direct = await cancel_route(run_id, _ScopedRequest(_USER_ID))
-    assert direct == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert direct["run_id"] == run_id
+    assert direct["status"] == "cancelled" and direct["cancelled"] is True
+    assert direct["stop_confirmed"] is True
+    assert direct["disposition"] == "stop_confirmed"
     assert (await store.get_run(run_id)).status is RunStatus.CANCELLED
 
     second = await _created_canonical_run(store, workspaces, view.id, _USER_ID)
@@ -785,7 +798,11 @@ async def test_cancel_by_direct_canonical_id_matches_the_projection_route(
         canonical_run_id=second,
     )
     via_projection = await cancel_route("dag-via-projection", _ScopedRequest(_USER_ID))
-    assert via_projection == {"run_id": second, "status": "cancelled", "cancelled": True}
+    assert via_projection["run_id"] == second
+    assert via_projection["status"] == "cancelled"
+    assert via_projection["cancelled"] is True
+    assert via_projection["stop_confirmed"] is True
+    assert via_projection["disposition"] == "stop_confirmed"
     assert (await store.get_run(second)).status is RunStatus.CANCELLED
 
 
@@ -885,6 +902,10 @@ async def test_cancel_gate_resolves_the_run_through_the_wired_reader_stores(
     # The initiator who can read the Run can cancel it: the gate answers
     # from the spine's own truth, not from a store that cannot see it.
     response = await cancel_route(run_id, _ScopedRequest(_USER_ID))
-    assert response == {"run_id": run_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
+    assert response["stop_confirmed"] is True
+    assert response["disposition"] == "stop_confirmed"
     cancelled = await store.get_run(run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
