@@ -273,15 +273,19 @@ def _refusal_receipt(
 
 
 def _unevidenced_receipt(
-    task_id: str, run_id: str | None, cancelled: bool
+    task_id: str, run_id: str | None, cancelled: bool, *, dispatched: bool = False
 ) -> TaskCancellationReceipt:
     """The bool path's honest reading, for an admitter with no receipt member.
 
     A refusal is reported as the refusal it is. An acceptance with no canonical
-    Run behind it really did stop everything, because nothing physical existed.
+    Run behind it stopped everything *only if the work never dispatched*: an
+    admitter-less queue paired with a :class:`TaskRunner` still executes — the
+    runner calls the injected executor directly — so a dispatched task's
+    cancellation fenced the receipt without signalling that coroutine, and
+    this says `UNCERTAIN` instead of claiming a stop nobody can prove.
     An acceptance *with* a Run is only the fence: the wired admitter cannot say
-    what happened to the provider, so this says `UNCERTAIN` instead of
-    inheriting the confidence the older response implied.
+    what happened to the provider, so this says `UNCERTAIN` there too, rather
+    than inheriting the confidence the older response implied.
     """
     if not cancelled:
         return TaskCancellationReceipt(
@@ -292,6 +296,21 @@ def _unevidenced_receipt(
             diagnosis="the canonical Run refused cancellation; its own outcome is the winner",
         )
     if not run_id:
+        if dispatched:
+            # Direct-executor tier, work already running: terminalizing the
+            # receipt is not a signal the executor ever received, so the one
+            # honest answer is that the stop is unproven.
+            return TaskCancellationReceipt(
+                task_id=task_id,
+                cancelled=True,
+                disposition=CancellationDisposition.UNCERTAIN,
+                run_id=None,
+                diagnosis=(
+                    "the receipt had no canonical Run behind it, but the runner was "
+                    "already executing it directly and this cancellation never "
+                    "signalled that executor, so the stop is not proven"
+                ),
+            )
         return TaskCancellationReceipt(
             task_id=task_id,
             cancelled=True,
@@ -2093,6 +2112,11 @@ class TaskQueue:
         """
         if task.status in _TERMINAL:
             return _refusal_receipt(task.task_id, task.run_id, task.status)
+        # Dispatched work on the receipt-only tier is the reviewer's hole
+        # (#1242): `run_id is None` plus a non-QUEUED status means the local
+        # runner already called the executor, and `cancel` below never joins
+        # it. Only never-dispatched work may claim no invocation existed.
+        dispatched = task.status is not TaskStatus.QUEUED
         evidence = (
             await self._run_cancel_receipt(task.task_id, task.run_id) if task.run_id else None
         )
@@ -2103,7 +2127,12 @@ class TaskQueue:
                 # of a second one written here.
                 await self.cancel(task.task_id)
             return evidence
-        return _unevidenced_receipt(task.task_id, task.run_id, await self.cancel(task.task_id))
+        return _unevidenced_receipt(
+            task.task_id,
+            task.run_id,
+            await self.cancel(task.task_id),
+            dispatched=dispatched,
+        )
 
     async def _run_cancel_receipt(
         self, task_id: str, run_id: str | None

@@ -671,6 +671,52 @@ async def test_cancel_registered_reports_no_owner_for_an_unknown_attempt() -> No
 
 
 @pytest.mark.asyncio
+async def test_cancel_registered_evidence_reports_no_owner_for_an_unknown_attempt() -> None:
+    """`None` is "not this process's Attempt", distinct from a refused cancel.
+
+    The bool return of `cancel_registered` says "the cancel did not take";
+    the receipt logic needs to know whether that is because this process has
+    no Runtime handle at all — the case where another worker may still be
+    running the try (#1242). An id no service registered answers `None`, not
+    `False`.
+    """
+    assert (
+        await AttemptExecutionService.cancel_registered_evidence("attempt-unknown-evidence") is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_registered_evidence_answers_when_the_service_is_the_owner() -> None:
+    """A registered owner's evidence is the same bool `cancel_registered` gives.
+
+    The receipt classifier only reaches this probe for tries no enumerate
+    covered; when the service IS the registered owner it must still answer —
+    a `None` here would silently reclassify a live local try as someone
+    else's problem and the receipt would under-report a stop it did prove.
+    """
+    from datetime import timedelta
+
+    store, run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    await store.transition_run(run_id, RunStatus.QUEUED)
+    await store.transition_run(run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(
+        node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    service._active_services[attempt.attempt_id] = service
+    try:
+        assert await AttemptExecutionService.cancel_registered_evidence(attempt.attempt_id) is True
+        persisted = await store.get_attempt(attempt.attempt_id)
+        assert persisted is not None
+        assert persisted.status is AttemptStatus.CANCELLED
+    finally:
+        service._active_services.pop(attempt.attempt_id, None)
+
+
+@pytest.mark.asyncio
 async def test_a_launch_refused_by_the_store_settles_the_attempt_as_cancelled() -> None:
     """A store that refuses the RUNNING write leaves an Attempt that never ran.
 
