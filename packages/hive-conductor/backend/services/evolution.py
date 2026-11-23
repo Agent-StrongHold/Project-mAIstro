@@ -443,6 +443,10 @@ class _EvolutionService:
             self.initialize_domain_state()
             return False
         try:
+            from maistro_evolve.durable_snapshot import (
+                EvolveDomainExport,
+                restore_domain_state,
+            )
             from maistro_evolve.population import PopulationStore
             from maistro_evolve.tournament import EloTournament
 
@@ -466,9 +470,15 @@ class _EvolutionService:
             return False
         population = PopulationStore()
         tournament = EloTournament()
-        population.restore_genomes_snapshot(snapshot.genomes)
-        population.restore_cycle_markers(snapshot.cycle_markers)
-        tournament.restore_snapshot(snapshot.tournament)
+        restore_domain_state(
+            population,
+            tournament,
+            EvolveDomainExport(
+                genomes=snapshot.genomes,
+                tournament_state=snapshot.tournament,
+                cycle_markers=snapshot.cycle_markers,
+            ),
+        )
         # Replay exactly the battles published after this snapshot. The
         # journal rows carry their (NodeRun, benchmark) identity, so the
         # rebuilt tournament's publication index answers the idempotency

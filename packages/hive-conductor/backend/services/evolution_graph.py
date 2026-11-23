@@ -615,10 +615,15 @@ async def _capture_domain_snapshot(
     ``last_battle_seq`` pins the journal head at capture so a restore replays
     exactly the battle rows published after this snapshot, never the ones it
     already carries.
+
+    The export choreography itself is Evolve's own
+    ``maistro_evolve.durable_snapshot.export_domain_state``: the package
+    owning the stores owns their serialization contract, so this seam only
+    pins the journal head and persists the result.
     """
-    markers = (
-        population.export_cycle_markers() if hasattr(population, "export_cycle_markers") else {}
-    )
+    from maistro_evolve.durable_snapshot import export_domain_state
+
+    export = export_domain_state(population, tournament)
     head = await domain_store.battle_journal_head(workspace_id)
     snapshot = EvolveDomainSnapshot(
         workspace_id=workspace_id,
@@ -627,9 +632,9 @@ async def _capture_domain_snapshot(
         membership_ids=list(membership_ids),
         membership_hash=_membership_hash(membership_ids),
         completed_cycles=completed_cycles,
-        genomes=population.export_genomes_snapshot(),
-        tournament=tournament.export_snapshot(),
-        cycle_markers=markers,
+        genomes=export.genomes,
+        tournament=export.tournament_state,
+        cycle_markers=export.cycle_markers,
         last_battle_seq=head,
     )
     await domain_store.save_snapshot(snapshot)
