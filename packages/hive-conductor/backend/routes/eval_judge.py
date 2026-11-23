@@ -249,9 +249,7 @@ async def _legacy_alias_evidence(
         evidence = get_verdict(run_id)
         if is_valid_verdict(evidence):
             return evidence
-    for alias_id in await visible_aliases_for_canonical_run(
-        uid, canonical_run_id, workspace_id
-    ):
+    for alias_id in await visible_aliases_for_canonical_run(uid, canonical_run_id, workspace_id):
         evidence = get_verdict(alias_id)
         if is_valid_verdict(evidence):
             return evidence

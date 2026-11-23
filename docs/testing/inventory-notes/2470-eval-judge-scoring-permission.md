@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +23
+  packages/hive-conductor/backend/tests: +25
 ---
 # 2470 eval-judge scoring permission
 
@@ -84,3 +84,18 @@ paid model effect or drop started evidence:
   Run and the Run is filed in the projection row's own Workspace — the
   read-side twin of the POST gate's association rule (#2466); every
   refusal degrades to the ordinary "no verdict" answer.
+
+## Follow-up (+2): alias evidence for canonical-ID requests
+
+Two more node IDs close the canonical-ID gap: a POST addressed by canonical
+Run id skipped the alias-evidence check entirely, so a pre-upgrade verdict
+stored under the projection alias was invisible and the same Run was scored
+a second time (billed) with a duplicate evidence row for the optimizer to
+count twice:
+
+- A canonical-ID POST resolves and honors the durable alias-keyed verdict
+  verbatim — one logical score across the upgrade boundary, no second paid
+  model call, no rewrite, no duplicate row.
+- Alias discovery itself stays inside the scoped boundary (inspection-seam
+  resolution, rows filed in the Run's own Workspace, caller admitted to the
+  canonical Run) — a foreign-Workspace link cannot serve or place evidence.
