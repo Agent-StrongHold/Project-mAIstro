@@ -1,5 +1,5 @@
 {
-  "_comment": "One reviewed disposition for every GitHub workflow (#400). Until this inventory existed, `.github/workflows/` was governed only by the gates that happened to parse it: stream1-diagnostic.yml sat pinned to a branch deleted after #373 landed, swallowing every failure with `|| true`, unable to fail and reading to every agent as an active pattern. ACTIVE = event-triggered gate or automation; its trigger branches must be live remote refs (or reviewed retained_branches rows). MANUAL_DIAGNOSTIC = workflow_dispatch-only, an on-demand measurement an operator or agent invokes deliberately. RETIRED = removed; names `replaced_by` (what now covers its function), a `removal_owner` and a `removal_issue` -- a retirement is a decision, not permission to resurrect, so a RETIRED file that reappears on disk fails the gate. Checked by scripts/check-workflow-inventory.py in both directions (a workflow file with no entry fails; an entry naming no file fails), plus the three rots that let stream1 go unnoticed: dead trigger branches, pinned commits the repository no longer contains, and blanket error swallowing (`|| true`, `continue-on-error: true`) with no written reason within six lines. The gate does NOT verify that a workflow's declared job graph still does what its rationale says; rationales are reviewed prose, not proofs.",
+  "_comment": "One reviewed disposition for every GitHub workflow (#400). Until this inventory existed, `.github/workflows/` was governed only by the gates that happened to parse it: stream1-diagnostic.yml sat pinned to a branch deleted after #373 landed, swallowing every failure with `|| true`, unable to fail and reading to every agent as an active pattern. ACTIVE = event-triggered gate or automation; its trigger branches must be live remote refs (or reviewed retained_branches rows). MANUAL_DIAGNOSTIC = workflow_dispatch-only, an on-demand measurement an operator or agent invokes deliberately. MANUAL_MAINTENANCE = workflow_dispatch-only write-capable maintenance, requiring a documented mutation_scope and operator_control; it must not masquerade as a read-only measurement. RETIRED = removed; names `replaced_by` (what now covers its function), a `removal_owner` and a `removal_issue` -- a retirement is a decision, not permission to resurrect, so a RETIRED file that reappears on disk fails the gate. Checked by scripts/check-workflow-inventory.py in both directions (a workflow file with no entry fails; an entry naming no file fails), plus the three rots that let stream1 go unnoticed: dead trigger branches, pinned commits the repository no longer contains, and blanket error swallowing (`|| true`, `continue-on-error: true`) with no written reason within six lines. The gate does NOT verify that a workflow's declared job graph still does what its rationale says; rationales are reviewed prose, not proofs.",
   "workflows": [
     {
       "id": "cage-guard",
@@ -200,11 +200,13 @@
     {
       "id": "reconcile-issue-hierarchy",
       "file": ".github/workflows/reconcile-issue-hierarchy.yml",
-      "disposition": "MANUAL_DIAGNOSTIC",
+      "disposition": "MANUAL_MAINTENANCE",
       "triggers": [
         "workflow_dispatch"
       ],
-      "rationale": "Manual, develop-only, explicit-confirmation GitHub native sub-issue reconciliation (#2503). Read-only by default; an operator must opt into bounded Issues-write migration with a reviewed manifest, a per-invocation cap, fresh parent/state rechecks, and read-after-write verification. Never an automatic issue creator or merge gate."
+      "rationale": "Manual, develop-only, privileged native sub-issue repair (#2503). Distinct from read-only diagnostic workflows: explicit apply authorization, scoped Issues-write permissions, bounded writes, read-after-write proof and durable artifact report; no issue/PR/schedule triggered writes.",
+      "mutation_scope": "Scoped GitHub issues:write. Only native sub-issue relation additions explicitly selected from a reviewed snapshot; no issue state, label, milestone, or description writes.",
+      "operator_control": "Default dry-run; apply requires repository owner BlakeMatthews-dev, exact APPLY confirmation and 1-50 write cap; workflow only executes on develop, rechecks live state and verifies after POST."
     },
     {
       "id": "release-installer",
