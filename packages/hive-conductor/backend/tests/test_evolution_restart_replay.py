@@ -20,6 +20,8 @@ and one Elo update for that logical NodeRun — reconstructed, not remembered.
 from __future__ import annotations
 
 import asyncio
+import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -644,3 +646,117 @@ async def test_faulted_finalize_fails_closed_across_restart_with_compensated_dom
     assert service.population.export_genomes_snapshot() == admission_population
     await spine.close()
     await restarted.close()
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def battle_receipt_store(request: pytest.FixtureRequest, tmp_path: Path):
+    """Real stores, with a private Workspace for each losing-replica scenario."""
+    from services.evolve_domain_store import InMemoryEvolveDomainStore, PgEvolveDomainStore
+
+    workspace = f"evolve-battle-receipt-{uuid.uuid4().hex}"
+    pool = None
+    if request.param == "memory":
+        store = InMemoryEvolveDomainStore()
+    elif request.param == "sqlite":
+        store = SqliteEvolveDomainStore(str(tmp_path / "receipts.db"))
+    else:
+        dsn = os.environ.get("MAISTRO_TEST_PG_DSN", "").strip()
+        if not dsn:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        import asyncpg
+
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+        store = PgEvolveDomainStore(pool)
+    try:
+        await store.ensure_schema()
+        yield store, workspace
+    finally:
+        if pool is not None:
+            await pool.execute(
+                "DELETE FROM evolve_domain_publications WHERE workspace_id = $1", workspace
+            )
+            await pool.close()
+
+
+def _battle_receipt_work(store: Any, workspace: str) -> Any:
+    from services.evolution_graph import _TournamentWork
+
+    from maistro_evolve.tournament import EloTournament
+
+    return _TournamentWork(
+        cycle=_ReplayCycle(tournament=EloTournament()),
+        population=_seed_population(),
+        domain_store=store,
+        workspace_id=workspace,
+    )
+
+
+def _battle_receipt_context(workspace: str) -> NodeContext:
+    return NodeContext(
+        run_id="run-receipt",
+        dag_id="dag-receipt",
+        node_id="battle",
+        node_run_id="nr-receipt",
+        attempt_id="at-winner",
+        workspace_id=workspace,
+    )
+
+
+@pytest.mark.asyncio
+async def test_losing_battle_replica_uses_committed_scores_and_attempt(
+    battle_receipt_store,
+) -> None:
+    """The durable winner, not a stale worker's inputs, determines Elo and provenance."""
+    from services.evolution_graph import _BattleInput
+
+    store, workspace = battle_receipt_store
+    winner = _battle_receipt_work(store, workspace)
+    ctx = _battle_receipt_context(workspace)
+    inputs = _BattleInput(pairs=[("g1", "g2")])
+    await winner.run_pair_durable(inputs, ctx)
+    receipt = await store.find_battle_publication(workspace, ctx.node_run_id, _BENCHMARK)
+
+    loser = _battle_receipt_work(store, workspace)
+    # Same frozen membership, different volatile scores: exactly the case
+    # the membership-only recovery guard cannot detect.
+    loser._population.get("g1").eval_scores[_BENCHMARK] = 0.1
+    loser._population.get("g2").eval_scores[_BENCHMARK] = 0.99
+    retry_ctx = ctx.model_copy(update={"attempt_id": "at-loser"})
+    for _ in range(2):
+        await loser.run_pair_durable(inputs, retry_ctx)
+        assert loser._cycle.tournament.signature() == winner._cycle.tournament.signature()
+        battle = loser._cycle.tournament.find_published_battle(ctx.node_run_id, _BENCHMARK)
+        assert battle.attempt_id == "at-winner"
+    assert await store.find_battle_publication(workspace, ctx.node_run_id, _BENCHMARK) == receipt
+    assert len(await store.list_battle_publications(workspace)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["run", "pair"])
+@pytest.mark.parametrize("already_mirrored", [False, True])
+async def test_incompatible_battle_receipt_refuses_before_local_mutation(
+    battle_receipt_store, mismatch: str, already_mirrored: bool
+) -> None:
+    """A reused NodeRun must never silently authorize a different Run or pair."""
+    from services.evolution_graph import EvolveRecoveryBlocked, _BattleInput
+
+    store, workspace = battle_receipt_store
+    winner = _battle_receipt_work(store, workspace)
+    ctx = _battle_receipt_context(workspace)
+    inputs = _BattleInput(pairs=[("g1", "g2")])
+    await winner.run_pair_durable(inputs, ctx)
+    loser = _battle_receipt_work(store, workspace)
+    if already_mirrored:
+        await loser.run_pair_durable(inputs, ctx)
+    before = loser._cycle.tournament.signature()
+    receipt = await store.find_battle_publication(workspace, ctx.node_run_id, _BENCHMARK)
+    retry_ctx = ctx.model_copy(update={"attempt_id": "at-loser"})
+    if mismatch == "run":
+        retry_ctx = retry_ctx.model_copy(update={"run_id": "run-incompatible"})
+    else:
+        inputs = _BattleInput(pairs=[("g1", "g3")])
+    with pytest.raises(EvolveRecoveryBlocked, match=r"battle publication.*incompatible"):
+        await loser.run_pair_durable(inputs, retry_ctx)
+    assert loser._cycle.tournament.signature() == before
+    assert await store.find_battle_publication(workspace, ctx.node_run_id, _BENCHMARK) == receipt
+    assert len(await store.list_battle_publications(workspace)) == 1

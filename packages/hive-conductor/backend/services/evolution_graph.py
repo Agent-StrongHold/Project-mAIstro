@@ -449,22 +449,34 @@ class _TournamentWork:
                 ),
             )
             if not inserted:
-                # Another worker (or a prior Attempt of this process) already
-                # durably published this logical battle. Mirror it into the
-                # local tournament exactly once so this process's in-memory
-                # ratings converge on the journal, and never re-apply it.
-                find_published = getattr(self._cycle.tournament, "find_published_battle", None)
-                already = find_published(ctx.node_run_id, benchmark) if find_published else None
-                if already is None:
-                    self._cycle.tournament.record_battle(
-                        benchmark=benchmark,
-                        genome_a_id=genome_a.id,
-                        genome_b_id=genome_b.id,
-                        score_a=genome_a.eval_scores[benchmark],
-                        score_b=genome_b.eval_scores[benchmark],
-                        node_run_id=ctx.node_run_id,
-                        attempt_id=ctx.attempt_id,
+                # The winning receipt, not this worker's volatile scores or
+                # Attempt identity, is the committed effect. Validate it even
+                # when already mirrored locally: a cached battle cannot make
+                # a different Run or pair compatible with this NodeRun.
+                published = await self._domain_store.find_battle_publication(
+                    self._workspace_id, ctx.node_run_id, benchmark
+                )
+                if (
+                    published is None
+                    or published.run_id != ctx.run_id
+                    or published.payload.get("genome_a_id") != genome_a.id
+                    or published.payload.get("genome_b_id") != genome_b.id
+                ):
+                    raise EvolveRecoveryBlocked(
+                        f"battle publication for NodeRun {ctx.node_run_id!r} is missing or "
+                        "incompatible with the recovering Run/pair"
                     )
+                # record_battle's logical key also makes repeated local
+                # mirroring a no-op (no second counter or Elo update).
+                self._cycle.tournament.record_battle(
+                    benchmark=benchmark,
+                    genome_a_id=published.payload["genome_a_id"],
+                    genome_b_id=published.payload["genome_b_id"],
+                    score_a=published.payload["score_a"],
+                    score_b=published.payload["score_b"],
+                    node_run_id=published.node_run_id,
+                    attempt_id=published.attempt_id,
+                )
                 continue
             self._cycle.tournament.record_battle(
                 benchmark=benchmark,
