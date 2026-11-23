@@ -878,6 +878,102 @@ def test_durable_alias_keyed_verdict_is_honored_without_a_second_paid_score(
     assert len(stores.eval_verdicts) == 1
 
 
+def test_canonical_id_post_honors_durable_alias_keyed_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller holding only the canonical id still gets the legacy score.
+
+    The alias-keyed guard above only runs when the caller posts the alias;
+    a canonical-id POST resolves through the canonical-only read path, which
+    never sees the projection row. Without discovery, the same Run that a
+    pre-upgrade verdict already scored is scored — and billed — a second
+    time, writing a duplicate evidence row the optimizer counts twice. The
+    scoped discovery resolves the alias the authorized Run was recorded
+    under whichever id the caller used, so the stored verdict is the score,
+    no model effect runs, and the durable row stays byte-identical.
+    """
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    import stores
+
+    legacy = {
+        "run_id": scene["row_id"],
+        "dag_id": "dag-chat",
+        "status": "ok",
+        "score": 73,
+        "rationale": "recorded before canonical keying",
+        "evaluator_version": "eval-judge/1",
+        "scored_at": "2026-11-22T00:00:00+00:00",
+    }
+    stores.eval_verdicts[scene["row_id"]] = legacy
+
+    initiator_client = _client_for(scene["initiator"], elevate=True)
+    calls = _stubbed_scorer(monkeypatch, '{"score": 12, "rationale": "must not run"}')
+    r = initiator_client.post(f"/v1/eval-judge/{scene['canonical_run_id']}")
+    assert r.status_code == 200, r.text
+    assert calls == []
+    assert r.json()["score"] == 73
+    assert stores.eval_verdicts[scene["row_id"]] == legacy
+    assert len(stores.eval_verdicts) == 1
+
+    # The same evidence reads through the canonical id: one logical score,
+    # visible through either identity the caller might hold.
+    got = initiator_client.get(f"/v1/eval-judge/{scene['canonical_run_id']}")
+    assert got.status_code == 200
+    assert got.json()["score"] == 73
+
+
+def test_alias_discovery_stays_inside_the_scoped_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery is the scoped read's job, not id algebra (#2470).
+
+    A row that merely names this canonical Run proves nothing: a row filed
+    in another Workspace is outside the caller's universe (and a cross-link
+    the overlay deliberately leaves untouched), and the canonical id itself
+    is not an alias. Only the same-Workspace row this caller may inspect
+    comes back — the association rule the POST gate and the canonical read
+    fallback already apply.
+    """
+    scene = asyncio.run(_two_principal_scene(monkeypatch))
+    asyncio.run(
+        _projection_row(
+            "foreign-row",
+            canonical_run_id=scene["canonical_run_id"],
+            workspace_id="ws-not-yours",
+            user_id="someone-else",
+        )
+    )
+
+    from services.dag_run_inspection import visible_aliases_for_canonical_run
+
+    aliases = asyncio.run(
+        visible_aliases_for_canonical_run(
+            scene["initiator"], scene["canonical_run_id"], scene["workspace_id"]
+        )
+    )
+    assert aliases == [scene["row_id"]]
+
+    # A Workspace outside the caller's universe is closed even when the
+    # canonical correlation matches: scoping happens before any discovery.
+    assert (
+        asyncio.run(
+            visible_aliases_for_canonical_run(
+                scene["initiator"], scene["canonical_run_id"], "ws-not-yours"
+            )
+        )
+        == []
+    )
+    # Unknown Run: nothing to discover, no existence signal either way.
+    assert (
+        asyncio.run(
+            visible_aliases_for_canonical_run(
+                scene["initiator"], "run-unknown", scene["workspace_id"]
+            )
+        )
+        == []
+    )
+
+
 def test_chat_producer_records_the_canonical_actor_and_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

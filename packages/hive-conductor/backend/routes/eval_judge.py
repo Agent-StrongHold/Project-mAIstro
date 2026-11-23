@@ -42,7 +42,8 @@ protected by services.eval_judge — a valid verdict is terminal evidence, so
 retrying returns it verbatim (no second model effect, no restart double-fire),
 and a later failing/unparseable/unavailable attempt can never downgrade it.
 A valid verdict a producer recorded before canonical keying lives under the
-projection alias this same authorized read resolved; honoring it verbatim
+projection alias; the route resolves it for the authorized Run whichever id
+the caller holds, honoring it verbatim
 keeps one paid model effect per logical score across the upgrade and writes
 nothing. There is deliberately no automatic re-score or supersede here:
 replacing a valid verdict is a governed decision the M2 policy owns, not a
@@ -55,7 +56,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from services.dag_run_inspection import visible_run_detail, visible_run_ids
+from services.dag_run_inspection import (
+    visible_aliases_for_canonical_run,
+    visible_run_detail,
+    visible_run_ids,
+)
 from services.eval_judge import get_verdict, is_valid_verdict, score_run
 from services.request_principal import require_actor_id
 
@@ -87,8 +92,36 @@ async def read_verdict(run_id: str, request: Request) -> dict[str, Any]:
     if v is None:
         v = await _canonical_keyed_verdict(_user_id(request), detail)
     if v is None:
+        v = await _legacy_alias_verdict(_user_id(request), run_id, detail)
+    if v is None:
         raise HTTPException(status_code=404, detail="no verdict for run_id")
     return v
+
+
+async def _legacy_alias_verdict(
+    uid: str, run_id: str, detail: dict[str, Any]
+) -> dict[str, Any] | None:
+    """A pre-canonical verdict under this Run's projection alias, if visible.
+
+    The read-side twin of the POST's legacy-evidence discovery (#2470): a
+    caller addressing the Run by its canonical id gets the same evidence an
+    alias read serves, so one logical score is visible through either id.
+    Discovery runs through the inspection seam — only rows filed in the
+    canonical Run's own Workspace, inside this caller's universe, are
+    considered, so a cross-linked row never names evidence here. Every
+    refusal degrades to the ordinary "no verdict" answer.
+    """
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id or str(detail.get("id") or "") != canonical_run_id:
+        # Alias-keyed reads already answered via the direct alias lookup.
+        return None
+    for alias_id in await visible_aliases_for_canonical_run(
+        uid, canonical_run_id, str(detail.get("workspace_id") or "")
+    ):
+        v = get_verdict(alias_id)
+        if is_valid_verdict(v):
+            return v
+    return None
 
 
 async def _canonical_keyed_verdict(uid: str, detail: dict[str, Any]) -> dict[str, Any] | None:
@@ -198,6 +231,33 @@ async def _canonical_scoreable_run(uid: str, run_id: str, detail: dict[str, Any]
     return run
 
 
+async def _legacy_alias_evidence(
+    uid: str, run_id: str, canonical_run_id: str, workspace_id: str
+) -> dict[str, Any] | None:
+    """Pre-canonical evidence for this Run, whichever id the caller holds.
+
+    When the caller holds the alias itself, the direct lookup honors it: the
+    alias was proven by the same authorized read that resolved this Run.
+    When the caller holds only the canonical id, no direct lookup is
+    possible, so discovery through the inspection seam resolves the
+    projection alias this Run was recorded under (#2470). Either way the
+    valid durable row is the score — one paid model effect per logical
+    score across the upgrade, no canonical-keyed duplicate for the
+    optimizer to count twice — and nothing is mutated.
+    """
+    if run_id != canonical_run_id:
+        evidence = get_verdict(run_id)
+        if is_valid_verdict(evidence):
+            return evidence
+    for alias_id in await visible_aliases_for_canonical_run(
+        uid, canonical_run_id, workspace_id
+    ):
+        evidence = get_verdict(alias_id)
+        if is_valid_verdict(evidence):
+            return evidence
+    return None
+
+
 @router.post("/{run_id}")
 async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
     """Score a terminal canonical Run.
@@ -240,15 +300,11 @@ async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
     existing = get_verdict(canonical_run_id)
     if is_valid_verdict(existing):
         return existing
-    if run_id != canonical_run_id:
-        # Evidence recorded before canonical keying lives under the
-        # projection alias this same authorized read resolved (#2470).
-        # Honoring it verbatim keeps one paid model effect per logical
-        # score across the upgrade — and mutates nothing: the durable row
-        # stays exactly as recorded, no canonical-keyed duplicate appears.
-        alias_evidence = get_verdict(run_id)
-        if is_valid_verdict(alias_evidence):
-            return alias_evidence
+    alias_evidence = await _legacy_alias_evidence(
+        uid, run_id, canonical_run_id, str(run.workspace_id)
+    )
+    if is_valid_verdict(alias_evidence):
+        return alias_evidence
 
     class _Adapter:
         def __init__(self, d: dict[str, Any]) -> None:
