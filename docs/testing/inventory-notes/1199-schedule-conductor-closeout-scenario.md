@@ -273,3 +273,20 @@ gates. Full negative-before/positive-after detail in
 server's actual credentials every PostgreSQL leg executed this round. The
 integration-only negative-before/positive-after CI-evidence clause remains
 the sole handoff limit.
+
+## Addendum — repair-round validation at `431864fef623`
+
+The verifier artifact's sole failed check invoked `pytest
+packages/maistro-core/tests/conftest.py` and returned exit 5 because that file
+contains fixtures, not collected tests; this is a validation-command error,
+not a product failure. Re-ran meaningful acceptance checks at this exact
+candidate head:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py packages/maistro-core/tests/scheduling -x -q` — **328 passed, 67 skipped**. No PostgreSQL DSN was supplied, so the parameterized PG and process-shared-durable legs are not claimed from this run.
+- `uv run pytest tests/cross_product_parity/test_cross_product_parity.py -k 'schedule_required or schedule_fire or scaffold_only' -q -s` — **3 passed**, with strict evidence `executed=true`, `status=PASSED` for `scheduler-occurrence-to-conductor`.
+- `uv run ruff check .` and `uv run ruff format --check .` — passed (3642 files).
+- CI-exact vulture baseline command — passed, 1221 reviewed identities match 1221 findings.
+
+No tests were added in this round; the suite inventory is unchanged. The
+integration-only negative-before/positive-after CI evidence remains outside
+this lane's ability to produce.
