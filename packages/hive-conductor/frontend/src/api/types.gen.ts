@@ -1496,6 +1496,15 @@ export interface paths {
          *     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
          *     no provider stop signal; an unreachable canonical authority answers the
          *     spine-unavailable 503 instead.
+         *
+         *     The response separates two facts that used to be collapsed into
+         *     ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+         *     fence -- the authority that refuses a late provider success --
+         *     ``stop_confirmed`` is the physical one, and it is False whenever the
+         *     Attempt is live under a worker this replica cannot signal: Conductor then
+         *     reports ``stop_pending`` with a diagnosis instead of a stop nobody
+         *     observed. The mutation gate above is #2466's contract; the receipt below
+         *     reports truthfully about what the fence did and did not stop.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
@@ -3001,7 +3010,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List All Proposals */
+        /**
+         * List All Proposals
+         * @description Proposals across the caller's Workspace universe, newest first.
+         *
+         *     Membership scopes before the page limit, so a foreign tenant's newer
+         *     pending rows cannot push the caller's own proposals out of the page.
+         */
         get: operations["list_all_proposals_v1_optimizer_proposals_get"];
         put?: never;
         post?: never;
@@ -3052,7 +3067,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List For Dag */
+        /**
+         * List For Dag
+         * @description One DAG's proposals, scoped to the caller's canonical Workspaces.
+         *
+         *     Authentication happens in AuthMiddleware; it is not authorization
+         *     (#2469). A DAG claimed by another tenant shares the non-disclosing 404
+         *     with an unknown one, so the list cannot become a tenant oracle.
+         */
         get: operations["list_for_dag_v1_optimizer__dag_id__proposals_get"];
         put?: never;
         post?: never;
@@ -13599,6 +13621,7 @@ export interface operations {
                 apply_auto?: boolean;
                 validate?: boolean;
                 workspace_id?: string | null;
+                project_id?: string | null;
             };
             header?: never;
             path: {

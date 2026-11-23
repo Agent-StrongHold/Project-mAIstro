@@ -565,10 +565,22 @@ async def _builders_conductor_scenario() -> ScenarioExecution:
         )
         live_id = await _wait_for_running_turn(profile.run_store, profile.workspace_id)
         response = await cancel_route(live_id, _ParityRequest(_PARITY_USER))
+        # #1242: the receipt is strict closeout evidence, not a bare success.
+        # The fence is durable CANCELLED; the walk had not claimed the turn's
+        # physical try yet, so there was nothing to signal and the durable
+        # fence is what refuses a competing consumer claim afterwards.
         assert response == {
             "run_id": live_id,
             "status": "cancelled",
             "cancelled": True,
+            "stop_confirmed": True,
+            "disposition": "stop_confirmed",
+            "cause": "requested",
+            "diagnosis": (
+                "the Run owned no physical try; the durable CANCELLED fence is what refuses "
+                "a competing consumer claim, so no invocation can start afterwards"
+            ),
+            "attempts": [],
         }
         fenced = await profile.run_store.get_run(live_id)
         assert fenced is not None and fenced.status is RunStatus.CANCELLED

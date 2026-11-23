@@ -106,6 +106,15 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
     no provider stop signal; an unreachable canonical authority answers the
     spine-unavailable 503 instead.
+
+    The response separates two facts that used to be collapsed into
+    ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+    fence -- the authority that refuses a late provider success --
+    ``stop_confirmed`` is the physical one, and it is False whenever the
+    Attempt is live under a worker this replica cannot signal: Conductor then
+    reports ``stop_pending`` with a diagnosis instead of a stop nobody
+    observed. The mutation gate above is #2466's contract; the receipt below
+    reports truthfully about what the fence did and did not stop.
     """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
@@ -173,16 +182,21 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
     if run.workspace_id != str(detail.get("workspace_id") or ""):
         raise HTTPException(status_code=404, detail="run not found")
     try:
-        updated = await RunExecutionService(
+        cancellation = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(run.run_id)
+        ).cancel_run_receipt(run.run_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
-        "run_id": updated.run_id,
-        "status": updated.status.value,
-        "cancelled": updated.status.value == "cancelled",
+        "run_id": cancellation.run_id,
+        "status": cancellation.run_status.value,
+        "cancelled": cancellation.fenced,
+        "stop_confirmed": cancellation.stop_confirmed,
+        "disposition": cancellation.disposition.value,
+        "cause": cancellation.cause.value,
+        "diagnosis": cancellation.diagnosis,
+        "attempts": [row.model_dump(mode="json") for row in cancellation.attempts],
     }
 
 
