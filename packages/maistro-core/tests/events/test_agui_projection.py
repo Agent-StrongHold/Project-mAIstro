@@ -116,9 +116,9 @@ def test_unknown_status_is_an_error_not_implicit_success() -> None:
 
 def test_status_vocabulary_matches_canonical_run_enum() -> None:
     # A new canonical status forces an explicit reviewed AG-UI projection decision.
-    projected = {"created", "queued", "running", "waiting", "paused", "completed", "failed", "cancelled"}
+    projected = {"created", "queued", "running", "waiting", "paused", "completed", "failed", "cancelled", "timed_out"}
     assert projected == {status.value for status in RunStatus}
-    assert {"completed", "failed", "cancelled"} == {s.value for s in TERMINAL_RUN_STATUSES}
+    assert {"completed", "failed", "cancelled", "timed_out"} == {s.value for s in TERMINAL_RUN_STATUSES}
 
 
 def test_run_events_order_filter_and_dedupe_canonical_sequences() -> None:
@@ -152,3 +152,9 @@ def test_run_events_order_filter_and_dedupe_canonical_sequences() -> None:
 def test_invalid_cursor_is_refused() -> None:
     with pytest.raises(ValueError):
         project_agui_run_events([], workspace_id="ws-1", run_id="run-1", after_sequence=-1)
+
+
+def test_timed_out_run_reports_failure() -> None:
+    assert project_agui_run_terminal(
+        thread_id="thread-1", run_id="run-1", status="timed_out"
+    ) == {"type": "RUN_ERROR", "message": "The run timed out.", "code": "maistro.run.timed_out"}
