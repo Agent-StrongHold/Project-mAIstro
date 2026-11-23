@@ -183,3 +183,47 @@ fault injection, production-harness parity, explicit terminal disposition for
 never-durable QUEUED prerequisites, approved persistence/replay design +
 #947 review disposition, exact-head green CI, #459 strict-scenario coverage)
 is not yet satisfied.
+
+## Independent verification at exact head `dfd2464c5e49fe235ebb8df3453afb9023f216b3` (2026-11-23)
+
+Verifier-executed at the assigned head (delta `026cad5db51f..dfd2464c5e` is
+this docs note only; no code or test change). Re-derived, not inferred:
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5570/maistro_test
+  uv run pytest test_evolution_restart_replay.py test_evolution_restart_replay_pg.py
+  test_evolution_startup_wiring.py test_evolve_domain_retention.py
+  test_evolve_domain_store.py test_evolution_recovery.py -q`
+  -> **67 passed, 0 skipped** against `maistro-1064-pg` (alembic_version=069).
+- `uv run pytest packages/maistro-evolve/tests/test_domain_reconstruction.py
+  packages/maistro-evolve/tests/test_durable_snapshot.py -q` -> **11 passed**.
+- `uv run pytest tests/cross_product_parity/test_cross_product_parity.py -q`
+  -> **26 passed**.
+- `uv run ruff check .` -> all checks passed; `uv run python
+  scripts/check-suite-inventory.py` (CI's exact no-arg invocation) -> ok,
+  21 suites match the recorded inventory.
+- Live read-only `gh pr view 2497` at this exact head: rollup shows 79 checks
+  with no terminal state plus 1 PENDING (`test`, `coverage (PostgreSQL)`,
+  `integration-scope`, `Gate C`, `formal-conformance`, `Mutation gate`,
+  SAST family, `cross-product-parity`, ... unsettled) -> exact-head CI
+  remains **UNVERIFIED**.
+- Closure-keyword scan of `git log 88ca7a1ccb..HEAD --format='%B'`: no
+  fixes/closes/resolves #N; conventional `fix(#1064):`/`docs(#1064):`
+  prefixes only.
+- All prior evidence re-confirmed at this head: `_ProcessKilled(BaseException)`
+  in-interpreter kill (`test_evolution_restart_replay.py:56-58`),
+  `_restore_process` same-interpreter docstring (:377-380),
+  `cull_pct=0.0`/`migration_interval=1000` (:315-317) with `_self_improve_top`
+  no-op (:307-309), `_bind_deterministic_harness` EvalHarness double
+  (:445-456), PG suite same-OS-process header
+  (`test_evolution_restart_replay_pg.py:4-9`) with `fidelity="proxy"` harness
+  (:207,237,331), stranded runs left QUEUED by design
+  (`test_evolution_recovery.py:455-510`), no `docs/adr` or `docs/specs` path
+  in `git diff 8e7d7d3165..HEAD`, and `pulls/947/reviews` 7/7 COMMENTED
+  (dispatch-context.json).
+
+Verdict at this head: **NEEDS-REPAIR** — locally green and genuinely
+PG-backed, but the issue's close-only contract and the cull/migrate/
+self-improve boundary, never-durable-prerequisite disposition, harness-parity,
+approved-design/#947-disposition, and exact-head-CI criteria remain unmet
+(as itemized above). Repair budget for this campaign is exhausted; these
+findings are handed off unresolved.
