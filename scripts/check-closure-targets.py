@@ -217,10 +217,64 @@ def _get_json(url: str, token: str) -> object:
         return json.load(response)
 
 
-def fetch_target(repo: str, number: int, token: str) -> Target:
-    """Title, state, body and open-children presence of ``repo#number``."""
-    base = f"{API_ROOT}/repos/{repo}/issues/{number}"
 
+# Only explicit direct-child sections carry closure authority. Arbitrary issue
+# references (dependencies, related work, ancestors) are not children.
+_CHILD_SECTION = re.compile(
+    r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<heading>.*?)\s*$"
+)
+_DIRECT_CHILD_ENTRY = re.compile(
+    r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?"
+    r"(?:\*\*)?#(?P<number>\d+)(?:\*\*)?(?!\d)"
+)
+
+
+def declared_direct_children(body: str) -> list[int]:
+    """Direct child IDs in list sections, not loose issue references.
+
+    A child section may contain subordinate headings (the #453 milestone and
+    program groups do), but a peer or parent heading terminates the section.
+    Code-fenced examples and references outside such sections are ignored.
+    """
+    depth: int | None = None
+    fence: str | None = None
+    children: list[int] = []
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith((chr(96) * 3, "~~~")):
+            kind = stripped[:3]
+            if fence is None:
+                fence = kind
+            elif fence == kind:
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        heading = _CHILD_SECTION.match(line)
+        if heading:
+            level = len(heading.group("hashes"))
+            title = heading.group("heading").casefold().strip()
+            if depth is not None and level <= depth:
+                depth = None
+            if (
+                ("direct" in title and ("child" in title or "children" in title))
+                or title in {"child initiative", "child initiatives", "child epic", "child epics"}
+            ):
+                depth = level
+            continue
+        if depth is None:
+            continue
+        item = _DIRECT_CHILD_ENTRY.match(line)
+        if item:
+            number = int(item.group("number"))
+            if number not in children:
+                children.append(number)
+    return children
+
+
+def fetch_target(repo: str, number: int, token: str) -> Target:
+    """Fetch issue and test both native and explicitly declared direct children."""
+    base = f"{API_ROOT}/repos/{repo}/issues/{number}"
     try:
         issue = _get_json(base, token)
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -228,30 +282,46 @@ def fetch_target(repo: str, number: int, token: str) -> Target:
     if not isinstance(issue, dict):
         raise GitHubError(f"GET {base}: unexpected response shape")
 
-    # The sub-issues endpoint has no state filter, so page until a page comes
-    # back empty or an open child is found. A bounded page cap keeps a
-    # pathological parent from spinning the gate; a parent with more closed
-    # children than the cap and an open one beyond it fails closed as
-    # "cannot rule out open children" only via the API-error path, never by
-    # silently passing.
+    # GitHub paginates native children. An unavailable endpoint, malformed row
+    # or scan cap cannot prove all children are closed.
     has_open_sub_issues = False
     for page in range(1, 11):
+        url = f"{base}/sub_issues?per_page=100&page={page}"
         try:
-            subs = _get_json(f"{base}/sub_issues?per_page=100&page={page}", token)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                subs = []
-            else:
-                raise GitHubError(f"GET {base}/sub_issues: {exc}") from exc
+            subs = _get_json(url, token)
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise GitHubError(f"GET {base}/sub_issues: {exc}") from exc
+            raise GitHubError(f"GET {url}: {exc}") from exc
         if not isinstance(subs, list):
-            raise GitHubError(f"GET {base}/sub_issues: unexpected response shape")
-        if any(isinstance(sub, dict) and sub.get("state") == "open" for sub in subs):
+            raise GitHubError(f"GET {url}: unexpected response shape")
+        if any(
+            not isinstance(sub, dict) or sub.get("state") not in {"open", "closed"}
+            for sub in subs
+        ):
+            raise GitHubError(f"GET {url}: missing or invalid sub-issue state")
+        if any(sub["state"] == "open" for sub in subs):
             has_open_sub_issues = True
             break
         if len(subs) < 100:
             break
+    else:
+        raise GitHubError(f"GET {base}/sub_issues: pagination limit exceeded")
+
+    # Until #2503 backfills the native graph, a parent listing unresolved
+    # direct children in prose must not look childless to the closing guard.
+    if not has_open_sub_issues:
+        for child_number in declared_direct_children(str(issue.get("body") or "")):
+            if child_number == number:
+                raise GitHubError(f"#{number} declares itself a direct child")
+            child_url = f"{API_ROOT}/repos/{repo}/issues/{child_number}"
+            try:
+                child = _get_json(child_url, token)
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                raise GitHubError(f"GET {child_url}: {exc}") from exc
+            if not isinstance(child, dict) or child.get("state") not in {"open", "closed"}:
+                raise GitHubError(f"GET {child_url}: invalid declared child response")
+            if child["state"] == "open":
+                has_open_sub_issues = True
+                break
 
     return Target(
         number=number,
