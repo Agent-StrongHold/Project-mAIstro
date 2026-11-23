@@ -28,6 +28,7 @@ from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
 from services.governed_tools import hive_tool_reversibility, validate_hive_tool_arguments
+from services.safe_projection import HOST_POLICY_NODE_REFUSAL
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -838,7 +839,12 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
             )
         tier = _classify_node_execution(self._raw_node, node_id, host_mode=host_mode)
         if tier == "blocked":
-            raise PermissionError("Execution blocked: host policy did not authorize this node")
+            # One sentence, defined once in the #2465 public-disclosure policy:
+            # what the host raises here is exactly what the DAG receipt may
+            # disclose — host-authored, names no node id, path or provider.
+            # The projection (safe_projection.public_failure_text) matches
+            # this sentence, so editing it moves both ends together.
+            raise PermissionError(HOST_POLICY_NODE_REFUSAL)
 
         role = str(self._raw_node.get("role", "worker"))
         await self._emit_progress(
