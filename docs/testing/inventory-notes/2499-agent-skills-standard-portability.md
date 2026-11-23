@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +25
+  packages/maistro-core/tests: +28
 ---
 
 # #2499 — Agent Skills standards-layout directory portability
@@ -14,13 +14,13 @@ and `export_agent` format remain unchanged.
 MAIstro parser requires internal `parameters` and snake_case names. It
 is unsafe to silently translate those identifiers into tool authority.
 
-**25 collected test cases** in
+**28 collected test cases** in
 `packages/maistro-core/tests/portability/test_agent_skills_standard.py`:
 roundtrip with inert script/resources and stable content digest; `allowed-tools`
 is informational only; malformed frontmatter, unknown keys, duplicate YAML keys,
 aliases, invalid names, directory/name mismatches, symlinks, size caps, export
 traversal and overwrite refusal; legacy format remains accepted; CRLF preserved
-in bundle bytes.
+in bundle bytes; EOF closing delimiter and export resource limits.
 
 The API does **not** register imported skills into a Workspace, dispatch
 bundled scripts, grant tool permissions or enable remote fetch. Any future
