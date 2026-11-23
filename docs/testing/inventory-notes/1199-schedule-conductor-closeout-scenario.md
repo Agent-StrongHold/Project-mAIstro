@@ -290,3 +290,36 @@ candidate head:
 No tests were added in this round; the suite inventory is unchanged. The
 integration-only negative-before/positive-after CI evidence remains outside
 this lane's ability to produce.
+
+## Addendum — current exact head d0806ce55c3a
+
+Revalidated the assigned head without relying on the preceding verifier artifact:
+
+- Core scheduling plus the schedule-winner crash test: `uv run pytest
+  packages/maistro-core/tests/scheduling
+  packages/maistro-core/tests/persistence/test_schedule_winner_crash.py -x
+  -q` — **289 passed, 42 skipped**. The lane has no PostgreSQL test DSN set;
+  therefore this run does not claim the skipped PostgreSQL integrations.
+- Canonical Hive scheduler/projection/admission/manual-fire suites:
+  `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  packages/hive-conductor/backend/tests/test_schedule_projection_authority.py
+  packages/hive-conductor/backend/tests/test_schedule_canonical_definitions.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py
+  packages/hive-conductor/backend/tests/test_schedule_manual_fire_canonical.py
+  packages/hive-conductor/backend/tests/test_scheduler_bounded_tick.py -x -q`
+  — **138 passed, 46 skipped**, again without PostgreSQL credentials.
+- Strict real schedule→Conductor scenario:
+  `uv run pytest tests/cross_product_parity/test_cross_product_parity.py -k
+  'schedule_required or schedule_fire or scaffold_only' -q -s` — **3 passed**;
+  emitted `executed=true`, `status=PASSED` for
+  `scheduler-occurrence-to-conductor`.
+- `uv run ruff check .`, `uv run ruff format --check .` (3642 files), and
+  CI-exact vulture baseline (1221 reviewed identities match 1221 findings)
+  passed; `git diff --check` was clean.
+
+No tests were added, so no inventory delta applies. PostgreSQL behavior has
+prior first-party evidence at code-identical scheduler implementation heads,
+but is **not re-executed at this exact head** because all PostgreSQL DSN
+variables are unset. The post-integration negative-before/positive-after CI
+evidence remains unverified and outside this lane's authority.
