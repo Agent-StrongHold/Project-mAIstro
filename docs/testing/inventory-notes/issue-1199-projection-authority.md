@@ -283,3 +283,30 @@ This resolves the invalid test target as a validation issue, not a product
 regression. Real PostgreSQL acceptance legs were rerun successfully as recorded
 above. No tests or suite counts were added or removed, so the existing
 inventory delta is unchanged.
+
+## Exact assigned-head revalidation at ac68b22d1bd3 (2026-11-23)
+
+The dispatched check attempted to execute `packages/maistro-core/tests/conftest.py`
+and exited 5 (`no tests ran`); this is a non-test setup file, not a product
+failure. Re-ran executable acceptance suites at the exact candidate head:
+
+- `MAISTRO_TEST_PG_DSN=... MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest
+  packages/maistro-core/tests/scheduling
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_admission.py
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  -x -q` against the lane's running PostgreSQL 18 service → **413 passed,
+  1 skipped**. PostgreSQL legs were required and ran; the single skip is the
+  explicitly inapplicable memory-only independent-process scenario.
+- Scheduler tests without a DSN → **58 passed, 29 skipped**; skips are
+  backend-dependent integration cases, so this run is supplemental only and
+  not the PostgreSQL acceptance evidence.
+- Strict scheduler-to-Conductor closeout selector → **3 passed**, emitted
+  `M1_PARITY_EVIDENCE` with `executed=true`, `status=PASSED`, and
+  `scenario=scheduler-occurrence-to-conductor`.
+- `uv run python scripts/check-suite-inventory.py` → 21 suites match;
+  `uv run ruff check .` and `uv run ruff format --check .` → clean;
+  exact CI vulture command → 1221 reviewed identities = 1221 findings.
+
+No tests or suite counts were added or removed; the existing inventory delta
+is unchanged.
