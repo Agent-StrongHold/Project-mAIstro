@@ -378,7 +378,11 @@ class _Spine:
 
 
 async def _restore_process(spine: _Spine, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """A genuinely fresh process: new service object, restored domain only."""
+    """A new service object in the current process, restored from durable rows.
+
+    This exercises reconstruction without claiming OS-process isolation; the
+    close-only restart requirement still needs a subprocess Run-level test.
+    """
     import services.evolution as evolution_module
 
     service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)

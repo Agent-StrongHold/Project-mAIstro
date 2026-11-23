@@ -1,17 +1,14 @@
-"""Run-level uninterrupted vs process-kill+resume equality on PostgreSQL (#1064).
+"""Run-level recovery comparison on PostgreSQL (#1064).
 
-The sqlite restart-replay suite proves the choreography over durable sqlite
-files. This suite proves the same contract at Run level over the production
-spine — a migrated PostgreSQL database through ``PgProjectScopeStore``/
-``PgRunStore``/``PgGraphContinuationStore`` plus the ``PgEvolveDomainStore``
-publication ledger — which is the close-only letter of #1064's acceptance:
-byte/semantic equality of uninterrupted versus process-kill+resume
-battle/Elo/lineage and canonical Run evidence *using fresh PostgreSQL
-connections*. Each leg is a genuinely distinct connection authority: the
-interrupted process's pool is closed entirely before the restarted process
-opens its own, so nothing survives the restart except the server's durable
-rows. Skipped unless ``MAISTRO_TEST_PG_DSN`` names a reachable, migrated
-server, like every other PG-leg suite in this repo.
+The sqlite restart-replay suite exercises recovery over durable sqlite files.
+This suite compares the Run-level choreography over the production spine — a
+migrated PostgreSQL database through ``PgProjectScopeStore``/``PgRunStore``/
+``PgGraphContinuationStore`` plus the ``PgEvolveDomainStore`` publication
+ledger. Each recovery leg closes the interrupted leg's pool and creates a new
+one, but remains in the same OS process; this is not evidence for the issue's
+close-only distinct-process launch requirement. Skipped unless
+``MAISTRO_TEST_PG_DSN`` names a reachable, migrated server, like every other
+PG-leg suite in this repo.
 """
 
 from __future__ import annotations

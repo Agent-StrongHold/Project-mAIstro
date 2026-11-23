@@ -9,12 +9,12 @@ restart-recovery scenarios (evaluation receipts, committed-finalize
 evidence, hard-kill mid-finalize) each parametrized over SQLite and
 PostgreSQL via a shared `restart_spine_factory` fixture. The PostgreSQL
 legs run against the production `PgEvolveDomainStore`/`PgRunStore`/
-`PgProjectScopeStore` spine with a brand-new asyncpg pool per process leg —
-nothing survives a restart but the server's durable rows — and skip only
+`PgProjectScopeStore` spine with a brand-new asyncpg pool for each recovery
+leg. Recovery is invoked in the same OS process: a new pool and service object
+do not satisfy the distinct-process launch requirement. The PG legs skip only
 when `MAISTRO_TEST_PG_DSN` is absent. Because the PG legs share one server,
-the reference leg's durable rows are purged before the crash leg is
-admitted, so the restarted process's journal is exactly the crash run's own
-history.
+the reference leg's durable rows are purged before the recovery leg is
+admitted, so its journal is exactly that run's own history.
 
 The scenarios pin the three crash windows the issue names at the
 domain-mutation → Attempt-commit boundary:
@@ -35,7 +35,8 @@ domain-mutation → Attempt-commit boundary:
 Each leg compares against an uninterrupted reference run on the same
 backend: same members, same fitness, same battle outcomes and Elo ratings
 (`_domain_signature`), byte-identical genome exports where the contract
-asks for byte equality.
+asks for byte equality. The deterministic scenarios patch `EvalHarness` with
+a test double; production-harness parity is not established.
 
 No canonical spine changes: `Goal -> Graph -> Run -> NodeRun -> Attempt`
 remains the only execution authority; the Evolve domain ledger only makes
