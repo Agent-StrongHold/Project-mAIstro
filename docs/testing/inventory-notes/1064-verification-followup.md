@@ -461,3 +461,40 @@ failures**.
 Verdict carried at this head: **NEEDS-REPAIR** (single open criterion:
 hosted exact-SHA CI settlement) — every locally executable acceptance leg was
 re-executed and passed at this exact SHA with real PostgreSQL.
+
+### Round 4 addendum — exact-head CI settled RED (2026-11-23T23:0xZ)
+
+The in-flight rollup at this head **settled with a completed FAILURE**, so the
+exact-SHA/CI criterion is now definitively unmet (no longer merely "pending"):
+
+- Check `Coverage gate (publish-set floor + diff coverage)` — job
+  `138078750667`, run `45282026375`, completed 2026-11-23T23:01:11Z:
+  `Coverage failure: total of 83 is less than fail-under=87` →
+  `##[error]publish-set coverage below the 87% floor` (TOTAL 110,859
+  statements / 17,046 missed = 83%).
+- Not a partial-artifact race: the gate `needs: [coverage-unit,
+  coverage-archive, coverage-postgres]` (`.github/workflows/quality.yml:540`)
+  and its runner setup began only after the producers completed (23:00:36Z);
+  the combine ran over full artifacts.
+- Not pre-existing red on the base: develop's latest quality run
+  `45239478051` at `a6a0969ca1` (the merge base) concluded **success** at
+  2026-11-23T18:32:28Z — the branch's diff is what turned the gate red.
+- Branch-relevant change: this PR's additive coverage producer step
+  (`.github/workflows/quality.yml:498-518`, "hive-conductor Evolve PostgreSQL
+  legs (under coverage)") deliberately extends what the combine measures for
+  `packages/hive-conductor/backend/services`; the step's own comment records
+  the store's changed lines measuring 85% pre-existing. The publish-set floor
+  arithmetic now lands below 87% with the branch's ~2.5k lines of backend
+  service code (evolve_domain_store.py +858, evolution_graph.py +624/-39,
+  evolution.py +335) in scope. Whether the repair is (a) more covered arcs for
+  the new code in the recorded producers, (b) a floor re-authorization under
+  the quality-gates grant process (two merges), or (c) producer-set scoping,
+  is a repair-lane decision — the verifier does not adjust floors.
+- Last rollup reading (2026-11-23T23:5xZ): 77 SUCCESS / 2 SKIPPED /
+  1 IN_PROGRESS (`test`) / **1 FAILURE (Coverage gate)** / 1 null context.
+
+Verdict for this round: **NEEDS-REPAIR** — locally executable acceptance legs
+all re-executed and passed at this exact SHA with real PostgreSQL, #947 P1
+disposition met, no premature closure keywords; but the close-only
+exact-SHA/CI criterion now fails concretely at the head (coverage gate FAILURE,
+branch-attributable vs a green develop base).
