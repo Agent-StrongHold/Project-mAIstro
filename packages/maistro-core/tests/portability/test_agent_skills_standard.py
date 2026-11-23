@@ -152,3 +152,35 @@ def test_crlf_input_is_parsed_without_modifying_bundle_bytes(tmp_path):
     imported = load_agent_skill_directory(root)
     assert imported.name == "pdf-processing"
     assert dict(imported.files)["SKILL.md"] == data
+
+
+def test_standard_minimal_skill_with_closing_delimiter_at_eof(tmp_path):
+    root = _skill(
+        tmp_path,
+        content="---\nname: pdf-processing\ndescription: A standard skill\n---",
+    )
+    imported = load_agent_skill_directory(root)
+    assert imported.name == "pdf-processing"
+    assert imported.instructions == ""
+
+
+def test_empty_declared_compatibility_refused(tmp_path):
+    root = _skill(
+        tmp_path,
+        content=(
+            "---\nname: pdf-processing\ndescription: A standard skill\n"
+            "compatibility: ''\n---\n"
+        ),
+    )
+    with pytest.raises(AgentSkillValidationError):
+        load_agent_skill_directory(root)
+
+
+def test_forged_package_exceeding_export_file_count_is_rejected(tmp_path):
+    imported = load_agent_skill_directory(_skill(tmp_path))
+    forged = replace(imported, files=imported.files * 257)
+    destination = tmp_path / "out"
+    destination.mkdir()
+    with pytest.raises(AgentSkillValidationError):
+        export_agent_skill_directory(forged, destination)
+    assert not (destination / imported.name).exists()
