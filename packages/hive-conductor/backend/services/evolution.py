@@ -492,11 +492,12 @@ class _EvolutionService:
             return False
         try:
             await store.ensure_schema()
-            snapshot = await store.latest_snapshot(workspace_id, kind="committed")
-            snapshot_kind = "committed"
-            if snapshot is None:
-                snapshot = await store.latest_snapshot(workspace_id)
-                snapshot_kind = "admission"
+            # Restore the newest publication boundary, not "any committed
+            # snapshot if one exists". A later cycle's admission snapshot is
+            # the compensation base for that cycle and may contain legitimate
+            # member changes absent from the previous cycle's committed view.
+            snapshot = await store.latest_snapshot(workspace_id)
+            snapshot_kind = snapshot.kind if snapshot is not None else "admission"
         except Exception as exc:
             # A broken durable store must not silently downgrade to a fresh
             # fabricated population that recovery would then trust: surface

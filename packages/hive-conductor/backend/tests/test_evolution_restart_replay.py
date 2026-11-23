@@ -33,6 +33,7 @@ from services.evolution_graph import (
     FinalizeReconciliationRequired,
     NodeContext,
     _admitted_by_evolve,
+    _capture_domain_snapshot,
     _finalize_cycle,
     _recovery_resolver,
     run_canonical_evolution_cycle,
@@ -753,6 +754,59 @@ async def test_process_death_between_journal_and_attempt_resumes_exactly_once(
     assert restored_tournament.get_stats()["total_battles"] == 3
     await recovered_spine.close()
     await reference_spine.close()
+
+
+@pytest.mark.asyncio
+async def test_latest_admission_snapshot_supersedes_older_committed_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later cycle's admission is newer truth than the prior committed state."""
+    from maistro_evolve.tournament import EloTournament
+
+    spine = await _Spine(tmp_path, _WS).start()
+    try:
+        previous = _seed_population()
+        await _capture_domain_snapshot(
+            domain_store=spine.domain_store,
+            workspace_id=_WS,
+            run_id="previous-cycle",
+            kind="committed",
+            population=previous,
+            tournament=EloTournament(),
+            membership_ids=["g1", "g2", "g3", "g4"],
+            completed_cycles=1,
+        )
+        admitted = _seed_population()
+        admitted.add(_genome("new-member", 0.6))
+        await _capture_domain_snapshot(
+            domain_store=spine.domain_store,
+            workspace_id=_WS,
+            run_id="next-cycle",
+            kind="admission",
+            population=admitted,
+            tournament=EloTournament(),
+            membership_ids=["g1", "g2", "g3", "g4", "new-member"],
+            completed_cycles=1,
+        )
+    finally:
+        await spine.close()
+
+    restarted = await _Spine(tmp_path, _WS).start()
+    try:
+        service = await _restore_process(restarted, monkeypatch)
+        assert service._domain_restore is not None
+        assert service._domain_restore["kind"] == "admission"
+        assert sorted(genome.id for genome in service.population.list_all()) == [
+            "g1",
+            "g2",
+            "g3",
+            "g4",
+            "new-member",
+        ]
+        assert service.cycle_count == 1
+    finally:
+        await restarted.purge_domain()
+        await restarted.close()
 
 
 @pytest.mark.asyncio
