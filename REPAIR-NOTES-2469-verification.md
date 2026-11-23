@@ -212,3 +212,34 @@ the CI `test` job are `PytestUnhandledThreadExceptionWarning` text from the
 `packages/maistro-server/tests` producer step — a step that PASSED (the job
 continued through it), in a package this branch does not touch; they are not
 failures and not caused by this change.
+
+## Round 3 — merge-queue format + inventory repair (head 48bf0bc9a29d)
+
+The merge-queue evaluation of 48bf0bc9a29d failed two checks:
+
+1. `ruff format --check .` — the two outage-refusal tests added in
+   48bf0bc9a2 used a non-canonical dict-literal style. Reformatted
+   `test_optimizer_scope_refusal_edges.py` (whitespace only; the file's 14
+   tests re-run green).
+2. `scripts/check-suite-inventory.py` — suite `packages/hive-conductor/backend/tests`
+   expected 4416, collected 4418 (net +2): the same two outage tests were
+   added without recording their delta. Note `2469-refusal-edge-tests.md`
+   amended +12 -> +14 with the outage legs named in the prose. Scoped gate
+   now passes: 4418 collected = recorded inventory.
+
+## Executed evidence (this round)
+
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 3632 files already formatted.
+- `python3 scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests`
+  (the verifier's scope) — ok: 1 suite matches the recorded inventory,
+  4418 unique node IDs, 0 duplicate evidence.
+- 4-suite optimizer battery (`test_optimizer_workspace_authorization.py`,
+  `test_optimizer_scope_refusal_edges.py`, `test_optimizer_scope_durable.py`,
+  `test_optimizer.py`) — 91 passed, 1 skipped (the PG leg skips without
+  `MAISTRO_TEST_PG_DSN`; round 2 ran it green against a real server).
+- `test_gate_removal_flips_the_refusal` — 5 passed (gate bypassed at its
+  one seam: global list, DAG list, accept, reject, and run all leak, so
+  gate removal fails the suite, endpoint by endpoint).
+- `uv run python scripts/check-workspace-retirement.py` — OK: 89 entries
+  match the tree; importer lists unchanged (78 -> 78).

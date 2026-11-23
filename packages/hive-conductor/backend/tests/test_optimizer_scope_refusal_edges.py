@@ -194,11 +194,13 @@ def test_a_template_store_outage_refuses_closed(_isolated: Any) -> None:
             asyncio.run(canonical_dag_workspace("dag-outage"))
         with pytest.raises(OptimizerTargetNotAuthorized):
             asyncio.run(
-                canonical_proposal_workspace({
-                    "id": "stale-row",
-                    "dag_id": "dag-outage",
-                    "workspace_id": _TENANT_A,
-                })
+                canonical_proposal_workspace(
+                    {
+                        "id": "stale-row",
+                        "dag_id": "dag-outage",
+                        "workspace_id": _TENANT_A,
+                    }
+                )
             )
     finally:
         _wipe(stores.optimizer_proposals)
