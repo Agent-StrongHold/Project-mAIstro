@@ -1762,6 +1762,7 @@ async def _tool_run_workflow(
     # `completed`; catching it separately is what lets the failure branch
     # record the canonical outcome instead of re-deciding it locally (#35).
     from services.graph_runner import CanonicalDagExecutionError
+    from services.safe_projection import public_failure
 
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
@@ -1863,7 +1864,7 @@ async def _tool_run_workflow(
                 result=canonical,
                 canonical_run_id=str(canonical.get("run_id") or ""),
             )
-        return {"error": f"DAG execution failed: {exc}"}
+        return {"error": f"DAG execution failed: {public_failure(exc)}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
