@@ -497,7 +497,8 @@ def check(root: Path) -> list[str]:
         failures.append(
             f"{rel}: no entry in quality/workflow-inventory.json -- every "
             "workflow carries a reviewed disposition (ACTIVE, "
-            "MANUAL_DIAGNOSTIC, MANUAL_MAINTENANCE or RETIRED); a workflow nobody dispositioned "
+            "MANUAL_DIAGNOSTIC, MANUAL_MAINTENANCE or RETIRED); "
+            "a workflow nobody dispositioned "
             "is how stream1-diagnostic.yml stayed always-green (#400)"
         )
     return failures
