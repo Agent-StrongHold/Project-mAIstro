@@ -310,3 +310,35 @@ failure. Re-ran executable acceptance suites at the exact candidate head:
 
 No tests or suite counts were added or removed; the existing inventory delta
 is unchanged.
+
+## Assigned-head independent acceptance revalidation at 1340843a52c1 (2026-11-23)
+
+Re-executed the live behavior at the exact assigned head rather than relying on
+prior-run claims:
+
+- `uv run pytest packages/maistro-core/tests/scheduling packages/hive-conductor/backend/tests/test_scheduler.py packages/hive-conductor/backend/tests/test_schedule_projection_authority.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py -x -q`
+  → **413 passed, 68 skipped** (without a DSN; database legs skipped).
+- Created a fresh `auto1199fresh` database on the lane's pg18 service and
+  migrated it with `uv run alembic upgrade head` through 069. Required-PG
+  projection authority + canonical-due suites → **67 passed, 1 skipped**;
+  skip is the memory-only independent-process case.
+- On that fresh migrated DB, `MAISTRO_REQUIRE_PG_LEGS=1 uv run pytest
+  packages/maistro-core/tests -k schedul -x -q` → **368 passed**, including
+  SQLite/PostgreSQL `record_fire` serialization and due-cursor persistence.
+- Explicit cursor regressions on fresh PG: concurrent `record_fire`,
+  no-occurrence cursor write, and `TestTheDueCursorIsRecordedWithoutAFire`
+  → **12 passed** across memory/SQLite/PostgreSQL parametrizations.
+- Strict scheduler-to-Conductor closeout selector
+  (`test_schedule_required_scenario_emits_strict_closeout_evidence`) →
+  **1 passed**, exercising configured scheduler lifespan and emitting the
+  scenario evidence.
+- `uv run ruff check .`, `uv run ruff format --check .`, exact CI vulture
+  command, and `uv run python scripts/check-suite-inventory.py` all passed
+  (1221/1221 vulture identities; 21 suites match).
+
+An initial broad scheduler run against a reused scratch database failed in an
+unrelated cancellation/active-run-cap crash test; an isolated rerun on that
+reused DB also failed before its subprocess checkpoint. Re-running the full
+suite on a fresh migrated database passed 368/368, demonstrating scratch-DB
+contamination rather than a scheduler acceptance failure. No tests or suite
+counts were changed; inventory delta remains unchanged.
