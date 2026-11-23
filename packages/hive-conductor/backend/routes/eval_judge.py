@@ -75,17 +75,53 @@ async def read_verdict(run_id: str, request: Request) -> dict[str, Any]:
     # never confirms a run (or a verdict for it) exists beyond the caller's
     # boundary. "No verdict" is only answerable for a run the caller may
     # already inspect. Evidence is keyed by canonical Run id (#2470), so a
-    # projection-id read falls back to the canonical id this same authorized
-    # read resolved — no second authorization, no alias-keyed duplicate row.
+    # projection-id read falls back to the canonical id — but only after the
+    # alias itself is proven: the overlay leaves a cross-linked projection
+    # row untouched, so its canonical_run_id is not read authorization. The
+    # fallback resolves the Run through the scoped reader and requires the
+    # projection's own Workspace before serving canonical-keyed evidence.
     detail = await visible_run_detail(_user_id(request), run_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
     v = get_verdict(run_id)
     if v is None:
-        v = get_verdict(str(detail.get("canonical_run_id") or ""))
+        v = await _canonical_keyed_verdict(_user_id(request), detail)
     if v is None:
         raise HTTPException(status_code=404, detail="no verdict for run_id")
     return v
+
+
+async def _canonical_keyed_verdict(uid: str, detail: dict[str, Any]) -> dict[str, Any] | None:
+    """The projection's canonical-keyed verdict, only when the alias is proven.
+
+    ``detail["canonical_run_id"]`` alone is not read authorization: the
+    inspection overlay deliberately leaves a projection row unchanged when
+    its canonical Run is unreadable or filed in another Workspace, so the id
+    can name a foreign Run whose verdict must never surface here. The alias
+    is honored only when the scoped reader admits this caller to the Run
+    itself and the Run is filed in the projection's own Workspace — the
+    read-side twin of the POST gate's association check. Every refusal
+    degrades to the ordinary "no verdict" answer, indistinguishable from a
+    missing one, so nothing about the foreign Run is confirmed.
+    """
+    from services.engine import get_engine
+
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id:
+        return None
+    try:
+        reader = get_engine().run_reader
+    except Exception:
+        return None
+    if reader is None:
+        return None
+    try:
+        run = await reader.get_run(canonical_run_id, principal_id=uid)
+    except Exception:
+        return None
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        return None
+    return get_verdict(canonical_run_id)
 
 
 @router.get("")

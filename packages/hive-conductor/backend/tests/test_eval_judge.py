@@ -433,6 +433,76 @@ async def test_score_run_none_run_raises_value_error() -> None:
         await score_run(None)
 
 
+async def test_score_run_joiner_cancellation_does_not_cancel_shared_invocation() -> None:
+    """Cancelling only a joiner must not cancel the shared scoring task:
+    the leader completes, the verdict is persisted, and exactly one paid
+    model call is made (#2470 review follow-up)."""
+    import asyncio
+
+    import stores
+    from services.eval_judge import score_run
+
+    calls = 0
+    released = asyncio.Event()
+
+    async def _stub(messages: list[dict], **kw: Any) -> str:
+        nonlocal calls
+        calls += 1
+        await released.wait()
+        return '{"score": 90, "rationale": "ok"}'
+
+    run = _Run(run_id="r-joiner-cancel")
+    leader = asyncio.create_task(score_run(run, llm_call=_stub))
+    while calls == 0:
+        await asyncio.sleep(0)
+    joiner = asyncio.create_task(score_run(run, llm_call=_stub))
+    await asyncio.sleep(0)
+    joiner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await joiner
+    released.set()
+    out = await leader
+    assert out["status"] == "ok"
+    assert calls == 1
+    assert stores.eval_verdicts["r-joiner-cancel"]["score"] == 90
+
+
+async def test_score_run_leader_cancellation_keeps_registry_until_finish() -> None:
+    """If the leader's caller is cancelled mid-await, the in-flight entry
+    stays until the scoring task itself finishes, so a later caller joins
+    the same invocation instead of paying for a second one."""
+    import asyncio
+
+    from services import eval_judge as ej
+    from services.eval_judge import score_run
+
+    calls = 0
+    released = asyncio.Event()
+
+    async def _stub(messages: list[dict], **kw: Any) -> str:
+        nonlocal calls
+        calls += 1
+        await released.wait()
+        return '{"score": 70, "rationale": "ok"}'
+
+    run = _Run(run_id="r-leader-cancel")
+    leader = asyncio.create_task(score_run(run, llm_call=_stub))
+    while calls == 0:
+        await asyncio.sleep(0)
+    leader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+    # Scoring task still running: the registry entry must survive so
+    # later callers join it rather than start a second paid invocation.
+    assert "r-leader-cancel" in ej._score_inflight
+    released.set()
+    out = await score_run(run, llm_call=_stub)
+    assert out["status"] == "ok"
+    assert calls == 1
+    await asyncio.sleep(0)  # let done callbacks flush
+    assert "r-leader-cancel" not in ej._score_inflight
+
+
 async def test_score_run_falls_back_to_default_llm_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

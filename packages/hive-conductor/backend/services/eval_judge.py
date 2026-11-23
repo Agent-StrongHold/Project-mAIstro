@@ -249,8 +249,12 @@ async def score_run(
     leader = _score_inflight.get(run_id) if run_id else None
     if leader is not None and leader.get_loop() is asyncio.get_running_loop():
         # One logical scoring effect per run: joiners await the leader's
-        # invocation instead of issuing a second paid model call.
-        return await leader
+        # invocation instead of issuing a second paid model call. The await
+        # is shielded: a joiner's own cancellation must not propagate into
+        # the shared invocation (Task.cancel() cancels the awaited task),
+        # which would cancel the leader and every other joiner and leave
+        # the evidence store empty after a started model call.
+        return await asyncio.shield(leader)
     if leader is None and run_id:
         task = asyncio.create_task(
             _score_run_once(
@@ -265,11 +269,19 @@ async def score_run(
             )
         )
         _score_inflight[run_id] = task
-        try:
-            return await task
-        finally:
-            if _score_inflight.get(run_id) is task:
-                _score_inflight.pop(run_id, None)
+
+        def _release(t: asyncio.Task[dict[str, Any]] = task, rid: str = run_id) -> None:
+            # Retain the registry entry until the scoring task itself
+            # finishes: this caller may be cancelled mid-await while the
+            # shared task keeps running, and later callers must still join
+            # it rather than start a second paid invocation.
+            if _score_inflight.get(rid) is t:
+                _score_inflight.pop(rid, None)
+
+        task.add_done_callback(_release)
+        # Shielded as above: cancelling this caller must not cancel the
+        # shared scoring task other callers have joined.
+        return await asyncio.shield(task)
     return await _score_run_once(
         run_record,
         feedback_outcomes=feedback_outcomes,

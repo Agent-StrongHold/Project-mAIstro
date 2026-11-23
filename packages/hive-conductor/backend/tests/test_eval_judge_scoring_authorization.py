@@ -558,6 +558,70 @@ def test_cross_workspace_link_cannot_proxy_scoring(monkeypatch: pytest.MonkeyPat
     assert stub_calls == [run_id]
 
 
+def test_cross_workspace_link_cannot_serve_canonical_keyed_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read side of the association rule: a verdict keyed under W2's
+    canonical Run is not retrievable through a W1 projection row. A W1-only
+    member cannot even read the foreign Run the overlay left unproven, and a
+    member of both Workspaces is still refused by the Workspace association —
+    only a same-Workspace row (or the Run's own admitted id) serves the
+    canonical-keyed evidence."""
+    initiator, _ = _elevated_scorer("xlink-read-initiator")
+    peer, _ = _elevated_scorer("xlink-read-peer")
+    w1 = asyncio.run(_workspace("Evidence Row", initiator))
+    w2 = asyncio.run(_workspace("Evidence Run", initiator))
+
+    from maistro.workspaces.model import WorkspaceRole
+
+    asyncio.run(_grant_member(w1.id, peer, WorkspaceRole.MEMBER))
+    store, _reader = _wire_spine(monkeypatch)
+    run_id = asyncio.run(_canonical_run(store, w2.id, initiator))
+    asyncio.run(
+        _projection_row(
+            "xlink-read-row", canonical_run_id=run_id, workspace_id=w1.id, user_id=initiator
+        )
+    )
+
+    initiator_client = _client_for(initiator, elevate=True)
+    stub_calls = _stubbed_scorer(monkeypatch, '{"score": 64, "rationale": "direct"}')
+    scored = initiator_client.post(f"/v1/eval-judge/{run_id}")
+    assert scored.status_code == 200, scored.text
+    assert scored.json()["score"] == 64
+    assert stub_calls == [run_id]
+    import stores
+
+    assert run_id in stores.eval_verdicts
+
+    # The initiator can read both Workspaces, yet the row must not serve the
+    # foreign verdict — the association boundary, not mere readability.
+    via_row = initiator_client.get("/v1/eval-judge/xlink-read-row")
+    assert via_row.status_code == 404
+    assert via_row.json() == {"detail": "no verdict for run_id"}
+
+    # The W1-only member reads the row (it sits in W1) but cannot read the
+    # foreign Run: the same non-disclosing "no verdict" answer.
+    peer_client = _client_for(peer)
+    via_peer = peer_client.get("/v1/eval-judge/xlink-read-row")
+    assert via_peer.status_code == 404
+    assert via_peer.json() == {"detail": "no verdict for run_id"}
+
+    # A same-Workspace row keeps the alias working: the initiator reads the
+    # same evidence through the W2 twin projection.
+    asyncio.run(
+        _projection_row(
+            "twin-read-row", canonical_run_id=run_id, workspace_id=w2.id, user_id=initiator
+        )
+    )
+    twin = initiator_client.get("/v1/eval-judge/twin-read-row")
+    assert twin.status_code == 200, twin.text
+    assert twin.json() == stores.eval_verdicts[run_id]
+    assert twin.json()["score"] == scored.json()["score"]
+    # The peer still cannot reach the W2 twin or the Run directly.
+    assert peer_client.get("/v1/eval-judge/twin-read-row").status_code == 404
+    assert peer_client.get(f"/v1/eval-judge/{run_id}").status_code == 404
+
+
 # --- 5. Evidence protection --------------------------------------------------
 
 

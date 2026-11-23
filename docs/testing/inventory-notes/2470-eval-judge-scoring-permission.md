@@ -1,13 +1,14 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +20
+  packages/hive-conductor/backend/tests: +23
 ---
 # 2470 eval-judge scoring permission
 
 ## What moved
 
-`packages/hive-conductor/backend/tests` gains 17 collected node IDs, all in the
-new `test_eval_judge_scoring_authorization.py`. `test_eval_judge.py` keeps its
+`packages/hive-conductor/backend/tests` gains 23 collected node IDs: 20 in the
+new `test_eval_judge_scoring_authorization.py` and 3 in `test_eval_judge.py`
+(the follow-ups below). `test_eval_judge.py` keeps its
 36 node IDs: three trigger tests were rewritten in place (same counts) because
 the #2470 route contract changed what a successful POST means — the caller now
 needs the assigned-and-elevated `eval.score` capability, and the scored target
@@ -62,3 +63,24 @@ one evidence row whoever triggers it:
   evaluator-version provenance a manual score records — the turn's
   initiator rides through to `_persist`, so the shared evidence the
   optimizer ranks on is attributable.
+
+## Follow-up (+3): the shared invocation survives its callers
+
+Three further node IDs pin the single-flight contract's cancellation
+semantics — the cases where the in-flight dedupe itself could leak a second
+paid model effect or drop started evidence:
+
+- Cancelling a joiner must not cancel the shared invocation it joined
+  (`asyncio.shield`): the leader completes, the verdict is persisted, and
+  exactly one paid model call is made — an abandoned retry tab can no longer
+  tear down the score other principals are waiting on.
+- Cancelling the leader's caller mid-await keeps the in-flight registry
+  entry until the scoring task itself finishes (release via done-callback,
+  not caller-scoped `finally`), so the next caller joins the running
+  invocation instead of paying for a second one; the registry is empty
+  after the task settles.
+- A projection-id read serves canonical-keyed evidence only when the alias
+  itself is proven — the scoped reader admits the caller to the canonical
+  Run and the Run is filed in the projection row's own Workspace — the
+  read-side twin of the POST gate's association rule (#2466); every
+  refusal degrades to the ordinary "no verdict" answer.
