@@ -120,16 +120,24 @@ async def _registered_template_workspaces(dag_id: str) -> set[str]:
     from services.optimizer_candidates import template_store
 
     store = template_store()
+    # The store is the registration authority (ADR-082926-65bf), and durable
+    # backends do real I/O: an outage must refuse closed, not read as absence.
+    # Returning set() here would fall through to proposal recordings and let a
+    # stale row name a tenant the canonical registration never granted.
     try:
         versions = sorted(await store.versions(dag_id))
-    except Exception:  # pragma: no cover - backends do not raise here
-        return set()
+    except Exception as exc:
+        raise OptimizerTargetNotAuthorized(
+            "canonical template store unreadable; optimizer target not found"
+        ) from exc
     workspaces: set[str] = set()
     for version in reversed(versions):
         try:
             template = await store.get(dag_id, version=version)
-        except Exception:  # pragma: no cover - backends do not raise here
-            template = None
+        except Exception as exc:
+            raise OptimizerTargetNotAuthorized(
+                "canonical template store unreadable; optimizer target not found"
+            ) from exc
         if template is None:
             continue
         workspace = str(getattr(template, "workspace_id", "") or "").strip()

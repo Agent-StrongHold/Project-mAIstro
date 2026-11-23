@@ -162,6 +162,69 @@ def test_an_unreadable_template_version_contributes_no_claim(_isolated: Any) -> 
     assert asyncio.run(canonical_dag_workspace("dag-unreadable")) == ""
 
 
+def test_a_template_store_outage_refuses_closed(_isolated: Any) -> None:
+    from services.optimizer_candidates import set_template_store
+    from services.optimizer_scope import (
+        OptimizerTargetNotAuthorized,
+        canonical_dag_workspace,
+        canonical_proposal_workspace,
+    )
+
+    class _OutageStore:
+        async def versions(self, template_id: str) -> list[int]:
+            raise ConnectionError("pool exhausted")
+
+        async def get(self, template_id: str, *, version: int | None = None) -> None:
+            raise TimeoutError("read timed out")
+
+    set_template_store(_OutageStore())
+    import stores
+
+    _wipe(stores.optimizer_proposals)
+    stores.optimizer_proposals["stale-row"] = {
+        "id": "stale-row",
+        "dag_id": "dag-outage",
+        "workspace_id": _TENANT_A,
+    }
+    try:
+        # A store outage is not an unregistered DAG: neither the canonical
+        # answer nor the recorded-row fallback may answer while the
+        # registration authority is unreadable.
+        with pytest.raises(OptimizerTargetNotAuthorized):
+            asyncio.run(canonical_dag_workspace("dag-outage"))
+        with pytest.raises(OptimizerTargetNotAuthorized):
+            asyncio.run(
+                canonical_proposal_workspace({
+                    "id": "stale-row",
+                    "dag_id": "dag-outage",
+                    "workspace_id": _TENANT_A,
+                })
+            )
+    finally:
+        _wipe(stores.optimizer_proposals)
+
+
+def test_an_unreadable_version_read_refuses_closed(_isolated: Any) -> None:
+    from services.optimizer_candidates import set_template_store
+    from services.optimizer_scope import (
+        OptimizerTargetNotAuthorized,
+        canonical_dag_workspace,
+    )
+
+    class _VersionReadFails:
+        async def versions(self, template_id: str) -> list[int]:
+            return [1]
+
+        async def get(self, template_id: str, *, version: int | None = None) -> None:
+            raise ConnectionError("connection reset")
+
+    set_template_store(_VersionReadFails())
+    # Same posture for the per-version read: a failure mid-loop refuses the
+    # target rather than downgrading to a partial (possibly empty) claim.
+    with pytest.raises(OptimizerTargetNotAuthorized):
+        asyncio.run(canonical_dag_workspace("dag-outage"))
+
+
 def test_a_template_version_without_a_workspace_claims_nothing(_isolated: Any) -> None:
     from services.optimizer_candidates import set_template_store
     from services.optimizer_scope import canonical_dag_workspace
