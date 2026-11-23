@@ -137,3 +137,78 @@ descriptor — but descriptor read/edit via the DAG routes is equally unscoped
 today. This belongs to the DAG-surface tenancy issues (#766/#364 lineage),
 not the optimizer gate; fixing it here alone would shift the hole, not close
 it.
+
+---
+
+# REPAIR ROUND 2 — CI gate repair at head 67f06b4fa510 (post-merge of develop c810c956)
+
+The merge-queue evaluation at `67f06b4fa510` failed four check-runs: `test`,
+`Quality / Workspace retirement` (+ its dependent `Quality gate (Pillars
+1–4, 7, 8)`), and `Coverage gate (publish-set floor + diff coverage)`.
+
+## Root cause (one, with two consequences)
+
+`services/optimizer_scope.py` imported `stores` and read
+`stores.optimizer_proposals` / `stores.dags` directly. Both are RETIRE
+entries in `quality/workspace-retirement.json`, whose importer lists are
+judged against the trusted merge base and may only shrink: the module was a
+NEW importer of each store, so `check-workspace-retirement.py` failed, so
+`tests/test_check_workspace_retirement.py` failed in the root suite (which
+the `test` job and the coverage gate's `--source=scripts` producer both
+run), cascading into `Quality gate` and `Coverage gate`. Adding
+`optimizer_scope.py` to the importer lists is not an available repair: that
+loosening needs a grant landed at the merge base first (RATCHET-PROVENANCE
+two-merge rule), and none exists.
+
+## Repair
+
+1. **Storage seam (#2469 unchanged in behavior).** Added three read-only,
+   late-bound accessors in `services/optimizer.py` — the module the
+   retirement ledger already names as the tolerated consumer of both
+   stores — `proposal_rows()`, `stored_proposal(id)`, `dag_known(id)`;
+   `services/optimizer_scope.py` no longer imports `stores` at all. Every
+   row lookup, page walk, and descriptor existence check is delegated
+   through that seam; the ledger's importer lists are unchanged (78 → 78
+   tolerated importers) and the routes still hold no import of the
+   projection: `optimizer_scope` remains the one authorization door.
+2. **Diff-coverage floor.** With the root-suite cascade fixed, the coverage
+   gate proceeds to the per-file diff-coverage floor, which flagged 16
+   partial branch arcs in `optimizer_scope.py` plus `optimizer.py:682`
+   (`record_decision`'s authorized-tenant-vs-recording contradiction raise)
+   — all fail-closed edges no route-level test can reach single-threaded.
+   New `test_optimizer_scope_refusal_edges.py` (12 tests) pins them: blank
+   ids, an unreadable/tenant-less template version, garbage and blank
+   projection rows, one template registered under two Workspaces, a row
+   contradicting the precomputed DAG tenancy, `_member_role` blank
+   identities, decision-filtered paging, an unclaimed DAG's empty list,
+   decision on a blank-DAG / deleted-DAG / scope-less row, and the
+   `record_decision` contradiction. Every case asserts zero writes.
+
+## Executed evidence (this round, exact head under repair)
+
+- `uv run python scripts/check-workspace-retirement.py` — **OK: 89 entries
+  match the tree** (was FAIL with the two NEW-importer findings).
+- `tests/test_check_workspace_retirement.py` — 20 passed (was 1 FAILED).
+- Root suite `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 pytest tests/
+  --ignore=tests/tools/registry -q` — **5909 passed, 140 skipped, 0 failed**
+  (CI's `test` job and coverage gate both red on this suite before).
+- Full hive suite under branch coverage — **4369 passed, 47 skipped**; then
+  `scripts/check-diff-coverage.py coverage.xml --base c810c956785b` — **ok:
+  every measured file ≥90% lines / ≥80% branch arcs**.
+- Durable gate legs with a real server: `MAISTRO_TEST_PG_DSN` against the
+  lane's `pgvector/pg18` container at `alembic` head 068 — **2 passed,
+  0 skipped** (the PG leg really ran; sqlite + postgres).
+- `scripts/check-suite-inventory.py` — all **21 suites match** the recorded
+  inventory (note `2469-refusal-edge-tests.md` records the +12 delta).
+- `uv run ruff check .` / `uv run format --check .` — pass; vulture with
+  CI's exact arguments — 1221 reviewed identities → 1221 findings, exit 0.
+- Acceptance-criteria tests from round 1 all still pass (disclosure scoping,
+  foreign-decision zero-write, owner promotion, revocation, foreign run with
+  no execution, project-tenant refusal, forged-field freeze, registration
+  contradiction, five-endpoint gate-removal mutation control).
+
+The `##[error] raise RuntimeError('Event loop is closed')` annotations in
+the CI `test` job are `PytestUnhandledThreadExceptionWarning` text from the
+`packages/maistro-server/tests` producer step — a step that PASSED (the job
+continued through it), in a package this branch does not touch; they are not
+failures and not caused by this change.

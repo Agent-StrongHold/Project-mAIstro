@@ -1055,6 +1055,52 @@ def _mutated_snapshot(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, 
     return candidate, BUILT, ""
 
 
+def proposal_rows() -> list[dict[str, Any]]:
+    """Read-only snapshot of every stored proposal row.
+
+    This is the storage seam the #2469 authorization gate reads through:
+    ``services.optimizer_scope`` must resolve proposals to their canonical
+    owning Workspace, but ``stores.optimizer_proposals`` is a retiring
+    surface (WORKSPACE-CUTOVER-PLAN section 5) whose ledger entry may not
+    gain a new importer, so the scope gate reads rows through this — the
+    module the retirement ledger already names — instead of importing the
+    projection itself. Late-bound on purpose: rows are resolved at call
+    time so per-test isolation of ``stores`` keeps working.
+    """
+    import stores
+
+    return list(stores.optimizer_proposals.values())
+
+
+def stored_proposal(proposal_id: str) -> dict[str, Any] | None:
+    """One stored proposal row, or None when absent or not a mapping.
+
+    Same #2469 storage seam as :func:`proposal_rows`, for the manual
+    decision path: the scope gate looks a proposal up by id without the
+    route ever touching the projection. A stored non-mapping payload is
+    indistinguishable from an absent id — both refuse closed.
+    """
+    import stores
+
+    payload = stores.optimizer_proposals.get(proposal_id)
+    return payload if isinstance(payload, dict) else None
+
+
+def dag_known(dag_id: str) -> bool:
+    """Whether the descriptor store holds a record for this DAG id.
+
+    The #2469 authorization gate refuses a run, a DAG-scoped list, or a
+    decision whose target DAG has no descriptor: a bare id with no record
+    would otherwise mint proposals in the caller's tenant for a target
+    that does not exist. Read here — not imported from the scope gate — so
+    the retiring ``stores.dags`` surface gains no new importer; late-bound
+    like the other seams in this module.
+    """
+    import stores
+
+    return dag_id in stores.dags
+
+
 def list_proposals(
     dag_id: str = "",
     *,

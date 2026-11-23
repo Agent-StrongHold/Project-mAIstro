@@ -45,6 +45,15 @@ authorization door and no second path a future handler could take around
 it. Membership revalidation reads the live canonical store on every
 request, so a session (or elevation) that outlives a revocation loses
 access with it.
+
+Nor does this module import the projection or descriptor stores directly:
+``stores.optimizer_proposals`` and ``stores.dags`` are retiring surfaces
+(WORKSPACE-CUTOVER-PLAN section 5) whose ledger entries may not gain a new
+importer, so every row lookup, page walk, and descriptor existence check
+here is delegated to ``services.optimizer`` — the module the retirement
+ledger already names as their consumer (``proposal_rows``,
+``stored_proposal``, ``dag_known``). The seam stays read-only and
+late-bound, so per-test isolation of ``stores`` keeps working.
 """
 
 from __future__ import annotations
@@ -131,10 +140,10 @@ async def _registered_template_workspaces(dag_id: str) -> set[str]:
 
 def _recorded_proposal_workspaces(dag_id: str) -> set[str]:
     """The Workspaces the server recorded on this DAG's stored proposals."""
-    import stores
+    from services.optimizer import proposal_rows
 
     workspaces: set[str] = set()
-    for payload in stores.optimizer_proposals.values():
+    for payload in proposal_rows():
         if not isinstance(payload, dict):
             continue
         if str(payload.get("dag_id", "") or "").strip() != dag_id:
@@ -233,8 +242,6 @@ async def _visible_rows(
     #1240 discipline). Rows that resolve to no Workspace, and rows whose
     tenancy is an aliasing fault, are visible to no one.
     """
-    import stores
-
     from services.workspace_authority import list_workspace_ids_for_user
 
     allowed = {
@@ -247,7 +254,9 @@ async def _visible_rows(
     wanted_dag = dag_id.strip()
     visible: list[dict[str, Any]] = []
     tenancy_cache: dict[str, str] = {}
-    for stored in stores.optimizer_proposals.values():
+    from services.optimizer import proposal_rows
+
+    for stored in proposal_rows():
         if not isinstance(stored, dict):
             continue
         row_dag = str(stored.get("dag_id", "") or "").strip()
@@ -294,10 +303,10 @@ async def visible_dag_proposals(
     share the non-disclosing refusal; an unclaimed DAG has nothing to
     disclose and answers the empty list.
     """
-    import stores
-
     dag_id = dag_id.strip()
-    if not dag_id or dag_id not in stores.dags:
+    from services.optimizer import dag_known
+
+    if not dag_id or not dag_known(dag_id):
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     claimed = await canonical_dag_workspace(dag_id)
     if claimed:
@@ -320,18 +329,18 @@ async def authorize_proposal_decision(user_id: str, proposal_id: str) -> Optimiz
     non-disclosing refusal; a member without write authority (a viewer) is
     forbidden, not foreign, and answers 403.
     """
-    import stores
+    from services.optimizer import dag_known, stored_proposal
 
     proposal_id = proposal_id.strip()
-    payload = stores.optimizer_proposals.get(proposal_id)
-    if not isinstance(payload, dict):
+    payload = stored_proposal(proposal_id)
+    if payload is None:
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     dag_id = str(payload.get("dag_id", "") or "").strip()
     if not dag_id:
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     # A deleted or missing target DAG refuses the decision: the promotion
     # surface the decision drives no longer exists.
-    if dag_id not in stores.dags:
+    if not dag_known(dag_id):
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     workspace = await canonical_proposal_workspace(payload)
     if not workspace:
@@ -365,13 +374,13 @@ async def authorize_dag_run(
     Both answers are the same non-disclosing 404; neither a baseline nor a
     proposal can exist for them.
     """
-    import stores
+    from services.optimizer import dag_known
 
     scope = await authorize_hive_dag_scope(
         workspace_id=workspace_id, user_id=user_id, project_id=project_id
     )
     dag_id = dag_id.strip()
-    if not dag_id or dag_id not in stores.dags:
+    if not dag_id or not dag_known(dag_id):
         raise OptimizerTargetNotAuthorized("optimizer target not found")
     claimed = await canonical_dag_workspace(dag_id)
     if claimed and claimed != scope.workspace_id:
