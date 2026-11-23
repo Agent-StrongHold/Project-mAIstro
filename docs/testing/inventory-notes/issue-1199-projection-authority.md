@@ -226,3 +226,28 @@ module. Ran instead:
 No production or test code changed and no tests were added; the inventory
 delta above remains unchanged. The skipped database legs remain unverified in
 this round; prior PostgreSQL evidence is recorded above but was not re-run.
+
+## Exact-head revalidation at 8263bd487fde (2026-11-23)
+
+Re-ran acceptance evidence on the assigned head with the lane's PostgreSQL 18
+service (`auto-1199-r3-pg`, port 18995), migrated to Alembic head 069:
+
+- Projection authority, canonical due, and canonical admission suites with
+  `MAISTRO_REQUIRE_PG_LEGS=1`: **86 passed, 1 skipped**. The skip is the
+  intentionally inapplicable memory-only independent-process case; PostgreSQL
+  cases ran against the real service, including restart, edit/delete recovery,
+  cursor and occurrence claims.
+- Core scheduling suite with required PostgreSQL legs:
+  `uv run pytest packages/maistro-core/tests -k schedul -x -q` → **368 passed**.
+- Strict configured scheduler-to-Conductor closeout selector → **3 passed**;
+  emitted `M1_PARITY_EVIDENCE` with `executed=true` and `status=PASSED`.
+- `uv run ruff check . && uv run ruff format --check .` passed (3630 files
+  formatted); `scripts/check-suite-inventory.py` passed (21 suites); durable
+  table inventory passed (125 tables); exact CI vulture command passed
+  (1221 reviewed identities, 1221 findings).
+
+The initial PG attempt used a SQLAlchemy `postgresql+asyncpg://` URL for a
+fixture that passes `MAISTRO_TEST_PG_DSN` to psycopg and failed during fixture
+setup (`missing "="`); corrected the test DSN to standard `postgresql://` and
+the complete required-PG test selection passed. No tests or suite counts were
+added or removed in this validation; the existing inventory delta is unchanged.
