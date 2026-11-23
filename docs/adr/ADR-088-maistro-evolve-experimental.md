@@ -112,8 +112,6 @@ turn the experimental package API into a general stability guarantee.
 - The intended architecture of maistro-evolve is legible without implying it is frozen.
 - Downstream code is warned off depending on the current API; the experimental label is explicit.
 - A clear revision trigger (stabilisation) is on record, so this ADR is not mistaken for a final
-- Downstream code is warned off depending on the current API; the experimental label is explicit.
-- A clear revision trigger (stabilisation) is on record, so this ADR is not mistaken for a final
   contract.
 
 ## Out of scope
