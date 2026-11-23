@@ -28,6 +28,7 @@ def row(number: int, parent=None, native=None, milestone="M1"):
         "issue_id": number + 1000,
         "title": f"issue #{number}",
         "state": "open",
+        "labels": ["type:issue"],
         "declared_parent": parent,
         "native_parent": native,
         "ambiguous_parent_line": False,
@@ -86,12 +87,15 @@ def test_live_link_uses_github_database_id_and_verifies_both_sides(
 ) -> None:
     parent = {
         "number": 1,
+        "id": 1001,
         "milestone": {"number": 2},
         "sub_issues_summary": {"total": 0},
     }
     child = {
         "number": 2,
         "id": 1002,
+        "state": "open",
+        "labels": [{"name": "type:issue"}],
         "milestone": {"number": 2},
         "body": "Parent: #1",
         "parent_issue_url": None,
@@ -134,10 +138,12 @@ def test_already_linked_is_idempotent_and_never_posts(repair, monkeypatch) -> No
 
 
 def test_stale_parent_line_blocks_native_mutation(repair, monkeypatch) -> None:
-    parent = {"number": 1, "milestone": {"number": 2}}
+    parent = {"number": 1, "id": 1001, "milestone": {"number": 2}}
     child = {
         "number": 2,
         "id": 1002,
+        "state": "open",
+        "labels": [{"name": "type:issue"}],
         "milestone": {"number": 2},
         "body": "Parent: #999",
         "parent_issue_url": None,
