@@ -3010,7 +3010,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List All Proposals */
+        /**
+         * List All Proposals
+         * @description Proposals across the caller's Workspace universe, newest first.
+         *
+         *     Membership scopes before the page limit, so a foreign tenant's newer
+         *     pending rows cannot push the caller's own proposals out of the page.
+         */
         get: operations["list_all_proposals_v1_optimizer_proposals_get"];
         put?: never;
         post?: never;
@@ -3061,7 +3067,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List For Dag */
+        /**
+         * List For Dag
+         * @description One DAG's proposals, scoped to the caller's canonical Workspaces.
+         *
+         *     Authentication happens in AuthMiddleware; it is not authorization
+         *     (#2469). A DAG claimed by another tenant shares the non-disclosing 404
+         *     with an unknown one, so the list cannot become a tenant oracle.
+         */
         get: operations["list_for_dag_v1_optimizer__dag_id__proposals_get"];
         put?: never;
         post?: never;
@@ -13608,6 +13621,7 @@ export interface operations {
                 apply_auto?: boolean;
                 validate?: boolean;
                 workspace_id?: string | null;
+                project_id?: string | null;
             };
             header?: never;
             path: {
