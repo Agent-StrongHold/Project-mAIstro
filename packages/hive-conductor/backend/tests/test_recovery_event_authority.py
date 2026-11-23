@@ -118,7 +118,7 @@ def test_canonical_publisher_without_run_lookup_never_falls_back_to_legacy() -> 
         canonical_event_publisher=CanonicalEventPublisher(store),
         event_bus=EventBus(),
     )
-    with pytest.raises(AttributeError):
+    with pytest.raises(RuntimeError, match="canonical RunStore unavailable"):
         recovery_events_for(owner)
 
 
