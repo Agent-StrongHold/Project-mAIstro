@@ -70,3 +70,18 @@ approval, or #947 review disposition; no remote mutations were performed.
 The tests still do not launch a new OS process for resumed Run-level recovery or
 exercise each finalize mutation boundary; these remain unresolved and are not
 promoted to acceptance evidence by the passing same-process suite.
+
+## Independent verification at `acaad60dab3b`
+
+- Scoped Evolve restart/store suites: **40 passed, 13 skipped**. The skipped
+  PostgreSQL legs require `MAISTRO_TEST_PG_DSN`; it is unset in this run.
+- `uv run ruff check .` and `uv run ruff format --check .`: passed.
+- CI-exact acceptance-state ratchet with mandate `88ca7a1ccb5c`: **failed**;
+  design coverage is `39.7781%`, below the base floor `44.4608%`. This repair
+  cannot authorize or bank that fall.
+- The unresolved close-only gaps remain: no distinct-OS-process Run recovery
+  test, no production-harness parity proof, incomplete finalize-boundary
+  coverage, and no verified real-PostgreSQL run. The accepted canonical
+  execution/recovery ADRs require the Run/NodeRun/Attempt + Graph-continuation
+  authority to remain canonical; Evolve persistence must remain domain evidence,
+  not a parallel execution lifecycle.
