@@ -89,7 +89,7 @@ def test_parent_directory_must_match_upstream_skill_name(tmp_path):
         "---\nname: pdf-processing\ndescription: ''\n---\nWork\n",
         "---\nname: pdf-processing\ndescription: Valid\nmetadata:\n  count: 8\n---\nWork\n",
         "---\nname: pdf-processing\ndescription: Valid\nallowed-tools: [Bash]\n---\nWork\n",
-        "---\nname: pdf-processing\ndescription: Valid\nmetadata: &shared {author: A}\n---\n*shared\n",
+        "---\nname: pdf-processing\ndescription: Valid\nmetadata: {author: &a alpha}\nlicense: *a\n---\nWork\n",
         "name: pdf-processing\ndescription: Valid\n",
     ],
 )
