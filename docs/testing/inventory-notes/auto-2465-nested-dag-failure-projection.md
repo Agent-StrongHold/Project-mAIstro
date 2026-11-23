@@ -1,8 +1,38 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +17
+  packages/hive-conductor/backend/tests: +21
 ---
-# auto-2465 — nested DAG failure results and Design exception responses projected at the public boundary (round 2)
+# auto-2465 — nested DAG failure results and Design exception responses projected at the public boundary (round 3)
+
+Round 3 (CI repair): two gate failures at head ed211344, both reproduced
+locally and fixed.
+
+1. **SAST / Gitleaks** — the sentinel suite's SECRET_SENTINEL was a whole
+   secret-shaped literal on one line; gitleaks' generic-api-key rule fires
+   on the introducing commit (7e00a4aa8), whose patch stays in every
+   scanned range. The literal is now assembled from inert pieces (the
+   repo's no-single-line-reads-as-KEY
+   convention) and .gitleaks.toml carries one commit+path+rule-scoped entry
+   for the historical commit, the de04b449 / 1e4058c3c / 4806d967 precedent
+   shape. Range arm c810c956..HEAD: no leaks (gitleaks 8.30.1, CI's pinned
+   version).
+
+2. **hive-conductor-e2e-ui** — pm-workflow.spec.ts step 06 failed:
+   `expect(String(run.result?.error)).toContain("host policy")` received
+   "run failed; see server logs". The round-1 projection bounded the
+   harness's host-authored node-execution refusal ("Execution blocked: host
+   policy did not authorize this node", wrapped by the canonical executor as
+   `PermissionError: <sentence>`) along with unclassified exception text.
+   That refusal is host-authored, bounded, and the actionable disclosure the
+   M1 surface contract pins; the policy now preserves it by sentence —
+   `HOST_POLICY_NODE_REFUSAL` in safe_projection.py, raised by
+   legacy_dag_node from the same constant, matched by sentence and never by
+   wrapper kind so an arbitrary PermissionError at a filesystem boundary
+   stays bounded. Four unit pins cover: the wrapped sentence crosses
+   verbatim; arbitrary PermissionError text stays bounded; the receipt keeps
+   the refusal while failed-node responses stay kind-only; the enforcement
+   site raises the policy's own constant (single source of truth). The
+   e2e suite passes 229/229 against the repaired branch.
 
 Round 2: the CI diff-coverage gate failed the first cut — three of the six
 re-anchored Design generic-500 branches (skill listing, discovery form, render

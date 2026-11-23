@@ -31,7 +31,15 @@ The policy, and the boundary it draws:
   halt, plan mismatch, replay refusal). Those names and sentences are safe,
   actionable disclosure ("run exceeded max_cycles=1 ..."), so
   `public_failure_text` keeps them; everything else — any unclassified or
-  physical-execution error text — is bounded to a fixed sentence.
+  physical-execution error text — is bounded to a fixed sentence. The
+  host's own node-execution refusal (`HOST_POLICY_NODE_REFUSAL`, raised by
+  the node tier resolver when host policy blocks a node) is the same class:
+  authored by the host, names no node id, path, provider or diagnostic, and
+  is the actionable disclosure the public receipt has carried since the M1
+  e2e contract pinned it (pm-workflow.spec.ts step 06). It is matched by
+  sentence, never by wrapper kind (`PermissionError`): a PermissionError
+  raised at a filesystem or network boundary carries unbounded text and
+  stays bounded.
 - **Failures stay failures.** Nothing here rewrites a status: a failed Run is
   projected as failed, with its Run id, never as a successful execution.
 """
@@ -43,6 +51,7 @@ from typing import Any
 
 __all__ = [
     "HOST_AUTHORED_RUN_ERROR_CODES",
+    "HOST_POLICY_NODE_REFUSAL",
     "NODE_FAILURE_TEXT",
     "RUN_FAILURE_TEXT",
     "node_failure_text",
@@ -74,6 +83,15 @@ HOST_AUTHORED_RUN_ERROR_CODES = frozenset(
     }
 )
 
+#: The host's own node-execution refusal (`legacy_dag_node` raises it when the
+#: resolved execution tier is "blocked"). Host-authored and bounded — it names
+#: no node id, filesystem path, provider or diagnostic — so it is safe,
+#: actionable disclosure and crosses the boundary verbatim. The canonical
+#: executor wraps it as ``PermissionError: <sentence>``, and the projection
+#: matches the *sentence*, never the wrapper kind: a ``PermissionError`` from
+#: a filesystem or network boundary carries unbounded text and stays bounded.
+HOST_POLICY_NODE_REFUSAL = "Execution blocked: host policy did not authorize this node"
+
 
 def public_failure(exc: BaseException) -> str:
     """The failure text a transport may show: the exception kind, never its message.
@@ -101,6 +119,8 @@ def public_failure_text(text: str) -> str:
     """
     if "ALLOW_STUB_LLM" in text:
         return _stub_refusal_remediation()
+    if HOST_POLICY_NODE_REFUSAL in text:
+        return HOST_POLICY_NODE_REFUSAL
     code, sep, _message = text.partition(": ")
     if sep and code in HOST_AUTHORED_RUN_ERROR_CODES:
         return text

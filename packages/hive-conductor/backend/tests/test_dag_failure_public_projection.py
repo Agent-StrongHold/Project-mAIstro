@@ -293,6 +293,63 @@ class TestBudgetKindsSurviveTheProjection:
         assert "ALLOW_STUB_LLM" in public_failure(exc)
 
 
+class TestTheHostPolicyNodeRefusalStaysActionable:
+    """The host's own node-execution refusal is the one failure whose text the
+    public receipt has always carried (pm-workflow.spec.ts step 06 asserts
+    "host policy" in ``result.error``). It is host-authored and bounded, so
+    the #2465 policy keeps it — matched by sentence, never by wrapper kind."""
+
+    HOST_REFUSAL = "Execution blocked: host policy did not authorize this node"
+
+    def test_the_wrapped_refusal_crosses_as_the_sentence(self) -> None:
+        """The canonical executor wraps it as ``PermissionError: <sentence>``
+        (nodes/base.py error_code = exception class, durable_runs executor
+        composes ``code: message``). The projection returns the sentence —
+        the wrapper kind and any trailing text stay off the wire."""
+        from services.safe_projection import (
+            HOST_POLICY_NODE_REFUSAL,
+            public_failure_text,
+        )
+
+        wrapped = f"PermissionError: {self.HOST_REFUSAL}"
+        assert public_failure_text(wrapped) == HOST_POLICY_NODE_REFUSAL
+        assert "host policy" in public_failure_text(wrapped)
+
+    def test_an_arbitrary_permission_error_stays_bounded(self) -> None:
+        """The degenerate path: PermissionError at a filesystem boundary
+        carries paths and credentials — the sentence gate must not open for
+        it."""
+        from services.safe_projection import RUN_FAILURE_TEXT, public_failure_text
+
+        raw = f"PermissionError: [Errno 13] denied: {PATH_SENTINEL}"
+        assert public_failure_text(raw) == RUN_FAILURE_TEXT
+        assert PATH_SENTINEL not in public_failure_text(raw)
+
+    def test_the_receipt_keeps_the_refusal_and_bounds_the_nodes(self) -> None:
+        """Receipt shape: run-level ``result.error`` keeps the host-authored
+        refusal; the failed node's nested response stays kind-only."""
+        from services.safe_projection import (
+            NODE_FAILURE_TEXT,
+            safe_dag_result,
+        )
+
+        result = _failed_canonical_result()
+        result["error"] = f"PermissionError: {self.HOST_REFUSAL}"
+        projected = safe_dag_result(result)
+        assert projected["error"] == self.HOST_REFUSAL
+        assert projected["node_results"]["n-bad"]["response"] == NODE_FAILURE_TEXT
+        _assert_no_sentinels(projected)
+
+    def test_the_enforcement_site_raises_the_policy_sentence(self) -> None:
+        """Single source of truth: the tier resolver raises the policy's own
+        constant, so the disclosure contract cannot drift from the refusal
+        the canonical Run actually records."""
+        import services.legacy_dag_node as legacy_dag_node
+        from services.safe_projection import HOST_POLICY_NODE_REFUSAL
+
+        assert legacy_dag_node.HOST_POLICY_NODE_REFUSAL is HOST_POLICY_NODE_REFUSAL
+
+
 class TestTheStreamProjectionCarriesNoNestedFailureText:
     async def test_replayed_frames_project_failed_nodes(
         self, monkeypatch: pytest.MonkeyPatch
