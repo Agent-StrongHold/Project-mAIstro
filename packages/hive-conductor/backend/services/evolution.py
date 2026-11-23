@@ -322,6 +322,15 @@ class _EvolutionService:
         # wire the production store before the first cycle.
         self._domain_store: Any = None
         self._domain_restore: dict[str, Any] | None = None
+        # Run ids whose finalize NodeRun carries a durably committed
+        # publication marker (#1064). Seeded at restore and refreshed at the
+        # start of every recovery tick: the recovery resolver reads this set
+        # synchronously (resolver construction has no await point) to tell
+        # "the restored population IS this Run's committed post-finalize
+        # domain" apart from foreign drift. Sound against staleness because
+        # lease fencing hides a live worker's commit from recovery until its
+        # lease lapses — and a later tick re-reads the ledger before then.
+        self._committed_finalize_runs: set[str] = set()
         # Manual requests and the cadence task share one admission lock. This
         # serializes cycle planning/finalization without making the population
         # store a second execution authority.
@@ -334,7 +343,9 @@ class _EvolutionService:
     @property
     def domain_store(self) -> Any:
         """The durable domain snapshot/publication store, or ``None`` (#1064)."""
-        return self._domain_store
+        # Conservative default for instances built without __init__ (tests,
+        # module reloads): no store means the durable choreography is off.
+        return getattr(self, "_domain_store", None)
 
     @property
     def domain_restore(self) -> dict[str, Any] | None:
@@ -344,7 +355,44 @@ class _EvolutionService:
         snapshot a restarted process restored (run_id, kind, counts) instead
         of silently presenting a rebuilt population as if it were fresh.
         """
-        return self._domain_restore
+        return getattr(self, "_domain_restore", None)
+
+    @property
+    def committed_finalize_run_ids(self) -> set[str]:
+        """Run ids with a durably committed finalize publication (#1064)."""
+        # Conservative default for instances built without __init__ (tests,
+        # module reloads): no committed evidence means the membership checks
+        # refuse, never widen.
+        return set(getattr(self, "_committed_finalize_runs", None) or ())
+
+    async def refresh_committed_finalize_evidence(self) -> None:
+        """Re-read committed finalize markers from the durable ledger (#1064).
+
+        Called at restore time and at the start of every recovery tick so the
+        synchronous membership checks in ``_recovery_resolver`` see durable
+        committed-finalize evidence for Runs whose publishing process died
+        between ``_publish_finalize_committed`` and its Attempt terminal.
+        """
+        store = self.domain_store
+        workspace = self.workspace_id
+        if store is None or not workspace:
+            return
+        list_markers = getattr(store, "list_finalize_markers", None)
+        if list_markers is None:
+            return
+        committed: set[str] = set()
+        try:
+            for marker in await list_markers(workspace):
+                if str(marker.payload.get("status")) == "committed" and marker.run_id:
+                    committed.add(str(marker.run_id))
+        except Exception as exc:
+            # A broken ledger must not silently widen or narrow the refusal:
+            # keep the previous evidence (an empty set refuses conservatively).
+            logger.warning(
+                "Evolve committed-finalize evidence refresh failed: %s", exc, exc_info=True
+            )
+            return
+        self._committed_finalize_runs = committed
 
     @property
     def execution_available(self) -> bool:
@@ -443,13 +491,6 @@ class _EvolutionService:
             self.initialize_domain_state()
             return False
         try:
-            from maistro_evolve.durable_snapshot import (
-                EvolveDomainExport,
-                restore_domain_state,
-            )
-            from maistro_evolve.population import PopulationStore
-            from maistro_evolve.tournament import EloTournament
-
             await store.ensure_schema()
             snapshot = await store.latest_snapshot(workspace_id, kind="committed")
             snapshot_kind = "committed"
@@ -468,8 +509,70 @@ class _EvolutionService:
         if snapshot is None:
             self.initialize_domain_state()
             return False
+        from maistro_evolve.population import PopulationStore
+        from maistro_evolve.tournament import EloTournament
+
         population = PopulationStore()
         tournament = EloTournament()
+        (
+            replayed_battles,
+            replayed_evaluations,
+            committed_finalize_runs,
+        ) = await self._replay_domain_journal(
+            store=store,
+            workspace_id=workspace_id,
+            snapshot=snapshot,
+            population=population,
+            tournament=tournament,
+        )
+        self._population = population
+        self._tournament = tournament
+        self._cycle_count = snapshot.completed_cycles
+        self._committed_finalize_runs = committed_finalize_runs
+        self._domain_restore = {
+            "run_id": snapshot.run_id,
+            "kind": snapshot_kind,
+            "population_size": len(population.list_all()),
+            "total_battles": tournament.get_stats().get("total_battles", 0),
+            "replayed_battles": replayed_battles,
+            "replayed_evaluations": replayed_evaluations,
+            "completed_cycles": snapshot.completed_cycles,
+        }
+        logger.info(
+            "evolve_domain_restored store=%s run=%s kind=%s population=%d battles=%d "
+            "replayed=%d evaluations=%d",
+            store.backend,
+            snapshot.run_id,
+            snapshot_kind,
+            len(population.list_all()),
+            tournament.get_stats().get("total_battles", 0),
+            replayed_battles,
+            replayed_evaluations,
+        )
+        self._refresh_execution_availability()
+        return True
+
+    async def _replay_domain_journal(
+        self,
+        *,
+        store: Any,
+        workspace_id: str,
+        snapshot: Any,
+        population: Any,
+        tournament: Any,
+    ) -> tuple[int, int, set[str]]:
+        """Fold the durable journal into a freshly restored domain (#1064).
+
+        Evaluation receipts first (they carry the winning publisher's folded
+        scores), then battle rows (deterministic Elo math, so replay is
+        exact), then the finalize markers (a faulted finalize has no committed
+        snapshot, so the admission snapshot's markers predate the fault and
+        the fail-closed disposition must survive the restart). Returns
+        ``(replayed_battles, replayed_evaluations, committed_finalize_run_ids)``
+        with the last feeding the recovery resolver's membership decision.
+        """
+        from maistro_evolve.durable_snapshot import EvolveDomainExport, restore_domain_state
+
         restore_domain_state(
             population,
             tournament,
@@ -479,11 +582,35 @@ class _EvolutionService:
                 cycle_markers=snapshot.cycle_markers,
             ),
         )
+        # Replay exactly the evaluation publications published after this
+        # snapshot (#1064). The admission snapshot is pre-cycle: the genomes
+        # are unscored, and every evaluation NodeRun the dead process
+        # completed has a durable receipt row carrying its folded scores —
+        # replaying them reconstructs scored genomes instead of resuming
+        # against the unscored admission state. Re-applying is a SET of the
+        # receipt's values (the winner's fold, durably recorded), so it is
+        # idempotent even when the snapshot already carries them (a committed
+        # snapshot pins the journal head past its own cycle's rows).
+        from services.evolution_graph import _apply_evaluation_receipt
+
+        replayed_evaluations = 0
+        for publication in await store.list_evaluation_publications(
+            workspace_id, after_seq=snapshot.last_battle_seq
+        ):
+            payload = publication.payload
+            genome_id = str(payload.get("genome_id", ""))
+            genome = population.get(genome_id)
+            if genome is None:
+                # Culled by a later committed cycle this snapshot already
+                # supersedes; its scores have no live genome to land on.
+                continue
+            population.add(_apply_evaluation_receipt(genome, payload))
+            replayed_evaluations += 1
         # Replay exactly the battles published after this snapshot. The
         # journal rows carry their (NodeRun, benchmark) identity, so the
         # rebuilt tournament's publication index answers the idempotency
         # question for a recovered battle Attempt without a second battle.
-        replayed = 0
+        replayed_battles = 0
         for publication in await store.list_battle_publications(
             workspace_id, after_seq=snapshot.last_battle_seq
         ):
@@ -497,35 +624,13 @@ class _EvolutionService:
                 node_run_id=publication.node_run_id,
                 attempt_id=publication.attempt_id,
             )
-            replayed += 1
-        # Durable finalize markers overlay the snapshot's embedded ones (a
-        # faulted finalize has no committed snapshot, so the admission
-        # snapshot's markers predate the fault) — the fail-closed disposition
-        # must survive the restart.
+            replayed_battles += 1
+        committed_finalize_runs: set[str] = set()
         for marker in await store.list_finalize_markers(workspace_id):
             population.record_cycle_marker(f"finalize:{marker.node_run_id}", dict(marker.payload))
-        self._population = population
-        self._tournament = tournament
-        self._cycle_count = snapshot.completed_cycles
-        self._domain_restore = {
-            "run_id": snapshot.run_id,
-            "kind": snapshot_kind,
-            "population_size": len(population.list_all()),
-            "total_battles": tournament.get_stats().get("total_battles", 0),
-            "replayed_battles": replayed,
-            "completed_cycles": snapshot.completed_cycles,
-        }
-        logger.info(
-            "evolve_domain_restored store=%s run=%s kind=%s population=%d battles=%d replayed=%d",
-            store.backend,
-            snapshot.run_id,
-            snapshot_kind,
-            len(population.list_all()),
-            tournament.get_stats().get("total_battles", 0),
-            replayed,
-        )
-        self._refresh_execution_availability()
-        return True
+            if str(marker.payload.get("status")) == "committed" and marker.run_id:
+                committed_finalize_runs.add(str(marker.run_id))
+        return replayed_battles, replayed_evaluations, committed_finalize_runs
 
     @property
     def workspace_id(self) -> str | None:

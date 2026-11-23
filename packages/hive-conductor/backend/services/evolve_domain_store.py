@@ -25,9 +25,12 @@ Two logical records over two tables (or their sqlite/memory twins):
   ``(workspace_id, effect_kind, node_run_id, benchmark)``. ``effect_kind``
   is ``battle`` (one row per (NodeRun, benchmark) battle — the primary key
   *is* the exactly-once fence: two concurrent publishers race on
-  ``INSERT ... ON CONFLICT``, exactly one inserts) or ``finalize`` (one row
-  per finalize NodeRun whose payload is the marker state machine:
-  ``in_progress`` → ``committed{output}``/``faulted``).
+  ``INSERT ... ON CONFLICT``, exactly one inserts), ``evaluation`` (one row
+  per evaluation NodeRun carrying the winning receipt's folded scores — the
+  durable form of what evaluation folded into the population, so a restart
+  reconstructs scored genomes instead of resuming against unscored ones),
+  or ``finalize`` (one row per finalize NodeRun whose payload is the marker
+  state machine: ``in_progress`` → ``committed{output}``/``faulted``).
 
 Ownership stays where the issue puts it: this is Evolve-owned durable state
 composable with the canonical spine, not a second execution authority. The
@@ -84,6 +87,7 @@ CREATE INDEX IF NOT EXISTS ix_evolve_domain_publications_ws_kind_seq
 _SNAPSHOT_KIND_ADMISSION = "admission"
 _SNAPSHOT_KIND_COMMITTED = "committed"
 _EFFECT_BATTLE = "battle"
+_EFFECT_EVALUATION = "evaluation"
 _EFFECT_FINALIZE = "finalize"
 
 
@@ -147,6 +151,20 @@ class EvolveDomainStore(Protocol):
     ) -> EvolveDomainPublication | None: ...
 
     async def list_battle_publications(
+        self, workspace_id: str, *, after_seq: int = 0
+    ) -> list[EvolveDomainPublication]: ...
+
+    async def record_evaluation_publication(
+        self, workspace_id: str, publication: EvolveDomainPublication
+    ) -> bool:
+        """Insert-if-absent; True when THIS call won the insert (effect is ours)."""
+        ...
+
+    async def find_evaluation_publication(
+        self, workspace_id: str, node_run_id: str
+    ) -> EvolveDomainPublication | None: ...
+
+    async def list_evaluation_publications(
         self, workspace_id: str, *, after_seq: int = 0
     ) -> list[EvolveDomainPublication]: ...
 
@@ -229,6 +247,38 @@ class InMemoryEvolveDomainStore:
                 p
                 for (ws, kind, _nr, _b), p in self._publications.items()
                 if ws == workspace_id and kind == _EFFECT_BATTLE and p.sequence > after_seq
+            ]
+            return sorted(rows, key=lambda p: p.sequence)
+
+    async def record_evaluation_publication(
+        self, workspace_id: str, publication: EvolveDomainPublication
+    ) -> bool:
+        key = (workspace_id, _EFFECT_EVALUATION, publication.node_run_id, "")
+        with self._lock:
+            if key in self._publications:
+                return False
+            self._pub_seq += 1
+            stored = publication.model_copy(
+                deep=True, update={"effect_kind": _EFFECT_EVALUATION, "sequence": self._pub_seq}
+            )
+            self._publications[key] = stored
+            return True
+
+    async def find_evaluation_publication(
+        self, workspace_id: str, node_run_id: str
+    ) -> EvolveDomainPublication | None:
+        with self._lock:
+            found = self._publications.get((workspace_id, _EFFECT_EVALUATION, node_run_id, ""))
+            return found.model_copy(deep=True) if found else None
+
+    async def list_evaluation_publications(
+        self, workspace_id: str, *, after_seq: int = 0
+    ) -> list[EvolveDomainPublication]:
+        with self._lock:
+            rows = [
+                p
+                for (ws, kind, _nr, _b), p in self._publications.items()
+                if ws == workspace_id and kind == _EFFECT_EVALUATION and p.sequence > after_seq
             ]
             return sorted(rows, key=lambda p: p.sequence)
 
@@ -411,6 +461,79 @@ class PgEvolveDomainStore:
             workspace_id,
         )
         return int(row["seq"]) if row else 0
+
+    async def record_evaluation_publication(
+        self, workspace_id: str, publication: EvolveDomainPublication
+    ) -> bool:
+        # Same single-statement exactly-once fence as battles, under the
+        # 'evaluation' effect kind: two workers racing to publish the same
+        # evaluation NodeRun cannot both insert.
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO evolve_domain_publications
+                (workspace_id, effect_kind, node_run_id, benchmark, attempt_id, run_id, payload)
+            VALUES ($1, 'evaluation', $2, '', $3, $4, $5::text::jsonb)
+            ON CONFLICT (workspace_id, effect_kind, node_run_id, benchmark) DO NOTHING
+            RETURNING seq
+            """,
+            workspace_id,
+            publication.node_run_id,
+            publication.attempt_id,
+            publication.run_id,
+            json.dumps(publication.payload),
+        )
+        return row is not None
+
+    async def find_evaluation_publication(
+        self, workspace_id: str, node_run_id: str
+    ) -> EvolveDomainPublication | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT seq, attempt_id, run_id, payload
+            FROM evolve_domain_publications
+            WHERE workspace_id = $1 AND effect_kind = 'evaluation'
+              AND node_run_id = $2 AND benchmark = ''
+            """,
+            workspace_id,
+            node_run_id,
+        )
+        if row is None:
+            return None
+        return EvolveDomainPublication(
+            effect_kind=_EFFECT_EVALUATION,
+            node_run_id=node_run_id,
+            benchmark="",
+            attempt_id=row["attempt_id"],
+            run_id=row["run_id"],
+            payload=decode_payload(row["payload"]),
+            sequence=int(row["seq"]),
+        )
+
+    async def list_evaluation_publications(
+        self, workspace_id: str, *, after_seq: int = 0
+    ) -> list[EvolveDomainPublication]:
+        rows = await self._pool.fetch(
+            """
+            SELECT seq, node_run_id, attempt_id, run_id, payload
+            FROM evolve_domain_publications
+            WHERE workspace_id = $1 AND effect_kind = 'evaluation' AND seq > $2
+            ORDER BY seq ASC
+            """,
+            workspace_id,
+            after_seq,
+        )
+        return [
+            EvolveDomainPublication(
+                effect_kind=_EFFECT_EVALUATION,
+                node_run_id=row["node_run_id"],
+                benchmark="",
+                attempt_id=row["attempt_id"],
+                run_id=row["run_id"],
+                payload=decode_payload(row["payload"]),
+                sequence=int(row["seq"]),
+            )
+            for row in rows
+        ]
 
     async def upsert_finalize_marker(
         self, workspace_id: str, node_run_id: str, payload: dict[str, Any], *, run_id: str
@@ -632,6 +755,55 @@ class SqliteEvolveDomainStore:
                 (workspace_id,),
             ).fetchone()
         return int(row["seq"]) if row else 0
+
+    async def record_evaluation_publication(
+        self, workspace_id: str, publication: EvolveDomainPublication
+    ) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO evolve_domain_publications
+                    (workspace_id, effect_kind, node_run_id, benchmark, attempt_id, run_id, payload)
+                VALUES (?, 'evaluation', ?, '', ?, ?, ?)
+                ON CONFLICT (workspace_id, effect_kind, node_run_id, benchmark) DO NOTHING
+                """,
+                (
+                    workspace_id,
+                    publication.node_run_id,
+                    publication.attempt_id,
+                    publication.run_id,
+                    json.dumps(publication.payload),
+                ),
+            )
+            return cursor.rowcount > 0
+
+    async def find_evaluation_publication(
+        self, workspace_id: str, node_run_id: str
+    ) -> EvolveDomainPublication | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM evolve_domain_publications
+                WHERE workspace_id = ? AND effect_kind = 'evaluation'
+                  AND node_run_id = ? AND benchmark = ''
+                """,
+                (workspace_id, node_run_id),
+            ).fetchone()
+        return self._publication_from_row(row, _EFFECT_EVALUATION) if row else None
+
+    async def list_evaluation_publications(
+        self, workspace_id: str, *, after_seq: int = 0
+    ) -> list[EvolveDomainPublication]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM evolve_domain_publications
+                WHERE workspace_id = ? AND effect_kind = 'evaluation' AND seq > ?
+                ORDER BY seq ASC
+                """,
+                (workspace_id, after_seq),
+            ).fetchall()
+        return [self._publication_from_row(row, _EFFECT_EVALUATION) for row in rows]
 
     async def upsert_finalize_marker(
         self, workspace_id: str, node_run_id: str, payload: dict[str, Any], *, run_id: str
