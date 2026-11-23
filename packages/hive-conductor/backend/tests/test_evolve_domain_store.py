@@ -65,6 +65,23 @@ async def store(request: pytest.FixtureRequest, tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ["memory", "sqlite"])
+async def test_backend_names_are_honest_about_durability(backend_kind: str, tmp_path: Path) -> None:
+    """Recovery trusts ``backend`` to mean cross-process durability (#1064).
+
+    The memory twin is explicitly non-durable; reporting itself as anything
+    but "memory" would let a restarted process believe a ledger exists that
+    died with the old one. The expectation is pinned by the param, not
+    derived from the store under test.
+    """
+    if backend_kind == "memory":
+        store = InMemoryEvolveDomainStore()
+    else:
+        store = SqliteEvolveDomainStore(str(tmp_path / "evolve_domain.db"))
+    assert store.backend == backend_kind
+
+
+@pytest.mark.asyncio
 async def test_snapshots_save_and_load_latest_by_kind(store) -> None:
     await store.save_snapshot(_snapshot("run-1", "admission"))
     await store.save_snapshot(_snapshot("run-2", "committed"))

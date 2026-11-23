@@ -492,6 +492,29 @@ jobs:
           uv run coverage run --append --branch \
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
+      # hive-conductor's backend joins by that same rule (#1064): its durable
+      # Evolve domain store (services/evolve_domain_store.py) is the
+      # PostgreSQL production fence for exactly-once battle publication, its
+      # PG legs gate on MAISTRO_TEST_PG_DSN, and the coverage-gate job runs
+      # the whole backend suite without a server — so without a producer here
+      # the store's changed lines measured 85% while the same arcs passed
+      # against a real server (the #231/#102/#12 shape again). Its suites
+      # create their own idempotent schema (ensure_schema() is IF NOT
+      # EXISTS), so sharing this job's migrated chain is safe. The
+      # requirements.txt install happens here, last, for the same reason
+      # coverage-gate installs it after the recorded producers above: a
+      # version it resolves outside the lock cannot perturb the maistro-core
+      # and canvas coverage data already recorded by this job.
+      - name: hive-conductor Evolve PostgreSQL legs (under coverage)
+        run: |
+          uv pip install -r packages/hive-conductor/backend/requirements.txt
+          uv run coverage run --append --branch \
+            --source=packages/hive-conductor/backend \
+            -m pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py \
+              packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py \
+              packages/hive-conductor/backend/tests/test_evolve_domain_retention.py \
+              packages/hive-conductor/backend/tests/test_evolve_domain_store.py \
+              --timeout=120 -q
       - name: upload coverage data
         uses: actions/upload-artifact@v7
         with:

@@ -339,7 +339,7 @@ class _TournamentWork:
         # cycle. Different cycles (different workspace/cycle/membership)
         # still vary; library callers without a seed keep process-local
         # variety.
-        rng = random.Random(self._pair_seed) if self._pair_seed else random.Random()
+        rng = random.Random(self._pair_seed or None)  # DevSkim: ignore DS148264 until 2027-12-31
         rng.shuffle(shuffled)  # DevSkim: ignore DS148264 until 2027-12-31
         pairs = [
             (shuffled[index].id, shuffled[index + 1].id) for index in range(0, len(shuffled) - 1, 2)
