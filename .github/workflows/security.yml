@@ -364,11 +364,24 @@ jobs:
       # same replay class the rsi-runner rotation below closed (#2283).
       # Rotation severs every cached vertex under the old scope; a cache
       # miss rebuilds, so the worst case is one cold build per workflow.
+      # Rotation is a per-advisory treadmill, not a class fix: the #1629
+      # repair round watched the SAME class replay on the already-rotated
+      # rsi-runner-r2 scope (linux-libc-dev scanned at 6.12.117-1 while its
+      # own apt fetched 6.12.118-1, run 45208690976), with the #1152 pin
+      # bump unavailable because python:3.12-slim still resolved to
+      # sha256:5e2bdb1b…. buildx keys are computed pre-execution, so the
+      # fix mutates the apt stage's key per run via OS_REFRESH (see
+      # Dockerfile.research): every downstream key chain changes with it and
+      # the loaded image can only assemble the freshly executed layers. The
+      # builder stage above stays on the stable pinned base, so the venv
+      # keeps its cross-run cache and the per-run cost is apt + the final
+      # assembly, not a cold build.
       - name: Build maistro-engine-research image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t "maistro-engine-research:pr-${CANDIDATE_TAG}"
           --no-cache-filter production-apt
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
           --load --cache-from type=gha,scope=engine-research-r2
           --cache-to type=gha,scope=engine-research-r2,mode=max .
 
@@ -380,12 +393,21 @@ jobs:
       # is the only state source that can carry that layer, and it is the same
       # replay class #795 closed at instruction level. Rotation severs every
       # cached vertex under the old scope; a cache miss rebuilds, so the worst
-      # case is one cold build per workflow.
+      # case is one cold build per workflow. The #1629 repair round then
+      # watched the class REPLAY on this already-rotated scope: linux-libc-dev
+      # scanned at 6.12.117-1 (75 HIGH) while this build's own log unpacked
+      # 6.12.118-1 from trixie-security (run 45208690976, job 137811317864),
+      # with the #1152 pin-bump remedy unavailable because python:3.12-slim
+      # still resolved to sha256:5e2bdb1b…. Keys are computed pre-execution, so
+      # OS_REFRESH mutates the apt stage's key per run and every downstream
+      # key chain with it; the workspace branch in Dockerfile.rsi-runner hangs
+      # off the pinned base directly, so the venv keeps its cross-run cache.
       - name: Build maistro-rsi-runner image
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t "maistro-rsi-runner:pr-${CANDIDATE_TAG}"
           --no-cache-filter runtime-apt
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
           --load --cache-from type=gha,scope=rsi-runner-r2
           --cache-to type=gha,scope=rsi-runner-r2,mode=max .
 
