@@ -409,3 +409,55 @@ recovery, per-boundary finalize fault injection, exactly-once publication
 fences, honest refusal windows, and the #459 strict scenario); the #947 P1
 disposition is met. Hosted exact-head CI remains unverified and requires
 settlement on PR #2497 outside this worktree.
+
+## Round 4 — head `31c38337db1d` (2026-11-23T22:5xZ, independent verifier re-run)
+
+The assigned head is the round-3 writer commit `31c38337db1d`; the delta from
+the previously code-validated head `4d9ef50dd1` is docs-only
+(`git diff --stat 4d9ef50dd1..HEAD`: this note only), so all production-code
+evidence above carries over verbatim.
+
+Re-executed at this exact head (not trusted from prior rounds):
+
+- Driver deterministic checks (job `3491434d…` check-*.log, all rc=0):
+  `uv sync --locked --extra dev`; `ruff check .`; `ruff format --check` clean
+  (3,652 files); maistro-evolve replay suites 11 passed; conductor subset
+  46 passed / 19 skipped without DSN; suite-inventory gates ok
+  (hive-conductor backend 4540 node IDs, maistro-evolve 1017).
+- **PG acceptance legs re-run by this verifier with
+  `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:5570/maistro_test`
+  (PG18 container, alembic `069`): 65 passed, 0 skipped** — the 19 DSN-gated
+  legs now actually executed, including the distinct-OS-process recovery leg
+  (`test_evolution_restart_replay_pg.py:486`, real `subprocess.run` child,
+  asserts `pid != os.getpid()` and exact battle/Elo/population parity vs the
+  uninterrupted reference) and the per-boundary finalize fault parametrization
+  (`test_evolution_restart_replay.py:1524`, cull/breed/self_improve/migrate,
+  byte-identical via `export_genomes_snapshot()`/`_domain_signature()`).
+- `tests/cross_product_parity/test_cross_product_parity.py::
+  test_evolve_required_scenario_emits_strict_closeout_evidence` — 1 passed in
+  1.23s at this head.
+- `packages/maistro-evolve/tests/test_domain_reconstruction.py +
+  test_durable_snapshot.py` — 11 passed.
+- **#947 P1 disposition re-checked live** (GraphQL reviewThreads): 4/4 P1
+  threads `isResolved=true`; 6/7 threads resolved; the one open thread is the
+  **P2** residual `PRRT_kwDOT-he_M6d9dTY` ("Record the durable executor"),
+  unchanged and outside this issue's P1-specific criterion.
+- **Closure-keyword scan** `git log a6a0969ca1..31c38337db1d --format='%s%n%b'`
+  for GitHub closure syntax (`keyword ␣ #N`): **no matches**. The
+  conventional-commit `fix(#1064):` prefixes are not closure syntax (no
+  whitespace between keyword and reference); live PR #2497 body contains only
+  "Refs #1064".
+
+Exact-head hosted CI readings this round (`gh pr view 2497`, headRefOid ==
+`31c38337db1d`): first refresh 80 checks — 61 SUCCESS / 2 SKIPPED /
+16 IN_PROGRESS / 1 null / **0 failures**; second refresh (≈4 min later) —
+**71 SUCCESS / 2 SKIPPED / 7 IN_PROGRESS / 1 null / 0 failures** (coverage,
+integration-scope, e2e, container scan, docker-build, `test`, and one
+unstarted context still settling). The rollup is at the exact SHA, never
+failed, and still in flight: pending CI is not green, so the close-only
+exact-SHA/CI criterion remains **UNVERIFIED until it settles with no
+failures**.
+
+Verdict carried at this head: **NEEDS-REPAIR** (single open criterion:
+hosted exact-SHA CI settlement) — every locally executable acceptance leg was
+re-executed and passed at this exact SHA with real PostgreSQL.
