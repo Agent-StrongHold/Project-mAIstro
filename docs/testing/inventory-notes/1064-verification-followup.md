@@ -268,3 +268,26 @@ production harness parity, and the queued prerequisite disposition. This
 verification-only entry adds no tests and makes no inventory-count claim.
 The approved design/#947 disposition and exact-head hosted CI remain
 unverified. Verdict: **NEEDS-REPAIR**.
+
+## Writer re-check at assigned head `bcf4141811f3` (2026-11-23)
+
+The assigned job directory contained no `check-*.log` files, so I did not rely
+on driver claims. Re-ran the focused restart/recovery suite:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py packages/hive-conductor/backend/tests/test_evolution_recovery.py -x -q`
+  -> **31 passed, 10 skipped**. `MAISTRO_TEST_PG_DSN` was unset; the skipped
+  PostgreSQL legs do not prove live-PG recovery.
+- `uv run ruff check . && uv run ruff format --check .`
+  -> passed; 3,652 files already formatted.
+
+These results validate the available SQLite/in-process test paths only. The
+committed-finalize test at `test_evolution_restart_replay.py:1209` kills after
+both committed snapshot and marker, so it does not cover snapshot-persisted /
+marker-pending. The recovery test at `test_evolution_recovery.py:488` continues
+to assert a mismatched-prerequisite Run remains QUEUED; this is inconsistent
+with issue #1064's explicit no-indefinite-QUEUED requirement. The test harness
+also remains same-interpreter and does not inject after cull, breed, migrate,
+or real self-improvement. No claim of distinct-process or actual PostgreSQL
+acceptance is made. The approved persistence/replay design, #947 P1 disposition,
+and exact-head hosted CI remain unverified. No test was added and no inventory
+count changed. Verdict: **NEEDS-REPAIR**.
