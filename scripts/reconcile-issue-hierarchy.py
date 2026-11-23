@@ -256,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--issue-number", type=int)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
+    result: dict[str, Any] = {"mode": "apply" if args.apply else "dry-run", "writes": []}
 
     try:
         data = load_manifest(args.manifest)
@@ -300,7 +301,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
     except (HierarchyError, OSError, ValueError, TypeError) as exc:
+        result["error"] = str(exc)
         print(f"error: {exc}", file=sys.stderr)
+        if args.report:
+            try:
+                args.report.write_text(
+                    json.dumps(result, indent=2) + "\n", encoding="utf-8"
+                )
+            except OSError as report_error:
+                print(f"error: could not save failure report: {report_error}", file=sys.stderr)
         return 1
 
 
