@@ -57,6 +57,13 @@ PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/audit": "audit.write",
         "/v1/harness": "harness.execute",
         "/v1/rsi": "rsi.execute",
+        # Scoring a Run is an evaluated-effect mutation, not a read (#2470):
+        # the trigger launches a billed model call and writes the shared
+        # improvement evidence the optimizer ranks on. It must never ride the
+        # read permission Workspace membership grants, so POST carries its own
+        # capability here while the verdict reads stay the #1174 in-route
+        # Workspace-scoped read (the GET carve-out in required_permission).
+        "/v1/eval-judge": "eval.score",
         # Resolution of a capability approval is an authority-bearing
         # decision with its own approver scope (develop); discovery and
         # provider configuration stay config writes. The more specific
