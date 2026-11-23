@@ -23,8 +23,18 @@ alternative authorization truth.
 
 ## 1. Canonical Workspace identity/membership — the authority
 
-**Fields.** Workspace: `workspace_id`, `name`, `created_at`, `updated_at`.
-Membership: `user_id`, `role` (`owner`/`contributor`/`member`), `principal_id`.
+**Fields.** Workspace: `workspace_id`, `name`, `description`, `metadata`,
+`created_at`, `updated_at`. Membership: `workspace_id`, `user_id`, `role`
+(`owner`/`contributor`/`member`), `added_at`
+(`packages/maistro-core/src/maistro/workspaces/model.py`). Both durable
+backends persist these models through the same relational columns — identity,
+role, and timestamps (`sqlite_store.py` schema; migration 019's
+`canonical_workspaces` / `canonical_workspace_memberships`) — with the full
+record, `description` and `metadata` included, serialized in the row's
+`payload` column. `principal_id` is not stored state anywhere in this family —
+it is the acting-principal keyword argument on store/authorization methods
+(`get`, `update`, `delete`, `get_membership`) that is resolved against the
+membership rows, never persisted as one of them.
 The same `workspace_id` atomically provisions the immutable Root Project
 (`project_store.create_root` inside `WorkspaceStore.create`,
 `packages/maistro-core/src/maistro/workspaces/store.py`).
@@ -131,8 +141,14 @@ is never replayed to fill the gap
 ## Stale records cannot override canonical authorization
 
 Behavioral proof at this head (`packages/hive-conductor/backend/tests/`,
-executed 2026-11-23 — 33 passed including the PostgreSQL legs against a
-migrated PG18 database):
+executed 2026-11-23 at commit `1c840790a1`). With `MAISTRO_TEST_PG_DSN`
+pointed at a PostgreSQL 18 database migrated to alembic head
+(`DATABASE_URL=postgresql+asyncpg://… uv run alembic upgrade head`, revision
+068): both suites together report **35 passed, 0 skipped** —
+`test_workspace_authority.py` 11 + `test_workspace_authority_durable.py` 24.
+Without a DSN the same invocation reports 27 passed, 8 skipped: the 8
+PostgreSQL-only legs all live in `test_workspace_authority_durable.py`, and
+`MAISTRO_REQUIRE_PG_LEGS=1` turns that silent skip into an error:
 
 | Claim | Test |
 |---|---|
