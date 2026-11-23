@@ -23,6 +23,16 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only, acceptance-based delivery planning for maintainers (#1629).**
+  `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
+  reviewed GitHub snapshot. It refuses work selection on stale/incomplete
+  ownership coverage, does not treat merged PRs as acceptance evidence, and
+  protects reserved task scopes. A dated example plan, sample seed, operator
+  skill and 56 focused adversarial cases document the non-dispatch boundary.
+  This does not configure or operate the external orchestrator.
+
 ### Changed
 
 - **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
