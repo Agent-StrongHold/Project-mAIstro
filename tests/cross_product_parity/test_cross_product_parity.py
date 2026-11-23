@@ -71,8 +71,299 @@ def _scheduler_scenario() -> ScenarioExecution:
     return _unavailable_real_seam("scheduler (#231)")
 
 
-def _evolve_scenario() -> ScenarioExecution:
-    return _unavailable_real_seam("Evolve (#51/#1064/#1065/#1066)")
+def _abstaining_scenario() -> ScenarioExecution:
+    """A required producer that never reached its real boundary.
+
+    Negative-oracle fixture: the Evolve scenario is a real execution now, so
+    the closeout-report test exercises its stop-on-first-failure contract with
+    an explicitly abstaining callback instead of Evolve's scaffold.
+    """
+    raise ScenarioAbstained("producer did not execute its real boundary")
+
+
+def _evolve_genome(genome_id: str, score: float) -> Any:
+    """A pre-scored, pre-fitnessed proxy genome: plan-pairs → battles → finalize."""
+    from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome
+    from maistro_evolve.types import PipelineGenome as RealGenome
+
+    genome = RealGenome(
+        id=genome_id,
+        name=genome_id,
+        topology=DAGTopology(
+            nodes=[
+                NodeGenome(
+                    id="q1",
+                    role="queen",
+                    strategy="react",
+                    model="gpt-4",
+                    temperature=0.3,
+                    max_tokens=4096,
+                    system_prompt="test",
+                    max_tool_rounds=5,
+                )
+            ],
+            edges=[],
+            entry_node="q1",
+            max_cycles=3,
+            beam_width=1,
+            use_scout=False,
+        ),
+        eval_weights=EvalWeights(),
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    genome.eval_scores = {"proxy": score}
+    genome.fitness_score = score
+    return genome
+
+
+def _evolve_population() -> Any:
+    from maistro_evolve.population import PopulationStore
+
+    population = PopulationStore()
+    for genome_id, score in (("g1", 0.9), ("g2", 0.2), ("g3", 0.8), ("g4", 0.3)):
+        population.add(_evolve_genome(genome_id, score))
+    return population
+
+
+class _DeterministicEvolveCycle:
+    """The deterministic finalize double the shipped replay suite also uses.
+
+    Every genome arrives pre-scored, so the canonical graph is
+    plan-pairs → battles → finalize and the LLM seams never fire; the double
+    keeps finalize's own mutations (fitness fold, one bred child, cycle
+    advance) deterministic without an LLM or official benchmarks. The producer
+    evidence under test — canonical Run/NodeRun/Attempt admission over the
+    durable spine and the exactly-once battle/finalize publication ledger
+    (#1064) — is entirely real.
+    """
+
+    fidelity = "proxy"
+
+    def __init__(self, harness: Any = None, tournament: Any = None, archive: Any = None) -> None:
+        self.harness = harness
+        self.tournament = tournament
+        self.archive = archive
+        self._island_pop = None
+        self._cycle_count = 0
+
+    @staticmethod
+    def _fold_score(genome: Any, benchmark: str, score: float, stub: bool, alpha: float) -> None:
+        genome.eval_scores[benchmark] = score
+
+    def _compute_all_fitness(self, population: Any) -> list[Any]:
+        for genome in population.list_all():
+            genome.fitness_score = sum(genome.eval_scores.values())
+        return population.list_all()
+
+    def _breed_island(
+        self, island_pop: Any, island_id: int, population: Any, config: Any, cap: int
+    ) -> None:
+        # Idempotent by content, not by a per-process latch: a restarted
+        # process's fresh cycle object cannot breed the same child twice.
+        if any(g.id == "child-1" for g in population.list_all()):
+            return
+        child = _evolve_genome("child-1", 0.5)
+        child.parent_a_id = "g1"
+        child.parent_b_id = "g2"
+        population.add(child)
+
+    async def _self_improve_top(self, population: Any, config: Any, llm_call: Any) -> None:
+        return None
+
+
+async def _evolve_conductor_scenario() -> ScenarioExecution:
+    """Scenario 3 as a real execution, not a source probe.
+
+    REAL_SCENARIO_EVIDENCE: evolve-conductor
+
+    The producer half runs the shipped canonical Evolve cycle
+    (``run_canonical_evolution_cycle`` -> ``run_durable_graph``) against the
+    supported durable SQLite spine plus the durable Evolve domain ledger
+    (#1064), so the Workspace/Project/Graph/Run identity chain, the physical
+    NodeRun/Attempt evidence, and the exactly-once battle/finalize publication
+    rows are real durable records, not test doubles of the spine. Only the
+    breeding genetics are a deterministic double, exactly as the shipped
+    backend replay suite stages them; the canonical admission/execution and
+    the publication ledger under test are the real ones.
+
+    The observer half is Conductor's landed inspection seam (#1036's
+    ``dag_run_inspection``), wired to the same canonical stores through the
+    engine bridge exactly as the app wires it. The scenario requires: the
+    projection store never recorded the Run; list/detail answer by the
+    canonical id alone; the battle/finalize NodeRun/Attempt tree is readable
+    through the scoped seam; the durable publication ledger caught exactly one
+    row per battle NodeRun plus a committed finalize marker; and an observer
+    outside the Workspace is refused indistinguishably from a missing id.
+    """
+    _bind_hive_backend()
+
+    import services.engine as engine_mod
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.evolution_graph import run_canonical_evolution_cycle
+    from services.evolve_domain_store import SqliteEvolveDomainStore
+    from services.workspace_authority import canonical_store_for_tests, create_workspace
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    scratch = Path(tempfile.mkdtemp(prefix="evolve-conductor-parity-"))
+    profile = None
+    monkey = pytest.MonkeyPatch()
+    try:
+        # The producer acts as a member of a real canonical Workspace (the
+        # Conductor-side authority the observation half authorizes against).
+        view = await create_workspace(
+            creator_user_id=_PARITY_USER,
+            name="Evolve parity",
+            persona_template_id="pm_fleet",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        profile = await open_durable_profile(scratch / "spine.sqlite3", workspace_id=view.id)
+        durable = CanonicalDurableRunStore(profile.run_store, profile.continuation_store)
+        domain = SqliteEvolveDomainStore(str(scratch / "evolve_domain.db"))
+        await domain.ensure_schema()
+
+        population = _evolve_population()
+        from maistro_evolve.tournament import EloTournament
+
+        tournament = EloTournament()
+        monkey.setattr("maistro_evolve.cycle.EvolutionCycle", _DeterministicEvolveCycle)
+        record = await run_canonical_evolution_cycle(
+            population=population,
+            tournament=tournament,
+            config=SimpleNamespace(
+                eval_batch_size=4,
+                target_benchmarks=["proxy"],
+                eval_ema_alpha=0.5,
+                cull_pct=0.0,
+                island_count=1,
+                population_size=4,
+                migration_interval=1000,
+            ),
+            harness=SimpleNamespace(fidelity="proxy"),
+            llm_call=None,
+            actor_principal_id=_PARITY_USER,
+            cycle_number=1,
+            container=SimpleNamespace(
+                config=SimpleNamespace(workspace_id=profile.workspace_id),
+                project_scope_store=profile.project_store,
+                run_store=profile.run_store,
+                graph_run_store=durable,
+            ),
+            domain_store=domain,
+        )
+        from maistro.runs import RunStatus
+
+        assert record.run.status is RunStatus.COMPLETED, (
+            f"cycle ended {record.run.status}: {record.run.error}"
+        )
+        run_id = record.run_id
+
+        # The durable publication ledger caught exactly one row per battle
+        # NodeRun the cycle executed, plus the committed finalize marker —
+        # #1064's exactly-once evidence is part of the parity observation.
+        node_runs = await profile.run_store.list_node_runs(run_id)
+        battle_node_ids = {
+            node.node_run_id for node in node_runs if str(node.node_id).startswith("evolve-battle")
+        }
+        finalize_node_ids = {
+            node.node_run_id for node in node_runs if node.node_id == "evolve-finalize"
+        }
+        assert battle_node_ids, "the cycle must execute at least one battle NodeRun"
+        battle_publications = await domain.list_battle_publications(profile.workspace_id)
+        assert {p.node_run_id for p in battle_publications} == battle_node_ids
+        assert all(p.run_id == run_id for p in battle_publications)
+        finalize_markers = await domain.list_finalize_markers(profile.workspace_id)
+        assert {m.node_run_id for m in finalize_markers} == finalize_node_ids
+        assert all(m.payload["status"] == "committed" for m in finalize_markers)
+
+        # -- Observer: Conductor inspects the same canonical id. --------------
+        # The producer never recorded a projection row: the dag_run_store is
+        # not the discovery mechanism for another product's Run (#1036).
+        assert get_dag_run_store().get_run(run_id) is None
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            SimpleNamespace(
+                run_store=profile.run_store,
+                run_reader=ScopedRunReader(
+                    profile.run_store,
+                    canonical_store_for_tests(),
+                    profile.project_store,
+                ),
+            ),
+        )
+
+        detail = await visible_run_detail(_PARITY_USER, run_id)
+        assert detail is not None
+        assert detail["id"] == detail["canonical_run_id"] == run_id
+        assert detail["workspace_id"] == view.id == profile.workspace_id
+        assert detail["project_id"] == profile.project_id
+        assert detail["status"] == "completed"
+        observed_nodes = detail.get("node_runs") or []
+        assert observed_nodes, "the completed cycle must expose physical NodeRun evidence"
+        attempts = [a for node in observed_nodes for a in node.get("attempts", [])]
+        assert attempts, "the completed cycle must expose physical Attempt evidence"
+        assert all(attempt["status"] == "completed" for attempt in attempts)
+        assert await can_inspect_run(_PARITY_USER, run_id)
+        assert await visible_run_ids(_PARITY_USER, [run_id, "no-such-run"]) == {run_id}
+        listed = await list_visible_runs(_PARITY_USER, limit=25)
+        assert run_id in {row["id"] for row in listed}
+
+        # A caller outside the producing Workspace is refused without learning
+        # the id exists — the same answer a missing id gets (#1174).
+        assert await visible_run_detail(_PARITY_FOREIGN_USER, run_id) is None
+        assert not await can_inspect_run(_PARITY_FOREIGN_USER, run_id)
+        assert await visible_run_ids(_PARITY_FOREIGN_USER, [run_id]) == set()
+
+        return ScenarioExecution(
+            {
+                "producer": "evolve",
+                "observer": "conductor",
+                "run_id": run_id,
+                "workspace_id": profile.workspace_id,
+                "project_id": profile.project_id,
+                "producer_status": detail["status"],
+                "physical_node_runs": len(observed_nodes),
+                "physical_attempts": len(attempts),
+                "battle_node_runs": len(battle_node_ids),
+                "durable_battle_publications": len(battle_publications),
+                "finalize_publications": len(finalize_markers),
+                "projection_rows_for_run": 0,
+                "foreign_observer_visible": False,
+            }
+        )
+    finally:
+        monkey.undo()
+        if profile is not None:
+            await profile.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _validate_evolve_observation(observation: Mapping[str, Any]) -> None:
+    """The strict invariant over the real producer/observer records."""
+    assert observation["producer"] == "evolve"
+    assert observation["observer"] == "conductor"
+    for field in ("run_id", "workspace_id", "project_id"):
+        assert observation[field], f"observation lacks canonical {field}"
+    assert observation["producer_status"] == "completed"
+    assert observation["physical_node_runs"] >= 2
+    assert observation["physical_attempts"] >= 1
+    assert observation["battle_node_runs"] >= 1
+    # The exactly-once ledger caught every battle the cycle executed.
+    assert observation["durable_battle_publications"] == observation["battle_node_runs"]
+    assert observation["finalize_publications"] >= 1
+    assert observation["projection_rows_for_run"] == 0
+    assert observation["foreign_observer_visible"] is False
 
 
 def _golden_scenario() -> ScenarioExecution:
@@ -413,8 +704,9 @@ SCHEDULER_SCENARIO = ParityScenario(
 )
 EVOLVE_SCENARIO = ParityScenario(
     name="evolve-cycle-to-conductor",
-    dependencies=(EVOLVE, CONDUCTOR_INSPECTION),
-    execute=_evolve_scenario,
+    dependencies=(EVOLVE, CONDUCTOR_INSPECTION, REAL_EVOLVE_CONDUCTOR_SCENARIO),
+    execute=_evolve_conductor_scenario,
+    validate_observation=_validate_evolve_observation,
 )
 GOLDEN_SCENARIO = ParityScenario(
     name="golden-real-observation",
@@ -583,10 +875,17 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
 
 
 def test_evolve_required_scenario_emits_strict_closeout_evidence() -> None:
-    """Scenario 3 through the closeout machinery (#1069); see scenario 1."""
+    """Scenario 3 through the closeout machinery (#1069); see scenario 1.
+
+    The Evolve -> Conductor scenario is a real execution now (with #1064's
+    durable publication ledger as part of the observation), so it must record
+    PASSED evidence in development mode; a regression back to an abstaining
+    scaffold or any parity break in the producer/observer boundary shows up
+    here as BLOCKED/FAILED instead of a green check.
+    """
     evidence = execute_scenario_sync(EVOLVE_SCENARIO)
-    if evidence.status == "BLOCKED":
-        assert evidence.blockers or evidence.error
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_shared_identity_contract_consumes_executable_ontology() -> None:
@@ -854,7 +1153,7 @@ async def test_strict_closeout_reports_every_required_scenario() -> None:
     )
     scenarios = (
         ParityScenario("first-required", (missing,), _scheduler_scenario),
-        ParityScenario("second-required", (missing,), _evolve_scenario),
+        ParityScenario("second-required", (missing,), _abstaining_scenario),
     )
 
     with pytest.raises(CloseoutFailure) as raised:
@@ -965,23 +1264,28 @@ def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> No
 
     Codex review (PR #1641): once a scenario's named product dependency lands,
     an import/source-token check alone is not proof the scenario executed a
-    real cross-product Run through the product's own path. Scenarios 2, 3 and
-    6 still carry their permanent, evidence-backed blockers (``REAL_*`` in
+    real cross-product Run through the product's own path. Scenarios 2 and 6
+    still carry their permanent, evidence-backed blockers (``REAL_*`` in
     harness.py) precisely so the compound ``dependency_assessment`` call stays
     unavailable -- and strict mode stays red -- until each scaffold is replaced
-    with a real execution. Scenario 1 (Builders -> Conductor) made that
-    replacement, so its ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` marker must now
-    read as available: its blocker is cleared by construction once the real
+    with a real execution. Scenarios 1 (Builders -> Conductor) and 3
+    (Evolve -> Conductor, with #1064's durable publication ledger in its
+    observation) made that replacement, so their ``REAL_*`` markers must now
+    read as available: a blocker is cleared by construction once the real
     scenario exists, and the real execution itself is what
-    ``test_builders_required_scenario_emits_strict_closeout_evidence`` proves.
+    ``test_builders_required_scenario_emits_strict_closeout_evidence`` and
+    ``test_evolve_required_scenario_emits_strict_closeout_evidence`` prove.
     """
     assert REAL_BUILDERS_CONDUCTOR_SCENARIO.available(), (
         "the Builders -> Conductor real-scenario marker regressed to unavailable: "
         "the real scenario execution was lost"
     )
+    assert REAL_EVOLVE_CONDUCTOR_SCENARIO.available(), (
+        "the Evolve -> Conductor real-scenario marker regressed to unavailable: "
+        "the real scenario execution was lost"
+    )
     for dependency in (
         REAL_SCHEDULE_CONDUCTOR_SCENARIO,
-        REAL_EVOLVE_CONDUCTOR_SCENARIO,
         REAL_GOLDEN_PRODUCT_OBSERVATION,
     ):
         assert not dependency.available(), (
