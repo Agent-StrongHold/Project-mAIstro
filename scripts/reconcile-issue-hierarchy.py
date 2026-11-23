@@ -21,6 +21,7 @@ from typing import Any
 API_ROOT = "https://api.github.com"
 MANIFEST = Path("docs/testing/issue-2503-native-hierarchy-audit.json")
 MAX_DIRECT_CHILDREN = 100
+MAX_NESTED_LEVELS = 8
 
 
 class HierarchyError(RuntimeError):
@@ -116,7 +117,10 @@ def plan(data: dict[str, Any]) -> tuple[list[dict[str, Any]], Counter[str]]:
         return depths[number]
 
     for number in by_number:
-        depth(number, set())
+        if depth(number, set()) > MAX_NESTED_LEVELS:
+            raise HierarchyError(
+                f"#{number}: nested hierarchy exceeds {MAX_NESTED_LEVELS} levels"
+            )
 
     per_parent = Counter(row["declared_parent"] for row in proposed)
     for number, added in per_parent.items():
@@ -187,6 +191,14 @@ def apply_one(
         )
     if issue.get("id") != row["issue_id"]:
         raise HierarchyError(f"#{number}: issue identity changed")
+    if issue.get("state") != row.get("state"):
+        raise HierarchyError(f"#{number}: issue state changed since snapshot")
+    current_labels = sorted(
+        item.get("name") for item in (issue.get("labels") or [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    if current_labels != sorted(row.get("labels", [])):
+        raise HierarchyError(f"#{number}: labels changed since snapshot")
 
     # The entire explicit source line must still be unchanged. There is no
     # automatic repair based on stale titles, historical comments or siblings.
@@ -203,6 +215,8 @@ def apply_one(
     if snapshot_ms != live_ms:
         raise HierarchyError(f"#{number}: child milestone changed since snapshot")
     expected_parent = by_number[parent_number]
+    if parent.get("id") != expected_parent.get("issue_id"):
+        raise HierarchyError(f"#{parent_number}: parent identity changed")
     if (parent.get("milestone") or {}).get("number") != expected_parent.get(
         "native_milestone"
     ):
