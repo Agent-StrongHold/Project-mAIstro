@@ -214,16 +214,18 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # merged identities develop already shipped — a landed trunk migration
     # never moves, and redrawing them would leave databases stamped at
     # develop's `066` never executing the new revision — so it takes `068`,
+    # #1064's Evolve domain publications renumber past that landed run as `070`.
     # one linear head. The Schedule deletion-marker table (#2467) — `064`
     # when written on this branch's previous tip — renumbers past that
     # landed run as `069` under the same convention.
-    assert directory.get_heads() == ["069"]
+    assert directory.get_heads() == ["070"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
     assert directory.get_revision("067").down_revision == "066"
     assert directory.get_revision("068").down_revision == "067"
     assert directory.get_revision("069").down_revision == "068"
+    assert directory.get_revision("070").down_revision == "069"
     walked = {item.revision for item in directory.walk_revisions("base", "062")}
     assert {
         "034_canonical_run_effect_claim",
@@ -275,6 +277,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     assert Path(directory.get_revision("068").path).name == "068_legacy_principal_ownership.py"
     assert directory.get_revision("069").down_revision == "068"
     assert Path(directory.get_revision("069").path).name == "069_schedule_deletions.py"
+    assert directory.get_revision("070").down_revision == "069"
+    assert Path(directory.get_revision("070").path).name == "070_evolve_domain_publications.py"
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
     # the exact collision the 55be1459 resolution removed them for. Develop's
