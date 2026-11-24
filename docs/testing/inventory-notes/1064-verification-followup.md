@@ -908,3 +908,48 @@ change has not yet been exercised by hosted CI and the timing-sensitive
 cross-product-parity check still requires exact-head settlement. Verdict:
 **NEEDS-REPAIR** pending exact-head CI evidence; no new tests or inventory
 counts were added.
+
+## Round 12 — independent verifier re-execution at exact head `1bd985be0a` (2026-11-24)
+
+Re-derived and re-executed at this exact worktree head; nothing inherited from
+prior summaries. Worktree confirmed clean at `1bd985be0a` for the entire run;
+no state-changing git operations were used.
+
+Executed by the verifier against PostgreSQL 18 (`maistro-1064-pg`, migrated,
+82 public tables):
+
+- `uv run ruff check .` — pass.
+- Restart/replay legs `test_evolution_restart_replay.py` +
+  `test_evolution_restart_replay_pg.py` with `MAISTRO_TEST_PG_DSN`:
+  **38 passed, 0 skipped** (evaluation receipts, committed-finalize evidence,
+  hard-kill mid-finalize, and the distinct-OS-subprocess recovery leg).
+- `test_evolution_startup_wiring.py` + `test_evolve_domain_retention.py` +
+  `test_evolve_domain_store.py` with the DSN: **27 passed** → **65 total
+  Evolve PG legs, 0 skipped**, matching the round-10 claim, now re-executed.
+- Evolve units `test_domain_reconstruction.py` + `test_durable_snapshot.py`:
+  **11 passed**.
+- `tests/cross_product_parity` with CI's exact invocation (ci.yml:952,
+  `REQUIRE_AUTH=false`, `MAISTRO_DRY_RUN=1`): **26 passed**.
+- `tests/test_check_diff_coverage.py`: **18 passed** (MEASURED_ROOTS includes
+  `packages/hive-conductor/backend/services`; agreement with the producer
+  `--source` asserted).
+
+Live hosted evidence (read-only `gh pr view 2497` refresh at this head):
+`headRefOid` is `1bd985be0a…`, draft; rollup **70 SUCCESS / 2 SKIPPED /
+8 IN_PROGRESS / 1 null** — both coverage producers (`coverage (no services)`,
+`coverage (PostgreSQL)`), `test`, `postgres (pg17)` and `hive-conductor-e2e`
+still IN_PROGRESS; the publish-set coverage gate is downstream of the
+producers and has not started. Per the standing rule, pending CI stays
+UNVERIFIED and the exact-SHA/CI criterion is not settled at this head.
+
+Workflow repair re-read at this head: `coverage-postgres` is excluded from the
+pre-floor combine, the unchanged 87% publish-set floor is evaluated first, the
+producer artifact is then appended for the diff gate with a hard error if it
+contributed no data — no floor lowered, no measured code dropped. Closure
+keywords: none in the branch commit messages or PR body ("Refs" only). The
+#947 thread disposition remains a #51 closeout item (P2 thread, outside this
+issue's P1-specific criterion), unchanged from round 11.
+
+This docs-only record shifts the PR head; hosted exact-head CI must settle at
+the new head before the CI criterion is proven. Verdict: **NEEDS-REPAIR**,
+solely pending hosted exact-head settlement.
