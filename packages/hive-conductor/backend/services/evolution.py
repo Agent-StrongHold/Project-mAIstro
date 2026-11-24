@@ -538,11 +538,19 @@ class _EvolutionService:
         if snapshot is None:
             self.initialize_domain_state()
             return False
+        from maistro_evolve.archive import CandidateArchive
         from maistro_evolve.population import PopulationStore
         from maistro_evolve.tournament import EloTournament
 
         population = PopulationStore()
         tournament = EloTournament()
+        # M4-A6: the candidate archive is Evolve domain state too. A durable
+        # snapshot does not carry archive contents (they are not part of the
+        # admission/commit export), but lineage archival for all future live
+        # and recovered cycles must still be installed here; leaving the
+        # constructor's ``None`` would silently disable the retired-genome
+        # and created-child snapshots on every restored process.
+        archive = CandidateArchive()
         (
             replayed_battles,
             replayed_evaluations,
@@ -556,6 +564,7 @@ class _EvolutionService:
         )
         self._population = population
         self._tournament = tournament
+        self._archive = archive
         self._cycle_count = snapshot.completed_cycles
         self._committed_finalize_runs = committed_finalize_runs
         self._domain_restore = {

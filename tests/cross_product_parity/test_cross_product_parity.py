@@ -1741,9 +1741,7 @@ def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> No
         "the schedule -> Conductor real-scenario marker regressed to unavailable: "
         "the real configured-lifespan scenario execution was lost (#1199)"
     )
-    for dependency in (
-        REAL_GOLDEN_PRODUCT_OBSERVATION,
-    ):
+    for dependency in (REAL_GOLDEN_PRODUCT_OBSERVATION,):
         assert not dependency.available(), (
             f"{dependency.key} reads as available -- its scaffold-only scenario "
             "would now pass as if it were real execution evidence"

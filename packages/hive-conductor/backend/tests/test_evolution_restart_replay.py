@@ -512,6 +512,11 @@ async def _restore_process(spine: _Spine, monkeypatch: pytest.MonkeyPatch) -> An
 
     restored = await service.restore_or_initialize_domain_state()
     assert restored is True
+    # M4-A6: a durable restore must install lineage archival too. The
+    # constructor seeds ``None``; only fresh init and a successful restore may
+    # replace it, and a restore that left ``None`` would silently disable the
+    # retired-genome and created-child snapshots on every restarted process.
+    assert service.archive is not None
     return service
 
 
@@ -790,6 +795,7 @@ async def test_process_death_between_journal_and_attempt_resumes_exactly_once(
     assert restored_tournament.get_stats()["total_battles"] == 2
     restored_population = service.population
     assert sorted(g.id for g in restored_population.list_all()) == ["g1", "g2", "g3", "g4"]
+    assert service.archive is not None
 
     run_id = journaled[0].run_id
     # The shipped due tick, with the tick's own clock past every elapsed
@@ -1224,6 +1230,16 @@ async def test_process_death_after_evaluations_recovers_scored_population(
     reference_eval_pubs = await reference_spine.domain_store.list_evaluation_publications(_WS)
     assert len(reference_eval_pubs) == 4
     reference_signature = _domain_signature(reference_tournament)
+
+    # Evidence parity: sample counts and per-benchmark history feed promotion
+    # gating (#854), so recovery must reproduce them exactly, not just scores.
+    reference_evidence = {
+        g.id: (
+            dict(g.harness_params.get("eval_samples", {})),
+            {k: list(v) for k, v in (g.harness_params.get("eval_history") or {}).items()},
+        )
+        for g in reference_population.list_all()
+    }
     # Legs share one durable domain on PG: the reference's rows are purged
     # before the crash leg is admitted, so the restarted process's journal
     # is exactly the crash run's own history.
@@ -1262,6 +1278,9 @@ async def test_process_death_after_evaluations_recovers_scored_population(
     assert service._domain_restore["replayed_evaluations"] == 1
     restored_g1 = service.population.get("g1")
     assert restored_g1.eval_scores == dict.fromkeys(config.target_benchmarks, _EVAL_SCORES["g1"])
+
+    assert restored_g1.harness_params.get("eval_samples") == reference_evidence["g1"][0]
+    assert restored_g1.harness_params.get("eval_history") == reference_evidence["g1"][1]
     assert service.population.get("g2").eval_scores == {}
     assert service.tournament.get_stats()["total_battles"] == 0
 
@@ -1294,6 +1313,15 @@ async def test_process_death_after_evaluations_recovers_scored_population(
     recovered_fitness = {g.id: g.fitness_score for g in service.population.list_all()}
     assert recovered_fitness == reference_fitness
     assert _domain_signature(service.tournament) == reference_signature
+
+    recovered_evidence = {
+        g.id: (
+            dict(g.harness_params.get("eval_samples", {})),
+            {k2: list(v) for k2, v in (g.harness_params.get("eval_history") or {}).items()},
+        )
+        for g in service.population.list_all()
+    }
+    assert recovered_evidence == reference_evidence
     await recovered_spine.close()
 
 

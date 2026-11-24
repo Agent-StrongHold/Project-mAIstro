@@ -174,6 +174,8 @@ def _published_evaluation_ref(genome: Any, node_run_id: str) -> dict[str, str] |
 
 _EVALUATION_PAYLOAD_GENOME = "genome_id"
 _EVALUATION_PAYLOAD_SCORES = "scores"
+_EVALUATION_PAYLOAD_SAMPLES = "eval_samples"
+_EVALUATION_PAYLOAD_HISTORY = "eval_history"
 _EVALUATION_PAYLOAD_COST = "cost_usd"
 _EVALUATION_PAYLOAD_LATENCY = "avg_latency_seconds"
 _EVALUATION_PAYLOAD_REF = "execution_ref"
@@ -186,6 +188,14 @@ def _evaluation_receipt_payload(
     return {
         _EVALUATION_PAYLOAD_GENOME: genome_id,
         _EVALUATION_PAYLOAD_SCORES: dict(working.eval_scores),
+        _EVALUATION_PAYLOAD_SAMPLES: dict(
+            working.harness_params.get("eval_samples") or {}
+        ),
+        _EVALUATION_PAYLOAD_HISTORY: {
+            key: list(values)
+            for key, values in dict(working.harness_params.get("eval_history") or {}).items()
+            if isinstance(values, list)
+        },
         _EVALUATION_PAYLOAD_COST: working.harness_params.get("total_cost_usd", 0.0),
         _EVALUATION_PAYLOAD_LATENCY: working.harness_params.get("avg_latency_seconds", 0.0),
         _EVALUATION_PAYLOAD_REF: {
@@ -200,7 +210,7 @@ def _apply_evaluation_receipt(genome: Any, payload: dict[str, Any]) -> Any:
     """Fold a winning evaluation receipt into a genome copy, exactly once (#1064).
 
     Receipt values are SET, never re-folded: the winning publisher already
-    did the EMA/cost/latency arithmetic over the committed pre-state, and the
+    did the EMA/cost/latency/sample-count arithmetic over the committed pre-state, and the
     payload is that arithmetic's durable result. Setting it is idempotent —
     a replayed receipt applies the same values — while re-folding would
     double-apply. The execution ref joins the same ledger
@@ -214,6 +224,16 @@ def _apply_evaluation_receipt(genome: Any, payload: dict[str, Any]) -> Any:
         {str(k): float(v) for k, v in dict(payload.get(_EVALUATION_PAYLOAD_SCORES) or {}).items()}
     )
     harness = working.harness_params
+    harness["eval_samples"] = {
+        str(k): int(v)
+        for k, v in dict(payload.get(_EVALUATION_PAYLOAD_SAMPLES) or {}).items()
+        if isinstance(v, (int, float))
+    }
+    harness["eval_history"] = {
+        str(k): [float(x) for x in values]
+        for k, values in dict(payload.get(_EVALUATION_PAYLOAD_HISTORY) or {}).items()
+        if isinstance(values, list)
+    }
     harness["total_cost_usd"] = float(payload.get(_EVALUATION_PAYLOAD_COST) or 0.0)
     harness["avg_latency_seconds"] = float(payload.get(_EVALUATION_PAYLOAD_LATENCY) or 0.0)
     ref = payload.get(_EVALUATION_PAYLOAD_REF)
