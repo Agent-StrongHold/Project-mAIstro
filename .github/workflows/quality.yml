@@ -536,7 +536,21 @@ jobs:
     # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
     # cancelled gate never reports, so it blocks the PR without measuring
     # anything. The suites, sources, floor and diff thresholds are unchanged.
-    timeout-minutes: 30
+    #
+    # 30 -> 45 on 2026-11-24: capacity, not scope. The #1064 candidate grew
+    # the two heaviest serial producers with tests that measure real code:
+    # the hive-conductor backend producer rose 2m16s -> 7m16s (the Evolve
+    # restart/replay suites' server-less legs) and the root `tests/` producer
+    # measured 17m39s (6081 tests). Measured at head
+    # 8fc5b6d on run 45447298201, where every suite the gate executed PASSED
+    # (4486 passed/100 skipped, then 6081 passed/140 skipped) and the job was
+    # cancelled at 30m16s by THIS limit before `coverage xml` could run — so
+    # the required check reported nothing and gates-ran failed it as
+    # "non-executed". The remaining producers (~4m40s) plus floor/combine
+    # (~2m) put the need at ~32-33m; 45 keeps the gate under one hour while
+    # leaving headroom for runner variance. Same rationale as the 15 -> 30
+    # raise: a gate that cannot finish measures nothing and blocks every PR.
+    timeout-minutes: 45
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and
