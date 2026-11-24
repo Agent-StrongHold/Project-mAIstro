@@ -1155,6 +1155,19 @@
       "notes": "Deleted only on explicit request; no retention sweep."
     },
     {
+      "table": "schedule_deletions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/scheduling/store.py",
+      "data_class": "configuration",
+      "retention": "indefinite_by_decision",
+      "deletion_path": "maistro.scheduling.store:SqliteScheduleStore.put",
+      "issue": "#2467",
+      "notes": "One row per deliberately deleted schedule id; the marker is what keeps startup from resurrecting the schedule. Cleared only when a later put re-creates that id, so it never outlives the decision it guards; grows by one row per delete, no sweep."
+    },
+    {
       "table": "schema_migrations",
       "backends": [
         "sqlite"

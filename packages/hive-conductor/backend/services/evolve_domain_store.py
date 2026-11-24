@@ -51,7 +51,7 @@ from pydantic import BaseModel, Field
 from maistro.runs.evidence_json import decode_payload
 
 #: Runtime bootstrap DDL for the PostgreSQL backends. The migration chain
-#: (``alembic/versions/069_evolve_domain_publications.py``) owns ``CREATE
+#: (``alembic/versions/070_evolve_domain_publications.py``) owns ``CREATE
 #: TABLE`` for real deployments and carries byte-identical DDL; this constant
 #: is what ``ensure_schema`` runs on standalone pools (tests, dev runs), the
 #: same pairing the delegation/event stores use.

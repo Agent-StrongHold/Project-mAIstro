@@ -501,12 +501,12 @@ def _assert_losslessly_migrated() -> None:
 
     # The chain tip: develop's landed 064 personas, 065 replay cursors, 066
     # receipts and 067 delegation grants keep their merged identities, and
-    # 068 — this file's subject — appends as the single new head
-    # (test_goal_installed_base_upgrade carries the same constant). #1064's
-    # Evolve domain store appends after it as 069: an upgrade to head stamps
-    # the tip, so the version table carries exactly 069 (one linear head,
-    # never a multi-version stamp).
-    assert _versions() == {"069"}
+    # 068 — this file's subject — appends past them; the Schedule
+    # deletion-marker table (#2467) — `064` when written on this branch's
+    # previous tip — renumbers past that landed run as `069` under the same
+    # convention (test_goal_installed_base_upgrade carries the same head).
+    # #1064's Evolve domain store renumbers past that landed run as `070`.
+    assert _versions() == {"070"}
 
 
 class TestMixedDataMigratesLosslessly:
