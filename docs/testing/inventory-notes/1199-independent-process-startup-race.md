@@ -180,3 +180,28 @@ Executed evidence at this head:
   where maistro is installed in the image; not re-executed locally (no
   `MAISTRO_TEST_PG_DSN`) — retained as UNVERIFIED-at-this-head locally,
   consistent with the addendum above.
+
+## Leakage-step repair addendum (cr-2512 round)
+
+With the racing test green, the `test` job's next red was ci.yml's leakage
+step (`uv run pytest tests/ packages/hive-conductor/backend/tests
+packages/maistro-design/tests -q --timeout=60`): 20 failures, all
+`[memory]`/`[sqlite]` legs of legacy-import tests, while every leg passed
+when the backend suite ran standalone.
+
+Root cause (reproduced, not guessed): the branch's own schedule-conductor
+parity scenario (`tests/cross_product_parity/test_cross_product_parity.py`,
+added by the develop-sync) boots the real hive scheduler lifespan. Its
+startup reconciliation marks the **process-global** `schedule_migration`
+projection ledger migrated (#2467). The backend suite's ledger isolation
+fixture snapshots pre-existing state by design, so in the same interpreter
+every legacy-import test inherited `migrated: true`, skipped the import
+pass, and degraded its rows ("cannot fire and will not be reimported").
+Minimal reproducer: `pytest tests/cross_product_parity
+packages/hive-conductor/backend/tests/test_schedule_projection_authority.py::test_legacy_import_happens_exactly_once`
+→ 2 failed; the same reproducer passes at the develop base a6a0969.
+
+Repair: the scenario snapshots the ledger before the lifespan runs and
+restores it (plus `reset_projection_health()`) in its existing `finally` —
+the polluter cleans up. Re-run of the exact leakage step: **11200 passed,
+203 skipped** (was 20 failed, 11180 passed), 10:38.
