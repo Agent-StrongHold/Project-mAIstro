@@ -368,7 +368,10 @@ async def put_canonical_definition(sid: str, schedule: Any) -> None:
     Called before the Hive row is written, so the canonical store is the
     authority and the row its projection. ``put`` keeps recorded cursors and
     clears ``next_due_at`` only on a cron/timezone change. A row naming no
-    template has no canonical definition, so any earlier one is removed.
+    template has no canonical definition, so any earlier one is removed —
+    without a tombstone: clearing the template retains the editable Hive
+    schedule, so this is a definition removal, not a deletion, and the read
+    path must keep serving (and retargeting) the surviving row.
     Raises ``ValueError`` for a definition the canonical model refuses.
     """
     authority = _definition_authority()
@@ -377,7 +380,7 @@ async def put_canonical_definition(sid: str, schedule: Any) -> None:
     runner, container = authority
     definition = await _scoped_definition(runner, sid, schedule, container)
     if definition is None:
-        await container.schedule_store.delete(sid)
+        await container.schedule_store.delete(sid, tombstone=False)
         return
     await container.schedule_store.put(definition)
 

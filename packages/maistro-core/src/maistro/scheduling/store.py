@@ -95,7 +95,16 @@ class ScheduleStore(Protocol):
 
     async def get(self, schedule_id: str) -> Schedule | None: ...
 
-    async def delete(self, schedule_id: str) -> bool: ...
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
+        """Remove the row; ``tombstone`` records the removal as durable (#2467).
+
+        The default is a deliberate schedule deletion: ``tombstoned_ids``
+        reports the id so no surviving projection is resurrected. Passing
+        ``tombstone=False`` removes a definition the schedule's own retained
+        projection outlives -- clearing a bound template -- and leaves no
+        marker, because the schedule itself was not deleted.
+        """
+        ...
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         """Every schedule filed in one Project, enabled or not."""
@@ -437,9 +446,9 @@ class InMemoryScheduleStore:
     async def get(self, schedule_id: str) -> Schedule | None:
         return self._schedules.get(schedule_id)
 
-    async def delete(self, schedule_id: str) -> bool:
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
         deleted = self._schedules.pop(schedule_id, None) is not None
-        if deleted:
+        if deleted and tombstone:
             self._deleted.add(schedule_id)
         return deleted
 
@@ -675,13 +684,13 @@ class SqliteScheduleStore:
             row = await cursor.fetchone()
         return self._row_to_schedule(row[0]) if row else None
 
-    async def delete(self, schedule_id: str) -> bool:
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
         async with self._serialized_write():
             cursor = await self._conn.execute(
                 "DELETE FROM schedules WHERE schedule_id = ?", (schedule_id,)
             )
             deleted = bool(cursor.rowcount)
-            if deleted:
+            if deleted and tombstone:
                 await self._conn.execute(
                     "INSERT OR IGNORE INTO schedule_deletions (schedule_id, deleted_at) "
                     "VALUES (?, ?)",
