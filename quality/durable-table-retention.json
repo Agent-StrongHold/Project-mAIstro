@@ -748,6 +748,32 @@
       "notes": "One row per replay consumer (#836); bounded by the consumer count, not by time. Same shape as consumer_cursors."
     },
     {
+      "table": "evolve_domain_publications",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/hive-conductor/backend/services/evolve_domain_store.py",
+      "data_class": "execution_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1064",
+      "notes": "The Evolve effect-publication journal (#1064), created by alembic 069 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition). One row per durably published battle/finalize effect keyed (workspace, effect_kind, node_run_id, benchmark); the primary key IS the exactly-once fence, so rows are append-only evidence and nothing in the tree DELETEs them. A run-keyed purge (or a bounded journal trim) is an open owner decision on #1064, same posture as delegation_grants' expiry sweep."
+    },
+    {
+      "table": "evolve_domain_snapshots",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/hive-conductor/backend/services/evolve_domain_store.py",
+      "data_class": "execution_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#1064",
+      "notes": "The Evolve domain reconstruction snapshots (#1064), created by alembic 069 on PostgreSQL and ensure_schema on SQLite (guarded DDL, one definition). Keyed (workspace, run_id, kind); each Run's admission row is the compensation reference its recovery verifies against and each committed row is the post-finalize restore point, so premature deletion would strand recovery. No DELETE path exists today; a run-completion trim is an open owner decision on #1064."
+    },
+    {
       "table": "feature_corrections",
       "backends": [
         "postgres"

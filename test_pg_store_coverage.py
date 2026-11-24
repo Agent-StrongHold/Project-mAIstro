@@ -118,7 +118,7 @@ class TestPgScheduleStoreRecordFire:
         fired_at = datetime.now(UTC)
         result = await pg_store.record_fire(
             sample_schedule.schedule_id,
-            fired_at=datetime.now(UTC),
+            fired_at=fired_at,
             run_id=str(uuid.uuid4()),
         )
         assert result.fires == 1
