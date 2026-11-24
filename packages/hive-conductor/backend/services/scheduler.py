@@ -37,6 +37,11 @@ _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DEFAULT_CATCHUP_WINDOW_SECONDS = DEFAULT_CATCHUP_WINDOW_SECONDS
 
+# Cadence between live ticks. A module constant rather than a literal so a
+# test can drive the real ``start_scheduler`` lifespan loop without waiting
+# out the production pause between ticks.
+_TICK_INTERVAL_S = 30.0
+
 _runner: _ScheduleRunner | None = None
 # Last failure that kept the scheduler from starting or killed its loop.
 # /health reads this (#290): a zoneless or broken scheduler must be visible
@@ -472,6 +477,7 @@ async def backfill_canonical_definitions(*, degraded: list[str] | None = None) -
         try:
             async with definition_lock(sid):
                 if await finish_tombstoned_row(sid, container):
+                    written += 1
                     continue
                 written += await _backfill_one(runner, sid, container)
         except ValueError as exc:
@@ -496,28 +502,70 @@ async def backfill_canonical_definitions(*, degraded: list[str] | None = None) -
     return written
 
 
-def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
-    """Whether ``existing``'s definition fields disagree with the Hive row's.
+def _hive_updates_from_canonical(definition: Schedule) -> dict[str, Any]:
+    """The Hive-row fields one canonical definition projects onto (#2467).
 
-    Compares only what ``_as_definition``/``_scoped_definition`` derive from
-    the Hive row — never the cursors ``record_fire`` owns (``runs_so_far``,
-    ``last_run_id``, ``next_due_at``, ``last_fired_at``,
-    ``recovered_occurrences``, ``pending_fires``) — so a schedule the tick
-    has since advanced is never flagged as drifted merely for having moved
-    past its Hive snapshot.
+    The inverse of ``_as_definition`` for the fields the canonical row owns.
+    ``description`` has no canonical counterpart, so projection repair keeps
+    whatever the existing Hive row says. Cursor fields (``last_run``,
+    ``last_run_id``, ``next_run``) are carried for row construction only:
+    the tick's ``_project_cursor`` is what mirrors them after every fire, so
+    repair compares and writes definition truth, never cursor truth.
     """
-    return (
-        existing.name != definition.name
-        or existing.cron != definition.cron
-        or existing.timezone != definition.timezone
-        or existing.graph_template_id != definition.graph_template_id
-        or existing.max_runs != definition.max_runs
-        # The window is a definition field the routes set (#1200); a PUT that
-        # changed it must reconcile the canonical row, not just the Hive one.
-        or existing.catchup_window_seconds != definition.catchup_window_seconds
-        or existing.enabled != definition.enabled
-        or existing.workspace_id != definition.workspace_id
-        or existing.project_id != definition.project_id
+    return {
+        "user_id": str(definition.actor_principal_id or ""),
+        "workspace_id": definition.workspace_id,
+        "project_id": definition.project_id,
+        "name": definition.name,
+        "cron_expression": definition.cron,
+        "mission_template_id": definition.graph_template_id,
+        "enabled": definition.enabled,
+        "timezone": definition.timezone,
+        "max_runs": definition.max_runs,
+        "catchup_window_seconds": definition.catchup_window_seconds,
+        "last_run": definition.last_fired_at,
+        "last_run_id": definition.last_run_id,
+        "next_run": definition.next_due_at,
+        "created_at": definition.created_at,
+        "updated_at": datetime.now(UTC),
+    }
+
+
+#: Fields projection repair never compares and never rewrites: the stamps
+#: the repair itself would move, and the fire cursors the tick's
+#: ``_project_cursor`` mirrors after every fire (so a cursor-only difference
+#: is tick timing, never definition drift).
+_NON_DEFINITION_FIELDS = frozenset(
+    {"created_at", "updated_at", "last_run", "last_run_id", "next_run"}
+)
+
+
+def _projected_row(definition: Schedule, current: Any) -> Any:
+    """The Hive row canonical truth projects onto, as a ``stores.schedules`` row."""
+    from models.schemas import Schedule as HiveSchedule
+
+    updates = _hive_updates_from_canonical(definition)
+    if current is not None:
+        repair = {k: v for k, v in updates.items() if k not in _NON_DEFINITION_FIELDS}
+        return current.model_copy(update=repair)
+    return HiveSchedule(id=definition.schedule_id, description="", **updates)
+
+
+def _projection_drifts(hive_row: Any, definition: Schedule) -> bool:
+    """Whether a Hive row disagrees with the canonical row above it.
+
+    Compares exactly the definition fields projection repair would write —
+    never ``created_at`` (which the canonical import merely inherited),
+    ``updated_at`` (which every write stamps), or the fire cursors (which
+    ``_project_cursor`` mirrors after every fire) — so an agreeing row is
+    never rewritten just to move its stamp, and a cursor a fire has not yet
+    mirrored is not mistaken for definition drift.
+    """
+    updates = _hive_updates_from_canonical(definition)
+    return any(
+        getattr(hive_row, field, None) != value
+        for field, value in updates.items()
+        if field not in _NON_DEFINITION_FIELDS
     )
 
 
@@ -534,6 +582,21 @@ async def reconcile_schedule_projection() -> int:
     return await _run()
 
 
+def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
+    """Whether a pre-migration canonical definition disagrees with its row."""
+    return (
+        existing.name != definition.name
+        or existing.cron != definition.cron
+        or existing.timezone != definition.timezone
+        or existing.graph_template_id != definition.graph_template_id
+        or existing.max_runs != definition.max_runs
+        or existing.catchup_window_seconds != definition.catchup_window_seconds
+        or existing.enabled != definition.enabled
+        or existing.workspace_id != definition.workspace_id
+        or existing.project_id != definition.project_id
+    )
+
+
 async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> int:
     import stores
 
@@ -544,10 +607,68 @@ async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> in
     if definition is None:
         return 0
     existing = await container.schedule_store.get(sid)
-    if existing is not None and not _definition_drifted(existing, definition):
-        return 0
+    if existing is not None:
+        # During the one-time import, only a Hive edit newer than the
+        # canonical row can represent pre-route legacy state. A canonical
+        # write at least as new as its projection is already authoritative;
+        # importing that projection would undo the crash window this policy
+        # is meant to close (#2467).
+        projected_at = getattr(schedule, "updated_at", None)
+        if (
+            projected_at is None
+            or existing.updated_at >= projected_at
+            or not _definition_drifted(existing, definition)
+        ):
+            return 0
     await container.schedule_store.put(definition)
     return 1
+
+
+async def canonical_projection(sid: str) -> Any | None:
+    """The Hive row as canonical truth has it, repaired in place (#2467).
+
+    A route must not silently serve a stale projection: an edit or delete
+    the canonical store acknowledged but a crash kept out of the Hive row
+    would otherwise come back as the row's enabled flag, cron, or very
+    existence. Under the same definition lock the routes write with, this
+    reads the canonical row and repairs the projection from it — the repair
+    startup backfill performs, applied at read time so healing the two-write
+    window never has to wait for a restart.
+
+    Returns None when canonical truth has no such schedule: a tombstoned
+    deletion, whose stale Hive row is removed on the way out. A Hive row the
+    canonical store has never seen — a legacy row not yet imported, or
+    standalone mode with no canonical authority at all — is returned as-is:
+    canonical truth is unknown there, not absent, and the startup import is
+    what gives the row its canonical definition. A configured-but-
+    unreadable authority raises :class:`ScheduleAdmissionUnavailable`, so
+    the caller can give the client an honest 503 instead of silently stale
+    truth.
+    """
+    import stores
+
+    authority = _definition_authority()
+    if authority is None:
+        # Standalone mode: no canonical authority exists, so the Hive row is
+        # all there is — serve it rather than answering 404 for a row that
+        # exists.
+        return stores.schedules.get(sid)
+    container = authority[1]
+    store = container.schedule_store
+    async with definition_lock(sid):
+        definition = await store.get(sid)
+        hive_row = stores.schedules.get(sid)
+        if definition is None:
+            if sid in await store.tombstoned_ids():
+                stores.schedules.pop(sid, None)
+                return None
+            return hive_row
+        if definition.workspace_id.startswith("hive:schedule:"):
+            return hive_row
+        if hive_row is not None and not _projection_drifts(hive_row, definition):
+            return hive_row
+        stores.schedules[sid] = _projected_row(definition, hive_row)
+        return stores.schedules[sid]
 
 
 class _ScheduleRunner:
@@ -567,7 +688,7 @@ class _ScheduleRunner:
         self._last_check = datetime.now(UTC)
         await reconcile_schedule_projection()
         while self._running:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_TICK_INTERVAL_S)
             try:
                 await self._tick()
             except Exception as exc:

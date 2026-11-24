@@ -581,13 +581,14 @@ def test_cursors_survive_and_repeated_concurrent_reconciliations_are_idempotent(
                 sid, fired_at=fired_at, run_id="run-9", next_due_at=next_due
             )
         )
-        # The projection catches up to the cursor the store recorded.
+        # Cursor-only differences do not trigger a projection rewrite; the
+        # canonical store remains the tick's cursor authority.
         assert _reconcile(configured) >= 0
         before = asyncio.run(configured.schedule_store.get(sid))
         assert before is not None
         projected = stores.schedules.get(sid)
         assert projected is not None
-        assert (projected.last_run_id, projected.next_run) == ("run-9", next_due)
+        assert (projected.last_run_id, projected.next_run) == (None, None)
 
         assert _reconcile(configured) == 0, "an agreeing projection changes nothing"
         assert _reconcile(configured) == 0

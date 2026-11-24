@@ -201,7 +201,12 @@ def _canonical_projection_updates(canonical: Any) -> dict[str, Any]:
 def _projection_drifted(canonical: Any, row: Any) -> bool:
     """Whether the Hive row disagrees with canonical on any owned field."""
     mirrored = _canonical_projection_updates(canonical)
-    return any(getattr(row, field) != value for field, value in mirrored.items())
+    projection_fields = {
+        field: value
+        for field, value in mirrored.items()
+        if field not in {"last_run", "last_run_id", "next_run"}
+    }
+    return any(getattr(row, field) != value for field, value in projection_fields.items())
 
 
 def _hive_row_from_canonical(canonical: Any) -> Any:
@@ -258,9 +263,16 @@ async def _repair_projection_one(sid: str, container: Any, degraded: list[str]) 
     from services.scheduler import hive_schedule_row, replace_hive_schedule_row
 
     row = hive_schedule_row(sid)
-    if row is None:
-        return 0
     canonical = await container.schedule_store.get(sid)
+    if row is None:
+        if canonical is None or canonical.workspace_id.startswith("hive:schedule:"):
+            return 0
+        replace_hive_schedule_row(sid, _hive_row_from_canonical(canonical))
+        logger.info(
+            "Rebuilt the Hive projection of canonical schedule %s (#2467)",
+            sid,
+        )
+        return 1
     if canonical is None:
         if str(getattr(row, "mission_template_id", "") or "").strip():
             # A non-empty template with no canonical row and no tombstone: a
@@ -403,21 +415,26 @@ async def run_startup_reconciliation() -> int:
                 "Legacy schedule import incomplete; migration marker left unwritten for retry: %s",
                 exc,
             )
-    else:
-        degraded: list[str] = []
-        for sid in hive_schedule_ids():
-            try:
-                async with definition_lock(sid):
-                    if await finish_tombstoned_row(sid, container):
-                        changed += 1
-                        continue
-                    changed += await _repair_projection_one(sid, container, degraded)
-            except Exception as exc:
-                degraded.append(sid)
-                logger.warning(
-                    "Failed to reconcile Hive projection %s with canonical truth: %s", sid, exc
-                )
-        _PROJECTION_HEALTH["degraded"] = degraded
+    degraded: list[str] = []
+    repair_ids = set(hive_schedule_ids())
+    repair_ids.update(
+        definition.schedule_id
+        for definition in await container.schedule_store.list_all()
+        if not definition.workspace_id.startswith("hive:schedule:")
+    )
+    for sid in sorted(repair_ids):
+        try:
+            async with definition_lock(sid):
+                if await finish_tombstoned_row(sid, container):
+                    changed += 1
+                    continue
+                changed += await _repair_projection_one(sid, container, degraded)
+        except Exception as exc:
+            degraded.append(sid)
+            logger.warning(
+                "Failed to reconcile Hive projection %s with canonical truth: %s", sid, exc
+            )
+    _PROJECTION_HEALTH["degraded"] = sorted(set(_PROJECTION_HEALTH["degraded"]) | set(degraded))
     _PROJECTION_HEALTH["migrated"] = lg.migrated()
     _PROJECTION_HEALTH["reconciled_at"] = datetime.now(UTC).isoformat()
     return changed
