@@ -682,3 +682,68 @@ Verdict remains **NEEDS-REPAIR**: local replay acceptance is re-proven, but
 exact-head hosted CI is not green and the known coverage failure remains
 unrepaired. The supplied #947 disposition satisfies the recorded P1-specific
 criterion; its unresolved P2 thread remains outside that criterion.
+
+## Round 8 — assigned head `a976b0ad48d4` verifier+writer round (2026-11-24)
+
+Prior-block resolution: the previous worker round had committed the
+`57201708d320` revalidation section above; this round treats that commit as
+the handed-off baseline (not as proof of repair) and re-derives everything
+itself. Driver deterministic checks in this job directory (`check-0..6.log`,
+all rc=0): `uv sync --locked --extra dev`; `ruff check .`; `ruff format
+--check .` clean (3,652 files); maistro-evolve replay suites 11 passed;
+conductor subset 46 passed / 19 skipped without DSN; suite-inventory gates ok
+(hive-conductor backend 4,540 node IDs; maistro-evolve 1,017).
+
+Content chain re-proven, not inherited: `git diff --numstat
+31c38337db1d..a976b0ad48d4` = this note only (+273 docs lines across the
+intervening verification commits) — no `.github/`, `quality/`, or
+`packages/` change since the coverage-gate-failing head `31c38337db1d`
+(branch numstat vs develop base shows `.github/workflows/quality.yml` +23 and
+`quality/durable-table-retention.json` +26 only; no coverage-floor grant or
+producer scoping landed). The settled RED therefore still applies to
+identical code content: hosted run `45282026375` / job `138078750667`,
+`Coverage gate (publish-set floor + diff coverage)` — publish-set 83 <
+floor 87, branch-attributable against a green develop-base run
+`45239478051`.
+
+Re-executed by this verifier at the exact assigned head (PG18 container
+`maistro-1064-pg`, `MAISTRO_TEST_PG_DSN=…127.0.0.1:5570/maistro_test`):
+
+- Six conductor suites (restart/replay + `_pg.py` + startup wiring + domain
+  retention + durable store + recovery) -> **79 passed, 0 skipped in 37.7s**,
+  including the distinct-OS-process recovery leg, the per-boundary finalize
+  fault parametrization, concurrent-publisher fences, and the fresh-cycle
+  non-suppression leg.
+- `packages/maistro-evolve/tests/test_domain_reconstruction.py +
+  test_durable_snapshot.py` -> **11 passed**.
+- `tests/cross_product_parity/…::test_evolve_required_scenario_emits_strict_
+  closeout_evidence` -> **1 passed in 1.26s**.
+
+Live read-only refreshes this round:
+
+- `gh pr view 2497`: headRefOid == `a976b0ad48d4` (exact head). Rollup (run
+  `45302431044`, started 2026-11-24T01:06Z): **64 SUCCESS / 2 SKIPPED / 13
+  IN_PROGRESS / 1 null / 0 failures**; `coverage (no services)` and
+  `coverage (PostgreSQL)` still IN_PROGRESS, so the
+  `Coverage gate (publish-set floor + diff coverage)` has **not started**.
+  Pending is not green: the exact-SHA/CI criterion is UNVERIFIED at this
+  head while the content-identical settled evidence is RED.
+- `#947` review threads re-checked live via GraphQL: 7 threads; **4/4 P1
+  resolved** (`PRRT_…dTA`, `…dTF`, `…dTK`, `…dTR`); the only open thread is
+  the P2 residual `PRRT_kwDOT-he_M6d9dTY` ("Record the durable executor"),
+  unchanged and outside this issue's P1-specific disposition criterion.
+- Closure-keyword scan: `git log a6a0969ca1..a976b0ad48d4 | grep -Ei
+  '(fix(es|ed)?|closes?|resolves?) #[0-9]+'` -> no matches; live PR body
+  contains only "Refs #1064".
+
+Verdict remains **NEEDS-REPAIR**: every locally executable acceptance leg
+passes at this exact SHA with real PostgreSQL and the #947 P1 disposition is
+met, but the close-only exact-SHA/CI criterion is unmet — the settled
+branch-attributable coverage-gate FAILURE at identical content is the
+concrete repair still owed (covered arcs for the new backend-service code, a
+floor grant under the two-merge authorization process, or producer-set
+scoping — a repair-lane decision), and the current head's hosted run had not
+settled its coverage gate at capture time. Nothing in this round weakened a
+gate, edited production code, or claimed pending CI as green. The stale
+round-7 rollup counts above (57/19) are retained as a time-stamped record;
+this section supersedes them with fresh readings.
