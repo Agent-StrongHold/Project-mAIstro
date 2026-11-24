@@ -1,7 +1,7 @@
 """Durable Evolve domain snapshots and effect publications (#1064).
 
-Revision ID: 069
-Revises: 068
+Revision ID: 070
+Revises: 069
 
 The Evolve product's recovery contract requires that a genuinely new process
 can reconstruct the exact population/tournament a stranded canonical Run was
@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "069"
-down_revision = "068"
+revision = "070"
+down_revision = "069"
 branch_labels = None
 depends_on = None
 
