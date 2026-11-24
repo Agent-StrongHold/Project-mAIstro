@@ -215,6 +215,17 @@ async def _schedule_conductor_scenario() -> ScenarioExecution:
     db_path = scratch / "spine.sqlite3"
     monkey = pytest.MonkeyPatch()
     container: Any = None
+    # The scheduler's startup reconciliation writes process-global product
+    # state (#2467): the projection ledger's migration marker, tombstones,
+    # and pending-create markers. Snapshot it before the lifespan runs so
+    # the finally below can hand the next suite in this interpreter a
+    # pristine ledger — the backend suite's ledger isolation preserves
+    # pre-existing state by design, so a leaked `migrated` marker flips its
+    # legacy-import tests into repair mode (ci.yml's leakage step runs
+    # tests/ and packages/hive-conductor/backend/tests in one process).
+    from services.schedule_projection import reset_projection_health, schedule_migration
+
+    ledger_snapshot = dict(schedule_migration.items())
     try:
         # The parity process must not run the scheduler's side self-repair
         # cadence; this scenario pins the schedule tick contract only.
@@ -459,6 +470,13 @@ async def _schedule_conductor_scenario() -> ScenarioExecution:
         from services.workspace_authority import presentation_store as _presentation_store
 
         _presentation_store().pop(_SCHEDULE_PARITY_WS, None)
+        # Restore the projection ledger this lifespan marked migrated (#2467)
+        # and reset the health surface the reconciliation wrote; see the
+        # snapshot above for why the next suite needs pristine globals.
+        schedule_migration.clear()
+        for ledger_key, ledger_value in ledger_snapshot.items():
+            schedule_migration[ledger_key] = ledger_value
+        reset_projection_health()
         monkey.undo()
         shutil.rmtree(scratch, ignore_errors=True)
         try:

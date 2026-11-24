@@ -69,6 +69,16 @@ import time
 backend, hive_path, database_url, workspace_id, ready_file, start_file, result_file = sys.argv[1:8]
 sys.path.insert(0, backend)
 
+# A bare interpreter inherits none of pytest's root `pythonpath` wiring, and
+# the CI system-python step installs only backend/requirements.txt —
+# maistro-core is consumed via sys.path there, never pip-installed. Without
+# this entry the worker dies on `import maistro` before writing its ready
+# marker, and the parent burns its entire deadline on a barrier that no
+# duration can satisfy (the PR #2512 `test` job red). `backend` stays at
+# index 0: the core src tree exports only the `maistro` package, so nothing
+# shadows the backend's own modules.
+sys.path.insert(1, str(pathlib.Path(backend).parents[1] / "maistro-core" / "src"))
+
 import stores
 from maistro.state import PersistedStore, State
 
@@ -687,6 +697,25 @@ async def test_repeated_and_concurrent_startup_is_idempotent(
         _drop_row(row.id)
 
 
+def _exited_worker_detail(workers: list[subprocess.Popen[bytes]]) -> str:
+    """Name each worker's own failure at the ready/start barrier.
+
+    A wiring crash (import error, store init) is visible only in the exited
+    worker's stderr, and only while it is reaped — without this the barrier
+    reports an unexplained timeout and the real error never reaches CI.
+    """
+
+    detail: list[str] = []
+    for i, worker in enumerate(workers):
+        tail: list[str] = []
+        if worker.poll() is not None:
+            out, err = worker.communicate(timeout=30)
+            text = (err or out or b"").decode(errors="replace").strip()
+            tail = text.splitlines()[-3:]
+        detail.append(f"worker[{i}] rc={worker.poll()} stderr_tail={tail}")
+    return "; ".join(detail)
+
+
 async def test_independent_processes_racing_startup_converge_on_canonical_truth(
     configured: Harness, database_url: str, tmp_path: pathlib.Path
 ) -> None:
@@ -747,9 +776,16 @@ async def test_independent_processes_racing_startup_converge_on_canonical_truth(
         deadline = time.monotonic() + 120.0
         while not all(p["ready"].exists() for p in paths) and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
-        assert all(p["ready"].exists() for p in paths), (
-            "both workers finished wiring their own persistence before the race"
-        )
+            # A worker that exited before its ready marker can never become
+            # ready; stop waiting and report why instead of burning the rest
+            # of the deadline on an impossible barrier.
+            if any(worker.poll() is not None for worker in workers):
+                break
+        if not all(p["ready"].exists() for p in paths):
+            raise AssertionError(
+                "both workers finished wiring their own persistence before the race: "
+                + _exited_worker_detail(workers)
+            )
         paths[0]["start"].write_text("go", encoding="utf-8")
 
         for worker in workers:

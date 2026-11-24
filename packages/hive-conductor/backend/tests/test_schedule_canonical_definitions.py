@@ -390,6 +390,15 @@ def test_clearing_the_template_removes_the_canonical_row(
         assert response.status_code == 200, response.text
         assert asyncio.run(configured.schedule_store.get(sid)) is None
         assert sid not in _due_ids(configured)
+        # The clear is a definition removal, not a deletion: no tombstone may
+        # mark the id, or the read path would drop the retained Hive row and
+        # 404 every route into unreachability (Codex review, #2512).
+        assert sid not in asyncio.run(configured.schedule_store.tombstoned_ids())
+        assert admin_client.get(f"/v1/schedules/{sid}").status_code == 200
+        # And the schedule can bind another template afterwards.
+        response = admin_client.put(f"/v1/schedules/{sid}", json={"mission_template_id": _TPL})
+        assert response.status_code == 200, response.text
+        assert asyncio.run(configured.schedule_store.get(sid)) is not None
     finally:
         _drop_hive_row(sid)
 

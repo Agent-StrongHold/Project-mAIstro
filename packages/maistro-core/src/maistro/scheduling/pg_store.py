@@ -89,22 +89,25 @@ class PgScheduleStore:
             )
         return _schedule_of(payload) if payload is not None else None
 
-    async def delete(self, schedule_id: str) -> bool:
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
         """True when a row was removed.
 
         asyncpg reports a command tag ("DELETE 1"), not a rowcount, so the
-        count is the last field of that string. The deletion also leaves a
-        durable tombstone (#2467): the marker and the removal commit in one
-        transaction, so no crash can leave a deleted schedule unmarked while
-        its Hive projection survives, and startup reads the marker to refuse
-        re-importing what a deliberate delete removed.
+        count is the last field of that string. A deletion is durable only
+        when ``tombstone`` is set (the default): the marker and the removal
+        then commit in one transaction, so no crash can leave a deleted
+        schedule unmarked while its Hive projection survives, and startup
+        reads the marker to refuse re-importing what a deliberate delete
+        removed. ``tombstone=False`` removes a definition the schedule's
+        retained projection outlives (template clearing) and writes no
+        marker.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             tag: str = await conn.execute(
                 "DELETE FROM schedules WHERE schedule_id = $1", schedule_id
             )
             deleted = tag.rsplit(" ", 1)[-1] != "0"
-            if deleted:
+            if deleted and tombstone:
                 await conn.execute(
                     """INSERT INTO schedule_deletions (schedule_id, deleted_at)
                        VALUES ($1, NOW()) ON CONFLICT (schedule_id) DO NOTHING""",
