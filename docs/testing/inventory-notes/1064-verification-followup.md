@@ -953,3 +953,60 @@ issue's P1-specific criterion), unchanged from round 11.
 This docs-only record shifts the PR head; hosted exact-head CI must settle at
 the new head before the CI criterion is proven. Verdict: **NEEDS-REPAIR**,
 solely pending hosted exact-head settlement.
+
+## Round 13 — independent verifier re-execution at exact head `5a9b0d2d` (2026-11-24)
+
+Re-derived from the issue text, not inherited. Worktree confirmed clean at
+`5a9b0d2d` at start; the only tree mutations this round are the evidence-driven
+digest repair recorded below, applied as the dispatch writer after the hosted
+failure was reproduced locally.
+
+Re-executed against PostgreSQL 18 (`maistro-1064-pg`, migrated, revision 069):
+
+- Restart/replay + startup-wiring + retention + domain-store suites with
+  `MAISTRO_TEST_PG_DSN`: **65 passed, 0 skipped** (38 restart/replay incl. the
+  distinct-OS-subprocess leg; the driver's own run had left 19 PG cases
+  skipped without a DSN — those are now executed, not trusted).
+- Migration chain against a scratch PG database (`maistro_migration_scratch`,
+  dropped afterwards): **18 passed** — the fixture-destructive legs the driver
+  skipped now run on real PostgreSQL through revision 069.
+- Evolve units: **11 passed**. Parity with CI's exact env (ci.yml:952): **26
+  passed**. Diff-coverage agreement: **18 passed**. `ruff check .` and
+  `ruff format --check .`: pass. Suite-inventory gates: pass (4540 + 1017,
+  0 duplicates — driver logs check-5/check-6).
+
+Hosted settlement at `5a9b0d2d` (live `gh pr view 2497` polls, head verified
+each time): the run drained from 21 → 10 → 5 → 1 IN_PROGRESS with 0 failures
+until the `test` job (id 138180853002, run 45315246527) completed **failure**:
+5965 passed, 1 failed —
+`tests/test_ci_quality_split.py::test_every_original_quality_obligation_survives_with_its_profile`,
+`AssertionError: '7998ee9e...' == '7211a89d...'`.
+
+**Defect reproduced locally in 0.76 s at the exact head, and attributed.** The
+repair commit `1bd985be` rewrote the `coverage-gate` job in
+`.github/workflows/quality.yml` (hold `coverage-postgres` out of the pre-floor
+combine) but did not refresh the SHA-256 job digest pinned in
+`tests/fixtures/ci_quality_obligations.json`. The fixture's `coverage-postgres`
+line had been updated; the `coverage-gate` line was not. Digest recomputation:
+base workflow coverage-gate == base fixture pin (`7211a89d…`, self-consistent —
+develop is green); head workflow coverage-gate digests to `7998ee9e…`. Sole
+consumer is `tests/test_ci_quality_split.py` itself, so the pin is a truthful
+anti-tamper ratchet over CI obligations, not a policy floor.
+
+**Writer repair applied:** one line in `tests/fixtures/ci_quality_obligations.json`
+— `coverage-gate` pin `7211a89d…` → `7998ee9e…` (the digest of the reviewed
+workflow repair, recomputed with the test's own `_digest`). No workflow, gate,
+or floor change. `uv run pytest tests/test_ci_quality_split.py -q`:
+**96 passed**. No closure keywords introduced.
+
+The #947 review threads were re-read live this round: all four P1 threads carry
+explicit dispositions (battle replay → #1064 fix; finalize replay → #1064 fix;
+restart resolver → #1064 fix; embedded-core preservation → #1066, closed by
+#1300/#1299). The single undisposed thread is the P2 "Record the durable
+executor on admitted Evolve runs" — outside this issue's P1-specific
+criterion, carried to the #51 closeout as recorded in rounds 11-12.
+
+The commit that carries this record moves the PR head again; hosted CI restarts
+at the new head and must settle there before the exact-SHA/CI criterion is
+proven. Verdict: **NEEDS-REPAIR** — the deterministic digest defect is repaired
+and locally proven; sole remaining item is hosted exact-head settlement.
