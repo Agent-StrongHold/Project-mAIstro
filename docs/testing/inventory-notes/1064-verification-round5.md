@@ -1,7 +1,3 @@
----
-inventory-delta: {}
----
-
 # 1064-verification-round5
 
 Round-5 repair of the hosted coverage-gate cancellation at head
@@ -99,3 +95,25 @@ floor/combine ~2m; need at this head ~32–33m > the 30m cap.
   reach `coverage xml` + the diff gate.
 - The #947 review-thread disposition and issue closure remain open and
   untouched (issue-closure preconditions, not PR-merge criteria).
+
+## Front-matter repair (round-5 verification round, same change)
+
+This note originally opened with `inventory-delta: {}` — a delta block with a
+same-line value, which `check-suite-inventory.py` rejects as unreadable rather
+than silently treating as zero. The change records no delta (it adds no
+tests; it raises the coverage-gate capacity and re-pins one obligation
+digest), so the block is removed entirely: per `inventory-notes/README.md`, a
+note with no front matter records no delta, which is the correct form for a
+change that moved no count.
+
+Local battery re-run at head `0e5f077cd9` with this edit: the failed gate
+(`check-suite-inventory.py`, both CI's no-arg form and the `--suite
+packages/hive-conductor/backend/tests` form) passes — 21/21 suites match,
+36483 node IDs; `ruff check .` and `ruff format --check .` clean;
+evolve reconstruction/durable-snapshot legs 11 passed;
+hive-conductor evolution restart-replay/startup/retention/store legs
+52 passed, 20 skipped; `tests/test_ci_quality_split.py` +
+`tests/test_check_diff_coverage.py` 114 passed (digest re-pin still valid);
+cross-product parity 26 passed; workflow-inventory (33 workflows) and
+workflow-write-safety clean; vulture at CI's exact arguments 1221 == 1221
+(exit 0); merge-base HEAD == origin/develop == `0282be2423ab`.
