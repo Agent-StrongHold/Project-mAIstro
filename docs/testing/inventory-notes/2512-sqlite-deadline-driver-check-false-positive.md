@@ -63,3 +63,36 @@ issue body records.
 
 No test functions were added or removed by this round; the inventory delta
 is zero and no code was changed — this round's only delta is this note.
+
+## Independent revalidation at `695cfdcd8f4b` (repair round, fresh run)
+
+Re-executed every driver check plus the branch's remaining changed suites;
+none of the earlier claims were taken on faith:
+
+- `uv run pytest packages/maistro-core/tests/conftest.py -q -x` → exit 5,
+  `no tests ran`; `git show <base>:packages/maistro-core/tests/conftest.py |
+  grep -cE '^(async )?def test_'` → **0 at base** — the check fails
+  identically on develop, confirming the false-positive diagnosis above.
+- `uv run ruff check .` → **All checks passed!**; `uv run ruff format
+  --check .` → **3644 files already formatted**.
+- Three-file battery (`test_schedule_canonical_definitions.py`,
+  `test_schedule_projection_authority.py`,
+  `test_scheduler_projection_authority.py`) → **95 passed, 31 skipped in
+  13.36s** (byte-identical to the driver's check-4).
+- Race test node → **1 passed (SQLite), 2 skipped in 2.66s**; skips are
+  memory (`two processes need durable state to share`) and pg
+  (`MAISTRO_TEST_PG_DSN is unset`), matching the issue body. Both readiness
+  waits read `time.monotonic() + 120.0` at this head.
+- `scripts/check-suite-inventory.py` for `packages/hive-conductor/backend/tests`
+  (4514) and `packages/maistro-core/tests` (18908) → **ok**.
+- `packages/maistro-core/tests/scheduling` → **289 passed, 38 skipped in
+  6.31s**; `tests/cross_product_parity/test_cross_product_parity.py` →
+  **26 passed in 1.67s**; the four changed `tests/migrations` files →
+  **4 passed, 27 skipped** (PG-gated variants skip without a live DSN, as
+  inventoried).
+- Codex-review fixes verified in reachable production code: import-failure
+  repair deferral (`schedule_projection.py:418,443`), canonical enumeration
+  containment (`schedule_projection.py:429-443`), template clearing without
+  a tombstone (`scheduler.py:383`, `tombstone=False`).
+
+Inventory delta for this note: zero — no tests added, removed, or renamed.
