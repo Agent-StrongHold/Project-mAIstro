@@ -886,6 +886,7 @@ async def _publish_finalize_committed(
     cycle: Any,
     ctx: NodeContext,
     output: _FinalizeOutput,
+    completed_cycles: int | None = None,
 ) -> None:
     """Persist committed finalize evidence to the durable ledger (#1064).
 
@@ -906,7 +907,17 @@ async def _publish_finalize_committed(
             population=population,
             tournament=cycle.tournament,
             membership_ids=_population_membership(population),
-            completed_cycles=getattr(cycle, "_cycle_count", 0),
+            # The SERVICE's cumulative completed-cycle count, not the
+            # per-run ``EvolutionCycle``'s local counter: that counter is a
+            # fresh 0 incremented once by this cycle's mutations, so it would
+            # always persist 1 and a restart's
+            # ``restore_or_initialize_domain_state`` would reset the service
+            # count, reusing earlier cycle numbers and pairing seeds.
+            completed_cycles=(
+                int(completed_cycles)
+                if completed_cycles is not None
+                else getattr(cycle, "_cycle_count", 0)
+            ),
         )
     except Exception:
         await domain_store.upsert_finalize_marker(
@@ -934,6 +945,7 @@ async def _finalize_cycle(
     domain_store: Any = None,
     workspace_id: str | None = None,
     retry_after_compensation: bool = False,
+    completed_cycles: int | None = None,
 ) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle.
 
@@ -998,6 +1010,7 @@ async def _finalize_cycle(
             cycle=cycle,
             ctx=ctx,
             output=output,
+            completed_cycles=completed_cycles,
         )
     return output
 
@@ -1070,6 +1083,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         domain_store: Any = None,
         workspace_id: str | None = None,
         retry_after_compensation: bool = False,
+        completed_cycles: int | None = None,
     ) -> None:
         self._cycle = cycle
         self._population = population
@@ -1078,6 +1092,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         self._domain_store = domain_store
         self._workspace_id = workspace_id
         self._retry_after_compensation = retry_after_compensation
+        self._completed_cycles = completed_cycles
 
     async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _FinalizeOutput:
         return await _finalize_cycle(
@@ -1089,6 +1104,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             domain_store=self._domain_store,
             workspace_id=self._workspace_id,
             retry_after_compensation=self._retry_after_compensation,
+            completed_cycles=self._completed_cycles,
         )
 
 
@@ -1267,6 +1283,7 @@ def _resolver(
     workspace_id: str | None = None,
     pair_seed: str | None = None,
     finalize_retry_after_compensation: bool = False,
+    completed_cycles: int | None = None,
 ) -> NodeResolver:
     tournament_work = _TournamentWork(
         cycle=cycle,
@@ -1294,6 +1311,7 @@ def _resolver(
         domain_store=domain_store,
         workspace_id=workspace_id,
         retry_after_compensation=finalize_retry_after_compensation,
+        completed_cycles=completed_cycles,
     )
 
     def resolve(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -1468,6 +1486,11 @@ async def run_canonical_evolution_cycle(
             domain_store=domain_store,
             workspace_id=workspace_id,
             pair_seed=_pair_seed(workspace_id, cycle_number, membership_ids),
+            # Cumulative service count this cycle's committed snapshot must
+            # persist: cycle_number is 1-based cumulative, so after finalize
+            # ``cycle_number`` cycles have completed. The temp EvolutionCycle's
+            # own counter resets to 1 every run and would regress the restore.
+            completed_cycles=max(cycle_number or 1, 1),
         ),
         actor_principal_id=actor_principal_id,
         run_id=admitted.run_id,
@@ -1634,6 +1657,10 @@ def _recovery_resolver(run: Run) -> NodeResolver:
         # memory — so a pair plan re-planned under recovery is identical to
         # the one the killed process was computing.
         pair_seed=_pair_seed(workspace_id, run.provenance.get("cycle_number"), membership_ids),
+        # Same cumulative count admission captured (#1064): the durable Run
+        # provenance's cycle_number, never the fresh recovery cycle's local
+        # counter that resets to 1 each process.
+        completed_cycles=max(int(run.provenance.get("cycle_number") or 1), 1),
         # A finalize marker found faulted/in_progress is transparently
         # retried ONLY when this process's domain was restored from the
         # durable store (#1064): the restore rebuilt the exact pre-finalize
