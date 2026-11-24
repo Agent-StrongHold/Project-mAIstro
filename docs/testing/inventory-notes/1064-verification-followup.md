@@ -1135,3 +1135,55 @@ Evolve runs" advisory.
 Verdict: the tree defect the hosted red exposed is repaired locally; the
 exact-SHA settlement criterion reopens at the resulting commit and must settle
 green there before merge readiness. No GitHub mutations made.
+
+## Round: 2026-11-24 — exact-SHA hosted settlement at c467355f1c9c
+
+Head under test: `c467355f1c9ce484619441f726d0b8399040eaaa` (= live PR #2497
+head at capture time). This round ran checks only; it changed no code and made
+no push, so the settlement below remains attached to the PR head.
+
+Hosted settlement, read live via the commit check-runs API for the exact SHA:
+
+- `gh api repos/.../commits/c467355f1c.../check-runs` -> conclusion multiset
+  `{success: 79, skipped: 2}`; the filter for any other conclusion returned an
+  empty list. `skipped` = `durable-events`, `object storage (MinIO)`
+  (service-gated, same two as every earlier observation).
+- `Coverage gate (publish-set floor + diff coverage)` — **SUCCESS**. This is
+  the gate that had never settled green at any prior head; the c467355f1c
+  repair (`coverage combine --append`) settled it.
+- `test` — SUCCESS; `gates-ran` — SUCCESS ("All required checks executed on
+  this exact head"); `cross-product-parity`, `postgres (pg17)`,
+  `postgres (pg18)`, `exact-debt-ledger`, `Mutation gate`, `Quality gate
+  (Pillars 1–4, 7, 8)`, `Quality / Mypy strict`, `Quality / Pyright`,
+  `Quality / Ruff`, `Quality / Vulture` — all SUCCESS.
+
+Local re-execution at this head (independent of the hosted run):
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:5570/maistro_test`
+  (migrated pg18, `alembic_version` = `069`): restart-replay + restart-replay-pg
+  + evolve-domain-store + evolve-domain-retention + startup-wiring +
+  maistro-evolve durable-snapshot/domain-reconstruction -> **82 passed, 0
+  skipped**; `test_pg_distinct_os_process_recovers_killed_run` re-run isolated
+  -> 1 passed.
+- `tests/test_ci_quality_split.py` -> 96 passed (fixture digests match live
+  quality.yml incl. the repinned coverage-gate obligation 01a08e42…).
+- `uv run ruff check .` / `uv run ruff format --check .` -> clean.
+- `scripts/check-suite-inventory.py` -> 21 suites match the recorded
+  inventory; 36443 collected node IDs, 0 duplicate identities.
+- `scripts/run-m1-closeout.py` -> `evolve-cycle-to-conductor … "executed":
+  true, "status": "PASSED", "blockers": []`; scheduler-occurrence (#231) and
+  golden-real-observation (#463) abstain as not-shipped, pre-existing and
+  unrelated to #1064.
+- `git diff --numstat a6a0969ca198..HEAD -- quality/` -> only
+  `quality/durable-table-retention.json` +26/−0; no ledger rows lost, no grant
+  edits.
+- PR #947 review threads re-read live (GraphQL): 7 threads, 6 RESOLVED
+  (incl. all P1s); sole open thread is the P2 "Record the durable executor on
+  admitted Evolve runs" advisory, outside the P1-specific disposition
+  criterion.
+- Closure-keyword scan across all 20 branch commit subjects/bodies -> none;
+  no premature GitHub closure risk.
+
+Verdict: every #1064 acceptance criterion now has executed evidence at the
+exact PR head — hosted settlement is no longer open. No GitHub mutations made;
+nothing pushed.
