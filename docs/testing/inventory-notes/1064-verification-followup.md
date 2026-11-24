@@ -886,3 +886,25 @@ timing-sensitive `cross-product-parity` builders leg must settle green at
 the exact SHA. Local replay-safety acceptance (all fault-injection PG legs,
 parity, fences, diagnostics) is green at this exact head; only the CI
 criterion blocks.
+
+## Round 11 — repair of measured coverage classification (2026-11-24)
+
+The round-10 coverage diagnosis was actionable: `coverage-postgres` included
+`packages/hive-conductor/backend/services` in the pre-floor aggregate although
+that code is outside the publish set. Updated `.github/workflows/quality.yml`
+to retain this producer's artifact until after the unchanged 87% publish-set
+floor, then combine it before the diff-coverage producers. This preserves
+changed-line coverage measurement for Hive Conductor; it does not omit the
+code from `coverage.xml`, lower a floor, or alter measured roots. The explicit
+missing-artifact check remains in place.
+
+Executed after the workflow change: `uv run ruff check .` and `uv run ruff
+format --check .` passed; `uv run pytest tests/test_check_diff_coverage.py -q
+-x` passed (18); the five Evolve backend suites passed 46 with 19 PG-dependent
+cases skipped because no `MAISTRO_TEST_PG_DSN` was configured. Thus these
+current runs do not re-prove PG recovery. The production implementation is
+unchanged from round 10's real-PostgreSQL evidence, but the coverage workflow
+change has not yet been exercised by hosted CI and the timing-sensitive
+cross-product-parity check still requires exact-head settlement. Verdict:
+**NEEDS-REPAIR** pending exact-head CI evidence; no new tests or inventory
+counts were added.
