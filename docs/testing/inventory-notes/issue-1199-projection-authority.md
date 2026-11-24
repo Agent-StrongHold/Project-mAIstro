@@ -430,3 +430,15 @@ The dispatched verifier's `pytest packages/maistro-core/tests/conftest.py` exite
 - `uv run ruff check .` and `uv run ruff format --check .` passed (3644 files).
 
 These runs exercise canonical due ticking, cursor persistence/concurrency, canonical Run/Attempt behavior, persisted projection reconciliation and restart cases. No tests or suite counts were added or removed; inventory delta is unchanged.
+
+## Writer exact-head revalidation at 15634a47bf (2026-11-24)
+
+Revalidated the assigned branch independently; the job-provided prior result was not treated as evidence:
+
+- With the lane's live PostgreSQL service (`auto-1199-r3-pg`, port 18995), the scheduling core suite plus `test_scheduler_canonical_due.py`, `test_scheduler_projection_authority.py`, and `test_schedule_projection_authority.py` → **445 passed, 1 skipped**. All PostgreSQL legs connected; the one skip is the inapplicable memory-only independent-process case. The first run used incorrect credentials and failed at PostgreSQL fixture setup; it did not pass and was rerun with the service's configured password.
+- Strict configured scheduler-lifespan/Run/Attempt/Conductor closeout test, `test_schedule_required_scenario_emits_strict_closeout_evidence`, with PostgreSQL configured → **1 passed**.
+- `uv run ruff check .` and `uv run ruff format --check .` → passed (3644 files formatted).
+- Exact CI vulture invocation → **1221 reviewed identities = 1221 findings**, no unbanked identities.
+- `uv run python scripts/check-suite-inventory.py`, `scripts/check-durable-table-inventory.py`, and `scripts/check-backlog-consistency.py` → all passed (21 suites, 125 durable tables, backlog consistent).
+
+No tests or suite counts were added or removed; inventory delta is unchanged. These checks establish the candidate behavior locally, not hosted CI or integration approval.
