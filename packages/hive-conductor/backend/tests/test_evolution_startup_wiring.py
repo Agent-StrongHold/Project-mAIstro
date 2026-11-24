@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 import services.evolution as evolution_module
 import services.evolution_graph as evolution_graph_module
+from services.evolution import EvolutionUnavailableError
 from services.evolve_domain_store import (
     InMemoryEvolveDomainStore,
     PgEvolveDomainStore,
@@ -47,8 +48,10 @@ def _fresh_service() -> Any:
 def test_select_domain_store_prefers_the_owner_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The container contract: ``pg_pool`` is the asyncpg pool (``db_pool`` is
+    # a separate SQLite connection), so PostgreSQL is selected only from it.
     pool = object()
-    owner = SimpleNamespace(db_pool=pool)
+    owner = SimpleNamespace(db_pool=None, pg_pool=pool)
     monkeypatch.setattr(evolution_graph_module, "canonical_execution_owner", lambda: owner)
 
     store = evolution_module.select_domain_store()
@@ -58,17 +61,30 @@ def test_select_domain_store_prefers_the_owner_pool(
     assert store._pool is pool
 
 
-def test_select_domain_store_falls_back_to_pg_pool_attribute(
-    monkeypatch: pytest.MonkeyPatch,
+def test_select_domain_store_never_takes_a_sqlite_db_pool_for_postgres(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    pool = object()
-    owner = SimpleNamespace(db_pool=None, pg_pool=pool)
+    """Regression (Codex review): a real SQLite-backed container's ``db_pool"
+
+    is its sqlite3 connection — selecting PostgreSQL from it produced a
+    ``PgEvolveDomainStore`` whose ``ensure_schema`` fails on the missing
+    ``acquire()``. The sqlite URL must win instead.
+    """
+
+    db_path = tmp_path / "conductor.db"
+    owner = SimpleNamespace(
+        db_pool=object(),  # sqlite3 connection stand-in: no acquire()
+        pg_pool=None,
+        config=SimpleNamespace(database_url=f"sqlite:///{db_path}"),
+    )
     monkeypatch.setattr(evolution_graph_module, "canonical_execution_owner", lambda: owner)
 
     store = evolution_module.select_domain_store()
 
-    assert isinstance(store, PgEvolveDomainStore)
-    assert store._pool is pool
+    assert not isinstance(store, PgEvolveDomainStore)
+    assert isinstance(store, SqliteEvolveDomainStore)
+    assert store.backend == "sqlite"
+    assert store._path == str(db_path)
 
 
 def test_select_domain_store_sqlite_file_url(
@@ -204,6 +220,8 @@ async def test_restore_without_workspace_key_initializes_fresh(
     # The historical fresh init ran: inspectable state, not a durable restore.
     assert service._population is not None
     assert service._tournament is not None
+    # No durable restore was attempted, so nothing is fail-closed.
+    assert service._restore_failed_reason is None
 
 
 async def test_restore_with_broken_store_falls_back_and_records_public_failure(
@@ -228,6 +246,43 @@ async def test_restore_with_broken_store_falls_back_and_records_public_failure(
     assert service._population is not None
 
 
+async def test_broken_restore_fails_closed_against_admission_and_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed durable restore must keep execution/publication blocked.
+
+    The historical fallback fresh state is honest for inspection, but a
+    healthy canonical engine must not let manual/cadence admission capture
+    that fabricated population as the newest snapshot and advance the
+    journal watermark past the durable battles a later restore must replay.
+    """
+
+    class _BrokenStore(InMemoryEvolveDomainStore):
+        async def latest_snapshot(self, workspace_id: str, *, kind: str | None = None) -> None:
+            raise RuntimeError("disk on fire")
+
+    service = _fresh_service()
+    service.attach_domain_store(_BrokenStore())
+    await _restore_with_workspace(service, "ws-1", monkeypatch)
+
+    # Even with a healthy canonical engine, availability stays off and the
+    # reason names the restore, not the engine.
+    monkeypatch.setattr(evolution_graph_module, "canonical_execution_owner", lambda: object())
+    service._refresh_execution_availability()
+    assert service._execution_available is False
+    assert service._availability == "unavailable"
+    assert "restore" in (service._availability_reason or "")
+
+    # The manual admission boundary refuses the same way (the /cycle route
+    # maps this to a 503).
+    with pytest.raises(EvolutionUnavailableError, match="restore"):
+        await service._run_one_cycle_locked()
+    assert service._execution_available is False
+
+    # ...and the failure is observable in the /status payload.
+    assert "restore" in (service.status()["restore_failed"] or "")
+
+
 async def test_restore_without_any_snapshot_initializes_fresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,6 +295,8 @@ async def test_restore_without_any_snapshot_initializes_fresh(
     assert service.domain_restore is None
     assert service._population is not None
     assert service._tournament is not None
+    # An empty-but-healthy store is not a restore failure: nothing fail-closed.
+    assert service._restore_failed_reason is None
 
 
 def test_domain_restore_property_reports_the_last_restore() -> None:

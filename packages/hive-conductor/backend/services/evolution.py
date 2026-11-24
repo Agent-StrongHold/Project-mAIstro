@@ -221,8 +221,10 @@ def get_evolution_service() -> _EvolutionService:
 def select_domain_store() -> Any | None:
     """Pick the durable Evolve domain store this deployment can honestly back (#1064).
 
-    PostgreSQL when the canonical engine's container carries an asyncpg pool;
-    sqlite when the canonical spine itself is a sqlite file; ``None`` when the
+    PostgreSQL when the canonical engine's container carries an asyncpg pool
+    (``pg_pool`` — the container keeps its SQLite connection, when any, in a
+    separate ``db_pool``); sqlite when the canonical spine itself is a sqlite
+    file; ``None`` when the
     deployment is memory-backed — where every canonical Run is memory-backed
     too, so a cross-process durable domain ledger would silently pretend a
     durability the spine doesn't have. The recovery contract stays honest:
@@ -235,7 +237,11 @@ def select_domain_store() -> Any | None:
         owner = canonical_execution_owner()
     except CanonicalExecutionUnavailable:
         return None
-    pool = getattr(owner, "db_pool", None) or getattr(owner, "pg_pool", None)
+    # PostgreSQL is selected only from the asyncpg pool: a SQLite-backed
+    # container's ``db_pool`` is a sqlite3 connection (no ``acquire()``), so
+    # branching on it would hand the SQLite deployment a Pg store whose
+    # ``ensure_schema`` and every later cycle publication fail (Codex review).
+    pool = getattr(owner, "pg_pool", None)
     if pool is not None:
         from services.evolve_domain_store import PgEvolveDomainStore
 
@@ -322,6 +328,12 @@ class _EvolutionService:
         # wire the production store before the first cycle.
         self._domain_store: Any = None
         self._domain_restore: dict[str, Any] | None = None
+        # Fail-closed latch for a failed durable restore (Codex review): while
+        # set, the fresh population stays inspectable but execution and
+        # publication stay blocked. Admitting a cycle over fabricated state
+        # would publish it as the newest admission snapshot and advance the
+        # journal watermark past durable battles a later restore must replay.
+        self._restore_failed_reason: str | None = None
         # Run ids whose finalize NodeRun carries a durably committed
         # publication marker (#1064). Seeded at restore and refreshed at the
         # start of every recovery tick: the recovery resolver reads this set
@@ -412,6 +424,14 @@ class _EvolutionService:
             logger.warning("Evolution execution unavailable: %s", exc, exc_info=True)
             self._availability_reason = _public_failure(exc)
             return
+        # A failed durable restore is a hard stop, not a fallback (Codex
+        # review): the fresh population built by the fallback is
+        # inspection-only. Only a successful restore re-opens execution.
+        if getattr(self, "_restore_failed_reason", None):
+            self._execution_available = False
+            self._availability = "unavailable"
+            self._availability_reason = self._restore_failed_reason
+            return
         # A healthy engine is necessary, not sufficient: a cycle also needs the
         # domain state `initialize_domain_state` builds. Advertising
         # "executable" without it enabled the Run Cycle button and started the
@@ -500,10 +520,18 @@ class _EvolutionService:
             snapshot_kind = snapshot.kind if snapshot is not None else "admission"
         except Exception as exc:
             # A broken durable store must not silently downgrade to a fresh
-            # fabricated population that recovery would then trust: surface
-            # the failure and keep the historical fresh init, which recovery
-            # membership verification will refuse against anyway.
+            # fabricated population that anything downstream would trust:
+            # recovery membership verification already refuses it, and the
+            # fail-closed latch now keeps manual/cadence admission from
+            # publishing that fabricated domain as the newest snapshot or
+            # advancing the journal watermark past durable battles (Codex
+            # review). Fresh init remains for inspection only; only a
+            # successful restore re-opens execution/publication.
             logger.warning("Evolve durable domain restore failed: %s", exc, exc_info=True)
+            self._restore_failed_reason = (
+                "durable domain restore failed; execution blocked until restore succeeds: "
+                + _public_failure(exc)
+            )
             self._last_cycle_error = _public_failure(exc)
             self.initialize_domain_state()
             return False
@@ -539,6 +567,7 @@ class _EvolutionService:
             "replayed_evaluations": replayed_evaluations,
             "completed_cycles": snapshot.completed_cycles,
         }
+        self._restore_failed_reason = None
         logger.info(
             "evolve_domain_restored store=%s run=%s kind=%s population=%d battles=%d "
             "replayed=%d evaluations=%d",
@@ -780,6 +809,15 @@ class _EvolutionService:
                 self._availability_reason,
                 availability=self._availability,
             ) from exc
+        restore_failed = getattr(self, "_restore_failed_reason", None)
+        if restore_failed:
+            # The manual admission boundary for the same latch `/status` and
+            # the cadence honor: publication must not run over the fabricated
+            # fallback domain (Codex review).
+            self._execution_available = False
+            self._availability = "unavailable"
+            self._availability_reason = restore_failed
+            raise EvolutionUnavailableError(restore_failed, availability=self._availability)
         if self._population is None or self._tournament is None:
             # Same answer `/status` gives: unavailable, with the reason, as a
             # 503 rather than a bare 500 from a RuntimeError. Checked before
@@ -906,4 +944,5 @@ class _EvolutionService:
                 else None
             ),
             "domain_restore": getattr(self, "_domain_restore", None),
+            "restore_failed": getattr(self, "_restore_failed_reason", None),
         }
