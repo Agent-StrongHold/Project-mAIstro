@@ -747,3 +747,79 @@ settled its coverage gate at capture time. Nothing in this round weakened a
 gate, edited production code, or claimed pending CI as green. The stale
 round-7 rollup counts above (57/19) are retained as a time-stamped record;
 this section supersedes them with fresh readings.
+
+## Round 9 — exact PR head `02a957bd0823` verifier+writer round (2026-11-24T01:14–01:55Z)
+
+Independent re-verification at the exact assigned/PR head, all evidence
+first-hand this round. Verification ran entirely at `02a957bd0823` before any
+writer edit; the docs-only commit below was made after evidence capture.
+
+Locally executed at this head (PG18 container `maistro-1064-pg`,
+`MAISTRO_TEST_PG_DSN=…127.0.0.1:5570/maistro_test`, `MAISTRO_REQUIRE_PG_LEGS=1`
+so a skip fails loudly):
+
+- CI-producer suite list (`test_evolution_restart_replay.py`,
+  `test_evolution_restart_replay_pg.py`, `test_evolve_domain_retention.py`,
+  `test_evolve_domain_store.py`, `--timeout=120 -q`) -> **52 passed, 0
+  skipped** (twice: once for pass/fail, once under
+  `coverage run --branch --source=packages/hive-conductor/backend/services`).
+- `test_evolution_startup_wiring.py` + `test_evolution_recovery.py` ->
+  **27 passed**. Six-suite total 52+27 = **79, matching Round 8's record**.
+- `tests/cross_product_parity` with CI's exact invocation -> **26 passed**.
+- maistro-evolve unit producer under coverage (`--source=…/maistro_evolve`)
+  -> **1005 passed, 12 skipped** (= recorded inventory 1017).
+- Floor-poisoning mechanism, measured: the branch's
+  `coverage-postgres` producer step scopes
+  `--source=packages/hive-conductor/backend/services` into the artifact that
+  `coverage-gate` combines **before** the 87% floor. That source alone is
+  **15,542 statements at 11% (13,531 missed), 79 modules at 0%**. Combining
+  it with the evolve-unit producer and running CI's own
+  `coverage report --fail-under=87` -> **exit 2** (TOTAL 21,245 stmts @ 33%).
+  The mechanism is deterministic: no publish-set base can absorb it.
+
+Hosted, read-only, first-hand this round:
+
+- `gh pr view 2497`: headRefOid == `02a957bd0823…` (exact). Rollup run
+  `45303482226` (started 2026-11-24T01:14Z; run still in progress at final
+  capture).
+- **Exact-head coverage gate settled RED, first-hand**: check-run
+  "Coverage gate (publish-set floor + diff coverage)" id `138149529335`
+  -> completed/**failure**; its `combine` step logged
+  `TOTAL 110859 17046 29740 1913 83%`, `Coverage failure: total of 83 is
+  less than fail-under=87`, `##[error]publish-set coverage below the 87%
+  floor` — byte-identical numbers to the 31c38337db run `45282026375`
+  (content identical; determinism confirmed across two runs).
+- **Exact-head `cross-product-parity` settled FAILURE (ci.yml, new this
+  round)**: job `138141739495`, step "Cross-product spine parity suite
+  (#459, development mode)" exit 1 —
+  `test_builders_required_scenario_emits_strict_closeout_evidence FAILED`
+  with `sqlite3.ProgrammingError: Cannot operate on a closed database.`
+  (packages/maistro-core/src/maistro/builders/interactive.py:162),
+  `RuntimeError: no running event loop`, `ValueError: no legal transition
+  path from 'cancelled' to 'running'`, and a `…'completed': False` vs
+  `True` response mismatch. Passes locally at the same SHA and passed
+  hosted at the content-identical predecessor `57201708d3` (run
+  `45295830614` success), so this is timing-sensitive async shutdown
+  exposure, not a code regression from the docs-only delta — but it is a
+  settled required-check FAILURE at the exact head.
+- Branch-attributability re-verified: quality run `45239478051` at develop
+  base `a6a0969ca1…` -> **success** (same workflow).
+- `#947` re-checked live (GraphQL, all 7 threads): **4/4 P1 resolved**
+  (`…dTA`, `…dTF`, `…dTK`, `…dTR`); P2 `…dTY` ("Record the durable
+  executor") open, plus two resolved P2s — P1-specific criterion met.
+- Closure keywords: none (branch `git log a6a0969ca1..02a957bd0823` — no
+  `fixes/closes/resolves #N`; PR body says only "Refs #1064").
+
+Verdict: **NEEDS-REPAIR** (unchanged, now fully settled at the exact head).
+Every locally executable acceptance leg passes with real PostgreSQL, but
+"exact SHA/CI" is unmet twice over at `02a957bd0823`: (1) the coverage gate
+is deterministically RED (publish-set 83 < 87) — the branch's own producer
+poisons the pre-floor combine with a 15,542-statement source at 11%, so the
+repair must either scope that producer out of the pre-floor artifact
+(post-floor combine or diff-gate-only producer) or bring the source's
+covered area above the floor's arithmetic, via the two-merge floor-raise
+process if a grant is the chosen path; (2) `cross-product-parity` is RED at
+this head on a timing-sensitive builders leg (closed-database /
+event-loop shutdown race) that CI must see green at the exact SHA. Prior
+rounds' "coverage gate unsettled" caveat is hereby closed: the gate has
+settled RED twice at identical content, the second time at this exact SHA.
