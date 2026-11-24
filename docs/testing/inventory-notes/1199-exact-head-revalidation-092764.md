@@ -51,3 +51,16 @@ are covered by current tests and prior committed exact implementation
 validation; the explicit integrated-CI negative-before/positive-after clause
 remains **UNVERIFIED**, so this is a validation handoff, not integration
 approval. No tests were added or removed; inventory delta remains zero.
+
+## Repair-round exact-head revalidation at `627c83e9fb`
+
+No `check-*.log` files were present in the assigned job directory. Re-ran the
+focused scheduler/store/parity selection at the assigned head:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py packages/maistro-core/tests/scheduling/test_store.py packages/maistro-core/tests/scheduling/test_admission_backend_parity.py tests/cross_product_parity/test_cross_product_parity.py -k 'schedule or scheduler' -x -q` — **62 passed, 39 skipped, 105 deselected**.
+- Strict M1 closeout command — **3 passed**, with `scheduler-occurrence-to-conductor` emitted as `executed=true`, `status=PASSED`.
+- Source grep confirms the live tick enumerates `container.schedule_store.due()` at `services/scheduler.py:783`; other `stores.schedules` uses are projection, reconciliation, or compatibility paths, not tick candidate authority.
+
+No test functions were added or removed. Fresh PG and post-integration
+negative-before/positive-after CI evidence remain unverified in this round; the
+committed real-PG evidence remains cited in the preceding exact-head notes.
