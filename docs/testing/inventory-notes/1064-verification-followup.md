@@ -1023,3 +1023,38 @@ settled SUCCESS (incl. `postgres (pg17)`, `postgres (pg18)`, both e2e suites
 and all three coverage producers). The publish-set floor itself was not
 evaluated in that run (pytest exits before the combine step), so the floor
 verdict remains pending at the repair head `9e50b3fcf1`.
+
+## Round 14 — independent exact-head recheck at `b6675803` (2026-11-24)
+
+Started clean at the assigned head `b66758034b65b497d76b484d37025dc02027c765`,
+which contains the digest repair (`9e50b3fcf1`) and its hosted-settlement
+record. No production/test defect was found or guessed at; no test or code
+changes were made.
+
+Local commands executed:
+
+- `uv run ruff check . && uv run ruff format --check .` — passed (3,652
+  files formatted).
+- `uv run pytest packages/maistro-evolve/tests/test_domain_reconstruction.py
+  packages/maistro-evolve/tests/test_durable_snapshot.py -x -q` — **11 passed**.
+- `uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  packages/hive-conductor/backend/tests/test_evolution_startup_wiring.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_retention.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_store.py -x -q` —
+  **46 passed, 19 skipped**. Neither `MAISTRO_TEST_PG_DSN` nor `DATABASE_URL`
+  is configured in this runner; skipped PostgreSQL legs are not local
+  evidence. The previously recorded real-PG run is not re-claimed as freshly
+  executed here.
+
+Live `gh pr checks 2497` confirmed the exact head remains
+`b66758034b65b497d76b484d37025dc02027c765`; the digest check and coverage
+producers are green, but required `test` and `Coverage gate (publish-set floor
++ diff coverage)` remain **pending**, as does `gates-ran`. Thus the repaired
+red check is no longer observed, but the publish-set floor is not proven green
+at the assigned SHA. No GitHub mutations made.
+
+Verdict: **NEEDS-REPAIR** solely because exact-SHA hosted settlement is still
+pending. No local tree defect is evidenced. This verification note itself
+will advance the head; hosted checks must settle again at the resulting commit
+before claiming merge readiness.
