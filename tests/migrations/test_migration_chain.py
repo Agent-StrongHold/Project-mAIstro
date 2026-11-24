@@ -195,6 +195,10 @@ EXPECTED_TABLES = frozenset(
         # cursor survives a restart and two scheduler replicas share one rather
         # than each keeping a private copy (#231).
         "schedules",
+        # Durable deletion markers for those schedules (069, #2467): a Hive
+        # projection row that outlives its canonical delete must never be
+        # re-imported as "never canonical" on the next startup backfill.
+        "schedule_deletions",
         "security_rate_limits",
         "security_strikes",
         "security_violations",
