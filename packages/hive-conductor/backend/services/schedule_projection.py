@@ -395,6 +395,7 @@ async def run_startup_reconciliation() -> int:
 
     _PROJECTION_HEALTH["degraded"] = []
     changed = await _resolve_pending_creates(runner, container)
+    deferred_imports: set[str] = set()
     if not lg.migrated():
         skipped: list[str] = []
         try:
@@ -411,18 +412,42 @@ async def run_startup_reconciliation() -> int:
             # the affected rows on the health surface rather than reporting a
             # clean migration over rows that cannot fire.
             _PROJECTION_HEALTH["degraded"] = sorted(set(skipped) | set(exc.failed_sids))
+            # The failed rows still hold the pending edits the retry must
+            # re-import; deferring their repair keeps those rows intact
+            # until the import succeeds.
+            deferred_imports = set(exc.failed_sids)
             logger.error(
                 "Legacy schedule import incomplete; migration marker left unwritten for retry: %s",
                 exc,
             )
     degraded: list[str] = []
-    repair_ids = set(hive_schedule_ids())
-    repair_ids.update(
-        definition.schedule_id
-        for definition in await container.schedule_store.list_all()
-        if not definition.workspace_id.startswith("hive:schedule:")
-    )
+    try:
+        repair_ids = set(hive_schedule_ids())
+        repair_ids.update(
+            definition.schedule_id
+            for definition in await container.schedule_store.list_all()
+            if not definition.workspace_id.startswith("hive:schedule:")
+        )
+    except Exception as exc:
+        # Enumeration is not per-schedule catchable: a transient canonical
+        # failure here must degrade the projection, not escape past the
+        # runner's unguarded await and kill the scheduler before its first
+        # tick (_runner stays set, so start_scheduler would never restart
+        # it). Skip the pass; the next startup retries the enumeration.
+        _PROJECTION_HEALTH["degraded"] = ["<canonical>"]
+        logger.error("Could not enumerate canonical schedules for repair: %s", exc)
+        _PROJECTION_HEALTH["migrated"] = lg.migrated()
+        _PROJECTION_HEALTH["reconciled_at"] = datetime.now(UTC).isoformat()
+        return changed
     for sid in sorted(repair_ids):
+        if sid in deferred_imports:
+            # Repairing a failed import from canonical truth would overwrite
+            # its pending Hive edit and stamp it with the stale canonical
+            # updated_at, so the next startup would see matching definitions
+            # and never retry the lost edit (a legacy disable could be
+            # reverted). Leave the row untouched; the unwritten marker makes
+            # the import pass retry it first.
+            continue
         try:
             async with definition_lock(sid):
                 if await finish_tombstoned_row(sid, container):

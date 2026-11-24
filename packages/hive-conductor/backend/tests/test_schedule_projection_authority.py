@@ -942,6 +942,69 @@ def test_a_failed_import_put_keeps_the_marker_unwritten_for_retry(configured: An
         _drop_hive_row(sid)
 
 
+def test_a_failed_import_defers_the_row_repair_so_the_pending_edit_survives(
+    configured: Any,
+) -> None:
+    """A legacy row whose import put fails transiently must not be repaired
+    from its stale canonical definition in the same run: the repair would
+    overwrite the row's newer pending edit and stamp it with the canonical
+    ``updated_at``, so the retry's newer-edit check would see no drift and
+    the lost edit (a legacy disable) could never be re-imported (#2512)."""
+    import stores
+    from services.schedule_projection import ledger, projection_health
+    from services.scheduler import LegacyImportIncomplete, backfill_canonical_definitions
+
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(configured.test_workspace))
+    sid = "s-legacy-deferred-repair"
+    older = datetime.now(UTC) - timedelta(hours=1)
+    newer = datetime.now(UTC)
+    # The legacy world already has a stale canonical row (the pre-route lazy
+    # tick wrote it when the schedule was enabled).
+    from services.scheduler import _definition_authority, _scoped_definition
+
+    runner, container = _definition_authority()
+    base = _legacy_row(sid, configured.test_workspace, root.project_id, enabled=True)
+    definition = asyncio.run(_scoped_definition(runner, sid, base, container))
+    asyncio.run(
+        container.schedule_store.put(
+            definition.model_copy(update={"enabled": True, "updated_at": older})
+        )
+    )
+    # The Hive row holds a newer, never-synced disable.
+    pending = _legacy_row(
+        sid, configured.test_workspace, root.project_id, enabled=False, updated_at=newer
+    )
+    stores.schedules._data[sid] = pending
+    store = configured.schedule_store
+    original_put = store.put
+
+    async def failing_put(definition: Any) -> None:
+        if definition.schedule_id == sid:
+            raise RuntimeError("simulated canonical outage")
+        return await original_put(definition)
+
+    try:
+        store.put = failing_put
+        with pytest.raises(LegacyImportIncomplete):
+            asyncio.run(backfill_canonical_definitions())
+        assert _reconcile(configured) == 0, "the failed import's repair writes nothing"
+        row = stores.schedules.get(sid)
+        assert row is not None and row.enabled is False, "the pending disable survives the run"
+        assert row.updated_at == newer, "the repair does not stamp the row with canonical time"
+        stored = asyncio.run(configured.schedule_store.get(sid))
+        assert stored is not None and stored.enabled is True, "canonical is still the old enable"
+        assert not ledger().migrated()
+
+        store.put = original_put
+        assert _reconcile(configured) >= 1
+        stored = asyncio.run(configured.schedule_store.get(sid))
+        assert stored is not None and stored.enabled is False, "the retry re-imports the disable"
+        assert ledger().migrated(), "the healed pass writes the durable marker"
+        assert sid not in projection_health()["degraded"]
+    finally:
+        _drop_hive_row(sid)
+
+
 def test_scheduler_status_reports_the_projection_state(configured: Any) -> None:
     """AC: the health surface says whether reconciliation ran and which rows
     it could not vouch for, instead of silently serving a stale flag (#290)."""
