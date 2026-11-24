@@ -985,6 +985,24 @@ async def _builders_conductor_scenario() -> ScenarioExecution:
         assert await visible_run_ids(_PARITY_FOREIGN_USER, [run_id]) == set()
 
         # -- Control: cancel a genuinely mid-flight turn by the same id. ------
+        # Deterministic claim gate. The walk claims the turn's physical try
+        # only when the frontier mints its NodeRun, so park the walk exactly
+        # there: with the gate closed the Run provably owns no attempt, and
+        # the cancel receipt below cannot race the claim regardless of how
+        # fast or loaded the machine is. CI runs the same interleaving a
+        # laptop does -- the strict receipt is closeout evidence, not a won
+        # race. Opening the gate after the receipt is asserted lets the
+        # unblocked walk claim its try under the now-durable CANCELLED fence,
+        # whose pre-launch refusal is the second half of the evidence.
+        claim_gate = asyncio.Event()
+        claim_create_node_run = profile.run_store.create_node_run
+
+        async def _gated_create_node_run(*args: Any, **kwargs: Any) -> Any:
+            if not claim_gate.is_set():
+                await claim_gate.wait()
+            return await claim_create_node_run(*args, **kwargs)
+
+        monkey.setattr(profile.run_store, "create_node_run", _gated_create_node_run)
         parked = _ParkedRunner()
         live = asyncio.create_task(
             producer.execute(
@@ -1014,6 +1032,7 @@ async def _builders_conductor_scenario() -> ScenarioExecution:
             ),
             "attempts": [],
         }
+        claim_gate.set()
         fenced = await profile.run_store.get_run(live_id)
         assert fenced is not None and fenced.status is RunStatus.CANCELLED
         after = await visible_run_detail(_PARITY_USER, live_id)
