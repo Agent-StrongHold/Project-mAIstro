@@ -58,7 +58,9 @@ async def _sqlite_store(path: pathlib.Path) -> Any:
 
 
 @pytest.fixture(params=["memory", "sqlite"])
-def configured(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> Iterator[Any]:
+def configured(
+    request: pytest.FixtureRequest, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Any]:
     """A real Container behind the engine, with the parametrised ScheduleStore."""
     import services.engine as engine_mod
 
@@ -70,6 +72,13 @@ def configured(request: pytest.FixtureRequest, tmp_path: pathlib.Path) -> Iterat
     if request.param == "sqlite":
         sqlite = asyncio.run(_sqlite_store(tmp_path / "schedules.db"))
         container.schedule_store = sqlite
+    import stores
+
+    # These are the only Hive rows these scenarios see: the demo seed row is
+    # a legitimate legacy row, so leaving it visible would make every
+    # backfill assertion depend on whether the default Workspace's root
+    # project exists in the parametrised store.
+    monkeypatch.setattr(stores.schedules, "_data", {})
     service = engine_mod.get_engine()
     previous = service._agent_port
     service._agent_port = SimpleNamespace(container=container)
@@ -285,21 +294,20 @@ def test_backfill_puts_a_missing_row_once_and_never_rewinds_its_cursor(
         _drop_hive_row(row.id)
 
 
-def test_backfill_reconciles_a_drifted_row_without_rewinding_its_cursor(
+def test_backfill_repairs_a_drifted_projection_without_touching_the_canonical_row(
     configured: Any,
 ) -> None:
-    """The residual case the old lazy tick could leave (Codex, #1199).
+    """The authority direction is one-way (#2467).
 
-    That tick wrote a canonical row only for an *enabled* schedule, so a Hive
-    PUT that disabled one before this deploy's routes existed to sync it
-    canonically left the canonical row stale. Skipping every row backfill
-    finds already present (the original behaviour) never corrects that on
-    restart -- exactly the orphan `due()` would keep returning that this PR
-    exists to stop -- so backfill must re-put a drifted row's definition too,
-    while `ScheduleStore.put` keeps its cursor untouched.
+    A stale Hive row — the residue the routes' two-write window can leave —
+    must not rewrite the canonical definition it sits under: startup repairs
+    the projection from the canonical row and keeps the cursors
+    ``record_fire`` recorded. The retired policy put the Hive-derived
+    definition back over the canonical row, reverting acknowledged edits —
+    exactly the failure #2467 filed against the any-drift startup put.
     """
     import stores
-    from services.scheduler import backfill_canonical_definitions
+    from services.scheduler import reconcile_schedule_projection
 
     store = configured.schedule_store
     workspace_id = configured.test_workspace
@@ -308,7 +316,7 @@ def test_backfill_reconciles_a_drifted_row_without_rewinding_its_cursor(
     stores.schedules._data[row.id] = row
     fired_at = datetime(2026, 9, 26, 3, 0, tzinfo=UTC)
     try:
-        assert asyncio.run(backfill_canonical_definitions()) >= 1
+        assert asyncio.run(reconcile_schedule_projection()) >= 1
         asyncio.run(
             store.record_fire(
                 row.id,
@@ -317,20 +325,22 @@ def test_backfill_reconciles_a_drifted_row_without_rewinding_its_cursor(
                 next_due_at=fired_at + timedelta(days=1),
             )
         )
-        # Disabled directly in the Hive row -- as a pre-#1199 PUT would have
-        # left it, with no route in between to sync the canonical row.
+        # Disabled and renamed directly in the Hive row — the stale projection
+        # a crash in update's two-write window leaves behind.
         stores.schedules._data[row.id] = row.model_copy(
             update={"enabled": False, "name": "renamed"}
         )
-        assert asyncio.run(backfill_canonical_definitions()) >= 1, "the drifted row is reconciled"
-        reconciled = asyncio.run(store.get(row.id))
-        assert reconciled is not None
-        assert reconciled.enabled is False, "backfill catches up a stale enabled row"
-        assert reconciled.name == "renamed"
-        assert reconciled.runs_so_far == 1, "the cursor is not rewound by reconciliation"
-        assert reconciled.last_run_id == "run-1"
-        assert reconciled.next_due_at == fired_at + timedelta(days=1)
-        assert row.id not in _due_ids(configured)
+        assert asyncio.run(reconcile_schedule_projection()) >= 1, "the projection is repaired"
+        canonical = asyncio.run(store.get(row.id))
+        assert canonical is not None
+        assert canonical.enabled is True, "the canonical definition is not reverted"
+        assert canonical.name == "legacy"
+        assert canonical.runs_so_far == 1, "the cursor is untouched by projection repair"
+        assert canonical.last_run_id == "run-1"
+        assert canonical.next_due_at == fired_at + timedelta(days=1)
+        repaired = stores.schedules._data[row.id]
+        assert repaired.enabled is True and repaired.name == "legacy"
+        assert asyncio.run(reconcile_schedule_projection()) == 0
     finally:
         _drop_hive_row(row.id)
 
@@ -380,6 +390,15 @@ def test_clearing_the_template_removes_the_canonical_row(
         assert response.status_code == 200, response.text
         assert asyncio.run(configured.schedule_store.get(sid)) is None
         assert sid not in _due_ids(configured)
+        # The clear is a definition removal, not a deletion: no tombstone may
+        # mark the id, or the read path would drop the retained Hive row and
+        # 404 every route into unreachability (Codex review, #2512).
+        assert sid not in asyncio.run(configured.schedule_store.tombstoned_ids())
+        assert admin_client.get(f"/v1/schedules/{sid}").status_code == 200
+        # And the schedule can bind another template afterwards.
+        response = admin_client.put(f"/v1/schedules/{sid}", json={"mission_template_id": _TPL})
+        assert response.status_code == 200, response.text
+        assert asyncio.run(configured.schedule_store.get(sid)) is not None
     finally:
         _drop_hive_row(sid)
 

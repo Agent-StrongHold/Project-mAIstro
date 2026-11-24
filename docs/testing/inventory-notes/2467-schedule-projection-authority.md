@@ -60,3 +60,27 @@ runner-startup orchestration patch targets `reconcile_schedule_projection`, and
 the `_definition_for` contract test asserts the new read-first authority
 (stored definition stands; first put still belongs to a never-canonicalized
 row).
+
+## Exact-head revalidation (c2f1fbb12b2d)
+
+The earlier independent review called out that the canonical PostgreSQL leg did
+not also prove restart from a persisted Hive projection. That proof is present
+in `packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py`:
+its `HiveProjection` uses `PersistedStore`/`ModelStore`, reopens the state DB on
+restart, and its PostgreSQL parametrization uses a real migrated PostgreSQL
+schedule store. Revalidation with `MAISTRO_REQUIRE_PG_LEGS=1` and a dedicated
+scratch database at the exact head ran this suite: **35 passed, 1 skipped**;
+the skip is the cross-process two-replica scenario on the intentionally
+non-durable memory-store parametrization (`two processes need durable state to
+share`). The complementary
+`test_schedule_projection_authority.py` suite also ran with all three store
+legs against the migrated scratch database: **51 passed**. A first invocation
+of the latter against an unmigrated `postgres` database failed at setup with
+`UndefinedTableError: relation "schedules" does not exist`; this was a test
+fixture setup issue, not a behavior failure, and the same suite passed after
+creating and migrating an isolated database. Broader scheduling coverage ran
+with mandatory PostgreSQL legs: `packages/maistro-core/tests/scheduling`, the
+canonical due, bounded tick and canonical admission suites, and strict
+cross-product parity: **408 passed**. Repository ruff check and format check
+passed; the exact vulture gate remained at 1221 findings/1221 reviewed
+identities, with no unbanked identities.
