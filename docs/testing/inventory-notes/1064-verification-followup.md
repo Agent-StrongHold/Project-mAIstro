@@ -574,3 +574,32 @@ content failed the branch-attributable coverage floor gate, the current head's
 run is still in flight with that gate unstarted, and the repair recorded in
 round 4 (covered arcs, floor grant under the two-merge process, or producer
 scoping — a repair-lane decision) has not landed in any commit.
+## Round 6 — assigned head `3c424c8afc55` revalidation (2026-11-23)
+
+The assigned commit changes only this verification record relative to the
+production/test source already checked at `0389a4797f99`. I independently ran:
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:5570/maistro_test
+  uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  packages/hive-conductor/backend/tests/test_evolution_startup_wiring.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_retention.py
+  packages/hive-conductor/backend/tests/test_evolve_domain_store.py -x -q`
+  -> **65 passed, 0 skipped**.
+- `uv run pytest packages/maistro-evolve/tests/test_domain_reconstruction.py
+  packages/maistro-evolve/tests/test_durable_snapshot.py -x -q` -> **11 passed**.
+- Strict cross-product scenario selector -> **1 passed**.
+- `uv run ruff check . && uv run ruff format --check .` -> passed; 3,652 files
+  formatted. Suite-inventory gates: hive-conductor backend **4540** and
+  maistro-evolve **1017**, both matched.
+- Live `gh pr view 2497` reports PR head `0389a4797f998bb768344819998370c22b5aac3d`
+  (the exact production/test content) with completed check
+  `Coverage gate (publish-set floor + diff coverage)` FAILURE. Thus current
+  content does not meet exact-head CI acceptance. The #1064 acceptance
+  criterion requiring exact-SHA CI is **UNVERIFIED/blocked by this failure**;
+  no floor or gate was weakened here.
+
+Verdict: **NEEDS-REPAIR**. The restart/replay behavioral legs pass locally,
+but the measured hosted coverage gate is red and must be repaired on the
+branch before this can be handed off as merge-ready.
+
