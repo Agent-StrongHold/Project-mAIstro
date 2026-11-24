@@ -442,3 +442,30 @@ Revalidated the assigned branch independently; the job-provided prior result was
 - `uv run python scripts/check-suite-inventory.py`, `scripts/check-durable-table-inventory.py`, and `scripts/check-backlog-consistency.py` → all passed (21 suites, 125 durable tables, backlog consistent).
 
 No tests or suite counts were added or removed; inventory delta is unchanged. These checks establish the candidate behavior locally, not hosted CI or integration approval.
+
+## Writer repair-round revalidation at b061209c2f (2026-11-24)
+
+The supplied prior result's failure was the invalid selection `pytest
+packages/maistro-core/tests/conftest.py -q -x` (exit 5: no tests collected);
+a conftest is fixture setup, not a test module. Re-ran actual acceptance suites
+at the exact assigned head. The first required-PostgreSQL run also used a
+stale password and failed at fixture setup; it was corrected by using the
+lane-owned container's configured credential, without changing the tree.
+
+- `MAISTRO_TEST_PG_DSN=<lane-owned pg18> MAISTRO_REQUIRE_PG_LEGS=1 uv run
+  pytest packages/maistro-core/tests/scheduling
+  packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py
+  packages/hive-conductor/backend/tests/test_scheduler_projection_authority.py
+  packages/hive-conductor/backend/tests/test_schedule_projection_authority.py
+  -x -q` → **445 passed, 1 skipped**. All PostgreSQL legs ran; the one skip
+  is the intentionally inapplicable memory-only independent-process case.
+- Strict configured scheduler-lifespan/Run/Attempt/Conductor closeout test
+  (`test_schedule_required_scenario_emits_strict_closeout_evidence`) with
+  required PostgreSQL configuration → **1 passed**.
+- `uv run ruff check .` and `uv run ruff format --check .` passed (3644 files
+  formatted). Suite inventory, duplicate-test, and durable-table gates passed
+  (21 suites, no duplicate tests, 125 durable tables).
+- The focused non-PostgreSQL selection independently passed **146 tests, 77
+  skipped**; skipped database legs were then covered by the required-PG run.
+
+No tests or suite counts were added or removed; inventory delta is unchanged.
