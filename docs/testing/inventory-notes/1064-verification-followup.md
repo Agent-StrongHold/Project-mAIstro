@@ -823,3 +823,66 @@ this head on a timing-sensitive builders leg (closed-database /
 event-loop shutdown race) that CI must see green at the exact SHA. Prior
 rounds' "coverage gate unsettled" caveat is hereby closed: the gate has
 settled RED twice at identical content, the second time at this exact SHA.
+
+## Round 10 — exact-head `1c3e01c65b` re-verification (2026-11-24, this round)
+
+Context: the round-9 job's verification was administratively rejected because its
+writer commit (`1c3e01c65b`, docs-only) landed mid-run and changed the worktree
+under the evidence; the repair demand "clean tree is not proof of repair" is
+resolved here by (a) re-deriving every acceptance leg at the frozen head and
+(b) landing this docs-only evidence commit *after* the runs below finished.
+No code, gate, or quality-ledger file was touched this round.
+
+Local, executed this round at exact head `1c3e01c65bf9bdb52334ee6a7c395a6d780d5d18`
+(real PostgreSQL at `127.0.0.1:5570`, `MAISTRO_TEST_PG_DSN` +
+`MAISTRO_REQUIRE_PG_LEGS=1` so skips fail):
+
+- Driver pre-checks at this head, all green: `uv sync --locked --extra dev`,
+  `ruff check .`, `ruff format --check .` (3652 files), evolve suites
+  `test_domain_reconstruction.py` + `test_durable_snapshot.py` (11 passed),
+  five hive-conductor suites without DSN (46 passed, 19 skipped),
+  `check-suite-inventory.py` for `packages/hive-conductor/backend/tests`
+  (4540) and `packages/maistro-evolve/tests` (1017).
+- Five hive-conductor suites with real PG + REQUIRE flag: **65 passed,
+  0 skipped** (replay fault-injection incl. distinct-process legs, startup
+  wiring, retention, domain store/fences).
+- `tests/cross_product_parity` with CI's exact invocation (ci.yml:952):
+  **26 passed** — the hosted failure at `02a957bd0823` remains
+  timing-sensitive, not a local reproducible regression.
+- Coverage producers reproduced at this head: maistro-evolve producer
+  **1005 passed + 12 skipped = 1017** (inventory match); hive-conductor
+  evolve producer with CI's exact 4-file invocation: **52 passed** under
+  real PG.
+- Floor mechanism re-measured at this head: scoped
+  `--include=packages/hive-conductor/backend/services` on the combined
+  producer DB = **15,542 stmts @ 11% (13,531 missed), 79 modules at 0%**;
+  CI's own `coverage report --fail-under=87` on that DB -> **exit 2**
+  (`Coverage failure: total of 33 is less than fail-under=87` on the
+  two-producer subset; hosted full combine measures 83). Deterministic.
+
+Hosted, read-only, first-hand this round:
+
+- `gh pr view 2497`: headRefOid == `1c3e01c65bf9…` (exact, draft, OPEN).
+  Rollup at final capture: **65 SUCCESS / 2 SKIPPED / 13 IN_PROGRESS /
+  1 PENDING**; zero settled failures so far at this head, but
+  `coverage (no services)`, `coverage (PostgreSQL)`, `test`,
+  `integration-scope`, `Quality / Acceptance state` and the Coverage gate
+  consumer itself had not settled — pending is not green.
+- Content identity re-verified via numstat: `57201708d3 -> 02a957bd0823 ->
+  1c3e01c65bf9` are each docs-only (this file only). Therefore the settled
+  REDs at `02a957bd0823` (coverage gate 83 < 87, check-run 138149529335;
+  cross-product-parity job 138141739495) apply deterministically to this
+  head's code content.
+- Branch-attributability stands: develop-base quality run `45239478051`
+  (same workflow) is success.
+- Closure keywords: none (`git log a6a0969ca1..1c3e01c65bf9` grep clean;
+  PR body "Refs #1064" only).
+
+Verdict: **NEEDS-REPAIR** (unchanged). The repair owed is unchanged from
+round 9: scope the hive-conductor `backend/services` producer out of the
+pre-floor publish-set combine (post-floor combine or diff-gate-only) or
+raise the floor through the two-merge grant process — and the
+timing-sensitive `cross-product-parity` builders leg must settle green at
+the exact SHA. Local replay-safety acceptance (all fault-injection PG legs,
+parity, fences, diagnostics) is green at this exact head; only the CI
+criterion blocks.
