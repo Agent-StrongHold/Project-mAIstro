@@ -603,3 +603,50 @@ Verdict: **NEEDS-REPAIR**. The restart/replay behavioral legs pass locally,
 but the measured hosted coverage gate is red and must be repaired on the
 branch before this can be handed off as merge-ready.
 
+## Round 7 — assigned head `1e94d9d45ed2` independent re-verification (2026-11-24)
+
+The assigned head equals the live PR #2497 `headRefOid` (fresh `gh pr view`
+reading) and is one docs commit past the code-validated head `3c424c8afc55`;
+`git diff --stat 0389a4797f99..1e94d9d45ed2` touches only this note (+105),
+so all production/test content is identical to what the round-4/5/6 legs
+validated. All locally executable legs were re-executed by this verifier at
+the exact assigned head (worktree clean at `1e94d9d45ed2`, PG18 container
+`maistro-1064-pg`, DSN `postgresql://maistro:maistro@127.0.0.1:5570/maistro_test`,
+alembic `069`):
+
+- Replay/fencing/startup/retention/store legs (`test_evolution_restart_replay.py`,
+  `_pg.py`, `test_evolution_startup_wiring.py`, `test_evolve_domain_retention.py`,
+  `test_evolve_domain_store.py`) -> **65 passed, 0 skipped in 39.95s**, including
+  the distinct-OS-process recovery leg, per-boundary finalize fault
+  parametrization, concurrent-publisher fences, and the fresh-cycle
+  non-suppression leg.
+- `packages/maistro-evolve/tests/test_domain_reconstruction.py +
+  test_durable_snapshot.py` -> **11 passed**.
+- `tests/cross_product_parity/…::test_evolve_required_scenario_emits_strict_closeout_evidence`
+  -> **1 passed in 1.22s**.
+- `uv run ruff check .` -> passed; `uv run ruff format --check .` -> clean
+  (3,652 files). `uv run python scripts/check-suite-inventory.py` (CI's exact
+  command, ci.yml:751) -> **ok: 21 suite(s) match the recorded inventory**;
+  driver deterministic checks (job check-*.log) additionally recorded
+  hive-conductor backend 4540 and maistro-evolve 1017 suite matches.
+- Closure-keyword scan `git log a6a0969ca1..1e94d9d45ed2 --format='%B'` ->
+  no fixes/closes/resolves #N (42 commits); live PR body still only "Refs #1064".
+- Live rollup at the exact head (run started 2026-11-24T00:03:44Z): **57
+  COMPLETED/SUCCESS, 2 SKIPPED, 1 NEUTRAL (CodeQL), 19 IN_PROGRESS, 0
+  failures**, `gates-ran` PENDING, and the
+  `Coverage gate (publish-set floor + diff coverage)` check has **not yet
+  started** (its producer jobs `coverage (no services|MinIO|PostgreSQL)` are
+  IN_PROGRESS). Pending is not green; the criterion stays unsettled.
+
+The last **settled** hosted run at content-identical code (round-4 addendum,
+job `138078750667`, run `45282026375`) failed
+`Coverage gate (publish-set floor + diff coverage)` with publish-set coverage
+83 < floor 87, branch-attributable against a green develop base run
+`45239478051` at the merge base; no floor grant, producer scoping, or covered-arc
+repair has landed in any commit since. Nothing in this round weakened a gate.
+
+Verdict: **NEEDS-REPAIR** — every locally executable acceptance criterion is
+proven at this exact SHA by this verifier's own runs with real PostgreSQL and
+the #947 P1 disposition remains met, but the close-only exact-SHA/CI criterion
+is unmet: settled branch-attributable coverage-gate FAILURE at identical
+content, current head's run still in flight with that gate unstarted.
