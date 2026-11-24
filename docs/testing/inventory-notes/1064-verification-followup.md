@@ -650,3 +650,35 @@ proven at this exact SHA by this verifier's own runs with real PostgreSQL and
 the #947 P1 disposition remains met, but the close-only exact-SHA/CI criterion
 is unmet: settled branch-attributable coverage-gate FAILURE at identical
 content, current head's run still in flight with that gate unstarted.
+
+## Assigned repair-worker revalidation at `57201708d320` (2026-11-24)
+
+The assigned worktree was clean at the stated starting head; no `check-*.log`
+files were present in this job directory. Re-executed local acceptance checks:
+
+- `MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:5570/maistro_test
+  uv run pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py
+  packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py
+  -x -q` -> **38 passed** (real PostgreSQL; includes restart/replay and
+  process-boundary legs).
+- `uv run pytest
+  tests/cross_product_parity/test_cross_product_parity.py::test_evolve_required_scenario_emits_strict_closeout_evidence
+  -x -q` -> **1 passed**.
+- `uv run ruff check .` and `uv run ruff format --check .` -> passed; format
+  check reports 3,652 files already formatted.
+- `uv run python scripts/check-suite-inventory.py` -> **21 suites match**,
+  including hive-conductor backend 4,540 and maistro-evolve 1,017 node IDs.
+- `git diff --check` -> clean before this evidence-only note update.
+
+No production or test change was justified by these passing local checks. The
+actual outstanding repair evidence is the content-identical hosted run
+`45282026375` / job `138078750667` failing publish-set coverage at 83 against
+floor 87 (develop base run `45239478051` was green), as captured above and in
+the supplied prior findings. The exact-head current rollup was still pending
+with coverage not started per the supplied evidence; this worker did not claim
+that pending status as green. No coverage floor/producer gate was weakened.
+
+Verdict remains **NEEDS-REPAIR**: local replay acceptance is re-proven, but
+exact-head hosted CI is not green and the known coverage failure remains
+unrepaired. The supplied #947 disposition satisfies the recorded P1-specific
+criterion; its unresolved P2 thread remains outside that criterion.
