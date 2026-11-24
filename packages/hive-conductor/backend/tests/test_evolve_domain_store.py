@@ -278,3 +278,46 @@ async def test_pg_distinct_process_publishes_once_and_this_process_replays(pg_st
         ),
     )
     assert fenced is False
+
+
+@pytest.mark.asyncio
+async def test_evaluation_publication_insert_is_the_exactly_once_fence(store) -> None:
+    """Two publishers of one evaluation NodeRun cannot both insert (#1064).
+
+    The battle fence has its own test above; the evaluation receipt carries
+    the same exactly-once contract — a recovered process replaying the same
+    logical evaluation NodeRun must lose the insert and read the winner's
+    row, not fold the scores twice.
+    """
+    pub = EvolveDomainPublication(
+        effect_kind="evaluation",
+        node_run_id="nr-eval-1",
+        run_id="run-1",
+        payload={"genome_id": "g1", "eval_scores": {"proxy": 0.9}},
+    )
+    assert await store.record_evaluation_publication(_WS, pub) is True
+    # The second publish of the same logical evaluation loses the fence.
+    assert await store.record_evaluation_publication(_WS, pub) is False
+    # The winner's receipt is the one a recovery reads back.
+    found = await store.find_evaluation_publication(_WS, "nr-eval-1")
+    assert found is not None
+    assert found.payload["genome_id"] == "g1"
+    assert found.run_id == "run-1"
+    # A different logical evaluation (different NodeRun) is never suppressed.
+    other = pub.model_copy(update={"node_run_id": "nr-eval-2"})
+    assert await store.record_evaluation_publication(_WS, other) is True
+
+
+@pytest.mark.asyncio
+async def test_pg_store_misses_return_none(pg_store) -> None:
+    """A fresh workspace has no snapshot, no battle receipt, no receipt row.
+
+    The miss outcomes of the three PG lookups are the recovery-refusal side
+    of the contract: a workspace the ledger has never seen must answer None
+    rather than a half-constructed record a resolver could mistake for
+    durable evidence.
+    """
+    ws = f"{_WS}-miss"
+    assert await pg_store.latest_snapshot(ws) is None
+    assert await pg_store.find_battle_publication(ws, "nr-none", "proxy") is None
+    assert await pg_store.find_evaluation_publication(ws, "nr-none") is None

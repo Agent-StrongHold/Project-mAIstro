@@ -1753,3 +1753,152 @@ async def test_death_between_committed_snapshot_and_marker_refuses_honestly(
     assert reread is not None
     assert reread.payload["status"] == "in_progress"
     await recovered_spine.close()
+
+
+@pytest.mark.asyncio
+async def test_refresh_committed_finalize_evidence_reads_the_durable_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Committed-finalize refusal evidence is read from the durable ledger.
+
+    The recovery resolver consults ``committed_finalize_run_ids``
+    synchronously — it has no await point — so the set must already be
+    populated from durable evidence when resolution begins. This drives the
+    three honest outcomes of the refresh: no store at all (durable
+    choreography off) keeps the previous evidence; a store without the
+    ledger method (a deployment without the publication backend) refuses
+    conservatively; and a real ledger admits exactly the committed markers
+    with a run id, leaving faulted markers out.
+    """
+    import services.evolution as evolution_module
+    from services.evolve_domain_store import InMemoryEvolveDomainStore
+
+    service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
+    service._domain_store = None
+    service._committed_finalize_runs = {"seeded-run"}
+    monkeypatch.setattr(
+        evolution_module._EvolutionService,
+        "workspace_id",
+        property(lambda self: _WS),
+    )
+
+    # No store: the choreography is off and the evidence set is untouched.
+    await service.refresh_committed_finalize_evidence()
+    assert service.committed_finalize_run_ids == {"seeded-run"}
+
+    # A store that does not expose the ledger method: refuse conservatively.
+    service._domain_store = SimpleNamespace()
+    await service.refresh_committed_finalize_evidence()
+    assert service.committed_finalize_run_ids == {"seeded-run"}
+
+    # The ledger answers: its durable content REPLACES the seeded evidence
+    # (the ledger is the authority once it responds). Exactly the committed
+    # markers with a run id join; faulted markers stay out.
+    ledger = InMemoryEvolveDomainStore()
+    service._domain_store = ledger
+    await ledger.upsert_finalize_marker(
+        _WS, "nr-finalize", {"status": "committed"}, run_id="run-ok"
+    )
+    await ledger.upsert_finalize_marker(
+        _WS, "nr-finalize-2", {"status": "faulted"}, run_id="run-bad"
+    )
+    await service.refresh_committed_finalize_evidence()
+    assert service.committed_finalize_run_ids == {"run-ok"}
+
+
+@pytest.mark.asyncio
+async def test_refresh_committed_finalize_evidence_keeps_conservative_refusal_on_ledger_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken ledger must not widen or narrow the refusal evidence.
+
+    The previous evidence set stands (an empty set refuses conservatively):
+    a half-readable ledger is indistinguishable from an absent commit, and
+    recovery fails closed rather than resuming against a guess.
+    """
+    import services.evolution as evolution_module
+
+    service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
+    service._committed_finalize_runs = {"run-kept"}
+    monkeypatch.setattr(
+        evolution_module._EvolutionService,
+        "workspace_id",
+        property(lambda self: _WS),
+    )
+
+    class _BrokenLedger:
+        async def list_finalize_markers(self, workspace_id: str):
+            raise RuntimeError("ledger offline")
+
+    service._domain_store = _BrokenLedger()
+    await service.refresh_committed_finalize_evidence()
+    assert service.committed_finalize_run_ids == {"run-kept"}
+
+
+@pytest.mark.asyncio
+async def test_evaluation_journal_replay_skips_receipts_for_culled_genomes(
+    tmp_path: Path,
+) -> None:
+    """An evaluation receipt for a genome the snapshot no longer holds lands nowhere.
+
+    A later committed cycle can cull a genome whose evaluation receipt is
+    still journalled ahead of the restored snapshot; replaying it must
+    neither resurrect the genome nor refuse the restore — the receipt is
+    skipped and the restored population is exactly the snapshot's.
+    """
+    from services.evolve_domain_store import EvolveDomainPublication
+
+    from maistro_evolve.tournament import EloTournament
+
+    spine = await _Spine(tmp_path, _WS).start()
+    try:
+        population = _seed_population()
+        await _capture_domain_snapshot(
+            domain_store=spine.domain_store,
+            workspace_id=_WS,
+            run_id="cycle-1",
+            kind="admission",
+            population=population,
+            tournament=EloTournament(),
+            membership_ids=["g1", "g2", "g3", "g4"],
+            completed_cycles=1,
+        )
+        # A dead process's evaluation receipt for a genome this admission
+        # snapshot does not hold: the receipt is journalled ahead of the
+        # snapshot and its subject has no live genome to land on.
+        await spine.domain_store.record_evaluation_publication(
+            _WS,
+            EvolveDomainPublication(
+                effect_kind="evaluation",
+                node_run_id="nr-eval-gone",
+                run_id="run-eval",
+                payload={"genome_id": "gone-member", "eval_scores": {"proxy": 0.7}},
+            ),
+        )
+        snapshot = await spine.domain_store.latest_snapshot(_WS)
+        assert snapshot is not None
+
+        import services.evolution as evolution_module
+
+        service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
+        restored_population = _seed_population()
+        restored_tournament = EloTournament()
+        replayed_battles, replayed_evaluations, committed = await service._replay_domain_journal(
+            store=spine.domain_store,
+            workspace_id=_WS,
+            snapshot=snapshot,
+            population=restored_population,
+            tournament=restored_tournament,
+        )
+        assert replayed_battles == 0
+        assert replayed_evaluations == 0
+        assert committed == set()
+        assert sorted(g.id for g in restored_population.list_all()) == [
+            "g1",
+            "g2",
+            "g3",
+            "g4",
+        ]
+    finally:
+        await spine.purge_domain()
+        await spine.close()

@@ -1058,3 +1058,80 @@ Verdict: **NEEDS-REPAIR** solely because exact-SHA hosted settlement is still
 pending. No local tree defect is evidenced. This verification note itself
 will advance the head; hosted checks must settle again at the resulting commit
 before claiming merge readiness.
+
+## Round: deep-review r2 — hosted settlement observed RED; root cause found and repaired locally
+
+Observed at the exact assigned head `b0b32ec9874b62cba60f8583e94c55074c2aff89`
+(PR #2497 head confirmed via `gh pr view` this round): after ~28 minutes the
+pending `Coverage gate (publish-set floor + diff coverage)` check settled
+**FAILURE** (completed 2026-11-24T05:12:21Z). Every other check at this head is
+SUCCESS (79 of 80 completed checks; `gates-ran` flips only after). The prior
+rounds' "pending, never inferred green" discipline was correct: it settled red.
+
+Failing step: `Diff coverage gate (per file, lines 90% / branches 80%)`, five
+files:
+
+- `services/evolution.py` 89.6% of 125 changed lines — uncovered 380-388,
+  391, 394, 395 (the entire `refresh_committed_finalize_evidence` body: the
+  durable committed-finalize evidence the recovery resolver consults) and 607
+  (the culled-genome receipt skip in evaluation journal replay);
+- `services/evolve_domain_store.py` 72.7% of 22 changed branch arcs — partial
+  at 258 (evaluation exactly-once fence, loser outcome), 374/416/500 (PG
+  snapshot/battle/evaluation lookup misses);
+- `maistro_evolve/durable_snapshot.py`, `population.py`, `tournament.py` —
+  "absent from the coverage report — the measurement did not happen".
+
+### Root cause of the three "absent" files (reproduced end-to-end locally)
+
+`coverage combine` **replaces** its destination with the merge of the current
+`.coverage.*` files. The gate combines unit+archive first, then moves
+`coverage-postgres` in and combines **again** — the second combine silently
+discards the first combine's database (the one the 87% floor just evaluated).
+The real gate log proves it: the post-floor report (04:45:08Z) prints
+`population.py` 97% / `tournament.py` 99% / `durable_snapshot.py` 100%, while
+the final coverage.xml (05:12Z) has no entry for them. The trio is measured
+only by the unit producer, and the postgres artifact holds zero
+`maistro-evolve` entries, so nothing re-measures them after the wipe. Local
+replay with the run's actual artifacts reproduced exactly this: unit+archive
+combined keeps 58 evolve entries; moving postgres in and re-combining leaves 0.
+
+### Repair (committed on this branch; hosted CI must settle at the new head)
+
+1. `.github/workflows/quality.yml`: the second combine is now
+   `coverage combine --append` — append the postgres producer into the floor's
+   database instead of replacing it. Validated against the run's real
+   downloaded artifacts: the repaired combine keeps 58 evolve + 118
+   hive-conductor-service entries in one database (1114 files), and the actual
+   `scripts/check-diff-coverage.py` run against the repaired xml shows the
+   trio **passing** their per-file floors on the producer's own data
+   (population.py +31 changed lines, tournament.py +130, durable_snapshot.py
+   +20 all ≥90%/80% — no new tests needed for them).
+2. `test_evolution_restart_replay.py`: the three refresh outcomes (no store;
+   store without the ledger method → conservative refusal; real ledger →
+   committed markers admitted, faulted excluded — the ledger's answer replaces
+   seeded evidence, it is the authority) plus the culled-genome replay skip.
+   These cover every hosted-uncovered `evolution.py` line.
+3. `test_evolve_domain_store.py`: the evaluation-publication exactly-once
+   fence (loser outcome) across memory/sqlite, and the three PG lookup miss
+   outcomes (fresh workspace answers None for snapshot, battle receipt,
+   evaluation receipt).
+4. Fixture digest for the edited `coverage-gate` job repinned in
+   `tests/fixtures/ci_quality_obligations.json`
+   (7998ee9e… → 01a08e42…); `tests/test_ci_quality_split.py` 96 passed.
+
+Local validation at this head: 41 restart-replay/restart-replay-pg tests with a
+real PG server (65 total across the five recovery suites incl. the
+distinct-OS-process subprocess leg), 15/12 store-suite tests with and without
+DSN, 96 fixture tests, ruff + format clean, suite inventory +6 recorded in
+`1064-verification-repair-round2.md` (4546 unique identities, 0 duplicates),
+evolve suite unchanged at 1017. `scripts/run-m1-closeout.py` evidence line
+re-captured live this round: `evolve-cycle-to-conductor … "executed": true,
+"status": "PASSED", "blockers": []`; scheduler-occurrence (#231) and
+golden-real-observation (#463) abstain exactly as at the develop base
+(pre-existing, unrelated). PR #947 review threads re-read live: all three P1s
+RESOLVED; sole open thread is the P2 "Record the durable executor on admitted
+Evolve runs" advisory.
+
+Verdict: the tree defect the hosted red exposed is repaired locally; the
+exact-SHA settlement criterion reopens at the resulting commit and must settle
+green there before merge readiness. No GitHub mutations made.

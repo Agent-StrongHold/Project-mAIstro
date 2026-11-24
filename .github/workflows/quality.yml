@@ -660,9 +660,20 @@ jobs:
           # is not yet governed (#163 item 6). The hive-conductor producer was
           # held out of the initial combine for this same reason; append it now
           # so its changed lines remain covered by the diff gate.
+          #
+          # --append is load-bearing (#1064): plain `coverage combine` starts
+          # clean and writes ONLY the merge of the current .coverage.* files,
+          # silently DISCARDING the database the floor just evaluated. That
+          # replacement erased every file measured only by the unit/archive
+          # producers, so changed files in those trees read as "absent from
+          # the coverage report" and failed the per-file diff gate with the
+          # measurement sitting in the deleted database. The real run that
+          # surfaced it (#1064): the post-floor report printed the Evolve
+          # durable-snapshot modules at 97-100%, the final coverage.xml had no
+          # entry for them at all.
           if [ -s coverage-data/coverage-postgres/.coverage ]; then
             mv coverage-data/coverage-postgres/.coverage .coverage.hive-conductor
-            uv run coverage combine
+            uv run coverage combine --append
           else
             echo "::error::producer coverage-postgres contributed no coverage data"
             exit 1
