@@ -1010,3 +1010,16 @@ The commit that carries this record moves the PR head again; hosted CI restarts
 at the new head and must settle there before the exact-SHA/CI criterion is
 proven. Verdict: **NEEDS-REPAIR** — the deterministic digest defect is repaired
 and locally proven; sole remaining item is hosted exact-head settlement.
+
+Round-13 postscript — full hosted settlement at `5a9b0d2d`. After the `test`
+job failure recorded above, the remaining producer finished SUCCESS
+(`coverage (no services)`) and the "Coverage gate (publish-set floor + diff
+coverage)" job then ran and also failed: **1 failed, 6080 passed, 140
+skipped** (job 138188150839, run 45315246228) — the identical
+`test_ci_quality_split.py` digest assertion, `- 7211a89d…` vs `+ 7998ee9e…`.
+Both hosted failures therefore trace to the single stale digest pin repaired
+above; no second defect is evidenced, and every other check at that head
+settled SUCCESS (incl. `postgres (pg17)`, `postgres (pg18)`, both e2e suites
+and all three coverage producers). The publish-set floor itself was not
+evaluated in that run (pytest exits before the combine step), so the floor
+verdict remains pending at the repair head `9e50b3fcf1`.
