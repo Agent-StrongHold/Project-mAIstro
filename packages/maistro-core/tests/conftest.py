@@ -162,6 +162,7 @@ _PG_SCRATCH_TABLES = (
     "trigger_definitions",
     "event_log",
     "schedules",
+    "schedule_deletions",
     "graph_templates",
     "graph_continuations",
     # (#563) Absent from this list, rows survived between runs — and these
