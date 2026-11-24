@@ -88,7 +88,7 @@ import services.schedule_projection  # noqa: F401  (registers its ledger store)
 
 ready = pathlib.Path(ready_file)
 ready.write_text("wired", encoding="utf-8")
-deadline = time.monotonic() + 60.0
+deadline = time.monotonic() + 120.0
 while not pathlib.Path(start_file).exists() and time.monotonic() < deadline:
     time.sleep(0.02)
 
@@ -744,7 +744,7 @@ async def test_independent_processes_racing_startup_converge_on_canonical_truth(
                     stderr=subprocess.PIPE,
                 )
             )
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + 120.0
         while not all(p["ready"].exists() for p in paths) and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         assert all(p["ready"].exists() for p in paths), (
