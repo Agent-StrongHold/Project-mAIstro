@@ -34,6 +34,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from services.recovery_event_authority import recovery_events_for
 from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
@@ -1179,7 +1180,7 @@ async def recover_stranded_evolution_runs(*, limit: int = 100) -> int:
             eligible=_admitted_by_evolve,
             admission_source=_ADMISSION_SOURCE,
             limit=limit,
-            events=owner.event_bus,
+            events=recovery_events_for(owner),
             # Held across ticks, mirroring the legacy-DAG wrapper (#1127):
             # the scan is bounded per call, so without one, at least `limit`
             # earlier unrecoverable candidates would be reselected on every
@@ -1212,7 +1213,7 @@ async def wake_due_evolution_runs(*, limit: int = 100) -> int:
             node_resolver_factory=_tracking_recovery_resolver_factory(attempted),
             eligible=_admitted_by_evolve,
             limit=limit,
-            events=owner.event_bus,
+            events=recovery_events_for(owner),
             scan=scan_continuation("resume_due_graph_runs", owner.graph_run_store),
         )
         if service is not None and attempted:

@@ -22,6 +22,7 @@ from maistro.graph.durable_runs import (
 from maistro.runs.model import Run
 from maistro.runs.sources import SCHEDULE_INPUTS_KEY
 from services.dag_agents import _container, _resolve_nodes_with
+from services.recovery_event_authority import recovery_events_for
 from services.scan_continuations import scan_continuation
 
 _SOURCES = frozenset({"schedule"})
@@ -67,7 +68,7 @@ async def recover_stranded_registered_dag_runs(*, limit: int = 100) -> int:
         node_resolver_factory=_resolver,
         eligible=_owned_traversal,
         admission_source="schedule",
-        events=container.event_bus,
+        events=recovery_events_for(container),
         limit=limit,
         scan=scan_continuation("recover_queued_registered_dag_runs", container.run_store),
     )
@@ -111,7 +112,7 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
             node_resolver_factory=_resolver,
             eligible=_owned_traversal,
             admission_source="schedule",
-            events=container.event_bus,
+            events=recovery_events_for(container),
             limit=limit,
             scan=scan_continuation("recover_queued_registered_dag_runs", container.run_store),
         )
@@ -120,7 +121,7 @@ async def wake_due_registered_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_resolver,
         eligible=_owned,
-        events=container.event_bus,
+        events=recovery_events_for(container),
         limit=limit,
         scan=scan_continuation("resume_due_registered_dag_runs", container.graph_run_store),
     )
