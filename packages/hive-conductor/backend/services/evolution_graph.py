@@ -188,9 +188,7 @@ def _evaluation_receipt_payload(
     return {
         _EVALUATION_PAYLOAD_GENOME: genome_id,
         _EVALUATION_PAYLOAD_SCORES: dict(working.eval_scores),
-        _EVALUATION_PAYLOAD_SAMPLES: dict(
-            working.harness_params.get("eval_samples") or {}
-        ),
+        _EVALUATION_PAYLOAD_SAMPLES: dict(working.harness_params.get("eval_samples") or {}),
         _EVALUATION_PAYLOAD_HISTORY: {
             key: list(values)
             for key, values in dict(working.harness_params.get("eval_history") or {}).items()
