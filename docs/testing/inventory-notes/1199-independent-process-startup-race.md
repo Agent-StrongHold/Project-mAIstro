@@ -132,3 +132,51 @@ No tests were added in this revalidation, so the existing `+3` inventory
 delta is unchanged. Complete PostgreSQL verification was not achievable without
 setting up `MAISTRO_TEST_PG_DSN`; this limitation is retained rather than
 assuming older-head evidence proves the merged candidate.
+
+## CI-repair addendum (833d2ef98d, PR #2512 `test` gate red)
+
+The `test` job was red on exactly this test's sqlite leg
+(check-run 138334770313): the ready barrier failed with "both workers
+finished wiring their own persistence before the race" after the parent
+burned its whole readiness deadline (job log: memory skip 09:29:19 → sqlite
+FAIL 09:31:20 ≈ the 120s wait). The 60s→120s bump in 2a838da099 treated the
+wrong disease.
+
+Root cause (proven, not guessed): the CI `test` job runs
+`python -m pytest packages/hive-conductor/backend/tests` on the **system**
+interpreter where only `backend/requirements.txt` is installed —
+maistro-core is consumed via sys.path there, never pip-installed
+(requirements.txt comments; root pyproject `pythonpath` is what lets the
+parent import `maistro`). The racing test's worker subprocesses are bare
+`sys.executable` runs that put only `backend` on sys.path, so each worker
+died on `import maistro` before writing its ready marker. Locally the worker
+inherits the uv venv where maistro-core is installed, which is why the test
+passed locally at 2.42s and never in CI at any deadline.
+
+Repair at 833d2ef98d (test-file-only, no production code, no node-ID
+changes → inventory delta 0):
+
+- The worker script inserts `packages/maistro-core/src` at `sys.path[1]`
+  (derived from the backend argv), mirroring the documented sys.path
+  consumption contract; `backend` stays first and nothing is shadowed.
+- The ready barrier stops early when a worker exits and the assertion
+  reports each worker's rc and stderr tail, so this failure class can no
+  longer masquerade as a timeout with the real error discarded.
+
+Executed evidence at this head:
+
+- Pre-fix reproduction in a throwaway requirements-only venv (the CI
+  system-python shape): exact CI assert at
+  `test_scheduler_projection_authority.py:750` after 122.41s.
+- Post-fix, same venv: sqlite leg **PASSED in 2.80s**; the full
+  `packages/hive-conductor/backend/tests` suite under it: **4451 passed,
+  60 skipped** (4511 collected = recorded inventory), 3:46.
+- Dev-venv three-file battery: 93 passed, 30 skipped — identical counts to
+  the pre-repair run (no inventory delta).
+- Racing test under `--timeout=60` (ci.yml leakage-step ceiling): passed,
+  2.81s.
+- The postgres leg is unchanged code-path-wise (the fix only adds a
+  sys.path entry before imports) and is exercised by the compose PG jobs
+  where maistro is installed in the image; not re-executed locally (no
+  `MAISTRO_TEST_PG_DSN`) — retained as UNVERIFIED-at-this-head locally,
+  consistent with the addendum above.
