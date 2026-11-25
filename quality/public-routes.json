@@ -73,33 +73,22 @@
       "kind": "exact",
       "owner": "@BlakeMatthews-dev",
       "risk": "high",
-      "disposition": "temporary",
-      "issue": 313,
-      "expires": "2026-11-24",
-      "reason": "First-run account creation, still reachable after setup completes. #313 closes it to invited or admin-created accounts; until then this is an unauthenticated write path, throttled since #366 but not shut."
-    },
-    "/v1/setup/": {
-      "kind": "prefix",
-      "owner": "@BlakeMatthews-dev",
-      "risk": "high",
-      "disposition": "temporary",
-      "issue": 313,
-      "expires": "2026-11-24",
-      "reason": "First-run provisioning, before any account exists to authenticate with. The whole prefix stays public after setup completes; the individual routes guard themselves with one-shot 409s, which is a check inside each handler rather than a boundary. Narrowing it to the pre-setup window is part of #313."
+      "disposition": "permanent",
+      "reason": "Public so open-mode signup and invitation redemption stay reachable (#313, whose durable registration policy is now the boundary the temporary exemption was waiting for): the handler fails closed — no durable record, an unreadable record, or a mid-bootstrap instance all refuse registration — mode changes are admin-only and audited, and the route stays throttled (#366). This is reviewed policy, not an open write path."
     },
     "/v1/setup/status": {
       "kind": "exact",
       "owner": "@BlakeMatthews-dev",
       "risk": "low",
       "disposition": "permanent",
-      "reason": "Whether first-run setup has completed. The SPA needs it before it can decide between the wizard and the login form. Redundant with the prefix above and listed separately so it survives that prefix being narrowed."
+      "reason": "Whether first-run setup has completed, plus the active registration mode. The SPA needs it before it can decide between the wizard and the login form. It publishes the mode bit only — no account detail — so it stays public on both sides of the narrowed /v1/setup/ prefix (#313)."
     },
     "/v1/setup/presets": {
       "kind": "exact",
       "owner": "@BlakeMatthews-dev",
       "risk": "low",
       "disposition": "permanent",
-      "reason": "The static hardware presets the wizard offers. Same pre-account window, same reason to survive the prefix narrowing."
+      "reason": "The static hardware presets the wizard offers. Static catalogue data with no account or deployment detail, so it stays public on both sides of the narrowed /v1/setup/ prefix (#313)."
     }
   }
 }
