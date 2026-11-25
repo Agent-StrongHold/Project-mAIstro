@@ -361,6 +361,7 @@ def _serialise_world_style(w: WorldStyle) -> str:
         f"architecture: {w.architectural_register}",
         f"vehicles: {w.vehicle_register}",
         f"fauna: {w.fauna_realism}",
+        f"perspective: {w.perspective}",
     ]
     if w.palette_anchors:
         parts.append("palette: " + ", ".join(w.palette_anchors))

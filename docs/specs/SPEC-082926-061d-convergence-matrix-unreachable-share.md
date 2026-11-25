@@ -43,7 +43,6 @@ owners:
 
 # SPEC-082926-061d: Convergence Matrix Unreachable Share
 
-- **Status:** AC Defined
 - **Decision:** ADR-082926-061d
 - **Closes:** #605
 
