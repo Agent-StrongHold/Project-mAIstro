@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 from typing import ClassVar
 
@@ -236,7 +237,6 @@ class TestEndToEnd:
         """A line that ran under a context the collection cannot name must be
         reported as executed-but-unattributed, never silently dropped into a
         group with tests that may not execute it."""
-        import types
 
         coverage_payload = {
             "files": {
@@ -262,9 +262,106 @@ class TestEndToEnd:
         assert selection.no_coverage == [4]
 
 
+class TestTheMeasuredScopeIsTheDeclaredSource:
+    """The selector's own argv is part of its contract.
+
+    pytest-cov's bare `--cov` means "record everything": it overrides the
+    `--cov=<dir>` scope that the same argv passes. The gate CI red on (#330
+    follow-up, PR #1994 head 2f21a0ab16) shows the shape: a test in the scope
+    imports a module from a scratch directory that is deleted before the run
+    ends (the extension lifecycle proof does exactly this), coverage traces the
+    ephemeral file, and `coverage json --show-contexts` then dies with "No
+    source for code" on the vanished path — the mutation gate cannot select
+    tests at all. Measuring only the declared source directory keeps ephemeral
+    code out of the data file, and the report step ignores reads of files that
+    vanished mid-run without ever skipping the critical source itself (a
+    missing critical-file entry still fails `_coverage_file_entry`).
+    """
+
+    def test_the_pytest_run_is_scoped_and_never_records_everything(
+        self, mod, monkeypatch, tmp_path
+    ):
+        captured: list[list[str]] = []
+        coverage_payload = {
+            "files": {
+                "pkg/mod.py": {
+                    "executed_lines": [4],
+                    "missing_lines": [],
+                    "contexts": {"4": ["test_mod.test_add"]},
+                }
+            }
+        }
+
+        def fake_run(argv, **kwargs):
+            argv = [str(part) for part in argv]
+            captured.append(argv)
+            if "coverage" in argv:
+                report = Path(argv[argv.index("-o") + 1])
+                report.write_text(json.dumps(coverage_payload), encoding="utf-8")
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "--collect-only" in argv:
+                return types.SimpleNamespace(
+                    returncode=0, stdout="tests/test_mod.py::test_add\n", stderr=""
+                )
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        selection = mod.select("pkg/mod.py", "tests/test_mod.py", [4])
+        pytest_argv = next(a for a in captured if "pytest" in a)
+        bare = [a for a in pytest_argv if a == "--cov"]
+        scoped = [a for a in pytest_argv if a.startswith("--cov=")]
+        assert bare == [], "bare --cov means record-everything and overrides the scope"
+        assert scoped == ["--cov=pkg"], "measure exactly the declared source directory"
+        json_argv = next(a for a in captured if "coverage" in a)
+        assert "--ignore-errors" in json_argv, (
+            "a source file deleted mid-run must not end selection"
+        )
+        assert selection.groups == [{"lines": [4], "tests": ["tests/test_mod.py::test_add"]}]
+
+    def test_an_ephemeral_module_deleted_by_the_suite_does_not_break_selection(self, mod, tmp_path):
+        """The real failure, small: the scope imports scratch code that deletes
+        itself before the coverage report is written. Under the old argv this
+        exact sequence reded `coverage json` with "No source for code"."""
+        pytest.importorskip("pytest_cov")
+        src_dir = tmp_path / "sel_pkg"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("", encoding="utf-8")
+        (src_dir / "calc.py").write_text(
+            "THREE = 3\n\n\ndef add(a, b):\n    return a + b\n",
+            encoding="utf-8",
+        )
+        ephemeral = tmp_path / "ephemeral-scratch"
+        ephemeral.mkdir()
+        (ephemeral / "greeter.py").write_text("VALUE = 41\n", encoding="utf-8")
+        tests_dir = tmp_path / "sel_tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_calc.py").write_text(
+            "import importlib.util\nimport shutil\nfrom pathlib import Path\n\n"
+            "from sel_pkg.calc import add\n\n\n"
+            "def test_add():\n    assert add(1, 2) == 3\n\n\n"
+            "def test_imports_ephemeral_code_then_it_vanishes():\n"
+            f"    path = Path({str(ephemeral / 'greeter.py')!r})\n"
+            "    spec = importlib.util.spec_from_file_location('greeter', path)\n"
+            "    module = importlib.util.module_from_spec(spec)\n"
+            "    spec.loader.exec_module(module)\n"
+            "    assert module.VALUE == 41\n"
+            "    shutil.rmtree(path.parent)\n",
+            encoding="utf-8",
+        )
+        selection = mod.select(
+            str(src_dir / "calc.py"),
+            str(tests_dir),
+            [5],  # `return a + b`
+            env_extra={"PYTHONPATH": f"{tmp_path}:{mod._package_pythonpath()}"},
+        )
+        assert selection.groups, "the scoped run still selects the killing test"
+        # Collected node ids are printed root-relative for an out-of-tree
+        # absolute tests path, so the stem carries no `sel_tests/` prefix.
+        assert {t for g in selection.groups for t in g["tests"]} == {"test_calc.py::test_add"}
+
+
 class TestARedBaselineAbortsSelection:
     def test_selection_refuses_to_rank_lines_on_a_red_baseline(self, mod, monkeypatch):
-        import types
 
         def red_run(argv, **kwargs):
             return types.SimpleNamespace(returncode=1, stdout="1 failed", stderr="")

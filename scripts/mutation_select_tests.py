@@ -207,7 +207,12 @@ def select(
 
         # coverage's source selector accepts only directories or importable
         # names, so scope to the file's directory and let coverage_contexts
-        # pick out the target file's lines from the JSON report.
+        # pick out the target file's lines from the JSON report. The scope is
+        # carried ONLY by `--cov=<dir>`: pytest-cov's bare `--cov` means
+        # "record everything" and would override it, tracing scratch modules a
+        # test imports and deletes (the extension lifecycle proof installs one
+        # in a temp dir and rmtree's it) — leaving the data file referencing a
+        # vanished path that `coverage json` then refuses to report.
         src_path = Path(source)
         cov_target = str(src_path.parent) if src_path.suffix == ".py" else source
         cov_run = subprocess.run(
@@ -217,7 +222,6 @@ def select(
                 "pytest",
                 tests,
                 *(pytest_args or ["-q", "--timeout=120", "-p", "no:cacheprovider"]),
-                "--cov",
                 f"--cov-config={rc}",
                 "--cov-report=",
                 f"--cov={cov_target}",
@@ -241,6 +245,10 @@ def select(
         coverage_env = dict(env)
         coverage_env["COVERAGE_FILE"] = str(tmp_path / ".coverage")
         coverage_env["COVERAGE_RCFILE"] = str(rc)
+        # --ignore-errors is safe here precisely because the critical source
+        # itself is never ignored: a report with no entry for `source` fails
+        # `_coverage_file_entry` below. Only foreign files that a test measured
+        # and then deleted off disk are skipped.
         subprocess.run(
             [
                 sys.executable,
@@ -248,6 +256,7 @@ def select(
                 "coverage",
                 "json",
                 "--show-contexts",
+                "--ignore-errors",
                 "-o",
                 str(report),
             ],
