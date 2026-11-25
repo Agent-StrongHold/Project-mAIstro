@@ -73,9 +73,9 @@ test("pinning a Home region posts to the layout pin authority", async () => {
   await expect(page.getByRole("button", { name: /^Unpin Goals$/i })).toBeVisible();
 });
 
-test("Legacy Dashboard remains reachable from Home", async () => {
-  await page.goto("/home");
-  await page.getByRole("link", { name: "Legacy Dashboard" }).click();
-  await page.waitForURL("**/dashboard");
-  await expect(page.getByRole("heading", { name: "Live Operations", exact: true })).toBeVisible();
+test("legacy /dashboard URL redirects to Workspace Home (#2274)", async () => {
+  await page.goto("/dashboard");
+  await page.waitForURL("**/home");
+  await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });

@@ -16,9 +16,8 @@ import { EmptyState, LoadingSpinner, PageHeader, useToast } from "../components/
  * Unified Capabilities surface (#2273 / conductor-407).
  *
  * Reads/writes only the public capabilities router (list / discover / slot
- * enable) — the same authority the CLI and any TUI use. Agents / MCP / Skills
- * / Topology remain registered for deep links until a follow-up deletes them;
- * this page is the primary nav.
+ * enable) — the same authority the CLI and any TUI use. Legacy Agents / MCP /
+ * Skills / Topology page modules are deleted (#2273); old URLs redirect here.
  */
 export default function CapabilitiesPage() {
   const toast = useToast();
@@ -156,8 +155,7 @@ export default function CapabilitiesPage() {
       )}
 
       <p style={{ marginTop: 24, fontSize: 13, opacity: 0.7 }}>
-        Legacy Agents, Integrations (MCP), Skills, and Topology pages stay reachable by URL until
-        retirement (#2273); this is the primary product surface.
+        Former /agents, /mcp, /skills, and /topology URLs redirect here (#2273).
       </p>
     </div>
   );

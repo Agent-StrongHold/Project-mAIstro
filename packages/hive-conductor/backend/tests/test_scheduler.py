@@ -1797,11 +1797,15 @@ def test_an_explicit_null_leaves_the_field_alone(admin_client: Any, admin_ws: st
         admin_client.delete(f"/v1/schedules/{sid}")
 
 
-def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh() -> None:
-    """`_definition_for` refreshes the canonical row from the in-memory one on
-    every tick. The cursors it returns and leaves on disk are the store's,
-    so a `record_fire` that landed since the row was read is not written
-    back over by the stale copy (Codex, #1199)."""
+def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_read() -> None:
+    """`_definition_for` returns the canonical row as stored (#2467).
+
+    The cursors it returns and leaves on disk are the store's, so a
+    `record_fire` that landed since the row was read is not written back over
+    by the stale copy (Codex, #1199) — and neither is the definition: the
+    row-derived copy is only ever the first put, so a Hive row that drifted
+    from what canonical already acknowledges cannot rewrite it here, the same
+    authority reversal the startup reconciliation exists to stop (#2467)."""
     from services.scheduler import _ScheduleRunner
 
     from maistro.scheduling import InMemoryScheduleStore
@@ -1822,13 +1826,18 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     stub.name = "renamed"
     refreshed = asyncio.run(runner._definition_for("s-refresh", stub, store=store))
     assert refreshed is not None
-    assert refreshed.name == "renamed", "the definition is the row's"
+    assert refreshed.name == "name-s-refresh", "the stored definition stands (#2467)"
     assert refreshed.runs_so_far == 1 and refreshed.last_run_id == "run-1", (
         "the cursor is the store's"
     )
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
+    assert recorded.name == "name-s-refresh", "no drift put landed behind the fire"
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+    # A row canonical has never seen is still a first put.
+    fresh = asyncio.run(runner._definition_for("s-fresh", stub, store=store))
+    assert fresh is not None and fresh.name == "renamed", "the first put is the row's"
 
 
 @pytest.mark.parametrize("winner", ["run-the-cursor-lost", None])
