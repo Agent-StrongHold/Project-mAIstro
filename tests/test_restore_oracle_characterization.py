@@ -67,6 +67,17 @@ def _docker_reachable() -> bool:
 
 pytestmark = [
     pytest.mark.scope("integration"),
+    # The coverage-gate root producer (quality.yml `combine`) runs this suite
+    # with pytest-timeout's --timeout=30. That default budget cannot contain
+    # this module's setup: the module-scoped fixture pulls pgvector/pgvector:pg17
+    # on a cold or loaded runner before initdb even starts, and _wait_ready is
+    # allowed 90s by design — which is how all four tests errored at fixture
+    # setup in the Coverage gate's combine step at 625879d0 (run 43878191747,
+    # job 133345309671, 2026-11-16, `docker run` wedged >30s in the image pull)
+    # while the parallel instance of the same job on the same head passed.
+    # 300s covers two full readiness cycles (source + restore containers) plus
+    # one image pull; the per-test call phases stay far under it.
+    pytest.mark.timeout(300),
     pytest.mark.skipif(
         not _docker_reachable(),
         reason="Docker not reachable; live PostgreSQL characterization needs it",
