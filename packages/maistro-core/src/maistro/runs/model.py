@@ -231,6 +231,15 @@ PAUSE_AWAITS_HUMAN = "awaits_human"
 #: graph layer.
 DURABLE_GRAPH_FORK_PROVENANCE = "durable_graph_fork"
 
+#: Provenance key under which a child Run records, at admission, why it is
+#: filed beneath an already-terminal parent. Same shape and same narrowing as
+#: the fork fact: the fact is identity-bound (it names the very parent this
+#: child hangs under) or the admission guard refuses the child. Shipped
+#: shapes: a control-plane operation minted after its requesting Run
+#: terminalized (a benchmark judge beneath a COMPLETED Run), and retry
+#: lineage beneath a FAILED Run.
+POST_TERMINAL_CHILD_PROVENANCE = "post_terminal_child"
+
 TERMINAL_RUN_STATUSES = frozenset(
     {
         RunStatus.COMPLETED,
@@ -724,6 +733,7 @@ __all__ = [
     "ACCEPTED_NODE_OUTCOME_STATUSES",
     "DURABLE_GRAPH_FORK_PROVENANCE",
     "PAUSE_AWAITS_HUMAN",
+    "POST_TERMINAL_CHILD_PROVENANCE",
     "TERMINAL_ATTEMPT_STATUSES",
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",

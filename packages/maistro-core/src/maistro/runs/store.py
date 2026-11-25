@@ -37,6 +37,7 @@ from maistro.runs.lifecycle import (
 )
 from maistro.runs.model import (
     DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -283,16 +284,27 @@ def refuse_child_under_terminal_parent(
 ) -> None:
     """Refuse filing a child Run under an already-terminal parent (#1621).
 
-    One child is accepted anyway: the durable Graph fork (ADR-062 /
-    ADR-082826-d9f5). The exemption is the fork fact itself
-    (``DURABLE_GRAPH_FORK_PROVENANCE``), and only when that fact names the
-    very parent this child is filed under.
+    Two children are accepted anyway, each because its own provenance
+    carries an identity-bound fact naming the very parent this child is
+    filed under:
+
+    - the durable Graph fork (ADR-062 / ADR-082826-d9f5), whose fact is
+      ``DURABLE_GRAPH_FORK_PROVENANCE``; and
+    - the post-terminal child (``POST_TERMINAL_CHILD_PROVENANCE``): a
+      control-plane operation minted after its requesting Run terminalized
+      (a benchmark judge beneath a COMPLETED Run), or retry lineage beneath
+      a FAILED Run.
+
+    A fact naming a different Run does not exempt this child — the carve-out
+    is the fact's parent identity, not its presence.
     """
     if parent_status not in TERMINAL_RUN_STATUSES:
         return
-    fact = (child_provenance or {}).get(DURABLE_GRAPH_FORK_PROVENANCE)
-    if isinstance(fact, dict) and fact.get("parent_run_id") == parent_run_id:
-        return
+    provenance = child_provenance or {}
+    for key in (DURABLE_GRAPH_FORK_PROVENANCE, POST_TERMINAL_CHILD_PROVENANCE):
+        fact = provenance.get(key)
+        if isinstance(fact, dict) and fact.get("parent_run_id") == parent_run_id:
+            return
     raise RunIntegrityError(
         f"child Run cannot be filed under a terminal Run (terminal parent, {parent_status.value})"
     )

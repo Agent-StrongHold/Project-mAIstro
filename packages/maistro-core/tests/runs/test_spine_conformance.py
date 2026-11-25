@@ -32,6 +32,7 @@ from maistro.runs.lifecycle import (
 )
 from maistro.runs.model import (
     DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
@@ -2709,6 +2710,71 @@ async def test_a_fork_fact_naming_another_parent_is_refused_under_a_terminal_par
                     "parent_run_id": "another-run-entirely",
                     "source_event_sequence": "1",
                     "reason": "restart from the beginning",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+
+
+async def test_a_post_terminal_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The second child a terminal parent accepts: the post-terminal child (#1621).
+
+    Shipped flows hang children under terminal parents by design: a
+    control-plane operation minted after its requesting Run terminalized (a
+    benchmark judge beneath a COMPLETED Run), and retry lineage beneath a
+    FAILED Run. The store accepts such a child when its own provenance
+    carries the identity-bound ``POST_TERMINAL_CHILD_PROVENANCE`` fact
+    naming that parent — the same carve-out shape as the durable Graph fork.
+    Pinned at the store layer on every backend beside the fork pin it
+    mirrors.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    late = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            POST_TERMINAL_CHILD_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "reason": ("control-plane operation minted after its requesting Run terminalized"),
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert late.parent_run_id == parent.run_id
+    assert late.status is RunStatus.QUEUED
+
+
+async def test_a_post_terminal_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The carve-out is the post-terminal fact's parent identity, not its presence.
+
+    Same rule as the fork fact: a fact naming a different Run does not make
+    this child THAT parent's late child, so the admission is refused like
+    any unmarked one. Without this pin the fact degenerates into a magic
+    word that files arbitrary children under terminal Runs.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                POST_TERMINAL_CHILD_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "reason": "names a different Run",
                 }
             },
             initial_status=RunStatus.QUEUED,
