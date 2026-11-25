@@ -186,11 +186,9 @@ RUN apk add --no-cache git && \
     go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
-    # -mod=vendor (explicit since the #2304 round-10 test rewrite): `go mod
-    # vendor` above re-syncs the tree to the patched go.mod, so the build reads
-    # exactly that module set; the develop-side -mod=mod variant of #2120 would
-    # resolve from the module cache instead and is deliberately not taken.
-    CGO_ENABLED=0 go build -mod=vendor -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 

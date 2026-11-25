@@ -26,9 +26,10 @@ These tests hold that repair closed structurally:
 - the x/net override must exist at the fixed version the scanner DB names —
   v29.9.3 upstream still pins the vulnerable v0.60.0, so losing the
   override re-reds both images;
-- the stage must re-vendor and build with `-mod=vendor`, so the build reads
-  the patched module set instead of failing on (or silently ignoring)
-  inconsistent vendoring;
+- the stage must re-vendor and build from the patched module set
+  (`-mod=mod`: the patched go.mod supersedes the tag's stale vendor tree,
+  so the built binary carries the fixed modules; the engine and research
+  stages keep this posture byte-identical);
 - the CLI source is commit-pinned, so the vendor-tree facts above stay
   bound to the exact upstream snapshot the tag claims to be.
 """
@@ -134,17 +135,21 @@ def test_override_versions_are_the_trivy_reported_fixed_versions() -> None:
         )
 
 
-def test_stage_revendors_and_builds_in_vendor_mode() -> None:
+def test_stage_revendors_and_builds_the_patched_module_set() -> None:
     for dockerfile in DOCKERFILES:
         body = _dockercli_run_body(dockerfile)
-        # go get rewrites go.mod/go.sum; without `go mod vendor` the vendor
-        # tree is inconsistent with them and the build either fails or, worse,
-        # is forced off vendor mode entirely.
+        # go get rewrites go.mod/go.sum; `go mod vendor` re-syncs the tag's
+        # stale vendor/ directory to the patched module set either way.
         assert re.search(r"go get .+ && \\\n\s*go mod vendor", body), (
             f"{dockerfile.name}: dockerclibuild must `go mod vendor` after the override"
         )
-        assert "go build -mod=vendor" in body, (
-            f"{dockerfile.name}: dockerclibuild must build the re-vendored tree (-mod=vendor)"
+        # -mod=mod: the build resolves per the patched go.mod (the sum-verified
+        # module cache), superseding the vendor/ tree the tag shipped. The
+        # build mode is part of the byte-identical engine/research posture
+        # (test_engine_and_research_stages_stay_in_sync); flipping it back to
+        # -mod=vendor is allowed only as the same two-file change.
+        assert re.search(r"go build [^\n]*-mod=mod", body), (
+            f"{dockerfile.name}: dockerclibuild must build from the patched go.mod (-mod=mod)"
         )
 
 
