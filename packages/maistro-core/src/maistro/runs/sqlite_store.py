@@ -79,6 +79,7 @@ from maistro.runs.store import (
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
+    refuse_child_under_terminal_parent,
     validate_child_scope,
     validate_effect_claim_parent,
     validate_eval_score_spine,
@@ -513,13 +514,12 @@ class SqliteRunStore:
                 raise RunIntegrityError("parent_node_run_id requires parent_run_id")
             if parent_run_id is not None:
                 parent = await self._require_run(parent_run_id)
-                if parent.status in TERMINAL_RUN_STATUSES:
-                    raise RunIntegrityError("cannot create child Run under a terminal Run")
                 validate_child_scope(
                     parent,
                     workspace_id=graph.workspace_id,
                     project_id=graph.project_id,
                     allow_cross_project=allow_cross_project,
+                    child_provenance=provenance,
                 )
                 if parent_node_run_id is not None:
                     parent_node_run = await self._require_node_run(parent_node_run_id)

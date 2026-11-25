@@ -36,6 +36,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -275,12 +276,35 @@ def _run_matches_status_scope(
     )
 
 
+def refuse_child_under_terminal_parent(
+    parent_status: RunStatus,
+    parent_run_id: str,
+    child_provenance: Mapping[str, Any] | None,
+) -> None:
+    """Refuse filing a child Run under an already-terminal parent (#1621).
+
+    One child is accepted anyway: the durable Graph fork (ADR-062 /
+    ADR-082826-d9f5). The exemption is the fork fact itself
+    (``DURABLE_GRAPH_FORK_PROVENANCE``), and only when that fact names the
+    very parent this child is filed under.
+    """
+    if parent_status not in TERMINAL_RUN_STATUSES:
+        return
+    fact = (child_provenance or {}).get(DURABLE_GRAPH_FORK_PROVENANCE)
+    if isinstance(fact, dict) and fact.get("parent_run_id") == parent_run_id:
+        return
+    raise RunIntegrityError(
+        f"child Run cannot be filed under a terminal Run (terminal parent, {parent_status.value})"
+    )
+
+
 def validate_child_scope(
     parent: Run,
     *,
     workspace_id: str,
     project_id: str,
     allow_cross_project: bool = False,
+    child_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Refuse a child Run that escapes its parent's scope.
 
@@ -303,6 +327,7 @@ def validate_child_scope(
             "child Run cannot implicitly cross Project boundaries; "
             "caller must authorize and request the destination Project"
         )
+    refuse_child_under_terminal_parent(parent.status, parent.run_id, child_provenance)
 
 
 def validate_effect_claim_parent(
@@ -1058,13 +1083,12 @@ class InMemoryRunStore:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
         if parent_run_id is not None:
             parent = self._require_run(parent_run_id)
-            if parent.status in TERMINAL_RUN_STATUSES:
-                raise RunIntegrityError("cannot create child Run under a terminal Run")
             validate_child_scope(
                 parent,
                 workspace_id=graph.workspace_id,
                 project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
+                child_provenance=provenance,
             )
             if parent_node_run_id is not None:
                 parent_node_run = self._require_node_run(parent_node_run_id)
