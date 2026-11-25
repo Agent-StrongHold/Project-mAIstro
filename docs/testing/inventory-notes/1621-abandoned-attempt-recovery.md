@@ -524,3 +524,49 @@ to verify their intended retention/admission behavior while the shared spine
 conformance test owns the refusal assertion. `e65be14577` records that focused
 repair. The PR-body closure wording remains an owner-only correction and is
 not changed here.
+
+## Independent verification at develop-sync head 91a306d4ae
+
+Verified the merge of develop `221dc3d517` into the branch (merge commit
+`91a306d4ae`, working tree clean at that head). The develop sync brought
+alembic head to 070; the pgvector:pg18 probe database was migrated with
+`uv run alembic upgrade head` before the PostgreSQL legs ran against it.
+
+- Driver deterministic checks at this head all passed: `ruff check .`,
+  `ruff format --check .` (3657 files), the six PR-declared paths
+  (**472 passed / 156 skipped** without a database), and both suite-inventory
+  gates (`maistro-core/tests`, `maistro-server/tests`). The prior round's
+  reported failure was a driver-side provider rate limit, not a tree defect;
+  this round re-executed everything rather than trusting that log.
+- With `MAISTRO_TEST_PG_DSN` on the migrated pg18 container the same six
+  paths pass **627 / skip 1**, and the three conformance suites alone pass
+  **523 / skip 1**. The fence tests are visibly on the PostgreSQL leg:
+  `test_a_parent_cannot_complete_while_a_child_run_is_open[postgres-*]` and
+  `test_a_terminal_parent_rejects_late_child_admission[postgres]` — the
+  completion-over-open-child fence and the terminal-parent admission fence
+  run inside `PgRunStore.transition_run`/`create_run` against the row-locked
+  parent (`pg_store.py:1359-1371`, `pg_store.py:525-528`).
+- `mypy --strict packages/maistro-core/src` (CI's exact scope, after
+  `uv sync --locked --all-extras`): Success, 847 files. The CI-exact vulture
+  gate passes: base `221dc3d517`, candidate `91a306d4ae`, **1221 reviewed
+  identities -> 1220 findings**, unclassified 0 — the branch's single ledger
+  removal (`recover_abandoned_attempts` is now reachable from
+  maistro-server) is consistent with the reachability change.
+- Closed the previously unexecuted PostgreSQL path of the atomic
+  reclaimed-Attempt park guard: an inline probe (scratch script, not committed
+  as a test) drove `PgRunStore.transition_node_run` with a stale
+  `expected_current_attempt_id` after a lapsed-lease reclaim plus retry and
+  got `RunIntegrityError: Attempt ... was superseded by ...`; the matching
+  token then parked the NodeRun `WAITING` on the same transaction path. The
+  guard is therefore executed on PostgreSQL as well as the SQLite container
+  race test (`test_replay_does_not_park_over_a_retry_committed_after_selection`).
+- The full maistro-server suite plus
+  `test_agent_delegate_remote_child_run.py` pass with PostgreSQL legs
+  (**772 passed / 1 skipped**), confirming the lifespan cadence start/stop
+  test and the delegation child guard agree with the recovered develop head.
+
+Residual, unchanged in kind: the PR body's negated closure wording
+(`Does not close #42`) stays an owner-only correction, and the GitHub PR head
+must be pushed to the verified tip `91a306d4ae` before the merge queue
+evaluates these commits. #232's kill-a-worker/restart acceptance remains
+outside this PR's proof, as its own body states.
