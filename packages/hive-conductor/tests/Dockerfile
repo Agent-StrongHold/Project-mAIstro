@@ -1,6 +1,6 @@
-# Digest-pinned (#349): python:3.12.16-slim-bookworm index digest resolved 2026-11-16
-# (3.12.16 CPython-binary refresh, #2304 container-gate round).
-FROM python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+# Digest-pinned (#349): python:3.15-slim index digest resolved 2026-11-18 (#2377),
+# registered in quality/image-pins.json with the same coordinates.
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 WORKDIR /tests
 # `tzdata` is deliberate (#290): the scheduler-timezone container tests
 # compute expected next-fire instants from an independent zone database, so

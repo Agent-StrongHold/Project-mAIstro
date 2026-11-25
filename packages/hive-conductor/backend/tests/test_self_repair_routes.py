@@ -72,9 +72,8 @@ async def _wire_self_repair():
 
     http = HttpxAsyncHttp("http://h:8150", transport=httpx.MockTransport(handler))
     reg = default_capability_registry()
-    inbox = reg.provider("approval", "inbox")
     mon = HostHealthMonitor(http)
-    act = HostHealthAction(http, autonomy="auto_safe", approval=inbox)
+    act = HostHealthAction(http, autonomy="auto_safe")
     reg.register(mon)
     reg.register(act)
 

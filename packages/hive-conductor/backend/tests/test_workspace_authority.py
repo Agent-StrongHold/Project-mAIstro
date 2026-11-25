@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import stores
 from models.schemas import Agent
-from models.workspace import Workspace, WorkspaceMember
+from models.workspace import Workspace, WorkspaceMember, WorkspacePresentation
 from services import workspace_authority
 
 from maistro.workspaces.model import WorkspaceMembership
@@ -308,3 +308,59 @@ async def test_delete_workspace_retires_a_hive_projection_row_when_one_exists() 
     assert projected.id not in stores.workspaces
     assert await workspace_authority.get_view(projected.id) is None
     assert await workspace_authority.get_view(unprojected.id) is None
+
+
+def test_presentation_fields_never_restate_canonical_identity() -> None:
+    """The projection carries no field that could make it a second identity owner.
+
+    Name, membership, and creation time live only in the canonical store; the
+    projection's ``workspace_id`` is a reference to that identity, not its
+    owner. If a projection field ever restated one of those facts, a stale
+    projection would have something authoritative-looking to override with.
+    """
+    assert set(WorkspacePresentation.model_fields) == {
+        "workspace_id",
+        "persona_template_id",
+        "checklist",
+        "tool_bindings",
+        "theme_id",
+        "voice_tone_override",
+        "active",
+        "updated_at",
+    }
+    assert not {"name", "members", "created_at"} & set(WorkspacePresentation.model_fields)
+
+
+@pytest.mark.asyncio
+async def test_a_presentation_record_alone_cannot_authorize_or_compose_a_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale or orphaned projection grants no membership and surfaces no view.
+
+    The projection exists so Hive can attach persona/UI choices to a canonical
+    Workspace. Every authorization question is answered by the canonical store,
+    so a projection row whose canonical identity does not exist must not
+    authenticate anyone, list anywhere, or compose a view.
+    """
+    canonical = InMemoryWorkspaceStore()
+    monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+    projection = workspace_authority.presentation_store()
+    projection["orphan-projection-ws"] = WorkspacePresentation(
+        workspace_id="orphan-projection-ws",
+        persona_template_id="pm_fleet",
+        checklist=["tool:jira"],
+        tool_bindings=[],
+        theme_id="default",
+        voice_tone_override=None,
+        active=True,
+        updated_at=datetime.now(UTC),
+    )
+    try:
+        assert not await workspace_authority.is_member("alice", "orphan-projection-ws")
+        assert await workspace_authority.member_role("alice", "orphan-projection-ws") is None
+        assert await workspace_authority.get_view("orphan-projection-ws") is None
+        assert await workspace_authority.visible_view("alice", "orphan-projection-ws") is None
+        assert await workspace_authority.list_views_for_user("alice") == []
+        assert await workspace_authority.list_workspace_ids_for_user("alice") == []
+    finally:
+        projection.pop("orphan-projection-ws", None)

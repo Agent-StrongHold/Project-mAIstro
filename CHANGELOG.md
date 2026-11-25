@@ -23,88 +23,205 @@ or placeholder-only section.
 
 ## [Unreleased]
 
-### Dependencies
+### Added
 
-- **Advisory patch refresh of the audited dependency set (#2304).** `uv.lock`
-  moves `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 →
-  3.3.1 (CVE-2026-119286), `joserfc` 1.7.5 → 1.7.6 (CVE-2026-119284), and the
-  OpenTelemetry family to api/sdk 1.45.2 + semantic-conventions 0.66b2
-  (CVE-2026-126360) — the pip-audit advisories the triage gate started
-  reporting once the 2026-11 DB revisions landed, each with an upstream-fixed
-  release, so the gate's upgrade-first policy applies rather than a triage
-  row. A second pass moves the research image's trivy findings to their
-  fixed versions: `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1`
-  0.6.4 → 0.6.5 (CVE-2026-119194…119197), `pypdf` 6.21.2 → 6.21.4
-  (CVE-2026-119203…119209), `soupsieve` 3.0.3 → 4.0 (CVE-2026-126190) —
-  13 HIGH findings, all with upstream fixes, so the upgrade-first policy
-  applies again. Same locked contract for the shipped images (they install
-  via `uv export --locked` + `--require-hashes` from this lock).
+- **Read-only, acceptance-based delivery planning for maintainers (#1629).**
+  `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
+  reviewed GitHub snapshot. It refuses work selection on stale/incomplete
+  ownership coverage, does not treat merged PRs as acceptance evidence, and
+  protects reserved task scopes. A dated example plan, sample seed, operator
+  skill and 56 focused adversarial cases document the non-dispatch boundary.
+  This does not configure or operate the external orchestrator.
 
-- **Conductor image runtime OS layer builds on `python:3.15.2-slim-bookworm`
-  (#2304).** The `runtime-apt` stage and final runtime of the Conductor image
-  moved to the CPython 3.15 line (fresh Debian 12 security-patch state),
-  landing on the 3.15.2 base build: the grype cross-check flags
-  CVE-2026-115557 (Critical, fixed 3.15.2) on the 3.15.0 CPython binary the
-  original dependabot pin shipped — the OS python stays in the final image
-  even though the app runs on the grafted contract build, so the binary is
-  scanned. The app keeps running on the registered CPython 3.13.18 contract
-  interpreter: the builder stage keeps the 3.13.18 pin and the runtime grafts
-  its exact installation (binary, libpython, stdlib), so the shipped venv
-  needs no managed download. Identity pins, the uv.lock install and the
-  build-time smoke are unchanged (the 3.13.18 refresh is a grype-driven
-  patch refresh within the 3.13 line, see the Security section).
+### Changed
+
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
+
+- **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
+  `maistro.cli._container*` as a parked operator-lifecycle leaf under
+  #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
+  Reachability disposition rationale names the future ADR-093 / operator
+  root. Collaboration CONNECT park (#2323) rationale updated to name A2UI.
+
+### Removed
+
+- **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
+  `MessageBoard.tsx` and `OptimizationInbox.tsx`; AppShell no longer links
+  Messages or Optimizer. `/messages`, `/optimizer`, and `/optimization-inbox`
+  `Navigate` to `/attention` so bookmarks cannot revive the modules. Backend
+  `/v1/messages` and `/v1/optimizer` remain the canonical owners projected
+  into Attention.
+
+### Changed
+
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
+- **Attention projects messages + optimizer proposals (#1049).** Unread agent
+  messages and pending Workspace-scoped optimizer proposals join the
+  read-time Attention projection (critical→severity/blocking, warning→queued,
+  info + optimizer→proactive/Waiting). Summary adds interruption counts and
+  Waiting quality metadata. Priority ladder remains severity >
+  time_sensitive > blocking > queued > follow_up > proactive. HITL
+  answer/defer/dismiss behavior is unchanged.
 
 ### Fixed
 
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
+
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
 - **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
   `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
   CodeQL Advanced was widened to `develop`; align the pin so CI catches
   regressions of the Security-tab refresh path. DevSkim also gains
   `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
-  another product commit.
+  another product commit. (#2359)
+
+- **Container gate: clear the fresh Trivy/Grype advisories that re-flagged the
+  four shipped images (#2303 CI repair).** The merge-queue evaluation at
+  d754936 failed exactly one required check — "Container scan + SBOM + cosign"
+  (job 133166051159) — and the `npm audit` tail in its log was a red herring:
+  step #27, `RUN npm ci` in the hive-conductor frontend stage, completed
+  successfully (identical output, exit 0, reproduced against the pinned
+  node:22-alpine digest). The real failure was the maistro-rsi-runner Trivy
+  scan: temporalio 1.34.0's bundled `bridge/Cargo.lock` carries the `zip` crate
+  8.6.0 with one CRITICAL and three HIGH advisories (CVE-2026-115905/-907/-908/-909,
+  fixed in zip 9.0.0–9.0.5) that the Trivy DB gained after develop's own
+  containers run passed. And because that scan failed first, the job never
+  reached the Grype cross-check, whose fresh DB flags CVE-2026-115557 (CRITICAL)
+  in the CPython 3.12.15/3.13.16 binaries the digest-pinned bases ship, plus
+  1 CRITICAL + 3 HIGH in the node 24.21.0 binary bundled by the playwright/
+  patchright 1.64 wheels (fixed in node 24.22.1). All fixed upstream, so the
+  repair moves dependencies rather than adding ignores:
+
+  - uv.lock: temporalio 1.34.0 -> 1.36.1 (bridge Cargo.lock now ships zip 9.5.1;
+    nexus-rpc moves 1.4.0 -> 1.5.0 with it), playwright 1.64.0 -> 1.65.2 and
+    patchright 1.64.1 -> 1.64.4 (bundled driver node now 26.13.1 / 24.22.1).
+    temporalio reaches only the rsi-runner image (root meta-package dep);
+    playwright/patchright only the research image (browser extra) — the
+    engine/hive/research Trivy scans and the pip-audit gate are unaffected.
+  - Base pins: python:3.13.16-slim-bookworm -> 3.13.18-slim-bookworm
+    (sha256:a5a7017e…) for the engine and Conductor images and
+    python:3.12-slim -> sha256:5e2bdb1b… (now 3.12.16) for research, rsi-runner,
+    e2e and sbx-tests, recorded in quality/image-pins.json — the same
+    grype-driven refresh mechanism as #363 and #1152. The Conductor identity
+    contract moves with the pin: the in-image assertion, both security.yml
+    identity smokes and tests/test_distribution_contract.py now assert
+    (3, 13, 18), and the canvas smoke's control image follows the same digest
+    (held closed by tests/test_pinned_digest_references.py).
+
+  Proven locally with CI's exact procedures on rebuilt images: Trivy 0.73.0
+  `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile
+  .trivyignore.yaml` exits 0 on all four, Grype v0.116.0 `--fail-on high
+  --only-fixed` exits 0 on all four (rsi-runner's only raw findings left are
+  the documented moto secret fixtures), `check-image-lock-reconciliation.py`
+  passes for rsi-runner (220 distributions) and research (147), the Conductor
+  identity smoke prints `identity=operational python=3.13.18`, and the
+  pip-audit gate still passes (only the triaged ecdsa advisory remains).
+  (#2303)
 
 ### Security
 
-- **The shipped docker CLI no longer embeds the vulnerable vendored go-jose,
-  x/net and klauspost/compress modules (#2304).** docker/cli v29.9.1's vendor
-  tree pins go-jose v4.1.5 (CVE-2026-116587, DoS via crafted RSA JWK
-  parameters, fixed v4.1.6), golang.org/x/net v0.60.0 (CVE-2026-78661, DoS
-  via crafted HTML input, fixed v0.62.0) and klauspost/compress v1.20.1
-  (GO-2026-6865, HIGH, fixed v1.20.2 — flagged by the gate's grype
-  cross-check, which trivy's DB does not carry yet); all have upstream
-  fixes, so the container-scan gate fails the release tag as-is. The
-  `dockerclibuild` stages of the maistro-engine and research images now
-  override the three modules to their fixed versions and re-vendor before
-  building (the same patched-toolchain policy the age stage already
-  applies); the release tag, commit pin and toolchain are unchanged.
+- **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
+  the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
+  session now returns the same 404 as a missing id; provenance-omit-and-admit
+  is gone. Workspace switch clears the prior transcript immediately and Chat
+  Retry re-hydrates after load failures (AC-3/AC-7).
 
-- **Image base refresh within the CPython patch lines (#2304).** The grype
-  cross-check flags CVE-2026-115557 (Critical, CPython binary, fixed in
-  3.13.18 / 3.12.16) in the `python:3.13.16-slim-bookworm` and
-  `python:3.12-slim` builds the previous digests carried, so the
-  engine/Conductor contract stages refresh to the registered
-  `3.13.18-slim-bookworm` digest and the research/RSI/e2e/sbx images move
-  from the floating `3.12-slim` tag (which had re-resolved to Debian
-  trixie) to the exact `3.12.16-slim-bookworm` patch tag — keeping the
-  bookworm-scoped apt triage notes true. Identity contract unchanged:
-  coincurve 21.0.0 cp313 wheels, same smoke assertions, same venv build.
-  `quality/image-pins.json` rows moved with the Dockerfiles.
+- **Overlay patchright driver Node 24.22.3 in the research image (#2356).**
+  Grype `--only-fixed --fail-on high` failed Container scan on
+  `maistro-engine-research` for seven HIGHs in the wheel-bundled
+  `patchright/driver/node` 24.22.1 (CVE-2026-126051/123865/123866/123874/
+  123863/123872/123864; fixed in 24.22.3/26.13.1). No newer patchright
+  wheel on PyPI; copy the digest-pinned `node:24.22.3-bookworm-slim` binary
+  over the driver and assert `v24.22.3`.
 
-- **The research image ships a pinned system Node instead of the drivers'
-  bundled Node binaries (#2304).** The playwright 1.65.2 and patchright
-  1.64.1 wheels bundle their own Node drivers (v26.13.1 / v24.21.0,
-  measured from the locked wheels), and the grype cross-check flags those
-  shipped binaries — CVE-2026-111497 (Critical) and
-  CVE-2026-105482/105483/106069 (High) on the v24.21.0 build, fixed
-  upstream in Node 24.22.1 — inside the published image. Both drivers are
-  JavaScript launched through Node and consult `PLAYWRIGHT_NODEJS_PATH`
-  first, so `Dockerfile.research` now installs a checksum-verified Node
-  24.22.1 into `/usr/local`, points the drivers at it, and deletes the
-  bundled binaries plus npm's vendored tree (nothing in the image uses
-  npm at runtime). Rebuild proof: trivy 0.73.0 HIGH/CRITICAL and grype
-  0.116.0 `--only-fixed --fail-on high` both exit 0 on the rebuilt image,
-  and Chromium launches through the system Node under the shipped
-  non-root user.
+- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2375; aligned
+  in #2356).** Trivy HIGH on `usr/bin/age` / `age-keygen` (and the same
+  stdlib in the static docker CLI) when built on `golang:1.27.3-alpine`:
+  MaxBytesReader HTTP/1 hang, fixed in go1.26.11/1.27.4. Digest-pinned
+  builder in `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
+  `Dockerfile.research`; `quality/image-pins.json` single 1.27.4 row.
 
 - **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
   develop (no linked issue: open code-scanning backlog).** Tip SARIF still
@@ -131,7 +248,25 @@ or placeholder-only section.
   immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
   Security tab stays actionable without editing cage-guarded trees.
 
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
 ### Added
+
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
 
 - **Extension attribution evidence: identity, version, publisher, and provenance
   through canonical telemetry (#976).** `maistro.extensions` now ships the
@@ -166,8 +301,8 @@ or placeholder-only section.
 - **Capabilities becomes the primary Hive Conductor surface for slots and
   providers (#2273, `conductor-407`).** New `/capabilities` page lists
   `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
-  enable/disable over the same public APIs. Agents, Topology, and Integrations
-  leave primary nav (URL-only until deleted); Skills was already URL-only.
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
 
 - **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
   `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
@@ -2112,6 +2247,38 @@ or placeholder-only section.
   lease-ownership behavior is unchanged.
 
 ### Dependencies
+
+- **Trivy-advisory refresh in the research image venv (#2303 CI repair).**
+  The maistro-engine-research Trivy scan (merge-queue job 133112186114 at
+  58cc1eb) flagged 13 HIGH advisories with fixed releases available that the
+  trivy DB gained after develop's own 2026-11-08 run passed the same scan:
+  `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1` 0.6.4 → 0.6.5
+  (CVE-2026-119194/-119195/-119196/-119197), `pypdf` 6.21.2 → 7.1.0
+  (CVE-2026-119203 … CVE-2026-119209, eight findings fixed in 6.21.3/6.21.4)
+  and `soupsieve` 3.0.3 → 4.1.1 (CVE-2026-126190, fixed in 4.0.0). All four
+  are transitive dependencies (browser-use, beautifulsoup4, pyasn1-modules,
+  requests-oauthlib) with no manifest constraint to raise — pure `uv.lock`
+  moves under existing resolution constraints. Proven with CI's exact trivy
+  invocation (`--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+  --ignorefile .trivyignore.yaml`, trivy 0.73.0) on a rebuilt research image:
+  exit 0, zero findings. The pip-audit gate (its DB lags trivy on these four)
+  still passes with only the triaged ecdsa advisory.
+
+- **Pip-audit-advisory refresh across the lock and the engine docker CLI
+  (#2303 CI repair).** The supply-chain gate and the maistro-engine Trivy scan
+  both failed on advisories with fixed releases available. `uv.lock` moves
+  `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 → 3.3.2
+  (CVE-2026-119286, fixed in 3.3.1), `joserfc` 1.7.5 → 1.8.0 (CVE-2026-119284,
+  fixed in 1.7.6), and `opentelemetry-api` 1.45.1 → 1.45.2 (CVE-2026-126360;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move to their
+  matching releases). The engine and research images' source-built docker CLI
+  moves v29.9.1 → v29.9.3 (5457199, commit-verified in stage): v29.9.3 vendors
+  go-jose v4.1.7 upstream (CVE-2026-116587, fixed in v4.1.6), and the still-
+  pinned golang.org/x/net 0.60.0 is patched to v0.62.0 on the pinned tag
+  (CVE-2026-78661) with `go mod vendor` re-syncing the vendored tree before the
+  build. All four Python upgrades are floor moves
+  under existing constraints (no manifest change), and the image venvs that
+  install from the lock clear the Trivy `dnspython` HIGH in the same change.
 
 - **Pillow and certifi move past their open advisories (#363).** The
   installed `pillow` 12.3.0 carried eight advisories with fixes only in
