@@ -264,7 +264,19 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
     saw_temp_window = False
     observed: list[str] = []
     deadline = time.monotonic() + 120
-    while time.monotonic() < deadline and _health(container) != "healthy":
+    # Health is sampled at iteration start, BEFORE the probes. Sampling it
+    # after them races the shipped check's first successful evaluation: when
+    # the appended window ends, the final server and the 5s-interval
+    # healthcheck can both flip healthy in the ~0.5s an in-window assertion
+    # takes to reach its own `_health()` re-read, firing "must stay not-ready"
+    # against a window that had already closed (observed once locally at
+    # ~35s total: match, then healthy before the re-read). With the
+    # health-before-probe order the assertion's claim is contemporaneous by
+    # construction — a `healthy` sample cannot coexist with a no-response TCP
+    # probe, so any match under a healthy sample would be a REAL violation,
+    # which is exactly what this assertion exists to catch.
+    healthy = _health(container)
+    while time.monotonic() < deadline and healthy != "healthy":
         socket_probe = _exec(container, ["pg_isready", "-U", PG_USER])
         tcp_probe = _exec(container, ["pg_isready", "-U", PG_USER, "-h", "postgres-primary"])
         observed.append(
@@ -273,12 +285,13 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
         )
         if "accepting" in socket_probe and "no response" in tcp_probe:
             saw_temp_window = True
-            assert _health(container) != "healthy", (
+            assert healthy != "healthy", (
                 "the temporary initialization server answers the socket probe "
                 "(the pre-#2396 healthcheck would have reported ready) but the "
                 "shipped probe must stay not-ready until the final server is up"
             )
         time.sleep(0.5)
+        healthy = _health(container)
     assert saw_temp_window, (
         "never observed the temporary-server window (socket accepting, TCP "
         "refusing); the scenario is inconclusive — observed probe pairs: "

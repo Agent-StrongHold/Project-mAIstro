@@ -605,6 +605,23 @@ jobs:
       # they are renamed by producer before combining — same basename in
       # different directories would collide on move.
       - name: combine
+        env:
+          # The root producer below runs the whole tests/ tree under a 30s
+          # pytest-timeout to measure --source=scripts. A live Docker
+          # characterization test cannot honor that cap — `docker run` +
+          # initdb + the final server boot is 15-25s alone under runner load —
+          # and contributes nothing to scripts/ coverage. On 2026-11-25 it
+          # was killed by exactly that cap here (run 45589709654, job
+          # 139131975084: "Timeout (>30.0s) from pytest-timeout" on
+          # tests/test_prod_postgres_probe_live.py, 1 failed / 6256 passed)
+          # while simultaneously reding ci.yml's no-cap `test` leg by missing
+          # its own observation window under the same load. The probe's own
+          # documented opt-out (its MAISTRO_PROD_PROBE_DOCKER skipif) keeps it
+          # in the leg that can afford it and drops it from the one that
+          # cannot; the producer's pg-gated legs skip here by the same
+          # already-established pattern. The 3 skipped node IDs are unchanged
+          # collection, so the suite inventory is untouched.
+          MAISTRO_PROD_PROBE_DOCKER: "0"
         run: |
           set -euo pipefail
           shopt -s nullglob dotglob
