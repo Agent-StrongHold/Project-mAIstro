@@ -118,6 +118,8 @@ test.describe("Setup Wizard", () => {
     } catch {
       // No identity root on this deployment — no mnemonic screen.
     }
-    await expect(page.getByText("Live Operations")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible({
+      timeout: 20000,
+    });
   });
 });

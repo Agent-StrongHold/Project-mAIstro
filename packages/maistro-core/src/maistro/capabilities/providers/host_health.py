@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.capabilities.slots.infra import (
     ActionResult,
     ActionTier,
@@ -17,7 +16,6 @@ from maistro.capabilities.types import ProviderHealth
 
 if TYPE_CHECKING:
     from maistro.capabilities.http import AsyncHttp
-    from maistro.capabilities.slots.approval import Approval
 
 logger = logging.getLogger("maistro.capabilities.host_health")
 
@@ -180,18 +178,23 @@ _ALLOWED = (
 
 
 class HostHealthAction:
-    """infra_action provider: POST /action/{name}, tier-gated through approval."""
+    """infra_action provider: POST /action/{name}.
+
+    Tier gating no longer awaits an in-process ``InboxApproval`` (#2405).
+    Callers that need human approval admit a durable waiting-human NodeRun
+    (see ``admit_self_repair_approval``) and only invoke ``act(..., approved=True)``
+    after that decision. Passing ``approved=False`` (the default) for a gated
+    tier returns ``blocked_pending_approval`` without blocking the worker.
+    """
 
     def __init__(
         self,
         http: AsyncHttp,
         *,
         autonomy: Literal["approve_all", "auto_safe", "detect_only"] = "auto_safe",
-        approval: Approval | None = None,
     ) -> None:
         self._http = http
         self._autonomy = autonomy
-        self._approval = approval
 
     @property
     def name(self) -> str:
@@ -218,38 +221,28 @@ class HostHealthAction:
     def allowed_actions(self) -> tuple[str, ...]:
         return _ALLOWED
 
-    async def act(self, action: str, params: dict[str, Any]) -> ActionResult:
+    def needs_approval(self, action: str, params: dict[str, Any]) -> bool:
+        """Whether this autonomy mode requires a durable human decision first."""
+        tier = tier_for(action, params)
+        return tier is ActionTier.DESTRUCTIVE or (
+            tier is ActionTier.REVERSIBLE and self._autonomy != "auto_safe"
+        )
+
+    async def act(
+        self, action: str, params: dict[str, Any], *, approved: bool = False
+    ) -> ActionResult:
         if action not in _ALLOWED:
             return ActionResult(ok=False, detail=f"action '{action}' not in allowlist")
-
-        tier = tier_for(action, params)
 
         if self._autonomy == "detect_only":
             return ActionResult(ok=False, detail="autonomy=detect_only: no actions executed")
 
-        needs_approval = tier is ActionTier.DESTRUCTIVE or (
-            tier is ActionTier.REVERSIBLE and self._autonomy != "auto_safe"
-        )
-        if needs_approval:
-            if self._approval is None:
-                return ActionResult(
-                    ok=False,
-                    blocked_pending_approval=True,
-                    detail="approval required but no approval provider",
-                )
-            decision = await self._approval.request(
-                ApprovalRequest(
-                    action=action,
-                    params=params,
-                    tier=tier.value,
-                    requester="infra_action",
-                    rationale="",
-                )
+        if self.needs_approval(action, params) and not approved:
+            return ActionResult(
+                ok=False,
+                blocked_pending_approval=True,
+                detail="approval required; admit a durable waiting-human NodeRun",
             )
-            if not decision.approved:
-                return ActionResult(
-                    ok=False, blocked_pending_approval=True, detail="approval denied"
-                )
 
         return await self._execute(action, params)
 

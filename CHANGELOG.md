@@ -25,6 +25,43 @@ or placeholder-only section.
 
 ### Changed
 
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
+
 - **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
   `maistro.cli._container*` as a parked operator-lifecycle leaf under
   #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
@@ -42,6 +79,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
 - **Attention projects messages + optimizer proposals (#1049).** Unread agent
   messages and pending Workspace-scoped optimizer proposals join the
   read-time Attention projection (critical→severity/blocking, warning→queued,
@@ -51,6 +95,28 @@ or placeholder-only section.
   answer/defer/dismiss behavior is unchanged.
 
 ### Fixed
+
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
 
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
