@@ -50,9 +50,40 @@
 # The engine image is the one that selects it, and it prunes in the same layer
 # it asserts.
 
+# patchright 1.64.4 still ships node 24.22.1 as its Playwright-driver binary.
+# Grype 0.116.0 (`--only-fixed --fail-on high`, security.yml #2356 tip
+# 3e6a2c8 job 136030372016) flags seven HIGHs in that binary
+# (CVE-2026-126051/123865/123866/123874/123863/123872/123864; fixed in
+# 24.22.3 / 26.13.1). playwright 1.65.2 already ships the fixed 26.13.1
+# line; no newer patchright wheel is on PyPI as of 2026-11-20. Until
+# upstream republishes, overwrite only the patchright driver with the
+# digest-pinned Node 26.13.1 binary from the official glibc image (this
+# runtime is Debian slim, so the musl alpine build is the wrong ABI).
+# The donor line moved from 24.22.3 to 26.13.1 with the Dependabot bump
+# (#2431); both lines carry the same seven fixes, so only the donor
+# version annotation and the assertion below change.
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-driver-patch
+
 # ─── Build stage ───────────────────────────────────────
 # Digest-pinned (#349): python:3.12-slim resolved to this index digest on
 # 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
+#
+# #2430 evaluated Dependabot's 3.12 -> 3.15 index bump and rejected it
+# (2026-11-21, the same wheel ceiling as the engine image's #2136
+# disposition, re-verified on this lock): the `uv export --locked …
+# --require-hashes` install below selects psycopg-binary 3.3.4, which
+# ships no cp315 wheel and no sdist at all, so the install fails closed
+# whenever the venv line is bumped to 3.15 — and while it is left at
+# --python 3.12 (as Dependabot's lone-FROM jump ships it), uv instead
+# downloads an un-pinned managed 3.12 into the build and the copied venv
+# dangles on the fresh 3.15 runtime stage, the same dead-runtime outcome
+# demonstrated first-hand for the engine image. coincurve 21.0.0 stops at
+# cp313 and cffi 2.0.0 at cp314, both with sdists needing a compiler this
+# stage does not install. A lone FROM jump would also desync the
+# interpreter line this file itself pins: the venv line below names
+# --python 3.12 and the runtime stage hard-codes the python3.12
+# site-packages cleanup path. The static guard
+# tests/test_root_image_interpreter_lines.py covers this file.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
@@ -102,7 +133,11 @@ RUN uv export --locked --package maistro-server \
 # if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
 # independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
-# flags the 1.27.2 stdlib inside the built binary.
+# flags the 1.27.2 stdlib inside the built binary. That 1.27.3 builder aged out
+# in turn: CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH,
+# fixed in go1.26.11/1.27.4) flags the 1.27.3 stdlib inside the built binary
+# (#2375 Container scan gate, security.yml run 44477475371, 2026-11-19), so the
+# builder moved to 1.27.4-alpine, retiring both 1.27.3 indexes.
 #
 # 29.9.3 bump (CR1373 CI repair, 2026-11-16): v29.9.1 vendored go-jose/v4 4.1.5
 # (CVE-2026-116587 HIGH, fixed in 4.1.6) and golang.org/x/net 0.60.0
@@ -110,12 +145,15 @@ RUN uv export --locked --package maistro-server \
 # usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but still pins
 # x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
 # root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
+# Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
 # and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
 # versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
 # vendor.sum), so only the x/net patch below remains.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
 RUN apk add --no-cache git && \
@@ -123,7 +161,7 @@ RUN apk add --no-cache git && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get golang.org/x/net@v0.62.0 && \
+    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
     go mod vendor && \
     mkdir -p /out && \
     # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
@@ -140,7 +178,21 @@ RUN apk add --no-cache git && \
 # libexpat1 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214)
 # had published. security.yml builds this stage with
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
-# flag.
+# flag. Same base line as the builder — see the #2430 rejection note above:
+# 3.15 is unbuildable for this image's locked install set.
+#
+# 2026-11-23 (#1629 CI repair): `--no-cache-filter` alone cannot keep this
+# stage's freshness propagating — buildx keys are computed pre-execution
+# from the instruction string and the parent key chain, so the final
+# `FROM production-apt` vertex keeps replaying its last cached manifest no
+# matter how often apt re-executes. The rsi-runner-r2 scope demonstrated
+# the residual class that day: linux-libc-dev scanned at 6.12.117-1 while
+# the same run's apt fetched 6.12.118-1, and the #1152 pin-bump remedy had
+# no headroom (python:3.12-slim still resolved to sha256:5e2bdb1b…). This
+# stage's key is therefore mutated per run: both CI workflows pass
+# --build-arg OS_REFRESH=<run_id>-<attempt>, and the builder stage above
+# stays on the stable pinned base so the venv keeps its cross-run cache.
+# Local builds default to 0 and keep today's stable-key behaviour.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
@@ -159,7 +211,11 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 # The libnss3…fonts-liberation block is the Chromium runtime surface for the
 # RESEARCH browser tool. It is isolated to THIS image; the main API image is
 # Wolfi/browser-free.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# The no-op `:` word carries OS_REFRESH into the RUN's instruction so the
+# per-run value is part of the cache key without writing anything to the
+# layer.
+ARG OS_REFRESH=0
+RUN : "os-refresh=$OS_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
     libbrotli1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
@@ -190,6 +246,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
 # The lock-built venv (third-party pins hash-verified, members non-editable).
 COPY --from=builder /app/venv /app/venv
+
+# Overlay the fixed Node onto patchright's driver (see node-driver-patch).
+# Assert the path and version so a silent wheel layout change fails the build
+# instead of shipping the vulnerable binary again.
+COPY --from=node-driver-patch /usr/local/bin/node /tmp/node-26.13.1
+RUN python - <<'PY'
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import patchright
+
+dst = Path(patchright.__file__).resolve().parent / "driver" / "node"
+src = Path("/tmp/node-26.13.1")
+if not dst.is_file():
+    raise SystemExit(f"patchright driver node missing at {dst}")
+shutil.copy2(src, dst)
+os.chmod(dst, 0o755)
+ver = subprocess.check_output([str(dst), "-v"], text=True).strip()
+if ver != "v26.13.1":
+    raise SystemExit(f"expected v26.13.1 after overlay, got {ver!r}")
+src.unlink()
+print(f"patched patchright driver node -> {ver} at {dst}")
+PY
 
 # Application sources — on-disk assets the app reads at runtime (agent YAML,
 # prompts, migrations) and the two packages' data files. The venv is

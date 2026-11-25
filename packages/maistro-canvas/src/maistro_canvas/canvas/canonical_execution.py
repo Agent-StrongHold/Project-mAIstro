@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar, cast
 
 from maistro.graph.definitions import Edge, Graph, Node
+from maistro.observability.correlation import bind_execution_context
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
@@ -37,6 +38,10 @@ _CANVAS_EXECUTOR_ID = "canvas_job_runner"
 _CANVAS_OPERATION_KEY = "canvas_operation_id"
 _CANVAS_RECEIPT = "canvas_receipt"
 _CANVAS_ORG = "canvas_org_id"
+#: Finite canonical Attempt lease so dead-worker fencing can use the
+#: authorized ``reclaim_expired_attempt`` writer (CANCELLED+RECOVERED) rather
+#: than a generic CANCELLED that P4b typed reconciliation refuses (#232 / #735).
+_CANVAS_ATTEMPT_LEASE_TTL = timedelta(seconds=300)
 
 T = TypeVar("T")
 
@@ -69,6 +74,17 @@ def _node_id(job_id: str, stage: str) -> str:
     return f"canvas:{job_id}:{stage}"
 
 
+def _acting_principal_id(run: Run) -> str:
+    """The principal the Run acts for (#2464).
+
+    ``acting_principal_id`` is what accounting attributes to; the model
+    backfills it from ``actor_principal_id`` on rows that only carried the
+    latter. Blank means the Run named no principal, and the effect files as
+    "system" rather than guessing an identity.
+    """
+    return run.acting_principal_id or run.actor_principal_id or ""
+
+
 class CanvasCanonicalExecution:
     """Record Canvas physical execution in one bound canonical scope.
 
@@ -95,10 +111,12 @@ class CanvasCanonicalExecution:
         self._service = RunExecutionService(
             store=run_store,
             runtime=runtime or PythonExecutionRuntime(),
+            lease_ttl=_CANVAS_ATTEMPT_LEASE_TTL,
         )
-        # Canvas's own worker lease is deliberately separate from the canonical
-        # Attempt lease. If that worker disappears, the adapter must still fence
-        # the physical Attempt before a replacement try or terminal receipt.
+        # Canvas's own worker lease remains the product death signal; the
+        # canonical Attempt lease is finite so recovered fencing can use the
+        # authorized reclaim writer (#735 / #232 P4b) instead of inventing
+        # RECOVERED after a generic CANCELLED.
         self._reconciler = AttemptLifecycleReconciler(run_store)
 
     async def admit(
@@ -504,62 +522,77 @@ class CanvasCanonicalExecution:
                 )
             return await self._project_stage_result(run_id, stage, cast(T, completed.result))
 
-        await self._resume_for_execution(run_id)
-        captured: list[T] = []
+        # The Run row is the attribution authority for everything this stage
+        # files (#2464): bind its durable Workspace/Project onto the ambient
+        # execution context from the record just read — never from this
+        # composition's configuration. A job claimed by a differently-scoped
+        # worker then cannot attribute its provider effects to the worker's
+        # scope: the governed image client resolves its Binding against this
+        # context and refuses a mismatch before any provider dispatch. The
+        # Run's acting principal rides along for the same reason: quota and
+        # audit attribute the physical effect to the identity the Run was
+        # admitted for, not to the worker process.
+        with bind_execution_context(
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+            actor_id=_acting_principal_id(run),
+        ):
+            await self._resume_for_execution(run_id)
+            captured: list[T] = []
 
-        async def _execute(_work_item: object, _context: object) -> T:
-            result = await operation()
-            captured.append(result)
-            return result
+            async def _execute(_work_item: object, _context: object) -> T:
+                result = await operation()
+                captured.append(result)
+                return result
 
-        context = {"run_id": run_id, "node_id": node_id, "canvas_stage": stage}
-        if node_run is None:
-            _node_run_record, attempt = await self._service.execute_node(
-                run_id,
-                node_id,
-                None,
-                context,
-                executor=_execute,
-                executor_id=_CANVAS_EXECUTOR_ID,
-                timeout_s=timeout_s,
-            )
-        else:
-            attempts = await self._runs.list_attempts(node_run.node_run_id)
-            active = next(
-                (
-                    item
-                    for item in reversed(attempts)
-                    if item.status not in TERMINAL_ATTEMPT_STATUSES
-                ),
-                None,
-            )
-            if active is not None:
-                # The Canvas lease was reclaimed but the physical Attempt can
-                # still say RUNNING after a dead worker. Settle/fence it first;
-                # then re-enter from persisted truth. If the old worker actually
-                # completed in the race, the recursive read returns that result
-                # instead of issuing a duplicate provider effect.
-                await self._settle_abandoned_attempt(
-                    active,
-                    error="Canvas worker lease was reclaimed before retry",
-                    cancellation=CancellationCause.RECOVERED,
+            context = {"run_id": run_id, "node_id": node_id, "canvas_stage": stage}
+            if node_run is None:
+                _node_run_record, attempt = await self._service.execute_node(
+                    run_id,
+                    node_id,
+                    None,
+                    context,
+                    executor=_execute,
+                    executor_id=_CANVAS_EXECUTOR_ID,
+                    timeout_s=timeout_s,
                 )
-                return await self.execute_stage(run_id, stage, operation, timeout_s=timeout_s)
-            attempt = await self._service.retry_node(
-                node_run.node_run_id,
-                None,
-                context,
-                executor=_execute,
-                executor_id=_CANVAS_EXECUTOR_ID,
-                timeout_s=timeout_s,
+            else:
+                attempts = await self._runs.list_attempts(node_run.node_run_id)
+                active = next(
+                    (
+                        item
+                        for item in reversed(attempts)
+                        if item.status not in TERMINAL_ATTEMPT_STATUSES
+                    ),
+                    None,
+                )
+                if active is not None:
+                    # The Canvas lease was reclaimed but the physical Attempt can
+                    # still say RUNNING after a dead worker. Settle/fence it first;
+                    # then re-enter from persisted truth. If the old worker actually
+                    # completed in the race, the recursive read returns that result
+                    # instead of issuing a duplicate provider effect.
+                    await self._settle_abandoned_attempt(
+                        active,
+                        error="Canvas worker lease was reclaimed before retry",
+                        cancellation=CancellationCause.RECOVERED,
+                    )
+                    return await self.execute_stage(run_id, stage, operation, timeout_s=timeout_s)
+                attempt = await self._service.retry_node(
+                    node_run.node_run_id,
+                    None,
+                    context,
+                    executor=_execute,
+                    executor_id=_CANVAS_EXECUTOR_ID,
+                    timeout_s=timeout_s,
+                )
+            if captured:
+                return await self._project_stage_result(run_id, stage, captured[0])
+            if attempt.status is AttemptStatus.COMPLETED:
+                return await self._project_stage_result(run_id, stage, cast(T, attempt.result))
+            raise RunIntegrityError(
+                f"Canvas stage {stage!r} returned without a completed Attempt result"
             )
-        if captured:
-            return await self._project_stage_result(run_id, stage, captured[0])
-        if attempt.status is AttemptStatus.COMPLETED:
-            return await self._project_stage_result(run_id, stage, cast(T, attempt.result))
-        raise RunIntegrityError(
-            f"Canvas stage {stage!r} returned without a completed Attempt result"
-        )
 
     async def cancel(self, run_id: str) -> None:
         """Cancel live physical work and terminalize observed logical work."""
@@ -684,6 +717,32 @@ class CanvasCanonicalExecution:
                     cancellation=CancellationCause.RECOVERED,
                 )
 
+    async def _race_or_require_terminal(self, attempt_id: str) -> Attempt:
+        raced = await self._runs.get_attempt(attempt_id)
+        if raced is None or raced.status not in TERMINAL_ATTEMPT_STATUSES:
+            raise RunIntegrityError(
+                f"Canvas Attempt {attempt_id!r} could not be settled to a terminal status"
+            )
+        return raced
+
+    async def _reclaim_recovered_attempt(self, persisted: Attempt) -> Attempt:
+        """Fence a dead-worker Attempt via authorized CANCELLED+RECOVERED reclaim."""
+        lease = persisted.execution_lease
+        if lease is None:
+            raise RunIntegrityError(
+                f"active Canvas Attempt {persisted.attempt_id!r} has no execution lease"
+            )
+        moment = datetime.now(UTC)
+        if lease.expires_at is not None and lease.expires_at > moment:
+            moment = lease.expires_at + timedelta(microseconds=1)
+        try:
+            terminal = await self._runs.reclaim_expired_attempt(persisted.attempt_id, now=moment)
+        except Exception:
+            return await self._race_or_require_terminal(persisted.attempt_id)
+        if terminal is None:
+            return await self._race_or_require_terminal(persisted.attempt_id)
+        return terminal
+
     async def _settle_abandoned_attempt(
         self,
         attempt: Attempt,
@@ -708,6 +767,13 @@ class CanvasCanonicalExecution:
             raise RunIntegrityError(
                 f"active Canvas Attempt {persisted.attempt_id!r} has no execution lease"
             )
+
+        if cancellation is CancellationCause.RECOVERED:
+            # Authorized P2a writer — no generic CANCELLED (#232 Codex P1 / #735).
+            terminal = await self._reclaim_recovered_attempt(persisted)
+            await self._reconciler.reconcile(terminal, cancellation=cancellation)
+            return
+
         try:
             terminal = await self._runs.transition_attempt(
                 persisted.attempt_id,

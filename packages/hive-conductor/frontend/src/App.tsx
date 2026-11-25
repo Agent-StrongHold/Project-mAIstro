@@ -19,7 +19,6 @@ import Setup from "./pages/Setup";
 // Setup and Login (above) stay eager -- one of them is needed for the very
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
-const Agents = lazy(() => import("./pages/Agents"));
 const Approvals = lazy(() => import("./pages/Approvals"));
 const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
@@ -30,25 +29,19 @@ const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
 const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Goals = lazy(() => import("./pages/Goals"));
 const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
-const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
-const MessageBoard = lazy(() => import("./pages/MessageBoard"));
 const Missions = lazy(() => import("./pages/Missions"));
-const OptimizationInbox = lazy(() => import("./pages/OptimizationInbox"));
 const Quotas = lazy(() => import("./pages/Quotas"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Profile = lazy(() => import("./pages/Profile"));
 const Credentials = lazy(() => import("./pages/Credentials"));
-const Skills = lazy(() => import("./pages/Skills"));
-const Topology = lazy(() => import("./pages/Topology"));
 const WorkItems = lazy(() => import("./pages/WorkItems"));
 const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase"));
 
@@ -192,11 +185,11 @@ function AppRoutes() {
                 <Route path="/" element={<AppShell />}>
                   {/* #1048 / #1050: default landing is Workspace Home unless
                       the user set preferences.workspace_default_landing on
-                      the canonical profile. Dashboard stays registered until
-                      retirement burn-down (#2274) deletes it. */}
+                      the canonical profile. #2274: legacy Dashboard page is
+                      deleted — /dashboard redirects to Home. */}
                   <Route index element={<DefaultLandingRedirect />} />
                   <Route path="home" element={<Home />} />
-                  <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="dashboard" element={<Navigate to="/home" replace />} />
                   <Route path="chat" element={<Chat />} />
                   {/* #1049: Attention is the Workspace orchestration inbox
                       (read-only projection). Home links default here. */}
@@ -210,11 +203,15 @@ function AppRoutes() {
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
-                  {/* #2273: Capabilities is the primary product surface; Agents /
-                      MCP / Skills / Topology stay registered for deep links
-                      until the retirement slice deletes them. */}
+                  {/* #2273: Capabilities is the only product surface for slots /
+                      providers. Legacy /agents /mcp /skills /topology deep
+                      links redirect here — they must not revive the deleted
+                      page modules. */}
                   <Route path="capabilities" element={<Capabilities />} />
-                  <Route path="agents" element={<Agents />} />
+                  <Route path="agents" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="skills" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="mcp" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="topology" element={<Navigate to="/capabilities" replace />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
                   {/* #311 M0 containment lifted: the M2 Deck sanitizer
@@ -222,17 +219,12 @@ function AppRoutes() {
                       render sink, so the keyboard-complete Deck editor (#769)
                       is reachable at /decks and from Design Studio. */}
                   <Route path="decks" element={<DeckBuilder />} />
-                  <Route path="skills" element={<Skills />} />
-                  <Route path="mcp" element={<MCP />} />
-                  <Route path="topology" element={<Topology />} />
-                  <Route path="optimizer" element={<OptimizationInbox />} />
-                  {/* #1417: /optimization-inbox is an alias, not a second
-                      surface -- it redirects to the canonical /optimizer so
-                      a direct hit lands on the one nav-linked destination
-                      instead of rendering the same page with no active nav
-                      entry. */}
-                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
-                  <Route path="messages" element={<MessageBoard />} />
+                  {/* #1049 MERGE: MessageBoard + OptimizationInbox fold into
+                      Attention. Old URLs redirect so bookmarks do not revive
+                      the deleted modules. */}
+                  <Route path="optimizer" element={<Navigate to="/attention" replace />} />
+                  <Route path="optimization-inbox" element={<Navigate to="/attention" replace />} />
+                  <Route path="messages" element={<Navigate to="/attention" replace />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />

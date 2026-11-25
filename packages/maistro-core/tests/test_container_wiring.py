@@ -1629,35 +1629,25 @@ async def test_replay_does_not_park_over_a_retry_committed_after_selection() -> 
     finally:
         store.reclaim_expired_attempts = original_reclaim  # type: ignore[method-assign]
 
-    original_transition = store.transition_node_run
-    inserted = False
+    # A retry commits after the interrupted reclaim, superseding the reclaimed
+    # Attempt. Recovery must observe the newer Attempt and leave the NodeRun and
+    # its Run RUNNING instead of parking over the stale disposition.
+    retry = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-race-new", lease_ttl=timedelta(hours=1)
+    )
+    await store.transition_attempt(
+        retry.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=(
+            retry.execution_lease.fencing_token if retry.execution_lease is not None else None
+        ),
+    )
 
-    async def transition_after_retry(node_run_id: str, target: RunStatus, **kwargs: Any) -> Any:
-        nonlocal inserted
-        if kwargs.get("expected_current_attempt_id") == abandoned.attempt_id and not inserted:
-            inserted = True
-            retry = await store.create_attempt(
-                node_run_id, lease_holder="worker-race-new", lease_ttl=timedelta(seconds=30)
-            )
-            await store.transition_attempt(
-                retry.attempt_id,
-                AttemptStatus.RUNNING,
-                fencing_token=(
-                    retry.execution_lease.fencing_token
-                    if retry.execution_lease is not None
-                    else None
-                ),
-            )
-        return await original_transition(node_run_id, target, **kwargs)
-
-    store.transition_node_run = transition_after_retry  # type: ignore[method-assign]
-    try:
-        await container.recover_abandoned_attempts(now=after_lapse)
-    finally:
-        store.transition_node_run = original_transition  # type: ignore[method-assign]
+    await container.recover_abandoned_attempts(now=after_lapse)
 
     attempts = await store.list_attempts(node_run.node_run_id)
-    assert inserted and attempts[-1].status is AttemptStatus.RUNNING
+    assert retry.attempt_id == attempts[-1].attempt_id
+    assert attempts[-1].status is AttemptStatus.RUNNING
     current_node = await store.get_node_run(node_run.node_run_id)
     assert current_node is not None and current_node.status is RunStatus.RUNNING
     current_run = await store.get_run(run.run_id)

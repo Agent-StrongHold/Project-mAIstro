@@ -8,6 +8,11 @@ from maistro.runs.admission_identity import (
     LegacyAdmissionRecord,
     RootAdmissionEnvelope,
 )
+from maistro.runs.cancellation import (
+    AttemptCancellation,
+    CancellationDisposition,
+    CancellationReceipt,
+)
 from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
 from maistro.runs.eval import EvalSummary, eval_summary, open_re_eval_attempt
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
@@ -102,6 +107,7 @@ __all__ = [
     "AdmissionRecordV2",
     "ArtifactNotInRunLineage",
     "Attempt",
+    "AttemptCancellation",
     "AttemptExecutionService",
     "AttemptLifecycleReconciler",
     "AttemptLineage",
@@ -109,6 +115,8 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "CancellationDisposition",
+    "CancellationReceipt",
     "CanonicalJsonObject",
     "DuplicateThesisError",
     "EvalJudge",

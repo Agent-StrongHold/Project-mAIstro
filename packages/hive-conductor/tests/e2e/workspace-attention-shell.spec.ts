@@ -82,7 +82,7 @@ test.afterAll(async () => {
 });
 
 test("Attention is reachable from the icon rail", async () => {
-  await page.goto("/dashboard");
+  await page.goto("/home");
   await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
   const link = page.locator(".icon-sidebar").getByRole("link", { name: "Attention", exact: true });
   await expect(link).toBeVisible();
@@ -92,7 +92,7 @@ test("Attention is reachable from the icon rail", async () => {
 });
 
 test("Attention loads the Workspace projection API and shows summary", async () => {
-  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await page.goto("/home", { waitUntil: "domcontentloaded" });
   await selectSeededWorkspaceTab(page, seededWorkspaceName, seededWorkspaceId);
 
   // Match any workspace attention GET (ok or not) so a 403/404 surfaces as an
@@ -123,6 +123,18 @@ test("Attention loads the Workspace projection API and shows summary", async () 
   const empty = page.getByText("Nothing needs attention right now");
   const list = page.getByTestId("attention-items");
   await expect(empty.or(list)).toBeVisible();
+});
+
+test("legacy message/optimizer URLs land on Attention and do not revive modules", async () => {
+  await page.goto("/messages", { waitUntil: "domcontentloaded" });
+  await page.waitForURL("**/attention");
+  await expect(page.getByTestId("workspace-attention")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Message Board", exact: true })).toHaveCount(0);
+
+  await page.goto("/optimizer", { waitUntil: "domcontentloaded" });
+  await page.waitForURL("**/attention");
+  await expect(page.getByTestId("workspace-attention")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Optimization Inbox", exact: true })).toHaveCount(0);
 });
 
 test("Defer/Dismiss hides an item and preference survives reload", async () => {

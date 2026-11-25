@@ -203,7 +203,15 @@ def reload_settings() -> dict[str, Any]:
 #: The audit actions this surface owns. `GET /audit` is the settings-scoped
 #: view over the ONE durable audit log that `GET /v1/audit` serves whole --
 #: not a second log.
-_SETTINGS_AUDIT_ACTIONS = frozenset({"settings_update", "settings_patch", "settings_reload"})
+_SETTINGS_AUDIT_ACTIONS = frozenset(
+    {
+        "settings_update",
+        "settings_patch",
+        "settings_reload",
+        # Workspace product prefs via Profile UI / PATCH / Agent profile_set (#1050).
+        "profile_preference_set",
+    }
+)
 
 
 @router.get("/audit")

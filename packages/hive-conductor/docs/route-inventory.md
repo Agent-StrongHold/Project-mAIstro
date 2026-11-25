@@ -18,16 +18,16 @@ Sources of truth:
 
 Six retained shipped surfaces had no entry point anywhere in the app
 (`/schedules`, `/messages`, `/quotas`, `/containers`, `/cli`, `/audit`). They
-now have `fullNav` entries. `/optimization-inbox` became a redirect to the
-canonical `/optimizer` so an alias hit resolves to the one nav-linked
-destination instead of rendering a second active-state-less copy of the page.
-The legacy pages scheduled for replacement by Workspace projections were
-deliberately **not** promoted (per §9 and the issue boundary); they are
-recorded below as URL-only with their owning issues.
+received `fullNav` entries under #1417. **#1049 MERGE** later removed Messages
+and Optimizer from primary nav and redirects `/messages`, `/optimizer`, and
+`/optimization-inbox` to `/attention` so bookmarks cannot revive the deleted
+MessageBoard / OptimizationInbox modules. The remaining legacy pages scheduled
+for replacement by Workspace projections stay URL-only with their owning
+issues.
 
 ## Canonical surfaces (primary/grouped navigation entry)
 
-23 destinations, each reachable from both the desktop icon rail and the
+21 destinations, each reachable from both the desktop icon rail and the
 narrow-screen drawer (asserted by
 `tests/e2e/navigation-coverage.spec.ts`):
 
@@ -35,9 +35,9 @@ narrow-screen drawer (asserted by
 |---|---|---|---|---|
 | `/home` | Home | Home | KEEP / default landing (Workspace Mission Control) | #1048 |
 | `/chat` | Chat | Chat | PROJECT → Workspace Agent chat | #1822 (M3-D; foundation #1037 closed) |
-| `/dashboard` | Dashboard | Dashboard | DELETE v1.0 → Workspace Home | #1048 / retirement #2274 |
+| `/dashboard` | Dashboard | **DELETE** — page module removed; `Navigate` to `/home` (replace); must not revive `Dashboard.tsx` | #2274 |
 | `/goals` | Goals | Goals | PROJECT → Goal/Run inspection | #65/#1036 |
-| `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; API requires `dags.write`) | #1049 |
+| `/attention` | Attention | Attention | KEEP — Workspace orchestration projection (#1049; MERGE MessageBoard + OptimizationInbox; API requires `dags.write`) | #1049 |
 | `/approvals` | Approvals | Approvals | KEEP — Parity P-1 projection over capability + HITL APIs | #2278 |
 | `/design-studio` | Design Studio | Design Studio | KEEP / PROJECT v1.0 (blocker) | #95, #286, #773 |
 | `/dags` | DAG Builder | DAG Builder | PROJECT → Graph editing over canonical Graph | #65/#1036 |
@@ -46,8 +46,6 @@ narrow-screen drawer (asserted by
 | `/missions` | Missions | Missions | MERGE → Workspace backlog (DELETE v1.0) | #82 (M3-C) |
 | `/backlog` | Backlog | Backlog | Workspace backlog (canonical) | #82 |
 | `/capabilities` | Capabilities | Capabilities | KEEP — unified surface (#2273 / `conductor-407`) | #2273 |
-| `/optimizer` | Optimization Inbox | Optimizer | MERGE → Attention/Waiting | #1049 (M3-E) |
-| `/messages` | Message Board | Messages | MERGE → Attention/Waiting | #1049 (M3-E) |
 | `/quotas` | Quotas & Stats | Quotas | PROJECT → Invocation usage | #718 (M3) |
 | `/knowledge` | KnowledgeBase | Inner Temple | DELETE v1.0 → Workspace/user memory | #776, #1047 (M3-E) |
 | `/rsi` | RSI | RSI | PROJECT → Evolve/RSI Run inspection | #51/#50 (M4/M5) |
@@ -57,16 +55,19 @@ narrow-screen drawer (asserted by
 | `/audit` | Audit Log | Audit | PROJECT → core audit store | P0.4 (§5) |
 | `/settings` | Settings | Settings | PROJECT → settings service | #1050 (M3-E) |
 
-`/schedules`, `/messages`, `/quotas`, `/containers`, `/cli` and `/audit` are
-the #1417 additions. Agents / Topology / Integrations left primary nav for
-Capabilities (#2273); they remain URL-only until deleted.
+`/schedules`, `/quotas`, `/containers`, `/cli` and `/audit` remain the #1417
+additions still on primary nav. `/messages` and `/optimizer` MERGEd into
+Attention (#1049); their page modules are deleted and old URLs redirect to
+`/attention`. Agents / Topology / Integrations / Skills left primary nav for
+Capabilities (#2273) and their page modules are deleted; old URLs redirect
+to `/capabilities`.
 
 ## Canonical surfaces with a contextual or parent entry (no primary nav row)
 
 | Route | Surface | Entry point | Disposition | Owner |
 |---|---|---|---|---|
 | `/profile` | Profile | Drawer user chip (`NavLink` on the signed-in username) | PROJECT → settings service | #1050 |
-| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Skills, Topology, Messages, Quotas, Audit, Containers, Agents, Missions, MCP, Optimizer, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
+| `/docs` | Documentation | `helpHref="/docs#…"` contextual link rendered by `PageHeader` on most pages (Schedules, Attention, Quotas, Audit, Containers, Missions, Settings, CLI) | RETIRE (M3) | cutover plan §5 |
 | `/decks` | Deck Builder | Embedded editor inside Design Studio (deck mode → "Open Deck editor"); the standalone route is the deep link to the same editor | KEEP (own lane) | #286, #773, #95 |
 
 ## Intentionally URL-only surfaces (documented exception)
@@ -77,16 +78,25 @@ or hides them and this issue may not promote or retire them:
 | Route | Surface | Rationale for staying unlinked | Owner |
 |---|---|---|---|
 | `/work-items` | Jira drafts (WorkItems) | Legacy surface MERGEd into the Workspace backlog; permanent promotion would fight the M3-C cutover | #82 (M3-C) |
-| `/skills` | Skills | Legacy surface replaced by Capabilities (#2273); page delete is a follow-up slice | #2273 |
-| `/agents` | Agents | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
-| `/topology` | Topology | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
-| `/mcp` | MCP / Integrations | Superseded by Capabilities primary nav (#2273); URL retained until delete | #2273 |
 | `/memory` | Memory | Legacy surface replaced by user model / Workspace memory | #776, #1047 (M3-E) |
 | `/evolution` | Evolution Engine | Hidden for v1.0 per §9 ("DELETE/HIDE v1.0, restore v1.2"); route retirement itself is out of #1417's scope | #2275 (v1.2 restore; #51 Evolve impl) |
 
 `tests/e2e/navigation-coverage.spec.ts` asserts both halves of this contract:
 these routes still render (they are not deleted) and the shell renders no nav
 link for them.
+
+## Deleted capability surfaces (#2273) — redirect only
+
+| Former route | Former surface | Disposition |
+|---|---|---|
+| `/agents` | Agents ("The Hive") | **DELETE** — page module removed; `Navigate` to `/capabilities` (replace); must not revive `Agents.tsx` |
+| `/mcp` | MCP / Integrations | **DELETE** — same; must not revive `MCP.tsx` |
+| `/skills` | Skills | **DELETE** — same; must not revive `Skills.tsx` |
+| `/topology` | Topology | **DELETE** — same; must not revive `Topology.tsx` |
+
+`navigation-coverage.spec.ts` and `workspace-capabilities-shell.spec.ts` assert
+these URLs land on Capabilities with the Capabilities heading active, and that
+legacy nav labels stay absent.
 
 ## Hidden for v1.0 (no shipped route; restore later)
 
@@ -104,8 +114,15 @@ One canonical entry per destination; no duplicate menu items.
 | Route | Resolves to | Kind |
 |---|---|---|
 | `/` | `/home` (index `Navigate replace`; #1048) | default-route redirect |
-| `/optimization-inbox` | `/optimizer` (#1417: alias converted from a duplicate render to a redirect) | alias redirect |
+| `/messages` | `/attention` (#1049 MERGE: MessageBoard deleted) | cutover redirect |
+| `/optimizer` | `/attention` (#1049 MERGE: OptimizationInbox deleted) | cutover redirect |
+| `/optimization-inbox` | `/attention` (#1049: former #1417 alias now follows Optimizer into Attention) | cutover redirect |
 | `/cli/canvas` | `/design-studio` (#95 compatibility redirect; asserted by `tests/e2e/design-studio-truthfulness.spec.ts`) | compatibility redirect |
+| `/dashboard` | `/home` (#2274 retirement redirect) | retirement redirect |
+| `/agents` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/mcp` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/skills` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
+| `/topology` | `/capabilities` (#2273 retirement redirect) | retirement redirect |
 
 ## Auth / setup routes (outside the shell)
 
@@ -116,14 +133,15 @@ One canonical entry per destination; no duplicate menu items.
 
 ## Permission contract check
 
-Reading any of the six newly linked pages is authenticated-only: no `GET`
-under `/v1/schedules`, `/v1/messages`, `/v1/quotas`, `/v1/containers`,
-`/v1/cli` or `/v1/audit` carries a permission, so every authenticated
-principal can load every surface. Their *mutations* are scope-gated in
-`backend/middleware/auth.py` (`_PROTECTED_OPS`): schedules take
-`schedules.write`, containers take `containers.control`, audit writes take
-`audit.write` (the app writes audit entries in-process, so the page itself is
-read-only for a principal without it).
+Reading the retained #1417 pages is authenticated-only: no `GET` under
+`/v1/schedules`, `/v1/quotas`, `/v1/containers`, `/v1/cli` or `/v1/audit`
+carries a permission, so every authenticated principal can load every
+surface. `/v1/messages` and `/v1/optimizer` remain as canonical owners
+projected into Attention (#1049); their SPA pages are gone. Mutations stay
+scope-gated in `backend/middleware/auth.py` (`_PROTECTED_OPS`): schedules
+take `schedules.write`, containers take `containers.control`, audit writes
+take `audit.write` (the app writes audit entries in-process, so the page
+itself is read-only for a principal without it).
 
 The shell therefore mirrors the mutation scope on exactly the two entries
 whose pages are wall-to-wall gated forms — Schedules (`schedules.write`) and
@@ -156,7 +174,8 @@ both chrome modes.
   `schedules.write`/`containers.control` rows (see the permission contract
   above); each landing leaves exactly one active rail entry carrying the
   destination's accessible name; back/forward returns canonical surfaces; the
-  two aliases/redirects resolve to their canonical destination; the four
-  URL-only rows render while staying unlinked.
+  aliases/redirects (including #2273 capability retirement URLs) resolve to
+  their canonical destination; remaining URL-only rows render while staying
+  unlinked; Evolution stays hidden.
 - `tests/e2e/design-studio-truthfulness.spec.ts` — `/cli/canvas` compatibility
   redirect preserved.

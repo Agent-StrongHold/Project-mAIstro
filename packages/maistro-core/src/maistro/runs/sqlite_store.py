@@ -26,8 +26,10 @@ from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -41,12 +43,17 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
     Run,
     RunEvalScore,
     RunStatus,
+)
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
 )
 from maistro.runs.retention_scope import (
     RetentionScope,
@@ -1596,6 +1603,11 @@ class SqliteRunStore:
         today, and not something to make load-bearing. The candidate set is
         already narrowed to non-terminal Attempts by the status predicate,
         which is the part that matters for cost.
+
+        Selection outside the write lock is only a candidate list. Each row is
+        re-read and re-validated inside ``_write_lock`` so a renewal (or other
+        terminalizer) that won between nominating and writing is skipped —
+        batch returns only newly written rows (#2358 / #232 P2b+P2c).
         """
         moment = now if now is not None else datetime.now(UTC)
         cursor = await self._conn.execute(
@@ -1609,17 +1621,163 @@ class SqliteRunStore:
         )
         reclaimed: list[Attempt] = []
         async with self._write_lock:
-            for attempt in doomed[:limit]:
-                settled = reclaim_attempt(attempt, at=moment)
+            for nominee in doomed[:limit]:
+                current = await self.get_attempt(nominee.attempt_id)
+                if current is None or not lease_is_expired(current, moment):
+                    continue
+                settled = reclaim_attempt(current, at=moment)
                 await self._update_payload(
                     "canonical_attempts",
                     "attempt_id",
-                    attempt.attempt_id,
+                    nominee.attempt_id,
                     settled.status.value,
                     json_of(settled),
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a)."""
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                attempt = await self._require_attempt(attempt_id)
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                cursor = await self._conn.execute(
+                    """SELECT payload FROM canonical_node_runs
+                       WHERE run_id = ? ORDER BY node_run_id""",
+                    (run.run_id,),
+                )
+                all_node_runs = [model_of_json(NodeRun, row[0]) for row in await cursor.fetchall()]
+                attempts_by_node_run: dict[str, list[Attempt]] = {}
+                for nr in all_node_runs:
+                    attempt_cursor = await self._conn.execute(
+                        """SELECT payload FROM canonical_attempts
+                           WHERE node_run_id = ? ORDER BY ordinal""",
+                        (nr.node_run_id,),
+                    )
+                    attempts_by_node_run[nr.node_run_id] = [
+                        model_of_json(Attempt, row[0]) for row in await attempt_cursor.fetchall()
+                    ]
+                plan = plan_recovered_attempt_disposition(
+                    attempt=attempt,
+                    run=run,
+                    node_run=node_run,
+                    all_node_runs=all_node_runs,
+                    attempts_by_node_run=attempts_by_node_run,
+                )
+                settled_node, settled_run = materialize_recovered_disposition_plan(
+                    plan, run=run, node_run=node_run, attempt=attempt, at=at
+                )
+                if plan.park_node_run:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        settled_node.node_run_id,
+                        settled_node.status.value,
+                        json_of(settled_node),
+                    )
+                if plan.park_run:
+                    self._stage_payload(
+                        "canonical_runs",
+                        "run_id",
+                        settled_run.run_id,
+                        settled_run.status.value,
+                        json_of(settled_run),
+                    )
+                pending, self._pending = self._pending, []
+                for (table, identity_column), identity, status, payload in pending:
+                    await self._conn.execute(
+                        f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
+                        (status, payload, identity),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                # CancelledError inherits BaseException, not Exception: leaving
+                # BEGIN IMMEDIATE open after the write lock releases poisons
+                # the shared connection for every later writer (#2424 Codex).
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
+            return settled_node, settled_run
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            node_run = await self._require_node_run(attempt.node_run_id)
+            if node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
@@ -1654,6 +1812,7 @@ class SqliteRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._write_lock:
             attempt = await self._require_attempt(attempt_id)
@@ -1665,6 +1824,7 @@ class SqliteRunStore:
                 result=result,
                 error=error,
                 metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             if target is AttemptStatus.COMPLETED:
                 # Same lock `transition_run` holds, so a cancellation either

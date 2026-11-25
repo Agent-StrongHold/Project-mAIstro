@@ -55,8 +55,10 @@ from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLi
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -70,12 +72,17 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
     Run,
     RunEvalScore,
     RunStatus,
+)
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
 )
 from maistro.runs.retention_scope import (
     RetentionScope,
@@ -1645,6 +1652,7 @@ class PgRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._pool.acquire() as conn, conn.transaction():
             if target is AttemptStatus.COMPLETED:
@@ -1689,7 +1697,13 @@ class PgRunStore:
             # check that was true when it ran and false when it wrote.
             self._validate_fence(attempt, fencing_token)
             updated = transition_attempt(
-                attempt, target, at=at, result=result, error=error, metrics=metrics
+                attempt,
+                target,
+                at=at,
+                result=result,
+                error=error,
+                metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
         return updated
@@ -1981,6 +1995,202 @@ class PgRunStore:
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed.
+
+        Row-locked like ``renew_lease`` / ``transition_attempt``: the expiry
+        decision and the CANCELLED+RECOVERED write share one transaction so a
+        concurrent renew cannot extend a lease this call has already decided
+        to reclaim, and a concurrent reclaim cannot rewrite a winner (#2358).
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure.
+
+        Row-locked like ``transition_attempt``: fence check and
+        CANCELLED+RECOVERED write share one transaction so a concurrent launch
+        or terminalizer cannot leave a rewritten cause (#2369).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
+
+    async def _locked_recovered_disposition_tree(
+        self, conn: Any, attempt_id: str
+    ) -> tuple[Attempt, Run, NodeRun, list[NodeRun], dict[str, list[Attempt]]]:
+        """Resolve lineage under Run + NodeRun locks for recovered parking.
+
+        Attempt rows are read without Attempt locks (facts only). Candidate
+        NodeRun is rebound from the locked set so the planner and writer share
+        the same identity snapshot. Cold trees hydrate via ``archive_key``.
+        """
+        attempt = await self._require_attempt(attempt_id, conn=conn)
+        node_row = await conn.fetchrow(
+            "SELECT node_run_id, payload, archive_key FROM canonical_node_runs "
+            "WHERE node_run_id = $1",
+            attempt.node_run_id,
+        )
+        if node_row is None:
+            raise NodeRunNotFound(attempt.node_run_id)
+        node_run = NodeRun.model_validate(await self._hydrate(node_row))
+
+        run = Run.model_validate(
+            await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
+        )
+        node_rows = await conn.fetch(
+            """SELECT node_run_id, payload, archive_key FROM canonical_node_runs
+               WHERE run_id = $1
+               ORDER BY node_run_id
+               FOR UPDATE""",
+            run.run_id,
+        )
+        all_node_runs = [NodeRun.model_validate(await self._hydrate(row)) for row in node_rows]
+        locked_candidate = next(
+            (nr for nr in all_node_runs if nr.node_run_id == node_run.node_run_id),
+            None,
+        )
+        if locked_candidate is None:
+            raise NodeRunNotFound(node_run.node_run_id)
+
+        attempt = await self._require_attempt(attempt_id, conn=conn)
+        attempts_by_node_run: dict[str, list[Attempt]] = {
+            nr.node_run_id: [] for nr in all_node_runs
+        }
+        if all_node_runs:
+            attempt_rows = await conn.fetch(
+                """SELECT attempt_id, payload, archive_key FROM canonical_attempts
+                   WHERE node_run_id = ANY($1::text[])
+                   ORDER BY ordinal""",
+                [nr.node_run_id for nr in all_node_runs],
+            )
+            for row in attempt_rows:
+                peer = Attempt.model_validate(await self._hydrate(row))
+                attempts_by_node_run.setdefault(peer.node_run_id, []).append(peer)
+        return attempt, run, locked_candidate, all_node_runs, attempts_by_node_run
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
+
+        One connection/transaction: resolve lineage, lock Run then every NodeRun
+        in ``node_run_id`` order, read Attempt facts without Attempt row locks,
+        revalidate, and commit eligible parking. Does not call public
+        pool-acquiring helpers inside the transaction.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            (
+                attempt,
+                run,
+                node_run,
+                all_node_runs,
+                attempts_by_node_run,
+            ) = await self._locked_recovered_disposition_tree(conn, attempt_id)
+            plan = plan_recovered_attempt_disposition(
+                attempt=attempt,
+                run=run,
+                node_run=node_run,
+                all_node_runs=all_node_runs,
+                attempts_by_node_run=attempts_by_node_run,
+            )
+            settled_node, settled_run = materialize_recovered_disposition_plan(
+                plan, run=run, node_run=node_run, attempt=attempt, at=at
+            )
+            if plan.park_node_run:
+                await self._write(
+                    conn,
+                    "canonical_node_runs",
+                    "node_run_id",
+                    settled_node.node_run_id,
+                    settled_node,
+                )
+            if plan.park_run:
+                await self._write(conn, "canonical_runs", "run_id", settled_run.run_id, settled_run)
+            return settled_node, settled_run
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume.
+
+        Parent-first locks (Run → NodeRun → Attempt) match #1888 repair order so
+        orphan recovery cannot invert against concurrent cascade writers (#2417).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            lineage = await conn.fetchrow(
+                """SELECT a.node_run_id AS node_run_id, n.run_id AS run_id
+                     FROM canonical_attempts a
+                     JOIN canonical_node_runs n ON n.node_run_id = a.node_run_id
+                    WHERE a.attempt_id = $1""",
+                attempt_id,
+            )
+            if lineage is None:
+                raise AttemptNotFound(attempt_id)
+            if lineage["run_id"] != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {lineage['run_id']!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            run_row = await conn.fetchrow(
+                "SELECT run_id FROM canonical_runs WHERE run_id = $1 FOR UPDATE",
+                owning_run_id,
+            )
+            if run_row is None:
+                raise RunIntegrityError(
+                    f"owning Run {owning_run_id!r} does not exist for Attempt {attempt_id!r}"
+                )
+            node_run = NodeRun.model_validate(
+                await self._locked(
+                    conn, "canonical_node_runs", "node_run_id", lineage["node_run_id"]
+                )
+            )
+            attempt = Attempt.model_validate(
+                await self._locked(conn, "canonical_attempts", "attempt_id", attempt_id)
+            )
+            if attempt.node_run_id != lineage["node_run_id"] or node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} lineage changed under the orphan recovery lock"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
+            await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, settled)
+        return settled
 
     async def _require_attempt(self, attempt_id: str, *, conn: Any = None) -> Attempt:
         """Load an Attempt, reusing an open connection when inside a transaction.

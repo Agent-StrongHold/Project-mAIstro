@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -260,3 +261,62 @@ async def test_sqlite_reopen_recovers_later_completion(tmp_path: Any) -> None:
         await _assert_evidence(restarted.run_store, nodes, attempts)
     finally:
         await restarted.aclose()
+
+
+async def test_sweep_catches_recovered_disposition_refused(
+    recovery_container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep half must not abort when reconciler refuses disposition (#232 P4a).
+
+    A reclaimed Attempt whose NodeRun never left CREATED/QUEUED (or that
+    another path terminalized concurrently) raises RecoveredDispositionRefused
+    from the reconciler; the sweep logs and continues, covering the except
+    branch that also catches RunIntegrityError.
+    """
+    from maistro.runs.recovered_disposition import RecoveredDispositionRefused
+
+    container, workspace, project_id = recovery_container
+    store = container.run_store
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="disposition refusal sweep",
+        nodes=[Node(node_id="x", node_type="test")],
+    )
+    run = await store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id="test:refusal-sweep"
+    )
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node = await store.create_node_run(run.run_id, node_id="x")
+    await store.transition_node_run(node.node_run_id, RunStatus.QUEUED)
+    node = await store.transition_node_run(node.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(
+        node.node_run_id, lease_holder="w", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+
+    original_reconcile = AttemptLifecycleReconciler.reconcile
+
+    async def refuse_reconcile(
+        self: AttemptLifecycleReconciler, att: Attempt, **kwargs: Any
+    ) -> NodeRun:
+        if att.attempt_id == attempt.attempt_id:
+            raise RecoveredDispositionRefused("test: NodeRun already settled")
+        return await original_reconcile(self, att, **kwargs)
+
+    monkeypatch.setattr(AttemptLifecycleReconciler, "reconcile", refuse_reconcile)
+
+    # The sweep must not propagate; it logs and continues.
+    result = await container.recover_abandoned_attempts(
+        now=lease.expires_at + timedelta(seconds=1), limit=10
+    )
+    # The reclaim happened (the Attempt was physically reclaimed), but
+    # reconciliation was refused — the sweep still returns the reclaim count.
+    assert result >= 1

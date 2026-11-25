@@ -7,16 +7,25 @@ export type AttentionItem = {
   source_id: string;
   workspace_id: string;
   attention_class: string;
+  /** Issue interruption vocabulary: blocking | popup | queued | waiting. */
+  interruption?: string;
   rank: number;
   reason: string;
   evidence: Record<string, unknown>;
   answer_href: string | null;
 };
 
+export type AttentionWaitingQuality = {
+  count: number;
+  valuable_source_ids: string[];
+};
+
 export type AttentionSummary = {
   counts_by_class: Record<string, number>;
+  counts_by_interruption?: Record<string, number>;
   highest_class: string | null;
   rising: string[];
+  waiting_quality?: AttentionWaitingQuality;
   truncated: boolean;
   /** True when the canonical graph spine cannot supply HITL pauses. */
   hitl_unavailable?: boolean;
@@ -43,7 +52,37 @@ export function inspectionHref(item: AttentionItem): string {
     const runId = item.source_id.split("/")[0] || item.source_id;
     return `/dag-runs?run=${encodeURIComponent(runId)}`;
   }
+  // MessageBoard / OptimizationInbox MERGEd into Attention — stay here.
+  if (item.source_kind === "agent_message" || item.source_kind === "optimizer_proposal") {
+    return "/attention";
+  }
   return "/dag-runs";
+}
+
+/** Decide a pending optimizer proposal through its canonical owner (#1049). */
+export async function decideOptimizerProposal(
+  proposalId: string,
+  decision: "accept" | "reject",
+): Promise<unknown> {
+  const path = `/v1/optimizer/proposals/${encodeURIComponent(proposalId)}/${decision}`;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: "{}",
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new ApiError(detail || `Couldn't ${decision} proposal`, response.status, path);
+  }
+  if (response.status === 204) return undefined;
+  return response.json();
 }
 
 /** Parse a canonical HITL answer door (`/v1/hitl/{run}/{node}/answer`). */
@@ -100,17 +139,48 @@ const VERDICT_PAUSE_REASONS = new Set([
   "awaiting_role_delegate",
 ]);
 
+function approvalRequestIdOf(evidence: Record<string, unknown> | undefined): string {
+  const payload = evidence?.payload;
+  if (payload && typeof payload === "object" && payload !== null) {
+    const id = (payload as Record<string, unknown>).approval_request_id;
+    if (typeof id === "string") return id.trim();
+  }
+  return "";
+}
+
+function approvedVerdictOf(text: string): boolean | null {
+  const lower = text.trim().toLowerCase();
+  if (lower === "approve" || lower === "approved" || lower === "yes") return true;
+  if (lower === "reject" || lower === "rejected" || lower === "no" || lower === "deny") {
+    return false;
+  }
+  return null;
+}
+
 /**
  * Build the HITL answer body from Attention evidence (#1049).
- * Question pauses take `{ answer }`; approve/review/delegate take `{ verdict }`
- * so a text-only "approved" cannot leave the Run paused on a malformed shape.
+ * Question pauses take `{ answer }`; ordinary approve/review/delegate take
+ * `{ verdict }`. Capability-approval pauses (paused_reason +
+ * ``approval_request_id``) take `{ approved, expected_approval_request_id }`
+ * so Attention can settle DurableApproval (#2423 / #55).
  */
 export function hitlAnswerBody(
   pausedReason: unknown,
   text: string,
-): Record<string, string> {
+  evidence?: Record<string, unknown>,
+): Record<string, unknown> {
   const trimmed = text.trim();
   const reason = typeof pausedReason === "string" ? pausedReason : "";
+  const approvalRequestId = approvalRequestIdOf(evidence);
+  if (reason === "awaiting_human_approval" && approvalRequestId) {
+    const approved = approvedVerdictOf(trimmed);
+    // Unmapped free text refuses to invent APPROVED — Attention's Approve /
+    // Reject buttons always send the mapped words.
+    return {
+      approved: approved === true,
+      expected_approval_request_id: approvalRequestId,
+    };
+  }
   if (VERDICT_PAUSE_REASONS.has(reason)) {
     const lower = trimmed.toLowerCase();
     const verdict =
@@ -128,7 +198,7 @@ export function hitlAnswerBody(
 export async function submitHitlAnswer(
   runId: string,
   nodeId: string,
-  body: Record<string, string>,
+  body: Record<string, unknown>,
 ): Promise<unknown> {
   // Bare `fetch` + literal path: shipped-surface-truth discovers mutating
   // browser calls by scanning fetch sites, not apiPost helpers.
@@ -161,6 +231,17 @@ const CLASS_LABELS: Record<string, string> = {
   proactive: "Proactive",
 };
 
+const INTERRUPTION_LABELS: Record<string, string> = {
+  blocking: "Blocking",
+  popup: "Popup",
+  queued: "Queued",
+  waiting: "Waiting",
+};
+
 export function attentionClassLabel(name: string): string {
   return CLASS_LABELS[name] ?? name;
+}
+
+export function interruptionLabel(name: string): string {
+  return INTERRUPTION_LABELS[name] ?? name;
 }
