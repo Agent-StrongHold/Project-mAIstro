@@ -1048,3 +1048,130 @@ class (`.trivyignore.yaml`) shows the sanctioned shape a waiver would take;
 its npm equivalent is a one-line policy decision away. If picomatch publishes
 4.0.8 first, `npm update picomatch` in `packages/maistro-canvas/frontend`
 plus commit is the whole fix.
+
+## Round 14 (2026-11-25, head `0846fabbfac9`) — the develop merge (M2-B5, `ba7d378ef7`) landed four independent `test`-job reds; all four fixed and proven
+
+Round 13 ended predicting two exit paths for the npm-audit red. Both fired at
+once: the advisory was **withdrawn upstream** (GitHub advisories API now
+reads `Withdrawn Advisory: … withdrawn because it is not a security issue`,
+`withdrawn_at: 2026-11-18T15:38:56Z` — re-verified live 2026-11-25), and
+develop answered the advisory independently by merging M2-B5
+(`ba7d378ef7`), which replaced the bare `npm audit --audit-level=high` step
+with `scripts/npm_audit_gate.py` + a triaged `ALLOWED` waiver for
+GHSA-fc5q-39xc-vjpf. This branch merged that in as `0846fabbfac9`. The
+merge-queue `test` red at this head is four distinct defects:
+
+### 1. `pytest tests/` collection NameError (merge mis-resolution)
+
+The merge resolved `tests/test_devskim_scan_scope.py` to develop's import
+line `from functools import lru_cache` while keeping the branch-side
+`@cache`-decorated `_as_regex` (parent 1 `d669000035` had
+`from functools import cache`; parent 2 `ba7d378ef7` had no `@cache` at
+all). Executing HEAD's file raises `NameError: name 'cache' is not defined`
+at import — reproduced by loading `git show HEAD:tests/…` standalone — so
+every `pytest tests/` collection reds. Fix: import both names
+(`from functools import cache, lru_cache`); the merged file's three
+`@lru_cache(maxsize=1)` config helpers plus the `@cache` glob compiler are
+otherwise coherent.
+
+### 2. npm audit gate: stale waiver on the withdrawn advisory
+
+`npm audit --json` at `packages/maistro-canvas/frontend` now returns
+`metadata.vulnerabilities = {high: 0, critical: 0, total: 0}` (rc 0, node
+v22.22.1/npm 9.2.0, executed 2026-11-25) — npm's DB mirrors the withdrawal.
+The merged gate script ships `ALLOWED = {"GHSA-fc5q-39xc-vjpf": …}`, and the
+gate's own two-way ratchet — written into the same merge — fails a waiver
+whose advisory is no longer reported. Reproduced with HEAD's script against
+the real clean report: `::error::npm audit waivers are stale — …
+GHSA-fc5q-39xc-vjpf — delete it from ALLOWED`, rc 1. Fix (salvaged from the
+prior attempt, verified end-to-end): `ALLOWED` is `{}`; the waiver's
+triage history stays in the module docstring with the withdrawal evidence;
+tests that exercise waiver-passing now pass waivers explicitly; new
+`test_the_withdrawn_picomatch_advisory_is_not_waived` pins the shipped list
+empty (demonstrated failing against HEAD's script, passing against the
+fixed one). Inventory delta documented in
+`docs/testing/inventory-notes/2304-npm-audit-waiver-withdrawn.md` (+1).
+Nothing is relaxed: with a clean report and empty `ALLOWED` the gate prints
+`npm audit OK (0 advisories reported, all triaged in ALLOWED)`, rc 0, and
+any future high/critical advisory blocks until triaged.
+
+### 3. `Quality / Image pins`: the new sandbox Dockerfile pins an unregistered digest
+
+The same merge added
+`packages/maistro-bootstrap/tests/Dockerfile.sandbox` with
+`FROM python:3.12-slim@sha256:5e2bdb1…`, while the merge's own
+`quality/image-pins.json` update names that file under the registered
+`python:3.12.16-slim-bookworm@sha256:935c3c5…` pin (the one four other
+Dockerfiles carry; the floating `3.12-slim` tag re-resolved to Debian
+trixie, which is why the registry moved to the exact patch tag).
+`uv run python scripts/check-image-pins.py` (quality.yml:2244 shape)
+reported both violations (unregistered digest + used_by drift); the
+in-repo test `test_dunder_main_entrypoint_runs_the_real_gate` reds on the
+same gate. Fix: align the tree to the registry — the Dockerfile's FROM now
+carries the registered digest with a provenance comment. No ledger edit.
+
+### 4. Public-routes: both #313 temporary exemptions expired 2026-11-24
+
+`quality/public-routes.json` granted two `temporary` exemptions
+(`/v1/auth/register`, `/v1/setup/`), both `expires: 2026-11-24` — green
+when written, red the day after. `uv run python
+scripts/check-public-routes.py` (ci.yml:291 shape) failed on both, and
+`test_check_public_routes.py::TestTheRepositorysOwnRegistry` reds with it.
+
+- `/v1/auth/register` → **permanent**: unauthenticated by construction —
+  its function is session-less account creation when an administrator
+  opens registration or mints an invitation, so a session can never be
+  required (the gate's own definition of the permanent class, same as
+  `/v1/auth/login`). #313's mitigation has shipped: the durable
+  registration-policy record fails closed (missing/unreadable/corrupt/
+  mid-bootstrap all read closed), `open` is written only by an audited
+  admin `PUT /v1/auth/registration/policy`, invitations are single-use
+  hash-only tokens, and the endpoint is throttled (#366). The exemption's
+  removal issue is spent; keeping the entry temporary would re-arm the
+  time-bomb forever.
+- `/v1/setup/` → **temporary, re-justified, `expires: 2026-12-24`**: the
+  narrowing intent survives (auth.py already demonstrates the pattern on
+  `/v1/install/`: public only while `_setup_complete()` is false), the
+  reason now names that exact removal path plus the current truths
+  (`/v1/setup/complete` guards itself with an in-handler one-shot 409,
+  `status`/`presets` are read-only and must stay reachable pre-bootstrap).
+
+Ratchet: identities are `(path, kind)` pairs; neither changed, so
+12 identities → 12 identities, base-authorized, rc 0 — a field edit is
+"ordinary reviewed policy" per the gate's own failure text.
+
+### Round-14 validation battery (this machine, working tree at `0846fabbfac9` + this round's fixes)
+
+| gate | local command (CI shape) | result |
+|---|---|---|
+| 15 backend/canvas/e2e-adjacent `test` tree | `uv run pytest tests/ --ignore=tests/tools/registry -q --tb=short` | **5848 passed, 140 skipped, 0 failed** (5m29s) — was 3 failed |
+| sandbox conformance suite (merge-added) | `uv run pytest packages/maistro-bootstrap/tests -q` | 274 passed, 5 skipped |
+| audit-gate + devskim unit tests | `uv run pytest tests/test_npm_audit_gate.py tests/test_devskim_scan_scope.py -q` | 35 passed |
+| routes + pins in-repo tests | `uv run pytest tests/test_check_public_routes.py tests/test_check_image_pins.py -q` | 65 passed |
+| Quality / Image pins | `uv run python scripts/check-image-pins.py` | rc 0 — 10 pins across 11 Dockerfiles, all registered |
+| public routes (ci.yml:291) | `uv run python scripts/check-public-routes.py` | rc 0 — 12 identities, base-authorized |
+| npm audit (real registry call) | `npm audit --json` + `python scripts/npm_audit_gate.py` | audit rc 0, total 0; gate rc 0 |
+| suite inventory | `uv run python scripts/check-suite-inventory.py` | ok — 21 suites, `tests/:` 6081 incl. the +1 note |
+| test duplicates | `uv run python scripts/check-test-duplicates.py` | ok — 0 byte-identical groups |
+| vulture ledger (lane brief, CI-exact args) | `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | rc 0 — 1236 = 1236, base `ba7d378ef7d3` |
+| ruff | `uv run ruff check .` / `uv run ruff format --check .` | green, 3578 files |
+
+Blast radius of the merge is bounded and re-proven: it touches
+`maistro-bootstrap` sandbox tests + `Dockerfile.sandbox`, the npm audit
+gate + its tests, `tests/test_devskim_scan_scope.py`, and quality ledgers —
+`git diff 0846fabbfa^1 0846fabbfa -- packages/maistro-canvas/` is empty, so
+the canvas frontend steps are byte-identical to the tree whose CI ran green
+in rounds 12–13.
+
+### Round-14 disposition
+
+**MERGE-READY (writer handoff).** Every named red in the lane brief's last
+merge-queue evaluation is the `test` job, and all three of its independent
+failure modes at this head (collection NameError, stale npm waiver, expired
+exemptions) plus the `Quality / Image pins` red are fixed with local proofs
+in CI's exact shapes. The pin fix keeps the PR's own contract intact: the branch still ships the
+#2304 runtime OS layer, `python:3.15.2-slim-bookworm` (dependabot's 3.15.0
+as evolved through the container-gate rounds; pybuild keeps the CPython
+3.13.18 contract interpreter and the final stage grafts it), with test/sbx
+images deliberately held on the registered 3.12.16 bookworm pin the
+container gate triaged.

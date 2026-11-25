@@ -17,7 +17,7 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 
 import pytest

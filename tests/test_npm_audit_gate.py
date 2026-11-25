@@ -134,8 +134,18 @@ def _run(
 
 
 def test_the_real_picomatch_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """The live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report())
+    """A live waiver covers the advisory AND every package it cascades into.
+
+    The waiver is passed explicitly: the shipped ``ALLOWED`` is empty since
+    GHSA-fc5q-39xc-vjpf was withdrawn upstream on 2026-11-18 and deleted
+    under the stale-waiver ratchet (pinned separately).
+    """
+    rc = _run(
+        gate,
+        tmp_path,
+        _picomatch_report(),
+        allowed={"GHSA-fc5q-39xc-vjpf": "unpatchable picomatch advisory; triaged"},
+    )
     out = capsys.readouterr().out
     assert rc == 0
     assert "allowed: GHSA-fc5q-39xc-vjpf" in out
@@ -174,7 +184,12 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={"GHSA-fc5q-39xc-vjpf": "unpatchable picomatch advisory; triaged"},
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
@@ -261,11 +276,30 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={"GHSA-fc5q-39xc-vjpf": "unpatchable picomatch advisory; triaged"},
+    )
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
     assert "GHSA-fc5q-39xc-vjpf" in out
+
+
+def test_the_withdrawn_picomatch_advisory_is_not_waived(gate) -> None:
+    """The shipped ALLOWED must not waive an advisory npm no longer reports.
+
+    GHSA-fc5q-39xc-vjpf was withdrawn upstream on 2026-11-18
+    (``withdrawn_at: 2026-11-18T15:38:56Z``) and ``npm audit --json`` at the
+    canvas frontend now reports zero vulnerabilities, so the waiver fails the
+    gate's own stale-waiver ratchet in CI (the ``test`` job's audit step
+    exited 1 on it). Deleting it is the ratchet working, not a relaxation:
+    the shipped list stays empty until a live unfixable advisory is triaged.
+    """
+    assert "GHSA-fc5q-39xc-vjpf" not in gate.ALLOWED
+    assert gate.ALLOWED == {}
 
 
 def test_usage_error(gate) -> None:
