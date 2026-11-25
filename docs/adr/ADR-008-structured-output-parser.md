@@ -26,7 +26,6 @@ history:
 
 # ADR-008: StructuredOutputParser
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T1  
 **Depends on:** ADR-005
