@@ -233,6 +233,38 @@ async def test_compensate_unlaunched_mirrors_cancelled_recovered_onto_the_projec
     assert persisted.attempts[0].error == "graph launch boom"
 
 
+async def test_recover_orphaned_mirrors_cancelled_recovered_onto_the_projection() -> None:
+    """P3b: Graph execution store exposes the leaseless orphan leaf (#2417)."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+    assert attempt.execution_lease is None
+    running = await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    settled = await execution_store.recover_orphaned_attempt(
+        running.attempt_id, owning_run_id=record.run_id, error="graph orphan boom"
+    )
+
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "graph orphan boom"
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "graph orphan boom"
+
+
+async def test_recover_orphaned_refuses_wrong_owning_run() -> None:
+    _store, _run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+
+    with pytest.raises(RunIntegrityError, match="owning_run_id"):
+        await execution_store.recover_orphaned_attempt(
+            attempt.attempt_id, owning_run_id="not-this-run"
+        )
+
+
 async def test_reclaim_leaves_alone_an_attempt_whose_holder_renewed() -> None:
     """The projection can be stale by exactly one renewal. Cancelling on that
     evidence would terminalize demonstrably live work, which is the one thing
@@ -861,6 +893,64 @@ async def test_compensate_unlaunched_in_local_mode_commits_cancelled_recovered()
     assert persisted.attempts[0].error == "local launch boom"
 
 
+async def test_recover_orphaned_in_local_mode_commits_cancelled_recovered() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+    assert attempt.execution_lease is None
+
+    settled = await execution_store.recover_orphaned_attempt(
+        attempt.attempt_id, owning_run_id=record.run_id, error="local orphan boom"
+    )
+
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "local orphan boom"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "local orphan boom"
+
+
+async def test_recover_orphaned_in_local_mode_refuses_wrong_owning_run() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+
+    with pytest.raises(RunIntegrityError, match="owning_run_id"):
+        await execution_store.recover_orphaned_attempt(
+            attempt.attempt_id, owning_run_id="wrong-owner"
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED
+    assert persisted.attempts[0].cancellation_cause is None
+
+
+async def test_recover_orphaned_in_local_mode_skips_sibling_attempts() -> None:
+    """Multi-attempt records must walk past non-target rows (continue branch)."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    first = await execution_store.create_attempt(node_run_id)
+    await execution_store.transition_attempt(
+        first.attempt_id, AttemptStatus.CANCELLED, error="superseded"
+    )
+    second = await execution_store.create_attempt(node_run_id)
+    assert second.execution_lease is None
+
+    settled = await execution_store.recover_orphaned_attempt(
+        second.attempt_id, owning_run_id=record.run_id, error="sibling orphan"
+    )
+
+    assert settled.attempt_id == second.attempt_id
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    by_id = {attempt.attempt_id: attempt for attempt in persisted.attempts}
+    assert by_id[first.attempt_id].status is AttemptStatus.CANCELLED
+    assert by_id[first.attempt_id].cancellation_cause is None
+    assert by_id[second.attempt_id].cancellation_cause is CancellationCause.RECOVERED
+
+
 async def test_compensate_unlaunched_in_local_mode_refuses_a_stale_fence() -> None:
     """The record's own lock does not excuse a stale fencing token."""
     store, execution_store, record, node_run_id = await _local_only_store()
@@ -888,3 +978,143 @@ async def test_compensate_unlaunched_in_local_mode_missing_attempt_raises() -> N
         await execution_store.compensate_unlaunched_attempt(
             "missing", fencing_token="tok", error="x"
         )
+
+
+# --- P4b: leaseless recover + recovered disposition on the durable adapter ---
+
+
+async def test_recover_leaseless_skips_unrelated_attempts_then_settles_target() -> None:
+    """The mutate loop must `continue` past non-matching rows before settling."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    first = await execution_store.create_attempt(node_run_id, executor_id="prior")
+    cancelled = await execution_store.transition_attempt(first.attempt_id, AttemptStatus.CANCELLED)
+    assert cancelled.status is AttemptStatus.CANCELLED
+    orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
+    assert orphan.execution_lease is None
+
+    settled = await execution_store.recover_leaseless_orphaned_attempt(
+        orphan.attempt_id, error="process lost"
+    )
+
+    assert settled.attempt_id == orphan.attempt_id
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "process lost"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert [a.attempt_id for a in persisted.attempts] == [first.attempt_id, orphan.attempt_id]
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is None
+    assert persisted.attempts[1].cancellation_cause is CancellationCause.RECOVERED
+
+
+async def test_recover_leaseless_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.recover_leaseless_orphaned_attempt("no-such-attempt")
+
+
+async def test_local_recovered_disposition_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.apply_recovered_attempt_disposition("no-such-attempt")
+
+
+async def test_local_recovered_disposition_missing_node_run_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
+    recovered = await execution_store.recover_leaseless_orphaned_attempt(orphan.attempt_id)
+    assert recovered.cancellation_cause is CancellationCause.RECOVERED
+
+    current = await store.get(record.run_id)
+    assert current is not None
+    # DurableRunRecord refuses orphan Attempts on validate; construct a
+    # detached view so the disposition guard (not the record shape) fires.
+    detached = recovered.model_copy(update={"node_run_id": "missing-node-run"})
+    broken = DurableRunRecord.model_construct(
+        run=current.run,
+        graph_state=current.graph_state,
+        node_runs=current.node_runs,
+        attempts=(detached,),
+        version=current.version,
+    )
+
+    async def _broken_record() -> DurableRunRecord:
+        return broken
+
+    monkeypatch.setattr(execution_store, "_get_record", _broken_record)
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await execution_store.apply_recovered_attempt_disposition(detached.attempt_id)
+
+
+async def test_bound_recovered_disposition_mirrors_canonical_parking() -> None:
+    """Wired RunStore path: canonical disposition write + durable Graph mirror."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-A", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+    reclaimed = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+
+    parked_node, parked_run = await execution_store.apply_recovered_attempt_disposition(
+        reclaimed[0].attempt_id
+    )
+
+    assert parked_node.status is RunStatus.WAITING
+    assert parked_run.status is RunStatus.WAITING
+    canonical_node = await run_store.get_node_run(node_run_id)
+    canonical_run = await run_store.get_run(record.run_id)
+    assert canonical_node is not None and canonical_node.status is RunStatus.WAITING
+    assert canonical_run is not None and canonical_run.status is RunStatus.WAITING
+    durable = await store.get(record.run_id)
+    assert durable is not None
+    assert durable.node_runs[0].status is RunStatus.WAITING
+    assert durable.run.status is RunStatus.WAITING
+
+
+async def test_local_recovered_disposition_happy_path_parks_record() -> None:
+    """No-RunStore path: _apply_local_recovered_disposition parks NodeRun+Run in-record."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-L", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+    reclaimed = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+
+    parked_node, parked_run = await execution_store.apply_recovered_attempt_disposition(
+        reclaimed[0].attempt_id
+    )
+
+    assert parked_node.status is RunStatus.WAITING
+    assert parked_run.status is RunStatus.WAITING
+    durable = await store.get(record.run_id)
+    assert durable is not None
+    assert durable.node_runs[0].status is RunStatus.WAITING
+    assert durable.run.status is RunStatus.WAITING

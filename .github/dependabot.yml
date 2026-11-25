@@ -39,6 +39,48 @@ updates:
       interval: weekly
       day: saturday
     open-pull-requests-limit: 5
+  # JavaScript (#344): every tracked npm surface gets reviewed update PRs.
+  # Same tiering as uv above — security+patch grouped onto green CI, the
+  # rest weekly and rate-limited — and directories listed individually
+  # because Dependabot does not recurse. The surfaces are exactly the ones
+  # scripts/js_dependency_gate.py tracks; a new surface fails that gate
+  # until it is classified there AND here.
+  - package-ecosystem: npm
+    directory: /packages/hive-conductor/frontend
+    schedule:
+      interval: weekly
+      day: sunday
+    open-pull-requests-limit: 5
+    groups:
+      security-and-patch:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types:
+          - "patch"
+  - package-ecosystem: npm
+    directory: /packages/maistro-canvas/frontend
+    schedule:
+      interval: weekly
+      day: sunday
+    open-pull-requests-limit: 5
+    groups:
+      security-and-patch:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types:
+          - "patch"
+  - package-ecosystem: npm
+    directory: /packages/hive-conductor/tests/e2e
+    schedule:
+      interval: weekly
+      day: sunday
+    open-pull-requests-limit: 3
+    groups:
+      security-and-patch:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types:
+          - "patch"
   - package-ecosystem: docker
     directory: /packages/hive-conductor
     schedule:

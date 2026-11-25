@@ -22,6 +22,7 @@ from services.design_service import (
     get_renderer_registry,
 )
 from services.request_principal import require_actor_id
+from services.safe_projection import public_failure
 
 from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
 from maistro.runs.concurrency import RunConcurrencyExceeded
@@ -241,7 +242,12 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
             headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
         ) from exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
+        # The operation's name plus the exception KIND — never its text, which
+        # carries paths and provider replies (#2465, CodeQL
+        # py/stack-trace-exposure). Unclassified failures stay in server logs.
+        raise HTTPException(
+            status_code=500, detail=f"Project preparation failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/projects/{project_id}")
@@ -269,7 +275,9 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Project fetch failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/projects")
@@ -299,7 +307,9 @@ async def list_design_projects(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Project listing failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/skills")
@@ -337,7 +347,9 @@ async def list_design_skills() -> list[dict[str, Any]]:
             for s in skills
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Skill listing failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/packs")
@@ -424,7 +436,9 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Discovery form unavailable: {public_failure(e)}"
+        ) from None
 
 
 @router.post("/projects/{project_id}/render")
@@ -459,7 +473,9 @@ async def create_render_job(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
+        raise HTTPException(
+            status_code=500, detail=f"Render job creation failed: {public_failure(e)}"
+        ) from None
 
 
 @router.post("/projects/{project_id}/consistency")
@@ -527,5 +543,5 @@ async def get_render_job_status(project_id: str, job_id: str, request: Request) 
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Render job status unavailable: {e!s}"
+            status_code=500, detail=f"Render job status unavailable: {public_failure(e)}"
         ) from None

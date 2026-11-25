@@ -1652,7 +1652,13 @@ class _ChatDagRunScoreAdapter:
     """The run shape the eval judge scores a chat-launched DAG through."""
 
     def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
-        self.run_id = exec_id
+        # Evidence keys by the canonical Run the projection correlates to
+        # (#2470): the facade result names it in `run_id` (#35/#1332), so a
+        # chat-launched score lands under the same identity the scoring
+        # route guards idempotency by — not under a second alias-keyed row
+        # the optimizer would count twice. The exec id only backstops
+        # callers whose result predates canonical correlation.
+        self.run_id = str(result.get("run_id") or "") or exec_id
         self.dag_id = dag_id
         self.project_id = ""
         self.status = "completed"
@@ -1675,17 +1681,36 @@ class _ChatDagRunScoreAdapter:
             self.node_records.append(n)
 
 
-async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+async def _eval_judge_score(
+    exec_id: str,
+    dag_id: str,
+    result: dict[str, Any],
+    *,
+    actor_id: str = "",
+    workspace_id: str = "",
+) -> dict[str, Any]:
     """Score a chat-launched DAG through the eval judge.
 
     The scorer is commentary on a run, not part of it: its failure has the
     same standing as a failed history write and must not change the outcome
     the caller sees.
+
+    This automatic score is ONE logical score with a later authorized POST
+    (#2470): evidence keys by the canonical Run (`result["run_id"]`,
+    #35/#1332) so the route's idempotency guard sees it, and the turn's
+    principal and Workspace ride through as the verdict's provenance —
+    exactly what the route records for a manual score. An unattributed row
+    is not evidence the optimizer may rank improvement proposals on.
     """
     try:
         from services.eval_judge import score_run
 
-        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+        return await score_run(
+            _ChatDagRunScoreAdapter(exec_id, dag_id, result),
+            actor_id=actor_id,
+            workspace_id=workspace_id,
+            canonical_run_id=str(result.get("run_id") or ""),
+        )
     except Exception as e:
         return {"score": 0, "error": str(e)[:100]}
 
@@ -1762,6 +1787,7 @@ async def _tool_run_workflow(
     # `completed`; catching it separately is what lets the failure branch
     # record the canonical outcome instead of re-deciding it locally (#35).
     from services.graph_runner import CanonicalDagExecutionError
+    from services.safe_projection import public_failure
 
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
@@ -1804,8 +1830,17 @@ async def _tool_run_workflow(
                 payload={"source": "llm", "response": nr.get("response", "")[:2000]},
             )
 
-        # Trigger eval-judge
-        score_result = await _eval_judge_score(exec_id, dag_id, result)
+        # Trigger eval-judge — attributed to the turn's principal inside
+        # its Workspace (#2470): the automatic score is real scoring
+        # evidence and carries the same actor/scope provenance a manual
+        # score does.
+        score_result = await _eval_judge_score(
+            exec_id,
+            dag_id,
+            result,
+            actor_id=str(user_id or ""),
+            workspace_id=str(workspace_id or ""),
+        )
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1863,7 +1898,7 @@ async def _tool_run_workflow(
                 result=canonical,
                 canonical_run_id=str(canonical.get("run_id") or ""),
             )
-        return {"error": f"DAG execution failed: {exc}"}
+        return {"error": f"DAG execution failed: {public_failure(exc)}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
