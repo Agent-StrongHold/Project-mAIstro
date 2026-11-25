@@ -720,3 +720,101 @@ are the repo-wide #313 expiry (owner decision on `quality/public-routes.json`,
 or #313 itself) and the timing-sensitive prod-postgres live probe — neither
 reachable from this lane without either a security-ledger edit it is not
 authorized to make or a product authorization change it must not invent.
+
+## Round 2026-11-25 (start head `727920edd2`, job `095dab865df6`): container gate re-proven at the live PR head, and the `uv.lock` revision downgrade proven inert
+
+The brief again named **"Container scan + SBOM + cosign: failure"** — the same
+`a11908f338`-era board accounting three rounds have now disproved. Read the
+authoritative surface this time, not an inference: `gh api
+commits/bf0d53470239…/check-runs` returns 81 check runs, 78 success / 3
+failure, and `Container scan + SBOM + cosign` is **completed / success**. The
+three red ones are `Coverage gate (publish-set floor + diff coverage)`
+(job 139050831754), `lint-and-type-check` (139042378306) and `test`
+(139042378028).
+
+**Those three red checks are exactly four test failures, and only one is ours.**
+Pulled both job logs (`gh api actions/jobs/<id>/logs`): the `test` job reports
+`4 failed, 6138 passed, 141 skipped` and the coverage job dies in step 7
+`combine` (its root-suite producer) on the same four ids —
+`test_check_public_routes::test_it_agrees_with_the_middleware`,
+`test_check_public_routes::test_main_passes_and_says_how_many`,
+`test_js_dependency_gate::test_builds_reconcile_to_the_audited_lockfiles`,
+`test_prod_postgres_probe_live::test_first_boot_ready_only_after_init_completed`.
+The middle one is the `RUN npm ci` regression `d7a5303b33` already fixed, which
+is why CI still shows it: that commit is local-only, never pushed. Attribution
+of the other three: `git diff --stat 221dc3d517..HEAD -- quality/
+tests/test_check_public_routes.py tests/test_prod_postgres_probe_live.py
+scripts/check-public-routes.py` is empty — the branch touches none of them.
+
+**Re-measured here rather than carried over.**
+
+- `uv run pytest tests/test_check_public_routes.py -q` → 2 failed / 22 passed,
+  and the gate names its own two remedies verbatim: "the exemption expired on
+  2026-11-24 — close it (#313) or re-justify it with a new date…" for
+  `/v1/auth/register` and `/v1/setup/`. `gh api issues/313` → **open**, P1, M2,
+  unassigned. Not this lane's ledger and not this lane's authorization path.
+- `uv run pytest tests/test_prod_postgres_probe_live.py -q --timeout=30` (CI's
+  own producer bound) → **3 passed in 51.85s**, ≈17s per test. Two different
+  CI symptoms (an inconclusive-window assert in `test`, a `>30s` pytest-timeout
+  in the coverage producer) on a test that passes locally under CI's bound is
+  runner latency, and the branch ships nothing that reaches `deploy/`.
+- Container leg, built from THIS head rather than argued: `docker build --target
+  frontend --no-cache -f packages/hive-conductor/Dockerfile .` → exit 0, the
+  changed `RUN npm ci --audit-level=high` step executes and the vite bundle
+  builds. This matters specifically because `d7a5303b33` edited that line *after*
+  the successful container run at `bf0d534702`.
+- **New finding, previously unexamined by any round:** `bf0d534702`'s
+  regeneration left `uv.lock` at `revision = 3` while develop `221dc3d517` is at
+  `revision = 5` (and re-encoded four `pyobjc-framework-*` markers to their
+  logically equivalent simple form). That looks like a container-gate hazard —
+  the job's `Reconcile installed packages to uv.lock` step compares image
+  contents to `uv export --locked` — so it was tested, not assumed: all four of
+  CI's exact export commands produce files byte-identical to base's (only the
+  header command line differs), the exports are identical when run with CI's
+  pinned uv **0.12.5** (`uvx --from uv==0.12.5 uv export --locked …`, rc 0) as
+  with local uv 0.12.20, and `uv lock --check` passes under both. The downgrade
+  is semantically inert and no gate reads the revision number; no re-lock was
+  attempted, because rewriting all four reconciled images' lock to change one
+  header line is churn with a real downside and no gate to show for it.
+- Vulture with CI's argv (`packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) → `1221 reviewed identities -> 1221 findings`, exit 0.
+  Nothing is unbanked, so the brief's ledger-amendment permission is moot and
+  `quality/vulture-baseline.json` was not touched.
+- Offline image/supply-chain gates: `check-image-pins` (11 pins / 11
+  Dockerfiles), `check-image-inventory`, `check-workflow-inventory` (33),
+  `check-build-context`, `check-uv-setup` (74 steps at 0.12.5),
+  `check-suite-inventory` (21 suites), `check-reachability` (1503 production
+  modules, 82 unreachable, rc 0) — all green.
+- npm legs at this head: canvas `npm audit --json` → `npm_audit_gate.py` "OK (0
+  advisories reported)"; hive → "OK (1 advisories reported, all triaged in
+  ALLOWED)" with metadata `7 moderate / 0 high / 0 critical`; and
+  `pytest tests/test_npm_audit_gate.py tests/test_js_dependency_gate.py` → 53
+  passed, plus the five suites that read this Dockerfile → 184 passed.
+- Diff-coverage measured fresh here (producers `tests/pi_recovery` 177 + 32
+  subtests and `packages/maistro-rsi/tests` 1794 passed / 4 skipped, `coverage
+  xml`): `scripts/check-diff-coverage.py coverage.xml --base 221dc3d517` →
+  "ok: every measured file this change touches is at or above 90% lines / 80%
+  branch arcs", 10 measured files, 7 exempt as declared test code.
+- Issue acceptance re-checked: `pytest tests/pi_recovery -q -rs` → 177 passed,
+  32 subtests, **zero skips**; `systemd-analyze verify` clean on all four unit
+  templates; `tests/pi_recovery/test_portability.py` carries 20 cases including
+  the fresh-bindings-disabled, never-replace-existing, unsafe-operator-session,
+  relocated-package and no-embedded-user-home guards the PR body claims.
+
+**Two accuracy defects in the PR body, recorded for the reviewer, not
+repaired here** (editing the body is a GitHub mutation this lane must not
+make): it still says "85 unittest cases … 85 pytest cases plus 17 subtests" and
+"No product-package/runtime changes". Both were true of the `cf4a562b` draft.
+At this head the port carries 177 cases + 32 subtests across six root-suite
+files (+92 per `docs/testing/inventory-notes/pi-foremen-recovery-coverage.md`),
+and later CI-repair rounds did touch product/runtime files:
+`packages/maistro-rsi/src/maistro_rsi/free_router.py` (+8, OpenRouter-owned
+pick filter, covered by `test_resolve_rejects_third_party_free_picks`),
+`packages/hive-conductor/Dockerfile`, the two frontend `.npmrc` files, and
+`uv.lock`. A reviewer reading the body as an ops-only diff will be misinformed.
+
+**Round tally:** 1 named failure checked → 1 disproved with live CI evidence;
+0 in-scope defects left unfixed (the one branch-caused failure is fixed in
+`d7a5303b33`, unpushed); 2 base-inherited blockers escalated; 1 new inertness
+proof recorded; 2 PR-body accuracy defects flagged. No test added or removed, so
+no inventory-note delta. Tree change this round: this record only.
