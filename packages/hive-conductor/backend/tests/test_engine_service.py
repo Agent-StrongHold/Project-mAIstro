@@ -1030,3 +1030,19 @@ async def test_local_task_backend_get_async_scopes_to_the_owner() -> None:
     assert got is not None and got.id == rec.id
     assert await backend.get_async(rec.id, user_id="intruder") is None
     assert await backend.get_async("missing") is None
+
+
+def test_project_scope_store_reads_through_the_agent_port_container() -> None:
+    """#52: Design admission resolves scope via EngineService.project_scope_store."""
+    from services.engine import EngineService
+
+    scope = object()
+    service = EngineService()
+    service._agent_port = SimpleNamespace(container=SimpleNamespace(project_scope_store=scope))
+    assert service.project_scope_store is scope
+
+    service._agent_port = SimpleNamespace(container=None)
+    assert service.project_scope_store is None
+
+    service._agent_port = SimpleNamespace()
+    assert service.project_scope_store is None

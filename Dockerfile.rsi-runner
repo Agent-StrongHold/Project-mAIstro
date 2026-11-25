@@ -29,6 +29,32 @@
 # FROM down and the rebuilt image assembles the freshly executed layers.
 # Re-bump this pin whenever a DSA lands faster than this bump mechanism
 # can be exercised (recorded in quality/image-pins.json).
+#
+# 2026-11-23 (#1629 CI repair): that bump mechanism ran out of headroom —
+# python:3.12-slim still resolved to sha256:5e2bdb1b… when re-inspected
+# that day, so the linux-libc-dev 6.12.118-1 advisory landed WITHOUT any
+# base re-push, and the rsi-runner-r2 scope (rotation already consumed)
+# replayed its mode=max cached manifest at 6.12.117-1 while the same run's
+# own build log unpacked 6.12.118-1 from trixie-security (security.yml run
+# 45208690976, job 137811317864). Keys stay pre-execution, so no rotation
+# survives the next advisory either: `OS_REFRESH` mutates THIS stage's key
+# per run instead (both CI workflows pass
+# --build-arg OS_REFRESH=<run_id>-<attempt>), which changes every
+# downstream key chain with it — the loaded image can only ever assemble
+# the freshly executed layers. Local builds default to 0 and keep today's
+# stable-key behaviour.
+#
+# #2430 evaluated Dependabot's 3.12 -> 3.15 index bump and rejected it
+# (2026-11-21, the #2136 wheel ceiling re-verified on this lock):
+# `uv sync --locked --python 3.12` below installs the whole workspace set,
+# which selects psycopg-binary 3.3.4 (no cp315 wheel and no sdist — pinned
+# resolution fails closed if the line is ever bumped to 3.15) and
+# coincurve 21.0.0 (cp313 ceiling; its sdist needs a compiler this slim
+# base does not carry). On Dependabot's lone-FROM jump the sync instead
+# runs by downloading an un-pinned managed 3.12 interpreter into the
+# build — an unattested, moving artifact the #349 doctrine forbids, baked
+# into this image only via uv's home-dir python cache. See
+# tests/test_root_image_interpreter_lines.py.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime-apt
 
 # libbrotli1 ships here via git's libcurl; CVE-2026-111497 (Brotli decoder
@@ -36,7 +62,10 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 # named explicitly instead of left to dependency resolution — the
 # security-patch stage re-runs on every candidate (`--no-cache-filter
 # runtime-apt`), so the mirror's current candidate ships.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+ARG OS_REFRESH=0
+# The no-op `:` word carries the ARG into the RUN's instruction so the value
+# is part of the cache key without writing anything to the layer.
+RUN : "os-refresh=$OS_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git curl build-essential libbrotli1 \
     && apt-get autoremove -y --purge \
     && apt-get clean \
@@ -47,7 +76,24 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # Dockerfile.research. This image runs agent-authored code, so its OS surface
 # is a containment boundary, not a convenience.
 
-FROM runtime-apt
+# The workspace/venv branch hangs off the SAME digest-pinned base — not off
+# `runtime-apt` — so its cache keys stay stable across runs while the OS
+# layer re-keys per run. Everything expensive here (context copies, the
+# baked git snapshot, `uv sync --locked`) builds once and is reused across
+# runs whose candidate content is unchanged; the final stage below
+# assembles fresh-OS + this tree, and its own key chain includes the
+# per-run OS key, so it can never replay a cached pre-advisory manifest
+# (the 2026-11-23 rsi-runner-r2 replay class).
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS workspace
+
+# git: the baseline snapshot below runs `git init`/`git add`/`git commit`;
+# build-essential: the sdist headroom the apt stage used to lend this
+# branch (the 3.12 line resolves wheels for everything the sync selects,
+# but capability parity costs one cached layer). Neither binary reaches
+# the shipped image: only /workspace and the pinned uv binary are copied
+# out of this stage.
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # uv installer image digest-pinned to the 0.12.21 release (#349); `:latest`
 # here previously let a tag move swap the loop's installer with no repo diff.
@@ -168,5 +214,24 @@ RUN uv sync --locked --python 3.12 --extra rsi-fitness
 RUN .venv/bin/python scripts/prune-dependency-namespaces.py \
     && .venv/bin/python scripts/check-dependency-namespaces.py --production \
     && uv cache clean
+
+# Shipped image = fresh OS layer + the cached workspace tree. This stage's
+# key chain runs through `runtime-apt`, whose key OS_REFRESH mutates per
+# run, so `--load` can only ever produce an image whose OS state is what
+# THIS build fetched from the security mirror. Runtime parity with the
+# pre-restructure image: same env block, same /workspace WORKDIR, venv not
+# on PATH (consumers name /workspace/.venv/bin/python explicitly —
+# security.yml's lock reconciliation and tools/run_rsi_isolated.sh both do).
+FROM runtime-apt
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120
+
+WORKDIR /workspace
+
+COPY --from=workspace /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=workspace /workspace /workspace
 
 CMD ["sleep", "infinity"]

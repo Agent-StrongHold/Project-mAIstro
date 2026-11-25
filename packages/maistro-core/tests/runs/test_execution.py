@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from maistro.runs import (
 )
 from maistro.runs.execution import ExecutionYielded
 from maistro.runs.lifecycle import InvalidLifecycleTransition
+from maistro.runs.model import CancellationCause
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -669,6 +671,52 @@ async def test_cancel_registered_reports_no_owner_for_an_unknown_attempt() -> No
 
 
 @pytest.mark.asyncio
+async def test_cancel_registered_evidence_reports_no_owner_for_an_unknown_attempt() -> None:
+    """`None` is "not this process's Attempt", distinct from a refused cancel.
+
+    The bool return of `cancel_registered` says "the cancel did not take";
+    the receipt logic needs to know whether that is because this process has
+    no Runtime handle at all — the case where another worker may still be
+    running the try (#1242). An id no service registered answers `None`, not
+    `False`.
+    """
+    assert (
+        await AttemptExecutionService.cancel_registered_evidence("attempt-unknown-evidence") is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_registered_evidence_answers_when_the_service_is_the_owner() -> None:
+    """A registered owner's evidence is the same bool `cancel_registered` gives.
+
+    The receipt classifier only reaches this probe for tries no enumerate
+    covered; when the service IS the registered owner it must still answer —
+    a `None` here would silently reclassify a live local try as someone
+    else's problem and the receipt would under-report a stop it did prove.
+    """
+    from datetime import timedelta
+
+    store, run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    await store.transition_run(run_id, RunStatus.QUEUED)
+    await store.transition_run(run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(
+        node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    service._active_services[attempt.attempt_id] = service
+    try:
+        assert await AttemptExecutionService.cancel_registered_evidence(attempt.attempt_id) is True
+        persisted = await store.get_attempt(attempt.attempt_id)
+        assert persisted is not None
+        assert persisted.status is AttemptStatus.CANCELLED
+    finally:
+        service._active_services.pop(attempt.attempt_id, None)
+
+
+@pytest.mark.asyncio
 async def test_a_launch_refused_by_the_store_settles_the_attempt_as_cancelled() -> None:
     """A store that refuses the RUNNING write leaves an Attempt that never ran.
 
@@ -818,11 +866,12 @@ async def test_cancelling_an_active_attempt_without_a_lease_is_an_integrity_erro
 
 @pytest.mark.asyncio
 async def test_cancelling_a_registered_run_transitions_a_still_open_run() -> None:
-    """`cancel_registered_run` is the owner-visible leg of cancellation.
+    """`cancel_registered_run_evidence` is the owner-visible leg of cancellation.
 
     When the Run is not fenced CANCELLED yet (the spine asks for cancellation
     before any fence is written), the owning service must transition it, not
-    assume someone else did.
+    assume someone else did. The evidence tuple is #1242's contract: the
+    owner answer and this process's own signal results come back separately.
     """
     from datetime import timedelta
 
@@ -838,7 +887,12 @@ async def test_cancelling_a_registered_run_transitions_a_still_open_run() -> Non
     )
     service._active_services[attempt.attempt_id] = service
     try:
-        assert await AttemptExecutionService.cancel_registered_run(run_id) is True
+        owners, signals = await AttemptExecutionService.cancel_registered_run_evidence(run_id)
+        assert owners is True
+        # The try was created but never launched through the runtime, so the
+        # signal could not reach it: the evidence says False rather than
+        # claiming a physical stop nobody observed (#1242).
+        assert signals == {attempt.attempt_id: False}
         run = await store.get_run(run_id)
         assert run is not None
         assert run.status is RunStatus.CANCELLED
@@ -893,6 +947,159 @@ async def test_terminalizing_an_attempt_that_disappeared_mid_execution_is_an_int
     with pytest.raises(RunIntegrityError, match="disappeared during execution"):
         await service._terminalize_if_open(
             "attempt-ghost", AttemptStatus.FAILED, fencing_token="token-1"
+        )
+
+
+class _PrelaunchRaceStore(InMemoryRunStore):
+    """Another authority wins between the openness check and the compensate call.
+
+    The winner's transition lands inside `compensate_unlaunched_attempt` — the
+    exact interleaving the CREATED prelaunch refusal handler exists for. A
+    ``vanish`` prime instead models the row disappearing after the refusal,
+    which the handler must report as torn state rather than dereference.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.winner: AttemptStatus | None = None
+        self._vanish_after_refusal = False
+        self._refused = False
+
+    def prime_vanish_after_refusal(self) -> None:
+        self._vanish_after_refusal = True
+
+    async def compensate_unlaunched_attempt(
+        self, attempt_id: str, *, fencing_token: str, **kwargs: object
+    ) -> Attempt:
+        self._refused = True
+        if self.winner is not None:
+            await super().transition_attempt(attempt_id, self.winner, fencing_token=fencing_token)
+        if self._vanish_after_refusal:
+            raise InvalidLifecycleTransition("the prelaunch row was pulled underneath us")
+        return await super().compensate_unlaunched_attempt(
+            attempt_id, fencing_token=fencing_token, **kwargs
+        )
+
+    async def get_attempt(self, attempt_id: str, **kwargs: object) -> Any:
+        # After the refusal, a vanished row stays vanished: whatever looks the
+        # Attempt up now finds nothing, the way a concurrent terminalizer's
+        # delete would leave it.
+        if self._refused and self._vanish_after_refusal:
+            return None
+        return await super().get_attempt(attempt_id, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_requested_cancelled_prelaunch_settle_never_routes_through_the_seam() -> None:
+    """A requested stop (CancelledError) on a CREATED Attempt stays REQUESTED (#2369).
+
+    The executor feeds `_failure_disposition(CancelledError)` — status CANCELLED
+    — into `_terminalize_if_open`. The prelaunch seam must fire only for a
+    non-requested failure (status is not CANCELLED); a requested stop of
+    never-launched work takes the ordinary terminalize path: CANCELLED with no
+    RECOVERED stamp, still CREATED-unstarted, and this caller owns the
+    settle. Routing it through `compensate_unlaunched_attempt` would turn an
+    operator's decision into a crash-recovery artefact and park the node for
+    a retry nobody asked for.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+
+    settled, owned = await service._terminalize_if_open(
+        attempt.attempt_id, AttemptStatus.CANCELLED, fencing_token=token
+    )
+
+    assert owned is True
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is not CancellationCause.RECOVERED
+    assert settled.started_at is None
+    assert settled.finished_at is not None
+    reopened = await store.get_attempt(attempt.attempt_id)
+    assert reopened is not None
+    assert reopened.cancellation_cause is None
+    # The overridden store marks every seam call: zero means the guard held.
+    assert store._refused is False
+
+
+async def _prelaunch_rig() -> tuple[_PrelaunchRaceStore, AttemptExecutionService, Attempt, str]:
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("ws-1")
+    project = await project_store.create(
+        workspace_id="ws-1", parent_project_id=root.project_id, name="Execution"
+    )
+    store = _PrelaunchRaceStore(project_store=project_store)
+    graph = Graph(
+        workspace_id="ws-1",
+        project_id=project.project_id,
+        name="One node",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = await store.create_attempt(
+        node_run.node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    assert attempt.execution_lease is not None
+    return store, service, attempt, attempt.execution_lease.fencing_token
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_losing_to_a_running_winner_reraises() -> None:
+    """A launch that lands mid-failure owns the Attempt.
+
+    Its RUNNING write must not be rewritten into CANCELLED+RECOVERED by this
+    caller's late error: the refusal propagates and the row stays RUNNING with
+    no cause stamped.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+    store.winner = AttemptStatus.RUNNING
+
+    with pytest.raises(InvalidLifecycleTransition):
+        await service._terminalize_if_open(
+            attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
+        )
+
+    reopened = await store.get_attempt(attempt.attempt_id)
+    assert reopened is not None
+    assert reopened.status is AttemptStatus.RUNNING
+    assert reopened.cancellation_cause is None
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_losing_to_a_terminal_winner_reports_it() -> None:
+    """A concurrent canceller won: report its Attempt instead of raising.
+
+    `False` — this caller did not settle the row, so it must not reconcile
+    the row either (ADR-082526-b36a); the requested winner keeps its cause.
+    """
+    store, service, attempt, token = await _prelaunch_rig()
+    store.winner = AttemptStatus.CANCELLED
+
+    settled, owned = await service._terminalize_if_open(
+        attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
+    )
+
+    assert owned is False
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is None
+
+
+@pytest.mark.asyncio
+async def test_prelaunch_compensation_on_a_vanished_attempt_is_an_integrity_error() -> None:
+    """Refused, and then the row is gone: torn state, not a clean outcome."""
+    store, service, attempt, token = await _prelaunch_rig()
+    store.prime_vanish_after_refusal()
+
+    with pytest.raises(RunIntegrityError, match="disappeared during prelaunch compensation"):
+        await service._terminalize_if_open(
+            attempt.attempt_id, AttemptStatus.FAILED, fencing_token=token
         )
 
 

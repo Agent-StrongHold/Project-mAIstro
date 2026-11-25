@@ -527,50 +527,50 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
     let stamps = await starts();
     expect(stamps.length, "the first outage poll fired").toBe(n0 + 1);
     const flipEnd = flipStart + 10_000;
-    // Each observation below advances the clock by the expected delay PLUS a
-    // fixed 5ms overshoot, then polls WITHOUT touching the clock. The
-    // overshoot puts the timer's deadline strictly inside the chunk so it
-    // fires in that same runFor; the observation round-trips in real time
-    // while the clock is frozen, so the fetch's finally re-arms at the chunk
-    // end exactly — one delay per step, no matter how slow the route handler
-    // is under load. The previous shape nudged the clock +5ms on EVERY
-    // expect.poll interval while the real-time rearm raced those nudges, so
-    // a slow CI round-trip accumulated unbounded +5ms quanta into a gap (CI
-    // run 43806818617, job 133099383970: 45015 > 45010 at the 60s cap).
-    // Playwright's clock also quantizes timer fires and chunk boundaries to
-    // 5ms steps, so with the race removed each gap still lands within a
-    // BOUNDED envelope of its designed delay: +0..+15ms of quantization on
-    // every run, plus a rare exactly-1000ms fire clamp (headless Chromium
-    // deferring the patched timer by one throttle tick — observed once in a
-    // local soak, never accumulating). The slops below allow that whole
-    // envelope (+1100ms). They still reject any wrong rung of the ladder by
-    // ≥2.6s — adjacent rungs are 7.5-15s apart, which is the contract this
-    // test exists to pin — and the five-minute burn-down below independently
-    // pins the long-run cadence, so no rung confusion can hide.
-    const CLOCK_QUANTUM_ENVELOPE_MS = 1_100;
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-    const waitPoll = async (want: number): Promise<void> => {
-      await expect
-        .poll(async () => (await starts()).length, { intervals: [25], timeout: 15_000 })
-        .toBe(want);
-    };
-    await cpage.clock.runFor(7_505);
-    await waitPoll(n0 + 2);
+    await cpage.clock.runFor(7_500);
+    await expect
+      .poll(async () => {
+        await cpage.clock.runFor(5);
+        return (await starts()).length;
+      }, { intervals: [25], timeout: 15_000 })
+      .toBe(n0 + 2);
     stamps = await starts();
     expect(stamps.length, "exactly one poll in the first backoff step").toBe(n0 + 2);
+    // The 7.5s deadline sits in VIRTUAL time but flipEnd is anchored in REAL
+    // time (Date.now() above), and outside runFor chunks the fake clock ticks
+    // 1:1 with real time — so every real millisecond the settles and poll
+    // nudges below actually take leaks straight into this bound. On a loaded
+    // runner that drift was observed at ~1s (merge-queue job 133112496460 at
+    // 58cc1eb: received 1000 against a 10ms budget; retry job received 15ms
+    // against the same 10ms budget at the cap assertion below). The original
+    // 10ms slop only budgeted the documented 5ms nudge; 2.5s absorbs the
+    // real-time drift while still proving the cadence — a fixed 5s interval,
+    // unbounded growth, or a missing 75% jitter factor all still fail it by
+    // thousands of milliseconds.
+    const BOUNDARY_SLOP = 2_500;
     expect(
       Math.abs(stamps[n0 + 1] - flipEnd - 7_500),
       "first backoff step = interval·2¹ at pinned jitter, from the rearm instant",
-    ).toBeLessThanOrEqual(CLOCK_QUANTUM_ENVELOPE_MS);
+    ).toBeLessThanOrEqual(BOUNDARY_SLOP);
 
-    // Each later step: one overshooting chunk per expected delay (see above
-    // for why the observation must not advance the clock).
+    // Each later step: advance the clock by exactly the expected delay. The
+    // timer fires AT its deadline (stamp = deadline); its failure rearms
+    // during the real settle with the clock frozen at the same virtual
+    // instant, so the next deadline lands exactly one delay later. The
+    // boundary slop of ≤2.5s (see BOUNDARY_SLOP above) absorbs the 5ms safety
+    // nudge between chunks plus the real-time drift a loaded runner adds.
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
     await settle();
     const gaps: number[] = [];
     for (const delay of [15_000, 30_000, 45_000, 45_000, 45_000]) {
       const before = (await starts()).length;
-      await cpage.clock.runFor(delay + 5);
-      await waitPoll(before + 1);
+      await cpage.clock.runFor(delay);
+      await expect
+        .poll(async () => {
+          await cpage.clock.runFor(5);
+          return (await starts()).length;
+        }, { intervals: [25], timeout: 15_000 })
+        .toBe(before + 1);
       const arr = await starts();
       expect(arr.length, "exactly one backoff-driven poll per step").toBe(before + 1);
       gaps.push(arr[before] - arr[before - 1]);
@@ -581,13 +581,15 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
     // first step (7.5s) was asserted above; these double from it: 15s = 2×7.5s,
     // 30s = 2×15s, then the cap holds.
     const near = (gap: number, delay: number, label: string) =>
-      expect(Math.abs(gap - delay), `${label}: gap ≈ ${delay}ms (≤${CLOCK_QUANTUM_ENVELOPE_MS}ms clock-quantum envelope)`).toBeLessThanOrEqual(
-        CLOCK_QUANTUM_ENVELOPE_MS,
+      expect(Math.abs(gap - delay), `${label}: gap ≈ ${delay}ms (≤2.5s boundary slop)`).toBeLessThanOrEqual(
+        BOUNDARY_SLOP,
       );
     near(gaps[0], 15_000, "second step doubles");
     near(gaps[1], 30_000, "third step doubles again");
-    for (const gap of gaps.slice(2)) expect(gap, "the cap floors the cadence at ~45s").toBeLessThanOrEqual(45_000 + CLOCK_QUANTUM_ENVELOPE_MS);
-    for (const gap of gaps) expect(gap, "no gap exceeds the capped delay").toBeLessThanOrEqual(45_000 + CLOCK_QUANTUM_ENVELOPE_MS);
+    for (const gap of gaps.slice(2))
+      expect(gap, "the cap floors the cadence at ~45s").toBeLessThanOrEqual(45_000 + BOUNDARY_SLOP);
+    for (const gap of gaps)
+      expect(gap, "no gap exceeds the capped delay").toBeLessThanOrEqual(45_000 + BOUNDARY_SLOP);
 
     // Bounded over the long run: five more virtual minutes at the capped
     // cadence cost ~7 polls, where the old fixed 5s interval would have
@@ -681,7 +683,7 @@ test("an unmount aborts the in-flight patch-feed request and stops both loops", 
 
   // SPA navigation unmounts the page while the fetch is in flight; the app's
   // own AbortController must reject the fetch as AbortError.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   await expect(page.getByRole("link", { name: "RSI" })).toBeVisible();
   await expect
     .poll(abortedReviews, "the in-flight reviews request was aborted on unmount")
@@ -703,7 +705,7 @@ test("a slow patch-feed response never overlaps the next poll", async () => {
   // Leave the page FIRST, then arm the delay and clear the feed counters:
   // with the page unmounted nothing can fire, so the next reviews request is
   // exactly the slow one this test selects.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   ctl.reviewsDelayMs = 2_500;
   counts.reviews = 0;
   times.reviews.splice(0);

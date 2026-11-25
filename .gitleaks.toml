@@ -155,3 +155,21 @@ commits = ["4806d9673fab7d7dd6ec6944724990f0129d9d81"]
 paths = [
   '''\.github/workflows/ci\.yml$'''
 ]
+
+[[allowlists]]
+# PR #2465's sentinel regression suite pins a fake provider credential
+# (SECRET_SENTINEL in test_dag_failure_public_projection.py) so endpoint
+# tests can assert no public body ever echoes credential-shaped failure
+# evidence. The literal has since been split in the working tree (the
+# config-header fix this file documents), but `gitleaks git` scans each
+# commit's own patch, so the introducing commit (7e00a4aa8) keeps the
+# finding until history stops being scanned -- the same situation as the
+# de04b449 / 1e4058c3c / 4806d967 entries above. Scoped to that one
+# commit, one path, and the generic-api-key rule so any other
+# credential-shaped value still fails closed.
+description = "Fake provider-credential sentinel in the PR #2465 public-projection suite."
+targetRules = ["generic-api-key"]
+commits = ["7e00a4aa818427813399b24160c7bd4676aa362b"]
+paths = [
+  '''packages/hive-conductor/backend/tests/test_dag_failure_public_projection\.py$'''
+]
