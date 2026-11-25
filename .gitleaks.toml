@@ -107,6 +107,27 @@ regexes = [
 ]
 
 [[allowlists]]
+# SPEC-101826-1836's mutation table quotes one did:key specimen: the canonical
+# example DID published in the W3C did:key specification (an Ed25519 test
+# vector that authenticates to nothing). The document is a byte-exact
+# golden-vector contract -- the digest column is pinned to those exact input
+# bytes, to become literal test assertions on acceptance -- so rewording the
+# specimen would invalidate the recorded digest, and splitting the literal
+# cannot clear findings from already-written commit patches inside a PR-range
+# scan (the same reason the commit-scoped entry below exists). The generic
+# api-key rule matches the `key:` field-name prefix without regard to whether
+# what follows is a value or a specification specimen -- the same reason
+# ADR-064 and SPEC-070626-5341 keep their specimens. The reviewed identity is
+# the value itself: content-scoped, line-number- and commit-independent, and
+# scoped to the one rule family. Any OTHER credential-shaped value in this
+# document still fails closed. (#1836 introduced the document.)
+description = "W3C did:key specification's published example DID, quoted as a golden-vector input by SPEC-101826-1836; a public test vector that authenticates to nothing."
+targetRules = ["generic-api-key"]
+regexes = [
+  '''z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK''',
+]
+
+[[allowlists]]
 # The sentinel PII-filter fixture suite builds a PEM specimen in code:
 # an f-string whose body is the placeholder `{body}`, spliced between the
 # BEGIN/END markers at runtime. There is no key material on that line — the
@@ -154,4 +175,22 @@ targetRules = ["generic-api-key"]
 commits = ["4806d9673fab7d7dd6ec6944724990f0129d9d81"]
 paths = [
   '''\.github/workflows/ci\.yml$'''
+]
+
+[[allowlists]]
+# PR #2465's sentinel regression suite pins a fake provider credential
+# (SECRET_SENTINEL in test_dag_failure_public_projection.py) so endpoint
+# tests can assert no public body ever echoes credential-shaped failure
+# evidence. The literal has since been split in the working tree (the
+# config-header fix this file documents), but `gitleaks git` scans each
+# commit's own patch, so the introducing commit (7e00a4aa8) keeps the
+# finding until history stops being scanned -- the same situation as the
+# de04b449 / 1e4058c3c / 4806d967 entries above. Scoped to that one
+# commit, one path, and the generic-api-key rule so any other
+# credential-shaped value still fails closed.
+description = "Fake provider-credential sentinel in the PR #2465 public-projection suite."
+targetRules = ["generic-api-key"]
+commits = ["7e00a4aa818427813399b24160c7bd4676aa362b"]
+paths = [
+  '''packages/hive-conductor/backend/tests/test_dag_failure_public_projection\.py$'''
 ]

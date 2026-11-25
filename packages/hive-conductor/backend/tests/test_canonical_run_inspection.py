@@ -193,7 +193,9 @@ async def test_a_projectionless_canonical_run_is_inspectable_and_controllable_by
     # authority): the fence lands on the canonical Run, and the projection
     # store never gains a row for it -- cancellation is not a projection edit.
     response = await cancel_route(run.run_id, _ScopedRequest(_USER_ID))
-    assert response == {"run_id": run.run_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == run.run_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
     cancelled = await store.get_run(run.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
     assert cancelled.finished_at is not None

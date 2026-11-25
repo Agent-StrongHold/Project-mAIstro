@@ -461,6 +461,13 @@ jobs:
         run: |
           uv run pytest packages/maistro-core/tests/scheduling -v --tb=short
           uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -v --tb=short
+          # #2467's startup reconciliation is a policy over the canonical
+          # ScheduleStore, and its crash windows are only real against the
+          # production PgScheduleStore: the projection-authority suite's pg
+          # leg runs the same scenarios over the migrated server that the
+          # steps above migrated. Same contract: under MAISTRO_REQUIRE_PG_LEGS
+          # a missing DSN is a red job, not a silent skip.
+          uv run pytest packages/hive-conductor/backend/tests/test_schedule_projection_authority.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
@@ -1356,7 +1363,9 @@ jobs:
       # nothing every time. `docker-build` is the longest job in the suite --
       # the wall-clock floor under how fast any candidate can go green -- and
       # every build below ran with zero cache before this. Scopes are per
-      # image (`engine`, `hive-conductor`, `engine-research`, `rsi-runner`) so
+      # image (`engine`, `hive-conductor`, `engine-research-r2`,
+      # `rsi-runner-r2` -- the `-r2` suffixes mark scopes rotated off stale
+      # cached vertices, #2283 and the krb5 replay above) so
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
@@ -1574,12 +1583,26 @@ jobs:
       # build under a second tag. A tag alias proves exactly as much as a
       # second `docker build` would and costs nothing.
       - run: docker tag maistro-engine:test maistro-engine:ci
+      # Scope rotated with security.yml's identical step (CI runs 45129507410
+      # and 45191845177): the old scope's cached vertices predate the krb5
+      # 1.21.3-5+deb13u2 security update, and a stale read out of it is the
+      # only state source that can put the pre-advisory 1.21.3-5+deb13u1 dpkg
+      # layer into a freshly built image (the build's own apt log unpacked
+      # deb13u2; the scan read deb13u1). A cache miss just rebuilds cold.
+      # Rotation alone cannot survive the next advisory (#1629 repair:
+      # rsi-runner-r2 replayed linux-libc-dev 6.12.117-1 while its own apt
+      # fetched 6.12.118-1, and the #1152 pin bump had no headroom — the tag
+      # still resolved to sha256:5e2bdb1b…), so the image's apt stage key is
+      # mutated per run via OS_REFRESH (see Dockerfile.research); the cached
+      # builder stage keeps the venv warm because it hangs off the pinned
+      # base directly.
       - name: Build maistro-engine-research (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t maistro-engine-research:ci
-          --load --cache-from type=gha,scope=engine-research
-          --cache-to type=gha,scope=engine-research,mode=max .
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
+          --load --cache-from type=gha,scope=engine-research-r2
+          --cache-to type=gha,scope=engine-research-r2,mode=max .
       # #346 gap (b): the research image's whole purpose is the browser
       # surface, and a green build says the layers assemble, not that Chromium
       # is present or loadable. The smoke resolves the browser through
@@ -1595,11 +1618,18 @@ jobs:
       # 40091186336): the old scope's week of cached results predates the
       # libbrotli1 deb13u1 security update, and a stale read out of it is the
       # only state source that can put the pre-advisory 1.1.0-2+b7 layer into a
-      # freshly built image. A cache miss just rebuilds cold.
+      # freshly built image. A cache miss just rebuilds cold. The #1629 repair
+      # extends that remedy: rotation cannot survive the next advisory
+      # (rsi-runner-r2 itself replayed linux-libc-dev 6.12.117-1 at security
+      # run 45208690976 while the same run's apt fetched 6.12.118-1), so the
+      # apt stage's key is mutated per run via OS_REFRESH and the final image
+      # assembles fresh-OS + the cached workspace branch.
       - name: Build maistro-rsi-runner (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=rsi-runner-r2
           --cache-to type=gha,scope=rsi-runner-r2,mode=max .
       # #346 gap (b): the rsi-runner image's runtime contract is the one

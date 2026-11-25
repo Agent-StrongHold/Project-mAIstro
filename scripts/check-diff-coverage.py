@@ -100,6 +100,9 @@ MEASURED_ROOTS = (
     # codes against is exactly the code an uncovered bug would bite hardest.
     "packages/maistro-ext-sdk/src/maistro_ext_sdk",
     "packages/hive-conductor/backend",
+    # The Evolve PostgreSQL recovery producer scopes directly to services so
+    # dependency installation cannot perturb its measured production modules.
+    "packages/hive-conductor/backend/services",
     # The gates themselves (#257). Every one of #160's five mandates is
     # enforced by a file in here, and until this entry they were the only
     # Python in the repository that no gate governed — 5632 statements at 55%,

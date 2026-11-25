@@ -120,9 +120,6 @@ def test_image_pins_supported_python_and_installs_identity() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     python_tags = re.findall(r"^FROM python:(3\.\d+\.\d+)-slim-bookworm", dockerfile, re.MULTILINE)
 
-    # 3.13.18 on the 2026-11-16 #1373 CI-repair round: grype's freshly-pulled
-    # DB flags CPython 3.13.16 binary CVE-2026-115557 (CRITICAL, fixed
-    # 3.13.18) on the images built FROM this base.
     assert python_tags == ["3.13.18", "3.13.18"]
     # #348 moved the image's dependency contract out of a pip command line in
     # the Dockerfile and into maistro-server's `image` extra, which the

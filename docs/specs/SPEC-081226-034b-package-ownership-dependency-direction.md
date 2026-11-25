@@ -37,7 +37,6 @@ owners:
 
 # SPEC-081226-034b: Package Ownership and Dependency Direction
 
-- **Status:** AC Defined
 - **Date:** 2026-08-12
 - **ADR:** `ADR-081226-034b`
 
