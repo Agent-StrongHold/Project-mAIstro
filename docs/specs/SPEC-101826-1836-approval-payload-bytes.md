@@ -39,7 +39,6 @@ history:
 
 # SPEC-101826-1836: Exact-effect approval payload bytes — versioned canonical serialization contract
 
-- **Status:** Proposed
 
 ## Decision boundary — read this first
 
