@@ -79,7 +79,6 @@ from maistro.runs.store import (
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
-    refuse_child_under_terminal_parent,
     validate_child_scope,
     validate_effect_claim_parent,
     validate_eval_score_spine,
