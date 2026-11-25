@@ -2043,6 +2043,36 @@ async def _terminal_attempt(spine: Any, node_run: Any, status: AttemptStatus) ->
     )
 
 
+async def _stamp_cancellation_cause(store: Any, attempt: Any, cause: CancellationCause) -> Any:
+    """Persist a typed cause until P3c stamps REQUESTED on the generic transition.
+
+    P4b refuses unknown CANCELLED; reclaim already stamps RECOVERED. Tests that
+    need REQUESTED (or RECOVERED without going through reclaim) write the cause
+    through each backend's authoritative payload update.
+    """
+    from maistro.runs.evidence_json import json_of
+
+    typed = attempt.model_copy(update={"cancellation_cause": cause})
+    if hasattr(store, "_attempts"):
+        store._attempts[typed.attempt_id] = typed
+        return typed
+    if hasattr(store, "_write_lock"):
+        async with store._write_lock:
+            await store._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                typed.attempt_id,
+                typed.status.value,
+                json_of(typed),
+            )
+        return typed
+    if hasattr(store, "_pool"):
+        async with store._pool.acquire() as conn, conn.transaction():
+            await store._write(conn, "canonical_attempts", "attempt_id", typed.attempt_id, typed)
+        return typed
+    raise TypeError(f"cannot stamp cancellation_cause on {type(store).__name__}")
+
+
 async def test_a_requested_cancellation_terminalizes_its_node_run(spine: Any) -> None:
     """The retry decision has been made, and it was *don't*. Parked would mean
     "awaiting a decision" — which is what made a cancelled turn and an outage
@@ -2050,6 +2080,7 @@ async def test_a_requested_cancellation_terminalizes_its_node_run(spine: Any) ->
     store, _workspace, _project_id = spine
     run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.REQUESTED
@@ -2068,6 +2099,7 @@ async def test_a_recovered_cancellation_still_parks_its_node_run(spine: Any) -> 
     store, _workspace, _project_id = spine
     run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.RECOVERED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.RECOVERED
@@ -2079,14 +2111,15 @@ async def test_a_recovered_cancellation_still_parks_its_node_run(spine: Any) -> 
     assert reloaded is not None and reloaded.status is RunStatus.WAITING
 
 
-async def test_recovery_is_the_default_so_a_caller_that_forgets_loses_nothing(
+async def test_typed_recovered_parks_without_a_caller_cause(
     spine: Any,
 ) -> None:
-    """The two mistakes are not symmetric: defaulting to parked leaves a less
-    informative record, defaulting to terminal destroys resumable work."""
+    """Persisted RECOVERED is enough — the caller no longer supplies the meaning
+    (#232 P4b). Unknown CANCELLED refuses; see test_reconciler_recovered_provenance."""
     store, _workspace, _project_id = spine
     _run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.RECOVERED)
 
     await AttemptLifecycleReconciler(store).reconcile(attempt)
 
@@ -2128,6 +2161,8 @@ async def test_the_three_outcomes_do_not_collapse_into_one(spine: Any) -> None:
     ):
         _run, node_run = await _running_run_with_node(spine)
         attempt = await _terminal_attempt(spine, node_run, status)
+        if status is AttemptStatus.CANCELLED:
+            attempt = await _stamp_cancellation_cause(store, attempt, cause)
         await reconciler.reconcile(attempt, cancellation=cause)
         settled = await store.get_node_run(node_run.node_run_id)
         assert settled is not None
@@ -2153,6 +2188,7 @@ async def test_a_cancelled_node_does_not_cancel_a_run_with_live_siblings(spine: 
         await store.transition_node_run(node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run_id, RunStatus.RUNNING)
     attempt = await _terminal_attempt(spine, cancelled_node, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.REQUESTED
@@ -2173,6 +2209,7 @@ async def test_a_cancellation_arriving_after_the_node_finished_changes_nothing(
     store, _workspace, _project_id = spine
     _run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
     await store.transition_node_run(
         node_run.node_run_id, RunStatus.FAILED, error="the node itself failed"
     )

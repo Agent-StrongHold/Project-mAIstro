@@ -131,9 +131,11 @@ class TestReclaimRefusals:
 
 
 class TestGenericTransitionStillRejectsRecovered:
-    def test_transition_attempt_does_not_take_a_recovered_argument(self) -> None:
-        """P2a must not grow a RECOVERED kwarg on the generic transition."""
-        import inspect
-
-        params = inspect.signature(transition_attempt).parameters
-        assert "cancellation_cause" not in params
+    def test_transition_attempt_refuses_recovered_cause(self) -> None:
+        """Generic transition may accept REQUESTED but must refuse RECOVERED (#2421)."""
+        with pytest.raises(InvalidLifecycleTransition, match="RECOVERED"):
+            transition_attempt(
+                Attempt(node_run_id="nr-1", ordinal=1),
+                AttemptStatus.CANCELLED,
+                cancellation_cause=CancellationCause.RECOVERED,
+            )

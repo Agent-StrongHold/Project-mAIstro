@@ -266,7 +266,13 @@ def test_specialized_producer_and_aggregator_budgets_are_coherent() -> None:
     # maistro-core cold-rebuild path (all four images' install layers
     # invalidated) exceeding the old 25-minute bound before engine-research
     # even finished; 45 is the repaired producer budget.
-    observed_queue_lag_minutes = 35
+    # #2437 (run 44748434713, job 136329705554) re-measured the lag ceiling:
+    # the required producers were created ~14:36Z and sat queued ~124 minutes
+    # before the first started at 16:40Z, so the old 120-minute evidence
+    # window expired and the aggregator failed at 16:38:18Z; every required
+    # check then concluded success 16:40:50-16:59:24Z. The lag floor moves to
+    # the larger of the two measurements.
+    observed_queue_lag_minutes = 125
     assert docker_timeout_minutes == 45
     assert evidence_wait_minutes >= observed_queue_lag_minutes + docker_timeout_minutes
     assert integration_timeout_minutes > evidence_wait_minutes

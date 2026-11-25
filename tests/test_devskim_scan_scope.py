@@ -16,9 +16,9 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 
 from __future__ import annotations
 
-import functools
+import os
 import re
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -41,14 +41,13 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
-# The sweep test calls `_is_scanned` once per shipped source file, and every
-# call used to re-read and re-parse devskim.yml twice: ~5k files times 2
-# parses of a workflow YAML pushed the test past its 30s pytest-timeout on a
-# loaded CI runner (coverage-gate job 133120551863, run 43812084099,
-# 2026-11-16) even though the scan-scope configuration it pins was unchanged.
-# Cache the parse: the workflow is a module-level constant within a single
-# pytest process, so memoizing cannot stale across configurations.
-@functools.lru_cache(maxsize=1)
+# Memoized: the sweep below asks `_is_scanned` about every shipped source
+# file, and each call used to re-read and re-parse devskim.yml twice (once per
+# glob list) and recompile every glob regex — ~3300 redundant YAML parses per
+# sweep, ~8.5s locally and past the coverage gate's 30s per-test cap on a
+# loaded runner (#2303). The values are constants of the workflow file; the
+# assertions are unchanged.
+@cache
 def _scanner_step() -> dict[str, object]:
     # Parsed once per process, not once per classified file: the sweep below
     # calls `_is_scanned` for every shipped source (~1.6k files), and a
@@ -64,24 +63,24 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
-@lru_cache(maxsize=1)
-def _ignore_globs() -> tuple[str, ...]:
+@cache
+def _ignore_globs() -> list[str]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
     assert raw, "the scanner step passes no ignore-globs — it would scan everything"
-    return tuple(glob.strip() for glob in str(raw).split(",") if glob.strip())
+    return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
 
 
-@lru_cache(maxsize=1)
-def _include_globs() -> tuple[str, ...]:
+@cache
+def _include_globs() -> list[str]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
     match = re.search(r"--include-globs\s+(\S+)", extra)
     assert match, "DevSkim must pass --include-globs so non-product roots are never scanned"
-    return tuple(glob.strip() for glob in match.group(1).split(",") if glob.strip())
+    return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
 
 
-@functools.cache
+@cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
 
@@ -90,12 +89,6 @@ def _as_regex(glob: str) -> re.Pattern[str]:
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
-
-    Compiled once per distinct glob: the sweep below matches every shipped
-    source file against every configured glob. The pattern itself is cheap —
-    the original timeout came from `_ignore_globs`/`_include_globs` re-reading
-    and re-parsing the workflow YAML twice per candidate path (~3.3k parses
-    per sweep); with those cached the match loop is microseconds per file.
     """
     out = ""
     i = 0
@@ -125,48 +118,42 @@ def _is_scanned(path: str) -> bool:
     return allowed and not denied
 
 
+_EXCLUDED_DIRS = {
+    "tests",
+    "__tests__",
+    "node_modules",
+    "dist",
+    "third_party",
+    "swagger-ui",
+    "corpora",
+    "eval",
+}
+
+
 def _shipped_sources() -> list[str]:
     seen: set[str] = set()
     for tree in SHIPPED_TREES:
         for base in REPO_ROOT.glob(tree):
-            for path in base.rglob("*"):
-                if path.suffix not in SOURCE_SUFFIXES:
-                    continue
-                rel = path.relative_to(REPO_ROOT)
-                parts = set(rel.parts)
-                # Tests, vendored code, and the vendored swagger-ui-dist
-                # release (#1425, served by backend/routes/api_docs.py with
-                # sha256 provenance pinned in `_ASSETS` and enforced by
-                # `backend/tests/test_docs_first_party.py`) are what the list
-                # is *for*; they are not the shipped surface it must leave
-                # alone.
-                if parts & {
-                    "tests",
-                    "__tests__",
-                    "node_modules",
-                    "dist",
-                    "third_party",
-                    "swagger-ui",
-                    "corpora",
-                    "eval",
-                }:
-                    continue
-                # Bundled Open Design fixtures (json/md/css only) under
-                # systems/catalog — excluded as a location, not a filename shape.
-                if "systems" in rel.parts and "catalog" in rel.parts:
-                    try:
-                        systems_i = rel.parts.index("systems")
-                    except ValueError:
-                        systems_i = -1
-                    if (
-                        systems_i >= 0
-                        and systems_i + 1 < len(rel.parts)
-                        and rel.parts[systems_i + 1] == "catalog"
-                    ):
+            if not base.exists():
+                continue
+            for root, dirs, files in os.walk(base):
+                # Prune directories that never contribute shipped sources, so
+                # the scan-scope check does not spend its 30s budget walking
+                # (e.g.) node_modules or vendored trees. Semantics match the
+                # previous `parts & _EXCLUDED_DIRS` filter.
+                dirs[:] = [d for d in dirs if d not in _EXCLUDED_DIRS]
+                # Bundled Open Design fixtures under systems/catalog are
+                # excluded as a location, not a filename shape.
+                if "catalog" in dirs and Path(root).name == "systems":
+                    dirs.remove("catalog")
+                for name in files:
+                    path = Path(root) / name
+                    if path.suffix not in SOURCE_SUFFIXES:
                         continue
-                if ".test." in path.name:
-                    continue
-                seen.add(rel.as_posix())
+                    rel = path.relative_to(REPO_ROOT)
+                    if ".test." in name:
+                        continue
+                    seen.add(rel.as_posix())
     return sorted(seen)
 
 

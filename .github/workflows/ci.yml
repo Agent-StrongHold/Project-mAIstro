@@ -461,6 +461,13 @@ jobs:
         run: |
           uv run pytest packages/maistro-core/tests/scheduling -v --tb=short
           uv run pytest packages/hive-conductor/backend/tests/test_scheduler_canonical_due.py -v --tb=short
+          # #2467's startup reconciliation is a policy over the canonical
+          # ScheduleStore, and its crash windows are only real against the
+          # production PgScheduleStore: the projection-authority suite's pg
+          # leg runs the same scenarios over the migrated server that the
+          # steps above migrated. Same contract: under MAISTRO_REQUIRE_PG_LEGS
+          # a missing DSN is a red job, not a silent skip.
+          uv run pytest packages/hive-conductor/backend/tests/test_schedule_projection_authority.py -v --tb=short
 
   object-storage:
     needs: workflow-lint
@@ -699,15 +706,26 @@ jobs:
         working-directory: packages/maistro-canvas/frontend
       - run: npm run build
         working-directory: packages/maistro-canvas/frontend
-      # GHSA-fc5q-39xc-vjpf (picomatch ReDoS) lists every published picomatch
-      # as vulnerable with no patched release, and vite@8 depends on picomatch
-      # ^4.0.7 directly, so bare `npm audit` cannot exit 0 on any lock this
-      # frontend can produce until upstream ships a patch. Same shape as the
-      # Python supply chain (PYSEC-2026-1325), same answer: the step writes the
-      # JSON report and scripts/npm_audit_gate.py owns the verdict. Any
-      # high/critical advisory outside the gate's triaged ALLOWED list still
-      # fails the job — including future advisories on the same packages — and
-      # a waiver whose advisory stops being reported fails as stale.
+      # The canvas frontend's audit is judged by a triaged gate, not a bare
+      # `npm audit --audit-level=high`: GHSA-fc5q-39xc-vjpf (picomatch ReDoS)
+      # listed every published picomatch as vulnerable with no patched release
+      # while vite@8 depends on picomatch ^4.0.7 directly, so no lock this
+      # frontend can produce audited clean. The advisory was withdrawn
+      # 2026-11-18T15:38:56Z — 0 advisories against the identical lock,
+      # picomatch still pinned at 4.0.7 (#2375) — and the gate's two-way
+      # ratchet deleted the waiver, so ALLOWED ships empty. The step still
+      # writes the JSON report and scripts/npm_audit_gate.py owns the verdict:
+      # any high/critical advisory outside its ALLOWED list fails the job —
+      # including future advisories on the same packages — and a waiver whose
+      # advisory stops being reported fails as stale.
+      #
+      # Reconciliation with #344's merge over this exact step: the surface is
+      # now judged twice, deliberately. security.yml's js-supply-chain job
+      # audits every tracked npm surface (any severity, expiring
+      # version-pinned exceptions plus GuardDog/license/typosquat/provenance)
+      # while this step keeps the in-tree high/critical verdict behind its
+      # no-fix-only waiver ratchet. Both fail closed, so their verdicts can
+      # only ever disagree by one of them going red — never a silent pass.
       - run: npm audit --json > /tmp/npm-audit.json || true
         working-directory: packages/maistro-canvas/frontend
       - run: python scripts/npm_audit_gate.py /tmp/npm-audit.json
@@ -1345,11 +1363,13 @@ jobs:
       # nothing every time. `docker-build` is the longest job in the suite --
       # the wall-clock floor under how fast any candidate can go green -- and
       # every build below ran with zero cache before this. Scopes are per
-      # image (`engine`, `hive-conductor`, `engine-research`, `rsi-runner`) so
+      # image (`engine`, `hive-conductor`, `engine-research-r2`,
+      # `rsi-runner-r2` -- the `-r2` suffixes mark scopes rotated off stale
+      # cached vertices, #2283 and the krb5 replay above) so
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@v4.4.1
 
       # `docker/build-push-action` exposes GitHub's runtime cache-auth
       # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
@@ -1563,23 +1583,67 @@ jobs:
       # build under a second tag. A tag alias proves exactly as much as a
       # second `docker build` would and costs nothing.
       - run: docker tag maistro-engine:test maistro-engine:ci
+      # Scope rotated with security.yml's identical step (CI runs 45129507410
+      # and 45191845177): the old scope's cached vertices predate the krb5
+      # 1.21.3-5+deb13u2 security update, and a stale read out of it is the
+      # only state source that can put the pre-advisory 1.21.3-5+deb13u1 dpkg
+      # layer into a freshly built image (the build's own apt log unpacked
+      # deb13u2; the scan read deb13u1). A cache miss just rebuilds cold.
+      # Rotation alone cannot survive the next advisory (#1629 repair:
+      # rsi-runner-r2 replayed linux-libc-dev 6.12.117-1 while its own apt
+      # fetched 6.12.118-1, and the #1152 pin bump had no headroom — the tag
+      # still resolved to sha256:5e2bdb1b…), so the image's apt stage key is
+      # mutated per run via OS_REFRESH (see Dockerfile.research); the cached
+      # builder stage keeps the venv warm because it hangs off the pinned
+      # base directly.
       - name: Build maistro-engine-research (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.research -t maistro-engine-research:ci
-          --load --cache-from type=gha,scope=engine-research
-          --cache-to type=gha,scope=engine-research,mode=max .
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
+          --load --cache-from type=gha,scope=engine-research-r2
+          --cache-to type=gha,scope=engine-research-r2,mode=max .
+      # #346 gap (b): the research image's whole purpose is the browser
+      # surface, and a green build says the layers assemble, not that Chromium
+      # is present or loadable. The smoke resolves the browser through
+      # Playwright — the same resolution the RESEARCH web tool performs — and
+      # executes it, on image contents alone; a browser-less control image
+      # must fail the same probe. Ported from the validated dead-lane probes
+      # (docs/testing/inventory-notes/claude-issue-346-smoke-tests.md) onto
+      # the evolved Dockerfile.research.
+      - name: Smoke the research image's Chromium surface (#346)
+        shell: bash
+        run: scripts/smoke-research-chromium.sh maistro-engine-research:ci
       # Scope rotated with security.yml's identical step (PR #2283, CI run
       # 40091186336): the old scope's week of cached results predates the
       # libbrotli1 deb13u1 security update, and a stale read out of it is the
       # only state source that can put the pre-advisory 1.1.0-2+b7 layer into a
-      # freshly built image. A cache miss just rebuilds cold.
+      # freshly built image. A cache miss just rebuilds cold. The #1629 repair
+      # extends that remedy: rotation cannot survive the next advisory
+      # (rsi-runner-r2 itself replayed linux-libc-dev 6.12.117-1 at security
+      # run 45208690976 while the same run's apt fetched 6.12.118-1), so the
+      # apt stage's key is mutated per run via OS_REFRESH and the final image
+      # assembles fresh-OS + the cached workspace branch.
       - name: Build maistro-rsi-runner (cached)
         run: >-
           scripts/buildx-build-retry.sh --
           -f Dockerfile.rsi-runner -t maistro-rsi-runner:ci
+          --build-arg OS_REFRESH="${{ github.run_id }}-${{ github.run_attempt }}"
+          --no-cache-filter runtime-apt
           --load --cache-from type=gha,scope=rsi-runner-r2
           --cache-to type=gha,scope=rsi-runner-r2,mode=max .
+      # #346 gap (b): the rsi-runner image's runtime contract is the one
+      # tools/run_rsi_isolated.sh operates — venv plus the source trees on
+      # PYTHONPATH (the root meta-package does not install maistro-rsi or
+      # maistro-evolve). The smoke mirrors that exact contract and imports
+      # the `python -m maistro_rsi run|evolve` entrypoints' own modules, on
+      # image contents alone; a workspace-less control image must fail the
+      # same probe. Ported from the validated dead-lane probes
+      # (docs/testing/inventory-notes/claude-issue-346-smoke-tests.md) onto
+      # the evolved Dockerfile.rsi-runner.
+      - name: Smoke the rsi-runner image's RSI runtime imports (#346)
+        shell: bash
+        run: scripts/smoke-rsi-runner-imports.sh maistro-rsi-runner:ci
 
   # #348: "CI rebuilds twice and compares dependency manifests". The maistro
   # engine image installs its entire Python set from `uv export --locked` +
@@ -1595,7 +1659,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@v4.4.1
       - uses: crazy-max/ghaction-github-runtime@v4
       - name: Rebuild maistro-engine (1st, no cache)
         run: >-
