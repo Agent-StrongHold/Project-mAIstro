@@ -6,6 +6,7 @@ import pytest
 
 from maistro_canvas.canvas.asset_compositor import (
     RenderPlan,
+    _serialise_world_style,
     build_scene_graph,
     compile_personalization,
     compose_prompt,
@@ -27,6 +28,7 @@ from maistro_canvas.layers import (
     Transform,
     WorldStyle,
     WorldStylePartial,
+    merge_world_style,
 )
 from maistro_canvas.types import OcclusionCycleError, SkinBindingError
 
@@ -341,6 +343,66 @@ def test_compose_prompt_deterministic():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# WorldStyle.perspective reaches the asset-path prompt (issue #2398)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_serialise_world_style_golden_includes_perspective():
+    """Golden shape: era/realism/architecture/vehicles/fauna then
+    perspective, then optional palette. Issue #2398: perspective was
+    previously dropped, so the declarative field never reached prompts."""
+    s = _serialise_world_style(_ws(perspective="two_point"))
+    assert s == (
+        "era: modern"
+        "; realism: watercolor"
+        "; architecture: cottage"
+        "; vehicles: 1970s-pickup"
+        "; fauna: cute"
+        "; perspective: two_point"
+        "; palette: sage, cream"
+    )
+
+
+def test_serialise_world_style_defaults_perspective_to_flat():
+    s = _serialise_world_style(_ws())
+    assert "perspective: flat" in s
+
+
+def test_compose_prompt_carries_perspective():
+    s = compose_prompt(world_style=_ws(perspective="isometric"), base_prompt="a small farmhouse")
+    assert "perspective: isometric" in s
+    assert "a small farmhouse" in s
+
+
+def test_merge_world_style_preserves_base_perspective():
+    merged = merge_world_style(_ws(perspective="one_point"), WorldStylePartial(realism="cel"))
+    assert merged.realism == "cel"
+    assert merged.perspective == "one_point"
+
+
+def test_merge_world_style_partial_overrides_perspective():
+    merged = merge_world_style(
+        _ws(),
+        WorldStylePartial(perspective="two_point"),
+    )
+    assert merged.perspective == "two_point"
+
+
+def test_compose_prompt_volume_overrides_perspective_for_in_range_page():
+    sv = StyleVolume(
+        page_range=(7, 9),
+        partial_world_style=WorldStylePartial(perspective="one_point"),
+    )
+    in_range = compose_prompt(world_style=_ws(), style_volumes=[sv], page_index=8, base_prompt="x")
+    out_of_range = compose_prompt(
+        world_style=_ws(), style_volumes=[sv], page_index=3, base_prompt="x"
+    )
+    assert "perspective: one_point" in in_range
+    assert "perspective: one_point" not in out_of_range
+    assert "perspective: flat" in out_of_range
+
+
+# ─────────────────────────────────────────────────────────────────────
 # plan_render
 # ─────────────────────────────────────────────────────────────────────
 
@@ -468,3 +530,29 @@ def test_plan_render_inline_definition_resolves_base_prompt():
     plan = plan_render(canvas_id="c", instances=[cloud], world_style=_ws())
     [r] = plan.rendered
     assert "a wispy cloud" in r.prompt
+
+
+def test_plan_render_prompt_carries_perspective_end_to_end():
+    """Issue #2398: the shipped asset path (plan_render -> compose_prompt)
+    must include the world style's perspective in every rendered prompt."""
+    inline = AssetDefinition(
+        asset_id="",
+        kind=LayerKind.STRUCTURE,
+        base_prompt="a small red farmhouse",
+    )
+    inst = _instance("FH", definition=inline)
+    plan = plan_render(
+        canvas_id="c",
+        instances=[inst],
+        world_style=_ws(perspective="two_point"),
+    )
+    [r] = plan.rendered
+    assert (
+        "era: modern"
+        "; realism: watercolor"
+        "; architecture: cottage"
+        "; vehicles: 1970s-pickup"
+        "; fauna: cute"
+        "; perspective: two_point"
+    ) in r.prompt
+    assert "a small red farmhouse" in r.prompt

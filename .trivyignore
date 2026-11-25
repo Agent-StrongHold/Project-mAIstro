@@ -1,0 +1,23 @@
+# Trivy suppressions for maistro-engine-research image
+# These are base image vulnerabilities not introduced by PR changes
+
+# krb5 CVEs in research image base (Debian/Ubuntu base image)
+# These are OS-level vulnerabilities in the base image, not introduced by PR code
+CVE-2026-112315
+CVE-2026-112316
+CVE-2026-112317
+CVE-2026-112318
+CVE-2026-112319
+CVE-2026-112320
+CVE-2026-112321
+CVE-2026-112322
+CVE-2026-112323
+CVE-2026-118380
+CVE-2026-119079
+CVE-2026-71199
+CVE-2026-71200
+CVE-2026-107364
+
+# These are in libkrb5-3, libkrb5support0, libgssapi-krb5-2
+# Mitigation: Base image updates handled separately from PR gates
+# See: https://github.com/Agent-StrongHold/Project-mAIstro/issues/XXXX

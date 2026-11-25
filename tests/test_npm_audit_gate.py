@@ -4,7 +4,12 @@ The report fixtures mirror the real shape of ``npm audit --json`` captured on
 2026-11-18 against packages/maistro-canvas/frontend (picomatch
 GHSA-fc5q-39xc-vjpf cascading through fdir/tinyglobby/vite/vitest/
 @vitejs/plugin-react): ``via`` mixes real advisory objects (with a GHSA URL)
-with bare strings naming the package that carries the advisory.
+with bare strings naming the package that carries the advisory. The advisory
+itself was withdrawn 2026-11-18T15:38:56Z and the shipped ``ALLOWED`` list is
+empty again (#2375), so every waiver-dependent test injects its own allowlist
+via ``_run(allowed=...)`` instead of relying on the live advisory database —
+none depends on the production ALLOWED ledger except the retirement pins.
+
 """
 
 from __future__ import annotations
@@ -133,15 +138,38 @@ def _run(
     return rc
 
 
-def test_the_real_picomatch_waiver_passes_the_real_cascade(gate, tmp_path, capsys) -> None:
-    """The live waiver covers the advisory AND every package it cascades into."""
-    rc = _run(gate, tmp_path, _picomatch_report())
+def test_a_waiver_covers_the_advisory_and_every_package_it_cascades_into(
+    gate, tmp_path, capsys
+) -> None:
+    """A triaged waiver covers the advisory AND every package it cascades into."""
+    advisory_id = "GHSA-fc5q-39xc-vjpf"
+    rc = _run(
+        gate,
+        tmp_path,
+        _picomatch_report(advisory_id),
+        allowed={advisory_id: "withdrawn upstream, no fix ever shipped; build-time exposure only"},
+    )
+
     out = capsys.readouterr().out
     assert rc == 0
-    assert "allowed: GHSA-fc5q-39xc-vjpf" in out
+    assert f"allowed: {advisory_id}" in out
     # every cascaded package is attributed to the one root advisory
     assert "fdir" in out and "tinyglobby" in out and "vitest" in out
     assert "npm audit OK" in out
+
+
+def test_the_shipped_allowlist_is_empty_after_the_withdrawn_picomatch_waiver(
+    gate,
+) -> None:
+    """ALLOWED ships empty: the picomatch waiver died with its withdrawn advisory.
+
+    GHSA-fc5q-39xc-vjpf was withdrawn 2026-11-18T15:38:56Z, npm's audit stopped
+    reporting it, and the gate's two-way ratchet fails on any entry the report
+    no longer lists — so the shipped state is a waiver-free allowlist. Pinning
+    that state here makes every FUTURE waiver a conscious edit of this test,
+    not a quiet dict append.
+    """
+    assert gate.ALLOWED == {}
 
 
 def test_an_unwaived_advisory_fails_naming_the_id_and_affecting_packages(
@@ -174,11 +202,22 @@ def test_a_new_advisory_on_the_same_chain_is_not_covered_by_the_waiver(
             "range": "<=4.0.7",
         }
     )
-    rc = _run(gate, tmp_path, report)
+    rc = _run(
+        gate,
+        tmp_path,
+        report,
+        allowed={
+            "GHSA-fc5q-39xc-vjpf": "withdrawn upstream, no fix ever shipped; build-time exposure only"
+        },
+    )
+
     out = capsys.readouterr().out
     assert rc == 1
     assert "GHSA-new-new-new" in out
     assert "outside the triaged allowlist" in out
+    # the verdict fails fast on the blocker: the gate names the new ID and
+    # never reaches the allowed-entries printout (waivers are acknowledged
+    # only once nothing blocks)
 
 
 def test_the_cascade_direction_is_two_sided(gate, tmp_path, capsys) -> None:
@@ -236,7 +275,7 @@ def test_a_malformed_vulnerabilities_object_is_an_infrastructure_failure(gate, t
 
 
 def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path, capsys) -> None:
-    """A clean report with a live waiver must fail until the waiver is deleted."""
+    """A waiver for an advisory the report no longer lists must fail until deleted."""
     report = {
         "auditReportVersion": 2,
         "vulnerabilities": {
@@ -261,11 +300,51 @@ def test_a_waiver_whose_advisory_stopped_being_reported_is_stale(gate, tmp_path,
         },
         "metadata": {"vulnerabilities": {"low": 1, "total": 1}},
     }
-    rc = _run(gate, tmp_path, report)
+    rc = _run(gate, tmp_path, report, allowed={"GHSA-gone": "waived last quarter"})
+
     out = capsys.readouterr().out
     assert rc == 1
     assert "stale" in out
-    assert "GHSA-fc5q-39xc-vjpf" in out
+    assert "GHSA-gone" in out
+    assert "delete it from ALLOWED" in out
+
+
+def test_a_fully_clean_report_passes(gate, tmp_path, capsys) -> None:
+    """The post-retirement shape: zero advisories, empty allowlist, exit 0.
+
+    This is the live production situation since npm's advisory database
+    stopped reporting GHSA-fc5q-39xc-vjpf on 2026-11-18 (#2375).
+    """
+    report = {
+        "auditReportVersion": 2,
+        "vulnerabilities": {},
+        "metadata": {
+            "vulnerabilities": {
+                "info": 0,
+                "low": 0,
+                "moderate": 0,
+                "high": 0,
+                "critical": 0,
+                "total": 0,
+            }
+        },
+    }
+    rc = _run(gate, tmp_path, report, allowed={})
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "npm audit OK (0 advisories reported, all triaged in ALLOWED)" in out
+
+
+def test_the_retired_picomatch_waiver_is_gone_from_the_production_allowlist(gate) -> None:
+    """The production ledger carries no waiver npm no longer justifies (#2375).
+
+    Regression pin for the 2026-11-18 CI red: npm stopped reporting
+    GHSA-fc5q-39xc-vjpf while the lock still carried picomatch 4.0.7, so the
+    stale waiver failed every run until it was deleted. Re-adding it without
+    an actively reported advisory re-breaks the same way — triage belongs in
+    ALLOWED only while the advisory is real.
+    """
+    assert "GHSA-fc5q-39xc-vjpf" not in gate.ALLOWED
 
 
 def test_usage_error(gate) -> None:

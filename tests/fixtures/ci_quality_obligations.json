@@ -162,7 +162,7 @@
       "steps": [
         {
           "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
-          "sha256": "579e9c345159a574f691072e784a11e46dbc15b46184d93ccabf2859dcadcfeb"
+          "sha256": "117adc0f920e7239a341b84c7a14f84f9d6d122ca8cd6572ffd5a2d97cf9acc8"
         }
       ]
     },
@@ -546,7 +546,7 @@
   "coverage_jobs": {
     "coverage-unit": "81c343adca11aa9e82f74aa6c891a4707a9e6a64109194f83fe274c23a0cbe9e",
     "coverage-archive": "c2e6d0aecd422d0456f6e8c42aa00afd6797099d1cef810f1fc725b61f688a09",
-    "coverage-postgres": "4640a42df2bf206ed62586d2ca8fb1b14ffefb84b1e07052933b95fee817a809",
-    "coverage-gate": "a97ddcd8707b2e5c0e0d78c1d5b331614b4fde18d6cd7baa8de11a1e01d29abc"
+    "coverage-postgres": "39d3f5edc8305f8f645394ae9808ecadc7e6a4d85d04aacc4719be44008875ae",
+    "coverage-gate": "daad3b3aa5415bdefb1399423e3f0d1264cc1d1ac832fefae5629b80e829dedd"
   }
 }

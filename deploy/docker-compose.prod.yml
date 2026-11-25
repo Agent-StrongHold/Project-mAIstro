@@ -219,10 +219,32 @@ services:
       - wal-archive:/var/lib/postgresql/wal_archive
       - ./init-replication.sh:/docker-entrypoint-initdb.d/init-replication.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maistro}"]
+      # #2396: same probe shape the local stack moved to in #339/#2395. A
+      # socket pg_isready answers inside the image entrypoint's temporary
+      # initialization server (socket-only, listen_addresses='') -- on this
+      # stack that window covers init-replication.sh creating the replicator
+      # role -- and it accepts any password, so a wrong POSTGRES_PASSWORD
+      # against an existing volume read as healthy and every dependent
+      # service (the replica's pg_basebackup, both engines, the Conductor)
+      # crash-looped on authentication instead of failing here with the
+      # credential named. The probe goes over TCP to this service's own
+      # network address (the temporary server never listens on TCP; only the
+      # final server, which starts after initdb.d completed, can answer) and
+      # then runs a real query as the application user with the application
+      # password. `$$` keeps Compose from interpolating on the host: the
+      # values expand inside the container, from the environment this
+      # service already sets (user/db are parameterized here, unlike the
+      # local stack's fixed maistro).
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -h postgres-primary && PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -U \"$$POSTGRES_USER\" -h postgres-primary -d \"$$POSTGRES_DB\" -Atc 'SELECT 1'"]
       interval: 5s
       timeout: 3s
       retries: 10
+      # initdb plus init-replication.sh on slow storage can outlast the
+      # failure budget above. During start_period a failed probe does not
+      # count toward unhealthy (a successful probe still marks healthy
+      # immediately), so a slow first boot waits instead of aborting
+      # `compose up` -- the same contract the local stack uses (#339).
+      start_period: 300s
     mem_limit: 2g
     memswap_limit: 2g
     pids_limit: 512

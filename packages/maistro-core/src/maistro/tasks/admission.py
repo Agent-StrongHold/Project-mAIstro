@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work, direct_work_graph
+from maistro.runs.cancellation import CancellationReceipt
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
@@ -159,6 +160,22 @@ class TaskAdmitter(Protocol):
         work nothing signalled. Implement the member to make cancellation
         physically reach admitted Runs; leaving it absent opts out of
         physical cancellation, visibly (cancel refuses), never silently.
+        """
+        ...
+
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """The physical evidence behind one canonical cancellation (#1242).
+
+        ``cancel_run``'s bool says the *logical fence* is durable; it cannot
+        say whether the provider stopped, and a caller that renders "cancelled"
+        from it is rendering a stop nobody proved. This member returns the
+        receipt that separates the two.
+
+        Optional, probed with ``getattr`` exactly like ``cancel_run`` was
+        (#1338): an adapter that predates it keeps working, and the queue then
+        reports ``UNCERTAIN`` for its admitted work rather than borrowing a
+        confidence it has no evidence for. ``None`` means the Run was not
+        found, which callers read as they read a ``lookup_run`` miss.
         """
         ...
 
@@ -357,6 +374,19 @@ class TaskRunAdmitter:
         except ValueError:
             return False
         return updated.status is RunStatus.CANCELLED
+
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """Cancel through the canonical service and return its evidence."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            return await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run_receipt(run_id)
+        except ValueError:
+            return None
 
     async def record_transition(
         self,
@@ -566,6 +596,19 @@ class WorkspaceRoutingAdmitter:
         except ValueError:
             return False
         return updated.status is RunStatus.CANCELLED
+
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """Cancel through the shared canonical store, as ``cancel_run`` does."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            return await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run_receipt(run_id)
+        except ValueError:
+            return None
 
     async def record_transition(
         self,
