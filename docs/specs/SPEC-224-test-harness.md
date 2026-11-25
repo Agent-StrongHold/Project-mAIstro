@@ -75,7 +75,12 @@ class HarnessEnvironment:
 
 
 def create_test_environment(
-    *, provider=None, config=None, agents=None, graph_config=None, event_filter=None,
+    *,
+    provider=None,
+    config=None,
+    agents=None,
+    graph_config=None,
+    event_filter=None,
 ) -> HarnessEnvironment: ...
 ```
 

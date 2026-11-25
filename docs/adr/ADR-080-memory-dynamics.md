@@ -68,16 +68,20 @@ never decay to zero** — they have a permanent weight floor (per ADR-016 `WEIGH
 
 ```python
 def on_access(m: Memory) -> None:
-    m.decay_timer = now()                                # access refreshes
+    m.decay_timer = now()  # access refreshes
+
 
 def on_feedback(m: Memory, signal: Literal["up", "down"]) -> None:
     if signal == "up":
-        m.weight *= BOOST; m.decay_rate *= SLOW          # boost + slow decay
+        m.weight *= BOOST
+        m.decay_rate *= SLOW  # boost + slow decay
     else:
-        m.weight *= DROP;  m.decay_rate *= FAST           # drop + speed decay
-    m.tier = reclassify(m.cumulative_feedback)            # may promote→WISDOM / demote→REGRET
+        m.weight *= DROP
+        m.decay_rate *= FAST  # drop + speed decay
+    m.tier = reclassify(m.cumulative_feedback)  # may promote→WISDOM / demote→REGRET
 
-WEIGHT_FLOOR = {"REGRET": 0.6, "WISDOM": 0.9}            # ADR-016 WEIGHT_BOUNDS; never decays below
+
+WEIGHT_FLOOR = {"REGRET": 0.6, "WISDOM": 0.9}  # ADR-016 WEIGHT_BOUNDS; never decays below
 ```
 
 ### (B) Consolidation
@@ -126,8 +130,10 @@ def is_own_memory(reader: Principal, m: Memory) -> bool:
         return m.user_id == reader.user_id
     return True
 
+
 def can_read(reader: Principal, m: Memory) -> bool:
     return is_own_memory(reader, m) or (m.shared and m.scope >= reader.scope)
+
 
 def propose_widen(m: Memory, target: Scope) -> ConsentTask:
     return ConsentTask(prompt=f"You learned {m.summary}; share with {target}?", approver=m.owner)

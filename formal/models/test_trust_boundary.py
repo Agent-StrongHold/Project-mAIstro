@@ -6,8 +6,7 @@ import time
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.trust_boundary import (
     Action,
     PermissionGrant,
@@ -18,14 +17,14 @@ from maistro.security.trust_boundary import (
 
 
 def _fresh_grant(**overrides):
-    defaults = dict(
-        grantee="agent-1",
-        read_paths=["/workspace/**"],
-        write_paths=["/workspace/**"],
-        can_execute=False,
-        allowed_commands=[],
-        expires_at=time.time() + 3600,
-    )
+    defaults = {
+        "grantee": "agent-1",
+        "read_paths": ["/workspace/**"],
+        "write_paths": ["/workspace/**"],
+        "can_execute": False,
+        "allowed_commands": [],
+        "expires_at": time.time() + 3600,
+    }
     defaults.update(overrides)
     return PermissionGrant(**defaults)
 

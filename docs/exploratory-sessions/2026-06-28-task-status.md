@@ -17,11 +17,11 @@ stale value from an older enum version, etc.). Ran a quick interactive probe:
 from maistro.tasks.models import TaskStatus
 from maistro.tasks.status import can_transition
 
-can_transition(TaskStatus.QUEUED, "planning")        # -> True
-can_transition(TaskStatus.QUEUED, "not-a-real-status") # -> False
-can_transition("not-a-real-status", TaskStatus.PLANNING) # -> False
-can_transition(TaskStatus.QUEUED, None)               # -> False
-can_transition(None, TaskStatus.PLANNING)             # -> False
+can_transition(TaskStatus.QUEUED, "planning")  # -> True
+can_transition(TaskStatus.QUEUED, "not-a-real-status")  # -> False
+can_transition("not-a-real-status", TaskStatus.PLANNING)  # -> False
+can_transition(TaskStatus.QUEUED, None)  # -> False
+can_transition(None, TaskStatus.PLANNING)  # -> False
 ```
 
 No crash on any of these. `target in TRANSITIONS.get(current, set())` is defensive by

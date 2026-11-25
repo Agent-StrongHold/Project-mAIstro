@@ -6,10 +6,8 @@ import math
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.task_policy import InMemoryTaskAcceptancePolicy
-
 
 _VALID_TIERS = ["P0", "P1", "P2", "P3", "P4", "P5"]
 

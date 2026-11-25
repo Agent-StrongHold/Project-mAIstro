@@ -122,6 +122,7 @@ Dashboard configures per-endpoint. **Defaults: nothing public.** Operator opts i
 ```python
 from typing import Protocol
 
+
 class Substrate(Protocol):
     def name(self) -> str: ...
     def has_tls(self) -> bool: ...

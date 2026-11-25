@@ -159,12 +159,15 @@ reachability.
 ```python
 # maistro.agents.importers / maistro.skills.importers (new subpackages)
 class AgentImporter(Protocol):
-    format: str                       # "pi" | "openclaw" | "claude_code" | "codex" | "openai_assistant"
+    format: str  # "pi" | "openclaw" | "claude_code" | "codex" | "openai_assistant"
+
     def detect(self, source: dict | str) -> bool: ...
     def to_agent_config(self, source: dict | str) -> AgentConfig: ...
 
+
 class SkillImporter(Protocol):
-    format: str                       # "claude_code_skill" | "mcp_manifest" | "openai_tool"
+    format: str  # "claude_code_skill" | "mcp_manifest" | "openai_tool"
+
     def detect(self, source: dict | str) -> bool: ...
     def to_skill_definitions(self, source: dict | str) -> list[SkillDefinition]: ...
 ```

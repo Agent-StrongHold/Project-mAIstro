@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.warden.flag_response import build_audit_payload, build_flagged_response
-
 
 _BANNER_MARKER = "WARNING SECURITY NOTICE: This tool result has been flagged by Warden."
 

@@ -232,9 +232,7 @@ class AuditedSelfModificationMachine(RuleBasedStateMachine):
         (nothing to roll back to) leaves it alone."""
         current: str | None = None
         for entry in self.trail.entries:
-            if entry.event == "promotion_committed":
-                current = entry.genome_id
-            elif entry.event == "rollback_committed" and entry.genome_id:
+            if entry.event == "promotion_committed" or entry.event == "rollback_committed" and entry.genome_id:
                 current = entry.genome_id
         assert current == _active_genome_id(self.store)
 

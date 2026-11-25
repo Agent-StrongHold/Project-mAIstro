@@ -6,8 +6,7 @@ import string
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.secure_random import secure_base36, secure_id, secure_int, secure_urlsafe
 
 

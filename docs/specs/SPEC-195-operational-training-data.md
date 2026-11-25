@@ -62,35 +62,38 @@ New subsystem: `packages/maistro-core/src/maistro/training/`
 @dataclass
 class TrainingRecord:
     task_id: str
-    timestamp: float          # epoch seconds
-    prompt_hash: str          # SHA-256[:16] of the raw messages list
-    tier: int                 # 1, 2, or 3
+    timestamp: float  # epoch seconds
+    prompt_hash: str  # SHA-256[:16] of the raw messages list
+    tier: int  # 1, 2, or 3
     candidates: list[CandidateRecord]
     reviewer_scores: list[ReviewerScoreRecord]
     test_results: list[TestResultRecord]
     accepted_candidate_id: str | None
-    human_accepted: bool | None = None   # set later by thumbs widget / eval judge
+    human_accepted: bool | None = None  # set later by thumbs widget / eval judge
+
 
 @dataclass
 class CandidateRecord:
     candidate_id: str
-    content_hash: str         # SHA-256[:16] of the completion text
-    sampling_params: dict     # temperature, top_p, top_k, presence_penalty
+    content_hash: str  # SHA-256[:16] of the completion text
+    sampling_params: dict  # temperature, top_p, top_k, presence_penalty
     tokens_generated: int
     generation_time_ms: float
+
 
 @dataclass
 class ReviewerScoreRecord:
     candidate_id: str
-    scores: dict              # {"correctness": 8, "style": 7, ...}
-    overall: float            # weighted composite
-    verdict: str              # "accept" | "reject" | "escalate"
+    scores: dict  # {"correctness": 8, "style": 7, ...}
+    overall: float  # weighted composite
+    verdict: str  # "accept" | "reject" | "escalate"
+
 
 @dataclass
 class TestResultRecord:
     candidate_id: str
     passed: bool
-    summary: str              # e.g. "12/12 tests passed"
+    summary: str  # e.g. "12/12 tests passed"
 ```
 
 JSONL on disk — one record per line, one file per project:
@@ -134,14 +137,15 @@ not hash-keyed — the goal is to retrieve good examples of the same *kind* of t
 ```python
 @dataclass
 class Exemplar:
-    task_category: str       # one of the CATEGORIES list
-    task_description: str    # human-readable task summary
-    solution: str            # the accepted completion text
-    score: float             # overall reviewer score (0–10)
+    task_category: str  # one of the CATEGORIES list
+    task_description: str  # human-readable task summary
+    solution: str  # the accepted completion text
+    score: float  # overall reviewer score (0–10)
+
 
 class ExemplarLibrary:
     CATEGORIES = ["test_writing", "bug_fix", "new_feature", "refactor", "documentation"]
-    MAX_PER_CATEGORY = 50    # top 50 by score per category; older lower-scored entries are evicted
+    MAX_PER_CATEGORY = 50  # top 50 by score per category; older lower-scored entries are evicted
 
     def add(self, exemplar: Exemplar) -> None: ...
     def get_exemplars(self, category: str, n: int = 2) -> list[Exemplar]: ...

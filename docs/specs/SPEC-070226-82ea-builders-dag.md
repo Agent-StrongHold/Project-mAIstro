@@ -72,23 +72,26 @@ class StageSpec:
     name: str
     agent_name: str
     prompt_template: str
-    role: AgentRole = AgentRole.CODER       # for ADR-062 conversion
+    role: AgentRole = AgentRole.CODER  # for ADR-062 conversion
     skip_if: Callable[[RunContext], bool] | None = None
     timeout_seconds: float = 600.0
     on_complete: Callable[[Any, str], Awaitable[None]] | None = None
 
+
 @dataclass(frozen=True)
 class BuildersDAG:
     stages: tuple[StageSpec, ...]
-    edges: tuple[tuple[str, str], ...]      # forward edges only — must be acyclic
-    gates: Mapping[str, Gate] = {}          # stage name → gate evaluated after it
-    loop_targets: Mapping[str, str] = {}    # gated stage → ancestor to loop back to
+    edges: tuple[tuple[str, str], ...]  # forward edges only — must be acyclic
+    gates: Mapping[str, Gate] = {}  # stage name → gate evaluated after it
+    loop_targets: Mapping[str, str] = {}  # gated stage → ancestor to loop back to
 
-    def validate(self) -> list[str]: ...    # names, edges, gate/loop-target pairing,
-                                            # then cycles + ancestor check via lowering
+    def validate(self) -> list[str]:
+        ...  # names, edges, gate/loop-target pairing,
+        # then cycles + ancestor check via lowering
 
-def to_pipeline_graph(dag: BuildersDAG) -> PipelineGraph: ...   # SPEC-201 lowering
-def builders_dag_to_graph(dag: BuildersDAG) -> GraphSpec: ...   # ADR-062 conversion
+
+def to_pipeline_graph(dag: BuildersDAG) -> PipelineGraph: ...  # SPEC-201 lowering
+def builders_dag_to_graph(dag: BuildersDAG) -> GraphSpec: ...  # ADR-062 conversion
 ```
 
 `default_builders_dag()` builds the SPEC's stage set with a deviation: the loop-back
@@ -111,9 +114,9 @@ conditional loop-back edges and the iteration bound maps onto `max_cycles`.
 class Gate:
     name: str
     predicate: Callable[[StageResult], bool]  # True → continue; False → loop back
-    max_iterations: int = 3                   # safety valve: loop-backs permitted
+    max_iterations: int = 3  # safety valve: loop-backs permitted
     exhausted: Literal["fail", "continue"] = "fail"
-    graph_condition: str | None = None        # ADR-062 edge condition equivalent
+    graph_condition: str | None = None  # ADR-062 edge condition equivalent
 ```
 
 Deviation from the original `apply_gate` sketch: exhaustion does not silently force
@@ -142,11 +145,11 @@ each gate failure), skipped on the first pass via `skip_if`.
 ```python
 async def run_builders_dag(
     dag: BuildersDAG,
-    dispatcher: PipelineDispatcher,          # SPEC-201 DI seam — whatever runs agents
+    dispatcher: PipelineDispatcher,  # SPEC-201 DI seam — whatever runs agents
     *,
     params: Mapping[str, Any] | None = None,
     run_id: str | None = None,
-    budget: IterationBudget | None = None,   # ADR-062 shared budget
+    budget: IterationBudget | None = None,  # ADR-062 shared budget
 ) -> BuildersDagResult: ...
 ```
 

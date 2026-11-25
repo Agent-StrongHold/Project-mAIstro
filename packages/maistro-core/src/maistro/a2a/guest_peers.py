@@ -108,7 +108,7 @@ class GuestPeerManager:
         self,
         audit: AuditLogger | None = None,
         *,
-        warden: InboundWarden | None | object = _WARDEN_UNSET,
+        warden: InboundWarden | object | None = _WARDEN_UNSET,
     ) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()

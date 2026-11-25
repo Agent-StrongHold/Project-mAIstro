@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.auth._types import (
     CATEGORY_SCOPES,
     Scope,
@@ -14,7 +13,6 @@ from maistro.auth._types import (
     ServiceIdentity,
     expand_scopes,
 )
-
 
 _VALID_SCOPES = [s.value for s in Scope]
 _VALID_CATEGORIES = [c.value for c in ScopeCategory]

@@ -58,7 +58,6 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import (
     EffectNotApplied,
@@ -364,15 +363,15 @@ class InvocationEffectMachine(RuleBasedStateMachine):
         identity = self._identity_for(key)
         model = self.effects.get(identity)
         before = self.provider_calls[identity]
-        kwargs: dict[str, Any] = dict(
-            disposition=disposition,
-            source="formal-model",
-            actor="operator",
-            reason=f"evidence for {disposition.value}",
-            evidence={"probe": key},
-            workspace_id=WORKSPACE,
-            project_id=PROJECT,
-        )
+        kwargs: dict[str, Any] = {
+            "disposition": disposition,
+            "source": "formal-model",
+            "actor": "operator",
+            "reason": f"evidence for {disposition.value}",
+            "evidence": {"probe": key},
+            "workspace_id": WORKSPACE,
+            "project_id": PROJECT,
+        }
         if model is None or model.status == "fresh":
             with pytest.raises(KeyError):
                 _run(self.service.reconcile("no-such-invocation", **kwargs))

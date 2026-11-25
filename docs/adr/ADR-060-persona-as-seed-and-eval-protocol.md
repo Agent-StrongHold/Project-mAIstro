@@ -119,17 +119,16 @@ A `Scorer` protocol is added to `maistro.protocols`:
 
 ```python
 class Scorer(Protocol):
-    async def score(
-        self, output: str, context: dict[str, Any]
-    ) -> Score: ...
+    async def score(self, output: str, context: dict[str, Any]) -> Score: ...
+
 
 @dataclass(frozen=True)
 class Score:
-    value: float          # 0.0–1.0
+    value: float  # 0.0–1.0
     passed: bool
     rationale: str
-    evidence: list[str]   # source URLs or criterion names
-    provider: str         # "rubric" | "deepeval" | "promptfoo" | ...
+    evidence: list[str]  # source URLs or criterion names
+    provider: str  # "rubric" | "deepeval" | "promptfoo" | ...
 ```
 
 Three providers ship:

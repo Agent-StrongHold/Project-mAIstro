@@ -41,7 +41,6 @@ import pytest
 from hypothesis import settings as hyp_settings
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 from hypothesis.strategies import sampled_from
-
 from maistro.graph import Graph, Node
 from maistro.runs.lifecycle import ATTEMPT_TRANSITIONS
 from maistro.runs.model import AttemptStatus
@@ -86,7 +85,6 @@ class _Server:
         the pre-3.12 ambient-loop behavior.
         """
         import asyncpg
-
         from maistro.persistence import _register_json_codecs
 
         return await asyncpg.create_pool(

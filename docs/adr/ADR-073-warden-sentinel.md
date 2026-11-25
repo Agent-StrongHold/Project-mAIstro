@@ -71,11 +71,15 @@ detection logic is not safely product-authorable).
 
 ```python
 class Warden(Protocol):
-    def scan(self, data: Untrusted, *, boundary: Boundary, direction: Literal["in","out"]) -> Risk: ...
+    def scan(
+        self, data: Untrusted, *, boundary: Boundary, direction: Literal["in", "out"]
+    ) -> Risk: ...
+
+
 class Risk(BaseModel):
-    score: float                 # 0..1
+    score: float  # 0..1
     reasons: list[str]
-    tier: Literal["heuristic","llm_judge"]
+    tier: Literal["heuristic", "llm_judge"]
 ```
 
 ### Sentinel — policy decision + enforcement point (PDP/PEP)
@@ -93,9 +97,11 @@ decision the caller enforces; it raises nothing.
   engine config model). No code deploy to change a threshold or an approver binding.
 
 ```python
-class SentinelPolicy(Protocol):                       # extends the ADR-050 SentinelPolicy
-    def resolve_tier(self, call: ToolCall, p: Principal) -> Tier: ...        # ADR-068 §B/§C
-    async def authorize(self, call: ToolCall, p: Principal, risk: Risk) -> AuthzDecision: ...  # ADR-068 §F
+class SentinelPolicy(Protocol):  # extends the ADR-050 SentinelPolicy
+    def resolve_tier(self, call: ToolCall, p: Principal) -> Tier: ...  # ADR-068 §B/§C
+    async def authorize(
+        self, call: ToolCall, p: Principal, risk: Risk
+    ) -> AuthzDecision: ...  # ADR-068 §F
 ```
 
 ### Decision audit

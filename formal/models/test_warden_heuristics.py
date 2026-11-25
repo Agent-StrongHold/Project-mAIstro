@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import base64
+from typing import ClassVar
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.warden.heuristics import (
     INSTRUCTION_DENSITY_THRESHOLD,
     detect_encoded_instructions,
@@ -21,7 +21,7 @@ class HeuristicScanMachine(RuleBasedStateMachine):
     # instruction density exactly 0.0 and no base64 payload, so it must come
     # back clean. False positives on benign content are the counterexample
     # class (e.g. a threshold regression to 0.0 flags every non-empty text).
-    _BENIGN_WORDS = [
+    _BENIGN_WORDS: ClassVar[list[str]] = [
         "alpha",
         "bravo",
         "charlie",

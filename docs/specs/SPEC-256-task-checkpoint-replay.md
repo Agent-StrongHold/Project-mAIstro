@@ -128,6 +128,7 @@ class CheckpointKind(StrEnum):
     SPEND_UPDATE = "spend.update"
     MEMORY_PROMOTE = "memory.promote"
 
+
 @dataclass(frozen=True)
 class TaskCheckpoint:
     task_id: str
@@ -138,6 +139,7 @@ class TaskCheckpoint:
     code_registry_version: str
     created_at: datetime
 
+
 # maistro/tasks/replay.py
 @dataclass(frozen=True)
 class ResumeState:
@@ -146,14 +148,19 @@ class ResumeState:
     cumulative_spend: float
     pending_approval_gates: frozenset[str]
 
+
 def replay(checkpoints: tuple[TaskCheckpoint, ...]) -> ResumeState: ...
+
 
 # maistro/tasks/recovery.py
 class CrashLoopPolicy:
     def record_crash(self, breaker: CircuitBreaker) -> None: ...
     def should_quarantine(self, breaker: CircuitBreaker) -> bool: ...
 
-def version_compatible(checkpoint, *, current_recipe_version, current_code_registry_version) -> bool: ...
+
+def version_compatible(
+    checkpoint, *, current_recipe_version, current_code_registry_version
+) -> bool: ...
 ```
 
 ## Acceptance criteria

@@ -68,12 +68,15 @@ ADR:
 ```python
 # maistro/identity/slip39.py
 
+
 @dataclass(frozen=True)
 class Slip39Shares:
     """member_threshold-of-member_count shares of a ConductorSeed's entropy."""
-    shares: tuple[str, ...]          # each share is a SLIP-39 mnemonic (word list, joined)
+
+    shares: tuple[str, ...]  # each share is a SLIP-39 mnemonic (word list, joined)
     member_threshold: int
     member_count: int
+
 
 def split_seed(
     seed: ConductorSeed, *, member_threshold: int = 3, member_count: int = 5
@@ -81,6 +84,7 @@ def split_seed(
     """Split the seed's underlying entropy into SLIP-39 shares. Does not
     consume or mutate the seed."""
     ...
+
 
 def combine_shares(shares: Sequence[str]) -> ConductorSeed:
     """Reconstruct a ConductorSeed from >= member_threshold shares.
@@ -116,13 +120,17 @@ New in this SPEC — a vault.py-backed default implementation and the seed-persi
 ```python
 # maistro/identity/seed_store.py
 
+
 class VaultSecretStore(SecretStore):
     """SecretStore backed by maistro/vault.py (age-encrypted at rest)."""
+
     def __init__(self, vault: Vault, key_name: str = "conductor_seed") -> None: ...
+
 
 async def persist_seed(seed: ConductorSeed, *, secret_store: SecretStore) -> None:
     """Seal seed.mnemonic_words() via secret_store and write it under a
     well-known vault key. Does not affect in-memory ConductorSeed state."""
+
 
 async def load_seed(*, secret_store: SecretStore) -> ConductorSeed:
     """Read and unseal the persisted seed, reconstructing a ConductorSeed.

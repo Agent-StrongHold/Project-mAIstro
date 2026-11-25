@@ -81,17 +81,21 @@ codes via the ADR-038 classifier: `RATE_LIMIT → "rate_limit"`,
 # maistro/resilience/p1.py
 @dataclass
 class RetryBudget:
-    max_retries: int = 3            # total failed attempts allowed (no off-by-one)
+    max_retries: int = 3  # total failed attempts allowed (no off-by-one)
     compaction_window_ms: int = 5000
     attempts: list[RetryAttempt] = field(default_factory=list)
     # properties: current_attempt, exhausted, remaining; record(error, ...)
+
 
 # maistro/graph/executor.py
 async def execute_with_resilience(
     operation: Callable[[], Awaitable[T]],
     *,
-    run_id: str = "", node_id: str = "", role: str = "",
-    agent_id: str = "*", layer: str = "*",
+    run_id: str = "",
+    node_id: str = "",
+    role: str = "",
+    agent_id: str = "*",
+    layer: str = "*",
     budget: RetryBudget | None = None,
     policy_store: ResiliencePolicyStore | None = None,
     emit: Callable[[GraphEvent], Awaitable[None]] | None = None,
@@ -112,7 +116,7 @@ compacted history, re-raise). A node with `max_retries=3` executes exactly
 @dataclass(frozen=True)
 class ResiliencePolicy:
     agent_id: str = "*"
-    layer: str = "*"                 # Layer StrEnum values or free-form string
+    layer: str = "*"  # Layer StrEnum values or free-form string
     error_code: str = "*"
     max_p1_retries: int = 3
     backoff_strategy: Literal["exponential", "linear"] = "exponential"
@@ -120,8 +124,11 @@ class ResiliencePolicy:
     max_delay_s: float = 60.0
     escalate_on: frozenset[str] = frozenset()
 
-    def decide(self, attempt: int, error: Exception | str) -> Literal["retry", "escalate", "fail"]: ...
-    def backoff_for(self, attempt: int) -> float: ...   # 2s, 4s, 8s… exponential
+    def decide(
+        self, attempt: int, error: Exception | str
+    ) -> Literal["retry", "escalate", "fail"]: ...
+    def backoff_for(self, attempt: int) -> float: ...  # 2s, 4s, 8s… exponential
+
 
 class ResiliencePolicyStore(Protocol):
     async def get(self, agent_id: str, layer: str, error_code: str) -> ResiliencePolicy: ...
@@ -138,10 +145,11 @@ escalate `llm_refusal` everywhere; tools-layer `rate_limit` retries up to 5.
 @dataclass(frozen=True)
 class CompactedRetry:
     error_code: str
-    count: int                # always >= 2
+    count: int  # always >= 2
     first_timestamp: float
     last_timestamp: float
-    common_cause: str         # first attempt's message (heuristic, no LLM in P1)
+    common_cause: str  # first attempt's message (heuristic, no LLM in P1)
+
 
 def compact_attempts(
     attempts: list[RetryAttempt], window_ms: int
@@ -156,24 +164,24 @@ returned as the original `RetryAttempt` (single attempts are never compacted).
 
 ```python
 # Events emitted:
-emit("node.retry_attempted", {
-    "node_id": "...",
-    "attempt": 2,
-    "error_code": "rate_limit",
-    "backoff_seconds": 4
-})
+emit(
+    "node.retry_attempted",
+    {"node_id": "...", "attempt": 2, "error_code": "rate_limit", "backoff_seconds": 4},
+)
 
-emit("node.retry_exhausted", {
-    "node_id": "...",
-    "total_attempts": 3,
-    "compacted": CompactedRetry(...)
-})
+emit(
+    "node.retry_exhausted",
+    {"node_id": "...", "total_attempts": 3, "compacted": CompactedRetry(...)},
+)
 
-emit("node.escalated", {
-    "node_id": "...",
-    "reason": "llm_refusal",
-    "escalate_to": "orchestrator"  # or parent node
-})
+emit(
+    "node.escalated",
+    {
+        "node_id": "...",
+        "reason": "llm_refusal",
+        "escalate_to": "orchestrator",  # or parent node
+    },
+)
 ```
 
 Events are tagged with `source: "resilience.p1"` for filtering.

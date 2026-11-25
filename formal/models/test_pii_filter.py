@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.security.sentinel.pii_filter import (
     PIIMatch,
     normalize_for_scan,
@@ -28,7 +29,7 @@ class PIIScanMachine(RuleBasedStateMachine):
 
     # Real credential shapes from the governed oracle space (masked preview
     # not required here — the raw sample never enters the model state).
-    _SAMPLES = [
+    _SAMPLES: ClassVar[list[tuple[str, str]]] = [
         ("aws_key", "AKIAIOSFODNN7EXAMPLE"),
         ("github_token", "ghp_" + "aBcDeFgHiJkLmNoPqRsTtUvWxYz0123456789"[:36]),
         ("email", "alice@example.com"),
@@ -193,13 +194,13 @@ def test_redact_contains_placeholders(text):
 
 def test_redact_removes_original_value():
     text = "key is AKIAIOSFODNN7EXAMPLE end"
-    redacted, matches = scan_and_redact(text)
+    redacted, _matches = scan_and_redact(text)
     assert "AKIAIOSFODNN7EXAMPLE" not in redacted
 
 
 def test_redact_preserves_surrounding():
     text = "prefix AKIAIOSFODNN7EXAMPLE suffix"
-    redacted, matches = scan_and_redact(text)
+    redacted, _matches = scan_and_redact(text)
     assert "prefix" in redacted
     assert "suffix" in redacted
 

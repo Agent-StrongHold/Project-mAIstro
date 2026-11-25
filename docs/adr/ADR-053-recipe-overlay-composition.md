@@ -87,12 +87,14 @@ Fields with `merge: ref` carry a `name@version` string: `impact_estimator: "stri
 
 ```python
 class RecipeOverlay(BaseModel):
-    target: str               # base recipe name
-    overrides: dict[str, Any] # path -> value; merged per schema rules
+    target: str  # base recipe name
+    overrides: dict[str, Any]  # path -> value; merged per schema rules
+
 
 class CodeRegistry(Protocol):
-    def resolve(self, ref: str) -> Callable: ...           # "name@version" -> function
+    def resolve(self, ref: str) -> Callable: ...  # "name@version" -> function
     def compatible(self, base_ref: str, overlay_ref: str) -> bool: ...
+
 
 class RecipeRegistry:  # extends ADR-006
     def __init__(

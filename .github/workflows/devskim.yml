@@ -101,7 +101,9 @@ jobs:
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
         with:
-          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,formal/**,.github/**,deploy/**,alembic/**,packages/hive-conductor/eval/**,quality/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/static/swagger-ui/**,**/maistro_design/systems/catalog/**,**/benchmarks/corpora/**,**/hive-conductor/eval/**,**/deploy/scripts/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+          # AllowFilters also see absolute runner paths — prefix every root with **/.
+          extra-options: --include-globs **/packages/**,**/scripts/**,**/templates/**,**/extensions/**
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4

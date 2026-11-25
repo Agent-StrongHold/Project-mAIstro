@@ -65,6 +65,7 @@ It adds no repository test nodes and replaces no production authority.
 import asyncio
 import pytest
 
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     yield
@@ -78,10 +79,16 @@ def pytest_runtest_call(item):
         for row in records:
             run = await container.run_store.get_run(row.run_id)
             assert run is not None
-            print("ACCEPTANCE_JOIN", run.workspace_id, row.workspace_id,
-                  run.actor_principal_id, row.actor_id)
+            print(
+                "ACCEPTANCE_JOIN",
+                run.workspace_id,
+                row.workspace_id,
+                run.actor_principal_id,
+                row.actor_id,
+            )
             assert row.workspace_id == run.workspace_id
             assert row.actor_id == run.actor_principal_id
+
     asyncio.run(read())
 ```
 

@@ -78,10 +78,11 @@ class AgentKind(StrEnum):
     LIGHT = "light"
     HEAVY = "heavy"
 
+
 @dataclass(frozen=True)
 class AgentIdentity:
     ...
-    kind: AgentKind = AgentKind.HEAVY   # default preserves every existing agent's behavior
+    kind: AgentKind = AgentKind.HEAVY  # default preserves every existing agent's behavior
 ```
 
 - **Light agents structurally hold zero tools.** Not "zero tools by convention" — the factory

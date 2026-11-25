@@ -27,6 +27,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -96,38 +97,6 @@ _GATEWAY_RATE_LIMITS = RateLimitCoordinator()
 #: Adaptive context-window probe for models that omit a declared max (#2318).
 _CONTEXT_PROBE = ContextProbe()
 _GATEWAY_RATE_LIMIT_SCOPE = MODEL_GATEWAY_CREDENTIAL_PROVIDER
-
-
-def _adapter_identity_suffix(spec: Any) -> str:
-    """The declared package identity, as an error-message suffix.
-
-    Empty for a package that declares no identity (M9-I1, #976): legacy
-    adapters keep their message shape, while declaring packages make every
-    error traceable to the exact version and publisher without a registry
-    lookup — the message travels with the Invocation evidence, so the
-    identity of the failing package is readable even after that package is
-    upgraded or removed.
-    """
-
-    if not getattr(spec, "version", ""):
-        return ""
-    return f" {spec.version} (publisher {spec.publisher!r})"
-
-
-def _adapter_log_fields(adapter_provider: Any) -> dict[str, str]:
-    """Flat log fields naming the adapter package behind one governed call.
-
-    Declared identity becomes the canonical extension-attribution fields; a
-    legacy adapter logs only its id, so the line never claims an identity the
-    package did not declare. No field here carries request, payload, or
-    credential material — identity only.
-    """
-
-    attribution = adapter_provider.extension_attribution
-    if attribution is not None:
-        fields: dict[str, str] = attribution.to_log_fields()
-        return fields
-    return {"adapter_id": str(adapter_provider.spec.adapter_id)}
 
 
 class GatewayEndpoint(BaseModel):
@@ -626,55 +595,26 @@ async def _dispatch_adapter_model_chat(
     request: ModelChatRequest,
     endpoint: GatewayEndpoint,
 ) -> dict[str, object]:
-    """Transport one adapter-provider call over its declared preflight shape."""
+    """Transport one adapter-provider call over its declared preflight shape.
 
-    Only :class:`LlmGatewayProvider` and
-    :class:`~maistro.capabilities.provider_adapters.AdapterGatewayProvider`
-    handles may cross this seam; a foreign provider type is a wiring error, not
-    a silent alternate egress. Both are transported over the same single POST:
-    an adapter contributes its normalized payload, its declared credential
-    presentation, its timeout, and its error taxonomy — never a second
+    Only adapter handles cross this seam: an adapter contributes its
+    normalized payload, its declared credential presentation, its timeout,
+    and its error taxonomy over the one governed POST — never a second
     transport, a second authorization path, or a second Invocation.
     """
 
-    from maistro.capabilities.provider_adapters import AdapterGatewayProvider
-
-    if not isinstance(request, ModelChatRequest):
-        raise TypeError(f"model-chat Invocation received a foreign request: {type(request)!r}")
-
-    adapter_provider: AdapterGatewayProvider | None = None
-    if isinstance(provider, AdapterGatewayProvider):
-        adapter_provider = provider
-        preflight = _adapter_preflight(adapter_provider, request, endpoint)
-    elif isinstance(provider, LlmGatewayProvider):
-        _seed_context_probe(provider)
-        preflight = _gateway_preflight(provider, request, endpoint)
-    else:
-        raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
-
+    preflight = _adapter_preflight(adapter_provider, request, endpoint)
     _raise_if_gateway_rate_limited()
-    requested_tokens = preflight.payload.get("max_tokens")
-    requested_cap = requested_tokens if isinstance(requested_tokens, int) else None
-    model_name = str(preflight.payload.get("model") or getattr(provider, "name", ""))
     response = await _post_chat_completion(preflight)
-    if adapter_provider is not None:
-        fields = _adapter_log_fields(adapter_provider)
-        logger.info(
-            "extension adapter model call: adapter=%s model=%s %s",
-            adapter_provider.spec.adapter_id,
-            adapter_provider.model,
-            log_fields_suffix(fields),
-            extra=fields,
-        )
-        return _adapter_response_body(adapter_provider, response)
-    return _checked_body(response, model=model_name, requested_tokens=requested_cap)
-
-
-def _seed_context_probe(provider: LlmGatewayProvider) -> None:
-    """Seed the probe from the provider's declared window when known."""
-    meta = provider.metadata
-    if meta is not None and meta.max_tokens > 0:
-        _CONTEXT_PROBE.set_known_length(provider.name, meta.max_tokens)
+    fields = _adapter_log_fields(adapter_provider)
+    logger.info(
+        "extension adapter model call: adapter=%s model=%s %s",
+        adapter_provider.spec.adapter_id,
+        adapter_provider.model,
+        log_fields_suffix(fields),
+        extra=fields,
+    )
+    return _adapter_response_body(adapter_provider, response)
 
 
 async def _post_chat_completion(preflight: _ModelCallPreflight) -> Any:
@@ -697,15 +637,7 @@ async def _post_chat_completion(preflight: _ModelCallPreflight) -> Any:
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
-    fields = _adapter_log_fields(adapter_provider)
-    logger.info(
-        "extension adapter model call: adapter=%s model=%s %s",
-        adapter_provider.spec.adapter_id,
-        adapter_provider.model,
-        log_fields_suffix(fields),
-        extra=fields,
-    )
-    return _adapter_response_body(adapter_provider, response)
+    return response
 
 
 async def _post_model_chat(

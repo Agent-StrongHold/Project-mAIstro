@@ -119,11 +119,11 @@ Every contributor emits a `TrustSignal`:
 ```python
 @dataclass(frozen=True)
 class TrustSignal:
-    source: str           # which contributor emitted this (agent id, tool name, input_source id, ...)
+    source: str  # which contributor emitted this (agent id, tool name, input_source id, ...)
     tier: TrustTier
-    confidence: float     # [0, 1] — how sure the emitter is of `tier`
+    confidence: float  # [0, 1] — how sure the emitter is of `tier`
     rationale: str
-    trace_ref: str        # link to the audit/trace entry this signal came from
+    trace_ref: str  # link to the audit/trace entry this signal came from
 ```
 
 The session's STF is `min(signal.tier for signal in session.trust_signals)`, folded in as each

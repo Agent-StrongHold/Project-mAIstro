@@ -74,10 +74,11 @@ Lifecycle:
 class ShadowGitWorkspace(Protocol):
     workspace_ref: str  # opaque path or handle
 
-    async def commit_edit(self, files: dict[str, str], message: str) -> str: ...      # returns sha
-    async def diff_against_base(self) -> str: ...                                       # unified diff
+    async def commit_edit(self, files: dict[str, str], message: str) -> str: ...  # returns sha
+    async def diff_against_base(self) -> str: ...  # unified diff
     async def produce_pr_candidate(self, base: str, branch: str) -> PrCandidate: ...
     async def discard(self) -> None: ...
+
 
 class PrCandidate(BaseModel):
     branch: str

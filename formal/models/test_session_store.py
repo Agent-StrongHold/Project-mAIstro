@@ -6,8 +6,7 @@ import asyncio
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.session import SessionConfig
 

@@ -121,8 +121,7 @@ describes the repository.
 ```python
 def _superseded_grants(
     notes: list[Note], floors: dict[str, float], *, base_sha: str | None
-) -> dict[str, list[str]]:
-    ...  # counter -> the note names that, on their own, clear its floor
+) -> dict[str, list[str]]: ...  # counter -> the note names that, on their own, clear its floor
 ```
 
 Computed from `notes` at the base revision — the same source `floors` itself

@@ -116,12 +116,14 @@ class WaveSpec:
     agent_recipe: str
     inputs: dict[str, Any]
 
+
 @dataclass(frozen=True)
 class WaveHandle:
     wave_id: str
     branch: str
     status: Literal["running", "succeeded", "failed"]
     head_sha: str | None
+
 
 @dataclass(frozen=True)
 class ConflictRecord:
@@ -131,16 +133,20 @@ class ConflictRecord:
     sha_a: str
     sha_b: str
 
+
 @dataclass(frozen=True)
 class FanInResult:
     merged_sha: str | None
     conflicts: tuple[ConflictRecord, ...]
     failed_waves: tuple[WaveHandle, ...]
 
+
 # maistro/orchestrator/waves/fan_out.py
 MAX_PARALLEL_CEILING = 16
 
+
 def validate_fan_out_width(wave_specs: tuple[WaveSpec, ...], *, max_parallel: int) -> None: ...
+
 
 # maistro/orchestrator/waves/fan_in.py
 def fan_in(

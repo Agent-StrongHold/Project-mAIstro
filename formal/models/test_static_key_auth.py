@@ -7,11 +7,9 @@ import asyncio
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
 from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import SYSTEM_AUTH, IdentityKind
 from maistro.security.auth_static import StaticKeyAuthProvider
-
 
 API_KEY = "sk-test-secret-key-abc123"
 

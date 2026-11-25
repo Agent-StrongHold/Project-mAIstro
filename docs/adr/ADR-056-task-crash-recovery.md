@@ -96,17 +96,23 @@ On resume, substrate replays the checkpoint stream up to the last consistent sta
 ```python
 class TaskCheckpoint(BaseModel):
     task_id: UUID
-    sequence: int                # monotonic per task
+    sequence: int  # monotonic per task
     kind: Literal[
-        "tool_call.about_to_fire", "tool_call.done",
-        "wave.fan_out", "wave.completed", "wave.failed",
-        "approval.gate.raised", "approval.gate.answered",
-        "spend.update", "memory.promote",
+        "tool_call.about_to_fire",
+        "tool_call.done",
+        "wave.fan_out",
+        "wave.completed",
+        "wave.failed",
+        "approval.gate.raised",
+        "approval.gate.answered",
+        "spend.update",
+        "memory.promote",
     ]
     payload: dict[str, Any]
-    recipe_version: str          # for cross-version-resume safety
+    recipe_version: str  # for cross-version-resume safety
     code_registry_version: str
     created_at: datetime
+
 
 class TaskRecovery(Protocol):
     async def resumable_tasks(self) -> list[TaskRecord]: ...

@@ -88,7 +88,7 @@ API_VERSIONS: dict[int, ApiVersion] = {
 DEFAULT_API_VERSION = 1
 
 
-def _parse_accept_version(accept: str | None) -> int | None | str:
+def _parse_accept_version(accept: str | None) -> int | str | None:
     """Extract the negotiated version from an ``Accept`` header.
 
     Returns ``None`` when no maistro media type is present, the integer
@@ -115,7 +115,7 @@ def _parse_accept_version(accept: str | None) -> int | None | str:
     return None
 
 
-def _selector_from_query(query_string: bytes) -> int | None | str:
+def _selector_from_query(query_string: bytes) -> int | str | None:
     """Extract ``api_version`` from the raw query string, if present."""
     if not query_string:
         return None
@@ -130,7 +130,7 @@ def _selector_from_query(query_string: bytes) -> int | None | str:
     return None
 
 
-def _selector_from_body(body: bytes) -> int | None | str:
+def _selector_from_body(body: bytes) -> int | str | None:
     """Extract ``api_version`` from a JSON body, if the field is present.
 
     An absent, non-JSON, or non-object body is simply not a selector — the

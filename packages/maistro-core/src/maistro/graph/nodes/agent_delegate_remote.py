@@ -351,7 +351,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         guest_peers: GuestPeerManager | None = None,
         run_store: RunStore | None = None,
         effect_context: CapabilityEffectContext | None = None,
-        warden: InboundWarden | None | object = _WARDEN_UNSET,
+        warden: InboundWarden | object | None = _WARDEN_UNSET,
         audit_log: Any = None,
     ) -> None:
         """Wire in the delegator, the guest-peer manager, the Run store and

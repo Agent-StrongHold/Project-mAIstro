@@ -7,8 +7,7 @@ import hashlib
 import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
-
+from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.auth._types import Scope
 from maistro.auth.registry import ServiceKeyRegistry
 

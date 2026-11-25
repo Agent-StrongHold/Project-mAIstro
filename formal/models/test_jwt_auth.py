@@ -6,7 +6,6 @@ import asyncio
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
 from maistro.security._types import AuthContext, IdentityKind
 from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_jwt import JWTAuthProvider

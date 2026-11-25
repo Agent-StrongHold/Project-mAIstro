@@ -67,10 +67,11 @@ leakage.
 
 ```python
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [...]  # private keys, DB conn strings,
-    # auth headers, env-var assignments, query params, URL userinfo,
-    # AWS keys, JWTs, known API-key prefixes (sk-, ghp_, AIza, xoxb-, etc.)
+# auth headers, env-var assignments, query params, URL userinfo,
+# AWS keys, JWTs, known API-key prefixes (sk-, ghp_, AIza, xoxb-, etc.)
 
 _HIGH_ENTROPY_RE: re.Pattern[str]
+
 
 def _shannon_entropy(s: str) -> float: ...
 def _looks_like_secret(s: str) -> bool: ...
