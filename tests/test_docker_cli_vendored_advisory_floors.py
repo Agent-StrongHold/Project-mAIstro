@@ -20,7 +20,11 @@ Two mechanisms close that vendored set, and the stage may use either:
   Dockerfile that builds the CLI must raise them in the same `go get`, then
   re-sync `vendor/` with `go mod vendor`: `go get` alone leaves
   `vendor/modules.txt` inconsistent and the build fails with "inconsistent
-  vendoring".
+  vendoring". The x/net pin may be spelled two ways: literally inside the
+  `go get`, or (the develop #2110 form) as an exact
+  `ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0` consumed by the same
+  `go get` — either way the effective pin is asserted, so the indirection
+  cannot hide a downgrade or a dropped raise.
 
 Structural assertions over the Dockerfile text, not a build, so the test is
 fast and machine-independent.
@@ -87,7 +91,19 @@ def test_docker_cli_stage_raises_go_jose_and_x_net_to_fixed_releases(dockerfile:
     go_get = re.search(r"go get ([^&\n]*)", stage)
     assert go_get, f"{dockerfile.name}: docker CLI stage has no `go get` upgrade"
     args = go_get.group(1)
-    assert FIXED_X_NET in args, f"{dockerfile.name}: x/net not raised to v0.62.0"
+    if FIXED_X_NET in args:
+        return
+    # The develop #2110 round moves the exact pin into a named ARG consumed by
+    # `go get "${X_NET_MODULE_UPGRADE}"`. Resolve the indirection structurally:
+    # the ARG must pin exactly the fixed release AND the `go get` on the same
+    # stage must actually consume it — an unused ARG or a downgraded pin is as
+    # much a violation as a missing raise.
+    pin = re.search(r"^ARG X_NET_MODULE_UPGRADE=(\S+)\s*$", stage, flags=re.MULTILINE)
+    assert pin is not None and pin.group(1) == FIXED_X_NET and "${X_NET_MODULE_UPGRADE}" in args, (
+        f"{dockerfile.name}: x/net not raised to v0.62.0 — neither a literal "
+        f"`{FIXED_X_NET}` inside the `go get` nor an exact "
+        f"`ARG X_NET_MODULE_UPGRADE={FIXED_X_NET}` consumed by that same `go get`"
+    )
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES_BUILDING_DOCKER_CLI, ids=lambda p: p.name)
