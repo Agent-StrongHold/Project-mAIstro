@@ -818,3 +818,71 @@ pick filter, covered by `test_resolve_rejects_third_party_free_picks`),
 `d7a5303b33`, unpushed); 2 base-inherited blockers escalated; 1 new inertness
 proof recorded; 2 PR-body accuracy defects flagged. No test added or removed, so
 no inventory-note delta. Tree change this round: this record only.
+
+## Round 2026-11-25 (start head `23e9af624bf5`, jobs `9347b7f835bd` verify + repair): both remaining CI reds reduce to one base-inherited live probe test — observation window widened, coverage-gate cap dodged via the probe's own opt-out, in-window assertion made race-free
+
+**What was actually red at this head** (read from the authoritative surfaces,
+not the brief): `commits/23e9af624bf5…/check-runs` = 81 runs with exactly two
+non-green — `test` (failure, completed 10:07:59Z) and `Coverage gate
+(publish-set floor + diff coverage)` (in_progress at capture). The brief's
+named "Container scan + SBOM + cosign: failure" is already completed/**success**
+at this head — disproved with live CI evidence, same as the prior round.
+
+**The `test` job failure** (run 45589709595, job 139120350560): exactly one
+FAILED case,
+`tests/test_prod_postgres_probe_live.py::test_first_boot_ready_only_after_init_completed`
+— "never observed the temporary-server window (socket accepting, TCP
+refusing); the scenario is inconclusive". Evidence read before changing
+anything: the identical content passed on develop's own run 45581547101 at the
+merge base `d5eea943294b` and passes locally (13.7s, same
+`pgvector/pgvector:pg17`); the branch's 36-file diff does not touch this test,
+`deploy/docker-compose.prod.yml`, or `deploy/init-replication.sh`. Inherited
+scaffolding too tight for a loaded runner, not a branch regression.
+
+**The coverage-gate failure** (run 45589709654, job 139131975084, completed
+10:44:43Z — observed live to conclusion): the combine step's root
+scripts-producer failed on the SAME test with a DIFFERENT symptom —
+"Failed: Timeout (>30.0s) from pytest-timeout" — the only failure in
+"1 failed, 6256 passed, 141 skipped". That producer runs
+`pytest tests/ --timeout=30 -q` against `--source=scripts`: docker run +
+initdb + final boot consume 15-25s of the 30s cap under load, and the test
+measures nothing the producer owns.
+
+**Repairs** (`1902f357a7`, `fd05a7f84e`; no gate weakened, no assertion
+removed):
+
+- `tests/test_prod_postgres_probe_live.py`: appended init sleep 8 -> 30
+  (widens only the observation scaffold; `start_period: 300s` in the compose
+  contract keeps it unscored mid-window), deadline 90 -> 120, every observed
+  (socket,tcp) pair recorded and named in the inconclusive assertion; the
+  in-window "must stay not-ready" assertion now uses the health sample taken
+  at iteration start instead of re-reading `_health()` after the probes,
+  which raced the shipped 5s-interval check's first successful evaluation at
+  window end (reproduced once locally: whole-module failure at 68.9s with
+  timing consistent only with that assert; 3 later module runs pass at
+  77-80s; a standalone poll trace shows dozens of clean in-window matches
+  and health flipping only after the window closes).
+- `.github/workflows/quality.yml` combine step: `MAISTRO_PROD_PROBE_DOCKER=0`
+  — the probe module's own pre-existing skipif opt-out — so the
+  30s-capped producer stops hosting a test that cannot honor the cap, while
+  ci.yml's no-cap `test` leg keeps it at full strength
+  (`test_unit_suite_execution_partition.py` pins that leg; still passes).
+  The producer's pg-gated legs skipping in this job is an established
+  pattern (141 skips in the failing run). Skips change no collected node ID.
+
+**Local evidence**: 3 live cases pass 3x consecutively (77-80s, real
+containers); `MAISTRO_PROD_PROBE_DOCKER=0 … --timeout=30` (exact combine
+shape) = 3 skipped in 0.2s; actionlint 1.7.7 + shellcheck 0.10.0 (workflow-
+lint's exact commands) clean; `check-workflow-inventory.py` (33) and
+`check-workflow-write-safety.py` clean; `check-suite-inventory.py` 21
+suites / 36661 unique identities, ok; exact-debt-ledger's three steps
+(`check-ratchet-provenance`, `check-shipped-surface-truth`,
+`check-vulture-baseline` with CI's exact args, 1221 = 1221, 0 unclassified)
+all OK at candidate `fd05a7f84ef0`; ruff check/format clean.
+
+**Round tally:** 1 brief-named failure checked -> 1 disproved (containers
+gate green at this head); 2 real reds diagnosed to one inherited test with
+two distinct mechanisms; both repaired; 1 intermittent local failure
+attributed with mechanism-level evidence (health-sampling race) and fixed;
+no test added or removed (node IDs unchanged -> no inventory-note delta).
+Tree change this round: the test file, the combine env, this record.
