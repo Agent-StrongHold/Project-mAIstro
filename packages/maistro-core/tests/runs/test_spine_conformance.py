@@ -31,6 +31,7 @@ from maistro.runs.lifecycle import (
     UnearnedRunCompletion,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
@@ -2645,6 +2646,72 @@ async def test_a_terminal_parent_rejects_late_child_admission(spine: Any) -> Non
             _graph(workspace, project_id),
             parent_run_id=parent.run_id,
             actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+
+async def test_a_durable_fork_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The one child a terminal parent accepts is the durable Graph fork (#1621).
+
+    `refuse_child_under_terminal_parent` refuses every late child except the
+    one whose provenance carries the fork fact naming the very parent it is
+    filed under: time travel (ADR-062) branches a historical Run into a child
+    instead of reopening it, and the fork files that child after the source
+    Run has terminalized. Pinned at the store layer on every backend so a
+    develop sync that drops the exemption fails here, not three layers up in
+    a fork test — the exemption was lost exactly that way once already.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    forked = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            DURABLE_GRAPH_FORK_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "source_event_sequence": "1",
+                "reason": "restart from the beginning",
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert forked.parent_run_id == parent.run_id
+    assert forked.status is RunStatus.QUEUED
+
+
+async def test_a_fork_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The exemption is the fork fact's parent identity, not its presence.
+
+    A fork fact naming a different Run does not make this child THAT parent's
+    fork: accepting it would let any caller mint a fork-shaped provenance and
+    file arbitrary children under a terminal Run. The carve-out stays as
+    narrow as the fact that justifies it.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                DURABLE_GRAPH_FORK_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "source_event_sequence": "1",
+                    "reason": "restart from the beginning",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
         )
 
 

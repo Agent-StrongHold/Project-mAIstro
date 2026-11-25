@@ -1469,6 +1469,27 @@ async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() 
     assert await container.recover_abandoned_attempts(now=after_lapse) == 0
 
 
+async def test_replay_selection_answers_none_for_a_purged_node_run() -> None:
+    """A NodeRun deleted between the listing and the selection is not a crash.
+
+    `_reconcile_run_terminal_attempts` lists a Run's NodeRuns, then selects the
+    replayable Attempt per NodeRun; a retention purge can delete a listed
+    NodeRun in between. The selector must answer None — nothing to replay —
+    so the tick moves on instead of dying on a row it can no longer read
+    (#1621). The caller's `continue` on None is what makes the sweep survive
+    the race; raising here would abort the whole tick mid-page.
+    """
+    from datetime import UTC, datetime
+
+    container = await _container()
+    selected = await container._replayable_terminal_attempt(
+        "node-run-purged-before-selection",
+        moment=datetime.now(UTC),
+        allow_stranded_recovered=False,
+    )
+    assert selected is None
+
+
 async def test_the_replay_does_not_park_a_requested_cancellation() -> None:
     """`is_reclaimed_attempt` keeps the replay inside recovery's lane (#1621).
 

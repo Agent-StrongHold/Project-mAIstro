@@ -1613,15 +1613,22 @@ class Container:
         while the parent-only park lands. CREATED/QUEUED leaves never reach
         it: the planner's refusal table (#232 P4a) is their disposition, so
         they stay unselected unless a caller deliberately opens the gate.
+
+        Existence is checked first because the caller lists a Run's NodeRuns
+        and then selects per NodeRun: a retention purge deleting the Run in
+        between must land here as a quiet "nothing to replay", not as a
+        `NodeRunNotFound` from the Attempt queries that aborts the tick
+        mid-page. `get_node_run` answers None for a purged NodeRun on every
+        backend; `list_attempts` raises for one.
         """
         from maistro.runs.model import RunStatus
 
-        completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
-        if completed is not None:
-            return completed
         node_run = await self.run_store.get_node_run(node_run_id)
         if node_run is None:
             return None
+        completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
+        if completed is not None:
+            return completed
         if node_run.status is RunStatus.WAITING or allow_stranded_recovered:
             return await self._stranded_recovered_attempt(node_run_id, moment=moment)
         return None
