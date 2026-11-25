@@ -25,7 +25,11 @@ These tests hold that repair closed structurally:
   images;
 - the x/net override must exist at the fixed version the scanner DB names —
   v29.9.3 upstream still pins the vulnerable v0.60.0, so losing the
-  override re-reds both images;
+  override re-reds both images. The stage hoists the exact pin into an
+  `X_NET_MODULE_UPGRADE` ARG that the RUN's `go get` applies by reference
+  (develop's #2110 form), so the guards read the version through the ARG
+  and separately assert the RUN actually consumes it — a defined-but-unused
+  ARG is the silent no-op this split exists to catch;
 - the stage must re-vendor and build from the patched module set
   (`-mod=mod`: the patched go.mod supersedes the tag's stale vendor tree,
   so the built binary carries the fixed modules; the engine and research
@@ -57,6 +61,18 @@ DOCKERFILES = (
 CLI_RELEASE = "29.9.3"
 CLI_COMMIT_SHORT = "5457199"
 FIXED_X_NET = "v0.62.0"
+
+
+def _x_net_upgrade_pin(body: str) -> str | None:
+    """The exact x/net version the stage pins, resolved through the upgrade ARG.
+
+    The pin's literal text lives in `ARG X_NET_MODULE_UPGRADE=...`, not in
+    the `go get` line (which references the ARG by name), so the version can
+    only be read from the ARG. Returns None when the stage no longer
+    defines it — every caller must treat None as the override being gone.
+    """
+    pin = re.search(r"ARG X_NET_MODULE_UPGRADE=golang\.org/x/net@(\S+)", body)
+    return pin.group(1) if pin else None
 
 
 def _dockercli_run_body(dockerfile: Path) -> str:
@@ -107,31 +123,50 @@ def test_every_docker_cli_stage_still_overrides_x_net() -> None:
     both scanned images. If a future CLI release vendors v0.62.0 itself,
     this test's failure is the scheduled re-triage point — drop the override
     in the same commit that pins that release.
+
+    The develop-side stage (#2110) hoists the exact pin into an
+    `X_NET_MODULE_UPGRADE` ARG and applies it by reference in the `go get`
+    line, so "the override exists" is now two facts: the ARG names the
+    module, and the RUN's `go get` actually consumes the ARG. Deleting
+    either half fails here.
     """
     for dockerfile in DOCKERFILES:
         body = _dockercli_run_body(dockerfile)
-        go_get = re.search(r"go get ([^\n]+) &&", body)
+        assert re.search(r"ARG X_NET_MODULE_UPGRADE=golang\.org/x/net@", body), (
+            f"{dockerfile.name}: the X_NET_MODULE_UPGRADE ARG (the x/net override "
+            "pin) is gone — v29.9.3 upstream vendors the CVE-2026-78661-vulnerable "
+            "v0.60.0, so the override is load-bearing"
+        )
+        go_get = re.search(r"go get ([^\n]+?) &&", body)
         assert go_get is not None, (
             f"{dockerfile.name}: dockerclibuild lost the vendored-module override"
         )
-        assert "golang.org/x/net@" in go_get.group(1), (
-            f"{dockerfile.name}: golang.org/x/net is no longer overridden in "
-            "dockerclibuild (v29.9.3 upstream vendors the CVE-2026-78661-vulnerable "
-            "v0.60.0)"
+        assert '"${X_NET_MODULE_UPGRADE}"' in go_get.group(1), (
+            f"{dockerfile.name}: the go get line no longer applies the "
+            "X_NET_MODULE_UPGRADE override; golang.org/x/net is no longer "
+            "upgraded in dockerclibuild (v29.9.3 upstream vendors the "
+            "CVE-2026-78661-vulnerable v0.60.0)"
         )
 
 
 def test_override_versions_are_the_trivy_reported_fixed_versions() -> None:
     for dockerfile in DOCKERFILES:
         body = _dockercli_run_body(dockerfile)
-        go_get = re.search(r"go get ([^\n]+) &&", body)
+        pin = _x_net_upgrade_pin(body)
+        assert pin == FIXED_X_NET, (
+            f"{dockerfile.name}: the x/net override must stay {FIXED_X_NET} "
+            f"(CVE-2026-78661's fix); got {pin!r}; bump only with a re-triage"
+        )
+        # develop's belt-and-braces: v29.9.3 vendors the klauspost fix
+        # upstream, but the stage still pins it beside the x/net upgrade so a
+        # future tag bump cannot silently drop below the GO-2026-6865 fix.
+        go_get = re.search(r"go get ([^\n]+?) &&", body)
         assert go_get is not None, (
             f"{dockerfile.name}: dockerclibuild lost the vendored-module override"
         )
-        net_pin = re.search(r"golang\.org/x/net@(\S+)", go_get.group(1))
-        assert net_pin is not None and net_pin.group(1) == FIXED_X_NET, (
-            f"{dockerfile.name}: the x/net override must stay {FIXED_X_NET} "
-            "(CVE-2026-78661's fix); bump only with a re-triage"
+        assert "github.com/klauspost/compress@v1.20.2" in go_get.group(1), (
+            f"{dockerfile.name}: the belt-and-braces klauspost/compress pin must "
+            "stay v1.20.2 (GO-2026-6865's fix)"
         )
 
 
@@ -139,8 +174,11 @@ def test_stage_revendors_and_builds_the_patched_module_set() -> None:
     for dockerfile in DOCKERFILES:
         body = _dockercli_run_body(dockerfile)
         # go get rewrites go.mod/go.sum; `go mod vendor` re-syncs the tag's
-        # stale vendor/ directory to the patched module set either way.
-        assert re.search(r"go get .+ && \\\n\s*go mod vendor", body), (
+        # stale vendor/ directory to the patched module set either way. The
+        # stage currently runs both in one command chain (single line); the
+        # older two-line `&& \`-continuation form stays accepted so a pure
+        # style revert cannot red the suite — only losing the re-vendor does.
+        assert re.search(r"go get [^\n]+ && (?:\\\n\s*)?go mod vendor", body), (
             f"{dockerfile.name}: dockerclibuild must `go mod vendor` after the override"
         )
         # -mod=mod: the build resolves per the patched go.mod (the sum-verified
@@ -151,6 +189,35 @@ def test_stage_revendors_and_builds_the_patched_module_set() -> None:
         assert re.search(r"go build [^\n]*-mod=mod", body), (
             f"{dockerfile.name}: dockerclibuild must build from the patched go.mod (-mod=mod)"
         )
+
+
+def test_x_net_upgrade_pin_resolves_through_the_arg_indirection() -> None:
+    """The resolver must catch a drifted or deleted pin, not just the happy path.
+
+    Unit-level regression guard for the round-18 re-target: the version the
+    stage applies is readable only through the ARG (the `go get` line
+    references it by name), so a resolver that greps the `go get` line for
+    `golang.org/x/net@` would silently miss drift. These synthetic stage
+    bodies prove the failure modes are caught:
+
+    - the merged form (ARG + reference) resolves the fixed version;
+    - a drifted ARG resolves to the CVE-2026-78661-vulnerable v0.60.0 that
+      v29.9.3 vendors, i.e. test_override_versions reds rather than
+      false-greens on the fixed-version comparison;
+    - a stage that deletes the ARG resolves None, i.e. both guards red.
+    """
+    applied = (
+        "ARG DOCKER_CLI_VERSION=29.9.3\n"
+        "ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0\n"
+        'RUN go get "${X_NET_MODULE_UPGRADE}" github.com/klauspost/compress@v1.20.2'
+        " && go mod vendor\n"
+    )
+    assert _x_net_upgrade_pin(applied) == FIXED_X_NET
+    drifted = applied.replace("golang.org/x/net@v0.62.0", "golang.org/x/net@v0.60.0")
+    assert _x_net_upgrade_pin(drifted) == "v0.60.0"
+    assert _x_net_upgrade_pin(drifted) != FIXED_X_NET
+    deleted = "\n".join(line for line in applied.splitlines() if not line.startswith("ARG X_NET"))
+    assert _x_net_upgrade_pin(deleted) is None
 
 
 def test_engine_and_research_stages_stay_in_sync() -> None:
