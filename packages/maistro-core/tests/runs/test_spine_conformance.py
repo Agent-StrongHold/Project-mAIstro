@@ -31,6 +31,8 @@ from maistro.runs.lifecycle import (
     UnearnedRunCompletion,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
@@ -1180,13 +1182,16 @@ async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) ->
     — PostgreSQL would refuse it with a foreign key and the others must agree."""
     store, workspace, project_id = spine
     parent = await _run(spine)
-    await store.create_run(
+    child = await store.create_run(
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     for force in (False, True):
@@ -2584,6 +2589,198 @@ async def _assert_completion_over_a_paused_human_node_refused(spine: Any) -> Non
     assert settled.status is RunStatus.COMPLETED
 
 
+@pytest.mark.parametrize(
+    "non_success_terminal",
+    [RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT],
+)
+async def test_a_parent_cannot_complete_while_a_child_run_is_open(
+    spine: Any, non_success_terminal: RunStatus
+) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    child = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+
+    with pytest.raises(RunIntegrityError, match=r"child Run.*non-terminal"):
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    unchanged = await store.get_run(parent.run_id)
+    assert unchanged is not None and unchanged.status is RunStatus.RUNNING
+
+    # Non-success outcomes remain truthful even while delegated work is open.
+    non_success_parent = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await store.transition_run(non_success_parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(non_success_parent.run_id, RunStatus.RUNNING)
+    await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=non_success_parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    assert (
+        await store.transition_run(non_success_parent.run_id, non_success_terminal)
+    ).status is non_success_terminal
+
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
+    assert (
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+    ).status is RunStatus.COMPLETED
+
+
+async def test_a_terminal_parent_rejects_late_child_admission(spine: Any) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+
+async def test_a_durable_fork_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The one child a terminal parent accepts is the durable Graph fork (#1621).
+
+    `refuse_child_under_terminal_parent` refuses every late child except the
+    one whose provenance carries the fork fact naming the very parent it is
+    filed under: time travel (ADR-062) branches a historical Run into a child
+    instead of reopening it, and the fork files that child after the source
+    Run has terminalized. Pinned at the store layer on every backend so a
+    develop sync that drops the exemption fails here, not three layers up in
+    a fork test — the exemption was lost exactly that way once already.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    forked = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            DURABLE_GRAPH_FORK_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "source_event_sequence": "1",
+                "reason": "restart from the beginning",
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert forked.parent_run_id == parent.run_id
+    assert forked.status is RunStatus.QUEUED
+
+
+async def test_a_fork_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The exemption is the fork fact's parent identity, not its presence.
+
+    A fork fact naming a different Run does not make this child THAT parent's
+    fork: accepting it would let any caller mint a fork-shaped provenance and
+    file arbitrary children under a terminal Run. The carve-out stays as
+    narrow as the fact that justifies it.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                DURABLE_GRAPH_FORK_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "source_event_sequence": "1",
+                    "reason": "restart from the beginning",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+
+
+async def test_a_post_terminal_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The second child a terminal parent accepts: the post-terminal child (#1621).
+
+    Shipped flows hang children under terminal parents by design: a
+    control-plane operation minted after its requesting Run terminalized (a
+    benchmark judge beneath a COMPLETED Run), and retry lineage beneath a
+    FAILED Run. The store accepts such a child when its own provenance
+    carries the identity-bound ``POST_TERMINAL_CHILD_PROVENANCE`` fact
+    naming that parent — the same carve-out shape as the durable Graph fork.
+    Pinned at the store layer on every backend beside the fork pin it
+    mirrors.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    late = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            POST_TERMINAL_CHILD_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "reason": ("control-plane operation minted after its requesting Run terminalized"),
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert late.parent_run_id == parent.run_id
+    assert late.status is RunStatus.QUEUED
+
+
+async def test_a_post_terminal_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The carve-out is the post-terminal fact's parent identity, not its presence.
+
+    Same rule as the fork fact: a fact naming a different Run does not make
+    this child THAT parent's late child, so the admission is refused like
+    any unmarked one. Without this pin the fact degenerates into a magic
+    word that files arbitrary children under terminal Runs.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                POST_TERMINAL_CHILD_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "reason": "names a different Run",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+
+
 async def test_a_parent_cannot_complete_while_a_human_node_run_is_paused(spine: Any) -> None:
     await _assert_completion_over_a_paused_human_node_refused(spine)
 
@@ -2754,6 +2951,21 @@ async def test_a_live_lease_is_not_reclaimed(spine: Any) -> None:
 
 async def test_renewal_pushes_the_expiry_out(spine: Any) -> None:
     await _assert_renewal_pushes_the_expiry_out(spine)
+
+
+async def test_recovery_classification_uses_cause_not_matching_error_text(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    _node_run, active = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    assert active.execution_lease is not None and active.execution_lease.expires_at is not None
+    reclaimed = await store.reclaim_expired_attempts(
+        now=active.execution_lease.expires_at + timedelta(seconds=1)
+    )
+    persisted = reclaimed[0].model_copy(update={"cancellation_cause": None})
+
+    from maistro.runs.lifecycle import is_reclaimed_attempt
+
+    assert persisted.error == reclaimed[0].error
+    assert not is_reclaimed_attempt(persisted)
 
 
 async def test_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
