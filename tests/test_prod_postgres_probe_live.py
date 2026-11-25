@@ -234,7 +234,14 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
     a copy of init-replication.sh with a sleep appended AFTER the role
     creation, so the temporary server is observably the only listener while
     the init script's effects already exist — proving the probe waits for the
-    FINAL server, not for the artifacts.
+    FINAL server, not for the artifacts. The appended sleep is the
+    observation BUDGET for this poller, and the poller's iterations are two
+    `docker exec` calls plus an inspect each: on a loaded runner one
+    iteration can straddle a short window (socket probe read before it
+    opens, TCP probe after the final server is up) and never see it — the
+    2026-11-25 CI run missed a 8s window in 90s of polling exactly that way
+    while the same commit passed develop's run and a local one. 30s
+    comfortably exceeds the exec gap; the asserted properties are unchanged.
     """
     container = f"{_stack['network']}-first-boot"
     _stack["containers"].append(container)
@@ -245,7 +252,7 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
     init_dir = tmp_path / "initdb"
     init_dir.mkdir()
     widened = init_dir / "init-replication.sh"
-    widened.write_text(INIT_SCRIPT.read_text(encoding="utf-8") + "\nsleep 8\n", encoding="utf-8")
+    widened.write_text(INIT_SCRIPT.read_text(encoding="utf-8") + "\nsleep 30\n", encoding="utf-8")
     widened.chmod(0o755)
     _start_primary(
         container,
@@ -255,10 +262,15 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
         init_dir=init_dir,
     )
     saw_temp_window = False
-    deadline = time.monotonic() + 90
+    observed: list[str] = []
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline and _health(container) != "healthy":
         socket_probe = _exec(container, ["pg_isready", "-U", PG_USER])
         tcp_probe = _exec(container, ["pg_isready", "-U", PG_USER, "-h", "postgres-primary"])
+        observed.append(
+            f"socket={'accepting' if 'accepting' in socket_probe else 'other'}"
+            f"/tcp={'no-response' if 'no response' in tcp_probe else 'other'}"
+        )
         if "accepting" in socket_probe and "no response" in tcp_probe:
             saw_temp_window = True
             assert _health(container) != "healthy", (
@@ -269,7 +281,8 @@ def test_first_boot_ready_only_after_init_completed(_stack: dict[str, Any], tmp_
         time.sleep(0.5)
     assert saw_temp_window, (
         "never observed the temporary-server window (socket accepting, TCP "
-        "refusing); the scenario is inconclusive"
+        "refusing); the scenario is inconclusive — observed probe pairs: "
+        + (", ".join(observed[-12:]) or "none")
     )
 
     _wait_healthy(container)
