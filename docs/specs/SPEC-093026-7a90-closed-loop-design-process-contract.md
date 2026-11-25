@@ -29,7 +29,6 @@ owners:
 
 # SPEC-093026-7a90: Closed-loop design process — Rubric on Goal, eval-on-Run, packs, and the HITL fence
 
-- **Status:** Proposed
 - **Date:** 2026-09-30
 - **ADR:** `ADR-093026-7a90` (Proposed)
 - **Issue:** #790 (M7-A1). Parent epic #789; initiative #788; milestone #787.

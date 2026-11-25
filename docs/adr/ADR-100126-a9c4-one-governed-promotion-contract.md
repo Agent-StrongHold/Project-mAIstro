@@ -36,7 +36,6 @@ history:
 
 # ADR-100126-a9c4: One governed promotion contract for every reusable definition family
 
-- **Status:** Accepted
 
 ## Context
 
