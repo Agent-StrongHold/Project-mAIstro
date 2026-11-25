@@ -823,3 +823,249 @@ async def test_hostile_builder_system_prompt_is_refused_before_the_model(tmp_pat
         await apply_fn(None, str(tmp_path))
 
     assert invoked == []
+
+
+# ---------------------------------------------------------------------------
+# Promotion gate (#302): quarantine + signed approval BEFORE the --ff-only
+# ---------------------------------------------------------------------------
+
+
+def _head(cwd: Path | str) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True
+    )
+    return proc.stdout.strip()
+
+
+def _git_diff(work_root: str, rev_range: str) -> str:
+    baseline = Path(work_root) / "baseline"
+    proc = subprocess.run(
+        ["git", "diff", rev_range], cwd=str(baseline), capture_output=True, text=True
+    )
+    return proc.stdout
+
+
+class RecordingReview:
+    """An AdversarialReview that records what it was asked to judge."""
+
+    def __init__(self, approve: bool = True) -> None:
+        self.approve = approve
+        self.judged: list[list[str]] = []
+
+    async def review(self, diff: str, touched_paths: list[str]) -> bool:
+        self.judged.append(list(touched_paths))
+        return self.approve
+
+
+def test_green_ordinary_change_still_promotes_with_gate(tmp_path: Path) -> None:
+    """The gate is not a blanket ban: an ordinary (non-sensitive) clean diff
+    still crosses the canonical boundary and promotes exactly as before."""
+    repo = _make_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    judged: list[list[str]] = []
+
+    class SpyWarden:
+        async def scan(self, content: str, boundary: str = "default"):
+            judged.append([boundary])
+            from maistro.security._types import WardenVerdict
+
+            return WardenVerdict(clean=True)
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        warden=SpyWarden(),
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 1
+    # The quarantine boundary actually executed for this promotion's diff.
+    assert judged  # warden.scan ran
+    from maistro_rsi.trace_notes import read_trace_note
+
+    note = read_trace_note(Path(config.work_root) / "baseline", result.cycles[0].sha)
+    assert note is not None
+    assert note.gate is not None
+    assert note.gate["quarantine_cleared"] is True
+    assert note.gate["requires_approval"] is False
+
+
+def test_sensitive_candidate_cannot_promote_without_signed_approval(tmp_path: Path) -> None:
+    """#302 adversarial: a candidate that edits the promotion machinery itself
+    (a sensitive path) and passes the test command is still refused — no
+    reviewer, no approval, no promotion. The --ff-only never runs."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        # Touch the containment surface AND keep the suite green.
+        target = ws / "maistro_rsi" / "local_loop.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched promotion machinery\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "quarantine gate refused" in cycle.note
+    # The baseline branch never moved.
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
+
+
+def test_sensitive_candidate_with_review_but_unbound_approval_stays_put(tmp_path: Path) -> None:
+    """An approval that does not bind to THIS candidate/diff/scope is not
+    authority: denial leaves the baseline unchanged."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        target = ws / "maistro_rsi" / "local_loop.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        adversarial_review=RecordingReview(approve=True),
+        approval_provider=lambda *a: {  # validly signed, but for another change
+            "candidate_sha": "b" * 40,
+            "diff_sha256": "c" * 64,
+            "scope": "/other#main",
+            "approver": "someone",
+            "policy_version": "rsi-sensitive-paths-v1",
+            "expires_at": "2999-01-01T00:00:00+00:00",
+            "signature": "0" * 64,
+        },
+        approval_signing_secret="gate-test-secret",
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    assert not result.cycles[0].promoted
+    assert _head(Path(config.work_root) / "baseline") == head_before
+
+
+def test_sensitive_candidate_promotes_only_with_review_and_valid_approval(tmp_path: Path) -> None:
+    """The full authorized path: reviewer approves AND an approval service
+    returns a record signed and bound to the ACTUAL candidate/diff/scope —
+    then, and only then, the fast-forward runs, and the promotion's durable
+    trace note carries the approval provenance for independent audit."""
+    import hashlib
+    from dataclasses import asdict, replace
+
+    from maistro_rsi.promotion_gate import (
+        SignedPromotionApproval,
+        sign_promotion_approval,
+    )
+    from maistro_rsi.sensitive_paths import SENSITIVE_PATH_POLICY_VERSION
+    from maistro_rsi.trace_notes import read_trace_note
+
+    repo = _make_repo(tmp_path / "src")
+    secret = "gate-test-secret"
+    review = RecordingReview(approve=True)
+
+    def edit_gate(ws: Path) -> None:
+        target = ws / "maistro_rsi" / "local_loop.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# reviewed-and-approved edit\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    def approval_service(candidate_sha: str, diff: str, scope: str) -> dict[str, object] | None:
+        """Stands in for the external capability that existed BEFORE the run
+        (e.g. the Conductor review endpoint): it signs against the live
+        binding values it is handed and nothing else."""
+        approval = SignedPromotionApproval(
+            candidate_sha=candidate_sha,
+            diff_sha256=diff,
+            scope=scope,
+            approver="security-operator",
+            policy_version=SENSITIVE_PATH_POLICY_VERSION,
+            expires_at="2999-01-01T00:00:00+00:00",
+        )
+        return dict(asdict(replace(approval, signature=sign_promotion_approval(approval, secret))))
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        adversarial_review=review,
+        approval_provider=approval_service,
+        approval_signing_secret=secret,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 1
+    assert review.judged  # the reviewer was consulted on the sensitive diff
+    baseline = Path(config.work_root) / "baseline"
+    assert (baseline / "value.txt").read_text() == "1\n"
+    note = read_trace_note(baseline, result.cycles[0].sha)
+    assert note is not None and note.gate is not None
+    gate = note.gate
+    assert gate["requires_approval"] is True
+    assert gate["quarantine_cleared"] is True
+    approval = gate["approval"]
+    assert approval["approver"] == "security-operator"
+    # The recorded approval binds to the promoted commit and its diff digest.
+    assert approval["candidate_sha"] == result.cycles[0].sha
+    diff_text = _git_diff(
+        str(config.work_root), f"{config.baseline_branch}~1..{config.baseline_branch}"
+    )
+    assert approval["diff_sha256"] == hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+
+
+def test_candidate_cannot_self_score_through_an_oracle_rewrite(tmp_path: Path) -> None:
+    """#302 adversarial + #109: a candidate that rewrites the oracle it is
+    scored against (a sensitive path: the fitness evaluator) cannot use the
+    self-modified score to promote. Even with the test command green, the
+    sensitive-path policy demands authorization the run cannot mint — and the
+    promotion-surface invariant holds by construction (the gate consults
+    matches_sensitive_pattern over the REAL paths, not any candidate flag)."""
+    repo = _make_repo(tmp_path / "src")
+
+    def rewrite_oracle(ws: Path) -> None:
+        # The candidate weakens the evaluator that scores it…
+        evaluator = ws / "maistro_rsi" / "candidate_fitness.py"
+        evaluator.parent.mkdir(parents=True, exist_ok=True)
+        evaluator.write_text(
+            "def evaluate_candidate(*a, **k):\n    class S:\n        accepted = True\n"
+            "        composite = 1.0\n    return S()\n",
+            encoding="utf-8",
+        )
+        # …and touches a test path to shrink the oracle — all still "green".
+        oracle_test = ws / "maistro-rsi" / "tests" / "test_oracle.py"
+        oracle_test.parent.mkdir(parents=True, exist_ok=True)
+        oracle_test.write_text("", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(rewrite_oracle)).run()
+
+    assert result.promotions == 0
+    assert not result.cycles[0].promoted
+    assert "quarantine gate refused" in result.cycles[0].note
+    assert _head(Path(config.work_root) / "baseline") == head_before

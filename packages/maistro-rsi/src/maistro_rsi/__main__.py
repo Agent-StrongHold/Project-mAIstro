@@ -203,6 +203,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "(the durable output of an isolated run; feed to `maistro_rsi harvest`).",
     )
     run.add_argument(
+        "--approval-dir",
+        default=None,
+        help="Directory of pre-signed promotion approvals (#302), one "
+        "`<candidate-sha12>.approval.json` per sensitive candidate. Without it a "
+        "diff touching the containment surface can never promote — approval "
+        "must exist BEFORE the run, bound to the candidate/diff sha, scope, "
+        "approver, policy version and expiry.",
+    )
+    run.add_argument(
         "--report-every",
         type=int,
         default=0,
@@ -831,6 +840,8 @@ def _run(args: argparse.Namespace) -> int:
     scout_fallback_models = models.scout_fallback
     local_fallback_model = models.local_fallback
 
+    from maistro_rsi.promotion_gate import DirectoryApprovalStore
+
     config = LocalRsiConfig(
         repo_path=str(repo),
         test_command=args.test_cmd,
@@ -862,6 +873,12 @@ def _run(args: argparse.Namespace) -> int:
         roster_size=args.roster_size,
         emergency_models=emergency_models,
         local_fallback_model=local_fallback_model,
+        # #302: pre-staged approvals are the ONLY way a sensitive-surface
+        # candidate may promote under the CLI; omitted means the default
+        # fail-closed posture (sensitive diffs park, baseline unchanged).
+        approval_provider=(
+            DirectoryApprovalStore(args.approval_dir) if args.approval_dir else None
+        ),
     )
     print(
         f"RSI local loop -> clone of {repo} in {work_root} ({args.cycles} cycles, model={args.model or 'env default'})"
