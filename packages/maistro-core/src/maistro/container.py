@@ -1492,16 +1492,17 @@ class Container:
     async def _latest_reconcilable_completed_attempt(
         self, node_run_id: str, *, moment: datetime
     ) -> Attempt | None:
-        """The latest recoverable terminal Attempt, if the sweep may replay it.
+        """The latest COMPLETED Attempt of this NodeRun, if recovery may settle it.
 
         A terminal Attempt a crash interrupted is recoverable only when no
         sibling Attempt still executes the NodeRun under an unexpired lease --
         otherwise this sweep would overwrite an outcome a live walker is about
-        to write itself. Completed Attempts carry accepted physical evidence;
-        reclaimed Attempts carry the recovery marker and need their logical
-        park replayed if a process died between the two durable writes.
+        to write itself. Reclaimed (``CANCELLED`` + ``RECOVERED``) Attempts do
+        not ride this arm: they are selected by the stranded check below,
+        whose RUNNING/WAITING NodeRun gate is what keeps the #232 P4a refusal
+        table (prelaunch CREATED/QUEUED leaves) out of the replay (#1621).
         """
-        from maistro.runs.lifecycle import has_live_execution_lease, is_reclaimed_attempt
+        from maistro.runs.lifecycle import has_live_execution_lease
 
         attempts = await self.run_store.list_attempts(node_run_id)
         if has_live_execution_lease(attempts, moment):
@@ -1510,7 +1511,7 @@ class Container:
             (
                 attempt
                 for attempt in reversed(attempts)
-                if attempt.status is AttemptStatus.COMPLETED or is_reclaimed_attempt(attempt)
+                if attempt.status is AttemptStatus.COMPLETED
             ),
             None,
         )
@@ -1528,7 +1529,9 @@ class Container:
         ``remaining`` bounds this Run's share of the sweep's ``limit``: the
         caller passes the room it has left, so a Run early in the page cannot
         spend the whole budget a second time. Only observed persisted progress
-        (an accepted outcome or a Run settlement) charges the budget (#1850).
+        (an accepted outcome, or a parent Run status change with no NodeRun
+        disposition — the #1621 parent-only heal) charges the budget (#1850):
+        parking is not a settlement.
         """
         from maistro.runs.model import RunStatus
         from maistro.runs.recovered_disposition import RecoveredDispositionRefused
@@ -1601,13 +1604,27 @@ class Container:
         replayable completion falls to the stranded typed-RECOVERED check, and
         only when ``allow_stranded_recovered`` is true (RUNNING NodeRuns —
         prelaunch CREATED/QUEUED leaves stay with the reclaim refusal path).
+
+        One exception to that gate (#1621): a WAITING NodeRun takes the
+        stranded check regardless. WAITING is the crash seam between the
+        heal's two writes — the NodeRun parked while its Run is still
+        RUNNING — so the newest typed RECOVERED Attempt there is an unfinished
+        half of this sweep's own heal, and replaying it is a NodeRun no-op
+        while the parent-only park lands. CREATED/QUEUED leaves never reach
+        it: the planner's refusal table (#232 P4a) is their disposition, so
+        they stay unselected unless a caller deliberately opens the gate.
         """
+        from maistro.runs.model import RunStatus
+
         completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
         if completed is not None:
             return completed
-        if not allow_stranded_recovered:
+        node_run = await self.run_store.get_node_run(node_run_id)
+        if node_run is None:
             return None
-        return await self._stranded_recovered_attempt(node_run_id, moment=moment)
+        if node_run.status is RunStatus.WAITING or allow_stranded_recovered:
+            return await self._stranded_recovered_attempt(node_run_id, moment=moment)
+        return None
 
     async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
@@ -1668,7 +1685,13 @@ class Container:
         accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
         node_disposition = before_node.status is not reconciled.status
         run_disposition = after_run is not None and before_run.status is not after_run.status
-        return accepted or node_disposition or run_disposition
+        # A park alongside a NodeRun disposition is the reclaim half's logical
+        # completion replayed: parking is not a settlement (#1850), and the
+        # reclaim already reported that Attempt. The parent Run moving while
+        # every NodeRun record stays put is progress only this half can make —
+        # the #1621 crash seam between parking the NodeRun and parking its Run
+        # — so that, and only that, joins the accepted outcome.
+        return accepted or (run_disposition and not node_disposition)
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100

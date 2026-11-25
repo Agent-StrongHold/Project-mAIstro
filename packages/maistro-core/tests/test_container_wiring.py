@@ -1455,9 +1455,11 @@ async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() 
     stranded_run = await store.get_run(run.run_id)
     assert stranded_run is not None and stranded_run.status is RunStatus.RUNNING
 
-    # The next tick heals it — and counts the recovery it completed.
+    # The next tick heals it. Parking is not a settlement (#1850): the count
+    # stays 0 exactly as the interrupted-reclaim characterization pins, while
+    # the logical records land the park the dead tick never wrote.
     healed = await container.recover_abandoned_attempts(now=after_lapse)
-    assert healed == 1
+    assert healed == 0
     parked_node = await store.get_node_run(node_run.node_run_id)
     assert parked_node is not None and parked_node.status is RunStatus.WAITING
     parked_run = await store.get_run(run.run_id)
