@@ -96,7 +96,10 @@ refusal and the eventual-completion case on every backend (2 tests × 3
 backends = +6), and the delegation suite proves a delegate_remote child keeps
 its delegating parent un-completable while the child is in flight (+1). The added regressions cover late-child admission rejection across the stores,
 recovery classification by persisted cancellation cause rather than error text,
-and repair-budget accounting when only the parent Run moves to WAITING. The recovery
+and repair-budget accounting when only the parent Run moves to WAITING — the
+sweep is observed at the crash point between the heal's two durable writes
+(NodeRun parked, Run still RUNNING), so the returned count cannot hide a
+tick's only state change, and a completed heal charges no further budget. The recovery
 replay also revalidates that a reclaimed Attempt is still current immediately
 before parking; a regression test inserts a leased retry after the replay's
 selection snapshot and confirms the active NodeRun and Run remain `RUNNING` (+1).

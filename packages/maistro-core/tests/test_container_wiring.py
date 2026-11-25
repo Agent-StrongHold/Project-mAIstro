@@ -1315,11 +1315,28 @@ async def test_parent_only_recovery_progress_consumes_budget() -> None:
     after_lapse = lease.expires_at + timedelta(seconds=1)
     assert await store.reclaim_expired_attempts(now=after_lapse)
 
+    # The crash point between the heal's two durable writes: the NodeRun is
+    # already parked but the Run is still RUNNING. The sweep's only observable
+    # progress is the parent Run moving to WAITING — no NodeRun disposition,
+    # no accepted outcome — and that parent-only progress must still charge
+    # the repair budget instead of returning 0 over a state change it made.
+    parked_node = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.WAITING,
+        error=attempt.error,
+        expected_current_attempt_id=attempt.attempt_id,
+    )
+    assert parked_node.status is RunStatus.WAITING
+    assert (await store.get_run(run.run_id)).status is RunStatus.RUNNING
+
     assert await container.recover_abandoned_attempts(now=after_lapse, limit=1) == 1
     settled_node = await store.get_node_run(node_run.node_run_id)
     settled_run = await store.get_run(run.run_id)
     assert settled_node is not None and settled_node.status is RunStatus.WAITING
     assert settled_run is not None and settled_run.status is RunStatus.WAITING
+
+    # The heal is complete: replaying the same unchanged facts charges nothing.
+    assert await container.recover_abandoned_attempts(now=after_lapse, limit=1) == 0
 
 
 async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
