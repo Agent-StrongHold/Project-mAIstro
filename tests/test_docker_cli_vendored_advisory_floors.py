@@ -105,7 +105,7 @@ def test_docker_cli_stage_raises_klauspost_compress_to_fixed_release(dockerfile:
 def test_docker_cli_stage_resyncs_vendor_after_the_upgrade(dockerfile: Path) -> None:
     stage = _docker_cli_stage(dockerfile.read_text(encoding="utf-8"))
     upgrade = stage.index("go get ")
-    resync = stage.index("go mod vendor")
+    resync = stage.rindex("go mod vendor")
     assert resync > upgrade, (
         f"{dockerfile.name}: `go mod vendor` must follow the `go get`, or the "
         "vendored tree is inconsistent with go.mod and the build fails"

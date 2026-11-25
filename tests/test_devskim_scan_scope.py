@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 import re
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,13 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
+# The sweep test calls `_is_scanned` once per shipped source file, and every
+# call used to re-read and re-parse devskim.yml twice: ~5k files times 2
+# parses of a workflow YAML pushed the test past its 30s pytest-timeout on a
+# loaded CI runner (coverage-gate job 133120551863, run 43812084099,
+# 2026-11-16) even though the scan-scope configuration it pins was unchanged.
+# Cache the parse: the workflow is a module-level constant within a single
+# pytest process, so memoizing cannot stale across configurations.
 @functools.lru_cache(maxsize=1)
 def _scanner_step() -> dict[str, object]:
     # Parsed once per process, not once per classified file: the sweep below
@@ -57,7 +64,7 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
-@cache
+@lru_cache(maxsize=1)
 def _ignore_globs() -> tuple[str, ...]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
@@ -65,7 +72,7 @@ def _ignore_globs() -> tuple[str, ...]:
     return tuple(glob.strip() for glob in str(raw).split(",") if glob.strip())
 
 
-@cache
+@lru_cache(maxsize=1)
 def _include_globs() -> tuple[str, ...]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
@@ -90,11 +97,6 @@ def _as_regex(glob: str) -> re.Pattern[str]:
     and re-parsing the workflow YAML twice per candidate path (~3.3k parses
     per sweep); with those cached the match loop is microseconds per file.
     """
-    return _compile_glob_regex(glob)
-
-
-@cache
-def _compile_glob_regex(glob: str) -> re.Pattern[str]:
     out = ""
     i = 0
     while i < len(glob):

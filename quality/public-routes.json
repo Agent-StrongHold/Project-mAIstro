@@ -75,7 +75,7 @@
       "risk": "high",
       "disposition": "temporary",
       "issue": 313,
-      "expires": "2026-11-24",
+      "expires": "2026-12-25",
       "reason": "First-run account creation, still reachable after setup completes. #313 closes it to invited or admin-created accounts; until then this is an unauthenticated write path, throttled since #366 but not shut."
     },
     "/v1/setup/": {
@@ -84,7 +84,7 @@
       "risk": "high",
       "disposition": "temporary",
       "issue": 313,
-      "expires": "2026-11-24",
+      "expires": "2026-12-25",
       "reason": "First-run provisioning, before any account exists to authenticate with. The whole prefix stays public after setup completes; the individual routes guard themselves with one-shot 409s, which is a check inside each handler rather than a boundary. Narrowing it to the pre-setup window is part of #313."
     },
     "/v1/setup/status": {
