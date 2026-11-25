@@ -176,6 +176,13 @@ c6d2fbdba48c38cc5ab86f2b537c8ee047e26c8d:scripts/smoke-engine-canvas.sh:generic-
 2a46c7e00867993e49f1a3fcde868af420ab8769:docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md:generic-api-key:258
 465d8fd8fd8ee5e12b65f3c97bd19178825904bc:docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md:generic-api-key:261
 e14ea64f3ee00a359033ad0bfa7718dfc598eb15:docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md:generic-api-key:261
+# The #2372 repair branch's reconcile-to-develop commit re-presented the same
+# develop-reviewed ADR as a whole-file addition in its scan range (the working
+# tree copy is byte-identical to develop's, verified by an empty diff against
+# the #2268 squash), so the PR base..head scan re-reports the one finding the
+# introducers above already cover. Fingerprint scoped to that one reconcile
+# commit, path, rule and line; any other value in the document stays scanned.
+78b3244fc631cfec40c27e89d75670b3621707fc:docs/adr/ADR-101826-c3f1-webauthn-verification-adapter-py-webauthn.md:generic-api-key:261
 
 # ---- #1690's cross-replica auth-composition test (fixed at source; the
 # introducing commit is history) ----
