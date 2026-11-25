@@ -16,13 +16,14 @@ import sys
 import tempfile
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from maistro.graph.definitions import Graph, Node
+from maistro.graph.definitions import Graph, GraphTemplate, Node
 from maistro.identity import Principal
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from tests.cross_product_parity.harness import (
@@ -67,12 +68,734 @@ def _unavailable_real_seam(owner: str) -> ScenarioExecution:
     )
 
 
-def _scheduler_scenario() -> ScenarioExecution:
-    return _unavailable_real_seam("scheduler (#231)")
+_SCHEDULE_PARITY_NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+_SCHEDULE_PARITY_WS = "parity-schedule-ws"
+_SCHEDULE_PARITY_TEMPLATE = "parity-schedule-template"
+_SCHEDULE_PARITY_ID = "parity-schedule"
 
 
-def _evolve_scenario() -> ScenarioExecution:
-    return _unavailable_real_seam("Evolve (#51/#1064/#1065/#1066)")
+class _FixedScheduleClock:
+    """The scheduler's clock, pinned to the parity noon (the #1199 tick test idiom)."""
+
+    @staticmethod
+    def now(tz: object = None) -> datetime:
+        return _SCHEDULE_PARITY_NOW
+
+
+async def _stop_schedule_lifespan(sched: Any) -> None:
+    """Stop the real lifespan loop and wait until its task has actually ended."""
+    runner = getattr(sched, "_runner", None)
+    sched.stop_scheduler()
+    task = getattr(runner, "task", None) if runner is not None else None
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(task, timeout=10.0)
+    except TimeoutError:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+    except Exception:
+        task.exception()  # retrieved so the loop stays warning-free
+
+
+async def _wait_for_schedule_run(run_store: Any, *, timeout_s: float = 20.0) -> Any:
+    """Poll the canonical store until the tick's occurrence is terminal."""
+    from maistro.runs import RunStatus
+
+    deadline = time.monotonic() + timeout_s
+    observed: dict[str, int] = {}
+    while time.monotonic() < deadline:
+        found = []
+        for status in RunStatus:
+            found.extend(await run_store.list_by_status(status, limit=100))
+        observed = {}
+        for run in found:
+            observed[run.status.value] = observed.get(run.status.value, 0) + 1
+        terminal = [run for run in found if run.status in (RunStatus.COMPLETED, RunStatus.FAILED)]
+        if len(terminal) == 1:
+            return terminal[0]
+        if len(terminal) > 1:
+            raise ParityContractError(
+                "the parity occurrence admitted more than one canonical Run: "
+                f"{[run.run_id for run in terminal]}"
+            )
+        await asyncio.sleep(0.05)
+    raise ParityContractError(
+        f"the configured scheduler never reached one terminal occurrence within "
+        f"{timeout_s}s (observed: {observed})"
+    )
+
+
+async def _seed_stale_hive_schedule(container: Any) -> Any:
+    """Write a Hive projection row that disagrees with canonical truth.
+
+    This is the stale projection a #2467 crash leaves behind: the canonical
+    store already holds the acknowledged definition, and the in-process Hive
+    row still describes an older one. The restart must repair the row from
+    the store, never restore the row over the store.
+    """
+    import stores
+    from models.schemas import Schedule as HiveSchedule
+
+    canonical = await container.schedule_store.get(_SCHEDULE_PARITY_ID)
+    assert canonical is not None
+    row = HiveSchedule(
+        id=canonical.schedule_id,
+        user_id=str(canonical.actor_principal_id or ""),
+        workspace_id=canonical.workspace_id,
+        project_id=canonical.project_id,
+        name="stale Hive name",
+        description="",
+        cron_expression="9 9 9 9 9",
+        mission_template_id="wrong-template",
+        max_runs=canonical.max_runs,
+        catchup_window_seconds=canonical.catchup_window_seconds,
+        enabled=canonical.enabled,
+        timezone=canonical.timezone,
+        created_at=canonical.created_at,
+        updated_at=canonical.created_at,
+        last_run=canonical.last_fired_at,
+    )
+    stores.schedules._data[row.id] = row
+    return row
+
+
+async def _schedule_conductor_scenario() -> ScenarioExecution:
+    """Scenario 2 as a real execution: the configured scheduler lifespan fires
+    one occurrence into the canonical spine and Conductor inspects it.
+
+    REAL_SCENARIO_EVIDENCE: schedule-conductor
+
+    The producer half is the shipped scheduler exactly as the app lifespan
+    wires it (``services.scheduler.start_scheduler`` driving the real loop's
+    startup backfill and due tick) against a configured core ``Container`` on
+    the supported durable SQLite spine: the due tick admits the occurrence
+    through the canonical ``ScheduleRunAdmitter`` (one claimed occurrence ->
+    QUEUED canonical Run) and the same tick's canonical consumer executes it
+    into real NodeRun/Attempt evidence, advancing the durable due cursor.
+
+    The observer half is Conductor's landed inspection seam (#1174/#1036
+    ``dag_run_inspection``) wired to the same canonical stores exactly as the
+    app wires it. The scenario requires: the tick recorded no Conductor
+    projection row (the Hive row is not the run's discovery mechanism), the
+    Run is discoverable, inspectable, and evidence-complete by its canonical
+    id alone for a Workspace member, and a caller outside the Workspace is
+    refused indistinguishably from a missing id.
+
+    The restart half reopens the canonical database (a real close and
+    reopen, not a process-local dict) after reseeding a stale Hive
+    projection row, then starts the lifespan again (#1199/#2467): the
+    durable cursor admits no second occurrence, and the stale projection is
+    repaired from canonical truth — the row can neither resurrect the
+    schedule nor override the acknowledged definition.
+    """
+    _bind_hive_backend()
+
+    import services.engine as engine_mod
+    import services.scheduler as sched
+    import stores
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.workspace_authority import presentation_store
+
+    from maistro.container import create_container
+    from maistro.runs import RunStatus
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.scheduling import Schedule
+    from maistro.types.config import AgentConfig
+    from maistro.workspaces.model import WorkspaceRole
+
+    scratch = Path(tempfile.mkdtemp(prefix="schedule-conductor-parity-"))
+    db_path = scratch / "spine.sqlite3"
+    monkey = pytest.MonkeyPatch()
+    container: Any = None
+    # The scheduler's startup reconciliation writes process-global product
+    # state (#2467): the projection ledger's migration marker, tombstones,
+    # and pending-create markers. Snapshot it before the lifespan runs so
+    # the finally below can hand the next suite in this interpreter a
+    # pristine ledger — the backend suite's ledger isolation preserves
+    # pre-existing state by design, so a leaked `migrated` marker flips its
+    # legacy-import tests into repair mode (ci.yml's leakage step runs
+    # tests/ and packages/hive-conductor/backend/tests in one process).
+    from services.schedule_projection import reset_projection_health, schedule_migration
+
+    ledger_snapshot = dict(schedule_migration.items())
+    try:
+        # The parity process must not run the scheduler's side self-repair
+        # cadence; this scenario pins the schedule tick contract only.
+        monkey.setenv("SELF_REPAIR_INTERVAL_S", "0")
+        # The scheduler's clock is pinned to the parity noon, so one hourly
+        # occurrence is due exactly once no matter how long a slow host takes.
+        monkey.setattr(sched, "datetime", _FixedScheduleClock)
+        # The real cadence stays 30s; the parity lifespan drives the same loop
+        # with a pause it can actually wait out.
+        monkey.setattr(sched, "_TICK_INTERVAL_S", 0.05)
+        monkey.setattr(stores.schedules, "_data", {})
+
+        container = await create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                workspace_id=_SCHEDULE_PARITY_WS,
+                database_url=f"sqlite:///{db_path}",
+            )
+        )
+        monkey.setattr(
+            sched._ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: container),
+        )
+        # Composition provisions the configured Workspace (#1152); the parity
+        # actor's membership is this scenario's own contribution.
+        if await container.workspace_store.get(_SCHEDULE_PARITY_WS) is None:
+            await container.workspace_store.create(
+                creator_user_id=_PARITY_USER,
+                name="Schedule parity",
+                workspace_id=_SCHEDULE_PARITY_WS,
+            )
+        else:
+            await container.workspace_store.set_membership(
+                _SCHEDULE_PARITY_WS,
+                user_id=_PARITY_USER,
+                role=WorkspaceRole.CONTRIBUTOR,
+            )
+        root = await container.project_scope_store.root_for_workspace(_SCHEDULE_PARITY_WS)
+        await container.template_store.put(
+            GraphTemplate(
+                template_id=_SCHEDULE_PARITY_TEMPLATE,
+                workspace_id=_SCHEDULE_PARITY_WS,
+                version=1,
+                name="parity schedule template",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                metadata={"entry_node": "only"},
+            )
+        )
+        await container.schedule_store.put(
+            Schedule(
+                schedule_id=_SCHEDULE_PARITY_ID,
+                workspace_id=_SCHEDULE_PARITY_WS,
+                project_id=root.project_id,
+                name="canonical parity schedule",
+                cron="0 * * * *",
+                graph_template_id=_SCHEDULE_PARITY_TEMPLATE,
+                actor_principal_id=_PARITY_USER,
+                created_at=_SCHEDULE_PARITY_NOW - timedelta(days=1),
+                last_fired_at=_SCHEDULE_PARITY_NOW - timedelta(hours=1),
+            )
+        )
+        # A crash between the canonical write and the projection write leaves
+        # a stale Hive row behind (#2467); the restart below must not serve it.
+        await _seed_stale_hive_schedule(container)
+        # The presentation the app's workspace routes would have created; the
+        # canonical membership above is what authorizes, this is the view.
+        from models.workspace import WorkspacePresentation
+
+        presentation_store()[_SCHEDULE_PARITY_WS] = WorkspacePresentation(
+            workspace_id=_SCHEDULE_PARITY_WS,
+            persona_template_id="pm_fleet",
+            updated_at=_SCHEDULE_PARITY_NOW,
+        )
+
+        # -- Producer: the real configured lifespan fires the occurrence. -----
+        sched.start_scheduler()
+        fired = await _wait_for_schedule_run(container.run_store)
+        assert fired.status is RunStatus.COMPLETED, f"tick ended {fired.status}: {fired.error}"
+        assert fired.workspace_id == _SCHEDULE_PARITY_WS
+        assert fired.provenance["schedule_id"] == _SCHEDULE_PARITY_ID
+        assert fired.actor_principal_id == _PARITY_USER
+        await _stop_schedule_lifespan(sched)
+
+        recorded = await container.schedule_store.get(_SCHEDULE_PARITY_ID)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.last_run_id == fired.run_id
+        assert recorded.next_due_at == _SCHEDULE_PARITY_NOW + timedelta(hours=1)
+        [node] = await container.run_store.list_node_runs(fired.run_id)
+        attempts = await container.run_store.list_attempts(node.node_run_id)
+        assert attempts, "the fired occurrence must expose physical Attempt evidence"
+
+        # The startup projection repair (#2467) must have replaced the stale
+        # row's definition with the canonical definition it crashed over.
+        repaired = stores.schedules.get(_SCHEDULE_PARITY_ID)
+        assert repaired is not None
+        assert repaired.name == "canonical parity schedule"
+        assert repaired.cron_expression == "0 * * * *"
+        assert repaired.mission_template_id == _SCHEDULE_PARITY_TEMPLATE
+
+        # -- Observer: Conductor inspects the same canonical id. --------------
+        # The scheduler never recorded a projection row: the dag_run_store is
+        # not the discovery mechanism for another producer's Run (#1036).
+        assert get_dag_run_store().get_run(fired.run_id) is None
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            SimpleNamespace(
+                _agent_port=SimpleNamespace(container=container),
+                run_store=container.run_store,
+                run_reader=ScopedRunReader(
+                    container.run_store,
+                    container.workspace_store,
+                    container.project_scope_store,
+                ),
+            ),
+        )
+        detail = await visible_run_detail(_PARITY_USER, fired.run_id)
+        assert detail is not None
+        assert detail["id"] == detail["canonical_run_id"] == fired.run_id
+        assert detail["workspace_id"] == _SCHEDULE_PARITY_WS
+        assert detail["project_id"] == root.project_id
+        assert detail["status"] == "completed"
+        node_runs = detail.get("node_runs") or []
+        assert node_runs, "the fired occurrence must expose physical NodeRun evidence"
+        observed_attempts = [a for n in node_runs for a in n.get("attempts", [])]
+        assert observed_attempts, "the fired occurrence must expose physical Attempt evidence"
+        assert all(a["status"] == "completed" for a in observed_attempts)
+        assert await can_inspect_run(_PARITY_USER, fired.run_id)
+        assert await visible_run_ids(_PARITY_USER, [fired.run_id, "no-such-run"]) == {fired.run_id}
+        listed = await list_visible_runs(_PARITY_USER, limit=25)
+        assert fired.run_id in {row["id"] for row in listed}
+
+        # A caller outside the producing Workspace is refused without learning
+        # the id exists -- the same answer a missing id gets (#1174).
+        assert await visible_run_detail(_PARITY_FOREIGN_USER, fired.run_id) is None
+        assert not await can_inspect_run(_PARITY_FOREIGN_USER, fired.run_id)
+        assert await visible_run_ids(_PARITY_FOREIGN_USER, [fired.run_id]) == set()
+
+        # -- Restart: reopen the canonical database and start again. ----------
+        # The stale row is reseeded to model the crash window, then the real
+        # database is closed and reopened: nothing may resurrect from the
+        # process-local dict or re-fire the already-claimed occurrence.
+        await _seed_stale_hive_schedule(container)
+        real_due = container.schedule_store.due
+        due_calls = 0
+
+        async def counted_due(**kwargs: Any) -> Any:
+            nonlocal due_calls
+            due_calls += 1
+            return await real_due(**kwargs)
+
+        await container.aclose()
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            None,
+        )
+        container = await create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                workspace_id=_SCHEDULE_PARITY_WS,
+                database_url=f"sqlite:///{db_path}",
+            )
+        )
+        monkey.setattr(
+            sched._ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: container),
+        )
+        monkey.setattr(container.schedule_store, "due", counted_due)
+        sched.start_scheduler()
+        deadline = time.monotonic() + 20.0
+        while due_calls == 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert due_calls >= 1, "the reopened lifespan never reached its first due selection"
+        await _stop_schedule_lifespan(sched)
+
+        reopened_runs: list[Any] = []
+        for status in RunStatus:
+            reopened_runs.extend(await container.run_store.list_by_status(status, limit=100))
+        assert [run.run_id for run in reopened_runs] == [fired.run_id], (
+            "the restart must resume from the durable cursor, not fire again"
+        )
+        resumed = await container.schedule_store.get(_SCHEDULE_PARITY_ID)
+        assert resumed is not None
+        assert resumed.runs_so_far == 1 and resumed.last_run_id == fired.run_id
+        assert resumed.next_due_at == _SCHEDULE_PARITY_NOW + timedelta(hours=1)
+        repaired_after = stores.schedules.get(_SCHEDULE_PARITY_ID)
+        assert repaired_after is not None
+        assert repaired_after.cron_expression == "0 * * * *"
+        assert repaired_after.name == "canonical parity schedule"
+        assert repaired_after.mission_template_id == _SCHEDULE_PARITY_TEMPLATE
+
+        # The reopened canonical Run stays inspectable through the same seam.
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            SimpleNamespace(
+                _agent_port=SimpleNamespace(container=container),
+                run_store=container.run_store,
+                run_reader=ScopedRunReader(
+                    container.run_store,
+                    container.workspace_store,
+                    container.project_scope_store,
+                ),
+            ),
+        )
+        reopened_detail = await visible_run_detail(_PARITY_USER, fired.run_id)
+        assert reopened_detail is not None and reopened_detail["status"] == "completed"
+
+        return ScenarioExecution(
+            {
+                "producer": "scheduler",
+                "observer": "conductor",
+                "run_id": fired.run_id,
+                "workspace_id": _SCHEDULE_PARITY_WS,
+                "project_id": root.project_id,
+                "producer_status": "completed",
+                "physical_node_runs": len(node_runs),
+                "physical_attempts": len(attempts),
+                "projection_rows_for_run": 0,
+                "foreign_observer_visible": False,
+                "cursor_runs_so_far": resumed.runs_so_far,
+                "restart_new_runs": len(reopened_runs) - 1,
+                "stale_projection_repaired": True,
+            }
+        )
+    finally:
+        runner = getattr(sched, "_runner", None)
+        if runner is not None:
+            await _stop_schedule_lifespan(sched)
+        if container is not None:
+            await container.aclose()
+        from services.workspace_authority import presentation_store as _presentation_store
+
+        _presentation_store().pop(_SCHEDULE_PARITY_WS, None)
+        # Restore the projection ledger this lifespan marked migrated (#2467)
+        # and reset the health surface the reconciliation wrote; see the
+        # snapshot above for why the next suite needs pristine globals.
+        schedule_migration.clear()
+        for ledger_key, ledger_value in ledger_snapshot.items():
+            schedule_migration[ledger_key] = ledger_value
+        reset_projection_health()
+        monkey.undo()
+        shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            from maistro.capabilities.effect_context import default_effect_context
+
+            default_effect_context.cache_clear()
+        except Exception:
+            pass
+
+
+def _validate_schedule_observation(observation: Mapping[str, Any]) -> None:
+    """The strict invariant over the real scheduler/observer records (#1199)."""
+    assert observation["producer"] == "scheduler"
+    assert observation["observer"] == "conductor"
+    for field in ("run_id", "workspace_id", "project_id"):
+        assert observation[field], f"observation lacks canonical {field}"
+    assert observation["producer_status"] == "completed"
+    assert observation["physical_node_runs"] >= 1
+    assert observation["physical_attempts"] >= 1
+    assert observation["projection_rows_for_run"] == 0
+    assert observation["foreign_observer_visible"] is False
+    assert observation["cursor_runs_so_far"] == 1
+    assert observation["restart_new_runs"] == 0
+    assert observation["stale_projection_repaired"] is True
+
+
+def _abstaining_scenario() -> ScenarioExecution:
+    """A required producer that never reached its real boundary.
+
+    Negative-oracle fixture: the Evolve scenario is a real execution now, so
+    the closeout-report test exercises its stop-on-first-failure contract with
+    an explicitly abstaining callback instead of Evolve's scaffold.
+    """
+    raise ScenarioAbstained("producer did not execute its real boundary")
+
+
+def _evolve_genome(genome_id: str, score: float) -> Any:
+    """A pre-scored, pre-fitnessed proxy genome: plan-pairs → battles → finalize."""
+    from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome
+    from maistro_evolve.types import PipelineGenome as RealGenome
+
+    genome = RealGenome(
+        id=genome_id,
+        name=genome_id,
+        topology=DAGTopology(
+            nodes=[
+                NodeGenome(
+                    id="q1",
+                    role="queen",
+                    strategy="react",
+                    model="gpt-4",
+                    temperature=0.3,
+                    max_tokens=4096,
+                    system_prompt="test",
+                    max_tool_rounds=5,
+                )
+            ],
+            edges=[],
+            entry_node="q1",
+            max_cycles=3,
+            beam_width=1,
+            use_scout=False,
+        ),
+        eval_weights=EvalWeights(),
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    genome.eval_scores = {"proxy": score}
+    genome.fitness_score = score
+    return genome
+
+
+def _evolve_population() -> Any:
+    from maistro_evolve.population import PopulationStore
+
+    population = PopulationStore()
+    for genome_id, score in (("g1", 0.9), ("g2", 0.2), ("g3", 0.8), ("g4", 0.3)):
+        population.add(_evolve_genome(genome_id, score))
+    return population
+
+
+class _DeterministicEvolveCycle:
+    """The deterministic finalize double the shipped replay suite also uses.
+
+    Every genome arrives pre-scored, so the canonical graph is
+    plan-pairs → battles → finalize and the LLM seams never fire; the double
+    keeps finalize's own mutations (fitness fold, one bred child, cycle
+    advance) deterministic without an LLM or official benchmarks. The producer
+    evidence under test — canonical Run/NodeRun/Attempt admission over the
+    durable spine and the exactly-once battle/finalize publication ledger
+    (#1064) — is entirely real.
+    """
+
+    fidelity = "proxy"
+
+    def __init__(self, harness: Any = None, tournament: Any = None, archive: Any = None) -> None:
+        self.harness = harness
+        self.tournament = tournament
+        self.archive = archive
+        self._island_pop = None
+        self._cycle_count = 0
+
+    @staticmethod
+    def _fold_score(genome: Any, benchmark: str, score: float, stub: bool, alpha: float) -> None:
+        genome.eval_scores[benchmark] = score
+
+    def _compute_all_fitness(self, population: Any) -> list[Any]:
+        for genome in population.list_all():
+            genome.fitness_score = sum(genome.eval_scores.values())
+        return population.list_all()
+
+    def _breed_island(
+        self, island_pop: Any, island_id: int, population: Any, config: Any, cap: int
+    ) -> None:
+        # Idempotent by content, not by a per-process latch: a restarted
+        # process's fresh cycle object cannot breed the same child twice.
+        if any(g.id == "child-1" for g in population.list_all()):
+            return
+        child = _evolve_genome("child-1", 0.5)
+        child.parent_a_id = "g1"
+        child.parent_b_id = "g2"
+        population.add(child)
+
+    async def _self_improve_top(self, population: Any, config: Any, llm_call: Any) -> None:
+        return None
+
+
+async def _evolve_conductor_scenario() -> ScenarioExecution:
+    """Scenario 3 as a real execution, not a source probe.
+
+    REAL_SCENARIO_EVIDENCE: evolve-conductor
+
+    The producer half runs the shipped canonical Evolve cycle
+    (``run_canonical_evolution_cycle`` -> ``run_durable_graph``) against the
+    supported durable SQLite spine plus the durable Evolve domain ledger
+    (#1064), so the Workspace/Project/Graph/Run identity chain, the physical
+    NodeRun/Attempt evidence, and the exactly-once battle/finalize publication
+    rows are real durable records, not test doubles of the spine. Only the
+    breeding genetics are a deterministic double, exactly as the shipped
+    backend replay suite stages them; the canonical admission/execution and
+    the publication ledger under test are the real ones.
+
+    The observer half is Conductor's landed inspection seam (#1036's
+    ``dag_run_inspection``), wired to the same canonical stores through the
+    engine bridge exactly as the app wires it. The scenario requires: the
+    projection store never recorded the Run; list/detail answer by the
+    canonical id alone; the battle/finalize NodeRun/Attempt tree is readable
+    through the scoped seam; the durable publication ledger caught exactly one
+    row per battle NodeRun plus a committed finalize marker; and an observer
+    outside the Workspace is refused indistinguishably from a missing id.
+    """
+    _bind_hive_backend()
+
+    import services.engine as engine_mod
+    from services.dag_run_inspection import (
+        can_inspect_run,
+        list_visible_runs,
+        visible_run_detail,
+        visible_run_ids,
+    )
+    from services.dag_run_store import get_dag_run_store
+    from services.evolution_graph import run_canonical_evolution_cycle
+    from services.evolve_domain_store import SqliteEvolveDomainStore
+    from services.workspace_authority import canonical_store_for_tests, create_workspace
+
+    from maistro.graph.durable_runs import CanonicalDurableRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    scratch = Path(tempfile.mkdtemp(prefix="evolve-conductor-parity-"))
+    profile = None
+    monkey = pytest.MonkeyPatch()
+    try:
+        # The producer acts as a member of a real canonical Workspace (the
+        # Conductor-side authority the observation half authorizes against).
+        view = await create_workspace(
+            creator_user_id=_PARITY_USER,
+            name="Evolve parity",
+            persona_template_id="pm_fleet",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        profile = await open_durable_profile(scratch / "spine.sqlite3", workspace_id=view.id)
+        durable = CanonicalDurableRunStore(profile.run_store, profile.continuation_store)
+        domain = SqliteEvolveDomainStore(str(scratch / "evolve_domain.db"))
+        await domain.ensure_schema()
+
+        population = _evolve_population()
+        from maistro_evolve.tournament import EloTournament
+
+        tournament = EloTournament()
+        monkey.setattr("maistro_evolve.cycle.EvolutionCycle", _DeterministicEvolveCycle)
+        record = await run_canonical_evolution_cycle(
+            population=population,
+            tournament=tournament,
+            config=SimpleNamespace(
+                eval_batch_size=4,
+                target_benchmarks=["proxy"],
+                eval_ema_alpha=0.5,
+                cull_pct=0.0,
+                island_count=1,
+                population_size=4,
+                migration_interval=1000,
+            ),
+            harness=SimpleNamespace(fidelity="proxy"),
+            llm_call=None,
+            actor_principal_id=_PARITY_USER,
+            cycle_number=1,
+            container=SimpleNamespace(
+                config=SimpleNamespace(workspace_id=profile.workspace_id),
+                project_scope_store=profile.project_store,
+                run_store=profile.run_store,
+                graph_run_store=durable,
+            ),
+            domain_store=domain,
+        )
+        from maistro.runs import RunStatus
+
+        assert record.run.status is RunStatus.COMPLETED, (
+            f"cycle ended {record.run.status}: {record.run.error}"
+        )
+        run_id = record.run_id
+
+        # The durable publication ledger caught exactly one row per battle
+        # NodeRun the cycle executed, plus the committed finalize marker —
+        # #1064's exactly-once evidence is part of the parity observation.
+        node_runs = await profile.run_store.list_node_runs(run_id)
+        battle_node_ids = {
+            node.node_run_id for node in node_runs if str(node.node_id).startswith("evolve-battle")
+        }
+        finalize_node_ids = {
+            node.node_run_id for node in node_runs if node.node_id == "evolve-finalize"
+        }
+        assert battle_node_ids, "the cycle must execute at least one battle NodeRun"
+        battle_publications = await domain.list_battle_publications(profile.workspace_id)
+        assert {p.node_run_id for p in battle_publications} == battle_node_ids
+        assert all(p.run_id == run_id for p in battle_publications)
+        finalize_markers = await domain.list_finalize_markers(profile.workspace_id)
+        assert {m.node_run_id for m in finalize_markers} == finalize_node_ids
+        assert all(m.payload["status"] == "committed" for m in finalize_markers)
+
+        # -- Observer: Conductor inspects the same canonical id. --------------
+        # The producer never recorded a projection row: the dag_run_store is
+        # not the discovery mechanism for another product's Run (#1036).
+        assert get_dag_run_store().get_run(run_id) is None
+        monkey.setattr(
+            engine_mod,
+            "_singleton",
+            SimpleNamespace(
+                run_store=profile.run_store,
+                run_reader=ScopedRunReader(
+                    profile.run_store,
+                    canonical_store_for_tests(),
+                    profile.project_store,
+                ),
+            ),
+        )
+
+        detail = await visible_run_detail(_PARITY_USER, run_id)
+        assert detail is not None
+        assert detail["id"] == detail["canonical_run_id"] == run_id
+        assert detail["workspace_id"] == view.id == profile.workspace_id
+        assert detail["project_id"] == profile.project_id
+        assert detail["status"] == "completed"
+        observed_nodes = detail.get("node_runs") or []
+        assert observed_nodes, "the completed cycle must expose physical NodeRun evidence"
+        attempts = [a for node in observed_nodes for a in node.get("attempts", [])]
+        assert attempts, "the completed cycle must expose physical Attempt evidence"
+        assert all(attempt["status"] == "completed" for attempt in attempts)
+        assert await can_inspect_run(_PARITY_USER, run_id)
+        assert await visible_run_ids(_PARITY_USER, [run_id, "no-such-run"]) == {run_id}
+        listed = await list_visible_runs(_PARITY_USER, limit=25)
+        assert run_id in {row["id"] for row in listed}
+
+        # A caller outside the producing Workspace is refused without learning
+        # the id exists — the same answer a missing id gets (#1174).
+        assert await visible_run_detail(_PARITY_FOREIGN_USER, run_id) is None
+        assert not await can_inspect_run(_PARITY_FOREIGN_USER, run_id)
+        assert await visible_run_ids(_PARITY_FOREIGN_USER, [run_id]) == set()
+
+        return ScenarioExecution(
+            {
+                "producer": "evolve",
+                "observer": "conductor",
+                "run_id": run_id,
+                "workspace_id": profile.workspace_id,
+                "project_id": profile.project_id,
+                "producer_status": detail["status"],
+                "physical_node_runs": len(observed_nodes),
+                "physical_attempts": len(attempts),
+                "battle_node_runs": len(battle_node_ids),
+                "durable_battle_publications": len(battle_publications),
+                "finalize_publications": len(finalize_markers),
+                "projection_rows_for_run": 0,
+                "foreign_observer_visible": False,
+            }
+        )
+    finally:
+        monkey.undo()
+        if profile is not None:
+            await profile.close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _validate_evolve_observation(observation: Mapping[str, Any]) -> None:
+    """The strict invariant over the real producer/observer records."""
+    assert observation["producer"] == "evolve"
+    assert observation["observer"] == "conductor"
+    for field in ("run_id", "workspace_id", "project_id"):
+        assert observation[field], f"observation lacks canonical {field}"
+    assert observation["producer_status"] == "completed"
+    assert observation["physical_node_runs"] >= 2
+    assert observation["physical_attempts"] >= 1
+    assert observation["battle_node_runs"] >= 1
+    # The exactly-once ledger caught every battle the cycle executed.
+    assert observation["durable_battle_publications"] == observation["battle_node_runs"]
+    assert observation["finalize_publications"] >= 1
+    assert observation["projection_rows_for_run"] == 0
+    assert observation["foreign_observer_visible"] is False
 
 
 def _golden_scenario() -> ScenarioExecution:
@@ -262,6 +985,24 @@ async def _builders_conductor_scenario() -> ScenarioExecution:
         assert await visible_run_ids(_PARITY_FOREIGN_USER, [run_id]) == set()
 
         # -- Control: cancel a genuinely mid-flight turn by the same id. ------
+        # Deterministic claim gate. The walk claims the turn's physical try
+        # only when the frontier mints its NodeRun, so park the walk exactly
+        # there: with the gate closed the Run provably owns no attempt, and
+        # the cancel receipt below cannot race the claim regardless of how
+        # fast or loaded the machine is. CI runs the same interleaving a
+        # laptop does -- the strict receipt is closeout evidence, not a won
+        # race. Opening the gate after the receipt is asserted lets the
+        # unblocked walk claim its try under the now-durable CANCELLED fence,
+        # whose pre-launch refusal is the second half of the evidence.
+        claim_gate = asyncio.Event()
+        claim_create_node_run = profile.run_store.create_node_run
+
+        async def _gated_create_node_run(*args: Any, **kwargs: Any) -> Any:
+            if not claim_gate.is_set():
+                await claim_gate.wait()
+            return await claim_create_node_run(*args, **kwargs)
+
+        monkey.setattr(profile.run_store, "create_node_run", _gated_create_node_run)
         parked = _ParkedRunner()
         live = asyncio.create_task(
             producer.execute(
@@ -274,11 +1015,24 @@ async def _builders_conductor_scenario() -> ScenarioExecution:
         )
         live_id = await _wait_for_running_turn(profile.run_store, profile.workspace_id)
         response = await cancel_route(live_id, _ParityRequest(_PARITY_USER))
+        # #1242: the receipt is strict closeout evidence, not a bare success.
+        # The fence is durable CANCELLED; the walk had not claimed the turn's
+        # physical try yet, so there was nothing to signal and the durable
+        # fence is what refuses a competing consumer claim afterwards.
         assert response == {
             "run_id": live_id,
             "status": "cancelled",
             "cancelled": True,
+            "stop_confirmed": True,
+            "disposition": "stop_confirmed",
+            "cause": "requested",
+            "diagnosis": (
+                "the Run owned no physical try; the durable CANCELLED fence is what refuses "
+                "a competing consumer claim, so no invocation can start afterwards"
+            ),
+            "attempts": [],
         }
+        claim_gate.set()
         fenced = await profile.run_store.get_run(live_id)
         assert fenced is not None and fenced.status is RunStatus.CANCELLED
         after = await visible_run_detail(_PARITY_USER, live_id)
@@ -408,13 +1162,15 @@ BUILDERS_SCENARIO = ParityScenario(
 )
 SCHEDULER_SCENARIO = ParityScenario(
     name="scheduler-occurrence-to-conductor",
-    dependencies=(SCHEDULER, CONDUCTOR_INSPECTION),
-    execute=_scheduler_scenario,
+    dependencies=(SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO),
+    execute=_schedule_conductor_scenario,
+    validate_observation=_validate_schedule_observation,
 )
 EVOLVE_SCENARIO = ParityScenario(
     name="evolve-cycle-to-conductor",
-    dependencies=(EVOLVE, CONDUCTOR_INSPECTION),
-    execute=_evolve_scenario,
+    dependencies=(EVOLVE, CONDUCTOR_INSPECTION, REAL_EVOLVE_CONDUCTOR_SCENARIO),
+    execute=_evolve_conductor_scenario,
+    validate_observation=_validate_evolve_observation,
 )
 GOLDEN_SCENARIO = ParityScenario(
     name="golden-real-observation",
@@ -553,10 +1309,17 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
 
 
 def test_schedule_required_scenario_emits_strict_closeout_evidence() -> None:
-    """Scenario 2 through the closeout machinery (#1069); see scenario 1."""
+    """Scenario 2 through the closeout machinery (#1069); see scenario 1.
+
+    The schedule -> Conductor boundary is a real execution now, so it must
+    record PASSED evidence in development mode: a regression to an abstaining
+    scaffold -- or any break in the real configured-lifespan, restart, or
+    projection-authority contract (#1199/#2467) -- shows up here as
+    BLOCKED/FAILED instead of a green check.
+    """
     evidence = execute_scenario_sync(SCHEDULER_SCENARIO)
-    if evidence.status == "BLOCKED":
-        assert evidence.blockers or evidence.error
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
@@ -583,10 +1346,17 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
 
 
 def test_evolve_required_scenario_emits_strict_closeout_evidence() -> None:
-    """Scenario 3 through the closeout machinery (#1069); see scenario 1."""
+    """Scenario 3 through the closeout machinery (#1069); see scenario 1.
+
+    The Evolve -> Conductor scenario is a real execution now (with #1064's
+    durable publication ledger as part of the observation), so it must record
+    PASSED evidence in development mode; a regression back to an abstaining
+    scaffold or any parity break in the producer/observer boundary shows up
+    here as BLOCKED/FAILED instead of a green check.
+    """
     evidence = execute_scenario_sync(EVOLVE_SCENARIO)
-    if evidence.status == "BLOCKED":
-        assert evidence.blockers or evidence.error
+    assert evidence.status == "PASSED"
+    assert evidence.executed is True
 
 
 def test_shared_identity_contract_consumes_executable_ontology() -> None:
@@ -853,8 +1623,8 @@ async def test_strict_closeout_reports_every_required_scenario() -> None:
         probes=(SourceProbe("tests/cross_product_parity/no-such-closeout-seam.py"),),
     )
     scenarios = (
-        ParityScenario("first-required", (missing,), _scheduler_scenario),
-        ParityScenario("second-required", (missing,), _evolve_scenario),
+        ParityScenario("first-required", (missing,), _abstaining_scenario),
+        ParityScenario("second-required", (missing,), _abstaining_scenario),
     )
 
     with pytest.raises(CloseoutFailure) as raised:
@@ -965,25 +1735,32 @@ def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> No
 
     Codex review (PR #1641): once a scenario's named product dependency lands,
     an import/source-token check alone is not proof the scenario executed a
-    real cross-product Run through the product's own path. Scenarios 2, 3 and
-    6 still carry their permanent, evidence-backed blockers (``REAL_*`` in
+    real cross-product Run through the product's own path. Scenario 6
+    still carries its permanent, evidence-backed blocker (``REAL_*`` in
     harness.py) precisely so the compound ``dependency_assessment`` call stays
     unavailable -- and strict mode stays red -- until each scaffold is replaced
-    with a real execution. Scenario 1 (Builders -> Conductor) made that
-    replacement, so its ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` marker must now
-    read as available: its blocker is cleared by construction once the real
-    scenario exists, and the real execution itself is what
-    ``test_builders_required_scenario_emits_strict_closeout_evidence`` proves.
+    with a real execution. Scenario 1 (Builders -> Conductor) and scenario 2
+    (schedule occurrence -> Conductor, #1199) made that replacement, so their
+    ``REAL_*`` markers must now read as available: each blocker is cleared by
+    construction once the real scenario exists, and the real execution itself
+    is what the matching strict-closeout test proves.
+    Scenario 3 (Evolve -> Conductor, with #1064's durable publication
+    ledger in its observation) made that replacement as well; the
+    matching evolve strict-closeout test pins its real execution.
     """
     assert REAL_BUILDERS_CONDUCTOR_SCENARIO.available(), (
         "the Builders -> Conductor real-scenario marker regressed to unavailable: "
         "the real scenario execution was lost"
     )
-    for dependency in (
-        REAL_SCHEDULE_CONDUCTOR_SCENARIO,
-        REAL_EVOLVE_CONDUCTOR_SCENARIO,
-        REAL_GOLDEN_PRODUCT_OBSERVATION,
-    ):
+    assert REAL_EVOLVE_CONDUCTOR_SCENARIO.available(), (
+        "the Evolve -> Conductor real-scenario marker regressed to unavailable: "
+        "the real scenario execution was lost"
+    )
+    assert REAL_SCHEDULE_CONDUCTOR_SCENARIO.available(), (
+        "the schedule -> Conductor real-scenario marker regressed to unavailable: "
+        "the real configured-lifespan scenario execution was lost (#1199)"
+    )
+    for dependency in (REAL_GOLDEN_PRODUCT_OBSERVATION,):
         assert not dependency.available(), (
             f"{dependency.key} reads as available -- its scaffold-only scenario "
             "would now pass as if it were real execution evidence"

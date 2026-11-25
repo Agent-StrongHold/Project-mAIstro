@@ -211,6 +211,18 @@ order `wire_execution_spine` gives every canonical store); only the
 no-database in-memory POC composition still loses rows, exactly as it loses
 every other store.
 
+Closed by the #2467 repair (still under #1199): that migration is now
+genuinely one-time and tombstone-aware. Routes commit the canonical store
+first and the Hive row second, so a crash in that window used to leave a
+stale projection that startup pushed back OVER the canonical row — reverting
+acknowledged edits or resurrecting deleted schedules. Startup now repairs
+the projection from canonical (never the reverse), `delete` records a
+durable tombstone (`schedule_deletions`, alembic `069`) that a restart can
+never re-import past, a create-crash orphan is surfaced back into the
+projection, and the by-id routes repair the projection at read time — an
+update whose projection write fails after the canonical commit answers with
+an explicit degraded 503 instead of a silent rollback.
+
 Two smaller follow-ups from the same ADR remain: the Hive schedule row has no
 timezone column, so recurrence there is evaluated in UTC until one is added,
 and `maistro_schedule_fires_total` / the `schedule.fire` span are not emitted

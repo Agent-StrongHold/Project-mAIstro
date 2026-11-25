@@ -25,6 +25,7 @@ import pytest
 
 from maistro.agents.types import ConductorOutput
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.cancellation import CancellationDisposition
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.tasks.admission import TaskRunAdmitter
@@ -185,3 +186,32 @@ async def test_plain_queue_drain_still_records_shutdown_disposition(plain_runner
         "a genuine shutdown must still reach the webhook as a failure"
     )
     assert webhook.payloads[-1].status == TaskStatus.FAILED.value
+
+
+async def test_a_cancelled_dispatched_receipt_only_task_does_not_claim_a_stop(
+    plain_runner,
+) -> None:
+    """The receipt-only tier runs dispatched work its cancel never joins (#1242).
+
+    `TaskRunner` executes an admitter-less queue's tasks directly: a
+    dispatched receipt has no `run_id`, yet the executor coroutine is very
+    much alive. `cancel_receipt` there used to answer STOP_CONFIRMED from
+    "nothing physical existed to stop" — exactly the invented stop #1242
+    removes. The receipt must say UNCERTAIN: the local fence is durable, but
+    nothing in this cancellation reached the executor, so the stop is not
+    proven.
+    """
+    runner, queue, _webhook, executor = plain_runner
+    task = await _submit_and_start(queue, runner, executor)
+    try:
+        answer = await queue.cancel_receipt(task.task_id)
+
+        assert answer is not None
+        assert answer.cancelled is True
+        assert answer.stop_confirmed is False
+        assert answer.disposition is CancellationDisposition.UNCERTAIN
+        assert answer.run_id is None
+        assert "executor" in answer.diagnosis
+        assert "not proven" in answer.diagnosis
+    finally:
+        await runner.stop(drain_timeout=1)
