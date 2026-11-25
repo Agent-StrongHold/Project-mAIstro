@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -271,6 +272,96 @@ class DesignOutput:
         return self.root.value
 
 
+# ─── DesignProject payload (stable Attempt-result DTO) ────────────────────────
+
+#: Tag wrapping a BLOB leaf's bytes: durable Attempt evidence is JSON, so binary
+#: values ride base64 and are restored by `DesignProject.from_payload`.
+_BYTES_TAG = "__bytes_b64__"
+
+
+def _payload_value(value: str | bytes | None) -> str | dict[str, str] | None:
+    if isinstance(value, bytes):
+        return {_BYTES_TAG: base64.b64encode(value).decode("ascii")}
+    return value
+
+
+def _payload_from_value(value: Any) -> str | bytes | None:
+    if isinstance(value, dict) and set(value) == {_BYTES_TAG}:
+        encoded = value[_BYTES_TAG]
+        return base64.b64decode(str(encoded))
+    if isinstance(value, str | bytes) or value is None:
+        return value
+    raise TypeError("ArtifactNode leaf values must be str, bytes, or None")
+
+
+def _artifact_payload(node: ArtifactNode) -> dict[str, Any]:
+    return {
+        "key": node.key,
+        "kind": node.kind.value,
+        "format": node.format.value if node.format is not None else None,
+        "value": _payload_value(node.value),
+        "children": {key: _artifact_payload(child) for key, child in node.children.items()},
+        "metadata": node.metadata,
+    }
+
+
+def _artifact_from_payload(data: dict[str, Any]) -> ArtifactNode:
+    return ArtifactNode(
+        key=data["key"],
+        kind=ArtifactKind(data["kind"]),
+        format=OutputFormat(data["format"]) if data["format"] is not None else None,
+        value=_payload_from_value(data["value"]),
+        children={key: _artifact_from_payload(child) for key, child in data["children"].items()},
+        metadata=data["metadata"],
+    )
+
+
+def _output_payload(output: DesignOutput) -> dict[str, Any]:
+    return {
+        "root": _artifact_payload(output.root),
+        "url": output.url,
+        "trust_tier": output.trust_tier.value,
+        "metadata": output.metadata,
+        "created_at": output.created_at.isoformat(),
+        "run_id": output.run_id,
+        "node_run_id": output.node_run_id,
+        "attempt_id": output.attempt_id,
+    }
+
+
+def _output_from_payload(data: dict[str, Any]) -> DesignOutput:
+    return DesignOutput(
+        root=_artifact_from_payload(data["root"]),
+        url=data["url"],
+        trust_tier=TrustTier(data["trust_tier"]),
+        metadata=data["metadata"],
+        created_at=datetime.fromisoformat(data["created_at"]),
+        run_id=data["run_id"],
+        node_run_id=data["node_run_id"],
+        attempt_id=data["attempt_id"],
+    )
+
+
+def _discovery_payload(discovery: DiscoveryResult) -> dict[str, Any]:
+    return {
+        "skill_slug": discovery.skill_slug,
+        "responses": discovery.responses,
+        "design_system_slug": discovery.design_system_slug,
+        "trust_tier": discovery.trust_tier.value,
+        "created_at": discovery.created_at.isoformat(),
+    }
+
+
+def _discovery_from_payload(data: dict[str, Any]) -> DiscoveryResult:
+    return DiscoveryResult(
+        skill_slug=data["skill_slug"],
+        responses=data["responses"],
+        design_system_slug=data["design_system_slug"],
+        trust_tier=TrustTier(data["trust_tier"]),
+        created_at=datetime.fromisoformat(data["created_at"]),
+    )
+
+
 @dataclass
 class DesignProject:
     """Top-level design project combining skill + design system + outputs."""
@@ -302,6 +393,54 @@ class DesignProject:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+    def to_payload(self) -> dict[str, Any]:
+        """JSON-stable DTO of the full project — not the lossy `to_dict` summary.
+
+        Durable RunStores JSON-hydrate `Attempt.result`, so the canonical Design
+        adapter persists this payload as the Attempt's evidence and rebuilds the
+        domain object from it on replay (`from_payload`). BLOB leaves ride the
+        `_BYTES_TAG` base64 envelope; enums, timestamps, and nested
+        outputs/discovery are restored to their declared types.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "skill_slug": self.skill_slug,
+            "design_system_slug": self.design_system_slug,
+            "org_id": self.org_id,
+            "team_id": self.team_id,
+            "trust_tier": self.trust_tier.value,
+            "canvas_id": self.canvas_id,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "outputs": [_output_payload(output) for output in self.outputs],
+            "discovery": (
+                _discovery_payload(self.discovery) if self.discovery is not None else None
+            ),
+        }
+
+    @classmethod
+    def from_payload(cls, data: dict[str, Any]) -> DesignProject:
+        """Rebuild a `DesignProject` from `to_payload` output."""
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            skill_slug=data["skill_slug"],
+            design_system_slug=data["design_system_slug"],
+            org_id=data["org_id"],
+            team_id=data["team_id"],
+            trust_tier=TrustTier(data["trust_tier"]),
+            canvas_id=data["canvas_id"],
+            outputs=[_output_from_payload(output) for output in data["outputs"]],
+            discovery=(
+                _discovery_from_payload(data["discovery"])
+                if data["discovery"] is not None
+                else None
+            ),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
 
 
 # ─── Domain errors ────────────────────────────────────────────────────────────

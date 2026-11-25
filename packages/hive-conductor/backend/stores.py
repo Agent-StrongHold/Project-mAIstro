@@ -139,7 +139,6 @@ registration_invitations: JsonStore = JsonStore("registration_invitations")
 #: Canonical case-folded username -> user-id claims. Account creation writes
 #: this index and the user row in one durable transaction.
 username_claims: JsonStore = JsonStore("username_claims")
-
 _all_model_stores: list[ModelStore] = [
     missions,
     schedules,

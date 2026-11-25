@@ -579,13 +579,26 @@ def _optimizer_workspace(client: Any) -> str:
     return response.json()["id"]
 
 
+def _real_dag(client: Any, name: str) -> dict[str, Any]:
+    """A DAG descriptor that actually exists in the store.
+
+    The optimizer run gate (#2469) refuses a bare id with no descriptor: a
+    run against a target that does not exist must not mint proposals in the
+    caller's Workspace for it.
+    """
+    response = client.post("/v1/dags", json={"name": name, "description": "optimizer test"})
+    assert response.status_code == 201
+    return response.json()
+
+
 def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
-    _seed_metrics("d-http", "n1", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer HTTP")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     workspace_id = _optimizer_workspace(admin_client)
-    r = admin_client.post(f"/v1/optimizer/d-http/run?workspace_id={workspace_id}")
+    r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
     assert r.status_code == 200
     body = r.json()
-    assert body["dag_id"] == "d-http"
+    assert body["dag_id"] == dag["id"]
     assert body["proposals"]
     assert body["auto_applied"] == 0  # default apply_auto=False
 
@@ -594,9 +607,12 @@ def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
     """apply_auto over HTTP is truthful: without a concrete target value the
     model-swap proposal is `unsupported`, so nothing claims an application
     and auto_applied stays 0 (#861 removed the fake apply path)."""
-    _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer Apply")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     workspace_id = _optimizer_workspace(admin_client)
-    r = admin_client.post(f"/v1/optimizer/d-apply/run?apply_auto=true&workspace_id={workspace_id}")
+    r = admin_client.post(
+        f"/v1/optimizer/{dag['id']}/run?apply_auto=true&validate=false&workspace_id={workspace_id}"
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["auto_applied"] == 0
@@ -653,8 +669,7 @@ def test_run_endpoint_validates_proposals_against_a_real_baseline(
 
 
 def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
-    """FastAPI's path can't be empty, but if a service-level ValueError
-    bubbles, the route translates it to 400."""
+    """A service-level ValueError bubbles and the route translates it to 400."""
 
     # Monkeypatch via the route's binding
     from routes import optimizer as routes_opt
@@ -666,40 +681,47 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
 
     routes_opt.run_optimizer = _raise
     try:
+        dag = _real_dag(admin_client, "Optimizer 400")
         workspace_id = _optimizer_workspace(admin_client)
-        r = admin_client.post(f"/v1/optimizer/anything/run?workspace_id={workspace_id}")
+        r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
         assert r.status_code == 400
     finally:
         routes_opt.run_optimizer = original
 
 
 async def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
-    _seed_metrics("d-list", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer List")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    await run_optimizer("d-list")
-    r = admin_client.get("/v1/optimizer/d-list/proposals")
+    workspace_id = _optimizer_workspace(admin_client)
+    await run_optimizer(dag["id"], workspace_id=workspace_id)
+    r = admin_client.get(f"/v1/optimizer/{dag['id']}/proposals")
     assert r.status_code == 200
     items = r.json()
     assert items
-    assert all(p["dag_id"] == "d-list" for p in items)
+    assert all(p["dag_id"] == dag["id"] for p in items)
 
 
 async def test_list_all_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-all", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer List All")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    await run_optimizer("d-all")
+    workspace_id = _optimizer_workspace(admin_client)
+    await run_optimizer(dag["id"], workspace_id=workspace_id)
     r = admin_client.get("/v1/optimizer/proposals?decision=pending")
     assert r.status_code == 200
     assert r.json()
 
 
 async def test_accept_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-acc", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer Accept")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = await run_optimizer("d-acc")
+    workspace_id = _optimizer_workspace(admin_client)
+    out = await run_optimizer(dag["id"], workspace_id=workspace_id)
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/accept")
     assert r.status_code == 200
@@ -707,10 +729,12 @@ async def test_accept_endpoint(admin_client: Any) -> None:
 
 
 async def test_reject_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-rejhttp", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer Reject")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = await run_optimizer("d-rejhttp")
+    workspace_id = _optimizer_workspace(admin_client)
+    out = await run_optimizer(dag["id"], workspace_id=workspace_id)
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/reject")
     assert r.status_code == 200
@@ -727,17 +751,32 @@ def test_reject_endpoint_missing_id_returns_404(admin_client: Any) -> None:
     assert r.status_code == 404
 
 
+def _gated_proposal(admin_client: Any, name: str) -> str:
+    """A proposal id that survives the target gate: a real descriptor, a
+    Workspace the caller owns, and a server-recorded tenancy."""
+    from services.optimizer import run_optimizer
+
+    dag = _real_dag(admin_client, name)
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+    out = asyncio.run(run_optimizer(dag["id"], workspace_id=workspace_id))
+    assert out["proposals"]
+    return out["proposals"][0]["id"]
+
+
 def test_accept_endpoint_invalid_decision_returns_400(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Force record_decision to raise ValueError — route → 400."""
+    """A decision that survives the target gate but fails at the service
+    boundary (ValueError) — route → 400."""
     import routes.optimizer as routes_opt
 
     def _raise(*a: Any, **kw: Any) -> Any:
         raise ValueError("oops")
 
     monkeypatch.setattr(routes_opt, "record_decision", _raise)
-    r = admin_client.post("/v1/optimizer/proposals/anything/accept")
+    pid = _gated_proposal(admin_client, "Optimizer Accept 400")
+    r = admin_client.post(f"/v1/optimizer/proposals/{pid}/accept")
     assert r.status_code == 400
 
 
@@ -751,7 +790,8 @@ def test_reject_endpoint_invalid_decision_returns_400(
         raise ValueError("oops")
 
     monkeypatch.setattr(routes_opt, "record_decision", _raise)
-    r = admin_client.post("/v1/optimizer/proposals/anything/reject")
+    pid = _gated_proposal(admin_client, "Optimizer Reject 400")
+    r = admin_client.post(f"/v1/optimizer/proposals/{pid}/reject")
     assert r.status_code == 400
 
 

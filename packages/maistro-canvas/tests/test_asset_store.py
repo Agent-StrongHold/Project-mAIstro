@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from maistro_canvas.canvas.asset_store import InMemoryAssetStore
+from maistro_canvas.canvas.asset_store import (
+    InMemoryAssetStore,
+    _deser_world_style,
+    _deser_world_style_partial,
+    _ser_world_style,
+)
 from maistro_canvas.layers import (
     Anchor,
     AssetDefinition,
@@ -32,15 +37,17 @@ from maistro_canvas.types import (
 )
 
 
-def _world_style() -> WorldStyle:
-    return WorldStyle(
-        era="modern",
-        realism="watercolor",
-        architectural_register="cottage",
-        vehicle_register="1970s-pickup",
-        palette_anchors=("sage", "cream"),
-        fauna_realism="cute",
-    )
+def _world_style(**overrides: object) -> WorldStyle:
+    base: dict[str, object] = {
+        "era": "modern",
+        "realism": "watercolor",
+        "architectural_register": "cottage",
+        "vehicle_register": "1970s-pickup",
+        "palette_anchors": ("sage", "cream"),
+        "fauna_realism": "cute",
+    }
+    base.update(overrides)
+    return WorldStyle(**base)  # type: ignore[arg-type]
 
 
 #: The org every store call in this module runs under. Two-tenant
@@ -412,6 +419,59 @@ async def test_create_book_persists_world_style_and_volumes():
     assert out is not None
     assert out.world_style == base
     assert out.style_volumes == (sv,)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# WorldStyle.perspective serde (issue #2398)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_ser_world_style_round_trips_perspective():
+    w = _world_style(perspective="one_point")
+    assert _deser_world_style(_ser_world_style(w)) == w
+
+
+def test_ser_world_style_includes_perspective_key():
+    d = _ser_world_style(_world_style(perspective="isometric"))
+    assert d["perspective"] == "isometric"
+
+
+def test_deser_world_style_defaults_perspective_for_legacy_rows():
+    """Rows persisted before the field existed must still load."""
+    legacy = _ser_world_style(_world_style())
+    del legacy["perspective"]
+    w = _deser_world_style(legacy)
+    assert w.perspective == "flat"
+
+
+def test_deser_world_style_partial_defaults_perspective_to_none():
+    """A persisted partial without the key inherits (None), never pins flat."""
+    p = _deser_world_style_partial({"realism": "cel"})
+    assert p is not None
+    assert p.perspective is None
+    assert p.realism == "cel"
+
+
+@pytest.mark.asyncio
+async def test_book_round_trips_perspective_and_partial_perspective():
+    store = InMemoryAssetStore()
+    base = _world_style(perspective="two_point")
+    sv = StyleVolume(
+        page_range=(7, 9),
+        partial_world_style=WorldStylePartial(perspective="one_point"),
+    )
+    await store.create_book(
+        org_id=ORG,
+        book_id="b_1",
+        title="Perspective Book",
+        world_style=base,
+        style_volumes=(sv,),
+    )
+    out = await store.get_book("b_1", org_id=ORG)
+    assert out is not None
+    assert out.world_style.perspective == "two_point"
+    assert out.style_volumes[0].partial_world_style is not None
+    assert out.style_volumes[0].partial_world_style.perspective == "one_point"
 
 
 @pytest.mark.asyncio

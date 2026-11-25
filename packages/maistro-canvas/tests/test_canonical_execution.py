@@ -71,8 +71,10 @@ async def _seed_active_attempt(
         node_run.node_run_id,
         executor_id="dead-canvas-worker",
         lease_holder="dead-canvas-worker",
+        lease_ttl=timedelta(seconds=30),
     )
     assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is not None
     await runs.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.RUNNING,
@@ -168,6 +170,32 @@ async def test_successful_stage_is_one_completed_node_run_and_attempt() -> None:
     assert run.status is RunStatus.COMPLETED
 
 
+async def test_a_yielded_stage_is_an_integrity_error_not_a_silent_success() -> None:
+    """A stage whose operation paused (ExecutionYielded) returns a YIELDED
+    Attempt with no captured result. Canvas has no pause semantics, so the
+    stage must refuse truthfully rather than project an empty receipt — the
+    degenerate branch the projection guard exists for."""
+    from maistro.runs.execution import ExecutionYielded
+
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-yield",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+
+    async def pauses() -> list[str]:
+        raise ExecutionYielded(awaits_human=True)
+
+    with pytest.raises(RunIntegrityError, match="without a completed Attempt"):
+        await adapter.execute_stage(run_id, "generate", pauses)
+
+    attempts = await runs.list_attempts((await runs.list_node_runs(run_id))[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.YIELDED]
+
+
 async def test_failed_stage_retry_keeps_both_attempts_under_same_node_run() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
@@ -239,6 +267,7 @@ async def test_reclaimed_worker_attempt_is_fenced_before_retry() -> None:
         AttemptStatus.COMPLETED,
     ]
     assert attempts[0].attempt_id == abandoned.attempt_id
+    assert attempts[0].cancellation_cause is CancellationCause.RECOVERED
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
@@ -528,6 +557,104 @@ async def test_abandoned_attempt_integrity_requires_persisted_attempt_and_lease(
             error="worker disappeared",
             cancellation=CancellationCause.RECOVERED,
         )
+
+    with pytest.raises(RunIntegrityError, match="no execution lease"):
+        await adapter._reclaim_recovered_attempt(unleased)
+
+
+async def test_race_or_require_terminal_resolves_or_refuses() -> None:
+    adapter, runs, _project_id = await _adapter()
+
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal("missing-attempt")
+
+    run_id = await adapter.admit(
+        job_id="job-race-terminal",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-race-terminal:generate"
+    )
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal(attempt.attempt_id)
+
+    assert attempt.execution_lease is not None
+    cancelled = await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer won",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._race_or_require_terminal(cancelled.attempt_id)
+    assert raced.attempt_id == cancelled.attempt_id
+    assert raced.status is AttemptStatus.CANCELLED
+    assert node_run.node_run_id == cancelled.node_run_id
+
+
+async def test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-reclaim-race",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-reclaim-race:generate"
+    )
+    lease = attempt.execution_lease
+    assert lease is not None
+
+    async def boom(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        raise RuntimeError("reclaim raced")
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", boom)
+    # Peer already terminalized before our reclaim raised; argument keeps the
+    # pre-race lease so the reclaim path is entered, then falls back.
+    assert attempt.execution_lease is not None
+    await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled first",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._reclaim_recovered_attempt(attempt)
+    assert raced.status is AttemptStatus.CANCELLED
+    assert raced.attempt_id == attempt.attempt_id
+
+    # Fresh attempt: reclaim returns None (still live / no write) while a peer
+    # settles concurrently — fall through to the race reader.
+    run_id_2 = await adapter.admit(
+        job_id="job-reclaim-none",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run_2, attempt_2 = await _seed_active_attempt(
+        runs, run_id_2, "canvas:job-reclaim-none:generate"
+    )
+
+    async def no_write(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        return None
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", no_write)
+    assert attempt_2.execution_lease is not None
+    await runs.transition_attempt(
+        attempt_2.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled",
+        fencing_token=attempt_2.execution_lease.fencing_token,
+    )
+    again = await adapter._reclaim_recovered_attempt(attempt_2)
+    assert again.status is AttemptStatus.CANCELLED
+    assert again.attempt_id == attempt_2.attempt_id
 
 
 class _ReceiptStore:

@@ -12,7 +12,10 @@ dependencies = [
     # Tool Protocol
     "fastmcp>=3.2.0",
     # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
-    "opentelemetry-api>=1.30",
+    # Floor is the pip-audit gate's security floor: CVE-2026-126360 is fixed in
+    # 1.45.2 (2026-11 CI-repair round, #1995); opentelemetry-api ships in the
+    # runtime images, so the declared floor (not just the lock) must clear it.
+    "opentelemetry-api>=1.45.2",
     # Database
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",
@@ -40,9 +43,11 @@ dependencies = [
     # CI job).
     "maistro-canvas",
     # 1.36.1 floor (CR1373 CI-repair round, 2026-11-16, merge-queue run
-    # 43821935433): the trivy leg of the container gate scans the Cargo.lock
-    # the temporalio wheel ships (site-packages/temporalio/bridge/Cargo.lock)
-    # and flags zip 8.6.0 there — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
+    # 43821935433; hit on this branch too — local trivy 0.73.0 of the
+    # rebuilt maistro-rsi-runner image, 2026-11-18): the trivy leg of the
+    # container gate scans the Cargo.lock the temporalio wheel ships
+    # (site-packages/temporalio/bridge/Cargo.lock) and flags zip 8.6.0 there
+    # — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
     # CVE-2026-115907/115908/115909 (HIGH). temporalio 1.36.1 bundles zip
     # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
     # past all four; every fix version satisfies the pre-existing >= 1.27
@@ -252,7 +257,9 @@ constraint-dependencies = [
     # the advisory text still names the 3.3.0rc1 fix line). Both packages
     # are test-infrastructure only; neither ships in the runtime images.
     "gitpython>=3.2.1",
-    "graphql-core>=3.3.0",
+    # CVE-2026-119286 (pip-audit gate, 2026-11-15, #1995 CI-repair round) moved
+    # the fix line to 3.3.1; still moto[server]-only test infrastructure.
+    "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
     # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
@@ -270,8 +277,8 @@ constraint-dependencies = [
     # direct production pin — floors keep the frozen dev env above the advisories.
     "authlib>=1.9.1",
     "dnspython>=2.9.0",
-    # Same shape again (pip-audit gate, 2026-11-16, CR1373 CI-repair round,
-    # merge-queue run 43788520668 at 39d0d137): dnspython arrives via
+    # Same shape again (pip-audit gate, 2026-11-04, PR #2389 CI-repair round,
+    # workflow runs 41768658312/41768658412): dnspython arrives via
     # email-validator (pydantic[email]), graphql-core via moto[server],
     # joserfc via authlib / fastmcp-slim / moto, and opentelemetry-api is
     # maistro-core's direct telemetry dependency caught in the frozen dev
@@ -282,15 +289,18 @@ constraint-dependencies = [
     # satisfies the floors already declared here or in
     # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
     # lock moves; floors keep it above the advisories on the next resolve.
+    # (The #1995 branch landed the same floors independently at 35c005ea4d;
+    # develop's CR1373 round supersedes that comment block.)
     "dnspython>=2.9.2",
     "graphql-core>=3.3.1",
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
-    # Same shape again (Container scan + SBOM + cosign gate, 2026-11-16,
-    # CR1373 CI-repair round, merge-queue run 43821935433 at 4295a40): four
-    # HIGH python-pkg advisories in the maistro-engine-research image
-    # (maistro-server + observability + browser via browser-use, each a
-    # single consumer, none a direct production pin):
+    # Same shape again (Container scan + SBOM + cosign gate, PR #2389
+    # CI-repair round, run 41768658312 job 126372930414, 2026-11-04, plus
+    # develop's CR1373 round run 43821935433 against identical image
+    # contents): the maistro-engine / maistro-engine-research images carry
+    # these in the browser-use stack of the research venv (each a single
+    # consumer, none a direct production pin):
     #
     # - oauthlib 4.0.0 (via requests-oauthlib via google-auth-oauthlib via
     #   browser-use) — CVE-2026-49272, authentication bypass, fixed in 4.0.1;
@@ -309,23 +319,27 @@ constraint-dependencies = [
     # pyasn1>=0.6.1,<0.7.0), so only the lock moves; floors keep it above
     # the advisories on the next resolve. Nothing in packages/ or tests/
     # imports any of the four, so the exposure is the shipped image only.
+    # (The #1995 branch landed the same four floors independently in
+    # 19d7c26e74; develop's CR1373 round supersedes it, adding the
+    # patchright/playwright floors for the grype node-binary leg below.)
     "oauthlib>=4.0.1",
     "pyasn1>=0.6.5",
     "pypdf>=6.21.4",
     "soupsieve>=4.0",
     # Same gate, same round, the wheel-shipped binary half: the research
-    # image's grype leg (step 16, --only-fixed --fail-on high, fresh DB per
-    # run) also flags the Node binary that patchright/playwright wheels ship
-    # as their driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV,
-    # fixed 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright
-    # 1.64.4 bundles node 24.22.1 and playwright 1.65.2 bundles node
-    # 26.13.1 (both verified by unpacking the wheels and running the
+    # image's grype leg (--only-fixed --fail-on high, fresh DB per run) also
+    # flags the Node binary that patchright/playwright wheels ship as their
+    # driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV, fixed
+    # 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright 1.64.4
+    # bundles node 24.22.1 and playwright 1.65.2 bundles node 26.13.1 (both
+    # verified on the CR1373 round by unpacking the wheels and running the
     # bundled driver); browser-use declares patchright>=1.52.5 /
     # playwright>=1.52.0 uncapped, so the floors only move the lock.
     # Follow-up (#2356, 2026-11-20): 24.22.1 itself gained seven HIGHs
-    # fixed in 24.22.3; no newer patchright wheel exists, so
-    # Dockerfile.research overlays node:24.22.3-bookworm-slim onto
-    # patchright/driver/node until upstream republishes.
+    # fixed in 24.22.3 / 26.13.1; no newer patchright wheel exists, so
+    # Dockerfile.research overlays node:26.13.1-bookworm-slim onto
+    # patchright/driver/node until upstream republishes (donor line moved
+    # from 24.22.3 to 26.13.1 by Dependabot #2431).
     "patchright>=1.64.4",
     "playwright>=1.65.2",
 ]
@@ -391,9 +405,9 @@ max-complexity = 10
 
 [tool.pytest.ini_options]
 # --strict-markers (#391): an unregistered marker is a claim no gate can
-# read. `ac`, `contract`, and `scope` below are the registered set; anything
-# else a test carries is a typo or an undocumented axis, and both fail loudly
-# here rather than passing silently as inert decoration.
+# read. `ac`, `contract`, `scope`, and `timeout` below are the registered set;
+# anything else a test carries is a typo or an undocumented axis, and both
+# fail loudly here rather than passing silently as inert decoration.
 addopts = "--import-mode=importlib --strict-markers"
 testpaths = [
     "packages/maistro-core/tests",
@@ -429,6 +443,12 @@ markers = [
     "ac: Acceptance Criteria traceability (SPEC-NNN/AC-N)",
     "contract: ADR-032 contract axis (boundary | behavioral | cross-service)",
     "scope: test scope axis (unit | integration | e2e | property)",
+    # Registered even when pytest-timeout is absent: hive CI's system-python
+    # step installs backend/requirements.txt without the plugin, and
+    # --strict-markers would otherwise fail collection on @pytest.mark.timeout.
+    # With the plugin present (uv --extra dev / Coverage gate), the mark still
+    # sets the per-test ceiling.
+    "timeout: per-test wall-clock ceiling (pytest-timeout); inert without the plugin",
 ]
 pythonpath = [
     "packages/maistro-core/src",

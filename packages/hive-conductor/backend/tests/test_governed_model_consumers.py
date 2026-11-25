@@ -18,7 +18,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 from maistro.providers.types import ModelMetadata
-from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
@@ -765,8 +765,11 @@ async def test_settle_records_failed_and_cancelled_operations() -> None:
     assert cancelled_node is not None and cancelled_node.status is RunStatus.CANCELLED
     failed_attempt = await run_store.get_attempt(failed.attempt_id)
     assert failed_attempt is not None and failed_attempt.status is AttemptStatus.FAILED
+    assert failed_attempt.cancellation_cause is None
     cancelled_attempt = await run_store.get_attempt(cancelled.attempt_id)
     assert cancelled_attempt is not None and cancelled_attempt.status is AttemptStatus.CANCELLED
+    assert cancelled_attempt.cancellation_cause is CancellationCause.REQUESTED
+    assert cancelled_attempt.error == "authorization refused"
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ test.describe("Degraded mode (M3-B7)", () => {
     await page.route("**/v1/auth/whoami", (r) => r.fulfill({ json: USER }));
     await page.route("**/health", (r) => r.fulfill({ json: DEGRADED_HEALTH }));
 
-    await page.goto("/dashboard");
+    await page.goto("/home");
 
     const banner = page.getByTestId("degraded-banner");
     await expect(banner).toBeVisible();
@@ -70,7 +70,7 @@ test.describe("Degraded mode (M3-B7)", () => {
     await page.route("**/v1/auth/whoami", (r) => r.fulfill({ json: USER }));
     await page.route("**/health", (r) => r.fulfill({ json: HEALTHY_HEALTH }));
 
-    await page.goto("/dashboard");
+    await page.goto("/home");
 
     await expect(page.getByTestId("degraded-banner")).toHaveCount(0);
   });
