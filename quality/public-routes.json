@@ -74,7 +74,7 @@
       "owner": "@BlakeMatthews-dev",
       "risk": "high",
       "disposition": "permanent",
-      "reason": "Public so open-mode signup and invitation redemption stay reachable (#313, whose durable registration policy is now the boundary the temporary exemption was waiting for): the handler fails closed — no durable record, an unreadable record, or a mid-bootstrap instance all refuse registration — mode changes are admin-only and audited, and the route stays throttled (#366). This is reviewed policy, not an open write path."
+      "reason": "Account creation is unauthenticated by construction: an administrator opens registration (or mints an invitation) precisely so session-less strangers can reach this endpoint, so a session can never be required here — the same class as /v1/auth/login. The temporary exemption this entry replaces waited on #313, which has shipped: every POST consults the durable registration-policy record and fails closed (missing, unreadable, corrupt, or mid-bootstrap record reads as closed), open is a value only an authenticated administrator writes (audited PUT /v1/auth/registration/policy), single-use invitation tokens are stored hash-only and spent by one conflict-safe insert, and the endpoint is throttled (#366). The residual exposure is the policy-opened write path itself, not a bypass of it; #313 closed the gap the exemption was opened for, so the exemption can no longer be removed by closing that issue."
     },
     "/v1/setup/status": {
       "kind": "exact",
