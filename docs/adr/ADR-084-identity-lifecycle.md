@@ -30,7 +30,6 @@ history:
 
 # ADR-084: Identity Lifecycle
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Specifies the full lifecycle** of an identity — birth (DID), delegation (authority tokens),
 loss (recovery), death (offboarding), and cross-boundary trust (federation peers) — that ADR-021

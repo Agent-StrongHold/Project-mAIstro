@@ -27,7 +27,6 @@ owners:
 
 # SPEC-092626-1831: Workspace work campaigns narrow eligible work without owning it
 
-- **Status:** Proposed
 - **Date:** 2026-09-26
 - **ADR:** `ADR-092626-c1e7` (Proposed)
 - **Issue:** #103 (M3-C6). Parent epic #82. Depends on #98 (BacklogItem) and #100.

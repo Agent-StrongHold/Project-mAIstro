@@ -259,6 +259,8 @@ class WorldStyle:
     vehicle_register: str  # "1970s-pickup", "sailboat", "spaceship", ...
     palette_anchors: tuple[str, ...]
     fauna_realism: Literal["cute", "realistic"]
+    perspective: Literal["flat", "one_point", "two_point", "isometric"] = "flat"
+                                   # serialized into generation prompts (#2398)
 
 
 @dataclass(frozen=True)

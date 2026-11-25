@@ -741,6 +741,7 @@ def test_scoped_and_deep_queries_have_bounded_work(durable: DurableAudit) -> Non
         reader.close()
 
 
+@pytest.mark.timeout(180)
 def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None:
     """A page costs its own rows, not the corpus (#358 definition of done).
 
@@ -749,6 +750,10 @@ def test_million_row_corpus_pages_in_bounded_time(durable: DurableAudit) -> None
     Wall-clock bounds are generous for shared CI hardware. The VM-work checks
     additionally reject corpus scans even when a plan names an ordering index.
     Scope/cursor merges may sort bounded candidates, never the whole corpus.
+
+    Timeout is raised above the Coverage-gate `--timeout=30` default: seeding
+    plus `ensure_audit_index` regularly exceeds 30s on contended runners and
+    was aborting the hive-conductor coverage append before the page assertions.
     """
     durable.state.submit_sync(
         lambda conn: conn.executemany(

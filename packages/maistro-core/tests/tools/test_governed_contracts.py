@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from maistro.capabilities.effect_context import (
 )
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.events.envelope import EventEnvelope
+from maistro.tools.approval.types import ApprovalDecision, Impact
 from maistro.tools.contracts import (
     ExpectedEffectRequired,
     GovernedToolExecutor,
@@ -818,3 +820,413 @@ class TestContractGuardBranches:
             arguments_digest=pinned_digest,
         )
         assert pinned.arguments_digest == pinned_digest
+
+
+@dataclass
+class _RecordingGate:
+    outcome: str = "approved"
+    plan_calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    escalation_calls: list[tuple[str, str]] = field(default_factory=list)
+
+    async def request_plan_approval(
+        self, task_id: str, irreversible_calls: tuple[str, ...]
+    ) -> ApprovalDecision:
+        self.plan_calls.append((task_id, irreversible_calls))
+        return ApprovalDecision(
+            task_id=task_id,
+            target="plan",
+            outcome=self.outcome,  # type: ignore[arg-type]
+            latency_ms=1,
+            decided_by="test",
+        )
+
+    async def request_escalation(
+        self, task_id: str, call: str, impacts: tuple[Impact, ...]
+    ) -> ApprovalDecision:
+        self.escalation_calls.append((task_id, call))
+        return ApprovalDecision(
+            task_id=task_id,
+            target="call",
+            outcome=self.outcome,  # type: ignore[arg-type]
+            latency_ms=1,
+            decided_by="test",
+        )
+
+
+def _irreversible_registry() -> ToolContractRegistry:
+    registry = ToolContractRegistry()
+    registry.register(
+        ToolContract(
+            name="wipe_disk",
+            schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            capability="destructive",
+            provider_name="disk-provider",
+        ),
+        ToolRegistration(
+            name="wipe_disk",
+            reversibility=ToolReversibility.IRREVERSIBLE,
+        ),
+    )
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_irreversible_tool_without_gate_refuses() -> None:
+    from maistro.tools.contracts import ToolApprovalRequired
+
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("backend must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+    )
+    with pytest.raises(ToolApprovalRequired, match="ApprovalGate"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )
+
+
+async def _allow_irreversible_policy(_binding: Binding, _request: Any, _context: Any) -> Any:
+    """Test-only: Invocation-layer approval is separate from the ADR-051 gate under test."""
+    from maistro.policy.types import Decision, PolicyVerdict
+
+    return PolicyVerdict(Decision.ALLOW, reason="test allow", rule="test.allow")
+
+
+@pytest.mark.asyncio
+async def test_irreversible_tool_with_approving_gate_dispatches() -> None:
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="approved")
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def backend(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        return {"ok": True}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+    )
+    result = await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/x"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    assert result == {"ok": True}
+    assert calls == [("wipe_disk", {"path": "/tmp/x"})]
+    assert gate.plan_calls == [("run-1", ("wipe_disk",))]
+
+
+@pytest.mark.asyncio
+async def test_irreversible_declared_plan_skips_gate() -> None:
+    from datetime import UTC, datetime
+
+    from maistro.tools.approval.gate import PlanApprovalState
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="denied")
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def backend(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        return {"ok": True}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+        plan_state=PlanApprovalState(
+            task_id="run-1",
+            approved_calls=frozenset({"wipe_disk"}),
+            approved_at=datetime.now(UTC),
+        ),
+    )
+    result = await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/x"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    assert result == {"ok": True}
+    assert gate.plan_calls == []
+    assert gate.escalation_calls == []
+    assert calls == [("wipe_disk", {"path": "/tmp/x"})]
+
+
+@pytest.mark.asyncio
+async def test_plan_state_task_id_must_match_run() -> None:
+    from datetime import UTC, datetime
+
+    from maistro.tools.approval.gate import PlanApprovalState
+    from maistro.tools.contracts import ToolApprovalRequired
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        plan_state=PlanApprovalState(
+            task_id="other-run",
+            approved_calls=frozenset({"wipe_disk"}),
+            approved_at=datetime.now(UTC),
+        ),
+    )
+    with pytest.raises(ToolApprovalRequired, match="ApprovalGate"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_successful_plan_approval_covers_later_calls() -> None:
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="approved")
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+    )
+    await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/a"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/b"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    assert len(gate.plan_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_thresholds_without_impacts_fail_closed() -> None:
+    from maistro.tools.approval.types import Threshold
+    from maistro.tools.contracts import ToolApprovalRequired
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=_RecordingGate(outcome="approved"),
+        escalation_thresholds=(Threshold(dimension="cost", gt=1.0),),
+    )
+    with pytest.raises(ToolApprovalRequired, match="no per-call impacts"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_impact_estimator_and_escalation_path() -> None:
+    from datetime import UTC, datetime
+
+    from maistro.tools.approval.gate import PlanApprovalState
+    from maistro.tools.approval.types import Impact, Threshold
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="approved")
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def backend(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        return {"ok": True}
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    def estimate(_name: str, _arguments: dict[str, Any]) -> tuple[Impact, ...]:
+        return (Impact(dimension="cost", value=9.0),)
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+        plan_state=PlanApprovalState(
+            task_id="run-1",
+            approved_calls=frozenset({"wipe_disk"}),
+            approved_at=datetime.now(UTC),
+        ),
+        escalation_thresholds=(Threshold(dimension="cost", gt=1.0),),
+        impact_estimator=estimate,
+    )
+    result = await executor.execute(
+        "wipe_disk",
+        {"path": "/tmp/x"},
+        context=_CONTEXT,
+        authorized_tools=frozenset({"wipe_disk"}),
+    )
+    assert result == {"ok": True}
+    assert gate.escalation_calls == [("run-1", "wipe_disk")]
+    assert gate.plan_calls == []
+
+
+@pytest.mark.asyncio
+async def test_async_impact_estimator_and_denied_gate() -> None:
+    from maistro.tools.approval.types import Impact
+    from maistro.tools.contracts import ToolNotAuthorized
+
+    effects = new_effect_context(policy_evaluator=_allow_irreversible_policy)
+    binding = Binding(
+        binding_id="tool-binding-wipe",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="destructive",
+        provider_name="disk-provider",
+    )
+    await effects.bindings.put(binding)
+    gate = _RecordingGate(outcome="denied")
+
+    async def backend(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("must not run")
+
+    async def binding_for(_contract: ToolContract, _context: ToolInvocationContext) -> Binding:
+        return binding
+
+    async def estimate(_name: str, _arguments: dict[str, Any]) -> tuple[Impact, ...]:
+        return (Impact(dimension="cost", value=0.1),)
+
+    executor = GovernedToolExecutor(
+        effects=effects,
+        contracts=_irreversible_registry(),
+        binding_for=binding_for,
+        backend=backend,
+        approval_gate=gate,
+        impact_estimator=estimate,
+    )
+    with pytest.raises(ToolNotAuthorized, match="not approved"):
+        await executor.execute(
+            "wipe_disk",
+            {"path": "/tmp/x"},
+            context=_CONTEXT,
+            authorized_tools=frozenset({"wipe_disk"}),
+        )
+    assert gate.plan_calls == [("run-1", ("wipe_disk",))]

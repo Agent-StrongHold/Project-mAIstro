@@ -16,7 +16,9 @@ shipped trees, not by a broad `**/deploy/**` deny that would also hide
 
 from __future__ import annotations
 
+import os
 import re
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,13 @@ SHIPPED_TREES = (
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java", ".cs", ".go"}
 
 
+# Memoized: the sweep below asks `_is_scanned` about every shipped source
+# file, and each call used to re-read and re-parse devskim.yml twice (once per
+# glob list) and recompile every glob regex — ~3300 redundant YAML parses per
+# sweep, ~8.5s locally and past the coverage gate's 30s per-test cap on a
+# loaded runner (#2303). The values are constants of the workflow file; the
+# assertions are unchanged.
+@cache
 def _scanner_step() -> dict[str, object]:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
@@ -47,6 +56,7 @@ def _scanner_step() -> dict[str, object]:
     return scanner[0]
 
 
+@cache
 def _ignore_globs() -> list[str]:
     """The globs the workflow actually passes to the action."""
     raw = _scanner_step().get("with", {}).get("ignore-globs")  # type: ignore[union-attr]
@@ -54,6 +64,7 @@ def _ignore_globs() -> list[str]:
     return [glob.strip() for glob in str(raw).split(",") if glob.strip()]
 
 
+@cache
 def _include_globs() -> list[str]:
     """Allowlist passed via ``extra-options: --include-globs …``."""
     extra = str(_scanner_step().get("with", {}).get("extra-options") or "")  # type: ignore[union-attr]
@@ -62,6 +73,7 @@ def _include_globs() -> list[str]:
     return [glob.strip() for glob in match.group(1).split(",") if glob.strip()]
 
 
+@cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
 
@@ -96,48 +108,42 @@ def _is_scanned(path: str) -> bool:
     return allowed and not denied
 
 
+_EXCLUDED_DIRS = {
+    "tests",
+    "__tests__",
+    "node_modules",
+    "dist",
+    "third_party",
+    "swagger-ui",
+    "corpora",
+    "eval",
+}
+
+
 def _shipped_sources() -> list[str]:
     seen: set[str] = set()
     for tree in SHIPPED_TREES:
         for base in REPO_ROOT.glob(tree):
-            for path in base.rglob("*"):
-                if path.suffix not in SOURCE_SUFFIXES:
-                    continue
-                rel = path.relative_to(REPO_ROOT)
-                parts = set(rel.parts)
-                # Tests, vendored code, and the vendored swagger-ui-dist
-                # release (#1425, served by backend/routes/api_docs.py with
-                # sha256 provenance pinned in `_ASSETS` and enforced by
-                # `backend/tests/test_docs_first_party.py`) are what the list
-                # is *for*; they are not the shipped surface it must leave
-                # alone.
-                if parts & {
-                    "tests",
-                    "__tests__",
-                    "node_modules",
-                    "dist",
-                    "third_party",
-                    "swagger-ui",
-                    "corpora",
-                    "eval",
-                }:
-                    continue
-                # Bundled Open Design fixtures (json/md/css only) under
-                # systems/catalog — excluded as a location, not a filename shape.
-                if "systems" in rel.parts and "catalog" in rel.parts:
-                    try:
-                        systems_i = rel.parts.index("systems")
-                    except ValueError:
-                        systems_i = -1
-                    if (
-                        systems_i >= 0
-                        and systems_i + 1 < len(rel.parts)
-                        and rel.parts[systems_i + 1] == "catalog"
-                    ):
+            if not base.exists():
+                continue
+            for root, dirs, files in os.walk(base):
+                # Prune directories that never contribute shipped sources, so
+                # the scan-scope check does not spend its 30s budget walking
+                # (e.g.) node_modules or vendored trees. Semantics match the
+                # previous `parts & _EXCLUDED_DIRS` filter.
+                dirs[:] = [d for d in dirs if d not in _EXCLUDED_DIRS]
+                # Bundled Open Design fixtures under systems/catalog are
+                # excluded as a location, not a filename shape.
+                if "catalog" in dirs and Path(root).name == "systems":
+                    dirs.remove("catalog")
+                for name in files:
+                    path = Path(root) / name
+                    if path.suffix not in SOURCE_SUFFIXES:
                         continue
-                if ".test." in path.name:
-                    continue
-                seen.add(rel.as_posix())
+                    rel = path.relative_to(REPO_ROOT)
+                    if ".test." in name:
+                        continue
+                    seen.add(rel.as_posix())
     return sorted(seen)
 
 

@@ -33,7 +33,6 @@ history:
 
 # ADR-028: Admin / User Privilege Separation — Mandatory two-tier model
 
-**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-024 (DID/VC Identity)
 

@@ -19,9 +19,12 @@ Authentication happens in AuthMiddleware; it is not authorization.
 
 The routes hold no import of the projection storage at all (#65, the
 `Conductor canonical inspection plane` parity dependency): the list, the
-detail, the cancel control, the retention bounds, and the SSE subscription
-all go through the inspection seam, so there is exactly one authorization
-door and no second path a future handler could take around it.
+detail, the retention bounds, and the SSE subscription all go through the
+inspection seam, so there is exactly one authorization door and no second
+path a future handler could take around it. The cancel control additionally
+clears the canonical mutation boundary (`RunStoreBoundary.require_run_mutation`)
+over the same store triple: read visibility admits members, never lifecycle
+writes (#1152, #2466).
 """
 
 from __future__ import annotations
@@ -86,31 +89,114 @@ def retention() -> dict[str, Any]:
 
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Cancel through the canonical Run/Attempt execution seam."""
+    """Cancel through the canonical Run/Attempt execution seam.
+
+    Read visibility never admits a lifecycle write (#1152, #2466): before any
+    cancellation state change or physical work, the canonical target Run is
+    resolved through the shared `RunStoreBoundary` mutation gate -- the same
+    initiator/administrator rule maistro-server's cancel route applies -- so
+    only the Run's initiating principal or a Workspace administrator gets
+    through, and a projection row cannot delegate write authority across
+    Workspaces (its canonical link is honoured only when the Run is filed in
+    the row's own Workspace, the same attribution rule the read overlay
+    applies). The gate resolves through the wired reader triple the
+    inspection reads answer from; without a wired scoped reader it degrades
+    to the embedded Workspace authority, whose refusals stay fail-closed.
+    Absent, foreign, unadministered and mismatched-link targets all answer
+    the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
+    no provider stop signal; an unreachable canonical authority answers the
+    spine-unavailable 503 instead.
+
+    The response separates two facts that used to be collapsed into
+    ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+    fence -- the authority that refuses a late provider success --
+    ``stop_confirmed`` is the physical one, and it is False whenever the
+    Attempt is live under a worker this replica cannot signal: Conductor then
+    reports ``stop_pending`` with a diagnosis instead of a stop nobody
+    observed. The mutation gate above is #2466's contract; the receipt below
+    reports truthfully about what the fence did and did not stop.
+    """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
 
     from services.engine import get_engine
+    from services.workspace_authority import EmbeddedRuntimeUnavailable, canonical_workspace_store
 
+    from maistro.runs.scoped_reads import RunNotVisible
     from maistro.runs.service import RunExecutionService
+    from maistro.runs.store_boundary import RunStoreBoundary
     from maistro.runtime import PythonExecutionRuntime
 
-    store = get_engine().run_store
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from None
+    store = getattr(engine, "run_store", None)
+    reader = getattr(engine, "run_reader", None)
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    canonical_run_id = str(detail.get("canonical_run_id") or run_id)
     try:
-        updated = await RunExecutionService(
+        if reader is None:
+            # Degraded bridge: a run store without its wired scoped reader.
+            # There is no wired truth to diverge from, so the #2466 mutation
+            # gate runs over the embedded fallback Workspace authority; its
+            # refusals stay fail-closed 404s (a projection row naming no
+            # canonical Run is not cancellable, and must not read as 503).
+            workspace_store = await canonical_workspace_store()
+            boundary = RunStoreBoundary(store, workspace_store, workspace_store.project_store)
+        else:
+            # The mutation gate resolves the target through exactly the wired
+            # stores the inspection read above answered from: the engine
+            # bridge's reader triple -- the same objects the Container wires
+            # (and maistro-server hands `RunStoreBoundary` directly).
+            # Re-deriving a second authority when a reader IS wired -- e.g.
+            # the embedded fallback Workspace store's default Project store,
+            # which has never heard of the spine-wired Projects -- would
+            # refuse an initiator the route had just authorized to read
+            # (#2466; pinned by the cross-product parity scenario, where the
+            # gate's re-derived Project store answered RunNotVisible for the
+            # producer's own Run).
+            boundary = RunStoreBoundary(
+                reader.run_store, reader.workspace_store, reader.project_store
+            )
+        run = await boundary.require_run_mutation(canonical_run_id, principal_id=uid)
+    except RunNotVisible as exc:
+        # Absent, foreign, and initiator/admin-refused targets are the same
+        # non-disclosing 404 the read seam answers with (#1152).
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except EmbeddedRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    # Projection-to-Run association (#2466): a row filed in one Workspace
+    # cannot delegate mutation of a canonical Run filed in another, even when
+    # the caller is authorized against that Run's own Workspace -- the read
+    # seam already refuses to attribute a cross-link's lifecycle to this row,
+    # so the control route must not act on it either. The direct canonical
+    # route remains open to whoever the mutation gate admits.
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        cancellation = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+        ).cancel_run_receipt(run.run_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
-        "run_id": updated.run_id,
-        "status": updated.status.value,
-        "cancelled": updated.status.value == "cancelled",
+        "run_id": cancellation.run_id,
+        "status": cancellation.run_status.value,
+        "cancelled": cancellation.fenced,
+        "stop_confirmed": cancellation.stop_confirmed,
+        "disposition": cancellation.disposition.value,
+        "cause": cancellation.cause.value,
+        "diagnosis": cancellation.diagnosis,
+        "attempts": [row.model_dump(mode="json") for row in cancellation.attempts],
     }
 
 

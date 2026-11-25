@@ -29,7 +29,13 @@ from maistro.tasks.models import TaskStatus
 from maistro.tasks.queue import get_task_queue
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
-from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
+from maistro_server.api.schemas import (
+    AttemptCancellationSummary,
+    AttemptSummary,
+    NodeRunSummary,
+    RunCancellationResponse,
+    RunSummary,
+)
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -119,8 +125,17 @@ async def cancel_run(
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
     delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
-) -> RunSummary:
-    """Request cancellation through the canonical physical execution seam."""
+) -> RunCancellationResponse:
+    """Request cancellation through the canonical physical execution seam.
+
+    The response carries the durable fence *and* the physical evidence
+    separately (#1242): ``status``/``fenced`` say the canonical Run is
+    CANCELLED, which is the authority that refuses a late provider success,
+    while ``stop_confirmed`` says whether every physical try was demonstrably
+    stopped. When another replica owns the Attempt, this one writes the fence
+    and reports ``stop_pending`` — it cannot and does not claim a remote stop
+    it never observed.
+    """
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
     # View-level membership admits reads, never lifecycle mutation: only the
     # initiating principal or a Workspace administrator may cancel (#1152
@@ -130,10 +145,13 @@ async def cancel_run(
         await get_run_boundary().require_run_mutation(run_id, principal_id=owner)
     except RunNotVisible:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found") from None
-    run = await RunExecutionService(
+    cancellation = await RunExecutionService(
         store=store,
         runtime=PythonExecutionRuntime(),
-    ).cancel_run(run_id)
+    ).cancel_run_receipt(run_id)
+    run = await store.get_run(run_id)
+    if run is None:  # pragma: no cover - store contract violation
+        raise ValueError(f"Run {run_id!r} disappeared during cancellation")
     if run.provenance.get(ADMISSION_SOURCE) == TASK_QUEUE_SOURCE:
         task_id = run.provenance.get(TASK_ID_KEY)
         if isinstance(task_id, str) and task_id:
@@ -153,7 +171,7 @@ async def cancel_run(
             if receipt is not None and receipt.run_id == run.run_id:
                 await queue.update_status(task_id, TaskStatus.CANCELLED)
                 queue.settle_terminal_receipt(task_id, run=run)
-    return RunSummary(
+    return RunCancellationResponse(
         run_id=run.run_id,
         status=run.status.value,
         workspace_id=run.workspace_id,
@@ -164,6 +182,23 @@ async def cancel_run(
         finished_at=run.finished_at,
         result=run.result,
         error=run.error,
+        disposition=cancellation.disposition.value,
+        fenced=cancellation.fenced,
+        stop_confirmed=cancellation.stop_confirmed,
+        cause=cancellation.cause.value,
+        diagnosis=cancellation.diagnosis,
+        attempts=[
+            AttemptCancellationSummary(
+                attempt_id=row.attempt_id,
+                node_run_id=row.node_run_id,
+                status=row.status.value,
+                disposition=row.disposition.value,
+                owner=row.owner,
+                runtime_id=row.runtime_id,
+                diagnosis=row.diagnosis,
+            )
+            for row in cancellation.attempts
+        ],
     )
 
 

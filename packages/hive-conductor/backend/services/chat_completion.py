@@ -263,6 +263,10 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
         "memory_search if it's something you'd have saved earlier. "
         "When the user asks about performance, latency, TTFT, cost, or runtime data — use query_metrics. "
         "When they tell you something about themselves, their project, or preferences — use profile_set to save it. "
+        "Workspace restore phrases: 'hold onto my sessions longer' / 'take me back when I come back' → "
+        "profile_set workspace_restore_aggressiveness=generous (expands the restore window); "
+        "'always open this Workspace to Goals' → workspace_default_landing=/goals; "
+        "'go back to Home by default' → workspace_default_landing=/home. "
         "When you need context about the user or project — use profile_get first. "
         "For freeform notes/facts that don't fit profile fields — use memory_add. "
         "When they ask to forget something — use memory_delete or profile_delete. "
@@ -1648,7 +1652,13 @@ class _ChatDagRunScoreAdapter:
     """The run shape the eval judge scores a chat-launched DAG through."""
 
     def __init__(self, exec_id: str, dag_id: str, result: dict[str, Any]):
-        self.run_id = exec_id
+        # Evidence keys by the canonical Run the projection correlates to
+        # (#2470): the facade result names it in `run_id` (#35/#1332), so a
+        # chat-launched score lands under the same identity the scoring
+        # route guards idempotency by — not under a second alias-keyed row
+        # the optimizer would count twice. The exec id only backstops
+        # callers whose result predates canonical correlation.
+        self.run_id = str(result.get("run_id") or "") or exec_id
         self.dag_id = dag_id
         self.project_id = ""
         self.status = "completed"
@@ -1671,17 +1681,36 @@ class _ChatDagRunScoreAdapter:
             self.node_records.append(n)
 
 
-async def _eval_judge_score(exec_id: str, dag_id: str, result: dict[str, Any]) -> dict[str, Any]:
+async def _eval_judge_score(
+    exec_id: str,
+    dag_id: str,
+    result: dict[str, Any],
+    *,
+    actor_id: str = "",
+    workspace_id: str = "",
+) -> dict[str, Any]:
     """Score a chat-launched DAG through the eval judge.
 
     The scorer is commentary on a run, not part of it: its failure has the
     same standing as a failed history write and must not change the outcome
     the caller sees.
+
+    This automatic score is ONE logical score with a later authorized POST
+    (#2470): evidence keys by the canonical Run (`result["run_id"]`,
+    #35/#1332) so the route's idempotency guard sees it, and the turn's
+    principal and Workspace ride through as the verdict's provenance —
+    exactly what the route records for a manual score. An unattributed row
+    is not evidence the optimizer may rank improvement proposals on.
     """
     try:
         from services.eval_judge import score_run
 
-        return await score_run(_ChatDagRunScoreAdapter(exec_id, dag_id, result))
+        return await score_run(
+            _ChatDagRunScoreAdapter(exec_id, dag_id, result),
+            actor_id=actor_id,
+            workspace_id=workspace_id,
+            canonical_run_id=str(result.get("run_id") or ""),
+        )
     except Exception as e:
         return {"score": 0, "error": str(e)[:100]}
 
@@ -1715,8 +1744,16 @@ async def _cancellation_answer(
     canonical_run_id = str(record.get("canonical_run_id") or "")
     if not canonical_run_id or not await _canonical_run_was_cancelled(canonical_run_id):
         raise cancelled
+    # Mirror the spine's CANCELLED through the shared #1036 terminality
+    # contract — never a second product-private finish authority. The
+    # public cancel route never writes the projection at all; this chat
+    # awaiter only records after the spine fence was observed.
     with contextlib.suppress(Exception):
-        await get_dag_run_store().finish_run(exec_id, status="cancelled")
+        await get_dag_run_store().record_outcome(
+            exec_id,
+            status="cancelled",
+            canonical_run_id=canonical_run_id,
+        )
     return {
         "run_id": exec_id,
         "dag_id": dag_id,
@@ -1750,6 +1787,7 @@ async def _tool_run_workflow(
     # `completed`; catching it separately is what lets the failure branch
     # record the canonical outcome instead of re-deciding it locally (#35).
     from services.graph_runner import CanonicalDagExecutionError
+    from services.safe_projection import public_failure
 
     # The `try` below covers the event and history writes that follow the
     # execution as well as the execution itself, so a failing `append_event` --
@@ -1792,8 +1830,17 @@ async def _tool_run_workflow(
                 payload={"source": "llm", "response": nr.get("response", "")[:2000]},
             )
 
-        # Trigger eval-judge
-        score_result = await _eval_judge_score(exec_id, dag_id, result)
+        # Trigger eval-judge — attributed to the turn's principal inside
+        # its Workspace (#2470): the automatic score is real scoring
+        # evidence and carries the same actor/scope provenance a manual
+        # score does.
+        score_result = await _eval_judge_score(
+            exec_id,
+            dag_id,
+            result,
+            actor_id=str(user_id or ""),
+            workspace_id=str(workspace_id or ""),
+        )
 
         # This producer called `start_run` and never finished it, so a run
         # launched from chat sat at `running` for the life of the process --
@@ -1851,7 +1898,7 @@ async def _tool_run_workflow(
                 result=canonical,
                 canonical_run_id=str(canonical.get("run_id") or ""),
             )
-        return {"error": f"DAG execution failed: {exc}"}
+        return {"error": f"DAG execution failed: {public_failure(exc)}"}
     except Exception as e:
         # The failure branch has to finish the run too, or a chat-launched DAG
         # that failed is indistinguishable from one still running.
@@ -3077,6 +3124,8 @@ PROFILE_SCHEMA = {
         # #1050: how eagerly to restore a prior surface after absence
         # (off|brief|balanced|generous). Continuity consumer is #1822.
         "workspace_restore_aggressiveness",
+        # #1050: learned-landing dismiss cooldown (path → until epoch-ms).
+        "workspace_landing_suggestion_cooldown",
     ],
     "goals": ["current_focus", "okrs", "blockers", "definition_of_done"],
     "communication": ["challenge_style", "presentation_format", "terminology"],
@@ -3121,7 +3170,19 @@ async def _tool_profile_set(
     value = args.get("value", "")
     if not field or not value:
         return {"error": "field and value required"}
-    from services.workspace_preferences import PreferenceValueError
+    from services.workspace_preferences import (
+        PreferenceValueError,
+        audit_workspace_preference,
+        interpret_restore_aggressiveness_request,
+    )
+
+    # Natural-language restore requests may arrive as the value when the model
+    # mirrors the user's words; map known phrases onto the durable band so the
+    # same RESTORE_KEY expands the window whether UI, API, or Agent wrote it.
+    if field == "workspace_restore_aggressiveness" and isinstance(value, str):
+        mapped = interpret_restore_aggressiveness_request(value)
+        if mapped is not None:
+            value = mapped
 
     try:
         # Off the loop: a profile write waits inside the acknowledged `put_raw`
@@ -3135,6 +3196,16 @@ async def _tool_profile_set(
         # and answered `updated: True`, so the model told the user their fact
         # was saved when nothing held it (#699).
         return {"error": f"profile not saved: {exc}"}
+    # Off the loop: Pg-backed audit schedules onto this ASGI loop and then
+    # blocks on future.result — calling it inline deadlocks the worker for
+    # the audit timeout whenever an Agent saves a Workspace preference.
+    await asyncio.to_thread(
+        audit_workspace_preference,
+        actor=user_id,
+        field=field,
+        value=value,
+        source="agent",
+    )
     return {"updated": True, "field": field, "value": value}
 
 
@@ -3194,7 +3265,9 @@ PROFILE_TOOLS = [
                 "their preferences, or corrections. Workspace product prefs: "
                 "workspace_default_landing (path: /home|/chat|/goals|/backlog|/work-items); "
                 "workspace_restore_aggressiveness (off|brief|balanced|generous — "
-                "how long to restore the prior surface after absence)."
+                "how long to restore the prior surface after absence). "
+                "Phrase 'hold onto my sessions longer' / 'take me back when I come back' "
+                "→ workspace_restore_aggressiveness=generous (expands the restore window)."
             ),
             "parameters": {
                 "type": "object",

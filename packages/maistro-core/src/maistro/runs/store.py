@@ -23,8 +23,10 @@ from maistro.runs.concurrency import (
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -34,12 +36,15 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -47,6 +52,10 @@ from maistro.runs.model import (
     RunEvalScore,
     RunStatus,
     evidence_values_equal,
+)
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
 )
 from maistro.runs.retention_scope import (
     GlobalRetentionScope,
@@ -268,12 +277,46 @@ def _run_matches_status_scope(
     )
 
 
+def refuse_child_under_terminal_parent(
+    parent_status: RunStatus,
+    parent_run_id: str,
+    child_provenance: Mapping[str, Any] | None,
+) -> None:
+    """Refuse filing a child Run under an already-terminal parent (#1621).
+
+    Two children are accepted anyway, each because its own provenance
+    carries an identity-bound fact naming the very parent this child is
+    filed under:
+
+    - the durable Graph fork (ADR-062 / ADR-082826-d9f5), whose fact is
+      ``DURABLE_GRAPH_FORK_PROVENANCE``; and
+    - the post-terminal child (``POST_TERMINAL_CHILD_PROVENANCE``): a
+      control-plane operation minted after its requesting Run terminalized
+      (a benchmark judge beneath a COMPLETED Run), or retry lineage beneath
+      a FAILED Run.
+
+    A fact naming a different Run does not exempt this child — the carve-out
+    is the fact's parent identity, not its presence.
+    """
+    if parent_status not in TERMINAL_RUN_STATUSES:
+        return
+    provenance = child_provenance or {}
+    for key in (DURABLE_GRAPH_FORK_PROVENANCE, POST_TERMINAL_CHILD_PROVENANCE):
+        fact = provenance.get(key)
+        if isinstance(fact, dict) and fact.get("parent_run_id") == parent_run_id:
+            return
+    raise RunIntegrityError(
+        f"child Run cannot be filed under a terminal Run (terminal parent, {parent_status.value})"
+    )
+
+
 def validate_child_scope(
     parent: Run,
     *,
     workspace_id: str,
     project_id: str,
     allow_cross_project: bool = False,
+    child_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Refuse a child Run that escapes its parent's scope.
 
@@ -296,6 +339,7 @@ def validate_child_scope(
             "child Run cannot implicitly cross Project boundaries; "
             "caller must authorize and request the destination Project"
         )
+    refuse_child_under_terminal_parent(parent.status, parent.run_id, child_provenance)
 
 
 def validate_effect_claim_parent(
@@ -714,6 +758,7 @@ class RunStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def create_attempt(
@@ -744,6 +789,76 @@ class RunStore(Protocol):
         limit: int = DEFAULT_RECLAIM_BATCH,
     ) -> list[Attempt]: ...
 
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed (#2358 / #232 P2b).
+
+        Re-reads under the store's authoritative mutation protection, then
+        commits ``CANCELLED`` + ``cancellation_cause=RECOVERED`` +
+        ``finished_at`` together via ``reclaim_attempt``. Returns the newly
+        written row, or ``None`` when nothing new was written (live lease,
+        already terminal, no/infinite lease). Missing ids raise
+        ``AttemptNotFound`` — never invent a reclaim for an absent row.
+        """
+        ...
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure (#2369 / #232 P2d).
+
+        Re-reads under authoritative mutation protection, checks the fence,
+        then commits ``CANCELLED`` + ``RECOVERED`` via
+        ``compensate_unlaunched_attempt``. Refuses RUNNING / terminal / stale
+        fence / already-caused winners rather than rewriting them.
+        """
+        ...
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
+
+        One authoritative write: resolve lineage, lock the Run then every
+        NodeRun in deterministic identity order, read Attempt facts without
+        Attempt row locks, revalidate typed RECOVERED + current identity, then
+        atomically commit eligible parking. Returns the settled (NodeRun, Run),
+        including no-op preserves. Raises ``RecoveredDispositionRefused`` for
+        requested/unknown/CREATED-QUEUED refusals; ``AttemptNotFound`` when the
+        id is absent. Events stay outside this commit.
+        """
+        ...
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume (#2417).
+
+        Re-reads under authoritative mutation protection, checks
+        ``owning_run_id`` lineage, then commits ``CANCELLED`` + ``RECOVERED``
+        via ``recover_orphaned_attempt``. Leased / terminal / wrong-run /
+        already-caused winners refuse. The sweep must not call this seam.
+        """
+        ...
+
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
     ) -> Attempt | None: ...
@@ -760,6 +875,7 @@ class RunStore(Protocol):
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt: ...
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
@@ -984,6 +1100,7 @@ class InMemoryRunStore:
                 workspace_id=graph.workspace_id,
                 project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
+                child_provenance=provenance,
             )
             if parent_node_run_id is not None:
                 parent_node_run = self._require_node_run(parent_node_run_id)
@@ -1533,6 +1650,16 @@ class InMemoryRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
+        if target is RunStatus.COMPLETED:
+            open_children = [
+                child
+                for child in self._runs.values()
+                if child.parent_run_id == run_id and child.status not in TERMINAL_RUN_STATUSES
+            ]
+            if open_children:
+                raise RunIntegrityError(
+                    f"Run cannot complete while {len(open_children)} child Run(s) are non-terminal"
+                )
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
         settled = (
@@ -1678,9 +1805,17 @@ class InMemoryRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         node_run = self._require_node_run(node_run_id)
         self._refuse_under_terminal_run(node_run)
+        if expected_current_attempt_id is not None:
+            attempts = [a for a in self._attempts.values() if a.node_run_id == node_run_id]
+            current = max(attempts, key=lambda a: a.ordinal, default=None)
+            if current is not None and current.attempt_id != expected_current_attempt_id:
+                raise RunIntegrityError(
+                    f"Attempt {expected_current_attempt_id!r} was superseded by {current.attempt_id!r}"
+                )
         if accepted_outcome is not None:
             if accepted_outcome.node_run_id != node_run_id:
                 raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
@@ -1790,10 +1925,99 @@ class InMemoryRunStore:
         )
         reclaimed: list[Attempt] = []
         for attempt in doomed[:limit]:
-            settled = reclaim_attempt(attempt, at=moment)
+            # Re-check under the same dict authority the write uses: a
+            # concurrent renew (or other terminalizer) can land between the
+            # sort snapshot and this write. Skip, do not rewrite.
+            current = self._attempts.get(attempt.attempt_id)
+            if current is None or not lease_is_expired(current, moment):
+                continue
+            settled = reclaim_attempt(current, at=moment)
             self._attempts[attempt.attempt_id] = settled
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        attempt = self._require_attempt(attempt_id)
+        if not lease_is_expired(attempt, moment):
+            return None
+        settled = reclaim_attempt(attempt, at=moment)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        attempt = self._require_attempt(attempt_id)
+        self._validate_fence(attempt, fencing_token)
+        settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt."""
+        # Memory is a no-await atomic block: dict authority is the write lock.
+        attempt = self._require_attempt(attempt_id)
+        node_run = self._require_node_run(attempt.node_run_id)
+        run = self._require_run(node_run.run_id)
+        all_node_runs = sorted(self._node_runs_of(run.run_id), key=lambda item: item.node_run_id)
+        attempts_by_node_run: dict[str, list[Attempt]] = {
+            nr.node_run_id: [a for a in self._attempts.values() if a.node_run_id == nr.node_run_id]
+            for nr in all_node_runs
+        }
+        plan = plan_recovered_attempt_disposition(
+            attempt=attempt,
+            run=run,
+            node_run=node_run,
+            all_node_runs=all_node_runs,
+            attempts_by_node_run=attempts_by_node_run,
+        )
+        settled_node, settled_run = materialize_recovered_disposition_plan(
+            plan, run=run, node_run=node_run, attempt=attempt, at=at
+        )
+        if plan.park_node_run:
+            self._node_runs[settled_node.node_run_id] = settled_node
+        if plan.park_run:
+            self._runs[settled_run.run_id] = settled_run
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        attempt = self._require_attempt(attempt_id)
+        node_run = self._require_node_run(attempt.node_run_id)
+        if node_run.run_id != owning_run_id:
+            raise RunIntegrityError(
+                f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                f"not owning_run_id={owning_run_id!r}"
+            )
+        settled = recover_orphaned_attempt(attempt, at=at, error=error)
+        self._attempts[attempt_id] = settled
+        return settled.model_copy(deep=True)
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
@@ -1825,6 +2049,7 @@ class InMemoryRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         attempt = self._require_attempt(attempt_id)
         self._validate_fence(attempt, fencing_token)
@@ -1835,6 +2060,7 @@ class InMemoryRunStore:
             result=result,
             error=error,
             metrics=metrics,
+            cancellation_cause=cancellation_cause,
         )
         if target is AttemptStatus.COMPLETED:
             # The executor's Run fence is check-then-act across two awaits

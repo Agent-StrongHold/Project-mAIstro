@@ -23,7 +23,27 @@
 # Digest-pinned (#349): a tag move must not change what installs every
 # dependency without a repository diff. Refresh via Dependabot's docker
 # ecosystem and record the new digest in quality/image-pins.json.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS builder
+#
+# #2430 evaluated Dependabot's 3.13.18 -> 3.15.2 index bump and rejected it,
+# re-confirming the #2136 wheel ceiling on 2026-11-21 against the committed
+# lock AND first-hand in-container (python:3.15.2@96599df8 + pinned uv):
+# with the venv line left at --python 3.13, uv cannot use the 3.15 base
+# interpreter and silently downloads an un-pinned managed CPython 3.13.15
+# into the build — the copied venv then dangles on the fresh 3.15 runtime
+# stage and /app/venv/bin/python exits 127 (dead image, demonstrated); with
+# the venv line bumped to match, `uv pip install --require-hashes` fails
+# closed instead: psycopg-binary 3.3.4 ships no cp315 wheel and no sdist at
+# all (the research and RSI-runner installs select the same artifact);
+# coincurve 21.0.0 (still latest upstream per PyPI) stops at cp313; cffi
+# 2.0.0 stops at cp314 and its sdist needs libffi headers no builder
+# installs. The static guard tests/test_root_image_interpreter_lines.py
+# names 20 cp315-unservable lock entries vs zero on this line and pins the
+# venv line to the FROM line so the download path cannot slip through. The
+# 3.15.2 index itself is real (`docker manifest inspect` resolves,
+# linux/amd64 present) — the images are simply unbuildable/unshippable on
+# it. Re-attempt only when every linux-relevant locked distribution ships a
+# cp315 binary artifact.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -127,23 +147,66 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # docker:xx-cli tag ships a newer toolchain (29.1/29.2 ship older ones). Build
 # the exact same immutable release tag ourselves on the patched toolchain --
 # the same policy as the age stage in packages/hive-conductor/Dockerfile. The
-# tag resolves to dfc520d; fail if upstream ever disagrees. docker/cli has no
+# tag resolves to 5457199; fail if upstream ever disagrees. docker/cli has no
 # root go.mod (vendor.mod + vendor/ instead); renaming them is the module-mode
 # build the vendored tree is designed for. Builder moved to 1.27.3-alpine
 # (#1152, and independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
 # (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
-# flags the 1.27.2 stdlib inside the built binary.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS dockerclibuild
-ARG DOCKER_CLI_VERSION=29.9.1
-ARG DOCKER_CLI_COMMIT_SHORT=dfc520d
+# flags the 1.27.2 stdlib inside the built binary. That 1.27.3 builder aged out
+# in turn: CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH,
+# fixed in go1.26.11/1.27.4) flags the 1.27.3 stdlib inside the built binary
+# (#2375 Container scan gate, security.yml run 44477475371, 2026-11-19), so the
+# builder moved to 1.27.4-alpine, retiring both 1.27.3 indexes.
+#
+# 29.9.3 bump (CR1373 CI repair, 2026-11-16): trivy flagged the vendored
+# dependency set of v29.9.1 — go-jose/v4 4.1.5 (CVE-2026-116587, DoS via
+# crafted RSA JWK parameters, HIGH, fixed in 4.1.6) and golang.org/x/net
+# 0.60.0 (CVE-2026-78661, DoS via crafted HTML input, HIGH, fixed in 0.62.0)
+# inside usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but
+# still pins x/net 0.60.0 (v29.9.2 carries both unfixed), so the tag bump
+# alone cannot close the second advisory: x/net is patched onto the pinned
+# tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
+# re-syncs the vendored tree to the renamed go.mod before the build.
+# Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
+# #2120 note: the earlier v29.9.1 repair round pinned go-jose/v4 4.1.6 and
+# klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix versions
+# upstream (go-jose 4.1.7, compress 1.20.2 — verified in its vendor.sum), so
+# only the x/net patch below remains.
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# 2026-11-16 (#2110 CI-repair round): the v29.9.1 vendored tree carried three
+# HIGH findings in the docker binary. The trivy leg (security.yml
+# `Container scan + SBOM + cosign`, HIGH/CRITICAL, exit 1) flagged
+# CVE-2026-78661 (x/net/html DoS via crafted HTML input, fixed in v0.62.0)
+# and CVE-2026-116587 (go-jose DoS via crafted RSA parameters in JWKs,
+# fixed in v4.1.6); the grype cross-check leg then added GO-2026-6865
+# (klauspost/compress, fixed in v1.20.2) on a v29.9.1 build that had cleared
+# the trivy pair. Tag bumped to v29.9.3, which vendors go-jose v4.1.7 (≥ the
+# fix) and klauspost/compress v1.20.2 (vendor.sum verified 2026-11-16). No
+# docker/cli tag ships x/net ≥ v0.62.0 yet (v29.9.3 still vendors v0.60.0),
+# so the build upgrades that module in place, with develop's belt-and-braces
+# klauspost/compress pin beside it holding the module at the fix version the
+# tag already vendors — this tree already compiles
+# in module mode (vendor.mod -> go.mod above), and vendor.mod's own header
+# names `go mod vendor` as the way it is managed. Both pins below are exact,
+# and the commit assert still fails the build if the tag moves under us.
+# Exact module pin for the vendored upgrade; keep in sync with the comment
+# block above and with Dockerfile.research's identical stage.
+ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get "${X_NET_MODULE_UPGRADE}" github.com/klauspost/compress@v1.20.2 && go mod vendor && \
     mkdir -p /out && \
-    CGO_ENABLED=0 go build -trimpath -tags grpcnotrace \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
       -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
       -o /out/docker ./cmd/docker
 
@@ -168,8 +231,9 @@ RUN apk add --no-cache git && \
 # `--no-cache-filter runtime-apt` so every candidate re-consults the security
 # mirror; release.yml builds cold and needs no flag. The 2026-10-22
 # base-digest bump (#1152) additionally invalidated the previously cached
-# apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+# apt layer. Same base as the builder — see the #2430 rejection note above:
+# 3.15.2 is unbuildable for this image's locked install set.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \

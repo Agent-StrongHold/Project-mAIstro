@@ -86,7 +86,7 @@ CI runs `lint` in warn-only mode currently. Hard-fail flips after day 30 of regi
 
 ## Tests
 
-Three markers are registered in `pyproject.toml`, and `pytest` runs with
+Four markers are registered in `pyproject.toml`, and `pytest` runs with
 `--strict-markers` (#391): an unregistered marker is a claim no gate can read,
 so it fails collection instead of passing as inert decoration. Adding,
 removing, or re-purposing a marker is a same-PR documentation change —
@@ -97,6 +97,7 @@ removing, or re-purposing a marker is a same-PR documentation change —
 | `@pytest.mark.ac("SPEC-NNN/AC-N")` | This test is evidence for that acceptance criterion ([`ADR-097`](docs/adr/ADR-097-lifecycle-status-machine.md)). The id must name a declared `**AC-N**` in that doc — a typo'd id claims nothing and cannot clear the `covered` rung. | `scripts/ac_outcome_plugin.py` records claims/outcomes; `scripts/check-ac-state.py --run-tests --ratchet` folds them into evidence rungs | The AC-state ratchet (`quality` job) banks the rung each criterion reached: `declared → covered → passing → reachable`. A **skip is no evidence** and a failure sinks the criterion; rungs drive the acceptance-state/design-coverage gate (owner: #160) |
 | `@pytest.mark.contract("boundary"\|"behavioral"\|"cross-service")` | Which contract axis the test pins ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)) | `scripts/check-contract-markers.py` | A contract claim without a passing test is baselined debt, not evidence; new unmatched claims fail |
 | `@pytest.mark.scope("unit"\|"integration"\|"e2e"\|"property")` | Test scope axis ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)) | Selection/documentation axis (`pytest -m scope`) | Names the layer a change must test at per ADR-032; also how suites are selected in CI jobs |
+| `@pytest.mark.timeout(seconds)` | Per-test wall-clock ceiling above a job's default `--timeout=` (heavy seed/index envelopes that must finish under Coverage-gate load) | `pytest-timeout` plugin when installed (`uv --extra dev`); selection via `pytest -m "timeout"` | With the plugin present, the mark raises the per-test ceiling; without it (hive CI system-python step) the mark is inert decoration registered only so `--strict-markers` still collects |
 
 Examples of correct linkage and rung behavior:
 
@@ -109,7 +110,7 @@ Examples of correct linkage and rung behavior:
 async def test_due_schedule_admits_a_canonical_run() -> None: ...
 ```
 
-A Hypothesis property test on an ADR invariant is `@pytest.mark.contract("behavioral")` and/or `@pytest.mark.scope("property")` — not a standalone `behavioral` marker. Run e.g. `pytest -m "ac"` for AC-claiming tests; `pytest -m "contract"` for contract-tagged ones; `pytest -m "scope"` for scope-tagged ones.
+A Hypothesis property test on an ADR invariant is `@pytest.mark.contract("behavioral")` and/or `@pytest.mark.scope("property")` — not a standalone `behavioral` marker. Run e.g. `pytest -m "ac"` for AC-claiming tests; `pytest -m "contract"` for contract-tagged ones; `pytest -m "scope"` for scope-tagged ones; `pytest -m "timeout"` for tests that opt into an explicit wall-clock ceiling.
 
 ## Commit style
 

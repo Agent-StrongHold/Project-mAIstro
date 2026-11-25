@@ -116,6 +116,7 @@ PAGE_ROUTE_ROOTS = frozenset(
         "agents",
         "audit",
         "backlog",
+        "capabilities",
         "chat",
         "cli",
         "containers",

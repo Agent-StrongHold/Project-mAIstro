@@ -28,6 +28,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/ontology/test_design_loop_kind_fencing.py
+  - packages/maistro-core/tests/graph/durable_runs/test_fence_decisions.py
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
@@ -38,7 +39,6 @@ history:
 
 # ADR-092926-7a01: Closed-loop design process
 
-**Status:** Proposed
 
 *Merge-blocking status:* this ADR is the M7-A1 contract (#790, parent #789). It blocks every
 M7 implementation lane (A2–A7): no Rubric persistence, eval wiring, pack, fence, or Design

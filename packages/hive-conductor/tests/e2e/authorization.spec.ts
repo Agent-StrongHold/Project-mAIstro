@@ -95,26 +95,27 @@ test.describe("authorization reflects effective capability policy", () => {
     await page.goto("/settings");
     await expect(page.getByRole("button", { name: "edit", exact: true }).first()).toBeEnabled();
 
-    // The same holds for the write controls on Credentials and MCP, including
-    // the ones that only mount after another gated control (#373 repair):
-    // the MCP "add" submit exists solely inside the form the "+ add server"
-    // opener mounts, and the credentials probe button renders for the generic
-    // gateway regardless of configured state. Both must be live for a
-    // principal the policy authorizes — form validity still applies to the
-    // add button until the form is filled. The form is cancelled, not
-    // submitted: this asserts the control, it does not mutate the catalog.
+    // Credentials write controls must be live for a principal the policy
+    // authorizes. The credentials probe button renders for the generic
+    // gateway regardless of configured state.
     await page.goto("/credentials");
     const gatewayCard = page.locator("article", { hasText: "OpenAI-compatible gateway" });
     await expect(gatewayCard.getByRole("button", { name: "test & discover models" })).toBeEnabled();
+    // #2273: MCP page is deleted; /mcp redirects to Capabilities. Integration
+    // mutations stay API-authoritative (admin can POST servers).
     await page.goto("/mcp");
-    await page.getByRole("button", { name: "+ add server" }).click();
-    const formAdd = page.getByRole("button", { name: "add", exact: true });
-    await expect(formAdd).toBeDisabled();
-    await page.getByPlaceholder("server name").fill("authorization-probe");
-    await page.getByPlaceholder(/URL \(e\.g\./).fill("http://localhost:9999/mcp");
-    await expect(formAdd).toBeEnabled();
-    await page.getByRole("button", { name: "cancel", exact: true }).click();
-    await expect(formAdd).toHaveCount(0);
+    await page.waitForURL("**/capabilities");
+    await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+    expect(
+      (
+        await page.request.post("/v1/mcp/servers", {
+          data: {
+            name: "authorization-probe-admin",
+            url: "http://127.0.0.1:9/mcp",
+          },
+        })
+      ).status(),
+    ).not.toBe(403);
   });
 
   test("daily user: unauthorized surfaces filtered, controls disabled, API authoritative", async ({
@@ -154,9 +155,9 @@ test.describe("authorization reflects effective capability policy", () => {
       (await page.request.patch("/v1/settings", { data: { hive_name: "nope" } })).status(),
     ).toBe(403);
 
-    // The settings/credentials/integrations controls carry the same policy:
-    // an explanation plus disabled controls, never an actionable-looking
-    // control that is guaranteed to fail.
+    // The settings/credentials controls carry the same policy: an explanation
+    // plus disabled controls, never an actionable-looking control that is
+    // guaranteed to fail.
     await page.goto("/settings");
     await expect(page.getByText("Settings changes is not currently actionable")).toBeVisible();
     await expect(page.getByRole("button", { name: "edit", exact: true }).first()).toBeDisabled();
@@ -191,9 +192,21 @@ test.describe("authorization reflects effective capability policy", () => {
     for (let i = 0; i < toggleCount; i += 1) {
       await expect(toggles.nth(i)).toBeDisabled();
     }
+    // #2273: MCP UI is gone; integrations authority remains API-enforced.
     await page.goto("/mcp");
-    await expect(page.getByText("Integration changes is not currently actionable")).toBeVisible();
-    await expect(page.getByRole("button", { name: "+ add server" })).toBeDisabled();
+    await page.waitForURL("**/capabilities");
+    await expect(page.getByRole("heading", { name: "Capabilities", exact: true })).toBeVisible();
+    expect(body.surfaces.integrations.effective).toBe(false);
+    expect(
+      (
+        await page.request.post("/v1/mcp/servers", {
+          data: {
+            name: "authorization-probe-pm",
+            url: "http://127.0.0.1:9/mcp",
+          },
+        })
+      ).status(),
+    ).toBe(403);
   });
 
   test("scoped grant: assignment reaches the UI without a stale snapshot", async ({
