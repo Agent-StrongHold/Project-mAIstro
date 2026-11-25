@@ -209,6 +209,61 @@ async def test_a_durable_lease_that_lapses_is_reclaimed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_stale_park_replay_cannot_move_the_node_run() -> None:
+    """The recovery park is fenced by `expected_current_attempt_id` (#1621).
+
+    A replaying walker holds a genuine, persisted decision — the reclaim's
+    WAITING park for its own Attempt — but a newer Attempt owning the NodeRun
+    makes that decision stale, and parking over live retry work is exactly
+    the write this fence exists to refuse. The matching expectation lands.
+    """
+    from datetime import timedelta
+
+    from maistro.runs.store import RunIntegrityError
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    abandoned = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-stale", lease_ttl=timedelta(seconds=30)
+    )
+    lease = abandoned.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    await execution_store.transition_attempt(
+        abandoned.attempt_id, AttemptStatus.RUNNING, fencing_token=lease.fencing_token
+    )
+    (reclaimed,) = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    retry = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-retry", lease_ttl=timedelta(seconds=30)
+    )
+    assert retry.ordinal > reclaimed.ordinal
+
+    with pytest.raises(RunIntegrityError, match="was superseded"):
+        await execution_store.transition_node_run(
+            node_run_id,
+            RunStatus.WAITING,
+            error=reclaimed.error,
+            expected_current_attempt_id=reclaimed.attempt_id,
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.node_runs[0].status is RunStatus.RUNNING
+
+    parked = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.WAITING,
+        error=reclaimed.error,
+        expected_current_attempt_id=retry.attempt_id,
+    )
+    assert parked.status is RunStatus.WAITING
+    after = await store.get(record.run_id)
+    assert after is not None
+    assert after.node_runs[0].status is RunStatus.WAITING
+
+
+@pytest.mark.asyncio
 async def test_a_live_durable_lease_is_left_alone_and_reclaim_is_idempotent() -> None:
     from datetime import timedelta
 
