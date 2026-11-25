@@ -27,7 +27,6 @@ history:
 
 # ADR-011: Memory engine + session factory wiring
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-002

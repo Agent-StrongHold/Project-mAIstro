@@ -28,7 +28,6 @@ history:
 
 # ADR-018: Persist TaskRecord at queue/runner boundaries
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-011, ADR-012
