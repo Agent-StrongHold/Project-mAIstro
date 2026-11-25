@@ -617,15 +617,23 @@ test("a success resets the cadence to base and the failure ladder to fresh", asy
   await page.getByRole("button", { name: "Refresh" }).click();
   await expect(pollBanner()).toHaveCount(0, { timeout: 5_000 });
 
-  // Back under outage: the poll after the success must come at the BASE
-  // interval (the success rearmed base cadence, not a leftover backoff
-  // step), and the one after that at a FRESH first backoff step (7.5s) — an
-  // unreset failure counter would wait 15s there.
+  // Back under outage: sync on the BANNER, not on request counts. A manual
+  // refresh whose click Playwright has to re-verify after the cleared banner
+  // shifts layout can dispatch the refresh handler twice (CI run
+  // 43806818617, job 133099866372: a fixed `counts >= 4` window then indexed
+  // the extra manual refresh as a loop poll and measured the base cadence —
+  // 3.76s — as the "fresh ladder" gap, on both attempts). The banner's
+  // reappearance marks the loop's (or a late duplicate refresh's) first
+  // post-refresh outage poll in every dispatch ordering, so the two gaps
+  // around it ARE the contract: the first proves the success re-armed the
+  // base interval, the second proves the next failure started a fresh first
+  // backoff step (7.5s) instead of a leftover 15s rung.
   setModes("abort");
-  await expect.poll(() => counts.status, { timeout: 15_000 }).toBeGreaterThanOrEqual(4);
-  const n = times.status.length;
-  const gapBase = times.status[n - 2] - times.status[n - 3];
-  const gapFresh = times.status[n - 1] - times.status[n - 2];
+  await expect(pollBanner()).toHaveAttribute("data-health", "unreachable", { timeout: 15_000 });
+  const nFailure = times.status.length;
+  await expect.poll(() => times.status.length, { timeout: 15_000 }).toBe(nFailure + 1);
+  const gapBase = times.status[nFailure - 1] - times.status[nFailure - 2];
+  const gapFresh = times.status[nFailure] - times.status[nFailure - 1];
   expect(gapBase, "success re-arms the base interval (3.75s pinned), not 7.5s").toBeLessThanOrEqual(5_000);
   expect(gapFresh, "a new failure starts a fresh 7.5s ladder, not 15s").toBeGreaterThanOrEqual(6_800);
   expect(gapFresh).toBeLessThanOrEqual(11_000);
