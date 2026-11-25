@@ -178,13 +178,31 @@ RUN python /tmp/prune-dependency-namespaces.py \
 FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# 2026-11-16 (#2110 CI-repair round): the v29.9.1 vendored tree carried three
+# HIGH findings in the docker binary. The trivy leg (security.yml
+# `Container scan + SBOM + cosign`, HIGH/CRITICAL, exit 1) flagged
+# CVE-2026-78661 (x/net/html DoS via crafted HTML input, fixed in v0.62.0)
+# and CVE-2026-116587 (go-jose DoS via crafted RSA parameters in JWKs,
+# fixed in v4.1.6); the grype cross-check leg then added GO-2026-6865
+# (klauspost/compress, fixed in v1.20.2) on a v29.9.1 build that had cleared
+# the trivy pair. Tag bumped to v29.9.3, which vendors go-jose v4.1.7 (≥ the
+# fix) and klauspost/compress v1.20.2 (vendor.sum verified 2026-11-16). No
+# docker/cli tag ships x/net ≥ v0.62.0 yet (v29.9.3 still vendors v0.60.0),
+# so the build upgrades that module in place, with develop's belt-and-braces
+# klauspost/compress pin beside it holding the module at the fix version the
+# tag already vendors — this tree already compiles
+# in module mode (vendor.mod -> go.mod above), and vendor.mod's own header
+# names `go mod vendor` as the way it is managed. Both pins below are exact,
+# and the commit assert still fails the build if the tag moves under us.
+# Exact module pin for the vendored upgrade; keep in sync with the comment
+# block above and with Dockerfile.research's identical stage.
+ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
-    go mod vendor && \
+    go get "${X_NET_MODULE_UPGRADE}" github.com/klauspost/compress@v1.20.2 && go mod vendor && \
     mkdir -p /out && \
     # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
     # supersedes it, so build from the module set, not the vendored tree.
