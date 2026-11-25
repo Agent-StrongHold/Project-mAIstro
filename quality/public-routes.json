@@ -73,10 +73,8 @@
       "kind": "exact",
       "owner": "@BlakeMatthews-dev",
       "risk": "high",
-      "disposition": "temporary",
-      "issue": 313,
-      "expires": "2027-02-22",
-      "reason": "First-run account creation, still reachable after setup completes. #313 closes it to invited or admin-created accounts; until then this is an unauthenticated write path, throttled since #366 but not shut. Re-justified 2026-11-25 when the 2026-11-24 expiry failed CI: #313 is still open, no invite-gating replacement has shipped, and first-run bootstrap still needs this route, so the exemption is extended exactly 90 days as its second review. It closes when #313 lands or on the new date, whichever comes first."
+      "disposition": "permanent",
+      "reason": "Account creation is unauthenticated by construction: an administrator opens registration (or mints an invitation) precisely so session-less strangers can reach this endpoint, so a session can never be required here — the same class as /v1/auth/login. The temporary exemption this entry replaces waited on #313, which has shipped: every POST consults the durable registration-policy record and fails closed (missing, unreadable, corrupt, or mid-bootstrap record reads as closed), open is a value only an authenticated administrator writes (audited PUT /v1/auth/registration/policy), single-use invitation tokens are stored hash-only and spent by one conflict-safe insert, and the endpoint is throttled (#366). The residual exposure is the policy-opened write path itself, not a bypass of it; #313 closed the gap the exemption was opened for, so the exemption can no longer be removed by closing that issue."
     },
     "/v1/setup/": {
       "kind": "prefix",
@@ -84,8 +82,8 @@
       "risk": "high",
       "disposition": "temporary",
       "issue": 313,
-      "expires": "2027-02-22",
-      "reason": "First-run provisioning, before any account exists to authenticate with. The whole prefix stays public after setup completes; the individual routes guard themselves with one-shot 409s, which is a check inside each handler rather than a boundary. Narrowing it to the pre-setup window is part of #313. Re-justified 2026-11-25 when the 2026-11-24 expiry failed CI: #313 is still open and the pre-setup window is not enforced yet, so bootstrap still needs the prefix reachable; extended exactly 90 days as its second review. It closes when #313 lands or on the new date, whichever comes first."
+      "expires": "2026-12-24",
+      "reason": "First-run provisioning, before any account exists to authenticate with. Still exact: auth.py answers the whole prefix from _PUBLIC_PREFIXES unconditionally — the /v1/install/ prefix already demonstrates the shipped narrowing pattern (public only while _setup_complete() is false, AuthMiddleware.dispatch) and applying it here is the removal this exemption waits on. Until then /v1/setup/complete guards itself with a one-shot 409 inside the handler — an in-handler check, not a middleware boundary, which is why the prefix bypass is still an exemption at all — while /v1/setup/status and /v1/setup/presets are read-only and must stay reachable for the login page before any account exists. Narrowing the prefix to the pre-setup window in AuthMiddleware.dispatch, with the same conditional the install wizard uses, is the remaining #313 work."
     },
     "/v1/setup/status": {
       "kind": "exact",
