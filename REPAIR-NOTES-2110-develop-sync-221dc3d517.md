@@ -82,3 +82,45 @@ changes from #2460 are taken from develop as required for the spec to compile).
 No tests were added or removed by this round (test set identical to both
 parents; the ladder test is the same single test either way), so no
 inventory-note delta is required.
+
+## Deeper verifier findings at the resolved merge state
+
+| Gate (CI-exact) | Result |
+|-----------------|--------|
+| `tests/test_get_ps1_wsl_detection.py -q` (the PR's own static + PowerShell-mocked regressions; pwsh available here) | 28 passed |
+| `packages/maistro-bootstrap/tests -q` | 274 passed, 5 skipped (pre-existing docker-gated skips) |
+| `npm audit --json` (canvas frontend) + `python scripts/npm_audit_gate.py` | 0 advisories at every severity; gate OK — the previously documented red root cause (GHSA-fc5q-39xc-vjpf / picomatch) was withdrawn upstream 2026-11-18, and the new base judges this surface via the triaged ratchet (#2375) |
+| `python scripts/check-test-duplicates.py` | ok — 0 byte-identical groups |
+| CI-exact one-process suite: `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest tests/ packages/hive-conductor/backend/tests packages/maistro-design/tests -q --timeout=60` | 11254 passed, 222 skipped, **2 failed** (see below) |
+
+### Residual failure (branch-neutral, not repairable in this lane)
+
+`tests/test_check_public_routes.py::TestTheRepositorysOwnRegistry` (2 tests)
+fails because the `/v1/auth/register` and `/v1/setup/` temporary exemptions in
+`quality/public-routes.json` carry `expires: 2026-11-24` and the gate ran on
+2026-11-25. Evidence of branch-neutrality:
+
+- `git diff 221dc3d517 HEAD -- quality/public-routes.json` is empty — the
+  registry is byte-identical to the declared develop base; the gate's own
+  ratchet line reports `12 public route identities -> 12 public route
+  identities` (base == candidate surface).
+- The expiry is time-based, so develop's own tip fails identically today.
+- A re-justification already exists authored by the #2372 repair lane
+  (commit `71db1c9109`, dated 2026-11-25) — it is NOT on origin/develop yet,
+  so taking it here would jump another lane's writer boundary. Ledger edits
+  are prohibited in this lane outside the vulture exception, and
+  `quality/public-routes.json` is a policy ledger.
+
+Disposition: hand off to the #2372 lane / next develop sync. Not a defect of
+this merge.
+
+### Local-only stale artifact removed
+
+`quality/ac-state.json` existed on disk, untracked and git-ignored
+(`.gitignore:88`); the tracked copy was deliberately deleted upstream by
+`db442b5d15` (#604 folded the shared file into `quality/ac-state-notes/`).
+`check-branch-independence.py` discovers on-disk files, so this stale debris
+failed `test_every_quality_json_state_surface_is_classified_once` locally
+(CI's fresh checkout never sees it). Moved to
+`/tmp/stale-ac-state-json-backup-5f539347e3.json` (bytes preserved); the test
+passes after the move.
