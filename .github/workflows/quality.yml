@@ -492,6 +492,29 @@ jobs:
           uv run coverage run --append --branch \
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
+      # hive-conductor's backend joins by that same rule (#1064): its durable
+      # Evolve domain store (services/evolve_domain_store.py) is the
+      # PostgreSQL production fence for exactly-once battle publication, its
+      # PG legs gate on MAISTRO_TEST_PG_DSN, and the coverage-gate job runs
+      # the whole backend suite without a server — so without a producer here
+      # the store's changed lines measured 85% while the same arcs passed
+      # against a real server (the #231/#102/#12 shape again). Its suites
+      # create their own idempotent schema (ensure_schema() is IF NOT
+      # EXISTS), so sharing this job's migrated chain is safe. The
+      # requirements.txt install happens here, last, for the same reason
+      # coverage-gate installs it after the recorded producers above: a
+      # version it resolves outside the lock cannot perturb the maistro-core
+      # and canvas coverage data already recorded by this job.
+      - name: hive-conductor Evolve PostgreSQL legs (under coverage)
+        run: |
+          uv pip install -r packages/hive-conductor/backend/requirements.txt
+          uv run coverage run --append --branch \
+            --source=packages/hive-conductor/backend/services \
+            -m pytest packages/hive-conductor/backend/tests/test_evolution_restart_replay.py \
+              packages/hive-conductor/backend/tests/test_evolution_restart_replay_pg.py \
+              packages/hive-conductor/backend/tests/test_evolve_domain_retention.py \
+              packages/hive-conductor/backend/tests/test_evolve_domain_store.py \
+              --timeout=120 -q
       - name: upload coverage data
         uses: actions/upload-artifact@v7
         with:
@@ -513,7 +536,30 @@ jobs:
     # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
     # cancelled gate never reports, so it blocks the PR without measuring
     # anything. The suites, sources, floor and diff thresholds are unchanged.
-    timeout-minutes: 30
+    #
+    # 30 -> 45 on 2026-10-26: the same class again. #1532's gate (run
+    # 40380074341, job 121782351343) started 18:58:48Z and was killed at
+    # 19:29:06Z — 30m18s, eighteen seconds past this ceiling — leaving the
+    # run's conclusion `cancelled` and reding `gates-ran` on a measurement
+    # that never happened. The same serial combine step on a slower runner is
+    # the whole story; no suite, source, floor or diff threshold changes
+    # here. 45 keeps a 1.5x margin over the observed 30m18s, the same ratio
+    # the 15 -> 30 bump gave #1581.
+    #
+    # 30 -> 45 on 2026-11-24: capacity, not scope. The #1064 candidate grew
+    # the two heaviest serial producers with tests that measure real code:
+    # the hive-conductor backend producer rose 2m16s -> 7m16s (the Evolve
+    # restart/replay suites' server-less legs) and the root `tests/` producer
+    # measured 17m39s (6081 tests). Measured at head
+    # 8fc5b6d on run 45447298201, where every suite the gate executed PASSED
+    # (4486 passed/100 skipped, then 6081 passed/140 skipped) and the job was
+    # cancelled at 30m16s by THIS limit before `coverage xml` could run — so
+    # the required check reported nothing and gates-ran failed it as
+    # "non-executed". The remaining producers (~4m40s) plus floor/combine
+    # (~2m) put the need at ~32-33m; 45 keeps the gate under one hour while
+    # leaving headroom for runner variance. Same rationale as the 15 -> 30
+    # raise: a gate that cannot finish measures nothing and blocks every PR.
+    timeout-minutes: 45
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and
@@ -574,6 +620,12 @@ jobs:
           found=0
           for dir in coverage-data/*/; do
             name="$(basename "$dir")"
+            if [ "$name" = coverage-postgres ]; then
+              # Hive Conductor is measured for changed-line coverage below, but
+              # is outside the publish-set aggregate floor. Keep its producer
+              # data separate until that floor has been evaluated.
+              continue
+            fi
             if [ -s "${dir}.coverage" ]; then
               mv "${dir}.coverage" ".coverage.${name}"
               found=$((found + 1))
@@ -625,10 +677,30 @@ jobs:
           # for them would be the wrong move).
           uv run coverage report --fail-under=87 || \
             (echo "::error::publish-set coverage below the 87% floor" && exit 1)
-          # Now widen for the DIFF gate only. These four packages are outside
-          # the publish set, so none of them is under the floor above, but "the
-          # file you touched" is well defined even where "the package's
-          # aggregate" is not yet governed (#163 item 6).
+          # Now widen for the DIFF gate only. These packages are outside the
+          # publish set, so none of them is under the floor above, but "the file
+          # you touched" is well defined even where "the package's aggregate"
+          # is not yet governed (#163 item 6). The hive-conductor producer was
+          # held out of the initial combine for this same reason; append it now
+          # so its changed lines remain covered by the diff gate.
+          #
+          # --append is load-bearing (#1064): plain `coverage combine` starts
+          # clean and writes ONLY the merge of the current .coverage.* files,
+          # silently DISCARDING the database the floor just evaluated. That
+          # replacement erased every file measured only by the unit/archive
+          # producers, so changed files in those trees read as "absent from
+          # the coverage report" and failed the per-file diff gate with the
+          # measurement sitting in the deleted database. The real run that
+          # surfaced it (#1064): the post-floor report printed the Evolve
+          # durable-snapshot modules at 97-100%, the final coverage.xml had no
+          # entry for them at all.
+          if [ -s coverage-data/coverage-postgres/.coverage ]; then
+            mv coverage-data/coverage-postgres/.coverage .coverage.hive-conductor
+            uv run coverage combine --append
+          else
+            echo "::error::producer coverage-postgres contributed no coverage data"
+            exit 1
+          fi
           #
           # Every --source here must also appear in MEASURED_ROOTS in
           # scripts/check-diff-coverage.py; tests/test_check_diff_coverage.py

@@ -1480,6 +1480,31 @@ export interface paths {
         /**
          * Cancel Run
          * @description Cancel through the canonical Run/Attempt execution seam.
+         *
+         *     Read visibility never admits a lifecycle write (#1152, #2466): before any
+         *     cancellation state change or physical work, the canonical target Run is
+         *     resolved through the shared `RunStoreBoundary` mutation gate -- the same
+         *     initiator/administrator rule maistro-server's cancel route applies -- so
+         *     only the Run's initiating principal or a Workspace administrator gets
+         *     through, and a projection row cannot delegate write authority across
+         *     Workspaces (its canonical link is honoured only when the Run is filed in
+         *     the row's own Workspace, the same attribution rule the read overlay
+         *     applies). The gate resolves through the wired reader triple the
+         *     inspection reads answer from; without a wired scoped reader it degrades
+         *     to the embedded Workspace authority, whose refusals stay fail-closed.
+         *     Absent, foreign, unadministered and mismatched-link targets all answer
+         *     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
+         *     no provider stop signal; an unreachable canonical authority answers the
+         *     spine-unavailable 503 instead.
+         *
+         *     The response separates two facts that used to be collapsed into
+         *     ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+         *     fence -- the authority that refuses a late provider success --
+         *     ``stop_confirmed`` is the physical one, and it is False whenever the
+         *     Attempt is live under a worker this replica cannot signal: Conductor then
+         *     reports ``stop_pending`` with a diagnosis instead of a stop nobody
+         *     observed. The mutation gate above is #2466's contract; the receipt below
+         *     reports truthfully about what the fence did and did not stop.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
@@ -2181,15 +2206,17 @@ export interface paths {
         put?: never;
         /**
          * Trigger Score
-         * @description Score the run captured in dag_run_store. For Phase 5 we score off
-         *     the dag_run_store's run-record-shaped summary (DurableRunRecord
-         *     integration lands when the executor publishes the durable record
-         *     into dag_run_store; until then, this endpoint accepts whatever
-         *     dag_run_store returns and gracefully scores it).
+         * @description Score a terminal canonical Run.
          *
-         *     Scoped like every other run reader (#1174): the projection is read
-         *     through the inspection service, so an out-of-scope run gets the same
-         *     404 a missing one gets — and is never scored.
+         *     Read visibility never admits a scoring effect (#2470): the POST first
+         *     resolves the canonical target through the mutation gate (initiator or
+         *     Workspace administrator — membership alone refuses like a missing run),
+         *     then requires terminality, then honors the evidence contract — an
+         *     existing valid verdict IS the score and is returned verbatim without a
+         *     second model effect. Only then does the governed scorer run, writing the
+         *     verdict under the canonical Run id with its canonical actor/scope
+         *     provenance; a successful score is audited. Every refusal above happens
+         *     before any model call, verdict write, proposal, usage or audit mutation.
          */
         post: operations["trigger_score_v1_eval_judge__run_id__post"];
         delete?: never;
@@ -2985,7 +3012,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List All Proposals */
+        /**
+         * List All Proposals
+         * @description Proposals across the caller's Workspace universe, newest first.
+         *
+         *     Membership scopes before the page limit, so a foreign tenant's newer
+         *     pending rows cannot push the caller's own proposals out of the page.
+         */
         get: operations["list_all_proposals_v1_optimizer_proposals_get"];
         put?: never;
         post?: never;
@@ -3036,7 +3069,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List For Dag */
+        /**
+         * List For Dag
+         * @description One DAG's proposals, scoped to the caller's canonical Workspaces.
+         *
+         *     Authentication happens in AuthMiddleware; it is not authorization
+         *     (#2469). A DAG claimed by another tenant shares the non-disclosing 404
+         *     with an unknown one, so the list cannot become a tenant oracle.
+         */
         get: operations["list_for_dag_v1_optimizer__dag_id__proposals_get"];
         put?: never;
         post?: never;
@@ -13583,6 +13623,7 @@ export interface operations {
                 apply_auto?: boolean;
                 validate?: boolean;
                 workspace_id?: string | null;
+                project_id?: string | null;
             };
             header?: never;
             path: {

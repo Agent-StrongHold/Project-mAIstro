@@ -23,12 +23,27 @@ from routes.audit import log_audit
 def _public_failure(exc: BaseException) -> str:
     """What a caller may learn about an unexpected failure: the kind, not the text.
 
-    Delegates to ``graph_runner.public_failure`` so HTTP and WebSocket share
-    one contract (kind-only, with the ALLOW_STUB_LLM remediation preserved).
+    Delegates to the shared ``safe_projection`` policy so HTTP, WebSocket and
+    the nested result projection all answer from one contract (kind-only,
+    with the ALLOW_STUB_LLM remediation preserved).
     """
-    from services.graph_runner import public_failure
+    from services.safe_projection import public_failure
 
     return public_failure(exc)
+
+
+def _public_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project a settled DAG result for a public receipt body (#2465).
+
+    The canonical executor already projects its result through the shared
+    policy; this re-application is the HTTP boundary's own explicit contract,
+    so a receipt is safe even when the result in hand came from a caller
+    that bypassed the projection (a stub, a replayed exception, a future
+    producer). Idempotent; see ``services.safe_projection``.
+    """
+    from services.safe_projection import safe_dag_result
+
+    return safe_dag_result(result)
 
 
 router = APIRouter(tags=["dags"])
@@ -443,11 +458,12 @@ async def run_dag(
             headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
         ) from exc
     except CanonicalDagExecutionError as exc:
-        result = exc.result
+        result = _public_result(exc.result)
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
         # Exception text mirrors result["error"] and can carry node/provider
-        # detail; the browser gets the kind only (CodeQL py/stack-trace-exposure).
+        # detail; the browser gets the kind only, and the whole body — every
+        # nested field included — passes the shared #2465 projection policy.
         logger.warning("Canonical DAG execution failed: %s", exc, exc_info=exc)
         return {
             "status": result.get("status", "failed"),
@@ -460,13 +476,13 @@ async def run_dag(
         logger.warning("Graph execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}
 
-    await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
+    await _record_run_projection(dag_id=dag_id, user_id=actor, result=_public_result(result))
     run_id = result["run_id"]
     return {
         "status": result["status"],
         "execution_id": run_id,
         "run_id": run_id,
-        "result": result,
+        "result": _public_result(result),
     }
 
 
@@ -489,7 +505,7 @@ async def run_champion(
 
         result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
-        return {"execution_id": run_id, "run_id": run_id, "result": result}
+        return {"execution_id": run_id, "run_id": run_id, "result": _public_result(result)}
     except RunConcurrencyExceeded as exc:
         # Same canonical admission backpressure mapping as `run_dag` (#1182):
         # the champion never reached a Run, so a retryable 429 -- not a

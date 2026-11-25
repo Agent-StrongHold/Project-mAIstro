@@ -51,6 +51,10 @@ from maistro.runs.model import (
     RunEvalScore,
     RunStatus,
 )
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
+)
 from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
@@ -514,6 +518,7 @@ class SqliteRunStore:
                     workspace_id=graph.workspace_id,
                     project_id=graph.project_id,
                     allow_cross_project=allow_cross_project,
+                    child_provenance=provenance,
                 )
                 if parent_node_run_id is not None:
                     parent_node_run = await self._require_node_run(parent_node_run_id)
@@ -1267,6 +1272,18 @@ class SqliteRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
+            if target is RunStatus.COMPLETED:
+                children = await self._fetchone(
+                    "SELECT COUNT(*) FROM canonical_runs "
+                    "WHERE parent_run_id = ? AND status NOT IN "
+                    f"({_placeholders(len(_TERMINAL_STATUS_VALUES))})",
+                    (run_id, *_TERMINAL_STATUS_VALUES),
+                )
+                if children is not None and int(children[0]):
+                    raise RunIntegrityError(
+                        f"Run cannot complete while {int(children[0])} "
+                        "child Run(s) are non-terminal"
+                    )
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
             settled: list[NodeRun] = []
@@ -1420,10 +1437,27 @@ class SqliteRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         async with self._write_lock:
             node_run = await self._require_node_run(node_run_id)
             await self._refuse_under_terminal_run(node_run)
+            if expected_current_attempt_id is not None:
+                cursor = await self._conn.execute(
+                    """SELECT attempt_id FROM canonical_attempts
+                       WHERE node_run_id = ? ORDER BY ordinal DESC LIMIT 1""",
+                    (node_run_id,),
+                )
+                row = await cursor.fetchone()
+                current_attempt_id = row[0] if row is not None else None
+                if (
+                    current_attempt_id is not None
+                    and current_attempt_id != expected_current_attempt_id
+                ):
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current_attempt_id!r}"
+                    )
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
@@ -1645,6 +1679,77 @@ class SqliteRunStore:
                 json_of(settled),
             )
             return settled
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a)."""
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                attempt = await self._require_attempt(attempt_id)
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                cursor = await self._conn.execute(
+                    """SELECT payload FROM canonical_node_runs
+                       WHERE run_id = ? ORDER BY node_run_id""",
+                    (run.run_id,),
+                )
+                all_node_runs = [model_of_json(NodeRun, row[0]) for row in await cursor.fetchall()]
+                attempts_by_node_run: dict[str, list[Attempt]] = {}
+                for nr in all_node_runs:
+                    attempt_cursor = await self._conn.execute(
+                        """SELECT payload FROM canonical_attempts
+                           WHERE node_run_id = ? ORDER BY ordinal""",
+                        (nr.node_run_id,),
+                    )
+                    attempts_by_node_run[nr.node_run_id] = [
+                        model_of_json(Attempt, row[0]) for row in await attempt_cursor.fetchall()
+                    ]
+                plan = plan_recovered_attempt_disposition(
+                    attempt=attempt,
+                    run=run,
+                    node_run=node_run,
+                    all_node_runs=all_node_runs,
+                    attempts_by_node_run=attempts_by_node_run,
+                )
+                settled_node, settled_run = materialize_recovered_disposition_plan(
+                    plan, run=run, node_run=node_run, attempt=attempt, at=at
+                )
+                if plan.park_node_run:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        settled_node.node_run_id,
+                        settled_node.status.value,
+                        json_of(settled_node),
+                    )
+                if plan.park_run:
+                    self._stage_payload(
+                        "canonical_runs",
+                        "run_id",
+                        settled_run.run_id,
+                        settled_run.status.value,
+                        json_of(settled_run),
+                    )
+                pending, self._pending = self._pending, []
+                for (table, identity_column), identity, status, payload in pending:
+                    await self._conn.execute(
+                        f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
+                        (status, payload, identity),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                # CancelledError inherits BaseException, not Exception: leaving
+                # BEGIN IMMEDIATE open after the write lock releases poisons
+                # the shared connection for every later writer (#2424 Codex).
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
+            return settled_node, settled_run
 
     async def recover_orphaned_attempt(
         self,
