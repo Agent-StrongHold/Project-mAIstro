@@ -106,6 +106,7 @@ from maistro.runs.store import (
     admit_in_state,
     matches_chat_admission_snapshot,
     outcome_embeds_attempt,
+    refuse_child_under_terminal_parent,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -485,6 +486,7 @@ class PgRunStore:
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
             allow_cross_project=allow_cross_project,
+            child_provenance=provenance,
         )
         if parent_node_run_id is not None:
             parent_node_run = await self._require_node_run(parent_node_run_id)
@@ -522,6 +524,11 @@ class PgRunStore:
         the same connection commits Run and binding together or not at all
         (#1845). The statements are ``create_run``'s, unchanged.
         """
+        if run.parent_run_id is not None:
+            parent = Run.model_validate(
+                await self._locked(conn, "canonical_runs", "run_id", run.parent_run_id)
+            )
+            refuse_child_under_terminal_parent(parent.status, parent.run_id, run.provenance)
         await self._lock_root_admission(conn, run)
         await conn.execute(
             """INSERT INTO canonical_runs
@@ -1353,6 +1360,18 @@ class PgRunStore:
             rows = await conn.fetch(
                 "SELECT payload FROM canonical_node_runs WHERE run_id = $1", run_id
             )
+            if target is RunStatus.COMPLETED:
+                open_children = await conn.fetchval(
+                    "SELECT COUNT(*) FROM canonical_runs "
+                    "WHERE parent_run_id = $1 AND status <> ALL($2::text[])",
+                    run_id,
+                    list(_TERMINAL_STATUS_VALUES),
+                )
+                if open_children:
+                    raise RunIntegrityError(
+                        f"Run cannot complete while {int(open_children)} "
+                        "child Run(s) are non-terminal"
+                    )
             check_completion_is_earned(target, [model_of(NodeRun, row["payload"]) for row in rows])
             updated = transition_run(run, target, at=at, result=result, error=error)
             # The cascade runs inside the Run's own transaction, with the Run
@@ -1467,6 +1486,7 @@ class PgRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         async with self._pool.acquire() as conn, conn.transaction():
             node_run = NodeRun.model_validate(await self._peek_node_run(conn, node_run_id))
@@ -1477,6 +1497,20 @@ class PgRunStore:
             node_run = NodeRun.model_validate(
                 await self._locked(conn, "canonical_node_runs", "node_run_id", node_run_id)
             )
+            if expected_current_attempt_id is not None:
+                current_attempt_id = await conn.fetchval(
+                    """SELECT attempt_id FROM canonical_attempts
+                       WHERE node_run_id = $1 ORDER BY ordinal DESC LIMIT 1""",
+                    node_run_id,
+                )
+                if (
+                    current_attempt_id is not None
+                    and current_attempt_id != expected_current_attempt_id
+                ):
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current_attempt_id!r}"
+                    )
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
