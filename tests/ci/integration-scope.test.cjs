@@ -204,11 +204,16 @@ test('workflow preserves read-only permissions, exact PR/merge-group SHA, and po
   assert.deepEqual(workflow.permissions, { checks: 'read', contents: 'read' });
   assert.equal(step.env.CANDIDATE_SHA, '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}');
   // #41 run 36303867276: a 60-minute window expired while specialized
-  // producers were queued 38-55 minutes. The window was widened to 120
-  // minutes of evidence (240 x 30s) inside a 125-minute job timeout; the
+  // producers were queued 38-55 minutes; it was widened to 120 minutes of
+  // evidence (240 x 30s). PR #2441 run 44748461880 then measured deeper
+  // starvation: producers were queued ~118 minutes and docker-build, the
+  // last required producer, completed ~150 minutes after the aggregator
+  // started — the 120-minute window expired first even though every
+  // required check later concluded success. The window is widened to 180
+  // minutes of evidence (360 x 30s) inside a 185-minute job timeout; the
   // timeout must still cover attempts x interval plus checkout/setup slack.
-  assert.equal(job['timeout-minutes'], 125);
-  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '240');
+  assert.equal(job['timeout-minutes'], 185);
+  assert.equal(job.env.EVIDENCE_WAIT_ATTEMPTS, '360');
   assert.ok(
     job['timeout-minutes']
       > (Number(job.env.EVIDENCE_WAIT_ATTEMPTS)
