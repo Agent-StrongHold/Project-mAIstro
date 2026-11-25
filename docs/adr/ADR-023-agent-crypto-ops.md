@@ -33,7 +33,6 @@ history:
 
 # ADR-023: Agent Crypto Operations & Spending Policy
 
-**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-022 (Hardware Signing)
 

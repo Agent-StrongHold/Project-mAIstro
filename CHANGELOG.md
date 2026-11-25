@@ -23,7 +23,54 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only, acceptance-based delivery planning for maintainers (#1629).**
+  `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
+  reviewed GitHub snapshot. It refuses work selection on stale/incomplete
+  ownership coverage, does not treat merged PRs as acceptance evidence, and
+  protects reserved task scopes. A dated example plan, sample seed, operator
+  skill and 56 focused adversarial cases document the non-dispatch boundary.
+  This does not configure or operate the external orchestrator.
+
 ### Changed
+
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
 
 - **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
   `maistro.cli._container*` as a parked operator-lifecycle leaf under
@@ -42,6 +89,13 @@ or placeholder-only section.
 
 ### Changed
 
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
 - **Attention projects messages + optimizer proposals (#1049).** Unread agent
   messages and pending Workspace-scoped optimizer proposals join the
   read-time Attention projection (critical→severity/blocking, warning→queued,
@@ -51,6 +105,28 @@ or placeholder-only section.
   answer/defer/dismiss behavior is unchanged.
 
 ### Fixed
+
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
 
 - **Conductor Run projection purity: nonterminal never invents `finished_at`
   (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
@@ -749,6 +825,23 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **A document's status lives in front matter and nowhere else
+  (`ADR-092126-a28a`).** (#1532) The duplicated body `**Status:**` line is removed
+  from all 94 documents under `docs/adr/` and `docs/specs/` that carried one,
+  in both the bare and list-item spellings. Nothing but the gate written to
+  police them ever read those lines -- every other tool already read front
+  matter -- and storing one fact twice is what produced `#387` in the first
+  place: ADR-046's three-week contradiction, 28 more banked behind it, and 19
+  specs claiming a status (`Active`) that is not in the vocabulary at all.
+  `scripts/check-adr-status-language.py` accordingly changes its first
+  category from *agreement* to *absence*: any body status line is a finding
+  whatever it says, because one that agrees today is a second place to edit
+  tomorrow. Categories 2 and 3 (replacement banners, status-asserting prose)
+  are unchanged -- they police claims front matter cannot express. Operators
+  and authors read status from front matter, which every tool already acts on;
+  the scaffolding never emitted a body line, so nothing needs to change in how
+  new documents are written.
 
 - **Quality and SAST checks can be retried independently (#1357).** Each Quality
   obligation and SAST scanner has its own job. The existing required check names
@@ -2279,6 +2372,42 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **Container-gate repair round: CPython base refreshes, docker/cli v29.9.3,
+  and the temporalio/browser-stack floors that close its scan findings (#2110).**
+  The `Container scan + SBOM + cosign` gate at d3c793ae074e failed on four
+  HIGH findings (one CRITICAL) in `temporalio/bridge/Cargo.lock` — the Rust
+  `zip` crate 8.6.0 vendored inside the temporalio 1.34.0 wheel that only the
+  rsi-runner image's sync selection installs: CVE-2026-115905 (CRITICAL,
+  fixed 9.0.5), CVE-2026-115907/115908/115909 (HIGH, fixed 9.0.0). The root
+  lock now pins temporalio 1.36.1 (bridge `zip` 9.5.1; nexus-rpc moves
+  1.4.0 → 1.5.0 with its pin). Re-running the gate's grype leg locally on the
+  rebuilt image exposed the findings CI would have hit next, and they are
+  closed in the same round: the `python:3.12-slim` and
+  `python:3.13.16-slim-bookworm` digests move to the 3.12.16 / 3.13.18
+  releases (CVE-2026-115557, CRITICAL, fixed 3.12.16/3.13.18, plus
+  CVE-2026-114583 / CVE-2026-12345 on the same binary), the docker CLI is
+  rebuilt from docker/cli v29.9.3 (vendors go-jose v4.1.7 ≥ the CVE-2026-116587
+  fix and klauspost/compress v1.20.2 ≥ the GO-2026-6865 fix; x/net still
+  patched in place to v0.62.0 for CVE-2026-78661), and constraint floors pin
+  playwright ≥1.65.2 / patchright ≥1.64.4 so the browser drivers stop
+  bundling Node 24.21.0 (CVE-2026-106069 / CVE-2026-105483). All pins are
+  re-recorded in `quality/image-pins.json`; the conductor identity contract
+  asserts 3.13.18; the e2e and sbx-tests images ride the refreshed 3.12
+  digest. All four production images rebuild and rescan clean under the
+  gate's exact trivy (HIGH/CRITICAL, exit-code 1, ignore-unfixed) and grype
+  (--fail-on high --only-fixed) invocations.
+
+- **Windows bootstrap no longer overrides execution policy when it elevates
+  or resumes (#2110).** `get.ps1` removed the `-ExecutionPolicy Bypass`
+  tokens from its `Invoke-Elevated` and RunOnce resume commands: an
+  administrator-approved `AllSigned`/`RemoteSigned` policy now stays in
+  force across the elevation and the post-logon resume instead of being
+  silently dropped by the installer, and the download-and-run help text
+  documents the administrator-approved prerequisite, read-only policy
+  inspection, and fail-closed guidance. Ordinary policy resolution, `RunAs`,
+  quoting, argument passthrough, and the HKCU RunOnce destination are
+  unchanged; static and mocked-PowerShell regressions pin the behavior.
 
 - **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
   The `age` binaries in the conductor image and the static Docker CLI in the

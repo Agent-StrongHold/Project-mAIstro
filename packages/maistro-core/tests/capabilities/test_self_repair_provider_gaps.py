@@ -6,8 +6,6 @@ _dispatch_async's action-exception branch."""
 
 from __future__ import annotations
 
-import asyncio
-
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
 from maistro.capabilities.slots.infra import ActionResult, InfraHealth, ResourceHealth
 from maistro.capabilities.types import ProviderHealth
@@ -120,17 +118,25 @@ class TestAutoRunFailure:
 
 
 class TestDispatchAsyncFailure:
-    async def test_dispatch_async_exception_is_logged_and_swallowed(self) -> None:
-        action = _RaisingAction()
+    async def test_durable_admittor_exception_is_logged_as_failed(self) -> None:
+        """Admission errors must not raise out of run_once (#2405)."""
+
+        async def boom(_proposal: object, _effect_key: str) -> str:
+            raise RuntimeError("admit exploded")
+
+        async def must_not_invoke(*_a: object, **_k: object) -> ActionResult:
+            raise AssertionError("gated path must not auto-invoke")
+
         p = RuleBasedRepair(
             infra_monitor=_FakeMonitor(),
-            effect_invoker=_raising_invoker(action),
+            effect_invoker=must_not_invoke,
+            approval_admittor=boom,
             autonomy="approve_all",
         )
         result = await p.run_once()
         (r,) = result.results
-        assert r.decision.value == "pending_approval"
-        await asyncio.gather(*list(p._tasks))  # drain — must not raise
+        assert r.decision.value == "failed"
+        assert "admit exploded" in r.detail
 
 
 class TestGovernedInvokerBoundary:

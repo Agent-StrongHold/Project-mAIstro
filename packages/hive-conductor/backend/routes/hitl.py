@@ -29,7 +29,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from services.authorization import principal_has_permission
 from services.hitl_authorization import (
     HITL_ANSWER,
     HITL_CANCEL,
@@ -38,19 +39,23 @@ from services.hitl_authorization import (
     authorize_project,
     authorized_project_ids,
 )
-from services.request_principal import request_principal, require_actor_id
+from services.request_principal import request_principal, require_actor_id, require_principal
 from services.workspace_authority import (
     hitl_membership_mutation_lock,
     is_member,
     list_workspace_ids_for_user,
 )
 
+from maistro.capabilities.approval_store import ApprovalStatus, DurableApproval
 from maistro.graph.durable_runs import (
     HitlAuthorization,
+    HitlDeadlineElapsed,
     expire_hitl_pauses,
     pending_hitl_node_ids,
     pending_hitl_records,
 )
+from maistro.graph.durable_runs.stores import require_answerable_fence
+from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL
 from maistro.identity import Principal
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
@@ -63,6 +68,11 @@ router = APIRouter(tags=["hitl"])
 #: caller's own keys. Rejected on the way in as well, so a forged value never
 #: reaches the scan budget or the store.
 _RESERVED_ANSWER_KEY = "_pause"
+
+#: Control fields for the durable-approval bridge (#55 / #1192). Not graph
+#: payload — stripped before ``submit_hitl_answer`` so a stale UI cannot stamp
+#: execution state through them.
+_APPROVAL_CONTROL_KEYS = frozenset({"expected_approval_request_id"})
 
 
 class PendingHumanWork(BaseModel):
@@ -81,7 +91,18 @@ class PendingHumanWork(BaseModel):
 
 
 class HumanAnswer(BaseModel):
+    """Answer body for a paused node.
+
+    Ordinary human pauses accept free-form extras. Capability-approval pauses
+    (``awaiting_human_approval``) additionally require a strict boolean
+    ``approved`` and ``expected_approval_request_id`` matching the
+    server-stamped pause receipt (#55 / #1192).
+    """
+
     model_config = ConfigDict(extra="allow")
+
+    approved: StrictBool | None = None
+    expected_approval_request_id: str | None = None
 
 
 def _store() -> Any:
@@ -107,6 +128,22 @@ def _request_user_id(request: Request) -> str:
     return require_actor_id(request)
 
 
+def _node_pause(record: Any, node_id: str) -> Mapping[str, Any] | None:
+    pauses = record.graph_state.metadata.get("pauses")
+    if not isinstance(pauses, Mapping):
+        return None
+    pause = pauses.get(node_id)
+    return pause if isinstance(pause, Mapping) else None
+
+
+def _node_pause_metadata(record: Any, node_id: str) -> Mapping[str, Any] | None:
+    pause = _node_pause(record, node_id)
+    if pause is None:
+        return None
+    metadata = pause.get("metadata")
+    return metadata if isinstance(metadata, Mapping) else None
+
+
 def _intended_reviewer(record: Any, node_id: str) -> str | None:
     """Read an optional reviewer binding from canonical pause metadata.
 
@@ -114,10 +151,8 @@ def _intended_reviewer(record: Any, node_id: str) -> str | None:
     graph records an exact reviewer/approver, mutation must be bound to that
     principal rather than treating Project authority as a blanket approval.
     """
-    pauses = record.graph_state.metadata.get("pauses")
-    pause = pauses.get(node_id) if isinstance(pauses, Mapping) else None
-    metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
-    if not isinstance(metadata, Mapping):
+    metadata = _node_pause_metadata(record, node_id)
+    if metadata is None:
         return None
     for key in (
         "reviewer_id",
@@ -129,6 +164,221 @@ def _intended_reviewer(record: Any, node_id: str) -> str | None:
             value = metadata[key]
             return value.strip() if isinstance(value, str) and value.strip() else ""
     return None
+
+
+def _is_durable_approval_pause(record: Any, node_id: str) -> bool:
+    """True when the pending pause is a governed capability-approval wait."""
+    metadata = _node_pause_metadata(record, node_id)
+    if metadata is None:
+        return False
+    reason = metadata.get("paused_reason")
+    request_id = metadata.get("approval_request_id")
+    return (
+        reason == PAUSE_AWAITING_HUMAN_APPROVAL
+        and isinstance(request_id, str)
+        and bool(request_id.strip())
+    )
+
+
+def _approval_store() -> Any:
+    """The Container-selected DurableApproval store (#1362 / #55).
+
+    Missing composition is unavailable capability — never invent a second
+    approval inbox or fall through to the provider Approval slot.
+    """
+    from services.engine import get_engine
+
+    engine = get_engine()
+    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    effects = getattr(container, "capability_effects", None)
+    store = getattr(effects, "approval_store", None) if effects is not None else None
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="durable ApprovalStore is required for capability-approval answers",
+        )
+    return store
+
+
+def _require_approver_authority(request: Request) -> str:
+    """Admin or elevated ``approvals.resolve`` — intersects with HITL scope."""
+    principal = require_principal(request)
+    if principal.is_admin or principal_has_permission(principal, "approvals.resolve"):
+        return principal.actor_id()
+    log_audit(
+        "hitl_approval_resolve_refused",
+        _session_principal(request),
+        target="approvals.resolve",
+        detail={"refusal_reason": "approver_not_authorized"},
+        severity="warning",
+    )
+    raise HTTPException(
+        status_code=403, detail="Approver is not authorized for durable approval resolution"
+    )
+
+
+def _paused_node_run(record: Any, node_id: str) -> Any:
+    matches = [
+        node_run
+        for node_run in record.node_runs
+        if node_run.node_id == node_id and node_run.status is RunStatus.PAUSED
+    ]
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="node is not awaiting a human answer")
+    return matches[0]
+
+
+def _approval_mismatch(detail: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=detail)
+
+
+def _require_approval_matches_pause(
+    approval: DurableApproval,
+    *,
+    record: Any,
+    node_id: str,
+    expected_request_id: str,
+) -> None:
+    """Refuse mismatched DurableApproval evidence before resolve or queue."""
+    metadata = _node_pause_metadata(record, node_id) or {}
+    pause_request_id = str(metadata.get("approval_request_id") or "").strip()
+    node_run = _paused_node_run(record, node_id)
+
+    checks: list[tuple[bool, str]] = [
+        (
+            expected_request_id == pause_request_id,
+            "expected_approval_request_id does not match the current pause receipt",
+        ),
+        (
+            approval.request.request_id == pause_request_id,
+            "approval request does not match pause receipt",
+        ),
+        (approval.run_id == record.run.run_id, "approval run_id does not match paused Run"),
+        (
+            approval.node_run_id == node_run.node_run_id,
+            "approval node_run_id does not match pause",
+        ),
+        # Binding workspace/project may be synthetic (self-repair effect
+        # Binding uses ``default``/``default`` while the Run is admitted into
+        # hive_default_workspace + Root Project — #2423 Codex P1). Run +
+        # NodeRun identity already binds the approval to this pause; caller
+        # Project authorization is enforced separately against the Run.
+    ]
+    pause_effect_key = str(metadata.get("effect_key") or "").strip()
+    if pause_effect_key:
+        checks.append(
+            (approval.effect_key == pause_effect_key, "approval effect_key does not match pause")
+        )
+    pause_digest = str(metadata.get("request_digest") or "").strip()
+    if pause_digest:
+        checks.append(
+            (
+                approval.request_digest == pause_digest,
+                "approval request_digest does not match pause",
+            )
+        )
+    pause_binding = metadata.get("binding_id")
+    if isinstance(pause_binding, str) and pause_binding.strip():
+        checks.append(
+            (
+                approval.binding_id == pause_binding.strip(),
+                "approval binding_id does not match pause",
+            )
+        )
+    for ok, detail in checks:
+        if not ok:
+            raise _approval_mismatch(detail)
+
+
+def _require_answerable_before_approval_resolve(record: Any, node_id: str) -> None:
+    """Refuse elapsed/unanswerable pauses before ApprovalStore.resolve (#2423)."""
+    try:
+        require_answerable_fence(record, node_id)
+    except HitlDeadlineElapsed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _resolve_durable_approval_for_answer(
+    request: Request,
+    *,
+    record: Any,
+    node_id: str,
+    body: HumanAnswer,
+) -> None:
+    """Settle DurableApproval before queueing the Graph answer (#55 / #1192).
+
+    Ordering is resolve-then-``submit_hitl_answer`` so a still-PAUSED Run never
+    starts physical work from a missing approval decision. Ordinary human
+    pauses skip this path entirely.
+    """
+    if not _is_durable_approval_pause(record, node_id):
+        return
+
+    if body.approved is None:
+        raise HTTPException(
+            status_code=422,
+            detail="capability-approval answers require a strict boolean 'approved'",
+        )
+    expected = (body.expected_approval_request_id or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=422,
+            detail="capability-approval answers require expected_approval_request_id",
+        )
+
+    # Stale-UI precondition before any store mutation: expected id must equal
+    # the current server-stamped pause receipt (#1192).
+    pause_request_id = str(
+        (_node_pause_metadata(record, node_id) or {}).get("approval_request_id") or ""
+    ).strip()
+    if expected != pause_request_id:
+        raise HTTPException(
+            status_code=409,
+            detail="expected_approval_request_id does not match the current pause receipt",
+        )
+
+    actor = _require_approver_authority(request)
+    # Re-check live Project/HITL scope at the mutation boundary (intersection
+    # with approver authority — neither grant bypasses the other).
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_ANSWER,
+        record=record,
+        node_id=node_id,
+    )
+
+    approvals = _approval_store()
+    try:
+        loaded = await approvals.get(expected)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="ApprovalStore unavailable") from exc
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="approval request not found")
+
+    _require_approval_matches_pause(
+        loaded, record=record, node_id=node_id, expected_request_id=expected
+    )
+    _require_answerable_before_approval_resolve(record, node_id)
+
+    try:
+        resolved = await approvals.resolve(expected, approved=bool(body.approved), actor=actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="approval request not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # First-writer-wins: a contrary durable decision must not queue the
+    # caller's new verdict (#1192).
+    wanted = ApprovalStatus.APPROVED if body.approved else ApprovalStatus.DENIED
+    if resolved.status is not wanted:
+        raise HTTPException(
+            status_code=409,
+            detail="approval already resolved with a contrary decision",
+        )
 
 
 async def _require_project_access(
@@ -497,6 +747,10 @@ async def answer_human_work(
     not to re-decide the answer — the store is called regardless and its verdict
     is final, so a race between the read and the call surfaces as its error
     rather than as a wrong code.
+
+    Capability-approval pauses additionally settle the selected DurableApproval
+    before the Graph answer is queued (#55 / #1192): resolve, then
+    ``submit_hitl_answer``. Ordinary human pauses are unchanged.
     """
     store = _store()
     # Resolve and authorize the canonical target before validating or scanning
@@ -553,6 +807,12 @@ async def answer_human_work(
             status_code=422,
             detail={"error": "answer failed security scan", "finding_count": finding_count},
         )
+
+    # Durable approval first — never queue a Graph answer that would resume
+    # governed work without the ApprovalStore decision (#55 / #1192).
+    await _resolve_durable_approval_for_answer(request, record=record, node_id=node_id, body=body)
+    for key in _APPROVAL_CONTROL_KEYS:
+        answer.pop(key, None)
 
     try:
         updated = await store.submit_hitl_answer(

@@ -20,23 +20,42 @@ jobs:
     # #869 demonstrated a 35-minute gap between this aggregator starting and
     # the last required specialized producer receiving a runner. docker-build
     # is bounded to 45 minutes (#899 coherence, raised for the maistro-core
-    # cold-rebuild path measured in run 36831116132). Give evidence 180 minutes
+    # cold-rebuild path measured in run 36831116132). Give evidence 240 minutes
     # to appear and complete, plus five minutes for checkout/scope resolution
     # and cleanup. The 60-minute window (issue #41 lane, run 36303867276)
     # expired while specialized producers were queued 38–55 minutes; every
     # required check later concluded success (docker-build 67 minutes after
-    # this aggregator started). The window must cover queue starvation, not
-    # just execution time; it does not weaken the required evidence.
-    # PR #2441 (run 44748461880) then measured deeper starvation: producers
-    # were queued ~118 minutes, docker-build — the last required producer —
-    # completed ~150 minutes after this aggregator started, and the 120-minute
-    # window expired at 16:51:36Z ~26 minutes before that evidence landed even
-    # though every required check later concluded success.
-    timeout-minutes: 185
+    # this aggregator started). The 120-minute successor then expired the
+    # same way repeatedly: run 44748389544 exhausted it — its sole required
+    # producer (docker-build) received a runner 136 minutes after the
+    # aggregator started and concluded success 154 minutes in, 13 minutes
+    # after the aggregator had already failed closed on budget exhaustion —
+    # and PR #2433 (run 44748382537, job 136329528687) expired it on a
+    # wider starvation: all nine required
+    # producers were created at 13:54:02Z but none received a runner until
+    # 16:39–16:48Z — strike-ladder, the first to start, got one at 16:41:11Z,
+    # ~161 minutes after this aggregator began waiting at 14:19:12Z — and
+    # every required check concluded success by 17:00:32Z, 38 minutes after
+    # the budget had died at 16:22:43Z reporting missing evidence. PR #2435
+    # (run 44748408749) then expired it again: docker-build, the sole
+    # required producer, was queued ~134 minutes before receiving a runner,
+    # ran 17.7 minutes, and concluded success 160 minutes after this
+    # aggregator started — which had already failed at 124 minutes while
+    # every required check was still pending and later succeeded on the
+    # same SHA. PR #2437 (run 44748434713, job 136329705554) then measured
+    # the same ceiling from the candidate side: the required producers sat
+    # queued ~124 minutes and concluded success 16:40:50–16:59:24Z, minutes
+    # after the 120-minute aggregator died at 16:38:18Z; scope resolution
+    # itself was correct, only the window was too short. The window must
+    # cover queue starvation, not just execution time; it does not weaken
+    # the required evidence. 240 minutes of evidence inside a 245-minute
+    # job timeout covers the measured starvations with margin; the
+    # required evidence set and the fail-closed behavior are unchanged.
+    timeout-minutes: 245
     env:
-      # A 30-second cadence preserves the 180-minute evidence window while
+      # A 30-second cadence preserves the 240-minute evidence window while
       # bounding each aggregator to about 120 check-list requests per hour.
-      EVIDENCE_WAIT_ATTEMPTS: "360"
+      EVIDENCE_WAIT_ATTEMPTS: "480"
       EVIDENCE_WAIT_INTERVAL_MS: "30000"
     steps:
       - uses: actions/checkout@v7

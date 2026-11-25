@@ -630,6 +630,23 @@ class DagRunStore:
         run = self._runs.get(run_id)
         return run.to_detail() if run else None
 
+    def rows_for_canonical(self, canonical_run_id: str) -> list[dict[str, Any]]:
+        """Projection rows correlating to one canonical Run (#2470).
+
+        The projection is keyed by the row id a producer minted; the
+        canonical correlation is a field, not the key, so `get_run` cannot
+        answer the reverse direction. Legacy-evidence discovery needs exactly
+        that: the alias rows one canonical Run was recorded under, so an
+        authorized caller addressing the Run by its canonical id can resolve
+        the alias instead of guessing it. Raw summaries only — the caller
+        (the inspection seam) owns scoping and association.
+        """
+        return [
+            run.to_summary()
+            for run in self._runs.values()
+            if run.canonical_run_id == canonical_run_id
+        ]
+
     def subscribe(self, run_id: str) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=MAX_SSE_QUEUE)
         self._subscribers[run_id].append(q)

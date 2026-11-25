@@ -1,4 +1,4 @@
-"""Characterize recovery interrupted after physical reclaim, before reconciliation (#1863)."""
+"""Characterize recovery interrupted after physical reclaim, before reconciliation (#1863 / #232 P5a)."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
-from maistro.runs.lifecycle import is_reclaimed_attempt
 from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.recovered_disposition import is_typed_recovered_attempt
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -89,7 +89,7 @@ async def _interrupt_after_reclaim(
     persisted = await container.run_store.get_attempt(attempt.attempt_id)
     assert persisted is not None
     assert persisted.status is AttemptStatus.CANCELLED
-    assert is_reclaimed_attempt(persisted)
+    assert is_typed_recovered_attempt(persisted)
     assert persisted.execution_lease == attempt.execution_lease
     assert persisted.ordinal == attempt.ordinal
     return persisted
@@ -134,8 +134,12 @@ async def test_recovery_tick_rediscovers_reclaim_committed_before_reconcile(
         stored_before_tick = await fresh.run_store.get_attempt(attempt.attempt_id)
         assert stored_before_tick == cancelled
 
-        await fresh.recover_abandoned_attempts(
-            now=attempt.execution_lease.expires_at + timedelta(seconds=2), limit=1
+        # Rediscovery parks via disposition; parking is not a settlement (#1850).
+        assert (
+            await fresh.recover_abandoned_attempts(
+                now=attempt.execution_lease.expires_at + timedelta(seconds=2), limit=1
+            )
+            == 0
         )
 
         recovered_run = await fresh.run_store.get_run(run_id)

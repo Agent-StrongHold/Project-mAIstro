@@ -13,7 +13,11 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
-from maistro.runs.lifecycle import InvalidLifecycleTransition, latest_node_runs
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    is_reclaimed_attempt,
+    latest_node_runs,
+)
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     TERMINAL_ATTEMPT_STATUSES,
@@ -99,11 +103,21 @@ class AttemptLifecycleStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
 
     async def list_attempts(self, node_run_id: str) -> list[Attempt]: ...
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Atomic recovered parking (#232 P4a); required for RECOVERED reconcile."""
+        ...
 
 
 def _same_accepted_projection(
@@ -181,16 +195,16 @@ class AttemptLifecycleReconciler:
         self,
         attempt: Attempt,
         *,
-        cancellation: CancellationCause = CancellationCause.RECOVERED,
+        cancellation: CancellationCause | None = None,
     ) -> NodeRun:
         """Reconcile one already-persisted terminal Attempt into logical activity.
 
-        ``cancellation`` is read only for a CANCELLED Attempt, and says which of
-        its two meanings this one is. It defaults to ``RECOVERED`` — the parking
-        behaviour every caller had before #230 — because the two mistakes are
-        not symmetric: defaulting to parked leaves a less informative record,
-        while defaulting to terminal would make crash recovery destroy the work
-        it exists to resume.
+        For CANCELLED Attempts the persisted ``cancellation_cause`` is
+        authoritative (#232 P4b). A caller may pass ``cancellation`` only as a
+        consistency check: matching the persisted cause is a no-op; conflicting
+        with it refuses; an unknown (null) persisted cause refuses even when a
+        cause is supplied — there is no RECOVERED fallback. Typed RECOVERED
+        rows park through ``apply_recovered_attempt_disposition``.
         """
         if attempt.status not in TERMINAL_ATTEMPT_STATUSES:
             raise RunIntegrityError("cannot reconcile a non-terminal Attempt")
@@ -203,36 +217,9 @@ class AttemptLifecycleReconciler:
 
         node_run = await self._require_node_run(attempt.node_run_id)
         if attempt.status is AttemptStatus.COMPLETED:
-            physical = AttemptResult.from_attempt(persisted)
-            accepted = node_run.accepted_outcome
-            if accepted is not None:
-                if accepted.attempt_result == physical:
-                    # Acceptance and parent settlement are separate durable writes.
-                    # A crash between them must be repairable by replaying the
-                    # already-persisted Attempt rather than stranding the Run.
-                    await self._settle_run_if_fully_observed(node_run.run_id)
-                    await self._announce(persisted, node_run, cancellation)
-                    return node_run
-                raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
-            outcome = AcceptedNodeOutcome(
-                node_run_id=node_run.node_run_id,
-                attempt_result=physical,
-                logical_status=RunStatus.COMPLETED,
-                result=physical.result,
-            )
-            settled = await self._accept_node_outcome(node_run, outcome)
-            await self._settle_run_if_fully_observed(settled.run_id)
-            await self._announce(persisted, settled, cancellation)
-            return settled
-
-        if (
-            attempt.status is AttemptStatus.CANCELLED
-            and cancellation is CancellationCause.REQUESTED
-        ):
-            terminal = await self._cancel_node_run(node_run, attempt)
-            await self._announce(persisted, terminal, cancellation)
-            return terminal
-
+            return await self._reconcile_completed(persisted, node_run, cancellation=cancellation)
+        if attempt.status is AttemptStatus.CANCELLED:
+            return await self._reconcile_cancelled(persisted, node_run, cancellation=cancellation)
         if attempt.status is AttemptStatus.YIELDED:
             # A pause, not a failure. The disposition is read off the persisted
             # Attempt rather than passed in, so a process that restarts and
@@ -240,13 +227,95 @@ class AttemptLifecycleReconciler:
             # the one that wrote it.
             paused = await self._pause_node_run(node_run, persisted)
             await self._park_run_if_inactive(paused.run_id, _parked_run_status(paused))
-            await self._announce(persisted, paused, cancellation)
+            await self._announce(persisted, paused, cancellation or CancellationCause.RECOVERED)
             return paused
 
-        parked = await self._park_node_run(node_run, attempt)
+        parked = await self._park_node_run(
+            node_run,
+            attempt,
+            require_current=is_reclaimed_attempt(attempt),
+        )
         await self._park_run_if_inactive(parked.run_id)
-        await self._announce(persisted, parked, cancellation)
+        await self._announce(persisted, parked, cancellation or CancellationCause.RECOVERED)
         return parked
+
+    async def _reconcile_completed(
+        self,
+        persisted: Attempt,
+        node_run: NodeRun,
+        *,
+        cancellation: CancellationCause | None,
+    ) -> NodeRun:
+        """Accept a COMPLETED Attempt into the NodeRun, repairing stranded Runs."""
+        physical = AttemptResult.from_attempt(persisted)
+        accepted = node_run.accepted_outcome
+        announce_cause = cancellation or CancellationCause.RECOVERED
+        if accepted is not None:
+            if accepted.attempt_result == physical:
+                # Acceptance and parent settlement are separate durable writes.
+                # A crash between them must be repairable by replaying the
+                # already-persisted Attempt rather than stranding the Run.
+                await self._settle_run_if_fully_observed(node_run.run_id)
+                await self._announce(persisted, node_run, announce_cause)
+                return node_run
+            raise RunIntegrityError("NodeRun already accepted a different AttemptResult")
+        outcome = AcceptedNodeOutcome(
+            node_run_id=node_run.node_run_id,
+            attempt_result=physical,
+            logical_status=RunStatus.COMPLETED,
+            result=physical.result,
+        )
+        settled = await self._accept_node_outcome(
+            node_run,
+            outcome,
+            expected_current_attempt_id=persisted.attempt_id,
+        )
+        await self._settle_run_if_fully_observed(settled.run_id)
+        await self._announce(persisted, settled, announce_cause)
+        return settled
+
+    async def _reconcile_cancelled(
+        self,
+        persisted: Attempt,
+        node_run: NodeRun,
+        *,
+        cancellation: CancellationCause | None,
+    ) -> NodeRun:
+        """Apply CANCELLED disposition from the persisted cause (#232 P4b).
+
+        Typed RECOVERED parks through ``apply_recovered_attempt_disposition``.
+        Typed REQUESTED terminalizes. Unknown (null) cause refuses the
+        historical RECOVERED fallback — a caller cannot invent recovery. The
+        one transitional exception is an explicit caller ``REQUESTED`` while
+        the row is still untyped: P3c stamps REQUESTED on the CANCELLED write,
+        and until that lands execution still passes the argument after a
+        generic transition. That path is not a RECOVERED fallback.
+        """
+        cause = persisted.cancellation_cause
+        if cause is None:
+            if cancellation is CancellationCause.REQUESTED:
+                terminal = await self._cancel_node_run(node_run, persisted)
+                await self._announce(persisted, terminal, CancellationCause.REQUESTED)
+                return terminal
+            raise RunIntegrityError(
+                f"Attempt {persisted.attempt_id!r} is CANCELLED with unknown "
+                "cancellation_cause; typed reconciliation refuses an unknown cause"
+            )
+        if cancellation is not None and cancellation is not cause:
+            raise RunIntegrityError(
+                f"Attempt {persisted.attempt_id!r} caller cancellation "
+                f"{cancellation.value!r} conflicts with persisted {cause.value!r}"
+            )
+        if cause is CancellationCause.REQUESTED:
+            terminal = await self._cancel_node_run(node_run, persisted)
+            await self._announce(persisted, terminal, cause)
+            return terminal
+        # RECOVERED — atomic NodeRun/Run parking on the store.
+        parked_node, _parked_run = await self._store.apply_recovered_attempt_disposition(
+            persisted.attempt_id
+        )
+        await self._announce(persisted, parked_node, cause)
+        return parked_node
 
     async def _announce(
         self,
@@ -314,7 +383,11 @@ class AttemptLifecycleReconciler:
         if physical != outcome.attempt_result:
             raise RunIntegrityError("accepted outcome differs from persisted Attempt evidence")
         await self._require_current_attempt(outcome.node_run_id, persisted.attempt_id)
-        settled = await self._accept_node_outcome(node_run, outcome)
+        settled = await self._accept_node_outcome(
+            node_run,
+            outcome,
+            expected_current_attempt_id=persisted.attempt_id,
+        )
         await self._settle_run_if_fully_observed(settled.run_id)
         return settled
 
@@ -424,6 +497,8 @@ class AttemptLifecycleReconciler:
         self,
         node_run: NodeRun,
         outcome: AcceptedNodeOutcome,
+        *,
+        expected_current_attempt_id: str,
     ) -> NodeRun:
         accepted = node_run.accepted_outcome
         if accepted is not None:
@@ -437,6 +512,7 @@ class AttemptLifecycleReconciler:
                 result=node_run.result,
                 error=node_run.error,
                 accepted_outcome=outcome,
+                expected_current_attempt_id=expected_current_attempt_id,
             )
         if node_run.status is not RunStatus.RUNNING:
             raise RunIntegrityError("completed Attempt requires a running logical NodeRun")
@@ -446,9 +522,16 @@ class AttemptLifecycleReconciler:
             result=outcome.result,
             error=outcome.error,
             accepted_outcome=outcome,
+            expected_current_attempt_id=expected_current_attempt_id,
         )
 
-    async def _park_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:
+    async def _park_node_run(
+        self,
+        node_run: NodeRun,
+        attempt: Attempt,
+        *,
+        require_current: bool = False,
+    ) -> NodeRun:
         if node_run.status in TERMINAL_RUN_STATUSES or node_run.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -460,6 +543,7 @@ class AttemptLifecycleReconciler:
             node_run.node_run_id,
             RunStatus.WAITING,
             error=attempt.error,
+            expected_current_attempt_id=attempt.attempt_id if require_current else None,
         )
 
     async def _pause_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:

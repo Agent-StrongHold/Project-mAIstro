@@ -321,7 +321,144 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
 }
 
 #: (package, license) -> why a non-approved license is accepted.
-LICENSE_EXCEPTIONS: dict[tuple[str, str], Exception] = {}
+LICENSE_EXCEPTIONS: dict[tuple[str, str], Exception] = {
+    ("lightningcss", "MPL-2.0"): Exception(
+        reason=(
+            "MPL-2.0, a weak file-level copyleft license already carried by "
+            "this repo's legal posture: quality/license-policy.json records "
+            "zbus/secret-service rows for exactly this license class. "
+            "lightningcss is vite 8's hard dependency for CSS transform "
+            "(replacing the MIT/postcss chain vite 7 used) — a build-time "
+            "native binary whose output is plain CSS in the shipped dist/, "
+            "with the MPL-covered source staying upstream and public. "
+            "Build tool, never bundled into an image layer itself. "
+            "Re-triage on expiry."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-android-arm64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-darwin-arm64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-darwin-x64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-freebsd-x64", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm-gnueabihf", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm64-gnu", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-arm64-musl", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-x64-gnu", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package. This is the variant the "
+            "linux image build consumes."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-linux-x64-musl", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-win32-arm64-msvc", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("lightningcss-win32-x64-msvc", "MPL-2.0"): Exception(
+        reason=(
+            "Platform optional-dependency binary of lightningcss; identical "
+            "MPL-2.0 triage as the parent package."
+        ),
+        expires="2027-11-04",
+        versions=("1.33.0",),
+    ),
+    ("axe-core", "MPL-2.0"): Exception(
+        reason=(
+            "axe-core is MPL-2.0 and always has been: the registry manifest "
+            "declares it at 4.10.2 and 4.10.3 exactly as at 4.14.1 (npm view "
+            "checked during the #2445 triage). The bump did not change the "
+            "license — newer npm began RECORDING license fields in "
+            "package-lock.json entries, so a version that silently carried "
+            "MPL-2.0 all along became visible to this gate. MPL-2.0 is "
+            "file-level weak copyleft: consuming the library unmodified as "
+            "test tooling (the axe accessibility engine driven by the "
+            "Playwright e2e harness) imposes no source obligation on this "
+            "repo; only modifications to the covered files would have to be "
+            "shared, which npm ci consumption never does. The surface is "
+            "inventoried shipped=False — Playwright e2e tooling that never "
+            "reaches an image. Re-triage on expiry or on the next lockfile "
+            "bump of either package."
+        ),
+        expires="2027-11-21",
+        versions=("4.14.1",),
+    ),
+    ("@axe-core/playwright", "MPL-2.0"): Exception(
+        reason=(
+            "Same license situation as axe-core itself, which this Playwright "
+            "binding embeds: MPL-2.0 on the registry manifest at 4.10.2 (pre "
+            "-bump) exactly as at 4.14.0 — the #2445 bump only made the "
+            "lockfile record it. File-level weak copyleft consumed unmodified "
+            "as non-shipped e2e test tooling; no source obligation arises for "
+            "this repo. Re-triage on expiry or on the next lockfile bump."
+        ),
+        expires="2027-11-21",
+        versions=("4.14.0",),
+    ),
+}
 
 #: (package,) -> why its install script is accepted. Install scripts run
 #: arbitrary code at ``npm ci`` time; each one is reviewed and expires.

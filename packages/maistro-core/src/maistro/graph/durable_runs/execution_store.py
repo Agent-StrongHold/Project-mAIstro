@@ -16,6 +16,8 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_leaseless_orphaned_attempt,
+    recover_orphaned_attempt,
     renew_attempt_lease,
     renewed_lease,
     transition_attempt,
@@ -28,11 +30,16 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
     RunStatus,
     evidence_values_equal,
+)
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
 )
 from maistro.runs.store import (
     DEFAULT_RECLAIM_BATCH,
@@ -214,8 +221,17 @@ class DurableRunExecutionStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         def update(record: DurableRunRecord) -> DurableRunRecord:
+            if expected_current_attempt_id is not None:
+                attempts = [a for a in record.attempts if a.node_run_id == node_run_id]
+                current = max(attempts, key=lambda a: a.ordinal, default=None)
+                if current is not None and current.attempt_id != expected_current_attempt_id:
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current.attempt_id!r}"
+                    )
             node_runs = list(record.node_runs)
             for index, node_run in enumerate(node_runs):
                 if node_run.node_run_id != node_run_id:
@@ -246,6 +262,7 @@ class DurableRunExecutionStore:
                     result=result,
                     error=error,
                     accepted_outcome=accepted_outcome,
+                    expected_current_attempt_id=expected_current_attempt_id,
                 )
             updated = await self._mutate(
                 lambda record: self._replace_node_run(record, canonical_node)
@@ -485,6 +502,83 @@ class DurableRunExecutionStore:
         assert settled is not None
         return settled.model_copy(deep=True)
 
+    async def recover_leaseless_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Stamp CANCELLED+RECOVERED for a lease-less orphan under explicit resume.
+
+        Durable-graph local writer for ADR-082826-08f0's leaseless-under-resume
+        row. Leased work uses ``reclaim_expired_attempt``; prelaunch CREATED uses
+        ``compensate_unlaunched_attempt``.
+        """
+        settled_local: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled_local
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled_local = recover_leaseless_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled_local
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(attempt_id)
+
+        await self._mutate(update)
+        assert settled_local is not None
+        return settled_local.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under Graph resume (#2417 / #232 P3b).
+
+        When a canonical RunStore is wired, that store is the write authority and
+        enforces ``owning_run_id`` lineage; this view mirrors the settled Attempt.
+        Local-only mode applies the same lifecycle leaf under the run lock after
+        verifying the durable record's run_id matches ``owning_run_id``.
+        """
+        if self._run_store is not None:
+            canonical = await self._run_store.recover_orphaned_attempt(
+                attempt_id,
+                owning_run_id=owning_run_id,
+                at=at,
+                error=error,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
+        settled: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled
+            if record.run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {record.run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled = recover_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert settled is not None
+        return settled.model_copy(deep=True)
+
     async def reclaim_expired_attempts(
         self,
         *,
@@ -618,6 +712,80 @@ class DurableRunExecutionStore:
             if attempt.node_run_id == node_run_id
         ]
 
+    async def _apply_local_recovered_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None,
+    ) -> tuple[NodeRun, Run]:
+        """In-record recovered parking when no canonical RunStore is wired."""
+        record = await self._get_record()
+        attempt = next(
+            (item for item in record.attempts if item.attempt_id == attempt_id),
+            None,
+        )
+        if attempt is None:
+            raise AttemptNotFound(attempt_id)
+        node_run = next(
+            (item for item in record.node_runs if item.node_run_id == attempt.node_run_id),
+            None,
+        )
+        if node_run is None:
+            raise RunIntegrityError(f"NodeRun {attempt.node_run_id!r} does not exist")
+        attempts_by_node_run: dict[str, list[Attempt]] = {
+            nr.node_run_id: [item for item in record.attempts if item.node_run_id == nr.node_run_id]
+            for nr in record.node_runs
+        }
+        plan = plan_recovered_attempt_disposition(
+            attempt=attempt,
+            run=record.run,
+            node_run=node_run,
+            all_node_runs=list(record.node_runs),
+            attempts_by_node_run=attempts_by_node_run,
+        )
+        settled_node, settled_run = materialize_recovered_disposition_plan(
+            plan, run=record.run, node_run=node_run, attempt=attempt, at=at
+        )
+
+        def update(current: DurableRunRecord) -> DurableRunRecord:
+            updated = current
+            if plan.park_node_run:
+                updated = self._replace_node_run(updated, settled_node)
+            if plan.park_run:
+                updated = updated.model_copy(update={"run": settled_run})
+            return updated
+
+        await self._mutate(update)
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
+
+        When a canonical RunStore is wired, the disposition write is that
+        store's atomic method; this adapter mirrors the resulting NodeRun/Run
+        into the durable Graph record so AttemptLifecycleReconciler can use
+        DurableRunExecutionStore as AttemptLifecycleStore (mypy / #2425).
+        """
+        if self._run_store is None:
+            return await self._apply_local_recovered_disposition(attempt_id, at=at)
+
+        settled_node, settled_run = await self._run_store.apply_recovered_attempt_disposition(
+            attempt_id, at=at
+        )
+        self._require_run_id(settled_run.run_id)
+
+        def mirror(record: DurableRunRecord) -> DurableRunRecord:
+            updated = self._replace_node_run(record, settled_node)
+            return updated.model_copy(update={"run": settled_run})
+
+        await self._mutate(mirror)
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
     async def transition_attempt(
         self,
         attempt_id: str,
@@ -628,6 +796,7 @@ class DurableRunExecutionStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         if self._run_store is not None:
             canonical = await self._run_store.transition_attempt(
@@ -638,6 +807,7 @@ class DurableRunExecutionStore:
                 error=error,
                 metrics=metrics,
                 fencing_token=fencing_token,
+                cancellation_cause=cancellation_cause,
             )
             await self._mutate(lambda record: self._replace_attempt(record, canonical))
             return canonical.model_copy(deep=True)
@@ -655,6 +825,7 @@ class DurableRunExecutionStore:
                     result=result,
                     error=error,
                     metrics=metrics,
+                    cancellation_cause=cancellation_cause,
                 )
                 return record.model_copy(update={"attempts": tuple(attempts)})
             raise RunIntegrityError(f"Attempt {attempt_id!r} does not exist")
