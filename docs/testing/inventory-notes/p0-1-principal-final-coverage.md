@@ -677,3 +677,77 @@ Independent re-execution at HEAD, no inherited claims:
 - Worktree left clean; the only tree change in this round is this note
   (the gate's `quality/ac-state.json` output is gitignored).
 
+## Thirteenth verification round (2026-11-25, head 93139077d2c4 = pushed PR head)
+
+Prior block: `recovery budget exhausted: provider error 400 "missing tags"` —
+the 9d03afb6 job's nine driver checks all returned 0 at the assigned starting
+head 951a2917c8 (a strict ancestor of the pushed PR head) before the worker
+died. This round diagnosed the branch state, then re-executed acceptance at
+the actual pushed PR head 93139077d2c4 (local branch fast-forwarded to it; no
+local work discarded — 951a2917c8 is its merge-base).
+
+- **CI state at the pushed head (dispatch snapshot, 128 check-runs, all on
+  93139077d2c4):** the previously-red gates are now GREEN — Coverage gate
+  (publish-set floor + diff coverage) success ×2, Quality gate (Pillars 1–4,
+  7, 8) success ×2, Quality / Ruff success ×2, Quality / Principal identity
+  success ×2, Quality / Acceptance state success ×2, exact-debt-ledger
+  success, `gates-ran` success. The sole failure is **Mutation gate
+  (changed critical lines)** — root-caused below from CI's own job log.
+- **Mutation-gate CI failure root-caused (job 136166420865, run 44700198260,
+  2026-11-20 09:29→09:52):** not a kill-rate or governance failure. Target
+  resolution produced the same sole target this round reproduces locally
+  (`privilege-0df8f6816767 packages/maistro-core/src/maistro/privilege.py`);
+  `--validate` passed; after ~22.5 min the crash is
+  `mutation_select_tests.py:244` → `coverage json --show-contexts` exiting 1
+  (subprocess.CalledProcessError) — the selected-test pytest baseline run had
+  succeeded, so the coverage DATA file was written and the report conversion
+  failed. This is the same parallel-coverage tooling-corruption class the
+  eleventh round reproduced locally ("database disk image is malformed"
+  under /tmp pressure). Remedy is a CI re-run; re-triggering is out of scope
+  for a repair attempt, and no gate was weakened.
+- **Issue test plan, re-run in full at 93139077d2c4** (after
+  `uv sync --locked --extra dev`; the merge moved uv.lock):
+  `RATCHET_BASE_REV=origin/develop scripts/check-principal-identity.py` —
+  rc=0, base ff31f970656b → candidate 93139077d2c4, 4 tolerated → 0 current,
+  none new; `pytest packages/maistro-core/tests/fitness/
+  test_principal_identity.py packages/maistro-server/tests/api/test_auth.py`
+  — 39 passed; `pytest packages/hive-conductor/backend/tests/
+  test_username_registry.py` — 24 passed.
+- Acceptance greps at 93139077d2c4: no `class AuthenticatedPrincipal` /
+  `CurrentUser` / `HiveUser` / `_SubsystemIdentity` definition under
+  `packages/*/src` or `packages/hive-conductor/backend`;
+  `quality/principal-identity-baseline.json` `tolerated` is `{}`;
+  `hive routes/capabilities.py:302` resolves the approval actor via
+  `request_principal(request)` and `:318` gates on
+  `principal_has_permission(principal, "approvals.resolve")` — the burned
+  P0.1 state survived the large develop merge carried by the pushed head.
+- Driver battery re-proven at 93139077d2c4: `ruff check .` (All checks
+  passed!), `ruff format --check .` (3583 files already formatted), the
+  driver's server/canvas/core pytest selection (299 passed / 91 skipped),
+  the driver's hive backend selection (199 passed), and all four
+  suite-inventory gates ok — every returncode 0.
+- Vulture ledger with CI's exact args (`check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`): rc=0,
+  1235 reviewed identities → 1235 findings, 0 unclassified. Multiset
+  reconciliation vs the branch's own base ff31f97065: 12 rows = 12 rows,
+  zero removed, zero added (Counter, never `set()`) — the file the pushed
+  head carries is byte-equivalent to the trusted base; no exact-debt-ledger
+  amendment needed or made.
+- Mutation governance inputs re-derived with CI's exact base (CI printed
+  `base_sha: ff31f970656b`): `mutation_critical.py --validate` ok (8
+  critical sources / 7 domains); `git diff ff31f97065...HEAD -- packages
+  --diff-filter=ACMR` (46 paths) ∩ critical list resolves the sole target
+  `packages/maistro-core/src/maistro/privilege.py`, matching CI's target
+  line; trusted merge-base baseline `git show ff31f97065:quality/
+  mutation-baseline.json` has `entries: {}` — report-only semantics stand.
+- `check-ratchet-provenance.py` OK (55 quality JSON consumers with explicit
+  provenance) and `check-shipped-surface-truth.py` complete, both rc=0 at
+  the pushed head (workflow-inventory.json grew on the branch's own CI
+  changes; provenance validates them).
+- **Pending (recorded, not resolved this round):** `origin/develop` advanced
+  to 221dc3d517e (2026-11-24, PRs #2494–#2513 era), which is NOT an
+  ancestor of 93139077d2c4 — GitHub reports the PR `mergeable_state: dirty`.
+  The assigned block was the provider death, not a sync conflict, so the
+  merge is left to the next lane round per the snapshot discipline.
+- Worktree left clean; the only tree change in this round is this note.
+
