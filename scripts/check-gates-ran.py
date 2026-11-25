@@ -20,19 +20,18 @@ check only on that same measured evidence. Protected pushes retain the
 per-check execution-evidence contract without path scoping.
 
 A workflow-level ``paths:`` filter is a third producer-scoping mechanism, and
-it leaves no check run behind at all (#2059 repair): GitHub evaluates the
-filter before any job exists, so a pull request outside the filter -- say a
-docs-only PR against ``mutation.yml``'s ``packages/**/*.py`` -- produces no
-run, not even ``skipped``. Absence of such a check is excusable exactly when
-the measured changed-file envelope proves the trigger cannot match; absence
-without that proof stays pending, because only the envelope can tell "will
-never report, by design" apart from "has not reported yet". The globs and
-their interpretation live in ``check-required-checks.paths_filters()`` plus
-this module's conservative matcher, which fails closed: a glob it cannot
-model keeps the check required. Producers that cannot run on a merge-group
-candidate at all (a ``pull_request``-only job under a workflow with no
-``merge_group`` trigger) are named in ``MERGE_GROUP_PR_ONLY_CHECKS`` instead
-and are never requested as evidence for a synthetic queue SHA.
+it also leaves no check run behind at all: GitHub evaluates the filter before
+any job exists, so a pull request outside the filter produces no run, not even
+``skipped``. Such absence is still *pending*, never excused: the #2434
+incident replay pins that a head whose every completed producer is green but
+whose paths-filtered row is absent must stay pending until the producer's
+trigger scope covers the PR and the row lands -- the repair is trigger
+coverage, not evaluator leniency (the same doctrine the ``mutation.yml``
+trigger rows cite for every surface class they add). Producers that cannot
+run on a merge-group candidate at all (a ``pull_request``-only job under a
+workflow with no ``merge_group`` trigger) are named in
+``MERGE_GROUP_PR_ONLY_CHECKS`` instead and are never requested as evidence
+for a synthetic queue SHA.
 """
 
 from __future__ import annotations
@@ -40,9 +39,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,10 +87,10 @@ MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
 # - ``Mutation gate (changed critical lines)`` is a `pull_request`-only job
 #   (`if: github.event_name == 'pull_request'`) under a workflow whose
 #   triggers carry no ``merge_group`` key, so GitHub never attaches the name
-#   to a queue SHA (#2059 repair). Its PR-event enforcement still covers the
-#   diff before the queue, and the nightly mutation run measures the full
-#   critical set independently. Same class as ``pr-base``, arrived later
-#   (#2270) without being added here.
+#   to a queue SHA. Its PR-event enforcement still covers the diff before
+#   the queue, and the nightly mutation run measures the full critical set
+#   independently. Same class as ``pr-base``, arrived later (#2270) without
+#   being added here.
 MERGE_GROUP_PR_ONLY_CHECKS = frozenset(
     {
         "pr-base",
@@ -143,122 +141,6 @@ def required_check_names(
     return sorted(names)
 
 
-# ─── workflow-level `paths:` filters (#2059 repair) ─────────────────────────
-#
-# A workflow whose pull_request trigger carries `paths:` never runs outside
-# the filter, so the check it produces is absent -- not `skipped` -- for PRs
-# the producer scoped off. GitHub gives the evaluator no record of that
-# decision, so the only honest source is the measured changed-file envelope:
-# if none of the changed paths can match the producer's globs, the check's
-# absence is by producer design; otherwise it is still "has not reported
-# yet" and stays pending.
-
-
-def _segment_regex(segment: str) -> str | None:
-    """Translate one `/`-free glob segment, or None when it is not modeled."""
-    out: list[str] = []
-    i = 0
-    while i < len(segment):
-        ch = segment[i]
-        if ch == "*":
-            out.append("[^/]*")
-            i += 1
-        elif ch == "?":
-            out.append("[^/]")
-            i += 1
-        elif ch == "[":
-            end = segment.find("]", i + 1)
-            if end == -1:
-                return None  # unclosed class: not modeled, fail closed
-            body = segment[i + 1 : end]
-            if not body:
-                return None
-            negated = body[0] in "!^"
-            if negated:
-                body = body[1:]
-            if not body:
-                return None
-            # Keep `-` unescaped so ranges survive; every other class member
-            # is escaped literally.
-            rendered = "".join("-" if c == "-" else re.escape(c) for c in body)
-            out.append("[" + ("^" if negated else "") + rendered + "]")
-            i = end + 1
-        else:
-            out.append(re.escape(ch))
-            i += 1
-    return "".join(out)
-
-
-def _glob_regex(pattern: str) -> str | None:
-    """Translate one GitHub Actions `paths:` glob into a fullmatch regex.
-
-    GitHub's documented filter characters are `*` (within a path segment),
-    `**` (across segments), `?` and `[...]`; a leading `!` negates, and the
-    last matching pattern decides. Anything beyond that -- escapes, braces,
-    extglobs, a `**` fused inside a segment -- is not modeled and yields
-    None: the caller then cannot prove exclusion and keeps the check
-    required. Failing closed costs a pended gate on exotic globs; guessing
-    could cost a merged head that skipped a required gate.
-    """
-    if not pattern:
-        return None
-    if any(ch in pattern for ch in "\\{}@+"):
-        return None
-    segments = pattern.split("/")
-    regex = ""
-    for index, segment in enumerate(segments):
-        last = index == len(segments) - 1
-        if segment == "**":
-            # Trailing `**` covers everything under the previous segment; the
-            # `/` it sits behind was already emitted by the joiner above (and
-            # does not exist at all when the glob starts with `**`).
-            regex += ".*" if last else "(?:[^/]+/)*"
-        else:
-            if "**" in segment:
-                return None  # fused globstar: ambiguous, fail closed
-            piece = _segment_regex(segment)
-            if piece is None:
-                return None
-            regex += piece
-        if not last:
-            # A non-last `**` group already ends in `/`; every other segment
-            # needs the explicit separator ahead of the next one, so
-            # `packages/**/*.py` cannot match `packagesfoo.py`.
-            regex += "" if segment == "**" else "/"
-    return regex
-
-
-def _provably_excluded(globs: Sequence[str], files: Sequence[str]) -> bool:
-    """True when none of `files` can match the trigger's glob list.
-
-    GitHub fires a `paths:`-filtered trigger when at least one changed path
-    matches a positive glob and the *last* matching glob is not a negation.
-    This mirrors that ordering, returning False whenever any path can still
-    fire the trigger -- including when a glob is unmodelable, so the check
-    stays required rather than being excused on a guess.
-    """
-    compiled: list[tuple[int, bool, re.Pattern[str]]] = []
-    for index, raw in enumerate(globs):
-        negated = raw.startswith("!")
-        regex = _glob_regex(raw[1:] if negated else raw)
-        if regex is None:
-            return False
-        compiled.append((index, negated, re.compile(regex)))
-    if not any(not negated for _index, negated, _rx in compiled):
-        # No positive pattern: the trigger cannot fire for any file.
-        return True
-    for file in files:
-        matches = [
-            (index, negated) for index, negated, rx in compiled if rx.fullmatch(file) is not None
-        ]
-        if not matches:
-            continue  # this path cannot fire the trigger
-        last = max(matches, key=lambda match: match[0])
-        if not last[1]:
-            return False  # a positive pattern matched: the trigger can fire
-    return True
-
-
 @dataclass
 class Verdict:
     """What the head's check runs say about whether the gates reached it."""
@@ -267,11 +149,6 @@ class Verdict:
     not_executed: list[str] = field(default_factory=list)
     unfinished: list[str] = field(default_factory=list)
     ran: list[str] = field(default_factory=list)
-    #: Required checks whose absence (or bare skip) is excused by proof that
-    #: the producer's trigger cannot fire for this candidate at all (#2059
-    #: repair). Recorded so the ok-path can name what was excused; never a
-    #: finding, and never counted as evidence that something ran.
-    excused: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -318,7 +195,6 @@ def evaluate(
     require_complete: bool,
     scope: Mapping[str, bool] | None = None,
     scope_measured: bool = True,
-    untriggerable: frozenset[str] = frozenset(),
 ) -> Verdict:
     latest: dict[str, dict[str, Any]] = {}
     for run in check_runs:
@@ -332,9 +208,10 @@ def evaluate(
     # A measured out-of-scope check may be explicitly skipped.  Absence is
     # still pending for these (we cannot prove why it is absent), and any
     # conclusion other than skipped remains evidence that must be judged
-    # normally.  The workflow-level-`paths:` mechanism below is different in
-    # exactly one way: for those producers the measured envelope CAN prove
-    # why the check is absent, so absence is excusable there (#2059 repair).
+    # normally.  A workflow-level `paths:` filter is different in the other
+    # direction: outside the filter the producer leaves no check run at all,
+    # so such absence is pending too -- the envelope cannot excuse it (#2434
+    # replay); the repair is trigger coverage.
     if scope is not None:
         required = [
             name
@@ -353,7 +230,6 @@ def evaluate(
             latest.get(name),
             require_complete=require_complete,
             scope_measured=scope_measured,
-            untriggerable=untriggerable,
         )
         getattr(verdict, bucket).append(name)
     return verdict
@@ -365,20 +241,15 @@ def _classify_check(
     *,
     require_complete: bool,
     scope_measured: bool,
-    untriggerable: frozenset[str],
 ) -> str:
     """Return the verdict bucket a single required check belongs in."""
     if candidate is None:
-        if name in untriggerable:
-            # The measured envelope proves this producer's `paths:`
-            # filter cannot match, so the check is absent by producer
-            # design rather than still arriving (#2059 repair).
-            return "excused"
+        # Absent stays pending even when the measured envelope proves the
+        # producer's `paths:` filter cannot fire: absence is not non-execution,
+        # and the repair is trigger coverage, not evaluator leniency (#2434).
         return "absent"
     conclusion = candidate.get("conclusion")
     if conclusion in NON_EXECUTED:
-        if name in untriggerable and conclusion == "skipped":
-            return "excused"
         if not scope_measured and name in PATH_SCOPED_CHECKS and conclusion == "skipped":
             return "unfinished"
         return "not_executed"
@@ -446,64 +317,6 @@ def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
     return _load_scope_classifier().classify(changed_files), True
 
 
-def _measured_changed_files(path: Path) -> list[str]:
-    """The envelope's measured paths, or ValueError when it proves nothing.
-
-    The same bar `_pull_request_scope` applies before excusing a skip: an
-    unmeasured or truncated envelope is a partial measurement, and a partial
-    measurement must never excuse an absent check either.
-    """
-    payload = _read_json(path)
-    if not isinstance(payload, dict):
-        raise ValueError("changed-file payload is not an object")
-    measured = payload.get("measured")
-    if type(measured) is not bool or not measured:
-        raise ValueError("changed-file envelope was not measured")
-    if payload.get("truncated"):
-        raise ValueError(
-            f"changed-file set was truncated at GitHub's {LIST_FILES_CAP}-file listFiles cap"
-        )
-    files = payload.get("files")
-    if not isinstance(files, list) or not all(isinstance(item, str) for item in files):
-        raise ValueError("changed-file payload has no files array of strings")
-    return files
-
-
-def untriggerable_checks(event_name: str | None, changed_files_path: Path | None) -> frozenset[str]:
-    """Required checks whose producer's `paths:` filter cannot fire (#2059).
-
-    A workflow-level `paths:` filter is evaluated by GitHub before any job
-    exists, so outside the filter the producer leaves no check run at all.
-    For each such producer this asks the only answerable question: can the
-    measured changed-file set match the reviewed globs at all? When it
-    cannot, absence of that check on this head is by producer design and is
-    excusable; any other case -- unmeasured envelope, unmodelable glob, a
-    file that could still match -- returns nothing, and the absence stays
-    pending. Empty on every event other than pull_request: merge-group
-    candidates of such producers are handled by MERGE_GROUP_PR_ONLY_CHECKS,
-    which needs no envelope.
-    """
-    if event_name != "pull_request" or changed_files_path is None:
-        return frozenset()
-    try:
-        files = _measured_changed_files(changed_files_path)
-        filters = _load_required_checks_module().paths_filters()
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        json.JSONDecodeError,
-        ImportError,
-        RuntimeError,
-    ) as exc:
-        # _scope_for_args already reports envelope problems as pending
-        # reasons; an unloadable contract module must not silently shrink
-        # the required set, so both leave the set untouched here.
-        print(f"gates-ran: path-filter exclusion unavailable ({exc})")
-        return frozenset()
-    return frozenset(name for name, globs in filters.items() if _provably_excluded(globs, files))
-
-
 def _scope_for_args(
     event_name: str | None, changed_files_path: Path | None
 ) -> tuple[dict[str, bool] | None, bool]:
@@ -527,15 +340,7 @@ def _scope_for_args(
 def _render_verdict(verdict: Verdict, required: list[str]) -> int:
     """Print the verdict and return its process exit code."""
     if verdict.ok:
-        if verdict.excused:
-            print(
-                f"ok: all {len(required)} required check(s) judged on this head; "
-                f"{len(verdict.excused)} absent by measured trigger scope:"
-            )
-            for name in verdict.excused:
-                print(f"    excused, producer cannot trigger: {name}")
-        else:
-            print(f"ok: all {len(required)} required check(s) ran on this head")
+        print(f"ok: all {len(required)} required check(s) ran on this head")
         return 0
 
     heading = (
@@ -589,7 +394,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     scope, scope_measured = _scope_for_args(args.event_name, args.changed_files)
-    untriggerable = untriggerable_checks(args.event_name, args.changed_files)
 
     verdict = evaluate(
         required,
@@ -597,7 +401,6 @@ def main(argv: list[str] | None = None) -> int:
         require_complete=args.require_complete,
         scope=scope,
         scope_measured=scope_measured,
-        untriggerable=untriggerable,
     )
     return _render_verdict(verdict, required)
 

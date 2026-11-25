@@ -425,16 +425,29 @@ class TestPathsFilters:
     #: The shipped tree's one path-filtered producer. Hard-coded on purpose:
     #: a change to mutation.yml's filter is a change to which PRs see the
     #: gate at all, and must come with this list updated under review.
+    #:
+    #: Synced with develop's row as synced at the #2059 develop-sync merge:
+    #: #2120 added the image-pin registry, #2371 the grant ledger and the
+    #: testing-inventory notes, #2432 gate scripts, #2345 dev-tool
+    #: requirements and repair notes, #2450 lock/manifest metadata and the
+    #: Trivy suppression registry -- each a PR surface class that otherwise
+    #: never triggered the producer and left its required row permanently
+    #: absent (rationale in mutation.yml itself).
     SHIPPED: ClassVar[dict[str, list[str]]] = {
         "Mutation gate (changed critical lines)": [
             "packages/**/*.py",
             "quality/mutation-critical-files.json",
             "quality/mutation-baseline.json",
-            # Listed by develop's #2120: a PR touching only the image-pin
-            # registry otherwise never triggers this producer and gates-ran
-            # stays pending forever (rationale in mutation.yml itself).
             "quality/image-pins.json",
+            "quality/ratchet-authorizations.json",
+            "docs/testing/inventory-notes/**",
+            "scripts/**/*.py",
             ".github/workflows/mutation.yml",
+            "requirements-dev-tools.txt",
+            "REPAIR-NOTES-*.md",
+            "uv.lock",
+            "packages/**/pyproject.toml",
+            ".trivyignore.yaml",
         ]
     }
 

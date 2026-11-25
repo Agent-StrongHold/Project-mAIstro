@@ -51,6 +51,9 @@ PYTHON_3_13_ROW = next(
 PYTHON_3_12_ROW = next(
     row for row in PINS if row["image"] == "python" and row["tag"] == "3.12-slim"
 )
+PYTHON_3_15_ROW = next(
+    row for row in PINS if row["image"] == "python" and row["tag"] == "3.15-slim"
+)
 
 
 def _parse_patch_tag(tag: str) -> tuple[int, int, int]:
@@ -101,7 +104,6 @@ def test_engine_and_conductor_dockerfiles_pin_the_registered_3_13_base(
     (
         REPO_ROOT / "Dockerfile.research",
         REPO_ROOT / "Dockerfile.rsi-runner",
-        REPO_ROOT / "packages/hive-conductor/tests/Dockerfile",
         REPO_ROOT / "deploy/sbx/template/Dockerfile.tests",
     ),
     ids=lambda p: p.name,
@@ -116,6 +118,18 @@ def test_3_12_dockerfiles_pin_the_registered_grype_floor_digest(
     registered = f"python:3.12-slim@{PYTHON_3_12_ROW['digest']}"
     text = dockerfile.read_text(encoding="utf-8")
     assert registered in text, f"{dockerfile.name}: base pin {registered} not referenced verbatim"
+
+
+def test_the_hive_conductor_e2e_harness_pins_its_own_registered_row() -> None:
+    """The api-tests harness image left the 3.12-slim line for 3.15-slim in
+    develop's #2377 (pure-wheel pytest+httpx+tzdata harness, INTERNAL per
+    quality/image-inventory.json). It is pinned by its own quality/
+    image-pins.json row, not by the CVE-2026-115557 3.12 floor this module
+    guards -- so its absence from the 3.12 parametrization above is a
+    reviewed contract change, and this test holds the new row closed."""
+    text = (REPO_ROOT / "packages/hive-conductor/tests/Dockerfile").read_text(encoding="utf-8")
+    registered = f"python:3.15-slim@{PYTHON_3_15_ROW['digest']}"
+    assert registered in text, f"base pin {registered} not referenced verbatim"
 
 
 @pytest.mark.parametrize(
