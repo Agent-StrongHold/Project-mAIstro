@@ -2389,6 +2389,42 @@ or placeholder-only section.
 
 ### Security
 
+- **Container-gate repair round: CPython base refreshes, docker/cli v29.9.3,
+  and the temporalio/browser-stack floors that close its scan findings (#2110).**
+  The `Container scan + SBOM + cosign` gate at d3c793ae074e failed on four
+  HIGH findings (one CRITICAL) in `temporalio/bridge/Cargo.lock` — the Rust
+  `zip` crate 8.6.0 vendored inside the temporalio 1.34.0 wheel that only the
+  rsi-runner image's sync selection installs: CVE-2026-115905 (CRITICAL,
+  fixed 9.0.5), CVE-2026-115907/115908/115909 (HIGH, fixed 9.0.0). The root
+  lock now pins temporalio 1.36.1 (bridge `zip` 9.5.1; nexus-rpc moves
+  1.4.0 → 1.5.0 with its pin). Re-running the gate's grype leg locally on the
+  rebuilt image exposed the findings CI would have hit next, and they are
+  closed in the same round: the `python:3.12-slim` and
+  `python:3.13.16-slim-bookworm` digests move to the 3.12.16 / 3.13.18
+  releases (CVE-2026-115557, CRITICAL, fixed 3.12.16/3.13.18, plus
+  CVE-2026-114583 / CVE-2026-12345 on the same binary), the docker CLI is
+  rebuilt from docker/cli v29.9.3 (vendors go-jose v4.1.7 ≥ the CVE-2026-116587
+  fix and klauspost/compress v1.20.2 ≥ the GO-2026-6865 fix; x/net still
+  patched in place to v0.62.0 for CVE-2026-78661), and constraint floors pin
+  playwright ≥1.65.2 / patchright ≥1.64.4 so the browser drivers stop
+  bundling Node 24.21.0 (CVE-2026-106069 / CVE-2026-105483). All pins are
+  re-recorded in `quality/image-pins.json`; the conductor identity contract
+  asserts 3.13.18; the e2e and sbx-tests images ride the refreshed 3.12
+  digest. All four production images rebuild and rescan clean under the
+  gate's exact trivy (HIGH/CRITICAL, exit-code 1, ignore-unfixed) and grype
+  (--fail-on high --only-fixed) invocations.
+
+- **Windows bootstrap no longer overrides execution policy when it elevates
+  or resumes (#2110).** `get.ps1` removed the `-ExecutionPolicy Bypass`
+  tokens from its `Invoke-Elevated` and RunOnce resume commands: an
+  administrator-approved `AllSigned`/`RemoteSigned` policy now stays in
+  force across the elevation and the post-logon resume instead of being
+  silently dropped by the installer, and the download-and-run help text
+  documents the administrator-approved prerequisite, read-only policy
+  inspection, and fail-closed guidance. Ordinary policy resolution, `RunAs`,
+  quoting, argument passthrough, and the HKCU RunOnce destination are
+  unchanged; static and mocked-PowerShell regressions pin the behavior.
+
 - **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
   The `age` binaries in the conductor image and the static Docker CLI in the
   engine and research images are compiled in-tree from pinned release tags
