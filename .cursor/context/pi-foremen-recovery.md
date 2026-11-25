@@ -589,3 +589,134 @@ No tree change beyond this record; no tests added or moved, so no
 inventory-note delta. The named container-scan gate was already green at
 `a7da3a4917` (stale board accounting), and the last red audit leg is green
 with the registry's current advisory data.
+
+## Round 2026-11-25 (start head `bf0d534702`, job `c73ac0bde467`): branch-caused `RUN npm ci` regression fixed; the remaining red is develop's expired #313 exemption
+
+**The previous two jobs never measured anything — the venv was root-owned.**
+Jobs `0cd7ac590a9a` (verify) and the first pass of this one died on their very
+first driver check with `error: failed to remove directory
+/home/dev/Git/wt/cr-1896/.venv/lib: Permission denied (os error 13)`
+(`check-0.log` in both job dirs): a container run had recreated `.venv/` as
+`root`. Ownership restored with `sudo chown -R dev:dev .venv` — no tracked
+content touched, nothing discarded. Every check below then ran for real.
+
+**Driver checks, green (all with CI's exact arguments):**
+
+- `uv sync --locked --extra dev` → exit 0
+- `uv run ruff check .` → All checks passed
+- `uv run ruff format --check .` → 3670 files already formatted
+- `uv run pytest packages/maistro-rsi/tests/test_free_router.py -q -x` → 22 passed
+- `uv run python scripts/check-suite-inventory.py --suite packages/maistro-rsi/tests` → ok (1798 identities)
+- `uv run python scripts/check-suite-inventory.py` → ok, 21 suites / 36661 node IDs / 0 duplicate evidence
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → 1221 reviewed identities → 1221 findings, exit 0. The brief's ledger-amendment path is **moot at this head**: nothing is unbanked, so `quality/vulture-baseline.json` was not touched.
+- `uv run pytest tests/pi_recovery -q` → 177 passed + 32 subtests
+
+**Live CI at `bf0d534702` (read-only `gh pr view … statusCheckRollup`), final tally 78 success / 3 failure.**
+
+The brief's named failure is stale board accounting. `Container scan + SBOM +
+cosign` → **COMPLETED SUCCESS** at this head; the `failure` in the dispatch
+came from `a11908f338` (2026-11-16). That old job's own log (job
+`133159928643`) shows the quoted npm lines were incidental: step `#25 RUN npm
+config set audit-level=high && npm ci` printed `7 moderate severity
+vulnerabilities` / `Run npm audit for details.` at 51.58s and **continued**;
+the job died nine minutes later after Trivy's vulnerability tables
+(`##[error]Process completed with exit code 1`, log line 13708). Develop has
+since carried the Trivy suppression (`0282be2423`) through the merge. Also
+green at this head: `docker-build`, `docker-rebuild-compare`,
+`integration-scope`, `hive-conductor-e2e`, `hive-conductor-e2e-ui`, `JS supply
+chain (npm audit + GuardDog + policy gate)`, `Quality / Vulture`,
+`exact-debt-ledger`, `SAST / Semgrep`, `Supply chain (pip-audit)`, `Gate C —
+canonical clean install`, `coverage (MinIO)`.
+
+Red: `lint-and-type-check`, `test`, `Coverage gate (publish-set floor + diff
+coverage)`. All three reduce to the same four test failures plus one gate step.
+
+**Fixed this round (`d7a5303b33`) — `tests/test_js_dependency_gate.py::TestTheRealRepo::test_builds_reconcile_to_the_audited_lockfiles`, `assert 'RUN npm ci' in dockerfile`.**
+
+Branch-caused, and nine commits old: `a11908f338` rewrote the image's install
+step as `RUN npm config set audit-level=high && npm ci`. The JS supply-chain
+gate asserts every build path installs lockfile-exact with the literal
+`RUN npm ci` (and never `npm install`), so prefixing the command broke the
+assertion without changing what the install does. The repair keeps the gate
+exactly as written and keeps the intent: `RUN npm ci --audit-level=high`. No
+threshold moved — a moderate advisory still does not fail an image build,
+high/critical still does, and `scripts/npm_audit_gate.py` still owns the
+advisory verdict on the committed lockfiles.
+
+Proof: `uv run pytest tests/test_js_dependency_gate.py -q` → 38 passed;
+the four other suites that read this Dockerfile with it
+(`tests/test_prepull_base_images.py`, `tests/test_prepull_copy_sources.py`,
+`tests/test_image_lock_contract.py`, `tests/test_check_build_context.py`) →
+184 passed; `docker build --target frontend -f
+packages/hive-conductor/Dockerfile .` → exit 0, vite bundle built; inside the
+pinned `node:26-alpine@sha256:40cd011b…` (npm 11.20.0) `npm --audit-level=high
+config get audit-level` → `high` and `npm ci --audit-level=high` is accepted.
+
+**Not this branch — the two `tests/test_check_public_routes.py` failures and `lint-and-type-check`'s `scripts/check-public-routes.py` step are one finding.**
+
+`/v1/auth/register` and `/v1/setup/` carry `disposition: temporary`,
+`issue: 313`, `expires: 2026-11-24` in `quality/public-routes.json`, and today
+is 2026-11-25. Proof it is base-inherited and purely calendar-triggered:
+
+- `git diff 221dc3d517...HEAD -- quality/` is empty, and `git show 221dc3d517:quality/public-routes.json | diff - quality/public-routes.json` → identical. `origin/develop` *is* `221dc3d517` right now, so develop carries the same expired dates.
+- Calling the gate's own `audit_registry()` over the shipped registry and middleware with a forced date: `today=2026-11-23` → 0 failures, `2026-11-24` → 0 failures, `2026-11-25` → exactly these 2. Nothing but the calendar moved.
+
+Every branch in the repository, develop included, fails `lint-and-type-check`
+and the root suite from 2026-11-25 until the exemption is closed or
+re-justified. The gate names both remedies; neither is this lane's to pick.
+#313 ("[M2-A] Close public self-registration after initial setup") is OPEN, P1,
+milestone M2, unassigned, and its acceptance criteria (durable race-safe
+registration state, invite/admin-only after setup, exactly-one-owner under
+concurrency) live in hive-conductor's authorization path — not in an ops PR
+about Pi session recovery. And `quality/public-routes.json` is a security
+allowlist ledger (`docs/ci/RATCHET-PROVENANCE.md:34`); this lane's brief
+authorizes ledger amendment only for the vulture exact-debt ledger. Moving
+`expires` forward on two `risk: high` unauthenticated write paths is a
+route-owner decision (@BlakeMatthews-dev), and spending that forcing function
+silently inside PR #1896 is exactly what the gate exists to prevent.
+Escalated, not edited.
+
+**Not this branch — `tests/test_prod_postgres_probe_live.py::test_first_boot_ready_only_after_init_completed`.**
+
+Two different timing symptoms in two different jobs on the same head: the
+`test` job (job `139042378028`) reported `never observed the temporary-server
+window (socket accepting, TCP refusing); the scenario is inconclusive`, and the
+Coverage gate's root-suite producer (job `139050831754`, `--timeout=30`)
+reported `Failed: Timeout (>30.0s) from pytest-timeout`. The test polls a
+widened 8-second init window at 0.5s granularity through two `docker exec`
+probes per iteration, and its own inventory note
+(`docs/testing/inventory-notes/2396-prod-pg-probe.md`) records it as
+integration scope whose window is *measured*. This branch touches no `deploy/`,
+compose, postgres or probe code. Reproduced green 3/3 locally against the same
+pinned `pgvector/pgvector:pg17`: 13.48s, 13.75s, 13.77s.
+
+**The Coverage gate did not fail on coverage.** Its publish-set aggregate
+printed `TOTAL 95359 5415 25334 1858 93%` — above the 87% floor — and the job
+then died in the non-publish `--source=scripts` producer on the same 4 test
+failures (`4 failed, 6253 passed, 141 skipped`), before the diff-coverage step
+ran. That step was reproduced locally instead, from a deliberately
+*conservative* subset of CI's producers (`coverage run --branch
+--source=scripts -m pytest tests/pi_recovery`, `coverage run --branch
+--source=packages/maistro-rsi/src/maistro_rsi -m pytest
+packages/maistro-rsi/tests`, combined, `coverage xml`):
+`uv run python scripts/check-diff-coverage.py <xml> --base 221dc3d517` →
+`ok: every measured file this change touches is at or above 90% lines / 80%
+branch arcs`, exit 0 — 10 changed files measured, 7 exempt as test code,
+all 9 `scripts/pi_recovery/` modules present in the report.
+
+**Steps the short-circuit hid.** `check-public-routes.py` is `ci.yml:291`, so
+three later steps of `lint-and-type-check` never ran in CI. Run here with CI's
+commands: `scripts/check-closure-targets.py --body-file <PR body> --repo
+Agent-StrongHold/Project-mAIstro` → `ok: PR body closes no issue by keyword`;
+`scripts/check-shell-execution.py` → `ok: all 3 shell=True call(s) in the
+governed trees are declared`; `scripts/check-build-context.py` → `ok: both
+ignore files carry the same 60 rule(s), deny all 27 secret pattern(s), and
+exclude nothing tracked`. Nothing else is red behind the expiry failure.
+
+**What is left, and who owns it.** One tree change this round
+(`packages/hive-conductor/Dockerfile`), no test added or removed, so no
+inventory-note delta. After it lands, the only remaining blockers on this PR
+are the repo-wide #313 expiry (owner decision on `quality/public-routes.json`,
+or #313 itself) and the timing-sensitive prod-postgres live probe — neither
+reachable from this lane without either a security-ledger edit it is not
+authorized to make or a product authorization change it must not invent.
