@@ -154,7 +154,24 @@ jobs:
     name: Mutation gate (changed critical lines)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Budget must fit the widest mapped test scope, not the median one.
+    # Most critical sources resolve to a mirror/ancestor test directory and
+    # finish in ~15-25m. packages/maistro-core/src/maistro/privilege.py has
+    # no tests/maistro/test_privilege.py mirror, so mutation_targets.resolve_tests
+    # widens its scope to the whole packages/maistro-core/tests suite
+    # (18,908 collected tests): selection then re-runs that entire suite
+    # under coverage with dynamic_context=test_function before any mutant
+    # runs. Measured on CI: ~30m for that pass alone (run 45574782108,
+    # step 08:16:44Z->08:46:57Z), and run 45645094537 at PR head 5de7d17254
+    # was killed by this very cap — annotation "The job has exceeded the
+    # maximum execution time of 45m0s" — 25m into mutation_pr_gate.py with
+    # selection still incomplete. 150m = selection + collection + a
+    # nightly-shard-scale mutation phase (nightly packets get 60m each)
+    # plus toolchain overhead, with headroom so the required producer can
+    # actually emit a verdict instead of a permanent CANCELLED. The gate's
+    # pass/fail logic, critical list, and fail-closed behaviors are
+    # unchanged; this only stops strangling a verdict mid-selection.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
         with:
