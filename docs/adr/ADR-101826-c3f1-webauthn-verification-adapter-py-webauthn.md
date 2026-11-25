@@ -355,62 +355,90 @@ import base64, cbor2, hashlib, json, os, struct
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from webauthn import verify_registration_response, verify_authentication_response
-from webauthn.helpers.exceptions import (
-    InvalidRegistrationResponse, InvalidAuthenticationResponse)
+from webauthn.helpers.exceptions import InvalidRegistrationResponse, InvalidAuthenticationResponse
 
 RP_ID = "maistro.local"
 ORIGIN = "https://approvals.maistro.local"
 
 b64u = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
 
+
 def es256_cose_key(priv):
     n = priv.private_numbers().public_numbers
-    return cbor2.dumps({1: 2, 3: -7, -1: 1,
-                        -2: n.x.to_bytes(32, "big"), -3: n.y.to_bytes(32, "big")})
+    return cbor2.dumps(
+        {1: 2, 3: -7, -1: 1, -2: n.x.to_bytes(32, "big"), -3: n.y.to_bytes(32, "big")}
+    )
+
 
 def client_data(typ, challenge, origin):
-    return json.dumps({"type": typ, "challenge": b64u(challenge),
-                       "origin": origin, "crossOrigin": False},
-                      separators=(",", ":")).encode()
+    return json.dumps(
+        {"type": typ, "challenge": b64u(challenge), "origin": origin, "crossOrigin": False},
+        separators=(",", ":"),
+    ).encode()
+
 
 def auth_data(rp_id, flags, sign_count, attested=b""):
-    return (hashlib.sha256(rp_id.encode()).digest() + bytes([flags])
-            + struct.pack(">I", sign_count) + attested)
+    return (
+        hashlib.sha256(rp_id.encode()).digest()
+        + bytes([flags])
+        + struct.pack(">I", sign_count)
+        + attested
+    )
+
 
 REQUEST_DIGEST = hashlib.sha256(b"approval-request:ws_1:effect_1234:v1").digest()
 priv = ec.generate_private_key(ec.SECP256R1())
 cred_id = os.urandom(32)
-attested = (bytes(16) + struct.pack(">H", len(cred_id)) + cred_id
-            + es256_cose_key(priv))
+attested = bytes(16) + struct.pack(">H", len(cred_id)) + cred_id + es256_cose_key(priv)
 
 # Valid registration: flags UP|UV|AT (0x45), packed self-attestation.
 cd = client_data("webauthn.create", REQUEST_DIGEST, ORIGIN)
 ad = auth_data(RP_ID, 0x45, 0, attested)
 sig = priv.sign(ad + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
-att_obj = cbor2.dumps({"fmt": "packed",
-                       "attStmt": {"alg": -7, "sig": sig}, "authData": ad})
-reg = json.dumps({"id": b64u(cred_id), "rawId": b64u(cred_id), "type": "public-key",
-                  "response": {"clientDataJSON": b64u(cd),
-                               "attestationObject": b64u(att_obj)}})
+att_obj = cbor2.dumps({"fmt": "packed", "attStmt": {"alg": -7, "sig": sig}, "authData": ad})
+reg = json.dumps(
+    {
+        "id": b64u(cred_id),
+        "rawId": b64u(cred_id),
+        "type": "public-key",
+        "response": {"clientDataJSON": b64u(cd), "attestationObject": b64u(att_obj)},
+    }
+)
 vr = verify_registration_response(
-    credential=reg, expected_challenge=REQUEST_DIGEST, expected_rp_id=RP_ID,
-    expected_origin=ORIGIN, require_user_presence=True,
-    require_user_verification=True)
+    credential=reg,
+    expected_challenge=REQUEST_DIGEST,
+    expected_rp_id=RP_ID,
+    expected_origin=ORIGIN,
+    require_user_presence=True,
+    require_user_verification=True,
+)
 
 # Valid assertion: flags UP|UV (0x05), counter 0 -> 1.
 SETTLE = hashlib.sha256(b"approval-request:ws_1:effect_1234:v1:settle").digest()
 cd2 = client_data("webauthn.get", SETTLE, ORIGIN)
 ad2 = auth_data(RP_ID, 0x05, 1)
 sig2 = priv.sign(ad2 + hashlib.sha256(cd2).digest(), ec.ECDSA(hashes.SHA256()))
-assertion = json.dumps({"id": b64u(cred_id), "rawId": b64u(cred_id),
-                        "type": "public-key",
-                        "response": {"clientDataJSON": b64u(cd2),
-                                     "authenticatorData": b64u(ad2),
-                                     "signature": b64u(sig2)}})
+assertion = json.dumps(
+    {
+        "id": b64u(cred_id),
+        "rawId": b64u(cred_id),
+        "type": "public-key",
+        "response": {
+            "clientDataJSON": b64u(cd2),
+            "authenticatorData": b64u(ad2),
+            "signature": b64u(sig2),
+        },
+    }
+)
 va = verify_authentication_response(
-    credential=assertion, expected_challenge=SETTLE, expected_rp_id=RP_ID,
-    expected_origin=ORIGIN, credential_public_key=vr.credential_public_key,
-    credential_current_sign_count=0, require_user_verification=True)
+    credential=assertion,
+    expected_challenge=SETTLE,
+    expected_rp_id=RP_ID,
+    expected_origin=ORIGIN,
+    credential_public_key=vr.credential_public_key,
+    credential_current_sign_count=0,
+    require_user_verification=True,
+)
 
 # Invalid cases (I1–I6): rebuild the artifacts with exactly one mutation —
 # I1 clientData origin -> "https://evil.example.com";
