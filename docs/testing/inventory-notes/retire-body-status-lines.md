@@ -24,7 +24,7 @@ Removed (2), both testing machinery the new rule deletes:
 Added (3):
 
 - `test_the_corpus_carries_no_body_status_line_at_all` — the retirement
-  itself, asserted against the real corpus. Fails if any of the 93 lines comes
+  itself, asserted against the real corpus. Fails if any of the 94 lines comes
   back, including via a merge reinstating an old revision, which no
   per-document test would notice.
 - `test_a_body_status_line_fails_even_when_it_agrees` — the rule that makes
