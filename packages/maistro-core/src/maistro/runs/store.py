@@ -36,6 +36,8 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
@@ -275,12 +277,46 @@ def _run_matches_status_scope(
     )
 
 
+def refuse_child_under_terminal_parent(
+    parent_status: RunStatus,
+    parent_run_id: str,
+    child_provenance: Mapping[str, Any] | None,
+) -> None:
+    """Refuse filing a child Run under an already-terminal parent (#1621).
+
+    Two children are accepted anyway, each because its own provenance
+    carries an identity-bound fact naming the very parent this child is
+    filed under:
+
+    - the durable Graph fork (ADR-062 / ADR-082826-d9f5), whose fact is
+      ``DURABLE_GRAPH_FORK_PROVENANCE``; and
+    - the post-terminal child (``POST_TERMINAL_CHILD_PROVENANCE``): a
+      control-plane operation minted after its requesting Run terminalized
+      (a benchmark judge beneath a COMPLETED Run), or retry lineage beneath
+      a FAILED Run.
+
+    A fact naming a different Run does not exempt this child — the carve-out
+    is the fact's parent identity, not its presence.
+    """
+    if parent_status not in TERMINAL_RUN_STATUSES:
+        return
+    provenance = child_provenance or {}
+    for key in (DURABLE_GRAPH_FORK_PROVENANCE, POST_TERMINAL_CHILD_PROVENANCE):
+        fact = provenance.get(key)
+        if isinstance(fact, dict) and fact.get("parent_run_id") == parent_run_id:
+            return
+    raise RunIntegrityError(
+        f"child Run cannot be filed under a terminal Run (terminal parent, {parent_status.value})"
+    )
+
+
 def validate_child_scope(
     parent: Run,
     *,
     workspace_id: str,
     project_id: str,
     allow_cross_project: bool = False,
+    child_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Refuse a child Run that escapes its parent's scope.
 
@@ -303,6 +339,7 @@ def validate_child_scope(
             "child Run cannot implicitly cross Project boundaries; "
             "caller must authorize and request the destination Project"
         )
+    refuse_child_under_terminal_parent(parent.status, parent.run_id, child_provenance)
 
 
 def validate_effect_claim_parent(
@@ -721,6 +758,7 @@ class RunStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def create_attempt(
@@ -1062,6 +1100,7 @@ class InMemoryRunStore:
                 workspace_id=graph.workspace_id,
                 project_id=graph.project_id,
                 allow_cross_project=allow_cross_project,
+                child_provenance=provenance,
             )
             if parent_node_run_id is not None:
                 parent_node_run = self._require_node_run(parent_node_run_id)
@@ -1611,6 +1650,16 @@ class InMemoryRunStore:
         if principal_id is not None:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         run = self._require_run(run_id)
+        if target is RunStatus.COMPLETED:
+            open_children = [
+                child
+                for child in self._runs.values()
+                if child.parent_run_id == run_id and child.status not in TERMINAL_RUN_STATUSES
+            ]
+            if open_children:
+                raise RunIntegrityError(
+                    f"Run cannot complete while {len(open_children)} child Run(s) are non-terminal"
+                )
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
         settled = (
@@ -1756,9 +1805,17 @@ class InMemoryRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         node_run = self._require_node_run(node_run_id)
         self._refuse_under_terminal_run(node_run)
+        if expected_current_attempt_id is not None:
+            attempts = [a for a in self._attempts.values() if a.node_run_id == node_run_id]
+            current = max(attempts, key=lambda a: a.ordinal, default=None)
+            if current is not None and current.attempt_id != expected_current_attempt_id:
+                raise RunIntegrityError(
+                    f"Attempt {expected_current_attempt_id!r} was superseded by {current.attempt_id!r}"
+                )
         if accepted_outcome is not None:
             if accepted_outcome.node_run_id != node_run_id:
                 raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
