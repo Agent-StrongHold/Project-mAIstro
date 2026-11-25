@@ -20,6 +20,7 @@ from services import legacy_dag_node as _legacy_dag_node
 from services.canonical_dag_runner import execute_dag as _canonical_execute_dag
 from services.canonical_dag_runner import genome_to_dag
 from services.dag_execution_scope import DagExecutionScope
+from services.safe_projection import safe_dag_result
 
 # Historical helper imports remain available for existing tests and downstream
 # callers, but their implementation now lives with the one-node compatibility
@@ -44,19 +45,15 @@ logger = logging.getLogger("hive.graph_runner")
 
 
 def public_failure(exc: BaseException) -> str:
-    """The failure text a transport may show: the exception kind, never its message.
+    """The failure text a transport may show — the shared #2465 policy.
 
-    One structured remediation is preserved: when the failure is the no-gateway
-    stub refusal, name ``ALLOW_STUB_LLM`` so an operator can act without reading
-    server logs. That is an env-var name, not exception detail.
+    The definition lives in ``services.safe_projection`` so HTTP receipts,
+    WebSocket frames and the nested DAG projection answer from one contract;
+    this historical import path stays for existing callers.
     """
-    detail = str(exc)
-    if "ALLOW_STUB_LLM" in detail:
-        return (
-            f"{type(exc).__name__}: LLM gateway unset; "
-            "set ALLOW_STUB_LLM=true to opt into stubs; see server logs"
-        )
-    return f"{type(exc).__name__}: execution failed; see server logs"
+    from services.safe_projection import public_failure as _shared
+
+    return _shared(exc)
 
 
 class CanonicalDagExecutionError(RuntimeError):
@@ -96,6 +93,11 @@ async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
 
 
 def _node_frames(result: dict[str, Any]) -> list[dict[str, Any]]:
+    # The frames are a public projection (#2465): the result is projected
+    # through the shared policy first, so a replayed node frame can never
+    # carry a failed node's raw error text even when the result object in
+    # hand came from a producer that bypassed the canonical projection.
+    projected = safe_dag_result(result)
     return [
         {
             "status": "node_complete",
@@ -103,9 +105,9 @@ def _node_frames(result: dict[str, Any]) -> list[dict[str, Any]]:
             "role": node_result.get("role", "worker"),
             "response": node_result.get("response", ""),
             "success": bool(node_result.get("success")),
-            "run_id": result.get("run_id"),
+            "run_id": projected.get("run_id"),
         }
-        for node_id, node_result in result.get("node_results", {}).items()
+        for node_id, node_result in projected.get("node_results", {}).items()
     ]
 
 
@@ -341,7 +343,7 @@ async def _replay_stream(
     try:
         result = await execute_dag(dag_data, **kwargs)
     except CanonicalDagExecutionError as exc:
-        result = exc.result
+        result = safe_dag_result(exc.result)
         terminal = _failed_terminal(result, exc)
     except Exception as exc:
         logger.warning("Graph execution failed", exc_info=exc)
@@ -420,13 +422,14 @@ async def execute_dag_streaming(
         try:
             result = exec_task.result()
         except CanonicalDagExecutionError as exc:
-            result = exc.result
+            result = safe_dag_result(exc.result)
             terminal = _failed_terminal(result, exc)
         except Exception as exc:
             logger.warning("Graph execution failed", exc_info=exc)
             yield {"status": "failed", "error": public_failure(exc)}
             return
         else:
+            result = safe_dag_result(result)
             terminal = _completed_terminal(result)
 
         async for frame in _reconciled_frames(

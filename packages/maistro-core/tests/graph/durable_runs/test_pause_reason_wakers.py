@@ -78,6 +78,7 @@ from maistro.graph.nodes.base import (
     PAUSE_AWAITING_HARNESS,
     PAUSE_AWAITING_HUMAN_ANSWER,
     PAUSE_AWAITING_HUMAN_APPROVAL,
+    PAUSE_AWAITING_HUMAN_DECISION,
     PAUSE_AWAITING_HUMAN_REVIEW,
     PAUSE_AWAITING_REMOTE_DELEGATION,
     PAUSE_AWAITING_ROLE_DELEGATE,
@@ -177,6 +178,12 @@ PAUSE_REASON_WAKERS: dict[str, tuple[Waker, ...]] = {
     PAUSE_AWAITING_HUMAN_ANSWER: _HUMAN_WAKERS,
     PAUSE_AWAITING_HUMAN_APPROVAL: _HUMAN_WAKERS,
     PAUSE_AWAITING_HUMAN_REVIEW: _HUMAN_WAKERS,
+    # The design-loop fence (#794) settles through the same human routes: a
+    # recorded park/redirect/accept consumes the pause exactly like an answer
+    # (store-side), and the deadline tick expires it. A plain answer re-runs
+    # the gate node, which fail-closed re-parks — the Run is woken, never
+    # advanced, by an unrecorded verdict.
+    PAUSE_AWAITING_HUMAN_DECISION: _HUMAN_WAKERS,
     PAUSE_AWAITING_ROLE_DELEGATE: _HUMAN_WAKERS,
     # Same waker as every other answer-gated reason: the delegating node parks
     # PAUSED and `answer_human_work` delivers the remote agent's response,

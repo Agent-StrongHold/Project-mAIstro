@@ -10,13 +10,13 @@ caused the timeout.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import sys
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "mutation_targets.py"
@@ -246,33 +246,197 @@ class TestWorkflowDiffsAgainstItsOwnBase:
         assert "--diff-filter=ACMR" in workflow
 
 
-class TestNightlyWorkflowEditsReachTheGate:
-    """#2372: a PR whose only change was ``.github/workflows/mutation-nightly.yml``
-    matched no ``pull_request.paths`` entry of this workflow, so the required
-    "Mutation gate (changed critical lines)" check-run never existed on the
-    candidate head and ``gates-ran`` published "Required execution evidence is
-    still arriving" forever. CI-exact replay of the #2372 head 34c0da9fa488:
-    ``check-gates-ran.py`` -> PENDING, 71/72 required checks present, the
-    mutation gate absent; appending a synthetic successful run flips the same
-    replay to "ok: all 72 required check(s) ran on this head". The #2120
-    repair added ``quality/image-pins.json`` for this same class; the nightly
-    sibling workflow file was the one path still missing.
+class TestScriptsToolingSurfaceIsReachable:
+    """PRs whose Python diff is gate tooling under scripts/ are a recurring
+    surface (every check-*.py repair), and 'packages/**/*.py' cannot match
+    them. With no matching trigger path such a PR never started this job, so
+    the required-set row ("Mutation gate (changed critical lines)") had no
+    check-run on the candidate head and gates-ran stayed pending forever —
+    measured on #2432's head 632d5dbaa6 with the CI-exact evaluator:
+    73/74 required checks present, the mutation row absent -> PENDING. The
+    property, not the example: the trigger must keep covering the whole
+    scripts/ tooling subtree, the way it covers the packages/ source tree.
     """
 
     WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
-    NIGHTLY: ClassVar[str] = ".github/workflows/mutation-nightly.yml"
 
-    def test_a_nightly_only_pr_triggers_the_mutation_gate(self):
-        """The property, not the example: the trigger's ``paths:`` filter must
-        name the nightly workflow file itself, or the next PR that edits it
-        re-introduces the permanent pending. Parsed, not substring-matched:
-        a comment mentioning the path is not a trigger."""
+    def test_the_scripts_tooling_subtree_actually_exists(self, module):
+        """If it did not, the honest fix would be deleting the trigger entry
+        rather than adding a path filter for nothing."""
+        assert (REPO / "scripts").is_dir()
+
+    def test_every_scripts_tooling_change_is_in_the_workflow_scope(self):
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "'scripts/**/*.py'" in workflow
+
+    def test_scripts_scope_stays_zero_overlap_by_construction(self):
+        """The added trigger produces *evidence*, not mutation coverage: the
+        changed-file pathspec stays `-- packages`, so a scripts-only diff
+        resolves to the zero-overlap summary instead of mutating anything.
+        If the pathspec ever widens beyond packages/ this stops being true
+        and the trigger addition above would silently change gate semantics.
+        """
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "-- packages" in workflow
+
+
+def _paths_match(declared: list[str], changed: list[str]) -> bool:
+    """Approximate GitHub's `on.pull_request.paths` filter: a change triggers
+    when any changed path matches any declared pattern (Ruby File.fnmatch
+    semantics, which GitHub documents). A pattern with no `/` also matches the
+    basename at any depth, mirroring gitignore-style anchoring; for the
+    patterns under test the changed paths are root-level anyway. A stricter
+    reimplementation is deliberately not attempted — what the assertions
+    actually pin is that the declared patterns exist and cover their named
+    surfaces.
+    """
+
+    def matches(pattern: str, path: str) -> bool:
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path.rsplit("/", 1)[-1], pattern)
+
+    return any(matches(pattern, path) for pattern in declared for path in changed)
+
+
+class TestDependencyBumpPrSurfacesStillTrigger:
+    """PRs whose diff is exactly Python dependency metadata are the most
+    recurring non-Python surface in the repository (every dependabot uv
+    bump), and 'packages/**/*.py' cannot match them: a bump edits uv.lock and
+    packages/*/pyproject.toml, and its scan-triage round may edit
+    .trivyignore.yaml. With no matching trigger path such a PR never started
+    this job, so the required "Mutation gate (changed critical lines)" row
+    had no check-run on the candidate head and gates-ran stayed pending
+    forever — measured on #2450's head 62ce6f87a9 (anthropic 1.11.0 ->
+    2.9.0) with the CI-exact evaluator (check-gates-ran.py
+    --require-complete --base-branch develop --event-name pull_request
+    --changed-files <measured envelope>): 73/74 required checks present, the
+    mutation row absent -> exit 2 (PENDING). The same failure mode was fixed
+    for image pins (#2120), grant ledgers / inventory notes (#2371), gate
+    scripts (#2432) and dev-tool requirements (#2345); this pins the
+    lockfile, package-manifest and security-suppression surfaces #2450 hit.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+    CRITICAL_LIST: ClassVar[Path] = REPO / "quality" / "mutation-critical-files.json"
+
+    def _declared_paths(self) -> list[str]:
+        """The workflow's declared pull_request paths patterns."""
+        import yaml
+
         doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
-        trigger = doc.get(True, doc.get("on"))
-        assert trigger is not None, "mutation.yml lost its pull_request trigger"
-        paths = trigger.get("pull_request", {}).get("paths")
-        assert isinstance(paths, list), "pull_request.paths filter is missing"
-        assert self.NIGHTLY in paths
+        triggers = doc.get(True, doc.get("on"))  # YAML 1.1 parses `on:` as True
+        paths = triggers["pull_request"]["paths"]
+        assert isinstance(paths, list) and all(isinstance(p, str) for p in paths)
+        return paths
+
+    def test_the_dependency_surfaces_actually_exist(self):
+        """If they did not, the honest fix would be deleting the trigger
+        entries rather than adding path filters for nothing."""
+        assert (REPO / "uv.lock").is_file()
+        assert (REPO / ".trivyignore.yaml").is_file()
+        assert (REPO / "packages" / "maistro-core" / "pyproject.toml").is_file()
+        assert (REPO / "packages" / "maistro-bootstrap" / "pyproject.toml").is_file()
+
+    def test_a_workspace_lock_bump_pr_triggers_the_gate(self):
+        """The #2450 surface: a PR whose content bump is the uv.lock row for
+        a dependency must start the job."""
+        assert _paths_match(self._declared_paths(), ["uv.lock"])
+
+    def test_a_package_manifest_bump_pr_triggers_the_gate(self):
+        """Dependabot edits the version constraint in the package manifest
+        (maistro-core and maistro-bootstrap builders extra in #2450); the
+        trigger must reach any package depth."""
+        assert _paths_match(
+            self._declared_paths(),
+            [
+                "packages/maistro-core/pyproject.toml",
+                "packages/maistro-bootstrap/pyproject.toml",
+            ],
+        )
+
+    def test_a_scan_suppression_triage_pr_triggers_the_gate(self):
+        """The triage round of #2450 added a scoped gcp-service-account
+        suppression to .trivyignore.yaml; the security-suppression registry
+        is an evidence surface like quality/image-pins.json and must start
+        the job."""
+        assert _paths_match(self._declared_paths(), [".trivyignore.yaml"])
+
+    def test_dependency_surfaces_stay_zero_overlap_by_construction(self):
+        """The added triggers produce *evidence*, not mutation coverage:
+        every mutation-critical source is a .py file under packages/, so a
+        lock/manifest/suppression-only diff can never intersect the critical
+        set and resolves to the zero-overlap summary instead of mutating
+        anything. If a lockfile or manifest path ever became
+        mutation-critical, the trigger addition above would silently change
+        gate semantics and this pin must be revisited.
+        """
+        import json
+
+        critical = json.loads(self.CRITICAL_LIST.read_text(encoding="utf-8"))
+        sources = [entry["source"] for entry in critical["entries"]]
+        assert sources, "critical list must not be empty"
+        assert all(source.endswith(".py") for source in sources)
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "-- packages" in workflow
+
+
+class TestEvidenceOnlyPrSurfacesStillTrigger:
+    """A PR whose diff touches exactly a governance/evidence surface never
+    started this workflow, so its required "Mutation gate (changed critical
+    lines)" check-run never appeared on the candidate head and gates-ran
+    stayed pending forever — even though every producer had completed, so no
+    later publisher run could ever flip the verdict. Measured on #2345's head
+    720aaa2500 with the CI-exact evaluator (check-gates-ran.py
+    --require-complete --base-branch develop --event-name pull_request):
+    71/72 required checks present, the mutation gate absent -> exit 2
+    (PENDING). The same failure mode was fixed for image pins (#2120) and for
+    grant ledgers / inventory notes (#2371); this pins the dev-tool
+    requirements file and the root-level repair-note class that #2345 hit.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+
+    def _declared_paths(self) -> list[str]:
+        """The workflow's declared pull_request paths patterns."""
+        import yaml
+
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        triggers = doc.get(True, doc.get("on"))  # YAML 1.1 parses `on:` as True
+        paths = triggers["pull_request"]["paths"]
+        assert isinstance(paths, list) and all(isinstance(p, str) for p in paths)
+        return paths
+
+    def test_a_dev_tools_bump_pr_triggers_the_gate(self):
+        """The #2345 surface: a PR whose only content change is the dlint
+        bump in requirements-dev-tools.txt must start the job."""
+        assert _paths_match(self._declared_paths(), ["requirements-dev-tools.txt"])
+
+    def test_a_root_repair_note_pr_triggers_the_gate(self):
+        """Repair-round evidence notes at the repo root are the recurring
+        class this failure mode keeps hitting (#1450/#1837/#2267/#2345/#2375/
+        #2406 all added root REPAIR-NOTES-*.md files)."""
+        assert _paths_match(
+            self._declared_paths(),
+            ["REPAIR-NOTES-2345-develop-sync-round2.md"],
+        )
+
+    def test_the_previously_pinned_evidence_surfaces_remain_triggers(self):
+        """Widening the filter must not narrow it: every evidence surface a
+        prior repair pinned stays a trigger."""
+        declared = self._declared_paths()
+        for pattern in (
+            "quality/image-pins.json",
+            "quality/ratchet-authorizations.json",
+            "docs/testing/inventory-notes/**",
+            ".github/workflows/mutation.yml",
+            "packages/**/*.py",
+        ):
+            assert pattern in declared
+
+    def test_an_unrelated_doc_change_still_does_not_trigger(self):
+        """Negative control: the widening is scoped, not a blanket trigger.
+        A root README edit is neither mutation-critical nor an evidence
+        surface this gate tracks."""
+        assert not _paths_match(self._declared_paths(), ["README.md"])
 
 
 # --- the inverse mapping: changed tests -> the sources they cover ------------

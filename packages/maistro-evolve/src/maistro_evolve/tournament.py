@@ -293,3 +293,140 @@ class EloTournament:
             "total_genomes_rated": len({r.genome_id for r in self._ratings.values()}),
             "benchmarks_tracked": len({r.benchmark for r in self._ratings.values()}),
         }
+
+    # --- Durable reconstruction (#1064) -------------------------------------
+    #
+    # A genuinely new process (or a second replica) must be able to rebuild
+    # the exact tournament this process held -- ratings, full battle history
+    # including each battle's canonical NodeRun/Attempt publication identity,
+    # and the next battle id -- from a durable snapshot. ``export_snapshot``
+    # is the versioned serialization; ``restore_snapshot`` rebuilds this
+    # instance in place (the caller owns the instance, mirroring how
+    # ``PopulationStore`` is restored). Battle ids, Elo values and
+    # win/loss/draw counters are carried exactly; Python's json float repr
+    # round-trips doubles, so a restore is semantically identical to the
+    # exported tournament.
+
+    def export_snapshot(self) -> dict[str, Any]:
+        """Versioned serialization of the full tournament state (#1064).
+
+        Carries everything ``restore_snapshot`` needs to rebuild the identical
+        tournament: k-factor, next battle id, every rating, and every battle
+        with its canonical publication identity. Rating and battle order is
+        deterministic (sorted) so two exports of the same state are equal.
+        """
+        return {
+            "version": 1,
+            "k_factor": self._k_factor,
+            "next_id": self._next_id,
+            "ratings": [
+                {
+                    "genome_id": r.genome_id,
+                    "benchmark": r.benchmark,
+                    "elo": r.elo,
+                    "wins": r.wins,
+                    "losses": r.losses,
+                    "draws": r.draws,
+                }
+                for r in sorted(self._ratings.values(), key=lambda r: (r.genome_id, r.benchmark))
+            ],
+            "battles": [
+                {
+                    "id": b.id,
+                    "benchmark": b.benchmark,
+                    "genome_a_id": b.genome_a_id,
+                    "genome_b_id": b.genome_b_id,
+                    "winner_id": b.winner_id,
+                    "score_a": b.score_a,
+                    "score_b": b.score_b,
+                    "timestamp": b.timestamp,
+                    "node_run_id": b.node_run_id,
+                    "attempt_id": b.attempt_id,
+                }
+                for b in sorted(self._battles, key=lambda b: b.id)
+            ],
+        }
+
+    def restore_snapshot(self, data: dict[str, Any]) -> None:
+        """Rebuild this tournament in place from ``export_snapshot`` state (#1064).
+
+        Replaces ratings, battles, the ``(node_run_id, benchmark)``
+        publication index, the next battle id and the k-factor, so a
+        recovered process holds the exact domain references the exporting
+        process held. Raises ``ValueError`` on an unknown snapshot version
+        rather than silently half-restoring.
+        """
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise ValueError("tournament snapshot version must be 1")
+        ratings: dict[tuple[str, str], GenomeRating] = {}
+        for item in data.get("ratings", []):
+            rating = GenomeRating(
+                genome_id=str(item["genome_id"]),
+                benchmark=str(item["benchmark"]),
+                elo=float(item["elo"]),
+                wins=int(item["wins"]),
+                losses=int(item["losses"]),
+                draws=int(item["draws"]),
+            )
+            ratings[(rating.genome_id, rating.benchmark)] = rating
+        battles: list[GenomeBattle] = []
+        published: dict[tuple[str, str], GenomeBattle] = {}
+        for item in data.get("battles", []):
+            battle = GenomeBattle(
+                id=int(item["id"]),
+                benchmark=str(item["benchmark"]),
+                genome_a_id=str(item["genome_a_id"]),
+                genome_b_id=str(item["genome_b_id"]),
+                winner_id=str(item["winner_id"]),
+                score_a=float(item["score_a"]),
+                score_b=float(item["score_b"]),
+                timestamp=float(item["timestamp"]),
+                node_run_id=str(item.get("node_run_id") or ""),
+                attempt_id=str(item.get("attempt_id") or ""),
+            )
+            battles.append(battle)
+            if battle.node_run_id:
+                published[(battle.node_run_id, battle.benchmark)] = battle
+        self._ratings = ratings
+        self._battles = battles
+        self._published_battles = published
+        self._next_id = int(data["next_id"])
+        self._k_factor = float(data["k_factor"])
+
+    def signature(self) -> dict[str, Any]:
+        """A comparable digest of the tournament's semantic state (#1064).
+
+        Tests for crash/restart equivalence compare this between an
+        uninterrupted execution and a killed-then-resumed one: battle count,
+        every rating triple (elo/wins/losses/draws) and every battle's
+        winner/outcome identity. Wall-clock timestamps are deliberately
+        excluded: replaying a journaled battle carries its original
+        timestamp, but nothing in the recovery contract depends on them.
+        """
+        return {
+            "total_battles": len(self._battles),
+            "next_id": self._next_id,
+            "ratings": {
+                f"{r.genome_id}|{r.benchmark}": {
+                    "elo": r.elo,
+                    "wins": r.wins,
+                    "losses": r.losses,
+                    "draws": r.draws,
+                }
+                for r in sorted(self._ratings.values(), key=lambda r: (r.genome_id, r.benchmark))
+            },
+            "battles": [
+                {
+                    "id": b.id,
+                    "benchmark": b.benchmark,
+                    "genome_a_id": b.genome_a_id,
+                    "genome_b_id": b.genome_b_id,
+                    "winner_id": b.winner_id,
+                    "score_a": b.score_a,
+                    "score_b": b.score_b,
+                    "node_run_id": b.node_run_id,
+                    "attempt_id": b.attempt_id,
+                }
+                for b in sorted(self._battles, key=lambda b: b.id)
+            ],
+        }

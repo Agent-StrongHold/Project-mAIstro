@@ -23,6 +23,8 @@ if str(_BACKEND) not in sys.path:
 from fastapi import HTTPException  # noqa: E402
 from routes import design as design_routes  # noqa: E402
 
+from maistro.identity import Principal  # noqa: E402
+from maistro.runs.concurrency import RunConcurrencyExceeded  # noqa: E402
 from maistro_design.types import (  # noqa: E402
     ArtifactKind,
     ArtifactNode,
@@ -279,6 +281,26 @@ class TestTheRoutesPassItDown:
         assert "Render job status unavailable" in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
+    async def test_rendering_does_not_create_a_local_job_lifecycle(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Merged boundary from #52: neither render route may hand back a
+        process-local job object; both answer with the explicit unavailable
+        error of the merged seam contract instead."""
+
+        class _Project:
+            outputs: ClassVar[list[Any]] = []
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: _Store(project=_Project()))
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
+        with pytest.raises(HTTPException) as polled:
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
+        assert polled.value.status_code == 501
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -308,6 +330,7 @@ class TestTheRoutesPassItDown:
         the route resolved has to be the one the engine is told to use — this
         is where a project's `org_id` actually comes from."""
         seen: dict[str, Any] = {}
+        resolved: list[str] = []
 
         class _Engine:
             @staticmethod
@@ -322,11 +345,66 @@ class TestTheRoutesPassItDown:
 
                 return _Project()
 
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
         monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
-        answer = await design_routes.create_design_project(_Request(org_id="org-7"), object())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            resolved.append(principal_id)
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
+        answer = await design_routes.create_design_project(
+            _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+        )
         assert seen == {"org_id": "org-7", "team_id": None}
         assert answer["org_id"] == "org-7"
+        # The adapter is resolved from the request principal (#52 review), not
+        # from the startup's deployment-wide binding.
+        assert resolved == ["user-1"]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creation_is_unavailable_without_canonical_execution(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return None
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+            )
+        assert raised.value.status_code == 503
+        assert "canonical execution spine" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creation_is_unavailable_without_an_authenticated_principal(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The canonical spine records who asked; an anonymous request must
+        not fall back to a fabricated actor identity."""
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            raise AssertionError("an anonymous request must never reach scope resolution")
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(_Request(org_id="org-7"), object())
+        assert raised.value.status_code == 401
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_creating_without_persistence_is_unavailable_before_engine_runs(
@@ -341,10 +419,24 @@ class TestTheRoutesPassItDown:
                 called = True
                 raise AssertionError("must not prepare a project without persistence")
 
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
         monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
-            await design_routes.create_design_project(_Request(org_id="org-7"), object())
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+            )
         assert raised.value.status_code == 503
         assert "persistence unavailable" in str(raised.value.detail).lower()
         assert called is False
@@ -363,13 +455,65 @@ class TestTheRoutesPassItDown:
             async def generate(*a: Any, **k: Any) -> Any:
                 raise RuntimeError("prompt assembler exploded")
 
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
         monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
         with pytest.raises(HTTPException) as raised:
-            await design_routes.create_design_project(_Request(org_id="org-7"), object())
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+            )
         assert raised.value.status_code == 500
         assert "Project preparation failed" in str(raised.value.detail)
         assert "Generation failed" not in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_a_full_run_ceiling_is_backpressure_429_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full canonical root-Run ceiling is admission backpressure (#1182),
+        the same retryable condition the DAG and chat surfaces answer with 429
+        and Retry-After — preparation never started, so a server fault would
+        make temporary capacity indistinguishable from a failed project."""
+
+        class _Engine:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                raise AssertionError("a full ceiling must refuse admission before generation")
+
+        class _Canonical:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                raise RunConcurrencyExceeded(scope="principal", limit=3, active=3)
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+
+        async def _canonical_for(principal_id: str) -> Any:
+            return _Canonical()
+
+        monkeypatch.setattr(
+            design_routes, "get_design_canonical_execution_for_principal", _canonical_for
+        )
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", principal=Principal(user_id="user-1")), object()
+            )
+        assert raised.value.status_code == 429
+        assert raised.value.headers is not None
+        assert raised.value.headers.get("Retry-After") is not None
+        assert "too many active runs for this principal" in str(raised.value.detail)
+        assert "Project preparation failed" not in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_creating_a_project_with_a_blank_request_scope_is_refused(

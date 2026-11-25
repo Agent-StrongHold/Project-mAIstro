@@ -372,6 +372,35 @@ def test_update_book_409_on_id_mismatch(client: TestClient) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# WorldStyle.perspective over the API (issue #2398)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_book_round_trips_perspective(client: TestClient) -> None:
+    ws = _world_style()
+    ws["perspective"] = "one_point"
+    r = client.post(
+        "/v2/canvas/books",
+        json={"book_id": "b1", "title": "T", "world_style": ws},
+    )
+    assert r.status_code == 201
+    assert r.json()["world_style"]["perspective"] == "one_point"
+    got = client.get("/v2/canvas/books/b1")
+    assert got.status_code == 200
+    assert got.json()["world_style"]["perspective"] == "one_point"
+
+
+def test_book_without_perspective_defaults_to_flat(client: TestClient) -> None:
+    """Legacy payloads without the field stay valid and read back flat."""
+    r = client.post(
+        "/v2/canvas/books",
+        json={"book_id": "b1", "title": "T", "world_style": _world_style()},
+    )
+    assert r.status_code == 201
+    assert r.json()["world_style"]["perspective"] == "flat"
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Render plan
 # ─────────────────────────────────────────────────────────────────────
 
