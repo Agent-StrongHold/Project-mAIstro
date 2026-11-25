@@ -52,7 +52,6 @@ owners:
 
 # SPEC-091726-7c2a: A requirements interview precedes every Goal and CreativeBrief commit
 
-- **Status:** AC Defined
 - **Date:** 2026-09-17
 - **ADR:** `ADR-091726-7c2a`
 - **Issues:** #774 (CreativeBrief), #804 (persistent Workspace Agent), #53 (Workspace Agent chat), #458 (canonical Goal)
