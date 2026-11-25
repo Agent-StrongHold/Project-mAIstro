@@ -537,6 +537,15 @@ jobs:
     # cancelled gate never reports, so it blocks the PR without measuring
     # anything. The suites, sources, floor and diff thresholds are unchanged.
     #
+    # 30 -> 45 on 2026-10-26: the same class again. #1532's gate (run
+    # 40380074341, job 121782351343) started 18:58:48Z and was killed at
+    # 19:29:06Z — 30m18s, eighteen seconds past this ceiling — leaving the
+    # run's conclusion `cancelled` and reding `gates-ran` on a measurement
+    # that never happened. The same serial combine step on a slower runner is
+    # the whole story; no suite, source, floor or diff threshold changes
+    # here. 45 keeps a 1.5x margin over the observed 30m18s, the same ratio
+    # the 15 -> 30 bump gave #1581.
+    #
     # 30 -> 45 on 2026-11-24: capacity, not scope. The #1064 candidate grew
     # the two heaviest serial producers with tests that measure real code:
     # the hive-conductor backend producer rose 2m16s -> 7m16s (the Evolve
