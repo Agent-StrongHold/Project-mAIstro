@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  (none): 0
+  tests/: +0
 ---
 # Verifier round at merged head 8c85a1a0e1 (develop sync 8955cf07a2)
 
