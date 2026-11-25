@@ -43,8 +43,13 @@ evidence before this note was written.
    suites); `ruff check .` exit 0; `ruff format --check .` exit 0 (3659
    files). Driver logs agree (uv sync, ruff check, ruff format all pass).
 8. **No premature closure**: closure-keyword grep over
-   `bd96877ed8..HEAD` bodies → exit 1; PR body explicitly does not close
-   #1357/#160/#1605.
+   `bd96877ed8..HEAD` commit bodies → exit 1 (clean). **Correction
+   (2026-11-25, round 7):** the earlier claim that the PR body "explicitly
+   does not close" these issues was wrong. The live body's sentence
+   "This PR does not close #1357, #160 or #1605" contains the closer
+   keyword `close #1357`, and GitHub's parser ignores negation — merging
+   into the default branch can auto-close the OPEN issues #1357/#160/#1605.
+   Rewording the body is a GitHub-side action outside lane authority.
 9. **Live read-only rollup** (`gh pr view 2059 --json
    statusCheckRollup,headRefOid,isDraft` at `230f58198817`, head matches
    local): 25 legs **QUEUED**, 1 COMPLETED (SKIPPED — Container scan,
