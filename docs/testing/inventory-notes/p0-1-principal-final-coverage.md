@@ -751,3 +751,49 @@ local work discarded — 951a2917c8 is its merge-base).
   merge is left to the next lane round per the snapshot discipline.
 - Worktree left clean; the only tree change in this round is this note.
 
+## Fourteenth verification round (2026-11-25, head 7f9ac20cc0d8)
+
+Assigned repair round after the provider-death block. The branch head is now
+`7f9ac20cc0d8`, a merge of `origin/develop` (`221dc3d517e7`) into the feature
+branch; no local work was discarded.
+
+- Driver battery re-run on this head: `uv sync --locked --extra dev`,
+  `ruff check .`, `ruff format --check .`, targeted server/canvas/core pytest
+  (299 passed / 91 skipped), targeted hive backend pytest (199 passed), and
+  all four suite-inventory gates — every returncode 0.
+- Issue test plan re-run:
+  `scripts/check-principal-identity.py` — rc=0, base `221dc3d517e7` → candidate
+  `7f9ac20cc0d8`, 4 tolerated → 0 current, none new;
+  `pytest packages/maistro-core/tests/fitness/test_principal_identity.py` — 1 passed;
+  `pytest packages/maistro-server/tests/api/test_auth.py packages/hive-conductor/backend/tests/test_username_registry.py` — 62 passed.
+- Coverage-specific additions pass by node id:
+  `packages/maistro-canvas/tests/test_routes_org_paths.py -k foreign_org` — 3 passed;
+  `packages/maistro-server/tests/api/test_auth.py::TestExplicitPrincipalContract::test_auth_off_admits_a_dev_principal` — 1 passed.
+- Diff-coverage gate reproduced locally with a real PostgreSQL 18 server
+  (`MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@localhost:5433/maistro`):
+  full `packages/maistro-canvas/tests`, full `packages/maistro-server/tests`,
+  plus the changed core/hive selections were run under
+  `coverage run --branch`, then `scripts/check-diff-coverage.py coverage.xml
+  --base 221dc3d517e7 --fail-under 90 --branch-fail-under 80` — ok, all 17
+  changed measured files at or above the floors. Three unrelated server
+  integration tests (`test_task_cross_replica_visibility.py` ×2,
+  `test_task_restart_recovery.py`) failed because the scratch database had no
+  engine schema (`alembic upgrade head` was not run); their failure is
+  environmental and does not touch the changed files or the coverage verdict.
+- Vulture exact-debt ledger with CI's exact args
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) — rc=0, 1221 reviewed identities → 1221 findings.
+- Canonical source typecheck (`mypy packages/maistro-core/src
+  packages/maistro-server/src packages/maistro-canvas/src
+  packages/maistro-turing/src packages/maistro-bootstrap/src
+  packages/maistro-registry/src packages/maistro-ext-sdk/src`) — no issues.
+- Additional architecture/governance gates on this head: radon baseline,
+  reachability, convergence matrix, reachability dispositions, backlog
+  consistency, execution lifecycles, model egress, doc links, workflow
+  inventory, cross-package imports, and public-route surface — all rc=0 except
+  public-routes, which fails because two temporary exemptions
+  (`/v1/auth/register` and `/v1/setup/`) expired on 2026-11-24. That expiry is
+  present on the develop base `221dc3d517e7` and is unrelated to #1994.
+- No code change was required for the assigned issue; the worktree was clean
+  before this note was updated.
+
