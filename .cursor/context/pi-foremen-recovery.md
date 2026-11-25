@@ -534,3 +534,58 @@ beyond this record; no tests added or moved, so no inventory-note delta.
 **Required next action is outside this lane:** upstream patched releases
 (picomatch/tinyglobby lockfile bump) or a policy-owner re-scope of the
 standalone audit step (ci.yml:702). Escalated as NEEDS-DEEP-REVIEW.
+
+## Round: external audit block dissolved — verified green at PR head `4928a1e4d1` (2026-11-25, job 44172cfff4d9)
+
+Prior job `882b01594b44` at the same starting head `c63ad95ff` passed all five
+driver checks (uv sync, ruff check, ruff format, `test_free_router.py` 22
+passed, suite inventory) and then died from a provider 404 before producing a
+verdict; the worktree was clean, so no tree work was lost.
+
+**The npm-audit block has moved — in our favor.** The GHSA-fc5q-39xc-vjpf
+(picomatch ReDoS) advisory was **withdrawn** (`withdrawn_at: 2026-11-18T15:38:56Z`,
+per the in-tree CR-2375/CR-2377 notes) **without any upstream fix**:
+`npm view picomatch version` → 4.0.7 (still the newest release, still inside
+the withdrawn advisory's `<=4.0.7` range; tinyglobby 0.2.17 and fdir 6.5.0
+unchanged). npm's audit database stopped reporting it, so the identical
+committed lock that audited 6-high on 2026-11-18 now audits clean. Develop
+itself resolved the fallout by adding `scripts/npm_audit_gate.py` (two-way
+ratchet), retiring the stale waiver, and pinning `ALLOWED == {}` in
+`tests/test_npm_audit_gate.py` — all of which this branch now carries through
+the develop merges.
+
+Local branch fast-forwarded `c63ad95ff` → `4928a1e4d1` (origin/ops branch =
+PR #1896 head; two develop merges `e38685add9` + `4928a1e4d1`). The
+branch-unique surface vs its develop parent (`3ae2971366`) is unchanged:
+the `scripts/pi_recovery/` port, `tests/pi_recovery/`, ops docs and the
+earlier CI repairs — no product-package changes of its own.
+
+Fresh reproduction at `4928a1e4d1`, CI's exact commands, all green:
+
+- Canvas audit leg (ci.yml:714-716): `npm audit --json > /tmp/npm-audit.json
+  || true` then `python scripts/npm_audit_gate.py /tmp/npm-audit.json` →
+  `npm audit OK (0 advisories reported, all triaged in ALLOWED)`, exit 0.
+  `npm audit --audit-level=high` standalone → `found 0 vulnerabilities`, exit 0.
+- `uv run pytest tests/test_npm_audit_gate.py -q` → 15 passed (includes the
+  shipped-state pin `ALLOWED == {}`).
+- security.yml "Build frontend license surfaces" sequence, both frontends:
+  `npm config set audit-level=high && npm ci && npm run build` → exit 0
+  (canvas: `found 0 vulnerabilities`; hive-conductor: 7 moderates only,
+  below the high threshold; both vite builds succeeded). This is the same
+  npm surface as hive-conductor `Dockerfile:15`'s
+  `RUN npm config set audit-level=high && npm ci`.
+- Vulture ledger (CI args) at `4928a1e4d1`: 1235 reviewed identities →
+  1235 findings, exit 0. The −1 row vs the previous round comes from
+  develop's own `_vulture_whitelist.py` banking merged from develop — no
+  branch-side ledger edit this round.
+- Full battery: `uv sync --locked --extra dev` ok; `uv run ruff check .` →
+  pass; `uv run ruff format --check .` → pass (3602 files);
+  `uv run pytest tests/pi_recovery -q` → 177 passed + 32 subtests;
+  `uv run pytest packages/maistro-rsi/tests/test_free_router.py -q` →
+  22 passed; `uv run python scripts/check-suite-inventory.py` → ok
+  (21 suites match the recorded inventory).
+
+No tree change beyond this record; no tests added or moved, so no
+inventory-note delta. The named container-scan gate was already green at
+`a7da3a4917` (stale board accounting), and the last red audit leg is green
+with the registry's current advisory data.
