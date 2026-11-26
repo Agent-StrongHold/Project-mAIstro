@@ -134,7 +134,7 @@ def test_scout_fallback_catalog_falls_back_to_model_when_no_genome_models(tmp_pa
 
 
 def test_promotion_credits_the_scout_model_and_persists(tmp_path, monkeypatch) -> None:
-    loop = _loop(tmp_path)
+    loop = _loop(tmp_path, promotion_review=False)
 
     def fake_shortlist(source, tests, uncovered, llm_call, **kw):
         return [_ITEM] if llm_call.model == "model-b" else []

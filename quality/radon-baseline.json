@@ -995,12 +995,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/__main__.py::_run",
       "path": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
-      "line": 810,
+      "line": 1101,
       "name": "_run",
       "classname": null,
       "rank": "C",
-      "complexity": 15,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 12,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here. Banked 15 -> 12 when #302 split the genome-summary printing into _print_genome_summary; the ledger follows every improvement down."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/autorun.py::run_autonomous",
@@ -1010,7 +1010,7 @@
       "classname": null,
       "rank": "C",
       "complexity": 18,
-      "rationale": "M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique (D(22) -> C(17)), then the autorun-15 policy-state round added the ObjectiveParked step-checkpoint and intervention-merge handling, re-measured at C(18) \u2014 still below the merge-base D(22); recorded at the exact measured complexity so the ledger matches the scan."
+      "rationale": "M5-B stall-intervention change (#111): the per-cycle learnings recall and the intervention-record merge moved into _recall_prior_learnings/_extend_interventions_unique (D(22) -> C(17)), then the autorun-15 policy-state round added the ObjectiveParked step-checkpoint and intervention-merge handling, re-measured at C(18) — still below the merge-base D(22); recorded at the exact measured complexity so the ledger matches the scan."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py::_uncollectable_tests",
@@ -1115,12 +1115,12 @@
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop._run_cycle",
       "path": "packages/maistro-rsi/src/maistro_rsi/local_loop.py",
-      "line": 1846,
+      "line": 2217,
       "name": "_run_cycle",
       "classname": "LocalRsiLoop",
       "rank": "D",
-      "complexity": 22,
-      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here."
+      "complexity": 21,
+      "rationale": "Newly visible when the complexity ratchet widened from packages/maistro-core/src to every shipped package (#1682). Recorded at the complexity it already had that day so it cannot get worse; the Boy Scout ratchet is expected to bring it down rather than leave it here. Banked 22 -> 21 when #302 moved promotion through the canonical gate; the ledger follows every improvement down."
     },
     {
       "key": "packages/maistro-rsi/src/maistro_rsi/local_loop.py::LocalRsiLoop.run",
