@@ -1,15 +1,6 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { ApiError } from "../lib/api";
-
-type ElevationRequest = {
-  permission: string;
-  resolve: () => void;
-  reject: (error: Error) => void;
-};
-
-type ElevationContextValue = {
-  requestElevation: (permission: string) => Promise<void>;
-};
+import { elevateTask, type ElevationContextValue, type ElevationRequest } from "../lib/elevation";
 
 const ElevationContext = createContext<ElevationContextValue | null>(null);
 
@@ -37,27 +28,20 @@ export function ElevationProvider({ children }: { children: ReactNode }) {
   async function submit() {
     if (!request || !password) return;
     try {
-      const response = await fetch("/v1/auth/elevate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          password,
-          permissions: [request.permission],
-          task_id: taskId(request.permission),
-        }),
-      });
-      const body = (await response.json()) as { detail?: string };
-      if (!response.ok) {
-        setError(body.detail || `Elevation failed (${response.status})`);
-        return;
-      }
+      await elevateTask(password, request.permission, taskId(request.permission));
       const current = request;
       setRequest(null);
       setPassword("");
       current.resolve();
-    } catch {
-      setError("Elevation could not be completed. Check the connection and try again.");
+    } catch (error) {
+      // The shared client already turned the outcome into human copy: the
+      // backend's verbatim detail for a refusal ("Invalid password", the
+      // unassigned-permission cause), transport copy when unreachable (#1436).
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Elevation could not be completed. Check the connection and try again.",
+      );
     }
   }
 

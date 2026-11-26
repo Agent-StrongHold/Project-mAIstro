@@ -3,43 +3,10 @@ import { Play, Square, RefreshCw, Check, X, GitPullRequest, FileCode } from "luc
 
 import { useUser } from "../App";
 import { PageHeader } from "../components/shared";
+import { classifyFailure, decideRsiReview, fetchJson, outcome, startRsiRun, stopRsiRun, worstFailure } from "../lib/rsi";
+import { type FailureKind, type ModelOption, type PollHealth, type Review, type Run, type RsiStatus, type TestProfile } from "../lib/rsi";
 
 const API = "/v1/rsi";
-
-type RsiStatus = { available: boolean; active_runs: number; total_runs: number };
-type ModelOption = { id: string; label: string; tier: string };
-// A test command the SERVER holds, as its argument vector (#305). The page
-// shows the argv so an operator can see exactly what a profile runs; it
-// sends only the name, and the backend never accepts a command.
-type TestProfile = { name: string; argv: string[] };
-
-type Run = {
-  run_id: string;
-  mode: string;
-  status: string;
-  started_at: string;
-  ended_at: string | null;
-  cycles: number;
-  promotions: number;
-  last_error: string | null;
-  summary: string | null;
-  config: Record<string, unknown>;
-  report_dir: string | null;
-};
-
-type Review = {
-  sha: string;
-  target: string;
-  kind: string;
-  predicted_p: number;
-  theta: number;
-  note: string;
-  features: Record<string, number>;
-  resolved: boolean;
-  decision: string | null;
-  diff?: string;
-  diff_lines?: number;
-};
 
 
 const STATUS_TONE: Record<string, string> = {
@@ -69,79 +36,6 @@ const STATUS_TONE: Record<string, string> = {
 const PAGE_POLL_MS = 5_000;
 const REVIEWS_POLL_MS = 4_000;
 const MAX_BACKOFF_MS = 60_000;
-/** Poll requests get a tighter ceiling than the shared client's 30s (#1423):
- * a stalled endpoint must delay the loop, not hang it. Fires the same abort
- * path as an unmount, so a hung request classifies as unreachable and the
- * loop keeps going under backoff. */
-const POLL_TIMEOUT_MS = 15_000;
-
-/** Why a poll cycle failed, ranked by how the UI presents it. */
-type FailureKind = "unauthorized" | "server-error" | "unreachable";
-type PollHealth = "loading" | "ok" | FailureKind;
-
-const FAILURE_RANK: Record<FailureKind, number> = {
-  unauthorized: 3,
-  "server-error": 2,
-  unreachable: 1,
-};
-
-/** An HTTP status a poll can name. Transport failures carry no status, so
- * they stay unclassified and classify as "unreachable". */
-class PollHttpError extends Error {
-  constructor(
-    readonly kind: FailureKind,
-    readonly status: number,
-    readonly path: string,
-  ) {
-    super(`${path} answered ${status}`);
-    this.name = "PollHttpError";
-  }
-}
-
-function classifyFailure(err: unknown): FailureKind {
-  if (err instanceof PollHttpError) return err.kind;
-  // fetch()'s TypeError (offline, refused, CORS) and an abort (unmount or
-  // the timeout above) carry no HTTP answer: the service is unreachable,
-  // which is its own state — never "server error", never "not installed".
-  return "unreachable";
-}
-
-function worstFailure(a: FailureKind | null, b: FailureKind | null): FailureKind | null {
-  if (!a || !b) return a ?? b;
-  return FAILURE_RANK[a] >= FAILURE_RANK[b] ? a : b;
-}
-
-/** One GET for JSON, with the caller's lifecycle signal composed with the
- * poll timeout: whichever aborts first wins, and the composition is wired by
- * hand (no AbortSignal.any) to stay inside the build's browser baseline. */
-async function fetchJson<T>(path: string, signal: AbortSignal): Promise<T> {
-  const controller = new AbortController();
-  const stop = () => controller.abort();
-  const timeout = window.setTimeout(stop, POLL_TIMEOUT_MS);
-  signal.addEventListener("abort", stop, { once: true });
-  try {
-    const res = await fetch(path, { credentials: "same-origin", signal: controller.signal });
-    // 401/403 mean the SESSION cannot see RSI — a different problem, and a
-    // different message, than the service being down or broken (#359).
-    if (res.status === 401 || res.status === 403) throw new PollHttpError("unauthorized", res.status, path);
-    if (!res.ok) throw new PollHttpError("server-error", res.status, path);
-    return (await res.json()) as T;
-  } finally {
-    window.clearTimeout(timeout);
-    signal.removeEventListener("abort", stop);
-  }
-}
-
-/** Apply a settled endpoint result to its setter, or surface its failure.
- * Callers aggregate endpoints with Promise.allSettled so one dead endpoint
- * degrades the page instead of erasing it (the Topology lesson, per-endpoint). */
-function outcome<T>(settled: PromiseSettledResult<T>, apply: (value: T) => void): FailureKind | null {
-  if (settled.status === "fulfilled") {
-    apply(settled.value);
-    return null;
-  }
-  return classifyFailure(settled.reason);
-}
 
 /** One self-rescheduling poll loop. `poll` applies fresh data and returns the
  * worst failure kind it hit (null = healthy); the hook tracks health and
@@ -382,32 +276,26 @@ export default function RSI() {
     setStartError("");
     setBusy(true);
     try {
-      const resp = await fetch(`${API}/runs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "cleanup",
-          repo_path: repoPath,
-          test_profile: testProfile,
-          cycles,
-          agent_turns: agentTurns,
-          model,
-          fitness,
-          genome_models: genomeModels || undefined,
-          roster_size: rosterSize,
-          scout,
-        }),
+      const started = await startRsiRun({
+        mode: "cleanup",
+        repo_path: repoPath,
+        test_profile: testProfile,
+        cycles,
+        agent_turns: agentTurns,
+        model,
+        fitness,
+        genome_models: genomeModels || undefined,
+        roster_size: rosterSize,
+        scout,
       });
-      if (resp.ok) {
-        const run = await resp.json();
-        setSelectedRun(run.run_id);
+      if (started.ok) {
+        setSelectedRun(started.runId);
         refresh();
       } else {
         // The backend refuses a run it cannot contain (#305). Showing the
         // refusal beats a button that appears to do nothing: the operator
         // needs to know the isolated wrapper is the way to run this.
-        const body = await resp.json().catch(() => ({}));
-        setStartError(body.detail || `start refused (${resp.status})`);
+        setStartError(started.detail);
       }
     } finally {
       setBusy(false);
@@ -416,18 +304,13 @@ export default function RSI() {
 
   const decide = async (sha: string, decision: "approve" | "deny", reason?: string) => {
     if (!selectedRun) return;
-    const resp = await fetch(`${API}/runs/${selectedRun}/reviews/${sha}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, reason, repo_path: repoPath }),
-    });
-    if (resp.ok) {
-      const result = await resp.json();
+    const result = await decideRsiReview(selectedRun, sha, decision, repoPath, reason);
+    if (result) {
       // show what Ralph learned
       if (result.weight_delta?.prediction_explanation) {
         const expl = result.weight_delta.prediction_explanation
           .filter((e: { contribution: number }) => Math.abs(e.contribution) > 0.001)
-          .map((e: { feature: string; contribution: number }) => `${e.feature}: ${e.contribution > 0 ? "+" : ""}${e.contribution.toFixed(3)}`)
+          .map((e: { feature?: string; contribution: number }) => `${e.feature}: ${e.contribution > 0 ? "+" : ""}${e.contribution.toFixed(3)}`)
           .join(", ");
         const thetaDelta = result.weight_delta.theta.after - result.weight_delta.theta.before;
         const weightChanges = Object.entries(
@@ -588,7 +471,7 @@ export default function RSI() {
                 aria-label={`Stop run ${r.run_id}`}
                 title={canRunRsi ? `Stop run ${r.run_id}` : "Admin role required for RSI controls"}
                 disabled={!canRunRsi}
-                onClick={() => { if (canRunRsi) fetch(`${API}/runs/${r.run_id}/stop`, { method: "POST" }); }}
+                onClick={() => { if (canRunRsi) stopRsiRun(r.run_id); }}
                 className="rounded-lg border border-white/10 bg-slate-900/60 px-3 text-red-300 hover:bg-slate-800/60 disabled:opacity-40"
               >
                 <Square className="h-3.5 w-3.5" aria-hidden="true" />

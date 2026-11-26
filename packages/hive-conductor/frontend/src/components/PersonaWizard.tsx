@@ -1,19 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { apiPost } from "../lib/api";
+import { type WizardAgent, type WizardInterviewQuestion } from "../lib/personaWizard";
 import { useAuthorizedAction } from "./Elevation";
-
-type WizardAgent = {
-  agent: string;
-  role: string;
-  toolsText: string;
-  skillsText: string;
-};
-
-type WizardInterviewQuestion = {
-  field: string;
-  agent: string;
-  question: string;
-};
 
 function parseCommaList(value: string): string[] {
   return value

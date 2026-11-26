@@ -13,49 +13,7 @@ import {
   PageHeader,
   useToast,
 } from "../components/shared";
-
-type Role = "queen" | "worker" | "scout" | "drone" | "guard";
-type Strategy = "react" | "plan_execute" | "direct" | "delegate";
-type DagStatus = "draft" | "active" | "archived";
-
-type DAGNode = {
-  id: string;
-  role: string;
-  name: string;
-  agent_id: string | null;
-  model: string | null;
-  strategy: Strategy;
-  prompt: string | null;
-  config: Record<string, unknown>;
-};
-
-type DAGEdge = {
-  id: string;
-  from_node: string;
-  to_node: string | null;
-  condition: string | null;
-};
-
-type DAGFile = {
-  id: string;
-  name: string;
-  description: string;
-  nodes: DAGNode[];
-  edges: DAGEdge[];
-  entry_node: string | null;
-  max_cycles: number;
-  run_scout: boolean;
-  status: DagStatus;
-  created_at: string;
-  updated_at: string;
-};
-
-type Agent = {
-  id: string;
-  name: string;
-  model: string;
-  status: string;
-};
+import { type Agent, type DAGEdge, type DAGFile, type DAGNode, type DagStatus, type LiveRun, type Role, type Strategy } from "../lib/dagTypes";
 
 const ROLE_ICONS: Record<string, string> = {
   queen: "\u265B",
@@ -139,7 +97,7 @@ function fmtRelative(iso: string): string {
 // `execute_dag` runs (and the projection is recorded) regardless of this
 // socket; `settled` marks a terminal/parked/error frame; `detach` asks the
 // handlers to close the socket at the next safe point.
-type LiveRun = { ws: WebSocket; started: boolean; settled: boolean; detach: boolean };
+// (LiveRun's shape lives in lib/dagTypes.ts.)
 
 // Strips the handlers, then closes. Nulling the handlers first keeps our own
 // close() from re-entering them.

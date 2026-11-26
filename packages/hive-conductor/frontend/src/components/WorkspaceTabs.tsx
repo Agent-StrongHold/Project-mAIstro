@@ -1,14 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet } from "../lib/api";
+import { type PersonaTemplateOption } from "../lib/workspacePersonas";
 import { useToast } from "./shared";
 import { useAuthorizedAction } from "./Elevation";
 import { useWorkspaces } from "../context/WorkspaceContext";
-
-type PersonaTemplateOption = {
-  id: string;
-  display_name: string;
-  tagline: string;
-};
 
 /** Persona/Workspace system: the live tab strip a user switches between.
  * Each tab is one adopted persona's Workspace; switching applies that

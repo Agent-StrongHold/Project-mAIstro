@@ -1,22 +1,10 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
+import { type AgentBindingDraft, type PersonaAgentOption } from "../lib/workspacePersonas";
 import { useAuthorizedAction } from "./Elevation";
 import { useUser } from "../App";
 import { useToast } from "./shared";
 import { useWorkspaces, type Workspace, type WorkspaceRole } from "../context/WorkspaceContext";
-
-type PersonaAgentOption = {
-  agent_id: string;
-  role: string;
-  default_tools: string[];
-  default_skills: string[];
-};
-
-type AgentBindingDraft = {
-  checkedDefaults: Set<string>;
-  extraTools: string;
-  promptFragment: string;
-};
 
 function myRole(
   members: { user_id: string; role: WorkspaceRole }[],
