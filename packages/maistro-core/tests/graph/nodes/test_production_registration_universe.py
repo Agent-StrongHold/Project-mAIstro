@@ -891,6 +891,49 @@ def test_unrelated_loops_reusing_a_target_name_stay_unambiguous(
     assert [(r.class_name, r.kind) for r in _inventory_of(tmp_path, body)] == [("Solo", "x.solo")]
 
 
+def test_a_module_level_match_statement_registers_at_module_scope(
+    tmp_path: Path,
+) -> None:
+    """A module-level `match` is import-time code: its case bodies stay at
+    module scope, so a registration inside one is attributed exactly like a
+    direct call. A scanner that never traversed match statements would leave
+    the whole module out of the universe (the site scan would see no registrar
+    reference at all), silently omitting a reachable registration site from
+    every downstream proof instead of proving it."""
+    body = (
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "_SHIPPED = True\n"
+        "\n"
+        "\n"
+        "class Matched:\n"
+        "    kind = 'x.matched'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "match _SHIPPED:\n"
+        "    case True:\n"
+        "        register_node(Matched)\n"
+        "    case _:\n"
+        "        pass\n"
+    )
+    assert [(r.class_name, r.kind) for r in _inventory_of(tmp_path, body)] == [
+        ("Matched", "x.matched")
+    ]
+
+    root = _synthetic_repo(
+        tmp_path,
+        registration_files={"packages/x/src/x/reg.py": body},
+        unreachable=set(),
+        dispositioned=set(),
+    )
+    assert set(scan_registration_modules(root)) == {"x.reg"}, (
+        "a module whose only registrar call sits in a match case must still "
+        "enter the universe — skipping match statements hides the whole site"
+    )
+
+
 # --- static extraction: unsupported forms fail closed --------------------------------
 
 
@@ -1010,6 +1053,25 @@ def test_a_loop_call_not_passing_the_target_fails_closed(tmp_path: Path) -> None
     )
 
 
+def test_a_loop_target_shadowing_a_module_name_fails_closed(tmp_path: Path) -> None:
+    """A single registration loop whose target shadows a module-level
+    constant or class fails closed exactly like a repeated target: attribution
+    must not depend on guessing which binding a shadowed name denotes, so the
+    binding has to be renamed before the inventory attributes the loop."""
+    body = _two_class_body("from maistro.graph.nodes import register_node")
+    _assert_unsupported(
+        tmp_path,
+        body
+        + "\n\n_ALPHA_KIND = 'x.alpha'\nfor _ALPHA_KIND in (Beta,):\n    register_node(_ALPHA_KIND)\n",
+        "ambiguous loop bindings",
+    )
+    _assert_unsupported(
+        tmp_path,
+        body + "\n\nfor Alpha in (Beta,):\n    register_node(Alpha)\n",
+        "ambiguous loop bindings",
+    )
+
+
 def test_a_non_literal_kind_fails_closed(tmp_path: Path) -> None:
     _assert_unsupported(
         tmp_path,
@@ -1046,4 +1108,26 @@ def test_a_dynamic_loop_iterable_fails_closed(tmp_path: Path) -> None:
         body + "\n\ndef candidates():\n    return (Alpha,)\n"
         "\nfor _cls in candidates():\n    register_node(_cls)\n",
         "dynamic registration sequence",
+    )
+
+
+def test_a_registrar_call_in_a_match_header_fails_closed(tmp_path: Path) -> None:
+    """The match subject is evaluated at import time but is not a
+    statement-position registration call: a registrar reference there is
+    deferred, so it is diagnosed rather than silently dropped. A scanner that
+    never looked inside match statements would omit the whole module from the
+    universe instead of failing closed on the reference it cannot attribute."""
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "\n"
+        "class Guarded:\n"
+        "    kind = 'x.guarded'\n"
+        "\n"
+        "\n"
+        "match register_node(Guarded):\n"
+        "    case _:\n"
+        "        pass\n",
+        "deferred registration",
     )

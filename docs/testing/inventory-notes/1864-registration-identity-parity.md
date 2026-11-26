@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +65
+  packages/maistro-core/tests: +68
 ---
 
 # 1864-registration-identity-parity
@@ -9,7 +9,7 @@ Issue #1864 adds a statically derived registration-identity layer beside the
 existing composition guards, extending the existing suite file in the same
 directory:
 `packages/maistro-core/tests/graph/nodes/test_production_registration_universe.py`
-(+65 collected node IDs net, all under `packages/maistro-core/tests`).
+(+68 collected node IDs net, all under `packages/maistro-core/tests`).
 
 What moved and why:
 
@@ -48,15 +48,37 @@ What moved and why:
 - **Provenance:** `test_production_registration_universe.py` predates this
   change — it exists on the develop base `b1fc9a544f` with 14 collected
   tests from prior rounds' partial work. This change extends it in place
-  (net 14 → 79); every prior round's test continues to run unrenamed.
+  (net 14 → 79; the repair round below extends the same file to 82); every
+  prior round's test continues to run unrenamed.
 - Two existing assertions in the file import the guards' own sweep
   functions (`shipped_kinds`, `_kinds_declaring_authorities`) to prove the
   sweeps and the reconciled universe agree — cross-file, so neither guard
   can silently shrink without failing here.
+- **Repair round (branch head `6ef4c5c2e9`, merge of develop `5ca5a969d1`):
+  extractor fail-closed gaps found in verification, each proven to fail
+  against the pre-fix extractor and pass post-fix.**
+  (1) `ast.Match` was never traversed, so a module whose only registration
+  sits inside a module-level `match` case vanished from the site scan and
+  the expected inventory entirely (executed probe: 0 refs, empty
+  inventory, no diagnosis) — match case bodies now stay at their enclosing
+  scope like if/try bodies, while subject, patterns and guards defer; a
+  registrar reference in a match header now fails closed.
+  (2) `_reject_ambiguous_loops` computed `shadowed` as a subset of
+  `duplicated`, so the docstring's "target shadowing a module-level name"
+  clause was never enforced for a single loop (executed probe: a lone
+  shadowing registration loop was accepted); shadowing module-level string
+  constants or classes is now rejected exactly like a repeated target. No
+  production registration module regressed (the only shipped registration
+  loop target, `creative_nodes._node_cls`, neither repeats nor shadows).
+  Three tests added (+3 net). Full core CI selection at this head:
+  `pytest packages/maistro-core/tests --timeout=30 -q` → 17792 passed,
+  1302 skipped, 7 xfailed, 0 failed (6:20 wall clock); reachability and
+  disposition gates exit 0.
 
 The fresh-process probe and parity assertions execute under the existing
 core CI selection (`uv run pytest packages/maistro-core/tests --timeout=30 -q`;
 the `graph` partition of it is the suite these files live in).
 
 Collection verified via `scripts/check-suite-inventory.py --suite
-packages/maistro-core/tests --update`.
+packages/maistro-core/tests` (the repair round's +3 is folded into this
+note's front-matter delta, +65 → +68).

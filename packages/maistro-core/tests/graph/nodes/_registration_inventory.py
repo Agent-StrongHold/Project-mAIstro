@@ -240,6 +240,7 @@ _COMPOUND: Final[tuple[type[ast.stmt], ...]] = (
     ast.With,
     ast.AsyncWith,
     ast.Try,
+    ast.Match,
     *((ast.TryStar,) if hasattr(ast, "TryStar") else ()),
 )
 
@@ -311,9 +312,11 @@ def _statement_expressions(stmt: ast.stmt) -> list[ast.expr]:
 
 
 def _condition_expressions(stmt: ast.stmt) -> list[ast.expr]:
-    """Expressions of the condition/with heads a statement can have."""
+    """Expressions of the condition/with/match heads a statement can have."""
     if isinstance(stmt, (ast.If, ast.While, ast.Assert)):
         return [stmt.test]
+    if isinstance(stmt, ast.Match):
+        return [stmt.subject]
     if isinstance(stmt, (ast.With, ast.AsyncWith)):
         exprs = [item.context_expr for item in stmt.items]
         exprs.extend(
@@ -426,6 +429,16 @@ def _collect_compound(
         if isinstance(getattr(handler, "type", None), ast.expr):
             _scan_expr(handler.type, out, imports, "nested", None, None)
         _collect_scope(handler.body, nested, loop_target, imports, out, loops)
+    # `match` case bodies are import-time code like if/try bodies: a module-level
+    # case body stays at its enclosing scope (attributable), while the patterns
+    # and guards defer like the header expressions above. Skipping this loop
+    # would silently drop every registration inside a match case — a module
+    # whose only registrar call sits in one would vanish from the scan.
+    for case in getattr(stmt, "cases", []) or []:
+        _scan_expr(case.pattern, out, imports, "nested", None, None)
+        if isinstance(case.guard, ast.expr):
+            _scan_expr(case.guard, out, imports, "nested", None, None)
+        _collect_scope(case.body, nested, loop_target, imports, out, loops)
 
 
 def _collect_loop(
@@ -602,19 +615,22 @@ def _reject_ambiguous_loops(
     """Loop bindings that participate in registration must be unambiguous
     before any are resolved: two registration loops sharing a target name
     (or a target shadowing a module-level name) would conflate unrelated
-    registrations. Unrelated loops that carry no registrar calls are not
-    considered."""
+    registrations, so either form fails closed — a registration loop whose
+    target repeats across loops, or hides a module-level constant/class
+    name, must rename its binding before this inventory attributes it.
+    Unrelated loops that carry no registrar calls are not considered."""
     targets = [
         s.target.id
         for s in loops
         if isinstance(s.target, ast.Name) and _loop_body_refs(refs, s.target.id)
     ]
     duplicated = {name for name in targets if targets.count(name) > 1}
-    shadowed = duplicated & (set(constants) | set(classes))
-    if duplicated or shadowed:
+    shadowed = set(targets) & (set(constants) | set(classes))
+    ambiguous = duplicated | shadowed
+    if ambiguous:
         raise UnsupportedRegistration(
             f"{dotted}: ambiguous loop bindings for registrar calls — loop "
-            f"target(s) {sorted(duplicated)} repeat or shadow module-level names"
+            f"target(s) {sorted(ambiguous)} repeat or shadow module-level names"
         )
 
 
