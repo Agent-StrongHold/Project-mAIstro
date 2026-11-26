@@ -55,64 +55,7 @@ type ProjectState = {
   message: string;
 };
 
-// M7-A12 (#988): opening work in Design Studio mints canonical objects — a
-// Project-scoped Goal revision (#458, `maistro.goals` identity `goal_id` with
-// exact `goal_revision`), a CreativeBrief revision projected onto that exact
-// revision (#774), and one canonical Graph/Run carrying the pack binding and
-// the exploration params (#793/#984, ADR-092926-7a01: the loop is one Run).
-// There is no DesignRun: these types are client *projections* of the canonical
-// records returned by their owning surfaces, never a product-local kind.
-type PackSummary = {
-  pack_id: string;
-  name: string;
-  summary: string;
-  execute_backends: string[];
-  artifact_kinds: string[];
-};
-type GoalRecord = { goal_id: string; goal_revision: string | number; title: string };
-type BriefRecord = { brief_id: string; brief_revision: string | number; goal_id: string };
-type LoopRunRecord = { run_id: string; goal_id: string; pack_id: string; width: number; policy: string };
-type OpenLoop = { goal: GoalRecord; brief: BriefRecord; run: LoopRunRecord };
-type SurfaceStatus = "probing" | "ready" | "unavailable";
-type LoopSurface = { status: SurfaceStatus; cause: string | null };
-type LoopSurfaces = { packs: LoopSurface; goals: LoopSurface; briefs: LoopSurface; runs: LoopSurface };
-
-// The one closed pack set (#793). Presented as the selector listing the pack
-// registry serves; a pack is a bundle of defaults for the one loop, never a
-// route, a product, or a Goal identity.
-const PACK_IDS = ["product", "game", "book"] as const;
-const EXPLORATION_POLICIES = ["focused", "balanced", "wide"] as const;
-type ExplorationPolicy = (typeof EXPLORATION_POLICIES)[number];
-const DEFAULT_WIDTH = 3;
-const WIDTH_MIN = 1;
-const WIDTH_MAX = 8;
-
-const LOOP_SURFACE_LABELS: Record<keyof LoopSurfaces, string> = {
-  packs: "Pack listing (/v1/design/packs, #793)",
-  goals: "Goal revisions (/v1/goals, #458)",
-  briefs: "CreativeBrief revisions (/v1/creative-briefs, #774)",
-  runs: "Run mint (/v1/runs, ADR-092926-7a01)",
-};
-
-function loopSurfaceCause(err: unknown): string {
-  if (err instanceof ApiError) return `HTTP ${err.status} from ${err.path}`;
-  return err instanceof Error ? err.message : String(err);
-}
-
-function unavailableSurface(err: unknown): LoopSurface {
-  return { status: "unavailable", cause: loopSurfaceCause(err) };
-}
-
-function readySurface(): LoopSurface {
-  return { status: "ready", cause: null };
-}
-
-const LOOP_SURFACES_PROBING: LoopSurfaces = {
-  packs: { status: "probing", cause: null },
-  goals: { status: "probing", cause: null },
-  briefs: { status: "probing", cause: null },
-  runs: { status: "probing", cause: null },
-};
+import { DEFAULT_WIDTH, EXPLORATION_POLICIES, PACK_IDS, WIDTH_MAX, WIDTH_MIN, type BriefRecord, type ExplorationPolicy, type GoalRecord, type LoopRunRecord, type LoopSurface, type LoopSurfaces, type OpenLoop, type PackSummary } from "../lib/designLoop";
 
 const ARTIFACT_MODES: ArtifactMode[] = [
   { id: "deck", name: "Presentation / Deck", description: "Multi-page presentations with slide navigation, presentation mode, and deck export." },
@@ -138,9 +81,7 @@ function resourceSummary(skillCount: number, systemCount: number): string {
 function fieldValue(field: DiscoveryField): string {
   return field.default ?? field.options?.[0] ?? "";
 }
-
 const FIXED_PAGE_STORAGE_KEY = "hive_design_studio_fixed_page_artifacts";
-
 type PersistedFixedPageArtifact = {
   markup: string;
   trustRecommendation: VisualArtifactTrustRecommendation;
@@ -198,6 +139,34 @@ function loadPersistedArtifacts(): Partial<Record<FixedPageMode, PersistedFixedP
     return {};
   }
 }
+
+const LOOP_SURFACE_LABELS: Record<keyof LoopSurfaces, string> = {
+  packs: "Pack listing (/v1/design/packs, #793)",
+  goals: "Goal revisions (/v1/goals, #458)",
+  briefs: "CreativeBrief revisions (/v1/creative-briefs, #774)",
+  runs: "Run mint (/v1/runs, ADR-092926-7a01)",
+};
+
+function loopSurfaceCause(err: unknown): string {
+  if (err instanceof ApiError) return `HTTP ${err.status} from ${err.path}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
+function unavailableSurface(err: unknown): LoopSurface {
+  return { status: "unavailable", cause: loopSurfaceCause(err) };
+}
+
+function readySurface(): LoopSurface {
+  return { status: "ready", cause: null };
+}
+
+const LOOP_SURFACES_PROBING: LoopSurfaces = {
+  packs: { status: "probing", cause: null },
+  goals: { status: "probing", cause: null },
+  briefs: { status: "probing", cause: null },
+  runs: { status: "probing", cause: null },
+};
+
 
 export default function DesignStudio() {
   const headingRef = useRef<HTMLDivElement>(null);
@@ -493,7 +462,7 @@ export default function DesignStudio() {
 
       {/* M7-A12 (#988): the loop start is the FIRST committed choice — pack,
           Goal revision, CreativeBrief revision, exploration params — and it
-          mints canonical objects only. There is no DesignRun, no intake phase
+          mints canonical objects only — no product-local loop kind, no intake phase
           enum, and no client-side system of record: every id shown here came
           from an API. The visual-mode picker below stays as the
           execute-backend choice for a loop that already exists. */}
