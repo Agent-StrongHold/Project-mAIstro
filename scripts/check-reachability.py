@@ -260,6 +260,14 @@ STATIC_ROOTS = (
     # invocation a third-party CI performs, so the runner is the harness's
     # in-graph root, not unreachable library debt.
     "maistro_ext_harness.cli",
+    # The in-repo cosmic-ray operator provider (PR #1994): loaded only by the
+    # stevedore entry point [cosmic_ray.operator_providers] in
+    # packages/maistro-core/pyproject.toml, inside the dev-only mutation
+    # toolchain — the maistro_registry.cli precedent for a module whose only
+    # consumer is its own entry point. It lives at maistro/ top level rather
+    # than under maistro.testing so that rooting it does not execute that
+    # package's __init__ and reclassify its test-support imports.
+    "maistro.mutation_operator_provider",
 )
 
 # Package modules reached only through runtime strings or external launchers.
