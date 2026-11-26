@@ -110,7 +110,11 @@ def test_entra_only_route_rejects_password_login_before_password_lookup(monkeypa
         "get_settings",
         lambda: SimpleNamespace(human_auth_mode="entra"),
     )
-    monkeypatch.setattr(auth, "_users", lambda: pytest.fail("password lookup must not run"))
+    monkeypatch.setattr(
+        auth.username_registry,
+        "resolve",
+        lambda *_a, **_k: pytest.fail("password lookup must not run"),
+    )
 
     with pytest.raises(HTTPException) as exc:
         auth.login(

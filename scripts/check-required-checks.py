@@ -244,6 +244,57 @@ def base_coupled(rows: list[tuple[str, str, str]]) -> set[tuple[str, str]]:
     return {(wf, check) for wf, check, scope in rows if "base" in scope}
 
 
+def paths_filters() -> dict[str, list[str]]:
+    """Check name -> the workflow-level ``paths:`` filter guarding its producer.
+
+    GitHub evaluates a trigger's ``paths:`` filter before any job of the
+    workflow exists, so a pull request outside the filter produces no check
+    run at all -- not even ``skipped`` (#2059 repair). ``check-gates-ran.py``
+    uses this map to prove, from its measured changed-file envelope, that a
+    required check is absent *by producer design* rather than still arriving.
+
+    The globs are returned raw and uninterpreted: this script owns the
+    workflow-trigger contract, while the evaluator owns the match semantics
+    and fails closed on any glob it cannot model. Job-level conditions are
+    deliberately out of scope here -- a job ``if:`` still creates a check run
+    (conclusion ``skipped``), which the evaluator already reconciles through
+    its path-scoped skip rule.
+
+    Raises ContractError when a ``paths:`` filter is not a non-empty list of
+    strings (a filter the contract cannot express) or when two workflows map
+    one check name to different filter lists -- the same collision class
+    ``_refuse_duplicates`` refuses for names themselves.
+    """
+    filters: dict[str, list[str]] = {}
+    for path in _workflow_files():
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        pull_request = _pull_request_trigger(doc)
+        if pull_request is None:
+            continue
+        globs = pull_request.get("paths") if isinstance(pull_request, dict) else None
+        if globs is None:
+            continue
+        if not isinstance(globs, list) or not globs:
+            raise ContractError(f"{path.name}: `paths:` must be a non-empty list of globs")
+        if not all(isinstance(glob, str) and glob for glob in globs):
+            raise ContractError(f"{path.name}: `paths:` must be a non-empty list of globs")
+        for job_id, job in (doc.get("jobs") or {}).items():
+            job = job or {}
+            try:
+                names = _check_names(job_id, job)
+            except ContractError as exc:
+                raise ContractError(f"{path.name}: {exc}") from exc
+            for name in names:
+                seen = filters.get(name)
+                if seen is not None and seen != globs:
+                    raise ContractError(
+                        f"two workflows map the check name {name!r} to different "
+                        f"`paths:` filters: {seen!r} and {globs!r}"
+                    )
+                filters.setdefault(name, list(globs))
+    return filters
+
+
 def _develop_queue_policy_gaps(policy: dict) -> list[str]:
     """The checked-in develop queue policy must match the reviewed batching posture."""
     gaps: list[str] = []

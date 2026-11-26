@@ -26,7 +26,7 @@ from models.schemas import (
     ChatMessage,
     ChatSession,
     Container,
-    HiveUser,
+    HiveAccount,
     MCPServer,
     MCPTool,
     MemoryEntry,
@@ -105,7 +105,7 @@ backlog_items: ModelStore = ModelStore("backlog_items", BacklogItem)
 # write-through wrapper could have observed. See ADR-082926-0b72.
 chat_sessions: ModelStore = ModelStore("chat_sessions", ChatSession)
 cli_sessions: JsonStore = JsonStore("cli_sessions")
-users: ModelStore = ModelStore("users", HiveUser, unique_fields=("username",))
+users: ModelStore = ModelStore("users", HiveAccount, unique_fields=("username",))
 sessions: JsonStore = JsonStore("sessions")
 program_contexts: JsonStore = JsonStore("program_contexts")
 brief_interviews: JsonStore = JsonStore("brief_interviews")
@@ -139,7 +139,6 @@ registration_invitations: JsonStore = JsonStore("registration_invitations")
 #: Canonical case-folded username -> user-id claims. Account creation writes
 #: this index and the user row in one durable transaction.
 username_claims: JsonStore = JsonStore("username_claims")
-
 _all_model_stores: list[ModelStore] = [
     missions,
     schedules,

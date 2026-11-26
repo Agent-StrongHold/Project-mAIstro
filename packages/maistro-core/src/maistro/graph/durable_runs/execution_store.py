@@ -16,6 +16,7 @@ from maistro.runs.lifecycle import (
     compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_leaseless_orphaned_attempt,
     recover_orphaned_attempt,
     renew_attempt_lease,
     renewed_lease,
@@ -220,8 +221,17 @@ class DurableRunExecutionStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         def update(record: DurableRunRecord) -> DurableRunRecord:
+            if expected_current_attempt_id is not None:
+                attempts = [a for a in record.attempts if a.node_run_id == node_run_id]
+                current = max(attempts, key=lambda a: a.ordinal, default=None)
+                if current is not None and current.attempt_id != expected_current_attempt_id:
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current.attempt_id!r}"
+                    )
             node_runs = list(record.node_runs)
             for index, node_run in enumerate(node_runs):
                 if node_run.node_run_id != node_run_id:
@@ -252,6 +262,7 @@ class DurableRunExecutionStore:
                     result=result,
                     error=error,
                     accepted_outcome=accepted_outcome,
+                    expected_current_attempt_id=expected_current_attempt_id,
                 )
             updated = await self._mutate(
                 lambda record: self._replace_node_run(record, canonical_node)
@@ -490,6 +501,36 @@ class DurableRunExecutionStore:
         await self._mutate(update)
         assert settled is not None
         return settled.model_copy(deep=True)
+
+    async def recover_leaseless_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Stamp CANCELLED+RECOVERED for a lease-less orphan under explicit resume.
+
+        Durable-graph local writer for ADR-082826-08f0's leaseless-under-resume
+        row. Leased work uses ``reclaim_expired_attempt``; prelaunch CREATED uses
+        ``compensate_unlaunched_attempt``.
+        """
+        settled_local: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled_local
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled_local = recover_leaseless_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled_local
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(attempt_id)
+
+        await self._mutate(update)
+        assert settled_local is not None
+        return settled_local.model_copy(deep=True)
 
     async def recover_orphaned_attempt(
         self,

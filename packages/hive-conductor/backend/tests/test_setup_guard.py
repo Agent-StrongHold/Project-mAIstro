@@ -58,10 +58,10 @@ def test_public_setup_api_rejects_weak_admin_password_before_claim(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
 
@@ -104,10 +104,10 @@ def test_public_setup_api_reports_typed_validation_errors_without_state(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
 
@@ -128,12 +128,12 @@ def test_public_setup_api_reports_typed_validation_errors_without_state(
 def test_first_run_setup_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     """First-run setup (no users yet) must still succeed and create accounts."""
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes.setup import complete_setup
     from services.model_store import ModelStore
 
     # Simulate a fresh, un-provisioned instance: empty users store, no kv.
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     # Ensure the kv-based check also reports "not complete".
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
@@ -164,11 +164,11 @@ def test_requested_identity_failure_aborts_before_creating_accounts(
 
     import stores
     from fastapi import HTTPException
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes.setup import complete_setup
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
     # A None entry in sys.modules makes `from maistro.identity import ...`
@@ -200,11 +200,11 @@ def test_requested_identity_persistence_failure_aborts_before_creating_accounts(
     """A selected identity cannot report setup success without a durable seed."""
     import stores
     from fastapi import HTTPException
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes.setup import complete_setup
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
     monkeypatch.setattr("routes.setup._init_vault_best_effort", lambda: True)
@@ -277,11 +277,11 @@ def test_first_run_provisions_vault_and_persists_seed(
         pytest.skip("identity extra (bip_utils/pynacl) not installed")
 
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes.setup import complete_setup
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser)
+    fresh_users = ModelStore("users", HiveAccount)
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
     vault_file = tmp_path / "vault" / "secrets.age"
@@ -322,10 +322,10 @@ def test_identical_admin_and_user_usernames_are_rejected_before_any_write(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.model_store import ModelStore
 
-    fresh_users = ModelStore("users", HiveUser, unique_fields=("username",))
+    fresh_users = ModelStore("users", HiveAccount, unique_fields=("username",))
     monkeypatch.setattr(stores, "users", fresh_users)
     monkeypatch.setattr("routes.setup._get_kv", lambda: None)
 

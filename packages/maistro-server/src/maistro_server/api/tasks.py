@@ -22,13 +22,13 @@ from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, TaskCreatedResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
+def _owner_id(auth: Principal | None) -> str:
     """Compatibility view of the non-delegated effective owner."""
     return "dev" if auth is None else auth.user_id
 
@@ -177,18 +177,32 @@ async def cancel_task(
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
     delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
 ) -> TaskCancelledResponse:
+    """Cancel a task and report what the cancellation actually proved.
+
+    ``cancelled`` keeps its meaning — the request was accepted and the canonical
+    Run is durably fenced. ``disposition``/``stop_confirmed`` are the separate
+    physical fact (#1242), in the same vocabulary the Run and Conductor
+    cancellation receipts use, so a caller cannot read acceptance as a stop
+    nobody observed.
+    """
     owner, _, _, _ = resolve_delegated_identity(auth, delegation)
     # Shared cancel (#1690): None — unknown to this process and to the shared
     # durable tier — is the 404; a task known only through the durable tier is
     # cancelled through the same canonical Run authority the owning replica's
     # own cancel drives, so the request need not land on the accepting replica
     # to reach the work.
-    outcome = await queue.cancel_shared(task_id, user_id=owner)
+    outcome = await queue.cancel_receipt(task_id, user_id=owner)
     if outcome is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    if not outcome:
+    if not outcome.cancelled:
         raise HTTPException(status_code=400, detail="Cannot cancel task in current state")
-    return TaskCancelledResponse(cancelled=True)
+    return TaskCancelledResponse(
+        cancelled=True,
+        disposition=outcome.disposition.value,
+        stop_confirmed=outcome.stop_confirmed,
+        diagnosis=outcome.diagnosis,
+        run_id=outcome.run_id,
+    )
 
 
 @router.get("")

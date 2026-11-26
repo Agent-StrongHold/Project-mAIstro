@@ -170,6 +170,32 @@ async def test_successful_stage_is_one_completed_node_run_and_attempt() -> None:
     assert run.status is RunStatus.COMPLETED
 
 
+async def test_a_yielded_stage_is_an_integrity_error_not_a_silent_success() -> None:
+    """A stage whose operation paused (ExecutionYielded) returns a YIELDED
+    Attempt with no captured result. Canvas has no pause semantics, so the
+    stage must refuse truthfully rather than project an empty receipt — the
+    degenerate branch the projection guard exists for."""
+    from maistro.runs.execution import ExecutionYielded
+
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-yield",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+
+    async def pauses() -> list[str]:
+        raise ExecutionYielded(awaits_human=True)
+
+    with pytest.raises(RunIntegrityError, match="without a completed Attempt"):
+        await adapter.execute_stage(run_id, "generate", pauses)
+
+    attempts = await runs.list_attempts((await runs.list_node_runs(run_id))[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.YIELDED]
+
+
 async def test_failed_stage_retry_keeps_both_attempts_under_same_node_run() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(

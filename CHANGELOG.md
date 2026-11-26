@@ -23,6 +23,33 @@ or placeholder-only section.
 
 ## [Unreleased]
 
+### Added
+
+- **Atomic backlog claim/lease semantics for authorized Workspace actors
+  (#100).** The Workspace BacklogItem service (#98) gains the claim service
+  its reserved fields were held for: `claim`/`renew_claim`/`release_claim` on
+  both stores (one atomic claim per item — the loser gets the holder's
+  receipt), policy gates inside the same critical section (claimable status
+  pool, satisfied dependencies, #103 autonomy modes with human-only and
+  unknown tokens refusing Agent claims, declared scope checked against
+  allowed/protected scope), a monotone per-item fence token required to edit
+  an actively claimed item (a stale holder is refused even at the right
+  version), and deterministic re-eligibility (lease expiry, explicit release,
+  status moves; retiring a claimed item releases the claim in the same
+  write). HTTP: `POST .../backlog/{id}/claim`, `/claim/renew`,
+  `/claim/release` (contributor-gated) and `GET .../backlog/{id}/claim`; the
+  item payload itself carries claimant, lease and fence. A claim is work
+  coordination, never Goal ownership: it never touches `goal_ref` or the
+  canonical Goal -> Graph -> Run spine.
+
+- **Read-only, acceptance-based delivery planning for maintainers (#1629).**
+  `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
+  reviewed GitHub snapshot. It refuses work selection on stale/incomplete
+  ownership coverage, does not treat merged PRs as acceptance evidence, and
+  protects reserved task scopes. A dated example plan, sample seed, operator
+  skill and 56 focused adversarial cases document the non-dispatch boundary.
+  This does not configure or operate the external orchestrator.
+
 ### Changed
 
 - **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
@@ -191,6 +218,28 @@ or placeholder-only section.
   (#2303)
 
 ### Security
+
+- **docker CLI vendored klauspost/compress raised to v1.20.2 for the Grype
+  High (#2059).** The Grype cross-check (`--fail-on high --only-fixed`) in
+  "Container scan + SBOM + cosign" failed on `maistro-engine:pr-2059`
+  (security.yml run 43878205511, job 133336745388): GO-2026-6865 (High,
+  fixed in 1.20.2) in the vendored module set of the source-built
+  `/usr/local/bin/docker`. Both Dockerfiles that build that CLI add
+  `github.com/klauspost/compress@v1.20.2` to the stage's `go get`;
+  `tests/test_docker_cli_vendored_advisory_floors.py` holds the pin closed.
+
+- **Container-gate images move to CPython 3.13.18 / 3.12.16 for the grype
+  CPython-binary CRITICAL (#2059).** The Grype cross-check
+  (`--fail-on high --only-fixed`) failed on `hive-conductor:pr-2059`
+  (security.yml run 43844074725): CVE-2026-115557 (CRITICAL, fixed in
+  3.13.18/3.12.16) in the CPython binary the pinned bases ship. The
+  `python:3.13.18-slim-bookworm` and refreshed `python:3.12-slim`
+  (3.12.16) digests are re-recorded in `quality/image-pins.json` and
+  referenced verbatim by every Dockerfile that builds from them (including
+  the canvas-smoke control image); security.yml's docker-run identity
+  asserts follow to `(3, 13, 18)`. New
+  `tests/test_cpython_base_grype_floor.py` holds the floor and the
+  assert-vs-pin equivalence closed.
 
 - **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
   the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
@@ -815,6 +864,34 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **Supply-chain floors raised above four new advisories (#2059).** The frozen
+  lock now resolves dnspython ≥ 2.9.2 (CVE-2026-128089), graphql-core ≥ 3.3.1
+  (CVE-2026-119286), joserfc ≥ 1.7.6 (CVE-2026-119284) and opentelemetry-api
+  ≥ 1.45.2 (CVE-2026-126360); every advisory has a released fix, so none is
+  allowlist-triaged. The pip-audit gate verdict is unchanged.
+
+- **Vulture scans have one owner per existing event profile (#1357).** The
+  required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
+  Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,
+  trusted-base semantics, required status names and debt ledgers are unchanged.
+
+- **A document's status lives in front matter and nowhere else
+  (`ADR-092126-a28a`).** (#1532) The duplicated body `**Status:**` line is removed
+  from all 94 documents under `docs/adr/` and `docs/specs/` that carried one,
+  in both the bare and list-item spellings. Nothing but the gate written to
+  police them ever read those lines -- every other tool already read front
+  matter -- and storing one fact twice is what produced `#387` in the first
+  place: ADR-046's three-week contradiction, 28 more banked behind it, and 19
+  specs claiming a status (`Active`) that is not in the vocabulary at all.
+  `scripts/check-adr-status-language.py` accordingly changes its first
+  category from *agreement* to *absence*: any body status line is a finding
+  whatever it says, because one that agrees today is a second place to edit
+  tomorrow. Categories 2 and 3 (replacement banners, status-asserting prose)
+  are unchanged -- they police claims front matter cannot express. Operators
+  and authors read status from front matter, which every tool already acts on;
+  the scaffolding never emitted a body line, so nothing needs to change in how
+  new documents are written.
 
 - **Quality and SAST checks can be retried independently (#1357).** Each Quality
   obligation and SAST scanner has its own job. The existing required check names
@@ -2345,6 +2422,42 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Security
+
+- **Container-gate repair round: CPython base refreshes, docker/cli v29.9.3,
+  and the temporalio/browser-stack floors that close its scan findings (#2110).**
+  The `Container scan + SBOM + cosign` gate at d3c793ae074e failed on four
+  HIGH findings (one CRITICAL) in `temporalio/bridge/Cargo.lock` — the Rust
+  `zip` crate 8.6.0 vendored inside the temporalio 1.34.0 wheel that only the
+  rsi-runner image's sync selection installs: CVE-2026-115905 (CRITICAL,
+  fixed 9.0.5), CVE-2026-115907/115908/115909 (HIGH, fixed 9.0.0). The root
+  lock now pins temporalio 1.36.1 (bridge `zip` 9.5.1; nexus-rpc moves
+  1.4.0 → 1.5.0 with its pin). Re-running the gate's grype leg locally on the
+  rebuilt image exposed the findings CI would have hit next, and they are
+  closed in the same round: the `python:3.12-slim` and
+  `python:3.13.16-slim-bookworm` digests move to the 3.12.16 / 3.13.18
+  releases (CVE-2026-115557, CRITICAL, fixed 3.12.16/3.13.18, plus
+  CVE-2026-114583 / CVE-2026-12345 on the same binary), the docker CLI is
+  rebuilt from docker/cli v29.9.3 (vendors go-jose v4.1.7 ≥ the CVE-2026-116587
+  fix and klauspost/compress v1.20.2 ≥ the GO-2026-6865 fix; x/net still
+  patched in place to v0.62.0 for CVE-2026-78661), and constraint floors pin
+  playwright ≥1.65.2 / patchright ≥1.64.4 so the browser drivers stop
+  bundling Node 24.21.0 (CVE-2026-106069 / CVE-2026-105483). All pins are
+  re-recorded in `quality/image-pins.json`; the conductor identity contract
+  asserts 3.13.18; the e2e and sbx-tests images ride the refreshed 3.12
+  digest. All four production images rebuild and rescan clean under the
+  gate's exact trivy (HIGH/CRITICAL, exit-code 1, ignore-unfixed) and grype
+  (--fail-on high --only-fixed) invocations.
+
+- **Windows bootstrap no longer overrides execution policy when it elevates
+  or resumes (#2110).** `get.ps1` removed the `-ExecutionPolicy Bypass`
+  tokens from its `Invoke-Elevated` and RunOnce resume commands: an
+  administrator-approved `AllSigned`/`RemoteSigned` policy now stays in
+  force across the elevation and the post-logon resume instead of being
+  silently dropped by the installer, and the download-and-run help text
+  documents the administrator-approved prerequisite, read-only policy
+  inspection, and fail-closed guidance. Ordinary policy resolution, `RunAs`,
+  quoting, argument passthrough, and the HKCU RunOnce destination are
+  unchanged; static and mocked-PowerShell regressions pin the behavior.
 
 - **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
   The `age` binaries in the conductor image and the static Docker CLI in the

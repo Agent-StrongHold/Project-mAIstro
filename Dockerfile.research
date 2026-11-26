@@ -151,18 +151,28 @@ RUN uv export --locked --package maistro-server \
 # `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
 # #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
 # and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
-# versions upstream (go-jose 4.1.7, compress 1.20.2 — verified in its
-# vendor.sum), so only the x/net patch below remains.
+# versions upstream (go-jose 4.1.7, compress 1.20.2 — the compress floor also
+# closes GO-2026-6865 High, Grype cross-check run 43878205511), so only the
+# x/net patch below remains.
 FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
 ARG DOCKER_CLI_VERSION=29.9.3
 ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# Same docker/cli pin as the root Dockerfile's identical stage (#2110
+# CI-repair round): v29.9.1 vendored go-jose v4.1.5, x/net v0.60.0 and
+# klauspost/compress v1.20.1 — CVE-2026-78661 (x/net, fixed v0.62.0) and
+# CVE-2026-116587 (go-jose, fixed v4.1.6) fail the trivy leg while
+# GO-2026-6865 (klauspost/compress, fixed v1.20.2) fails the grype leg.
+# v29.9.3 vendors go-jose v4.1.7 and klauspost/compress v1.20.2; no tag
+# ships x/net ≥ v0.62.0 yet, so the build upgrades that module in place
+# (with the same belt-and-braces compress pin as the root Dockerfile) and
+# re-vendors, then compiles.
+ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
 RUN apk add --no-cache git && \
     git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
     cd /src/docker-cli && \
     test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
     cp vendor.mod go.mod && cp vendor.sum go.sum && \
-    go get golang.org/x/net@v0.62.0 github.com/klauspost/compress@v1.20.2 && \
-    go mod vendor && \
+    go get "${X_NET_MODULE_UPGRADE}" github.com/klauspost/compress@v1.20.2 && go mod vendor && \
     mkdir -p /out && \
     # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
     # supersedes it, so build from the module set, not the vendored tree.
@@ -180,6 +190,19 @@ RUN apk add --no-cache git && \
 # `--no-cache-filter production-apt`; release.yml builds cold and needs no
 # flag. Same base line as the builder — see the #2430 rejection note above:
 # 3.15 is unbuildable for this image's locked install set.
+#
+# 2026-11-23 (#1629 CI repair): `--no-cache-filter` alone cannot keep this
+# stage's freshness propagating — buildx keys are computed pre-execution
+# from the instruction string and the parent key chain, so the final
+# `FROM production-apt` vertex keeps replaying its last cached manifest no
+# matter how often apt re-executes. The rsi-runner-r2 scope demonstrated
+# the residual class that day: linux-libc-dev scanned at 6.12.117-1 while
+# the same run's apt fetched 6.12.118-1, and the #1152 pin-bump remedy had
+# no headroom (python:3.12-slim still resolved to sha256:5e2bdb1b…). This
+# stage's key is therefore mutated per run: both CI workflows pass
+# --build-arg OS_REFRESH=<run_id>-<attempt>, and the builder stage above
+# stays on the stable pinned base so the venv keeps its cross-run cache.
+# Local builds default to 0 and keep today's stable-key behaviour.
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
@@ -198,7 +221,11 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 # The libnss3…fonts-liberation block is the Chromium runtime surface for the
 # RESEARCH browser tool. It is isolated to THIS image; the main API image is
 # Wolfi/browser-free.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# The no-op `:` word carries OS_REFRESH into the RUN's instruction so the
+# per-run value is part of the cache key without writing anything to the
+# layer.
+ARG OS_REFRESH=0
+RUN : "os-refresh=$OS_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
     libbrotli1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \

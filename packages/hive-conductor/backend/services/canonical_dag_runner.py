@@ -630,14 +630,33 @@ def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:
 def _node_results(
     record: Any, raw_by_id: Mapping[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
+    """The projected node results, under the shared #2465 disclosure policy.
+
+    A failed node's ``response`` used to be its raw error text — the same
+    evidence the top-level error policy exists to hide, leaking back in
+    through the nested mapping (#2465). Projection applies
+    ``safe_projection.node_failure_text`` here, once, so every transport that
+    projects this mapping (HTTP receipt, websocket frames, SSE recorder)
+    inherits the policy; the raw error remains on the canonical NodeRun for
+    authorized inspection. Successful nodes' responses are the caller's own
+    task output and cross verbatim.
+    """
+    from services.safe_projection import node_failure_text
+
     projected: dict[str, dict[str, Any]] = {}
     for node_run in record.node_runs:
         raw = raw_by_id.get(node_run.node_id, {})
         result = node_run.result if isinstance(node_run.result, Mapping) else {}
+        success = node_run.status is RunStatus.COMPLETED
+        response = (
+            str(result.get("response") or "")
+            if success
+            else node_failure_text(result.get("response") or node_run.error)
+        )
         projected[node_run.node_id] = {
             "role": str(result.get("role") or raw.get("role") or "worker"),
-            "response": str(result.get("response") or node_run.error or ""),
-            "success": node_run.status is RunStatus.COMPLETED,
+            "response": response,
+            "success": success,
             "model": result.get("model") or raw.get("model"),
             **({"isolation": result.get("isolation")} if result.get("isolation") else {}),
         }

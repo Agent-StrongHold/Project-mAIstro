@@ -379,6 +379,10 @@ def test_a_manual_fire_never_moves_the_recurring_cursor(
                 runs_so_far=0,
                 last_fired_at=last_fired,
                 next_due_at=next_due,
+                # The canonical row is the authority a fire spends (#2467):
+                # it carries the actor the routes' own canonical writes stamp,
+                # instead of being rebuilt from the Hive row on the way in.
+                actor_principal_id="user-1",
             )
         )
         try:

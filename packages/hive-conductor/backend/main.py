@@ -253,6 +253,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _lifespan_log.warning("scheduler_start_failed: %s", exc, exc_info=True)
     try:
+        # #1823: a crash between the Goal and brief writes (or after the
+        # durable commit but before its response) leaves a resumable commit
+        # record behind. Recovery is deterministic — the record carries the
+        # pre-minted identities — so startup completes each interrupted pair
+        # instead of leaving a half-complete intake behind.
+        from services.brief_commit import recover_pending_commits
+
+        recovered = await recover_pending_commits()
+        if recovered:
+            _lifespan_log.info(
+                "brief_commit_recovery: %d interrupted commit(s) resumed",
+                len(recovered),
+            )
+    except Exception as exc:
+        _lifespan_log.warning("brief_commit_recovery_failed: %s", exc, exc_info=True)
+    try:
         # SPEC-080126-9e42: the episodic decay cadence. A process-lifetime task,
         # not a /v1/schedules record — decay is a system cadence and should live
         # exactly as long as the process does.
