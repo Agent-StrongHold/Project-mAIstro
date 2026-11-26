@@ -430,9 +430,10 @@ class TestPathsFilters:
     #: #2120 added the image-pin registry, #2371 the grant ledger and the
     #: testing-inventory notes, #2432 gate scripts, #2345 dev-tool
     #: requirements and repair notes, #2450 lock/manifest metadata and the
-    #: Trivy suppression registry -- each a PR surface class that otherwise
-    #: never triggered the producer and left its required row permanently
-    #: absent (rationale in mutation.yml itself).
+    #: Trivy suppression registry, #2442 npm dependency metadata (manifest
+    #: plus lockfile at any packages/ depth) -- each a PR surface class that
+    #: otherwise never triggered the producer and left its required row
+    #: permanently absent (rationale in mutation.yml itself).
     SHIPPED: ClassVar[dict[str, list[str]]] = {
         "Mutation gate (changed critical lines)": [
             "packages/**/*.py",
@@ -448,11 +449,91 @@ class TestPathsFilters:
             "uv.lock",
             "packages/**/pyproject.toml",
             ".trivyignore.yaml",
+            "packages/**/package.json",
+            "packages/**/package-lock.json",
         ]
     }
 
     def test_the_shipped_mutation_filter_is_discovered(self, gate) -> None:
         assert gate.paths_filters() == self.SHIPPED
+
+    @staticmethod
+    def _gh_paths_filter_matches(globs: list[str], path: str) -> bool:
+        """Model GitHub's pull_request.paths filter semantics for the subset
+        the shipped globs use: literal path segments, `*` inside one segment
+        (never crossing `/`), and `**` as a whole segment (zero or more
+        directories). Anything else fails loudly instead of guessing, so a
+        future filter entry the model cannot express breaks this pin rather
+        than silently weakening it."""
+        import re
+
+        def compile_one(g: str) -> str:
+            segments = g.split("/")
+            pieces: list[str] = []
+            for i, segment in enumerate(segments):
+                if segment == "**":
+                    # A trailing `**` also matches files directly under the
+                    # prefix, not only deeper directories; an interior one
+                    # spans zero or more whole directories.
+                    pieces.append("(?:[^/]+/)*.+" if i == len(segments) - 1 else "(?:[^/]+/)*")
+                    continue
+                if "**" in segment or any(ch in segment for ch in "?[]{}"):
+                    raise ValueError(f"unmodeled glob segment: {g!r}")
+                pieces.append("".join("[^/]*" if ch == "*" else re.escape(ch) for ch in segment))
+                if i < len(segments) - 1:
+                    pieces.append("/")
+            return "".join(pieces)
+
+        patterns = [re.compile(compile_one(g) + r"\Z") for g in globs]
+        return any(p.fullmatch(path) for p in patterns)
+
+    def test_npm_dependency_metadata_is_inside_the_mutation_producer_trigger(self, gate) -> None:
+        """Replay of the #2442 incident (head 251b4e2e71eb, react 19.2.0 ->
+        19.3.1 in packages/hive-conductor/tests/e2e). The bump touched only
+        packages/**/package.json + package-lock.json, so mutation.yml's
+        paths filter never fired: 73/74 required checks landed green and
+        `Mutation gate (changed critical lines)` stayed absent, leaving the
+        gates-ran publisher permanently pending ("commit status not
+        successful"). The filter must cover the whole npm-metadata class
+        under GitHub's own match semantics, while staying class-separated
+        from the mutation-critical Python sources it must never silently
+        widen to."""
+        globs = self.SHIPPED["Mutation gate (changed critical lines)"]
+        matches = self._gh_paths_filter_matches
+        # The exact incident envelope, plus the other npm surfaces in the
+        # repo (three manifests and three lockfiles across packages/).
+        for covered in (
+            "packages/hive-conductor/tests/e2e/package.json",
+            "packages/hive-conductor/tests/e2e/package-lock.json",
+            "packages/hive-conductor/frontend/package.json",
+            "packages/hive-conductor/frontend/package-lock.json",
+            "packages/maistro-canvas/frontend/package.json",
+            "packages/maistro-canvas/frontend/package-lock.json",
+            # An existing single-segment glob, so the matcher itself is
+            # proven on shipped syntax rather than only on the new entries.
+            "REPAIR-NOTES-cr-2442.md",
+        ):
+            assert matches(globs, covered), covered
+        # Wrong-reason guards: the npm globs must not swallow neighbouring
+        # classes. A critical Python source is covered by the filter (the
+        # producer must fire there too), but never by the npm-metadata
+        # entries; a sibling test asset is not covered at all.
+        assert not matches(
+            ["packages/**/package.json", "packages/**/package-lock.json"],
+            "packages/maistro-core/src/maistro/privilege.py",
+        )
+        assert matches(globs, "packages/maistro-core/src/maistro/privilege.py")
+        assert not matches(
+            globs,
+            "packages/hive-conductor/tests/e2e/agents-rsi-keyboard.spec.ts",
+        )
+        # Every shipped glob stays expressible in the modeled subset, so a
+        # future entry outside it fails here instead of dodging the pin.
+        for glob in globs:
+            try:
+                matches([glob], "x")
+            except ValueError as exc:  # pragma: no cover - failure path
+                raise AssertionError(f"unmodelable shipped glob: {glob}") from exc
 
     def test_every_filtered_check_is_a_collected_pr_check(self, gate) -> None:
         collected = {name for _workflow, name, _scope in gate.collect()}
