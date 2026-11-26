@@ -202,6 +202,28 @@ or placeholder-only section.
 
 ### Security
 
+- **docker CLI vendored klauspost/compress raised to v1.20.2 for the Grype
+  High (#2059).** The Grype cross-check (`--fail-on high --only-fixed`) in
+  "Container scan + SBOM + cosign" failed on `maistro-engine:pr-2059`
+  (security.yml run 43878205511, job 133336745388): GO-2026-6865 (High,
+  fixed in 1.20.2) in the vendored module set of the source-built
+  `/usr/local/bin/docker`. Both Dockerfiles that build that CLI add
+  `github.com/klauspost/compress@v1.20.2` to the stage's `go get`;
+  `tests/test_docker_cli_vendored_advisory_floors.py` holds the pin closed.
+
+- **Container-gate images move to CPython 3.13.18 / 3.12.16 for the grype
+  CPython-binary CRITICAL (#2059).** The Grype cross-check
+  (`--fail-on high --only-fixed`) failed on `hive-conductor:pr-2059`
+  (security.yml run 43844074725): CVE-2026-115557 (CRITICAL, fixed in
+  3.13.18/3.12.16) in the CPython binary the pinned bases ship. The
+  `python:3.13.18-slim-bookworm` and refreshed `python:3.12-slim`
+  (3.12.16) digests are re-recorded in `quality/image-pins.json` and
+  referenced verbatim by every Dockerfile that builds from them (including
+  the canvas-smoke control image); security.yml's docker-run identity
+  asserts follow to `(3, 13, 18)`. New
+  `tests/test_cpython_base_grype_floor.py` holds the floor and the
+  assert-vs-pin equivalence closed.
+
 - **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
   the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
   session now returns the same 404 as a missing id; provenance-omit-and-admit
@@ -825,6 +847,17 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **Supply-chain floors raised above four new advisories (#2059).** The frozen
+  lock now resolves dnspython ≥ 2.9.2 (CVE-2026-128089), graphql-core ≥ 3.3.1
+  (CVE-2026-119286), joserfc ≥ 1.7.6 (CVE-2026-119284) and opentelemetry-api
+  ≥ 1.45.2 (CVE-2026-126360); every advisory has a released fix, so none is
+  allowlist-triaged. The pip-audit gate verdict is unchanged.
+
+- **Vulture scans have one owner per existing event profile (#1357).** The
+  required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
+  Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,
+  trusted-base semantics, required status names and debt ledgers are unchanged.
 
 - **A document's status lives in front matter and nowhere else
   (`ADR-092126-a28a`).** (#1532) The duplicated body `**Status:**` line is removed
