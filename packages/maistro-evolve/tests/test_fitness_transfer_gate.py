@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
+from maistro_evolve.cycle import EvolutionCycle
 from maistro_evolve.fitness import compute_fitness
 from maistro_evolve.lift_matrix import TRANSFER_EPSILON
+from maistro_evolve.population import PopulationStore
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
 
 PASSING_SCORES = {"proxy_ifeval": 0.9, "proxy_bfcl": 0.9}
@@ -154,6 +158,32 @@ class TestMalformedEvidence:
         assert fitness.passed_hard_gate is False
         assert any("not a number" in f for f in fitness.gate_failures)
 
+    @pytest.mark.parametrize(
+        "epsilon",
+        [0.5, float("nan"), float("inf"), -0.1, True, None, "invalid"],
+    )
+    def test_a_candidate_cannot_relax_or_corrupt_the_transfer_tolerance(self, epsilon) -> None:
+        genome = _genome(
+            harness_params={
+                "transfer_by_benchmark": {"proxy_ifeval": _transfer(-0.4)},
+                "transfer_epsilon": epsilon,
+            }
+        )
+        fitness = compute_fitness(genome, [genome])
+        assert fitness.passed_hard_gate is False
+        assert fitness.total == 0.0
+        assert any("transfer_epsilon" in failure for failure in fitness.gate_failures)
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 1.1, -1.1])
+    def test_non_finite_or_impossible_transfer_is_not_evidence(self, value) -> None:
+        genome = _genome(
+            harness_params={"transfer_by_benchmark": {"proxy_ifeval": _transfer(value)}}
+        )
+        fitness = compute_fitness(genome, [genome])
+        assert fitness.passed_hard_gate is False
+        assert fitness.total == 0.0
+        assert any("transfer" in failure for failure in fitness.gate_failures)
+
     def test_the_epsilon_can_be_tightened_per_genome(self) -> None:
         genome = _genome(
             harness_params={
@@ -164,3 +194,37 @@ class TestMalformedEvidence:
         fitness = compute_fitness(genome, [genome])
         assert fitness.passed_hard_gate is False
         assert any("inverts on the frontier model" in f for f in fitness.gate_failures)
+
+
+class TestTransferEvidenceIdentity:
+    @pytest.mark.parametrize("changed_input", ["transfer", "epsilon", "approval"])
+    def test_gate_inputs_participate_in_the_evidence_hash(self, changed_input) -> None:
+        genome = _genome(
+            harness_params={"transfer_by_benchmark": {"proxy_ifeval": _transfer(-0.01)}}
+        )
+        before = compute_fitness(genome, [genome])
+        assert before.passed_hard_gate is True
+        if changed_input == "transfer":
+            genome.harness_params["transfer_by_benchmark"]["proxy_ifeval"] = _transfer(-0.5)
+        elif changed_input == "epsilon":
+            genome.harness_params["transfer_epsilon"] = 0.005
+        else:
+            genome.approved_for_promotion = True
+        after = compute_fitness(genome, [genome])
+        assert after.passed_hard_gate is False
+        assert after.total == 0.0
+        assert after.evidence_hash != before.evidence_hash
+
+    def test_refreshing_transfer_is_not_unexplained_fitness_drift(self) -> None:
+        genome = _genome(harness_params={"transfer_by_benchmark": {"proxy_ifeval": _transfer(0.2)}})
+        population = PopulationStore()
+        population.add(genome)
+        cycle = EvolutionCycle()
+        cycle._compute_all_fitness(population)
+        before = population.get(genome.id)
+        assert before is not None and before.fitness_score > 0
+        before.harness_params["transfer_by_benchmark"]["proxy_ifeval"] = _transfer(-0.5)
+        population.add(before)
+        cycle._compute_all_fitness(population)
+        after = population.get(genome.id)
+        assert after is not None and after.fitness_score == 0.0

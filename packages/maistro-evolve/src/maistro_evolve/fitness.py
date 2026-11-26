@@ -351,6 +351,12 @@ def _evidence_hash(
         "latency_evidence": _num(genome.harness_params.get("avg_latency_seconds")),
         "elo_evidence": _num(genome.harness_params.get("avg_elo")),
         "elo_battles_evidence": _num(genome.harness_params.get("elo_battles")),
+        # These inputs can zero fitness independently of benchmark scores.
+        # Omitting them makes a legitimate transfer refresh look like fitness
+        # drift under identical evidence, stopping the cycle's recomputation.
+        "transfer_evidence": genome.harness_params.get("transfer_by_benchmark"),
+        "transfer_epsilon": genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON),
+        "approved_for_promotion": genome.approved_for_promotion,
         "self_traits": [round(v, 9) for v in trait_vector(genome)],
         # Population evidence diversity was computed against (other members
         # only, sorted by id so list order cannot change the hash).
@@ -377,6 +383,12 @@ def _inversion_entry_failures(transfers: dict, epsilon: float) -> list[str]:
         transfer = entry["transfer"]
         if not isinstance(transfer, (int, float)) or isinstance(transfer, bool):
             failures.append(f"{bench} transfer value is not a number: {transfer!r}")
+            continue
+        # Transfer is the difference between two scores in [0, 1]. This
+        # range check also rejects NaN/infinity without coercing untrusted
+        # values; NaN otherwise silently bypasses the comparison below.
+        if not -1.0 <= transfer <= 1.0:
+            failures.append(f"{bench} transfer must be finite and in [-1, 1]: {transfer!r}")
             continue
         if transfer < -epsilon:
             stale = " (stale measurement)" if entry.get("transfer_stale") else ""
@@ -422,7 +434,15 @@ def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
             "transfer_by_benchmark must be a mapping of benchmark -> "
             "{'transfer': float, 'transfer_stale': bool}"
         ]
-    epsilon = float(genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON))
+    # Legacy per-genome tolerances may tighten policy, never relax it. The
+    # host's ceiling is fixed even when a candidate supplies its own value.
+    epsilon = genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON)
+    if (
+        not isinstance(epsilon, (int, float))
+        or isinstance(epsilon, bool)
+        or not 0.0 <= epsilon <= TRANSFER_EPSILON
+    ):
+        return [f"transfer_epsilon must be a finite number in [0, {TRANSFER_EPSILON}]"]
     return _inversion_entry_failures(transfers, epsilon) + _missing_transfer_evidence(
         genome, transfers
     )

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +168
+  packages/maistro-evolve/tests: +184
 ---
 
 # 104-m4g-external-harness-evidence
@@ -71,3 +71,75 @@ this note:
   `_resolve_metering_block`, `_result_row_errors`,
   `_validate_train_pair`/`_validate_test_entry`), messages byte-identical,
   with the same 1166-pass suite pinning the behaviour.
+
+## Writer repair: transfer-gate policy and evidence identity
+
+The historical +168 delta above is supplemented by **16 new regression nodes**
+in `test_fitness_transfer_gate.py` (+184 total for this note). The added cases
+exercise candidate-supplied tolerance relaxation/malformed values (7), non-finite
+or impossible transfers (5), fitness digest changes for transfer/tolerance/
+approval inputs (3), and the real cycle recomputability guard after a transfer
+refresh (1). No existing test is removed or renamed.
+
+The repair is bounded to the existing transfer fitness implementation. A
+candidate may request a stricter tolerance, but cannot weaken the host's
+`TRANSFER_EPSILON` ceiling; malformed tolerances and non-finite/out-of-range
+transfer values fail closed. Transfer gate inputs must participate in the
+fitness evidence digest so refreshed evidence cannot trigger a false
+`FitnessEvidenceDriftError`.
+
+Validation and epic-wide acceptance limitations are recorded below; prior
+verification claims are not treated as current acceptance evidence.
+
+## Validation executed for this repair (2026-11-26, this lane, `uv run`)
+
+Fail-then-pass, re-executed this round by swapping `fitness.py` against
+HEAD `8220813611` (file copies, no git history operations): at HEAD the new
+cases fail **14/28** (including a real `FitnessEvidenceDriftError` raised by
+`cycle.py` — a legitimate transfer refresh zeroing fitness under an unchanged
+evidence hash); with the repair the module passes **28/28**.
+
+Full battery on the repaired tree:
+
+- `pytest packages/maistro-evolve/tests -q` → **1182 passed, 6 skipped**;
+- `ruff check .` → all checks passed; `ruff format --check .` → 3495 files
+  formatted;
+- `scripts/check-suite-inventory.py` → ok, 21 suites, this note's suite at
+  **1188 collected nodes** (651 folded + note deltas), no duplicates;
+- `scripts/check-radon-baseline.py` (RATCHET_BASE_REV=origin/develop, merge
+  base `4de7e906d9`) → 127/127 blocks, 0 new, 0 regressed, 0 stale;
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → 1302/1302 identities;
+- `scripts/check-execution-lifecycles.py` → 19/19 classified;
+- `scripts/check-model-egress.py` → 20 callers, no candidate-approved
+  expansion.
+
+Production-path acceptance probes (no network/credentials) confirm the
+verdict battery holds on all four graders (hostile responses rejected,
+all four mutants killed) and that ARC availability is honestly reported
+(`False`, corpus not vendored — see below). Three observed limitations are
+recorded for review, not repaired here:
+
+1. `promotion`/`selection_eligibility` and `PopulationStore._promote`
+   re-derive only `_check_hard_gate` (per-benchmark thresholds); the
+   transfer-inversion rules reach `compute_fitness` but not the activation
+   path, so a measured inversion with `fitness_score=0.0` and
+   `approved_for_promotion=True` can still activate when no incumbent is
+   active.
+2. `publish_evidence_manifest` accepts and verifies a manifest whose run
+   metering records `unresolved_security_violations=1` — publishing
+   evidence of a violation vs refusing to publish is a design call for
+   review, not silently decided here.
+3. `_publish_evidence`'s run id is `<genome>-cycle-<n>`, so two fresh
+   `EvolutionCycle` instances evaluating the same genome at the same cycle
+   count overwrite one manifest (within-instance runs cannot); the normal
+   producer also supplies no `lift` rows or `refused_diffs` — those
+   sections are schema-verified but not yet populated by the cycle path.
+
+Epic-wide acceptance items that remain unimplemented/unverified for #104:
+ARC-AGI-3 proper (the adapter grades static ARC grids with
+`official_comparable=False`; the ARC Prize corpus is not vendored, so no
+ARC-AGI-3 evaluation has run), matched same-model comparisons against real
+external harnesses (the lift matrix machinery exists and is tested, but no
+external harness has been wrapped), and fresh-workspace controls on the
+real evaluation path.
