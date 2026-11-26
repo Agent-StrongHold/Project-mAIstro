@@ -21,6 +21,14 @@ and to check, when the decision lives in one small module with its own tests.
 
 from __future__ import annotations
 
+# Version of THIS policy — the classification that decides which candidates
+# need a signed approval before promotion (#302). Approvals are bound to it
+# (promotion_gate.SignedPromotionApproval.policy_version) and verification
+# refuses any other value, so a approval minted under a different — weaker,
+# wider, or stale — sensitive-path policy can never authorize a promotion
+# under this one. Bump when SENSITIVE_PATH_PATTERNS changes meaning.
+SENSITIVE_PATH_POLICY_VERSION = "rsi-sensitive-paths-v1"
+
 # Path fragments that mark the agent's own containment surface. A diff touching
 # any of these isn't blocked -- it's escalated to require adversarial review on
 # top of Warden + the full test suite, because a change here changes what
@@ -54,6 +62,11 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     "maistro-evolve/tests/",
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
+    # Capability + agent-spec surface reached via the signed-approval seam
+    # (#302): the canonical approval evidence lives here, so a candidate that
+    # edits it could weaken or bypass approval verification. Escalate.
+    "maistro/capabilities/",
+    "maistro/agents/spec/",
     # --- the Conductor's own RSI execution surface --------------------------
     # The product ships two production entry points for the capabilities this
     # list governs, and the `maistro_rsi/` and `maistro_evolve/` patterns above

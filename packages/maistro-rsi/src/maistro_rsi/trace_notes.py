@@ -95,6 +95,10 @@ class TraceNote:
     # governance-authorized shrink passed. Present on fitness promotions;
     # older notes (and non-fitness runs) simply omit it.
     inventory: dict[str, object] | None = None
+    # Promotion-gate evidence (#302): the quarantine verdict plus, when the
+    # diff touched the containment surface, the signed approval that
+    # authorized the promotion. Older notes simply omit it.
+    gate: dict[str, object] | None = None
     # Fail-first evidence record (#392): the base SHA, failing test identities,
     # failure-output digest, candidate SHA, and passing result behind a
     # behavior-changing promotion — the replayable proof the change was
