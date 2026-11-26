@@ -106,9 +106,10 @@ class TestSecretComparison:
         settings = Settings(api_keys=["ops:test-key-123"])
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-key-123")
         result = verify_api_key(creds, settings)
-        # verify_api_key returns an AuthenticatedPrincipal (not the raw key).
+        # verify_api_key returns a Principal (not the raw key material).
         assert result is not None
-        assert result.token == "test-key-123"
+        assert result.user_id == "ops"
+        assert result.user_id != "test-key-123"
 
     def test_wrong_key_rejected(self) -> None:
         settings = Settings(api_keys=["ops:correct-key"])
@@ -139,6 +140,16 @@ class TestSecretComparison:
 class TestExplicitPrincipalContract:
     """#843: every accepted long-lived API key resolves to one explicit
     stable canonical principal; the parser never invents ``default``."""
+
+    def test_auth_off_admits_a_dev_principal(self) -> None:
+        """Empty ``api_keys`` and ``admin_api_keys`` is the auth-off sentinel:
+        resolve returns the local-dev principal rather than inventing
+        ``default`` from a bare secret."""
+        settings = Settings(api_keys=[], admin_api_keys=[])
+        principal = resolve_token_principal("anything", settings)
+        assert principal is not None
+        assert principal.user_id == "dev"
+        assert principal.is_admin
 
     def test_legacy_plain_key_never_authenticates(self) -> None:
         """The exact secret material of a legacy plain key must resolve to
@@ -232,7 +243,6 @@ class TestExplicitPrincipalContract:
         principal = resolve_token_principal("secret-material-xyz", settings)
         assert principal is not None
         assert principal.user_id == "ops"
-        assert principal.user_id != principal.token
         assert "secret-material-xyz" not in principal.user_id
 
     def test_colon_containing_secret_keeps_working(self) -> None:
