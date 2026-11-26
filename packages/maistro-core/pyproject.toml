@@ -26,6 +26,11 @@ dependencies = [
     "pyyaml>=6.0.1,<7",
     # 50.x contains the security fix required by the supply-chain gate.
     "cryptography>=50.0.0,<51",
+    # Discovery feed parsing (#1051): source responses are remote content, so
+    # the parser must forbid entity/DTD expansion (billion-laughs) instead of
+    # trusting stdlib ElementTree's expansion. Bandit's B314 guidance and the
+    # Python docs' XML-vulnerability mitigation both name defusedxml.
+    "defusedxml>=0.7,<1",
     "argon2-cffi>=23.1,<26",
     # Warden's pattern engine (security/warden/patterns.py) prefers `regex` over
     # stdlib `re` for its match timeout. Declared so the timeout path is always

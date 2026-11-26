@@ -242,6 +242,15 @@ DEFAULT_STRANDED_ADMISSION_AGE = timedelta(minutes=5)
 _CHAT_SLOT_RECLAIM_LIMIT = 100
 
 
+def _bare_discovery_context() -> Any:
+    """The contributes-nothing discovery context (#1051), lazily imported so
+    the Container's module import never pulls the node package earlier than
+    it already does."""
+    from maistro.graph.nodes.discovery_context import default_discovery_context
+
+    return default_discovery_context()
+
+
 @dataclass
 class Container:
     """Holds all wired dependencies."""
@@ -349,6 +358,13 @@ class Container:
     #: `list_by_status` like every other Run. Optional the same way the rest of
     #: the spine is -- a Container built directly still routes requests.
     graph_run_store: DurableRunStore | None = None
+    #: Per-cycle bounded-discovery context (#1051). The host product supplies
+    #: its own implementation (Hive's Workspace config, budgets and fresh
+    #: Persona/user-model/Goal reads); the default provides nothing, so
+    #: discovery nodes then run context-free — Bindings still gate every
+    #: fetch. A Container-owned field so the resolver hands the node the same
+    #: instance every other authority comes from.
+    discovery_context: Any = field(default_factory=lambda: None)
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -1326,6 +1342,7 @@ class Container:
             graph_run_store=self.graph_run_store,
             provider_registry=self.provider_registry,
             llm_router=self.llm_router,
+            discovery_context=self.discovery_context,
         )
 
     async def recover_abandoned_attempts(
@@ -2600,6 +2617,90 @@ async def _provision_configured_workspace(
                 raise
 
 
+@dataclass
+class _BackendStores:
+    """What one database-URL decision wires, before the Container composes it.
+
+    Kept out of ``create_container`` so adding a backend does not grow the
+    composition function's branch count — the same reasoning #122 applied to
+    ``_wire_prompt_manager``. ``holds_*`` and ``usage_log`` carry the SQLite
+    branch's ownership/restoration decisions exactly as the inline branch
+    used to set them; ``create_container`` still resolves the caller-supplied
+    pool afterwards and re-derives the usage log from the chosen pool.
+    """
+
+    db_pool: Any = None
+    session_conn: Any = None
+    schedule_conn: Any = None
+    history_conn: Any = None
+    pg_pool: Any = None
+    quota_tracker: Any = None
+    learning_store: Any = None
+    outcome_store: Any = None
+    session_store: Any = None
+    stores_memory_backed: bool = False
+    holds_db_pool: bool = False
+    holds_pg_pool: bool = False
+    usage_log: Any = None
+    usage_log_persistence: Any = None
+
+
+async def _wire_backend_stores(
+    config: AgentConfig,
+    *,
+    embeddings: EmbeddingClient | None,
+    supplied_pg_pool: Any,
+    exposure_mode: MemoryExposureMode,
+) -> _BackendStores:
+    """Select and open the store backend ``config.database_url`` names."""
+    backend = _BackendStores()
+    if config.database_url.startswith("sqlite:"):
+        # A pathless `sqlite://` selects SQLite's in-memory database: the
+        # store classes are the durable twins, but nothing survives restart.
+        # Recorded so health reports the real disposition (#72).
+        backend.stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
+        (
+            backend.db_pool,
+            backend.session_conn,
+            backend.schedule_conn,
+            backend.history_conn,
+            backend.quota_tracker,
+            backend.learning_store,
+            backend.outcome_store,
+            backend.session_store,
+        ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
+        # All four connections were opened for this container (#1161);
+        # `aclose` closes them. The pg branch below sets its flag for the same
+        # reason.
+        backend.holds_db_pool = True
+        from maistro.quota.sqlite_usage_log import SqliteUsageLog
+
+        backend.usage_log_persistence = SqliteUsageLog(backend.db_pool)
+        await backend.usage_log_persistence.ensure_schema()
+        backend.usage_log = await backend.usage_log_persistence.restore()
+    elif config.database_url.startswith(POSTGRES_SCHEMES):
+        (
+            backend.pg_pool,
+            backend.quota_tracker,
+            backend.learning_store,
+            backend.outcome_store,
+            backend.session_store,
+        ) = await _wire_postgres_backend(
+            config.database_url,
+            embeddings,
+            supplied_pool=supplied_pg_pool,
+            exposure_mode=exposure_mode,
+        )
+        backend.holds_pg_pool = supplied_pg_pool is None
+    else:
+        _require_ephemeral_is_deliberate(config.database_url)
+        backend.quota_tracker = InMemoryQuotaTracker()
+        backend.learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
+        backend.outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
+        backend.session_store = InMemorySessionStore()
+    return backend
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -2610,6 +2711,7 @@ async def create_container(
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
     provider_adapter_catalog: ProviderAdapterCatalog | None = None,
+    discovery_context: Any | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -2702,50 +2804,26 @@ async def create_container(
     usage_log_persistence: Any = None
     stores_memory_backed = False
     try:
-        if config.database_url.startswith("sqlite:"):
-            # A pathless `sqlite://` selects SQLite's in-memory database: the
-            # store classes are the durable twins, but nothing survives restart.
-            # Recorded so health reports the real disposition (#72).
-            stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
-            (
-                db_pool,
-                session_conn,
-                schedule_conn,
-                history_conn,
-                quota_tracker,
-                learning_store,
-                outcome_store,
-                session_store,
-            ) = await _wire_sqlite_backend(config.database_url, exposure_mode=exposure_mode)
-            # All four connections were opened for this container (#1161);
-            # `aclose` closes them. The pg branch below sets its flag for the same
-            # reason.
-            holds_db_pool = True
-            from maistro.quota.sqlite_usage_log import SqliteUsageLog
-
-            usage_log_persistence = SqliteUsageLog(db_pool)
-            await usage_log_persistence.ensure_schema()
-            usage_log = await usage_log_persistence.restore()
-        elif config.database_url.startswith(POSTGRES_SCHEMES):
-            (
-                pg_pool,
-                quota_tracker,
-                learning_store,
-                outcome_store,
-                session_store,
-            ) = await _wire_postgres_backend(
-                config.database_url,
-                embeddings,
-                supplied_pool=supplied_pg_pool,
-                exposure_mode=exposure_mode,
-            )
-            holds_pg_pool = supplied_pg_pool is None
-        else:
-            _require_ephemeral_is_deliberate(config.database_url)
-            quota_tracker = InMemoryQuotaTracker()
-            learning_store = InMemoryLearningStore(exposure_mode=exposure_mode)
-            outcome_store = InMemoryOutcomeStore(exposure_mode=exposure_mode)
-            session_store = InMemorySessionStore()
+        stores = await _wire_backend_stores(
+            config,
+            embeddings=embeddings,
+            supplied_pg_pool=supplied_pg_pool,
+            exposure_mode=exposure_mode,
+        )
+        db_pool = stores.db_pool
+        session_conn = stores.session_conn
+        schedule_conn = stores.schedule_conn
+        history_conn = stores.history_conn
+        pg_pool = stores.pg_pool
+        quota_tracker = stores.quota_tracker
+        learning_store = stores.learning_store
+        outcome_store = stores.outcome_store
+        session_store = stores.session_store
+        stores_memory_backed = stores.stores_memory_backed
+        holds_db_pool = stores.holds_db_pool
+        holds_pg_pool = stores.holds_pg_pool
+        usage_log = stores.usage_log
+        usage_log_persistence = stores.usage_log_persistence
         pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
         usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
@@ -3237,6 +3315,7 @@ async def create_container(
             model_chat_binding=model_chat_binding,
             model_chat_egress=model_chat_egress,
             model_chat_client=model_chat_client,
+            discovery_context=discovery_context or _bare_discovery_context(),
             record_store=record_store,
             pii_detector=pii_detector,
             identity_store=identity_store,
@@ -4355,6 +4434,7 @@ def build_node_resolver(
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
     graph_run_store: DurableRunStore | None = None,
+    discovery_context: Any | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -4438,5 +4518,10 @@ def build_node_resolver(
         "provider_registry": provider_registry,
         "llm_router": llm_router,
         "node_resolver": _resolver,
+        # Per-cycle discovery context (#1051): the host's bounded-discovery
+        # provider, when the deployment wires one. Bare callers keep None and
+        # discovery nodes run context-free (Binding-gated fetches still
+        # refuse without a Binding) — the authority never widens execution.
+        "discovery_context": discovery_context,
     }
     return _resolver
