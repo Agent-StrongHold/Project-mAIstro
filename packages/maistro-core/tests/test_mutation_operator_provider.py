@@ -8,6 +8,15 @@ rename's return statement, exactly PR #1994's privilege.py diff — was
 structurally un-passable. ``maistro/ReplaceStringWithEmpty`` closes that
 operator gap by ADDING mutational power; these tests pin the operator's
 surface and the wiring that puts it in every ``cosmic-ray init``.
+
+They live in the maistro-core suite — not the root dev-tooling suite — because
+the diff-coverage gate scores every changed line under
+``packages/maistro-core/src/maistro`` against the producers that measure that
+tree, and the producer that measures it runs ``pytest
+packages/maistro-core/tests``. From the root suite these tests exercised the
+module for the reader but not for the gate: 61 changed lines at 0%, a gate
+structurally red for a file whose behavior was fully pinned. Same tests, same
+assertions, measured home.
 """
 
 from __future__ import annotations
@@ -20,9 +29,31 @@ from typing import Any
 import parso
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 MODULE = ROOT / "packages" / "maistro-core" / "src" / "maistro" / "mutation_operator_provider.py"
 GATE_SCRIPT = ROOT / "scripts" / "mutation_pr_gate.py"
+
+# Top-level distributions the guarded imports resolve; a published install
+# ships none of them (see the module's Import contract section).
+_TOOLCHAIN_ROOTS = ("cosmic_ray", "parso")
+_MODULE_NAME = "maistro.mutation_operator_provider"
+
+
+class _BlockRoot:
+    """A meta-path finder that makes one top-level package un-importable.
+
+    Raises from `find_spec` rather than returning None so the failure is a
+    `ModuleNotFoundError` naming the module, exactly as a genuinely absent
+    distribution produces (the test_extra_guard.py precedent).
+    """
+
+    def __init__(self, blocked: str) -> None:
+        self._blocked = blocked
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname.split(".")[0] == self._blocked:
+            raise ModuleNotFoundError(f"No module named {self._blocked!r}", name=self._blocked)
+        return None
 
 
 @pytest.fixture(scope="module")
@@ -157,3 +188,69 @@ class TestFingerprintCoversTheOperatorSet:
         assert gate.tool_fingerprint() != baseline, (
             "a cached result from before an operator landed must not survive"
         )
+
+
+class TestPublishedImportContract:
+    """The module ships in the maistro-core wheel; cosmic-ray never does.
+
+    The wheel-import gate's `all` tier walks every shipped module under the
+    widest extra, and cosmic-ray is installable from no extra at all — so the
+    module must import with the toolchain absent, and only the provider names
+    may raise. Neither wheel tier covers that failure path (`bare` never lists
+    the module before the guarded import existed; `all` installs everything),
+    which is exactly the hole test_extra_guard.py filled for maistro.identity:
+    simulate the bare install by blocking the import at the finder level.
+    """
+
+    @pytest.fixture
+    def bare_install(self, monkeypatch: pytest.MonkeyPatch):
+        """Yield a callable that blocks the toolchain and re-imports the module.
+
+        Uses monkeypatch's delitem/setattr for every mutation so `sys.modules`
+        and `sys.meta_path` are restored even on failure (the fixture-corruption
+        lesson recorded in test_extra_guard.py).
+        """
+
+        def _attempt() -> Any:
+            for name in list(sys.modules):
+                if name.split(".")[0] in _TOOLCHAIN_ROOTS or name == _MODULE_NAME:
+                    monkeypatch.delitem(sys.modules, name, raising=False)
+            monkeypatch.setattr(
+                sys,
+                "meta_path",
+                [*(_BlockRoot(root) for root in _TOOLCHAIN_ROOTS), *sys.meta_path],
+            )
+            return importlib.import_module(_MODULE_NAME)
+
+        return _attempt
+
+    def test_the_module_imports_without_the_toolchain(self, bare_install):
+        """Published-install resolution: the wheel's `all` tier imports it."""
+        module = bare_install()
+        assert module is not None
+        assert module.__all__ == ["MaistroMutationOperators", "ReplaceStringWithEmpty"]
+
+    def test_a_provider_name_without_the_toolchain_names_what_is_missing(self, bare_install):
+        module = bare_install()
+        with pytest.raises(ImportError) as exc:
+            _ = module.MaistroMutationOperators
+
+        message = str(exc.value)
+        assert "cosmic-ray" in message, (
+            f"the guard did not name the missing toolchain, raised: {message!r}"
+        )
+        with pytest.raises(ImportError):
+            _ = module.ReplaceStringWithEmpty
+
+    def test_an_unrelated_attribute_is_still_an_attribute_error(self, bare_install):
+        """The guard answers only its own names; everything else falls through."""
+        module = bare_install()
+        with pytest.raises(AttributeError):
+            _ = module.no_such_operator
+
+    def test_the_provider_resolves_when_the_toolchain_is_installed(self, mod):
+        """Control: the guard above is not tripping in this environment."""
+        from cosmic_ray.plugins import get_operator
+
+        assert get_operator("maistro/ReplaceStringWithEmpty") is mod.ReplaceStringWithEmpty
+        assert mod._TOOLCHAIN_PRESENT is True
