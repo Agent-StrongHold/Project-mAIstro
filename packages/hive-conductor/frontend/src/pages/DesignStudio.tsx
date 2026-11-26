@@ -12,7 +12,7 @@
 //   browser storage is never the system of record for loop state.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/shared";
-import { apiGet, apiPost } from "../lib/api";
+import { ApiError, apiGet, apiPost } from "../lib/api";
 import DeckBuilder from "./DeckBuilder";
 import FixedPageEditor from "./FixedPageEditor";
 import FixedPageArtifactEditor, { type FixedPageMode } from "./FixedPageArtifactEditor";
@@ -55,6 +55,8 @@ type ProjectState = {
   message: string;
 };
 
+import { DEFAULT_WIDTH, EXPLORATION_POLICIES, PACK_IDS, WIDTH_MAX, WIDTH_MIN, type BriefRecord, type ExplorationPolicy, type GoalRecord, type LoopRunRecord, type LoopSurface, type LoopSurfaces, type OpenLoop, type PackSummary } from "../lib/designLoop";
+
 const ARTIFACT_MODES: ArtifactMode[] = [
   { id: "deck", name: "Presentation / Deck", description: "Multi-page presentations with slide navigation, presentation mode, and deck export." },
   { id: "poster", name: "Poster", description: "Single fixed-page visual for print, signage, or display." },
@@ -79,9 +81,7 @@ function resourceSummary(skillCount: number, systemCount: number): string {
 function fieldValue(field: DiscoveryField): string {
   return field.default ?? field.options?.[0] ?? "";
 }
-
 const FIXED_PAGE_STORAGE_KEY = "hive_design_studio_fixed_page_artifacts";
-
 type PersistedFixedPageArtifact = {
   markup: string;
   trustRecommendation: VisualArtifactTrustRecommendation;
@@ -140,6 +140,34 @@ function loadPersistedArtifacts(): Partial<Record<FixedPageMode, PersistedFixedP
   }
 }
 
+const LOOP_SURFACE_LABELS: Record<keyof LoopSurfaces, string> = {
+  packs: "Pack listing (/v1/design/packs, #793)",
+  goals: "Goal revisions (/v1/goals, #458)",
+  briefs: "CreativeBrief revisions (/v1/creative-briefs, #774)",
+  runs: "Run mint (/v1/runs, ADR-092926-7a01)",
+};
+
+function loopSurfaceCause(err: unknown): string {
+  if (err instanceof ApiError) return `HTTP ${err.status} from ${err.path}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
+function unavailableSurface(err: unknown): LoopSurface {
+  return { status: "unavailable", cause: loopSurfaceCause(err) };
+}
+
+function readySurface(): LoopSurface {
+  return { status: "ready", cause: null };
+}
+
+const LOOP_SURFACES_PROBING: LoopSurfaces = {
+  packs: { status: "probing", cause: null },
+  goals: { status: "probing", cause: null },
+  briefs: { status: "probing", cause: null },
+  runs: { status: "probing", cause: null },
+};
+
+
 export default function DesignStudio() {
   const headingRef = useRef<HTMLDivElement>(null);
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
@@ -157,6 +185,20 @@ export default function DesignStudio() {
     projects: [],
     message: "Loading persisted Design projects…",
   });
+  const [loopSurfaces, setLoopSurfaces] = useState<LoopSurfaces>(LOOP_SURFACES_PROBING);
+  const [selectedPackId, setSelectedPackId] = useState<string>("");
+  const [packs, setPacks] = useState<PackSummary[]>([]);
+  const [goalTitle, setGoalTitle] = useState("");
+  const [desiredOutcome, setDesiredOutcome] = useState("");
+  const [stopConditions, setStopConditions] = useState("");
+  const [briefAudience, setBriefAudience] = useState("");
+  const [briefConstraints, setBriefConstraints] = useState("");
+  const [briefGuidance, setBriefGuidance] = useState("");
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  const [policy, setPolicy] = useState<ExplorationPolicy>("balanced");
+  const [openingLoop, setOpeningLoop] = useState(false);
+  const [openLoop, setOpenLoop] = useState<OpenLoop | null>(null);
+  const [loopMessage, setLoopMessage] = useState("Checking the canonical loop surfaces (Goal, CreativeBrief, pack, Run)…");
 
   useEffect(() => {
     let cancelled = false;
@@ -212,11 +254,147 @@ export default function DesignStudio() {
     headingRef.current?.focus();
   }, [editor]);
 
+  // M7-A12 (#988): discover whether the canonical loop surfaces exist before
+  // offering the loop start. Every surface is probed for real; a missing one
+  // leaves the control disabled with its actual cause (#286). Nothing is
+  // simulated and no timer fakes readiness. The Goal read doubles as the
+  // refresh restore: ids only ever come back from the APIs, never from
+  // client-side storage.
+  useEffect(() => {
+    let cancelled = false;
+    async function probeLoopSurfaces() {
+      // frontend-api-routes: allow /v1/design/packs is the #793 pack-selector listing; not mounted at this base — its absence is the honest disabled cause (#988/#286).
+      const packsProbe = apiGet<PackSummary[]>("/v1/design/packs");
+      // frontend-api-routes: allow /v1/goals is the #458 Goal revisions surface; not mounted at this base — its absence is the honest disabled cause (#988/#286).
+      const goalsProbe = apiGet<GoalRecord[]>("/v1/goals");
+      // frontend-api-routes: allow /v1/creative-briefs is the #774 CreativeBrief revision surface; not mounted at this base — its absence is the honest disabled cause (#988/#286).
+      const briefsProbe = apiGet<BriefRecord[]>("/v1/creative-briefs");
+      // frontend-api-routes: allow /v1/runs is the canonical Run listing (loop mint, ADR-092926-7a01); not mounted at this base — its absence is the honest disabled cause (#988/#286).
+      const runsProbe = apiGet<LoopRunRecord[]>("/v1/runs");
+      const [packsResult, goalsResult, briefsResult, runsResult] = await Promise.allSettled([
+        packsProbe,
+        goalsProbe,
+        briefsProbe,
+        runsProbe,
+      ]);
+      if (cancelled) return;
+      const nextSurfaces: LoopSurfaces = {
+        packs: packsResult.status === "fulfilled" ? readySurface() : unavailableSurface(packsResult.reason),
+        goals: goalsResult.status === "fulfilled" ? readySurface() : unavailableSurface(goalsResult.reason),
+        briefs: briefsResult.status === "fulfilled" ? readySurface() : unavailableSurface(briefsResult.reason),
+        runs: runsResult.status === "fulfilled" ? readySurface() : unavailableSurface(runsResult.reason),
+      };
+      if (packsResult.status === "fulfilled") {
+        const listed = packsResult.value.filter((pack) => (PACK_IDS as readonly string[]).includes(pack.pack_id));
+        setPacks(listed);
+      }
+      setLoopSurfaces(nextSurfaces);
+
+      // Refresh restore: if a Goal already exists for this scope, adopt the
+      // newest revision and its brief + run from the APIs. A missing record
+      // simply means no loop is open; nothing is fabricated.
+      if (goalsResult.status !== "fulfilled" || goalsResult.value.length === 0) {
+        setLoopMessage(
+          Object.values(nextSurfaces).every((surface) => surface.status === "ready")
+            ? "Choose a pack and describe the Goal to open a loop."
+            : "Opening a loop is disabled until the canonical surfaces above are available. Nothing is simulated in the meantime.",
+        );
+        return;
+      }
+      const goal = goalsResult.value[0];
+      const [briefsForGoal, runsForGoal] = await Promise.allSettled([
+        // frontend-api-routes: allow /v1/creative-briefs is the #774 CreativeBrief revision surface; not mounted at this base — its absence is the honest disabled cause (#988/#286).
+        apiGet<BriefRecord[]>(`/v1/creative-briefs?goal_id=${encodeURIComponent(goal.goal_id)}`),
+        // frontend-api-routes: allow /v1/runs is the canonical Run listing (loop mint, ADR-092926-7a01); not mounted at this base — its absence is the honest disabled cause (#988/#286).
+        apiGet<LoopRunRecord[]>(`/v1/runs?goal_id=${encodeURIComponent(goal.goal_id)}`),
+      ]);
+      if (cancelled) return;
+      const brief = briefsForGoal.status === "fulfilled" ? briefsForGoal.value.find((candidate) => candidate.goal_id === goal.goal_id) : undefined;
+      const run = runsForGoal.status === "fulfilled" ? runsForGoal.value.find((candidate) => candidate.goal_id === goal.goal_id) : undefined;
+      if (goal && brief && run) {
+        setOpenLoop({ goal, brief, run });
+        setSelectedPackId((current) => current || run.pack_id);
+        setLoopMessage("Loop restored from the canonical records.");
+      } else {
+        setLoopMessage("Choose a pack and describe the Goal to open a loop.");
+      }
+    }
+    void probeLoopSurfaces();
+    return () => { cancelled = true; };
+  }, []);
+
   const mode = ARTIFACT_MODES.find((candidate) => candidate.id === selectedMode) ?? ARTIFACT_MODES[0];
   const skill = catalog.skills.find((candidate) => candidate.slug === selectedSkillSlug);
   const systemSlug = catalog.systems.some((system) => system.slug === selectedSystemSlug) ? selectedSystemSlug : (catalog.systems[0]?.slug ?? selectedSystemSlug);
   const canOpenEditor = prompt.trim().length > 0;
   const canSaveProject = canOpenEditor && Boolean(skill && systemSlug);
+
+  // M7-A12 (#988): the loop start is gated on the REAL availability of every
+  // canonical surface it must mint, and on the Goal fields being present.
+  const missingSurfaces = (Object.keys(LOOP_SURFACE_LABELS) as (keyof LoopSurfaces)[]).filter(
+    (key) => loopSurfaces[key].status !== "ready",
+  );
+  const loopFieldsReady = Boolean(selectedPackId) && goalTitle.trim().length > 0 && desiredOutcome.trim().length > 0 && stopConditions.trim().length > 0;
+  const loopDisabledCause = openLoop
+    ? "Loop already open. Refresh restores its ids from the canonical records."
+    : missingSurfaces.length > 0
+      ? `Cannot open a loop: ${missingSurfaces.map((key) => `${LOOP_SURFACE_LABELS[key]} is ${loopSurfaces[key].status === "probing" ? "still being checked" : `unavailable (${loopSurfaces[key].cause})`}`).join("; ")}. Nothing is simulated while a surface is missing.`
+      : !loopFieldsReady
+        ? "Choose a pack, then give the Goal its title, desired outcome, and stop conditions."
+        : null;
+  const canOpenLoop = loopFieldsReady && missingSurfaces.length === 0 && !openingLoop && !openLoop;
+
+  async function openDesignLoop(): Promise<void> {
+    if (!canOpenLoop) {
+      setLoopMessage(loopDisabledCause ?? "Opening a loop is not available right now.");
+      return;
+    }
+    setOpeningLoop(true);
+    setLoopMessage("Minting the Goal revision…");
+    try {
+      // Mint order is the canonical dependency order: Goal revision first
+      // (#458), then the CreativeBrief projected onto that exact revision
+      // (#774), then one canonical Run carrying the pack binding and the
+      // exploration params (#793/#984). Width/policy ride on the Run — they
+      // are never part of the Goal payload, so tuning exploration can never
+      // rewrite Goal identity.
+      // frontend-api-routes: allow /v1/goals is the #458 Goal revisions surface; not mounted at this base — the probe above has already proven it ready before this call runs (#988/#286).
+      const goal = await apiPost<GoalRecord>("/v1/goals", {
+        title: goalTitle.trim(),
+        desired_outcome: desiredOutcome.trim(),
+        stop_conditions: stopConditions.trim(),
+      });
+      setLoopMessage("Minting the CreativeBrief revision…");
+      // frontend-api-routes: allow /v1/creative-briefs is the #774 CreativeBrief revision surface; not mounted at this base — the probe above has already proven it ready before this call runs (#988/#286).
+      const brief = await apiPost<BriefRecord>("/v1/creative-briefs", {
+        goal_id: goal.goal_id,
+        goal_revision: goal.goal_revision,
+        audience: briefAudience.trim(),
+        constraints: briefConstraints.trim(),
+        guidance: briefGuidance.trim(),
+      });
+      setLoopMessage("Starting the loop Run…");
+      // frontend-api-routes: allow /v1/runs is the canonical Run mint (loop Graph/Run per ADR-092926-7a01); not mounted at this base — the probe above has already proven it ready before this call runs (#988/#286).
+      const run = await apiPost<LoopRunRecord>("/v1/runs", {
+        goal_id: goal.goal_id,
+        goal_revision: goal.goal_revision,
+        brief_id: brief.brief_id,
+        brief_revision: brief.brief_revision,
+        pack_id: selectedPackId,
+        width,
+        policy,
+      });
+      setOpenLoop({ goal, brief, run });
+      setLoopMessage("Loop open. These ids are the canonical records; refresh restores them from the APIs.");
+    } catch (err) {
+      // A failed mint is reported as what it is. No partial loop is claimed:
+      // whatever minted stays queryable server-side; the surface shows the
+      // actual failure instead of a fabricated open loop.
+      setLoopMessage(err instanceof ApiError ? `Opening the loop failed: ${err.message} (HTTP ${err.status} from ${err.path})` : `Opening the loop failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setOpeningLoop(false);
+    }
+  }
 
   const persistArtifactMarkup = useCallback((fixedMode: FixedPageMode, markup: string, trustRecommendation: VisualArtifactTrustRecommendation) => {
     const safeMarkup = sanitizeVisualArtifactMarkup(markup);
@@ -282,9 +460,87 @@ export default function DesignStudio() {
           destination when an editor opens or closes. */}
       <div ref={headingRef} tabIndex={-1} style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }} />
 
+      {/* M7-A12 (#988): the loop start is the FIRST committed choice — pack,
+          Goal revision, CreativeBrief revision, exploration params — and it
+          mints canonical objects only — no product-local loop kind, no intake phase
+          enum, and no client-side system of record: every id shown here came
+          from an API. The visual-mode picker below stays as the
+          execute-backend choice for a loop that already exists. */}
+      <section className="card" style={{ marginBottom: 16 }} aria-labelledby="loop-start-title">
+        <h2 id="loop-start-title" style={{ fontFamily: "var(--hand)", fontSize: 16, margin: "0 0 4px" }}>Open a design loop</h2>
+        <p style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "0 0 12px" }}>A loop starts from canonical objects: one domain pack, one Goal revision, one CreativeBrief on that revision, one Run carrying the pack binding and exploration params. Visual artifact modes are chosen after the loop exists, as the execute backend.</p>
+
+        <div role="list" aria-label="Loop surface availability" style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+          {(Object.keys(LOOP_SURFACE_LABELS) as (keyof LoopSurfaces)[]).map((key) => (
+            <div key={key} role="listitem" style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", borderBottom: "1px solid var(--rule)", paddingBottom: 4 }}>
+              <span style={{ fontFamily: "var(--hand)", fontSize: 12 }}>{LOOP_SURFACE_LABELS[key]}</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase", color: loopSurfaces[key].status === "ready" ? "var(--accent)" : "var(--pencil)" }}>{loopSurfaces[key].status}</span>
+              {loopSurfaces[key].cause && <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", width: "100%" }}>{loopSurfaces[key].cause}</span>}
+            </div>
+          ))}
+        </div>
+
+        <div role="group" aria-label="Domain pack" aria-describedby="loop-pack-help" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 12 }}>
+          {packs.map((pack) => {
+            const selected = pack.pack_id === selectedPackId;
+            return <button key={pack.pack_id} type="button" aria-pressed={selected} disabled={openingLoop} onClick={() => { setSelectedPackId(pack.pack_id); setLoopMessage(`Pack ${pack.name} selected.`); }} className="card" style={{ cursor: "pointer", textAlign: "left", border: selected ? "2px solid var(--accent)" : "1.3px solid var(--rule)", background: selected ? "var(--paper)" : undefined, padding: 12 }}>
+              <span style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{pack.name}</span>
+              <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>{pack.summary}</span>
+            </button>;
+          })}
+        </div>
+        <p id="loop-pack-help" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "-6px 0 12px" }}>{loopSurfaces.packs.status === "ready" ? "A pack is a bundle of defaults for the one loop — never a product or a route." : "Pack listing unavailable; the pack choice stays disabled with its cause."}</p>
+
+        <label htmlFor="loop-goal-title" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Goal title</label>
+        <input id="loop-goal-title" value={goalTitle} disabled={(missingSurfaces.length > 0 && loopSurfaces.goals.status !== "ready") || openingLoop || Boolean(openLoop)} onChange={(event) => setGoalTitle(event.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 8 }} />
+        <label htmlFor="loop-goal-outcome" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Desired outcome</label>
+        <textarea id="loop-goal-outcome" value={desiredOutcome} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setDesiredOutcome(event.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 8, resize: "vertical" }} />
+        <label htmlFor="loop-goal-stop" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Stop conditions</label>
+        <textarea id="loop-goal-stop" value={stopConditions} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setStopConditions(event.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 12, resize: "vertical" }} />
+
+        <p style={{ fontFamily: "var(--hand)", fontSize: 13, margin: "0 0 8px" }}>CreativeBrief</p>
+        <label htmlFor="loop-brief-audience" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Audience</label>
+        <input id="loop-brief-audience" value={briefAudience} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setBriefAudience(event.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 8 }} />
+        <label htmlFor="loop-brief-constraints" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Constraints</label>
+        <textarea id="loop-brief-constraints" value={briefConstraints} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setBriefConstraints(event.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 8, resize: "vertical" }} />
+        <label htmlFor="loop-brief-guidance" style={{ display: "block", fontSize: 12, marginBottom: 4 }}>Creative guidance</label>
+        <textarea id="loop-brief-guidance" value={briefGuidance} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setBriefGuidance(event.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginBottom: 12, resize: "vertical" }} />
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+          <label htmlFor="loop-width" style={{ fontSize: 12 }}>Exploration width
+            <input id="loop-width" type="number" min={WIDTH_MIN} max={WIDTH_MAX} value={width} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => { const parsed = Number.parseInt(event.target.value, 10); if (Number.isNaN(parsed)) { setWidth(DEFAULT_WIDTH); return; } setWidth(Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, parsed))); }} style={{ display: "block", width: 90, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginTop: 4 }} />
+          </label>
+          <label htmlFor="loop-policy" style={{ fontSize: 12 }}>Exploration policy
+            <select id="loop-policy" value={policy} disabled={openingLoop || Boolean(openLoop)} onChange={(event) => setPolicy(event.target.value as ExplorationPolicy)} style={{ display: "block", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--rule)", fontFamily: "var(--hand)", fontSize: 13, marginTop: 4 }}>
+              {EXPLORATION_POLICIES.map((candidate) => <option key={candidate} value={candidate}>{candidate}</option>)}
+            </select>
+          </label>
+        </div>
+        <p style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "0 0 12px" }}>Width and policy are Run exploration params (#984) — changing them is not a Goal revision. The pack's Rubric catalog is instantiated onto the Goal (#791) and stays unlocked until the first fence lock.</p>
+
+        {openLoop && (
+          <div role="list" aria-label="Open loop records" style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+            <div role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "8px 10px", fontFamily: "var(--mono)", fontSize: 10 }}>
+              Goal {openLoop.goal.goal_id} · revision {openLoop.goal.goal_revision} · {openLoop.goal.title}
+            </div>
+            <div role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "8px 10px", fontFamily: "var(--mono)", fontSize: 10 }}>
+              CreativeBrief {openLoop.brief.brief_id} · revision {openLoop.brief.brief_revision}
+            </div>
+            <div role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "8px 10px", fontFamily: "var(--mono)", fontSize: 10 }} data-loop-run-record>
+              Run {openLoop.run.run_id} · pack {openLoop.run.pack_id} · width {openLoop.run.width} · policy {openLoop.run.policy}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button type="button" className="btn-primary" disabled={!canOpenLoop} onClick={openDesignLoop} aria-describedby="loop-start-state" style={{ padding: "9px 16px", borderRadius: 8 }}>{openingLoop ? "Opening the loop…" : "Open the loop"}</button>
+          <span id="loop-start-state" role="status" aria-live="polite" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{loopDisabledCause ? `${loopDisabledCause} — ${loopMessage}` : loopMessage}</span>
+        </div>
+      </section>
+
       <section className="card" style={{ marginBottom: 16 }} aria-labelledby="artifact-types-title">
         <h2 id="artifact-types-title" style={{ fontFamily: "var(--hand)", fontSize: 16, margin: "0 0 4px" }}>What are you making?</h2>
-        <p style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "0 0 12px" }}>Every format shares one project, brand, asset, and editing workspace. Presentations add deck-specific page and presentation tools.</p>
+        <p style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "0 0 12px" }}>Every format shares one project, brand, asset, and editing workspace. Presentations add deck-specific page and presentation tools. This picker is the execute-backend choice inside a loop that already exists — it is not how a loop starts, and no Goal is required to browse it.</p>
         <div role="group" aria-label="Design artifact types" aria-describedby="design-artifact-types-help" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
           {ARTIFACT_MODES.map((artifact) => {
             const selected = artifact.id === selectedMode;
@@ -372,7 +628,7 @@ export default function DesignStudio() {
       )}
 
       <section className="card" aria-labelledby="availability-title"><h2 id="availability-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: "0 0 10px" }}>Availability</h2><div role="list" aria-label="Design Studio availability" style={{ display: "grid", gap: 8 }}>
-        {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
+        {[{ label: "Loop start (Goal + CreativeBrief + pack + Run)", state: missingSurfaces.length === 0 ? "available" : loopSurfaces.packs.status === "probing" || loopSurfaces.goals.status === "probing" ? "checking" : "unavailable", detail: "Opening a loop mints a Goal revision, a CreativeBrief revision, a pack binding, and one canonical Run; missing surfaces leave it disabled with their cause." }, { label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
       </div></section>
     </div>
 
