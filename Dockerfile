@@ -167,6 +167,13 @@ RUN python /tmp/prune-dependency-namespaces.py \
 # alone cannot close the second advisory: x/net is patched onto the pinned
 # tag below the way the agebuild stage patches x/crypto, and `go mod vendor`
 # re-syncs the vendored tree to the renamed go.mod before the build.
+# The #2059 round raises one more module on the same seam: the vendored
+# module set also carries github.com/klauspost/compress v1.20.1 (GO-2026-6865
+# High, fixed 1.20.2 — reported by the Grype cross-check's `--fail-on high`
+# against the same binary, security.yml run 43878205511 job 133336745388,
+# 2026-11-16); it is patched onto the pinned tag below alongside x/net so
+# neither the Trivy gate (HIGH, exit-code 1) nor Grype fails on
+# /usr/local/bin/docker.
 # Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
 # golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
 # HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:

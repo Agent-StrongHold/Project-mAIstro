@@ -52,6 +52,8 @@ dependencies = [
     # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
     # past all four; every fix version satisfies the pre-existing >= 1.27
     # floor, so this only ever affects which temporalio the lock resolves.
+    # This lane's independent evidence trail for the same finding:
+    # docs/testing/inventory-notes/cr2059-temporalio-zip-floor.md.
     "temporalio>=1.36.1",
 ]
 

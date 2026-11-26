@@ -1,6 +1,8 @@
 """Auth middleware — session cookies, role-based access, task-scoped elevation.
 
-Public paths (setup, login, health, static) bypass auth.
+Public paths (login, health, static) bypass auth; the setup wizard API is
+public only inside the pre-setup window (#313), and the bootstrap status
+and preset reads the SPA needs on both sides of that line stay public.
 Admin role is blocked from /v1/chat/ routes (break-glass only).
 Protected ops require elevation bound to a task — permissions die with the task.
 """
@@ -24,9 +26,14 @@ from maistro.identity import Principal
 
 logger = logging.getLogger("hive.auth_middleware")
 
-_PUBLIC_PREFIXES = (
+_PUBLIC_PREFIXES = ("/health",)
+
+#: Wizard APIs that are public only inside the pre-setup window (#313): the
+#: wizard runs when no account exists yet to authenticate with, and normal
+#: auth applies once setup goes terminal. Same fail-closed boundary for both.
+_PRE_SETUP_PUBLIC_PREFIXES = (
+    "/v1/install/",
     "/v1/setup/",
-    "/health",
 )
 
 #: Authenticated like everything else, but by a device credential rather than a
@@ -165,11 +172,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        # The install wizard API is only useful before first-run provisioning,
-        # when no account exists yet to authenticate with. Public pre-setup;
-        # normal auth applies once setup completes (same one-shot boundary as
-        # /v1/setup/complete's 409 guard).
-        if _matches_public_prefix(path, "/v1/install/") and not self._setup_complete():
+        # The install wizard and setup wizard APIs are only useful before
+        # first-run provisioning, when no account exists yet to authenticate
+        # with (#313). Public pre-setup; normal auth applies once setup goes
+        # terminal (same one-shot boundary as /v1/setup/complete's 409
+        # guard). The status and preset reads the SPA needs on both sides of
+        # that line stay public via _PUBLIC_EXACT, and _setup_complete fails
+        # closed, so an unreadable setup state requires auth.
+        if (
+            any(_matches_public_prefix(path, p) for p in _PRE_SETUP_PUBLIC_PREFIXES)
+            and not self._setup_complete()
+        ):
             return await call_next(request)
 
         if request.method == "OPTIONS":

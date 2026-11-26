@@ -35,7 +35,6 @@ owners:
 
 # SPEC-092926-7a02: Closed-loop design-process contract: Goal, Rubric, Pack, Fence, eval-on-Run
 
-- **Status:** Proposed
 - **Date:** 2026-09-29
 - **ADR:** `ADR-092926-7a01` (Proposed)
 - **Issue:** #790 (M7-A1). Initiative #788; parent epic #789; milestone #787.

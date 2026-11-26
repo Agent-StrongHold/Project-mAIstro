@@ -45,7 +45,6 @@ owners:
 
 # SPEC-082926-25a2: AC-State Per-Branch Notes
 
-- **Status:** AC Defined
 - **Decision:** ADR-082926-25a2
 - **Closes:** #585
 
