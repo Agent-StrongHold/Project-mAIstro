@@ -215,6 +215,18 @@ def _extract_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _effective_auth(auth: Any) -> Any:
+    """A missing identity is the anonymous principal, never an absence.
+
+    Boundaries downstream (`Sentinel.process_output`, tool authorization) read
+    a role-less principal and fail closed on it (#66); handing them `None`
+    instead would make "no caller identity" read as "no boundary to enforce".
+    A function rather than an inline conditional in `handle`: same behavior,
+    and `handle` stays inside its authorized complexity budget.
+    """
+    return auth if auth is not None else ANONYMOUS_AUTH
+
+
 class Agent:
     """A running agent instance. All behavior determined by identity + strategy."""
 
@@ -284,7 +296,7 @@ class Agent:
         # A missing identity is an anonymous principal, never a reason to skip
         # Sentinel. This keeps direct Agent callers on the same fail-closed path
         # as the Container composition root.
-        auth = auth if auth is not None else ANONYMOUS_AUTH
+        auth = _effective_auth(auth)
 
         # `intent` was accepted and never read — line 219 was the only mention of
         # the name in this file. Callers that classify a request naturally pass
