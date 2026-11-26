@@ -896,5 +896,11 @@ class TestRegistrationIsolationAndSharedConformance:
 def _plugin_from_source(module_name: str, source: str) -> Any:
     """Exec one plugin source exactly as an artifact import would."""
     module = types.ModuleType(module_name)
-    exec(compile(source, f"{module_name}.py", "exec"), module.__dict__)
+    # Compile under this file's real path, not a synthetic ``<module>.py``:
+    # coverage traces the exec'd lines and would record a file that never
+    # existed on disk, and any later ``coverage json`` over this run (the
+    # mutation gate's selected-test pass) dies with "No source for code".
+    # The plugin source is fixture code carried by this test file; attribute
+    # it there.
+    exec(compile(source, __file__, "exec"), module.__dict__)
     return module
