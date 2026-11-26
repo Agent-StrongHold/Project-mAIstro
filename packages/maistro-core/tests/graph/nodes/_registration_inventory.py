@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 import types
 from collections.abc import Mapping, Sequence
@@ -52,6 +53,11 @@ from typing import Final
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 
 _REACHABILITY_SCRIPT: Final[Path] = _REPO_ROOT / "scripts" / "check-reachability.py"
+
+#: The ledger ``scripts/check-reachability.py`` ratchets: identities with no
+#: import path from any entry point. ``expected_registrations`` excludes them,
+#: mirroring ``_import_reachable_registrations``' loading rule.
+_REACHABILITY_BASELINE: Final[Path] = _REPO_ROOT / "quality" / "reachability-baseline.json"
 
 #: The module whose ``register_node`` is the only registrar this inventory
 #: attributes. Everything else fails closed.
@@ -452,7 +458,10 @@ def _collect_simple(
     """Simple statements: only statement-position calls are attributable.
 
     In nested scopes even those are deferred; every other expression position
-    holds deferred references at best.
+    holds deferred references at best. An unclassified statement-position call
+    (``consume(register_node(A))``) is still traversed: registrar references
+    inside its arguments are reachable registrations this inventory refuses
+    to attribute silently.
     """
     if (
         not nested
@@ -470,6 +479,8 @@ def _collect_simple(
         if form is not None:
             out.append(_Ref(stmt.value, form, "nested", None, None))
             _scan_call_arguments(stmt.value, out, imports)
+        else:
+            _scan_expr(stmt.value, out, imports, "nested", None, None)
 
 
 def _scan_call_arguments(call: ast.Call, out: list[_Ref], imports: _RegistrarImports) -> None:
@@ -584,13 +595,20 @@ def _class_kind(cls: ast.ClassDef, constants: dict[str, str], dotted: str) -> st
 def _reject_ambiguous_loops(
     dotted: str,
     loops: list[ast.For],
+    refs: list[_Ref],
     constants: dict[str, str],
     classes: dict[str, ast.ClassDef],
 ) -> None:
-    """Loop bindings must be unambiguous before any are resolved: two loops
-    sharing a target name (or a target shadowing a module-level name)
-    would conflate unrelated registrations."""
-    targets = [s.target.id for s in loops if isinstance(s.target, ast.Name)]
+    """Loop bindings that participate in registration must be unambiguous
+    before any are resolved: two registration loops sharing a target name
+    (or a target shadowing a module-level name) would conflate unrelated
+    registrations. Unrelated loops that carry no registrar calls are not
+    considered."""
+    targets = [
+        s.target.id
+        for s in loops
+        if isinstance(s.target, ast.Name) and _loop_body_refs(refs, s.target.id)
+    ]
     duplicated = {name for name in targets if targets.count(name) > 1}
     shadowed = duplicated & (set(constants) | set(classes))
     if duplicated or shadowed:
@@ -778,7 +796,7 @@ def _extract(
     refs: list[_Ref] = []
     loops: list[ast.For] = []
     _collect_scope(tree.body, False, None, imports, refs, loops)
-    _reject_ambiguous_loops(dotted, loops, constants, classes)
+    _reject_ambiguous_loops(dotted, loops, refs, constants, classes)
 
     expected: list[ExpectedRegistration] = []
     accounted: set[int] = set()
@@ -817,6 +835,11 @@ def scan_registration_modules(root: Path = _REPO_ROOT) -> dict[str, Path]:
     universe: the reachability classification this builds on excludes
     ``tests/`` trees and ``test_*`` modules, which is exactly the rule that
     keeps fixture registrations from satisfying the production proof.
+
+    This is the full production-shaped universe, ledgered-unreachable sites
+    included: the reconciliation needs the intersection to demand a reviewed
+    disposition for every excluded site. Reachable-only consumers (the loader
+    and :func:`expected_registrations`) apply the ledger themselves.
     """
     reachability = _load_reachability_module()
     modules: dict[str, Path] = {}
@@ -848,18 +871,39 @@ def scan_registration_modules(root: Path = _REPO_ROOT) -> dict[str, Path]:
     return modules
 
 
+def _unreachable_ledger(root: Path) -> frozenset[str]:
+    """The ledgered unreachable identities under ``root``.
+
+    Synthetic negative-case trees carry no baseline file; an empty ledger
+    keeps them reachable, which is what those cases assert against.
+    """
+    try:
+        baseline = root / _REACHABILITY_BASELINE.relative_to(_REPO_ROOT)
+        data = json.loads(baseline.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return frozenset()
+    return frozenset(data["unreachable"])
+
+
 def expected_registrations(
     root: Path = _REPO_ROOT,
 ) -> dict[str, list[ExpectedRegistration]]:
     """The statically expected registration inventory, per reachable module.
 
+    Modules the reachability ledger classifies unreachable are excluded, the
+    same identities ``_import_reachable_registrations`` declines to load: a
+    reviewed-unreachable site's kinds never run in production, so expecting
+    them would contradict the loading layer this inventory must equal.
+
     Pure source analysis: importing and running this in a fresh interpreter
     registers nothing, so it can judge a registry that interpreter loaded
     independently of the loading this helper's sibling performs.
     """
+    unreachable = _unreachable_ledger(root)
     return {
         dotted: expected_in_module(path, dotted)
         for dotted, path in scan_registration_modules(root).items()
+        if dotted not in unreachable
     }
 
 

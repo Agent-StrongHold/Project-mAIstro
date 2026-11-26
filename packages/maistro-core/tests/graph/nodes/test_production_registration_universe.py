@@ -644,6 +644,65 @@ def test_a_new_reachable_source_registration_needs_no_hand_maintained_list(
     assert report.missing == {"x.synthetic": reg.source}
 
 
+def test_a_ledgered_unreachable_registration_is_out_of_the_expected_minimum(
+    tmp_path: Path,
+) -> None:
+    """A registration module the reachability ledger classifies unreachable
+    (with the reconciliation's reviewed disposition) never loads, so the
+    static inventory excludes it too — the same identities, or the module-set
+    equality and registry parity would demand kinds production never runs.
+    """
+    root = _synthetic_repo(
+        tmp_path,
+        registration_files={
+            "packages/x/src/x/reg.py": _ATTRIBUTED_REGISTRATION_BODY,
+            "packages/x/src/x/shelved.py": _REGISTRATION_BODY,
+        },
+        unreachable={"x.shelved"},
+        dispositioned={"x.shelved"},
+    )
+
+    derived = expected_registrations(root)
+    assert set(derived) == {"x.reg"}, (
+        "a ledgered-unreachable registration site leaked into the expected "
+        "minimum the loading layer is compared against"
+    )
+
+
+def test_a_registrar_call_inside_another_statement_call_is_diagnosed(
+    tmp_path: Path,
+) -> None:
+    """A registration hidden in the arguments of an unrelated statement call
+    (`consume(register_node(A))`) is diagnosed, not dropped: a scan that
+    never traverses those arguments leaves the module out of the universe
+    entirely, silently omitting a reachable registration site from every
+    downstream proof instead of failing closed.
+    """
+    root = _synthetic_repo(
+        tmp_path,
+        registration_files={
+            "packages/x/src/x/reg.py": (
+                "from maistro.graph.nodes import register_node\n"
+                "\n"
+                "\n"
+                "class Wrapped:\n"
+                "    kind = 'x.wrapped'\n"
+                "\n"
+                "\n"
+                "consume(register_node(Wrapped))\n"
+            )
+        },
+        unreachable=set(),
+        dispositioned=set(),
+    )
+    assert set(scan_registration_modules(root)) == {"x.reg"}, (
+        "a module whose registrar call hides inside another call must still "
+        "enter the universe — skipping it silently hides a registration site"
+    )
+    with pytest.raises(UnsupportedRegistration, match="x\\.reg"):
+        expected_registrations(root)
+
+
 # --- static extraction: shipped forms attribute exactly ------------------------------
 
 
@@ -804,6 +863,32 @@ def test_a_direct_call_and_a_loop_in_one_module_stay_separate(tmp_path: Path) ->
         ("Solo", "x.solo"),
         ("Paired", "x.paired"),
     ]
+
+
+def test_unrelated_loops_reusing_a_target_name_stay_unambiguous(
+    tmp_path: Path,
+) -> None:
+    """Two module-level loops that share a target name but bind no registrar
+    call are not a registration ambiguity: rejecting them would make any
+    valid initialization code with repeated loop targets fail inventory
+    construction, while only loops whose bindings participate in a
+    registration can conflate one.
+    """
+    body = (
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "\n"
+        "@register_node\n"
+        "class Solo:\n"
+        "    kind = 'x.solo'\n"
+        "\n"
+        "\n"
+        "for item in (1, 2):\n"
+        "    pass\n"
+        "for item in (3, 4):\n"
+        "    pass\n"
+    )
+    assert [(r.class_name, r.kind) for r in _inventory_of(tmp_path, body)] == [("Solo", "x.solo")]
 
 
 # --- static extraction: unsupported forms fail closed --------------------------------
