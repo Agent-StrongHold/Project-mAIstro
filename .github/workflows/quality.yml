@@ -515,6 +515,20 @@ jobs:
               packages/hive-conductor/backend/tests/test_evolve_domain_retention.py \
               packages/hive-conductor/backend/tests/test_evolve_domain_store.py \
               --timeout=120 -q
+          # The brief-commit boundary (#1823) joins by the same rule: its
+          # durable legs gate on MAISTRO_TEST_DATABASE_URL, so in the
+          # coverage-gate job's server-less backend run they skip and the
+          # boundary's changed lines measured 62.2% while the same arcs passed
+          # against a real server — the #231/#102/#12/#1064 shape again. Its
+          # own invocation rather than appended to the evolve list above, for
+          # the same reason the backlog suite got one: the module pins
+          # ``_RESUMABLE`` recovery stages over a shared _commits store, and
+          # one process per store keeps an evolve failure from reading as a
+          # boundary one.
+          uv run coverage run --append --branch \
+            --source=packages/hive-conductor/backend/services \
+            -m pytest packages/hive-conductor/backend/tests/test_brief_commit.py \
+              --timeout=120 -q
       - name: upload coverage data
         uses: actions/upload-artifact@v7
         with:
