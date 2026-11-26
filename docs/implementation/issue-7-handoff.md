@@ -506,3 +506,68 @@ head; what remains is program-scale composition work, not a defect in this
 branch's diff.
 
 Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
+
+## Round 9 — independent verifier re-verification at the round-8 head (current round)
+
+Starting HEAD `9510ff2e1923` (exact match), worktree clean; the only change over
+Round 8 is that round's docs-only note. Driver-supplied `check-*.log` files were
+inspected (uv sync OK; `ruff check` "All checks passed!"; `ruff format --check`
+"3682 files already formatted"; the 42-test pytest pass; suite inventory
+`ok ... 4689` node IDs, 0 duplicate evidence), then every load-bearing result
+below was re-executed fresh in this round at this head. No code, test, ledger,
+grant, gate or policy file was edited; this section is the only change.
+
+### Executed at this head (verifier's own runs, not inherited claims)
+
+| Command | Result |
+| --- | --- |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | **42 passed** (matches driver log) |
+| `uv run pytest packages/maistro-rsi/tests -q` | **1793 passed, 4 skipped** (the branch's `sensitive_paths.py` addition is covered green) |
+| `uv run python scripts/check-workspace-retirement.py` (CI's exact invocation, `quality.yml:1148`) | exit 0: 78 -> 78 tolerated importers, 89 ledger entries OK (Round-7 repair holds) |
+| `uv run python scripts/check-release-consistency.py` | exit 0: released none / shipping 0.9.0 / working toward 1.0.0 (row 1) |
+| closure-keyword scan: `git log 3be6b6650c..HEAD --format=%s%n%b` grep `(fixes?\|closes?\|resolves?) #N` | **0 matches**; PR #2529 body is "Refs #7" only — no premature issue closure |
+| `git diff origin/develop -- quality/` | exactly the documented lane deltas: `reachability-baseline.json` −1 row (`services.entra_entitlements` now reachable), `reachability-dispositions.json` rationale + module-list updated with the #492 wiring; no other rows touched |
+
+### Negative composition claims re-proven at this head (all true)
+
+- Row 8: `container.py:1409` `if self.goal_reconciliation_policy is None: return 0`;
+  the only references to the policy are the field default (`:519`), the guard,
+  tests, and the vulture whitelist — no production assignment or tick caller;
+  `goals/reconciliation/wiring.py:134-139` answers a PostgreSQL pool with
+  `InMemoryGoalStore()`.
+- Row 11: `working_graph/manager.py:38-39` `_embedded_factory` selects
+  `create_backend("embedded", …)`; `working_graph/backend.py:5,114` records the
+  `ladybugdb` distribution as unpublished.
+- Row 12: `promote_evidence` callers are tests plus the `__init__` re-export
+  only; `recall_for_task` is reachable through the owner-scoped
+  `maistro_server/api/user_model.py` route and core `service.py` alone.
+- Row 18: `grep -r "UserModel\|recall_for_task\|Attention" packages/maistro-design/src --include=*.py`
+  → zero matches.
+- Rows 2/5: `.github/workflows/release.yml:23-24` still self-declares
+  "NOT YET EXERCISED … has never run"; all 36 local tags are `backup/*` /
+  orphan / pre-rebase lane tags — no release tags.
+
+### Positive Row-19 inspection at this head
+
+- `services/oauth_login.py:344-352`: `authenticate` invokes the JIT provisioner
+  only for a verified, unlinked Entra identity; refusal falls through to the
+  uniform denial with the decision audited.
+- Structural pin `test_entra_jit_provisioning.py:890`
+  (`assert not hasattr(entra_jit_module, "stores")`) and the strengthened
+  disabled-JIT refusal test (`:497-524`) are present and pass in the 42 above.
+- KNOWN-GAPS.md: 15 gap entries, each carrying an explicit shipped/deferred/
+  limited disposition, 12 `Tracking:` lines (row 6 re-confirmed by scan).
+
+### Verdict carried forward
+
+Round 5-8 accounting is unchanged at this head and was independently
+re-executed here. Milestone acceptance: **NEEDS-REPAIR** — rows 8 and 18 are
+not met by current production composition; rows 2, 3, 5, 17 are UNVERIFIED;
+rows 4, 7, 9, 11, 12 are PARTIAL; rows 1, 6, 13 are deterministic-PASS and
+rows 10, 14, 15, 16 PASS in the collected backend inventory with live-UI
+inspection unverified; row 19 is deterministic-PASS with declared live-tenant
+limits. The lane's repairs hold at this head; the remaining gap is
+program-scale composition plus operator release evidence, not a defect in this
+branch's diff.
+
+Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
