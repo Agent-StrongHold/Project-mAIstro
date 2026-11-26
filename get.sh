@@ -102,7 +102,8 @@ to install.sh (e.g. --answers-file, --skip-wizard, --no-start).
 Environment:
   MAISTRO_VERSION, MAISTRO_CHANNEL, MAISTRO_BRANCH, MAISTRO_REQUIRE_RELEASE,
   MAISTRO_REPO (default: Agent-StrongHold/Project-mAIstro), MAISTRO_DIR,
-  MAISTRO_SHA256SUMS_URL,
+  MAISTRO_SHA256SUMS_URL (override; a tagged install verifies install.sh
+    against the release's own SHA256SUMS by default),
   MAISTRO_GITHUB_TOKEN (only used to raise the GitHub API rate limit).
 EOF
 }
@@ -179,6 +180,13 @@ resolve_ref() {
         # A tagged install pins the container images to the matching tag, so
         # the compose stack and the source tree are the same release.
         IMAGE_TAG="$REF"
+        # Verify the laid-down install.sh against the SHA256SUMS manifest the
+        # release workflow attaches to this release (#84: checksums verify
+        # externally, with no env var required). Deterministic from the tag;
+        # an explicit MAISTRO_SHA256SUMS_URL wins as an override.
+        if [[ -z "${MAISTRO_SHA256SUMS_URL:-}" ]]; then
+            MAISTRO_SHA256SUMS_URL="https://github.com/${REPO}/releases/download/${REF}/SHA256SUMS"
+        fi
     else
         ARCHIVE_URL="https://github.com/${REPO}/archive/refs/heads/${REF}.tar.gz"
         # No published image corresponds to an arbitrary branch commit, so a
@@ -499,9 +507,12 @@ resolve_args_paths() {
 }
 
 # Verify the downloaded install.sh against a published SHA256SUMS manifest
-# before executing it (SPEC-072726-3439 Phase 5). Opt-in via
-# MAISTRO_SHA256SUMS_URL until the production release URL is wired in as a
-# default constant.
+# before executing it (SPEC-072726-3439 Phase 5, #84). For a tagged install
+# resolve_ref() defaults MAISTRO_SHA256SUMS_URL to that release's published
+# manifest — the SHA256SUMS asset release.yml attaches to every release — so
+# verification is the default, not an opt-in. The variable remains an override
+# (mirror, air-gapped cache). A branch install has no manifest to point at, so
+# there verification only runs when the variable is set explicitly.
 verify_installer_checksum() {
     [[ -n "${MAISTRO_SHA256SUMS_URL:-}" ]] || return 0
     command -v curl >/dev/null 2>&1 || fail "curl is required for checksum verification."

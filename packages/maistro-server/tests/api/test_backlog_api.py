@@ -9,20 +9,18 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from maistro.identity import Principal
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro.workspaces.backlog import InMemoryBacklogItemStore
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
 from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
 
 def _as_user(app: FastAPI, user_id: str) -> None:
-    principal = AuthenticatedPrincipal(
-        user_id=user_id, token=f"token-{user_id}", roles=frozenset({"user"})
-    )
+    principal = Principal(user_id=user_id, roles=frozenset({"user"}))
     app.dependency_overrides[verify_api_key] = lambda: principal
 
 
