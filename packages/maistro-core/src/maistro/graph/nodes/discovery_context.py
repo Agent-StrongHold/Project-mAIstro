@@ -60,10 +60,6 @@ class DiscoveryCycleContext:
     #: ``curate`` name the gate that closed.
     budget_refusal: str = ""
 
-    def binding_id_for(self, kind: str) -> str:
-        """The context's Binding id for ``"source"`` or ``"curator"``."""
-        return self.source_binding_id if kind == "source" else self.curator_binding_id
-
 
 class DiscoveryContextProvider(Protocol):
     """The host-implemented read for one Workspace's discovery cycle state."""

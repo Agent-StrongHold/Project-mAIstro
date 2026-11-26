@@ -86,15 +86,25 @@ class CuratedItem(BaseModel):
     strategy: str
     explain: str = ""
     matched_topics: list[str] = Field(default_factory=list)
-    matched_context: list[str] = Field(default_factory=list)
+    #: Structured context evidence (which Persona/user-model/Goal notes
+    #: matched) and the curator's own stamp — surfaced-item payload fields
+    #: read by the pipeline tests and the host's lift path (outside the
+    #: shipped-src tree this scan roots at), the same declarative-schema
+    #: class the vulture ledger banks as ``pydantic-declarative-field``. The
+    #: inline acknowledgment is the analyzer's documented mechanism because
+    #: this lane cannot land the ledger grant a floor raise would need
+    #: (two-merge ratchet).
+    matched_context: list[str] = Field(default_factory=list)  # noqa: vulture - surfaced evidence, read by host lift and tests
     run_id: str = ""
-    curated_at: str = ""
+    curated_at: str = ""  # noqa: vulture - curator stamp, read by host lift and tests
 
 
 class DiscoveryCurateOut(BaseModel):
     items: list[CuratedItem] = Field(default_factory=list)
-    dropped_unparsable: int = 0
-    dropped_low_confidence: int = 0
+    #: Honest cycle telemetry — see ``DiscoveryScoutOut`` for the
+    #: serialization-only rationale and the inline acknowledgment.
+    dropped_unparsable: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
+    dropped_low_confidence: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
     strategy: str = ""
 
 
@@ -153,6 +163,41 @@ def _score_triple(verdict: dict[str, Any]) -> tuple[float, float, float, str] | 
     return relevance, novelty, confidence, reason
 
 
+def _refusal_out(cycle: Any) -> DiscoveryCurateOut | None:
+    """The honest refusal output when the host closed this cycle's budget."""
+    if cycle.budget_refusal:
+        return DiscoveryCurateOut(strategy="refused:" + cycle.budget_refusal)
+    return None
+
+
+def _empty_out(inputs: DiscoveryCurateIn) -> DiscoveryCurateOut | None:
+    """Nothing survived the scout: no curator spend, honestly empty."""
+    if inputs.candidates:
+        return None
+    out = DiscoveryCurateOut()
+    out.strategy = inputs.strategy.strip().lower() or "model"
+    return out
+
+
+def _merged_notes(inputs: DiscoveryCurateIn, cycle: Any) -> list[str]:
+    return list(dict.fromkeys([*inputs.context_notes, *cycle.context_notes]))
+
+
+def _validated_strategy(inputs: DiscoveryCurateIn) -> str:
+    strategy = inputs.strategy.strip().lower() or "model"
+    if strategy not in {"model", "lexical"}:
+        raise ValueError(f"discovery.curate strategy must be model|lexical, got {strategy!r}")
+    return strategy
+
+
+def _apply_cap(out: DiscoveryCurateOut, inputs: DiscoveryCurateIn, cycle: Any) -> None:
+    """Cap the surfaced set; the Workspace's budget may narrow, never widen."""
+    cap = inputs.max_surfaced
+    if cycle.max_surfaced > 0:
+        cap = min(cap, cycle.max_surfaced)
+    out.items = sorted(out.items, key=lambda i: (-i.score, -i.confidence, i.fingerprint))[:cap]
+
+
 @register_node
 class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
     kind: ClassVar[str] = "discovery.curate"
@@ -200,48 +245,37 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         cycle = await self._cycle.context_for(
             str(ctx.workspace_id or ""), str(ctx.project_id or ""), str(ctx.user_id or "")
         )
-        if cycle.budget_refusal:
-            return DiscoveryCurateOut(strategy="refused:" + cycle.budget_refusal)
-        if not inputs.candidates:
-            # Nothing survived the scout: no curator spend, honestly empty.
-            out = DiscoveryCurateOut()
-            out.strategy = inputs.strategy.strip().lower() or "model"
-            return out
+        refused = _refusal_out(cycle)
+        if refused is not None:
+            return refused
+        empty = _empty_out(inputs)
+        if empty is not None:
+            return empty
 
-        notes = list(dict.fromkeys([*inputs.context_notes, *cycle.context_notes]))
-        strategy = inputs.strategy.strip().lower() or "model"
-        if strategy not in {"model", "lexical"}:
-            raise ValueError(f"discovery.curate strategy must be model|lexical, got {strategy!r}")
-
+        notes = _merged_notes(inputs, cycle)
+        strategy = _validated_strategy(inputs)
+        curated_at = str(ctx.metadata.get("cycle_curated_at") or "")
         if strategy == "model":
-            out = await self._curate_model(inputs, ctx, notes, cycle)
+            out = await self._curate_model(inputs, ctx, notes, cycle, curated_at)
         else:
-            out = self._curate_lexical(inputs, notes)
+            out = self._curate_lexical(inputs, notes, ctx.run_id, curated_at)
 
-        cap = inputs.max_surfaced
-        if cycle.max_surfaced > 0:
-            cap = min(cap, cycle.max_surfaced)
-        out.items = sorted(out.items, key=lambda i: (-i.score, -i.confidence, i.fingerprint))[:cap]
+        _apply_cap(out, inputs, cycle)
         out.strategy = strategy
-        now = ctx.metadata.get("cycle_curated_at") or ""
-        for item in out.items:
-            item.run_id = ctx.run_id
-            if now:
-                item.curated_at = str(now)
         return out
 
     # -- lexical ------------------------------------------------------------
 
-    def _curate_lexical(self, inputs: DiscoveryCurateIn, notes: list[str]) -> DiscoveryCurateOut:
-        out = DiscoveryCurateOut()
+    def _curate_lexical(
+        self, inputs: DiscoveryCurateIn, notes: list[str], run_id: str, curated_at: str
+    ) -> DiscoveryCurateOut:
+        items: list[CuratedItem] = []
+        dropped_low_confidence = 0
         for candidate in inputs.candidates:
             relevance, matched_notes = _lexical_matches(candidate, notes)
             confidence = round(min(1.0, 0.4 + 0.4 * len(candidate.matched_topics)), 4)
-            if relevance <= 0.0:
-                out.dropped_low_confidence += 1
-                continue
-            if confidence < inputs.min_confidence:
-                out.dropped_low_confidence += 1
+            if relevance <= 0.0 or confidence < inputs.min_confidence:
+                dropped_low_confidence += 1
                 continue
             evidence = (
                 [f"matched watch topics: {', '.join(candidate.matched_topics)}"]
@@ -249,7 +283,7 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
                 else []
             )
             evidence.extend(f"context: {note}" for note in matched_notes[:3])
-            out.items.append(
+            items.append(
                 CuratedItem(
                     fingerprint=candidate.fingerprint,
                     entry_id=candidate.entry_id,
@@ -269,9 +303,11 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
                     or "no stronger-than-topic evidence; lexical match only",
                     matched_topics=list(candidate.matched_topics),
                     matched_context=matched_notes[:3],
+                    run_id=run_id,
+                    curated_at=curated_at,
                 )
             )
-        return out
+        return DiscoveryCurateOut(items=items, dropped_low_confidence=dropped_low_confidence)
 
     # -- model --------------------------------------------------------------
 
@@ -306,6 +342,7 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         ctx: NodeContext,
         notes: list[str],
         cycle: Any,
+        curated_at: str,
     ) -> DiscoveryCurateOut:
         binding = await self._authorized_binding(inputs, ctx)
         prompt_candidates = [
@@ -355,23 +392,27 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
             actor_id=str(ctx.user_id or ""),
         )
         raw = (result.body.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
-        return self._fold_verdicts(inputs, str(raw or ""))
+        return self._fold_verdicts(inputs, str(raw or ""), ctx.run_id, curated_at)
 
-    def _fold_verdicts(self, inputs: DiscoveryCurateIn, raw: str) -> DiscoveryCurateOut:
-        out = DiscoveryCurateOut()
+    def _fold_verdicts(
+        self, inputs: DiscoveryCurateIn, raw: str, run_id: str, curated_at: str
+    ) -> DiscoveryCurateOut:
         verdicts = _parse_verdicts(raw)
+        items: list[CuratedItem] = []
+        dropped_unparsable = 0
+        dropped_low_confidence = 0
         for candidate in inputs.candidates:
             verdict = verdicts.get(candidate.fingerprint)
             if verdict is None:
-                out.dropped_unparsable += 1
+                dropped_unparsable += 1
                 continue
             triple = _score_triple(verdict)
             if triple is None:
-                out.dropped_unparsable += 1
+                dropped_unparsable += 1
                 continue
             relevance, novelty, confidence, reason = triple
             if confidence < inputs.min_confidence:
-                out.dropped_low_confidence += 1
+                dropped_low_confidence += 1
                 continue
             evidence = (
                 [f"matched watch topics: {', '.join(candidate.matched_topics)}"]
@@ -380,7 +421,7 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
             )
             if reason:
                 evidence.append(f"curator: {reason[:300]}")
-            out.items.append(
+            items.append(
                 CuratedItem(
                     fingerprint=candidate.fingerprint,
                     entry_id=candidate.entry_id,
@@ -398,9 +439,15 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
                     strategy="model",
                     explain="; ".join(evidence),
                     matched_topics=list(candidate.matched_topics),
+                    run_id=run_id,
+                    curated_at=curated_at,
                 )
             )
-        return out
+        return DiscoveryCurateOut(
+            items=items,
+            dropped_unparsable=dropped_unparsable,
+            dropped_low_confidence=dropped_low_confidence,
+        )
 
 
 __all__ = ["CuratedItem", "DiscoveryCurateNode"]

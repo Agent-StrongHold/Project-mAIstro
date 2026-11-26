@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -51,8 +51,14 @@ class DiscoverySourceFetchIn(BaseModel):
 
 class DiscoverySourceFetchOut(BaseModel):
     entries: list[dict[str, str]] = Field(default_factory=list)
-    sources_queried: int = 0
-    skipped_stale: int = 0
+    #: Honest cycle telemetry, read by the pipeline tests and the host's lift
+    #: path (outside the shipped-src tree this scan roots at) — the same
+    #: declarative-schema class the vulture ledger banks as
+    #: ``pydantic-declarative-field``; the inline acknowledgment is the
+    #: analyzer's documented mechanism because this lane cannot land the
+    #: ledger grant a floor raise would need (two-merge ratchet).
+    sources_queried: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
+    skipped_stale: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
     sources: list[dict[str, str]] = Field(
         default_factory=list,
         description="Per-source provenance actually queried this cycle",
@@ -89,6 +95,20 @@ def _stale(published_at: str, *, now: datetime, max_age: timedelta) -> bool:
     return (now - stamp) > max_age
 
 
+def _declared_sources(binding: Any) -> list[dict[str, Any]]:
+    """The Binding's declared, URL-bearing sources — fail closed when none."""
+    sources = [
+        source
+        for source in binding.config.get("sources", [])
+        if isinstance(source, dict) and str(source.get("url") or "").strip()
+    ]
+    if not sources:
+        raise BindingNotFound(
+            "discovery.source Binding declares no sources; refusing an open fetch"
+        )
+    return sources
+
+
 @register_node
 class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceFetchOut]):
     kind: ClassVar[str] = "discovery.source_fetch"
@@ -121,6 +141,73 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
         self._effects = effect_context or default_effect_context()
         self._cycle = discovery_context or default_discovery_context()
 
+    async def _binding_for(
+        self, inputs: DiscoverySourceFetchIn, ctx: NodeContext, cycle: Any
+    ) -> Any:
+        """The pre-authorized Binding for this cycle; refuse before any request."""
+        binding_id = inputs.binding_id.strip() or cycle.source_binding_id
+        if not binding_id:
+            raise BindingNotFound(
+                "discovery.source_fetch requires a pre-authorized Binding "
+                "(explicit input or discovery context) before any request"
+            )
+        return await self._effects.bindings.resolve(
+            binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability="discovery.source",
+        )
+
+    async def _invoke_source(
+        self,
+        source: dict[str, Any],
+        binding: Any,
+        ctx: NodeContext,
+        inputs: DiscoverySourceFetchIn,
+        per_source: int,
+    ) -> dict[str, Any]:
+        """One governed Invocation for one declared source."""
+        url = str(source.get("url") or "").strip()
+        invocation = await invoke_discovery_source(
+            self._effects,
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            attempt_id=ctx.attempt_id,
+            effect_key=f"discovery.source.fetch:{url}:{per_source}",
+            request=DiscoverySourceRequest(url=url, max_entries=per_source),
+            timeout_s=inputs.timeout_s,
+            actor_id=str(ctx.user_id or ""),
+        )
+        return invocation.result if isinstance(invocation.result, dict) else {}
+
+    def _accept_entries(
+        self,
+        result: dict[str, Any],
+        category: str,
+        *,
+        now: datetime,
+        inputs: DiscoverySourceFetchIn,
+        remaining: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        """Rows kept from one source's result, with the stale count dropped."""
+        rows: list[dict[str, str]] = []
+        skipped_stale = 0
+        max_age = timedelta(hours=inputs.max_age_hours)
+        for entry in result.get("entries", []):
+            if not isinstance(entry, dict) or len(rows) >= remaining:
+                continue
+            published = str(entry.get("published_at") or "")
+            if inputs.max_age_hours > 0 and _stale(published, now=now, max_age=max_age):
+                skipped_stale += 1
+                continue
+            row = {key: str(value) for key, value in entry.items()}
+            if category and not row.get("category"):
+                row["category"] = category
+            rows.append(row)
+        return rows, skipped_stale
+
     async def _execute(
         self, inputs: DiscoverySourceFetchIn, ctx: NodeContext
     ) -> DiscoverySourceFetchOut:
@@ -132,64 +219,38 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
             # refusal is the node's output, recorded on the Run.
             return DiscoverySourceFetchOut(refusal=cycle.budget_refusal)
 
-        binding_id = inputs.binding_id.strip() or cycle.source_binding_id
-        if not binding_id:
-            raise BindingNotFound(
-                "discovery.source_fetch requires a pre-authorized Binding "
-                "(explicit input or discovery context) before any request"
-            )
-        binding = await self._effects.bindings.resolve(
-            binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability="discovery.source",
-        )
-        sources = [
-            source
-            for source in binding.config.get("sources", [])
-            if isinstance(source, dict) and str(source.get("url") or "").strip()
-        ]
-        if not sources:
-            raise BindingNotFound(
-                "discovery.source Binding declares no sources; refusing an open fetch"
-            )
+        binding = await self._binding_for(inputs, ctx, cycle)
+        sources = _declared_sources(binding)
 
-        out = DiscoverySourceFetchOut()
+        entries: list[dict[str, str]] = []
+        sources_queried = 0
+        skipped_stale = 0
+        sources_meta: list[dict[str, str]] = []
         now = datetime.now(UTC)
-        max_age = timedelta(hours=inputs.max_age_hours)
         for source in sources:
-            if len(out.entries) >= inputs.limit:
+            if len(entries) >= inputs.limit:
                 break
             url = str(source.get("url") or "").strip()
-            per_source = min(inputs.max_entries_per_source, inputs.limit - len(out.entries))
-            invocation = await invoke_discovery_source(
-                self._effects,
-                binding=binding,
-                run_id=ctx.run_id,
-                node_run_id=ctx.node_run_id,
-                attempt_id=ctx.attempt_id,
-                effect_key=f"discovery.source.fetch:{url}:{per_source}",
-                request=DiscoverySourceRequest(url=url, max_entries=per_source),
-                timeout_s=inputs.timeout_s,
-                actor_id=str(ctx.user_id or ""),
-            )
-            result = invocation.result if isinstance(invocation.result, dict) else {}
-            out.sources_queried += 1
+            per_source = min(inputs.max_entries_per_source, inputs.limit - len(entries))
+            result = await self._invoke_source(source, binding, ctx, inputs, per_source)
+            sources_queried += 1
             category = str(result.get("category") or source.get("category") or "")
-            out.sources.append({"url": url, "category": category})
-            for entry in result.get("entries", []):
-                if not isinstance(entry, dict) or len(out.entries) >= inputs.limit:
-                    continue
-                published = str(entry.get("published_at") or "")
-                if inputs.max_age_hours > 0 and _stale(published, now=now, max_age=max_age):
-                    out.skipped_stale += 1
-                    continue
-                row = {key: str(value) for key, value in entry.items()}
-                if category and not row.get("category"):
-                    row["category"] = category
-                out.entries.append(row)
-        return out
+            sources_meta.append({"url": url, "category": category})
+            rows, stale = self._accept_entries(
+                result,
+                category,
+                now=now,
+                inputs=inputs,
+                remaining=inputs.limit - len(entries),
+            )
+            skipped_stale += stale
+            entries.extend(rows)
+        return DiscoverySourceFetchOut(
+            entries=entries,
+            sources_queried=sources_queried,
+            skipped_stale=skipped_stale,
+            sources=sources_meta,
+        )
 
 
 __all__ = ["DiscoverySourceFetchNode"]

@@ -299,40 +299,65 @@ def _parse_atom(source_url: str, body: str, max_entries: int) -> list[dict[str, 
     return out
 
 
+def _json_items(payload: Any) -> list[Any]:
+    """The feed's entry list, or the honest refusal of an unknown shape."""
+    if isinstance(payload, list):
+        return list(payload)
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return list(payload["items"])
+    raise RuntimeError("source JSON is neither a list nor an object with `items`")
+
+
+# Each JSON entry field: output key, source keys tried in order (first
+# truthy value wins, exactly the `or`-chain this table replaces), and
+# whether the value is stripped.
+_JSON_FIELD_SOURCES: tuple[tuple[str, tuple[str, ...], bool], ...] = (
+    ("entry_id", ("id", "guid"), False),
+    ("url", ("url", "link"), True),
+    ("title", ("title",), True),
+    ("summary", ("summary", "description"), True),
+    ("published_at", ("published_at", "published"), True),
+    ("expires_at", ("expires_at", "deadline"), True),
+    ("category", ("category",), True),
+)
+
+
+def _json_field(item: dict[str, Any], sources: tuple[str, ...], *, strip: bool) -> str:
+    value: Any = ""
+    for key in sources:
+        value = item.get(key)
+        if value:
+            break
+    text = str(value or "")
+    return text.strip() if strip else text
+
+
+def _json_entry(source_url: str, item: Any) -> dict[str, str] | None:
+    """One JSON-feed entry; non-dict rows are skipped, not fatal.
+
+    An expiry is honoured only as explicit source data; a JSON feed that
+    declares one per item may pass it, nothing synthesizes it.
+    """
+    if not isinstance(item, dict):
+        return None
+    fields = {
+        key: _json_field(item, sources, strip=strip) for key, sources, strip in _JSON_FIELD_SOURCES
+    }
+    return _entry(source_url, **fields)
+
+
 def _parse_json_feed(source_url: str, body: str, max_entries: int) -> list[dict[str, str]]:
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"source returned unparseable JSON: {exc}") from exc
-    items: list[Any]
-    if isinstance(payload, list):
-        items = payload
-    elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
-        items = payload["items"]
-    else:
-        raise RuntimeError("source JSON is neither a list nor an object with `items`")
     out: list[dict[str, str]] = []
-    for item in items:
+    for item in _json_items(payload):
         if len(out) >= max_entries:
             break
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or item.get("link") or "").strip()
-        # An expiry is honoured only as explicit source data; a JSON feed that
-        # declares one per item may pass it, nothing synthesizes it.
-        expires_at = str(item.get("expires_at") or item.get("deadline") or "").strip()
-        out.append(
-            _entry(
-                source_url,
-                entry_id=str(item.get("id") or item.get("guid") or ""),
-                url=url,
-                title=str(item.get("title") or "").strip(),
-                summary=str(item.get("summary") or item.get("description") or "").strip(),
-                published_at=str(item.get("published_at") or item.get("published") or "").strip(),
-                expires_at=expires_at,
-                category=str(item.get("category") or "").strip(),
-            )
-        )
+        row = _json_entry(source_url, item)
+        if row is not None:
+            out.append(row)
     return out
 
 

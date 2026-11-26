@@ -251,7 +251,7 @@ async def test_cycle_context_carries_fresh_context_notes(
         "current goal: plan the weekend shoot",
     )
     assert context.source_binding_id == ""
-    assert context.binding_id_for("curator") == ""
+    assert context.curator_binding_id == ""
 
 
 async def test_dismissed_category_downweights_future_cycles() -> None:

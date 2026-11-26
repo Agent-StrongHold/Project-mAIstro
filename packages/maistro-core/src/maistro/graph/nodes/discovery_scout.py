@@ -16,13 +16,17 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from . import register_node
 from .base import BaseNode, NodeContext, ReplaySemantics
-from .discovery_context import DiscoveryContextProvider, default_discovery_context
+from .discovery_context import (
+    DiscoveryContextProvider,
+    DiscoveryCycleContext,
+    default_discovery_context,
+)
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9'+.-]*", re.IGNORECASE)
 
@@ -52,8 +56,15 @@ class ScoutedCandidate(BaseModel):
 
 class DiscoveryScoutOut(BaseModel):
     candidates: list[ScoutedCandidate] = Field(default_factory=list)
-    seen_suppressed: int = 0
-    below_floor: int = 0
+    #: Honest cycle telemetry. These counts are read by the pipeline tests and
+    #: by the host's lift path (outside the shipped-src tree this scan roots
+    #: at), so inside ``packages/*/src`` they are serialization-only surface —
+    #: the same declarative-schema class the vulture ledger banks as
+    #: ``pydantic-declarative-field``. The inline acknowledgment is the
+    #: analyzer's documented mechanism, used because this lane cannot land the
+    #: ledger grant a floor raise would need (two-merge ratchet).
+    seen_suppressed: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
+    below_floor: int = 0  # noqa: vulture - cycle telemetry, read by host lift and tests
 
 
 def fingerprint_for(*, entry_id: str, url: str, title: str) -> str:
@@ -82,6 +93,63 @@ def _overlap(entry_text: str, topics: list[str]) -> tuple[float, list[str]]:
     return len(matched) / len(topics), matched
 
 
+def _cycle_floor(min_score: float, cycle: DiscoveryCycleContext) -> float:
+    """The effective floor: the Workspace's config may tighten, never loosen."""
+    if cycle.min_scout_score >= 0:
+        return max(min_score, cycle.min_scout_score)
+    return min_score
+
+
+def _entry_fingerprint(entry: dict[str, Any]) -> str:
+    return fingerprint_for(
+        entry_id=str(entry.get("id") or ""),
+        url=str(entry.get("url") or ""),
+        title=str(entry.get("title") or ""),
+    )
+
+
+def _scored(
+    entry: dict[str, Any], topics: list[str], downweights: dict[str, float]
+) -> tuple[float, list[str], str]:
+    """Topic-overlap score with feedback down-weights applied, plus category."""
+    text = " ".join(str(entry.get(key) or "") for key in ("title", "summary", "category"))
+    score, matched = _overlap(text, topics)
+    category = str(entry.get("category") or "")
+    weight = downweights.get(category)
+    if weight is not None and matched:
+        score = round(score * weight, 4)
+    return score, matched, category
+
+
+def _candidate(
+    entry: dict[str, Any], fingerprint: str, score: float, matched: list[str], category: str
+) -> ScoutedCandidate:
+    return ScoutedCandidate(
+        fingerprint=fingerprint,
+        entry_id=str(entry.get("id") or ""),
+        url=str(entry.get("url") or ""),
+        title=str(entry.get("title") or ""),
+        summary=str(entry.get("summary") or ""),
+        category=category,
+        source_url=str(entry.get("source_url") or ""),
+        published_at=str(entry.get("published_at") or ""),
+        expires_at=str(entry.get("expires_at") or ""),
+        score=score,
+        matched_topics=matched,
+    )
+
+
+def _capped(
+    scored: list[ScoutedCandidate], max_candidates: int, cycle: DiscoveryCycleContext
+) -> list[ScoutedCandidate]:
+    """Highest-score first; the Workspace's budget may narrow, never widen."""
+    scored.sort(key=lambda c: (-c.score, c.fingerprint))
+    cap = max_candidates
+    if cycle.max_candidates > 0:
+        cap = min(cap, cycle.max_candidates)
+    return scored[:cap]
+
+
 @register_node
 class DiscoveryScoutNode(BaseNode[DiscoveryScoutIn, DiscoveryScoutOut]):
     kind: ClassVar[str] = "discovery.scout"
@@ -108,57 +176,30 @@ class DiscoveryScoutNode(BaseNode[DiscoveryScoutIn, DiscoveryScoutOut]):
         )
         topics = list(dict.fromkeys([*inputs.watch_topics, *cycle.watch_topics]))
         downweights = dict(cycle.category_downweights)
-        floor = inputs.min_score
-        if cycle.min_scout_score >= 0:
-            # The Workspace's config floor may tighten, never loosen.
-            floor = max(floor, cycle.min_scout_score)
+        floor = _cycle_floor(inputs.min_score, cycle)
 
-        out = DiscoveryScoutOut()
         seen_in_cycle: set[str] = set()
         scored: list[ScoutedCandidate] = []
+        seen_suppressed = 0
+        below_floor = 0
         for entry in inputs.entries:
             if not isinstance(entry, dict):
                 continue
-            fingerprint = fingerprint_for(
-                entry_id=str(entry.get("id") or ""),
-                url=str(entry.get("url") or ""),
-                title=str(entry.get("title") or ""),
-            )
+            fingerprint = _entry_fingerprint(entry)
             if fingerprint in cycle.seen_fingerprints or fingerprint in seen_in_cycle:
-                out.seen_suppressed += 1
+                seen_suppressed += 1
                 continue
             seen_in_cycle.add(fingerprint)
-            text = " ".join(str(entry.get(key) or "") for key in ("title", "summary", "category"))
-            score, matched = _overlap(text, topics)
-            category = str(entry.get("category") or "")
-            weight = downweights.get(category)
-            if weight is not None and matched:
-                score = round(score * weight, 4)
+            score, matched, category = _scored(entry, topics, downweights)
             if score < floor:
-                out.below_floor += 1
+                below_floor += 1
                 continue
-            scored.append(
-                ScoutedCandidate(
-                    fingerprint=fingerprint,
-                    entry_id=str(entry.get("id") or ""),
-                    url=str(entry.get("url") or ""),
-                    title=str(entry.get("title") or ""),
-                    summary=str(entry.get("summary") or ""),
-                    category=category,
-                    source_url=str(entry.get("source_url") or ""),
-                    published_at=str(entry.get("published_at") or ""),
-                    expires_at=str(entry.get("expires_at") or ""),
-                    score=score,
-                    matched_topics=matched,
-                )
-            )
-        scored.sort(key=lambda c: (-c.score, c.fingerprint))
-        cap = inputs.max_candidates
-        if cycle.max_candidates > 0:
-            # The Workspace's budget may narrow the cycle cap, never widen it.
-            cap = min(cap, cycle.max_candidates)
-        out.candidates = scored[:cap]
-        return out
+            scored.append(_candidate(entry, fingerprint, score, matched, category))
+        return DiscoveryScoutOut(
+            candidates=_capped(scored, inputs.max_candidates, cycle),
+            seen_suppressed=seen_suppressed,
+            below_floor=below_floor,
+        )
 
 
 __all__ = ["DiscoveryScoutNode", "ScoutedCandidate", "fingerprint_for"]

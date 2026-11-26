@@ -347,7 +347,7 @@ async def test_discovery_source_fetch_replay_is_read_only_and_stable(
 
     class _Resp:
         status_code = 200
-        headers: dict[str, str] = {"content-type": "application/rss+xml"}
+        headers = {"content-type": "application/rss+xml"}  # noqa: RUF012 - response stub
         text = rss
 
     class _Client:

@@ -764,7 +764,8 @@ async def test_bare_context_provider_provides_nothing() -> None:
     assert context.watch_topics == ()
     assert context.seen_fingerprints == frozenset()
     assert context.budget_refusal == ""
-    assert context.binding_id_for("source") == ""
+    assert context.source_binding_id == ""
+    assert context.curator_binding_id == ""
 
 
 def test_budget_exhaustion_is_a_typed_error() -> None:
