@@ -34,11 +34,18 @@ ADMIN_PW = "s3cret-admin-pw"
 USER_PW = "s3cret-user-pw"
 
 
-def _served_questions() -> dict[str, dict]:
-    """The SPA's view of the declaration, over the real HTTP boundary."""
+def _served_questions(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict]:
+    """The SPA's view of the declaration, over the real HTTP boundary.
+
+    The conftest app is provisioned, so the narrowed /v1/setup/ prefix
+    (#313) requires auth there; the wizard always runs pre-setup, so the
+    boundary is opened the same way TestInstallPreSetupWindow does.
+    """
+    import routes.setup as setup_routes
     from fastapi.testclient import TestClient
     from main import app
 
+    monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
     response = TestClient(app).get("/v1/setup/questions")
     assert response.status_code == 200
     body = response.json()
@@ -58,7 +65,9 @@ def _spa_payload(questions: dict[str, dict], **operator_answers: object) -> dict
     return body
 
 
-def test_identical_answers_produce_identical_payloads_whichever_path_collected_them() -> None:
+def test_identical_answers_produce_identical_payloads_whichever_path_collected_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """THE #443 parity assertion: terminal wire payload == SPA wire payload.
 
     Both sides carry the same two explicit answers (the passwords). Every
@@ -71,7 +80,9 @@ def test_identical_answers_produce_identical_payloads_whichever_path_collected_t
     terminal = build_bootstrap_credentials(
         InstallAnswersV1(), admin_password=ADMIN_PW, user_password=USER_PW
     )
-    spa = _spa_payload(_served_questions(), admin_password=ADMIN_PW, user_password=USER_PW)
+    spa = _spa_payload(
+        _served_questions(monkeypatch), admin_password=ADMIN_PW, user_password=USER_PW
+    )
 
     assert terminal == spa
 
@@ -79,7 +90,9 @@ def test_identical_answers_produce_identical_payloads_whichever_path_collected_t
     assert SetupCompleteBody.model_validate(terminal) == SetupCompleteBody.model_validate(spa)
 
 
-def test_crypto_profile_mapping_keeps_both_paths_in_agreement() -> None:
+def test_crypto_profile_mapping_keeps_both_paths_in_agreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """#443 AC-6: the operator declines crypto on both paths.
 
     The terminal derives ``optional_modules`` from its crypto-profile answer;
@@ -92,7 +105,7 @@ def test_crypto_profile_mapping_keeps_both_paths_in_agreement() -> None:
         user_password=USER_PW,
     )
     spa = _spa_payload(
-        _served_questions(),
+        _served_questions(monkeypatch),
         admin_password=ADMIN_PW,
         user_password=USER_PW,
         optional_modules=[],
@@ -113,9 +126,9 @@ def test_crypto_profile_mapping_is_total_over_the_wizard_choices() -> None:
     )
 
 
-def test_questions_endpoint_serves_the_declaration() -> None:
+def test_questions_endpoint_serves_the_declaration(monkeypatch: pytest.MonkeyPatch) -> None:
     """The SPA reads the declaration, not a server-side restatement of it."""
-    served = _served_questions()
+    served = _served_questions(monkeypatch)
     assert set(served) == set(FIRST_RUN_QUESTIONS)
     for key, declared in FIRST_RUN_QUESTIONS.items():
         entry = served[key]
@@ -129,13 +142,17 @@ def test_questions_endpoint_serves_the_declaration() -> None:
         assert not isinstance(entry["default"], str) or "password" not in entry["key"]
 
 
-def test_server_field_defaults_come_from_the_declaration() -> None:
+def test_server_field_defaults_come_from_the_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The hinge of the parity test: when a collector omits a field, the
     server fills it with the *declared* default, so an omission can never
     diverge from what the other path states explicitly."""
     from routes.setup import SetupCompleteBody
 
-    served = _served_questions()
+    # Read pre-setup: the narrowed /v1/setup/ prefix requires auth on the
+    # provisioned conftest app (#313).
+    served = _served_questions(monkeypatch)
     # Fields the server accepts that are NOT operator questions (#287):
     # wizard-internal control metadata attached to the completion payload,
     # documented here so a new field cannot silently dodge the parity check
@@ -214,7 +231,7 @@ def test_terminal_staged_defaults_provision_the_declaration_named_accounts(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from routes import setup as setup_routes
     from services import registration_policy as rp
     from services.model_store import JsonStore, ModelStore
@@ -226,7 +243,7 @@ def test_terminal_staged_defaults_provision_the_declaration_named_accounts(
         DEFAULT_HARDWARE_PRESET,
     )
 
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
     monkeypatch.setattr(stores, "username_claims", JsonStore("username_claims"))
     monkeypatch.setattr(setup_routes, "_get_kv", lambda: None)
 

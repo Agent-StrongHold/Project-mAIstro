@@ -139,6 +139,13 @@ async def _boot_container(
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", _GATEWAY_KEY)
     # The node's own model pin must outrank the ambient default.
     monkeypatch.setenv("CHAT_DEFAULT_MODEL", "ambient-default-alias")
+    # `get_settings` is lru_cached suite-wide: an earlier module's boot (e.g.
+    # test_dag_model_tools' container) may have cached a Settings carrying its
+    # own ambient key. The governed runtime must resolve THIS fixture's env,
+    # so state the env first, then force the next resolution through it.
+    import config as hive_config
+
+    hive_config.get_settings.cache_clear()
     return owner
 
 
@@ -149,7 +156,11 @@ def _fake_transport(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     calls: list[dict[str, Any]] = []
 
-    async def execute(provider: Any, request: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def execute(
+        provider: Any, request: Any, *, endpoint: Any, on_chunk: Any = None
+    ) -> dict[str, Any]:
+        # ``on_chunk`` is the shipped streaming observer seam (SPEC-285); a
+        # non-streaming legacy LLM node dispatches with it unset.
         calls.append({"payload": _chat_payload(provider, request), "endpoint": endpoint})
         return {
             "model": f"{_MODEL}-2026-10",
@@ -337,7 +348,12 @@ async def test_unconfigured_gateway_fails_the_legacy_node_closed_without_fabrica
         assert result["status"] == "failed", result
         node_result = result["node_results"][_NODE]
         assert node_result["success"] is False
-        assert "No LLM gateway is configured" in node_result["response"]
+        # #2465: a failed node's projected response is the bounded failure
+        # kind — the refusal text stays on the canonical NodeRun and in the
+        # run-level error, which still names the ALLOW_STUB_LLM contract
+        # (asserted below). This narrows the M1-era pin that read the full
+        # refusal here; the disclosure regression is owned by #465/#446.
+        assert node_result["response"] == "node failed; see server logs"
         assert "No LLM gateway is configured" in str(result.get("error", ""))
         assert calls == []
         # The admitted canonical Run itself failed closed — no fabricated
@@ -382,8 +398,12 @@ async def test_unregistered_model_metadata_fails_the_real_container_path_closed(
         assert result["status"] == "failed", result
         node_result = result["node_results"][_NODE]
         assert node_result["success"] is False
-        assert "pinned model" in node_result["response"]
-        assert "ProviderRegistry" in node_result["response"]
+        # #2465: the bounded failure kind is all the projection carries at the
+        # node level; the "register the pinned model's metadata" guidance
+        # remains on the canonical NodeRun evidence for authorized inspection.
+        # Narrowed from the M1-era pin that read the refusal text here; the
+        # disclosure regression is owned by #465/#446.
+        assert node_result["response"] == "node failed; see server logs"
         assert calls == []
         # No completed invocation, no usage evidence: the refusal happened before
         # the physical call, exactly as fail-closed requires.

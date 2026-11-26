@@ -39,6 +39,39 @@ class _Provider:
     trust_tier: str = "trusted"
 
 
+@dataclass(frozen=True)
+class _DeclaringProvider:
+    """A provider handle that declares identity the way a spec does: a method.
+
+    ``ProviderAdapterSpec.extension_attribution()`` is a method, so a provider
+    exposing the same shape reaches :meth:`ResolvedBinding.from_provider` as a
+    callable attribute, not a materialized value (M9-I1, #976).
+    """
+
+    name: str = "provider-a"
+    slot: str = "external_write"
+    trust_tier: str = "trusted"
+
+    def extension_attribution(self) -> Any:
+        from maistro.capabilities.providers.extension_attribution import ExtensionAttribution
+
+        return ExtensionAttribution(
+            extension_id="acme.external",
+            version="1.2.3",
+            publisher="acme",
+            package_sha256="a" * 64,
+            manifest_sha256="b" * 64,
+        )
+
+
+@dataclass(frozen=True)
+class _DecliningProvider(_Provider):
+    """A declaring-shaped handle that declines: the method returns ``None``."""
+
+    def extension_attribution(self) -> None:
+        return None
+
+
 async def _resolver(binding: Binding) -> _Provider:
     assert binding.capability == "external_write"
     return _Provider()
@@ -100,6 +133,31 @@ def test_resolved_binding_records_provider_and_rejects_pin_mismatch() -> None:
 
     with pytest.raises(ValueError, match="pins provider"):
         ResolvedBinding.from_provider(_binding(provider_name="provider-b"), provider)
+
+
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
+def test_resolved_binding_snapshots_a_method_declared_attribution() -> None:
+    """A provider declaring identity as a method still lands in the snapshot.
+
+    The spec convention (``ProviderAdapterSpec.extension_attribution()``) is a
+    method, so a provider handle with the same shape resolves through the
+    callable branch of ``from_provider``; the snapshot must carry the exact
+    identity either way (M9-I1, #976).
+    """
+
+    resolved = ResolvedBinding.from_provider(_binding(), _DeclaringProvider())
+
+    payload = resolved.config["extension_attribution"]
+    assert payload["extension_id"] == "acme.external"
+    assert payload["version"] == "1.2.3"
+    assert payload["publisher"] == "acme"
+    assert payload["package_sha256"] == "a" * 64
+
+    # A declaring-shaped handle that declines (returns None) leaves the
+    # wiring's own config untouched — the same as an attribute-less provider.
+    declined = ResolvedBinding.from_provider(_binding(), _DecliningProvider())
+    assert "extension_attribution" not in declined.config
+    assert declined.config == {"mode": "safe"}
 
 
 @pytest.mark.asyncio

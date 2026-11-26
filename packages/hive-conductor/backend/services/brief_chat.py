@@ -5,9 +5,12 @@ belongs to the brief interview for the caller's workspace. It does when an
 interview is already open there, or when the turn asks for work to be made.
 Then the reply is the interview's, not a model's: the next question, a
 reflection of what was just recorded, the summary once every required field
-is known, or the draft once the person says commit. Nothing here writes a
-Goal; the draft is what the Goal and CreativeBrief writers (#458, #774) will
-consume, and the reply says so.
+is known, and — once the person explicitly confirms the reviewed draft — the
+commit (#1823). The commit is `services.brief_commit`'s to make: this module
+only passes the gate's draft across the one authorized boundary and reports
+the truthful outcome. Until that boundary returns a durable result, nothing
+is written and the interview stays open; a committed interview is gone and
+its Goal is discoverable through the canonical Goal enumeration.
 
 The phrasing is deterministic on purpose (ADR-091726-7c2a): the same answer
 gives the same reply on every run, so the behaviour is testable without a
@@ -36,6 +39,12 @@ from maistro.agents.brief_interview import (
     start_brief_interview,
 )
 from services import brief_store
+from services.brief_commit import (
+    CommitNotAuthorized,
+    CommitOutcome,
+    CommitRejected,
+    commit_draft,
+)
 from services.workspace_mode import is_workspace_request_authorized
 
 #: A turn that asks for something to be made. Deliberately narrow: a question
@@ -61,10 +70,6 @@ _INTRO = (
     "few questions, one at a time. Say 'you decide' on any of them and I'll assume "
     "something and say so."
 )
-_NOT_WRITTEN = (
-    "Nothing is written beyond this draft yet: the Goal and CreativeBrief writers are "
-    "#458 and #774, and this draft is what they will consume."
-)
 
 
 @dataclass(frozen=True)
@@ -75,13 +80,45 @@ class BriefTurn:
     event: str
     brief: dict[str, Any]
     draft: dict[str, Any] | None = None
+    commit: dict[str, Any] | None = None
     citations: list[str] = field(default_factory=list)
+
+    @property
+    def _written(self) -> list[dict[str, Any]]:
+        """The canonical identities this turn actually wrote, truthfully.
+
+        Empty unless the commit is durable (AC-8: the product no longer
+        reports a draft as a durable commitment)."""
+        c = self.commit or {}
+        if c.get("status") not in ("committed", "already_committed"):
+            return []
+        written: list[dict[str, Any]] = []
+        if c.get("goal_id"):
+            written.append(
+                {
+                    "kind": "goal",
+                    "goal_id": c["goal_id"],
+                    "revision": c.get("goal_revision"),
+                }
+            )
+        if c.get("brief_id"):
+            written.append(
+                {
+                    "kind": "creative_brief",
+                    "brief_id": c["brief_id"],
+                    "lineage_id": c.get("lineage_id"),
+                    "version": c.get("brief_version"),
+                }
+            )
+        return written
 
     def payload(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": "brief", "event": self.event, **self.brief}
         if self.draft is not None:
             out["draft"] = self.draft
-            out["written"] = []
+        out["written"] = self._written
+        if self.commit is not None:
+            out["commit"] = self.commit
         return out
 
 
@@ -172,15 +209,6 @@ def _reflect(reply: BriefReply) -> str:
             return ""
 
 
-def _draft_text(draft: dict[str, Any]) -> str:
-    fields = "; ".join(f"{_label(k).capitalize()}: {v}" for k, v in draft["fields"].items())
-    assumed = ", ".join(_label(k) for k in draft["assumed"]) or "nothing"
-    return (
-        f"Committed as a draft. {fields}. Assumed: {assumed}. Notes: "
-        f"{'; '.join(draft['notes']) or 'none'}. {_NOT_WRITTEN}"
-    )
-
-
 def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     state = start_brief_interview(_SCRIPT, text)
     brief_store.save_interview(user_id, workspace_id, state)
@@ -200,16 +228,95 @@ def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     )
 
 
-def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn:
+def _committed_text(outcome: CommitOutcome, draft: dict[str, Any]) -> str:
+    assumed = ", ".join(_label(k) for k in draft["assumed"]) or "nothing"
+    head = (
+        f"Committed. Goal {outcome.goal_id} at revision {outcome.goal_revision}, with "
+        f"CreativeBrief {outcome.brief_id} (lineage {outcome.lineage_id}, "
+        f"version {outcome.brief_version})."
+    )
+    if outcome.status == "already_committed":
+        head = (
+            f"Already committed — this is that same Goal {outcome.goal_id} at "
+            f"revision {outcome.goal_revision}, brief {outcome.brief_id} v"
+            f"{outcome.brief_version}. Nothing was duplicated."
+        )
+    tail = (
+        f" I assumed {assumed}; say 'change ...' before I start work if any of "
+        "those need fixing. I'm accountable for this Goal from here — you'll "
+        "find it on the Goals board with this brief attached."
+    )
+    return f"{head}{tail}"
+
+
+def _uncommitted_text(outcome: CommitOutcome) -> str:
+    if outcome.status == "unavailable":
+        return (
+            f"I could not commit this yet: {outcome.reason}. Nothing is lost — "
+            "your answers are still here, and I haven't written a half-done "
+            "Goal. Say 'commit it' again once the durable stores are back."
+        )
+    return (
+        f"The commit did not go through: {outcome.reason}. Nothing was "
+        "finalized and your draft is intact — say 'commit it' to try again."
+    )
+
+
+def _refused_turn(reason: str, state: BriefInterview) -> BriefTurn:
+    """A refusal that re-confirming cannot fix (authorization, a draft the
+    gate no longer accepts). Truthful: nothing was written, the interview is
+    still open, and the next step is not 'commit it' again."""
+    return BriefTurn(
+        text=(
+            f"I can't commit this here: {reason} Nothing was written, and your "
+            "answers are still open — the Workspace owner is the one who can "
+            "turn this draft into a Goal."
+        ),
+        event="refused",
+        brief=_view(state),
+        commit={"status": "refused", "reason": reason},
+        citations=["commit refused: no write"],
+    )
+
+
+async def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn:
+    """The explicit confirmation: the one write path (SPEC-091726-7c2a + #1823).
+
+    The boundary re-runs the gate, resolves the principal/Project/agent on the
+    server, and commits one canonical Goal + one CreativeBrief as a single
+    logical, crash-safe commit. The interview is cleared only once the durable
+    result is in hand (AC-4): a failed or unavailable commit keeps the
+    interview open, so the same 'commit it' can be retried."""
     # Only called once brief_ready() holds, so the gate cannot refuse here.
     draft = commit_brief(_SCRIPT, state)
-    brief_store.clear_interview(user_id, workspace_id)
+    try:
+        outcome = await commit_draft(user_id, workspace_id, draft, confirmed=True)
+    except CommitNotAuthorized as exc:
+        return _refused_turn(str(exc), state)
+    except CommitRejected as exc:
+        return _refused_turn(str(exc), state)
+    if outcome.durable:
+        brief_store.clear_interview(user_id, workspace_id)
+        return BriefTurn(
+            text=_committed_text(outcome, draft),
+            event="committed",
+            brief=_view(None),
+            draft=draft,
+            commit=outcome.payload(),
+            citations=[
+                f"goal: {outcome.goal_id} r{outcome.goal_revision}",
+                f"brief: {outcome.brief_id} v{outcome.brief_version}",
+            ],
+        )
+    event = "unavailable" if outcome.status == "unavailable" else "failed"
+    citations = [f"commit {outcome.status}: retryable"]
     return BriefTurn(
-        text=_draft_text(draft),
-        event="drafted",
-        brief=_view(None),
+        text=_uncommitted_text(outcome),
+        event=event,
+        brief=_view(state),
         draft=draft,
-        citations=["draft produced", "written: nothing (no Goal store yet)"],
+        commit=outcome.payload(),
+        citations=citations,
     )
 
 
@@ -259,5 +366,5 @@ async def brief_turn(user_id: str, workspace_id: str | None, text: str) -> Brief
     if state is None:
         return _start(user_id, workspace_id, text) if _WORK_REQUEST.search(text) else None
     if brief_ready(_SCRIPT, state) and _COMMIT.match(text):
-        return _drafted(user_id, workspace_id, state)
+        return await _drafted(user_id, workspace_id, state)
     return _answered(user_id, workspace_id, state, text)

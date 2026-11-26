@@ -48,6 +48,7 @@ from routes import (
     missions,
     profile,
     program,
+    projects,
     providers,
     quotas,
     rum,
@@ -109,7 +110,10 @@ def _include_optional_router(
         module = import_module(module_name)
         app.include_router(module.router, prefix=prefix)
     except Exception as exc:
-        state[module_name] = f"{type(exc).__name__}: {exc}"
+        # /health returns this string to browsers (CodeQL
+        # py/stack-trace-exposure). Keep the kind only; full import text
+        # stays in the warning log and audit detail below.
+        state[module_name] = f"{type(exc).__name__}: router failed to mount; see server logs"
         _log.warning(
             "optional_router_unavailable: module=%s error=%s",
             module_name,
@@ -129,7 +133,10 @@ def _include_optional_router(
                 "optional_router_degraded",
                 "system",
                 target=module_name,
-                detail={"error": state[module_name]},
+                detail={
+                    "error": state[module_name],
+                    "cause": f"{type(exc).__name__}: {exc}",
+                },
                 severity="warning",
             )
         except Exception as audit_exc:
@@ -245,6 +252,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         start_scheduler()
     except Exception as exc:
         _lifespan_log.warning("scheduler_start_failed: %s", exc, exc_info=True)
+    try:
+        # #1823: a crash between the Goal and brief writes (or after the
+        # durable commit but before its response) leaves a resumable commit
+        # record behind. Recovery is deterministic — the record carries the
+        # pre-minted identities — so startup completes each interrupted pair
+        # instead of leaving a half-complete intake behind.
+        from services.brief_commit import recover_pending_commits
+
+        recovered = await recover_pending_commits()
+        if recovered:
+            _lifespan_log.info(
+                "brief_commit_recovery: %d interrupted commit(s) resumed",
+                len(recovered),
+            )
+    except Exception as exc:
+        _lifespan_log.warning("brief_commit_recovery_failed: %s", exc, exc_info=True)
     try:
         # SPEC-080126-9e42: the episodic decay cadence. A process-lifetime task,
         # not a /v1/schedules record — decay is a system cadence and should live
@@ -381,6 +404,10 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/v1/skills")
     app.include_router(agents.router, prefix="/v1/agents")
     app.include_router(program.router, prefix="/v1/program")
+    # Project onboarding wizard (intake → scan → deploy). Distinct from
+    # maistro.projects Workspace/Project *scope* — see disposition
+    # hive-project-onboarding. Router already declares prefix=/v1/projects.
+    app.include_router(projects.router)
     app.include_router(work_items.router, prefix="/v1/work-items")
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
@@ -429,6 +456,12 @@ def create_app() -> FastAPI:
     # Phase 7 — topology variant comparison.
     app.include_router(topology.router, prefix="/v1/topology")
     app.include_router(messages.router, prefix="/v1/messages")
+    # #1049 MERGE: Attention projects unread messages without gaining a
+    # retirement-ledger importer edge on routes.messages / stores.messages —
+    # main already imports both; wire the list door here.
+    from services import attention as attention_service
+
+    attention_service.set_message_rows_provider(messages.list_messages)
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
     # Perceived-load telemetry collector (#1420). The route exists even when

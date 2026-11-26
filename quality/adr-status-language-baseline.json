@@ -1,5 +1,6 @@
 {
-  "_comment": "Legacy body '**Status:**' lines written before front matter was canonical (#379). Body status language is checked per-identity (#387): a new contradiction fails, and a fixed one must shrink this ledger in the same change. Banner and status-assertion contradictions are never baselined. This ledger is empty: the whole corpus now agrees with its front matter, so an entry here would be a tolerance nothing currently needs \u2014 fix the document instead.",
+  "metric_definition_version": "2",
+  "_comment": "Legacy body '**Status:**' lines written before front matter was canonical (#379). Metric v2 checks absence per identity: every body status line is a finding regardless of agreement with front matter. A new finding fails, and a fixed one must shrink this ledger in the same change. Banner and status-assertion contradictions are never baselined. Expanding this ledger requires prior trusted-base authorization; delete the retired body status line instead.",
   "known": [],
   "details": {}
 }

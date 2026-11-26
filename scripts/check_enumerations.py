@@ -162,7 +162,7 @@ ROUTE_EXEMPT = {
     "/v1/canvas": "canvas visual evaluation (scoring, not execution)",
     "/v1/eval-judge": "run judging/scoring",
     "/v1/install": "bootstrap installer session state",
-    "/v1/widgets": "dashboard widgets; /screenshot renders localhost with the CALLER's own session cookie",
+    "/v1/widgets": "dashboard widgets; /screenshot renders localhost with the CALLER's own session cookie",  # DevSkim: ignore DS162092 until 2027-12-31
     "/v1/cli/sessions": "in-memory CLI session bookkeeping only — no command execution",
     "/v1/cli/commands": "read-only manifest of the fixed CLI command registry",
     "/v1/cli/exec": "executes exactly one command from the fixed in-process registry (#292): read-only introspection handlers, no argv passthrough, 10s budget, every execution and refusal audited — contract pinned by docs/architecture/CONDUCTOR-CLI-PAGE-CONTRACT.md; any other POST under this router must be scoped or re-classified here",

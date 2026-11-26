@@ -6,7 +6,7 @@ set -euo pipefail
 # This script is intentionally conservative:
 #   - it asks feature/deployment questions through maistro-install when a TTY exists;
 #   - it preserves existing .env files and appends only missing runtime keys;
-#   - it binds services to localhost by default;
+#   - it binds services to localhost by default;  # DevSkim: ignore DS162092 until 2027-12-31
 #   - it starts the checked-out source tree with docker/podman compose.
 
 # Where this script lives, so its helpers resolve whatever the caller's cwd is.
@@ -445,7 +445,7 @@ validate_port_value() {
     fi
 }
 
-# Compose's host-address:port syntax brackets IPv6 literals ([::1]:8000:8000).
+# Compose's host-address:port syntax brackets IPv6 literals ([::1]:8000:8000).  # DevSkim: ignore DS162092 until 2027-12-31
 # Bracket a bare literal so the same value works for the compose mapping and
 # the printed URLs; anything else (IPv4, a bracketed literal, a hostname)
 # passes through unchanged.
@@ -511,7 +511,7 @@ compose_published_port() {
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" port "$service" "$private_port" 2>/dev/null
 }
 
-# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a
+# Compose's `port` front-end reports wildcard bindings (0.0.0.0, [::]) that a  # DevSkim: ignore DS162092 until 2027-12-31
 # browser cannot open; loopback is the address that reaches them. A concrete
 # host is kept as-is, so a mapping like 127.0.0.2:9005 from an override file
 # probes and prints at 127.0.0.2, the address the stack actually bound.
@@ -691,10 +691,10 @@ DATABASE_URL=postgresql://maistro:${db_pass}@postgres:5432/maistro
 
 # LiteLLM gateway
 LITELLM_MASTER_KEY=${litellm_key}
-LITELLM_URL=http://litellm:4000
-LITELLM_BASE_URL=http://litellm:4000
-LITELLM_PROXY_URL=http://litellm:4000
-LITELLM_API_BASE=http://litellm:4000/v1
+LITELLM_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_BASE_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_PROXY_URL=http://litellm:4000  # DevSkim: ignore DS137138 until 2027-12-31
+LITELLM_API_BASE=http://litellm:4000/v1  # DevSkim: ignore DS137138 until 2027-12-31
 LITELLM_API_KEY=${litellm_key}
 LITELLM_PROXY_KEY=${litellm_key}
 
@@ -795,10 +795,10 @@ repair_existing_env() {
     fill_env_value DB_PASSWORD "$db_pass"
     append_env_once DATABASE_URL "postgresql://maistro:${db_pass}@postgres:5432/maistro"
     fill_env_value LITELLM_MASTER_KEY "$litellm_key"
-    append_env_once LITELLM_URL "http://litellm:4000"
-    append_env_once LITELLM_BASE_URL "http://litellm:4000"
-    append_env_once LITELLM_PROXY_URL "http://litellm:4000"
-    append_env_once LITELLM_API_BASE "http://litellm:4000/v1"
+    append_env_once LITELLM_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_BASE_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_PROXY_URL "http://litellm:4000"  # DevSkim: ignore DS137138 until 2027-12-31
+    append_env_once LITELLM_API_BASE "http://litellm:4000/v1"  # DevSkim: ignore DS137138 until 2027-12-31
     fill_env_value LITELLM_API_KEY "$litellm_key"
     fill_env_value LITELLM_PROXY_KEY "$litellm_key"
     append_env_once DEFAULT_MODEL "gemini/gemini-2.5-flash"
@@ -2361,8 +2361,8 @@ print_success() {
         echo "  (If 'maistro' is not found, run 'uv tool update-shell' and open a new shell.)"
         echo ""
     fi
-    echo "Security note: services are bound to localhost by default. Do not set"
-    echo "MAISTRO_BIND_HOST=0.0.0.0 until auth, network, and sandbox exposure have been reviewed."
+    echo "Security note: services are bound to localhost by default. Do not set"  # DevSkim: ignore DS162092 until 2027-12-31
+    echo "MAISTRO_BIND_HOST=0.0.0.0 until auth, network, and sandbox exposure have been reviewed."  # DevSkim: ignore DS162092 until 2027-12-31
     echo ""
 }
 

@@ -51,9 +51,6 @@ class _RecordingSandbox:
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
         raise AssertionError("unexpected edit_file")
 
-    def run_command(self, cmd: str, *, timeout: int = 30) -> str:
-        raise AssertionError("unexpected run_command")
-
     def diff(self) -> str:
         raise AssertionError("unexpected diff")
 

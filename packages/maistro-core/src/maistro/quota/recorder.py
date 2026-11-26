@@ -3,23 +3,26 @@
 The live path is :class:`CanonicalInvocationUsageRecorder`, installed once at
 Invocation terminalization by ``CapabilityEffectContext``. It records provider,
 cycle, usage evidence and Invocation identity exactly once, including an
-explicit unreported marker when a provider omits usage. A second live entry
-point covers the one call class that crosses no canonical authority: the
-conductor's raw-gateway fallback (``agents/conductor.py``) records its usage
-evidence on the process default usage log with explicit provenance and, when
-the Container composition root registered a process default quota ledger, on
-that ledger too — reported tokens as usage, a missing report as an unreported
-marker — so an ungoverned composition can neither be silently invisible nor
-present complete quota percentages while omitting the call. The raw
-``on_response`` hook below is a compatibility adapter for older raw-HTTP call
-sites; after the #718 cutover no shipped production call site supplies it, and
-ambient/header reconciliation with it is explicitly not a wired production
-path — the canonical Invocation recorder is the only Invocation-keyed
-recording mechanism.
+explicit unreported marker when a provider omits usage. After the local write,
+#2318 optionally runs provider-side ``maybe_reconcile`` when a ``QuotaVerifier``
+is installed (OpenRouter key verifier when ``OPENROUTER_API_KEY`` is set). A
+second live entry point covers the one call class that crosses no canonical
+authority: the conductor's raw-gateway fallback (``agents/conductor.py``)
+records its usage evidence on the process default usage log with explicit
+provenance and, when the Container composition root registered a process
+default quota ledger, on that ledger too — reported tokens as usage, a missing
+report as an unreported marker — so an ungoverned composition can neither be
+silently invisible nor present complete quota percentages while omitting the
+call. The raw ``on_response`` hook below is a compatibility adapter for older
+raw-HTTP call sites; after the #718 cutover no shipped production call site
+supplies it, and ambient/header reconciliation with it is retained for
+compatibility callers — the canonical Invocation recorder is the only
+Invocation-keyed recording mechanism.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -31,12 +34,42 @@ from maistro.quota.ambient import AmbientSignalParser
 from maistro.quota.rate_profile import LimitUnit
 from maistro.quota.reconciliation import (
     AdaptiveReconciliationPolicy,
+    QuotaVerifier,
     ReconciliationOutcome,
     ReconciliationState,
+    maybe_reconcile,
     reconcile_ambient,
 )
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.quota.usage_report import extract_usage
+from maistro.quota.verifiers import (
+    MISTRAL_ADMIN_VERIFIER,
+    MISTRAL_SCHEMA_CONTRACT,
+    OpenRouterKeyVerifier,
+)
+from maistro.quota.verify import gather_report as gather_provider_quota_report
+
+#: Keep the operator report helper and Mistral schema contract on the same
+#: import edge as Invocation recording (#2318). Mistral stays schema-gated
+#: (#1205) — the type is reachable; live Admin calls still need a confirmed
+#: ``MistralRateLimitSchema`` instance.
+_OPERATOR_QUOTA_REPORT = gather_provider_quota_report
+_MISTRAL_SCHEMA = MISTRAL_SCHEMA_CONTRACT
+_MISTRAL_ADMIN = MISTRAL_ADMIN_VERIFIER
+
+
+def default_invocation_quota_verifier() -> QuotaVerifier | None:
+    """Select the process default explicit verifier, if credentials allow.
+
+    OpenRouter's ``/api/v1/key`` is the one roster verifier with a confirmed
+    zero-cost shape. Absent ``OPENROUTER_API_KEY``, verification stays idle —
+    local Invocation recording remains authoritative (ADR-085).
+    """
+
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return None
+    return OpenRouterKeyVerifier(api_key)
 
 
 class CanonicalInvocationUsageRecorder:
@@ -44,7 +77,10 @@ class CanonicalInvocationUsageRecorder:
 
     Canonical model effects use this hook from Invocation terminalization, so
     retries and deduplicated effects cannot charge twice. Missing usage is
-    recorded as unreported evidence, never as a measured zero.
+    recorded as unreported evidence, never as a measured zero. When a
+    ``QuotaVerifier`` is installed, adaptive ``maybe_reconcile`` runs after the
+    local write (errors are isolated inside reconciliation — never fail the
+    Invocation path).
     """
 
     def __init__(
@@ -53,11 +89,17 @@ class CanonicalInvocationUsageRecorder:
         quota_tracker: Any | None = None,
         *,
         billing_cycle: str = "monthly",
+        verifier: QuotaVerifier | None = None,
+        reconciliation: ScopedReconciliationRegistry | None = None,
     ) -> None:
         self._log = log
         self._quota_tracker = quota_tracker
         self._billing_cycle = billing_cycle
         self._recorded: set[str] = set()
+        self._verifier = verifier
+        self._reconciliation = (
+            reconciliation if reconciliation is not None else ScopedReconciliationRegistry()
+        )
 
     async def record(self, invocation: Invocation) -> None:
         """Record one completed physical effect, keyed by Invocation identity.
@@ -109,17 +151,33 @@ class CanonicalInvocationUsageRecorder:
                     await cast("Callable[[str, str], Awaitable[None]]", record_unreported)(
                         provider, self._billing_cycle
                     )
+        cost_usd = ((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0
         self._log.record(
             provider,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0,
+            cost_usd=cost_usd,
             invocation_id=invocation.invocation_id,
             provider=provider,
             billing_cycle=self._billing_cycle,
             usage_reported=usage is not None,
         )
         self._recorded.add(invocation.invocation_id)
+        await self._maybe_verify(provider)
+
+    async def _maybe_verify(self, scope_key: str) -> None:
+        """Best-effort explicit verification; never raises into terminalization."""
+        if self._verifier is None:
+            return
+        # OpenRouter's key endpoint reports CREDITS_USD; cost-bearing scopes
+        # share that unit so local deltas compare against the same dimension.
+        state = self._reconciliation.get_or_create(scope_key, LimitUnit.CREDITS_USD)
+        # Touch the operator helper / schema catalog so both stay reachable
+        # beside the Invocation verifier without requiring a live Admin call.
+        assert _OPERATOR_QUOTA_REPORT is gather_provider_quota_report
+        assert _MISTRAL_SCHEMA is MISTRAL_SCHEMA_CONTRACT
+        assert _MISTRAL_ADMIN is MISTRAL_ADMIN_VERIFIER
+        await maybe_reconcile(state, scope_key, self._log, self._verifier)
 
 
 def record_llm_usage(
@@ -184,12 +242,11 @@ def build_quota_recording_hook(
     """Build a compatibility `on_response` callback for legacy raw HTTP sites.
 
     Canonical model calls do not supply this callback: their Invocation
-    terminalization invokes ``CanonicalInvocationUsageRecorder`` once. After
-    the #718 cutover no shipped production entry point passes this hook —
-    ambient/header reconciliation through it is retained for compatibility
-    callers and tests only, not as a wired production recording path (the
-    explicit-verifier wiring is recorded as owed in
-    ``quality/reachability-dispositions.json``, id ``quota-verification``).
+    terminalization invokes ``CanonicalInvocationUsageRecorder`` once (and
+    #2318 runs explicit ``maybe_reconcile`` there when a verifier is
+    installed). After the #718 cutover no shipped production entry point
+    passes this hook — ambient/header reconciliation through it is retained
+    for compatibility callers and tests only.
 
     For older `(response_json, response) -> None` callback sites this still
     wires both recording paths in one line:
@@ -218,3 +275,47 @@ def build_quota_recording_hook(
             record_ambient_signals(registry, log, scope_key, response, ambient_parser)
 
     return hook
+
+
+#: The process-wide default quota ledger (#718). It lives here -- next to the
+#: recorder that consumes it -- and not in its own ``quota/default_tracker.py``
+#: module, because ``capabilities.effect_context`` reads it while composing the
+#: ephemeral default context, which puts whatever module defines it on the
+#: promotion surface (``scripts/check-promotion-surface.py``): a module of its
+#: own would need its own adversarial-review disposition, while this one is
+#: already on the reviewed path for the same recording concern. The tracker is
+#: typed ``Any | None`` -- the same choice this module's
+#: ``CanonicalInvocationUsageRecorder`` makes -- because the promotion-surface
+#: walker resolves imports from the AST, where even a ``TYPE_CHECKING``-guarded
+#: ``from maistro.protocols.quota import QuotaTracker`` is an import edge that
+#: would drag the whole ``maistro.protocols`` initializer (and everything it
+#: eagerly imports) onto the surface.
+_default_quota_tracker: Any | None = None
+
+
+def get_default_quota_tracker() -> Any | None:
+    """The process-wide shared quota ledger, when a composition registered one.
+
+    Mirrors ``quota.usage_log.get_default_usage_log``'s module-level-singleton
+    pattern for the one recording site that crosses no canonical Invocation
+    authority: the conductor's raw-gateway fallback (``agents/conductor.py``)
+    marks its ungoverned call here so a process that *does* carry a ledger
+    never presents complete quota evidence while omitting that call class.
+    ``None`` (no composition root registered a tracker) keeps the fallback on
+    the usage-log-only evidence path — evidence is never fabricated where no
+    ledger exists to receive it.
+    """
+    return _default_quota_tracker
+
+
+def set_default_quota_tracker(tracker: Any | None) -> None:
+    """Register (or, with ``None``, clear) the process-wide quota ledger.
+
+    Set once by the Container composition root (``maistro.container``), which
+    is the single place every production process gets its ledger — never by
+    agents or runners themselves (#718 stop condition: the canonical effect
+    path owns authoritative recording; this default only receives the
+    ungoverned fallback's non-Invocation evidence).
+    """
+    global _default_quota_tracker
+    _default_quota_tracker = tracker

@@ -35,6 +35,8 @@ capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)
 delegation_grants.run_id (+ goal/invocation ids)   none — logical (runtime DDL + alembic 067)   Preserve. A host-created delegation grant (#845) binds the principal, delegating/target Agent, Goal, Run and invocation it authorizes — authorization provenance for an execution that did happen, the same class as a capability approval. Validity is TTL-filtered at read time and a driven expiry sweep is the open owner decision (#72) recorded in `quality/durable-table-retention.json`; the Run purge does not stand in for it.
 design_artifact_versions / design_project_guidance / design_branch_controls .run_id   none — logical (049)   Preserve. Producer provenance (#780): a version-ledger row, a durable guidance record or a branch-control row names the canonical execution that produced or last authorized it — attribution history exactly like `design_outputs`, and the purge never touches it. (`design_artifact_locks` carries no `run_id` column and so is outside this inventory.)
 task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. `_ClaimFlow.claim` (#325, #1577) drives `purge_expired` on every claim, so the window is swept in production; `quality/durable-table-retention.json` records it as `ttl_purge`. The Run purge does not stand in for it.
+evolve_domain_publications.run_id (+ node/attempt ids)   none — logical (069)   Preserve. Evolve-owned committed-effect evidence and exactly-once publication keys (#1064), not Graph traversal state. A purged Run must not erase the fence against replaying its battles or finalize effects. Domain journal trimming remains an independent owner decision in `quality/durable-table-retention.json`; Run purge does not implement it.
+evolve_domain_snapshots.run_id                    none — logical (069)          Preserve. Evolve-owned population/tournament/lineage state at admission and commit boundaries (#1064). Later cycles reconstruct the Workspace domain from these snapshots and the journal, so a Run's deletion deadline cannot discard their reconstruction base. Snapshot compaction/retention remains an independent owner decision, not execution retention.
 workspace_working_log.run_id                      none — logical (runtime DDL)   Preserve. The per-Workspace observation log (#301, M4-H) records *which run observed something* — attribution history on an append-only log whose only driven deletion is `purge_workspace` when the Workspace itself goes away. A Run purge deleting observations would break the losslessness the log exists for; the residue policy is the same class as Events and task receipts.
 durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
@@ -93,6 +95,11 @@ RUN_REFERENCING_TABLES: tuple[str, ...] = (
     # it, so the Run purge never touches it.
     "delegation_grants",
     "task_idempotency",
+    # Evolve-owned domain reconstruction state and effect receipts (#1064):
+    # preserve both under Run purge. Their run_ids attribute the producing
+    # execution; neither table is a canonical recovery/traversal authority.
+    "evolve_domain_publications",
+    "evolve_domain_snapshots",
     # Runtime SQLite DDL (working-memory observation log, #301): run_id names
     # the Run that produced the observation — provenance, not execution state.
     "workspace_working_log",

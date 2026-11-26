@@ -980,3 +980,27 @@ async def test_hostile_builder_system_prompt_is_refused_before_the_model(tmp_pat
         await apply_fn(None, str(tmp_path))
 
     assert invoked == []
+
+
+def test_default_campaign_ids_are_unique_per_loop(tmp_path: Path) -> None:
+    """Two loops sharing a provenance store must not collide on a default
+    campaign: each restarts its cycle index at one, so a static default would
+    file the second loop's cycles against the first's terminal Runs."""
+    repo = _make_repo(tmp_path / "src")
+
+    def config() -> LocalRsiConfig:
+        return LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="exit 0",
+            work_root=str(tmp_path / "work"),
+            max_cycles=1,
+        )
+
+    first = LocalRsiLoop(config(), apply_patch=_make_apply(lambda ws: None))
+    second = LocalRsiLoop(config(), apply_patch=_make_apply(lambda ws: None))
+    assert first._campaign_id.startswith("local-loop-")
+    assert second._campaign_id.startswith("local-loop-")
+    assert first._campaign_id != second._campaign_id
+
+    named = LocalRsiLoop(config(), campaign_id="operator-campaign")
+    assert named._campaign_id == "operator-campaign"
