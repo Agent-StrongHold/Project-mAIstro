@@ -224,21 +224,80 @@ def budget_status(workspace_id: str) -> dict[str, Any]:
     }
 
 
-def discovery_refusal(config: dict[str, Any], ledger: dict[str, Any]) -> str | None:
-    """Why a new cycle must not start, or None when the budget allows one."""
+def discovery_refusal(
+    config: dict[str, Any],
+    ledger: dict[str, Any],
+    source_count: int | None = None,
+) -> str | None:
+    """Why a new cycle must not start, or None when the budget allows one.
+
+    ``source_count`` is the next cycle's fetch cost. Fire-time callers pass
+    the count derived from the resolved source Binding — what the fetch node
+    will actually iterate — so ``daily_fetch_budget`` constrains real
+    requests even when the separately editable ``sources_count`` was never
+    set. Without a derived count (no configured Binding, or one that cannot
+    resolve, in which case the cycle performs zero fetches) the configured
+    count stands in.
+    """
     if not config.get("enabled"):
         return "discovery_disabled"
     if len(ledger.get("cycles", [])) >= int(config["daily_curate_budget"]):
         return "discovery_cycle_budget_exhausted"
-    if ledger.get("fetches", 0) + int(config.get("sources_count", 0)) > int(
-        config["daily_fetch_budget"]
-    ):
+    cost = source_count if source_count is not None else int(config.get("sources_count", 0))
+    if ledger.get("fetches", 0) + cost > int(config["daily_fetch_budget"]):
         return "discovery_fetch_budget_exhausted"
     return None
 
 
+def _binding_authority() -> Any:
+    """The Binding authority the fetch node resolves through (process default)."""
+    from maistro.capabilities.effect_context import default_effect_context
+
+    return default_effect_context().bindings
+
+
+async def _declared_source_count(
+    workspace_id: str, project_id: str, config: dict[str, Any]
+) -> int | None:
+    """One cycle's fetch cost: the resolved Binding's declared, live sources.
+
+    Resolves ``source_binding_id`` through the same authority, capability and
+    seed node id the fetch node uses, and counts the URL-bearing sources it
+    will actually iterate (the same declaration rule as the node's own
+    ``_declared_sources``). None means no configured Binding or a Binding
+    that cannot resolve here — which the fetch node cannot resolve either,
+    so that cycle does zero network fetches and the configured count can
+    never under-charge real requests.
+    """
+    binding_id = str(config.get("source_binding_id") or "")
+    if not binding_id:
+        return None
+    try:
+        binding = await _binding_authority().resolve(
+            binding_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id="discovery_fetch",
+            capability="discovery.source",
+        )
+    except Exception:
+        return None
+    return len(
+        [
+            source
+            for source in (binding.config.get("sources") or [])
+            if isinstance(source, dict) and str(source.get("url") or "").strip()
+        ]
+    )
+
+
 def _charge(
-    workspace_id: str, config: dict[str, Any], ledger: dict[str, Any], *, cycle_key: str
+    workspace_id: str,
+    config: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    cycle_key: str,
+    source_count: int | None = None,
 ) -> None:
     """Charge one cycle to the ledger, idempotent by Run id.
 
@@ -252,7 +311,8 @@ def _charge(
     if not cycle_key or cycle_key in ledger["cycles"]:
         return
     ledger["cycles"].append(cycle_key)
-    ledger["fetches"] = int(ledger.get("fetches", 0)) + int(config.get("sources_count", 0))
+    cost = source_count if source_count is not None else int(config.get("sources_count", 0))
+    ledger["fetches"] = int(ledger.get("fetches", 0)) + cost
     ledger["curated"] = int(ledger.get("curated", 0)) + 1
     ledger["updated_at"] = datetime.now(UTC).isoformat()
     store[_ledger_key(workspace_id, ledger["day"])] = ledger
@@ -416,10 +476,11 @@ async def cycle_context(
     ledger = today_ledger(workspace_id)
     already_charged = bool(cycle_key) and cycle_key in ledger["cycles"]
     if not already_charged:
-        refusal = discovery_refusal(config, ledger)
+        source_count = await _declared_source_count(workspace_id, project_id, config)
+        refusal = discovery_refusal(config, ledger, source_count)
         if refusal is not None:
             return DiscoveryCycleContext(budget_refusal=refusal)
-        _charge(workspace_id, config, ledger, cycle_key=cycle_key)
+        _charge(workspace_id, config, ledger, cycle_key=cycle_key, source_count=source_count)
 
     notes = [
         *await _persona_notes(workspace_id),
@@ -488,7 +549,8 @@ async def run_discovery_cycle(
     if await visible_view(user_id, workspace_id) is None:
         raise DiscoveryNotVisible(workspace_id)
     config = get_config(workspace_id)
-    refusal = discovery_refusal(config, today_ledger(workspace_id))
+    source_count = await _declared_source_count(workspace_id, project_id, config)
+    refusal = discovery_refusal(config, today_ledger(workspace_id), source_count)
     if refusal is not None:
         raise DiscoveryCycleRefused(refusal)
 

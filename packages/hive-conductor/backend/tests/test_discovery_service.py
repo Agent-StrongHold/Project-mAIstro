@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import services.discovery as discovery
@@ -190,6 +190,65 @@ async def test_fetch_budget_refuses_before_any_run(fake_runner: Any) -> None:
     with pytest.raises(discovery.DiscoveryCycleRefused, match="discovery_fetch_budget_exhausted"):
         await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
     assert fake_runner.calls == []
+
+
+async def test_the_fetch_cost_is_derived_from_the_resolved_binding(
+    fake_runner: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Binding's declared sources are the fetch cost, not ``sources_count``.
+
+    A Workspace that enables discovery and attaches a source Binding without
+    ever editing ``sources_count`` (it stays at its default of zero) must
+    still be charged per cycle — and a zero daily fetch budget must refuse —
+    because the gate counts what the fetch node will actually iterate, the
+    Binding's declared URL-bearing sources, not the separately editable
+    count field.
+    """
+
+    class _Binding:
+        config: ClassVar[dict[str, Any]] = {
+            "sources": [
+                {"url": "https://a.example.com/rss", "category": "camera"},
+                {"category": "no-url"},
+                {"url": "https://b.example.com/rss", "category": "camera"},
+            ]
+        }
+
+    async def _resolve(binding_id: str, **kwargs: Any) -> _Binding:
+        assert binding_id == "dsrc-1"
+        assert kwargs["capability"] == "discovery.source"
+        assert kwargs["node_id"] == "discovery_fetch"
+        return _Binding()
+
+    monkeypatch.setattr(discovery, "_binding_authority", lambda: SimpleNamespace(resolve=_resolve))
+
+    # Budget of zero with a resolvable Binding that declares two live
+    # sources: refused before admission — the old count-trusting gate would
+    # have admitted this (0 + 0 > 0 is false) and fetched for free.
+    ws = await _workspace("admin", "Zero budget with binding")
+    _enable(ws, daily_fetch_budget=0, source_binding_id="dsrc-1", sources_count=0)
+    with pytest.raises(discovery.DiscoveryCycleRefused, match="discovery_fetch_budget_exhausted"):
+        await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
+    assert fake_runner.calls == []
+
+    # A budget covering two derived charges bills each cycle the derived
+    # count, not the configured zero, and exhaustion tracks it.
+    ws = await _workspace("admin", "Derived charge")
+    _enable(ws, daily_fetch_budget=4, source_binding_id="dsrc-1", sources_count=0)
+    fake_runner.records["next"] = _fake_record("run-d1", [])
+    first = await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
+    provider = discovery.discovery_context_provider()
+    await provider.context_for(ws, ws, "admin", cycle_key=first["run_id"])
+    ledger = discovery.today_ledger(ws)
+    assert ledger["fetches"] == 2  # the Binding's two live sources
+    assert len(ledger["cycles"]) == 1
+    fake_runner.records["next"] = _fake_record("run-d2", [])
+    second = await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
+    await provider.context_for(ws, ws, "admin", cycle_key=second["run_id"])
+    assert discovery.today_ledger(ws)["fetches"] == 4  # two cycles x two sources
+    with pytest.raises(discovery.DiscoveryCycleRefused, match="discovery_fetch_budget_exhausted"):
+        await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
+    assert len(fake_runner.calls) == 2
 
 
 async def test_ledger_charges_are_idempotent_per_cycle_key() -> None:
