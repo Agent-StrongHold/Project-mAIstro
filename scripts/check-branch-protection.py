@@ -440,9 +440,11 @@ def _ruleset_requirement(
     """The union requirement of every ruleset governing one branch.
 
     Several rulesets may target the same branch; GitHub enforces all of them,
-    so their contexts union, strictness reads as any rule's declared value, and
-    the last queue rule wins (a branch with two queue rules is not a state
-    this repository has, and the compare would surface it as drift anyway).
+    so their contexts union, strictness combines as the most restrictive
+    declared value (GitHub rule layering: "the most restrictive version of the
+    rule applies"), and the last queue rule wins (a branch with two queue
+    rules is not a state this repository has, and the compare would surface it
+    as drift anyway).
     """
     contexts: set[str] = set()
     strict: bool | None = None
@@ -451,7 +453,7 @@ def _ruleset_requirement(
         found, found_strict = required_contexts_from_ruleset(live)
         contexts |= set(found)
         if found_strict is not None:
-            strict = found_strict
+            strict = strict or found_strict
         found_queue = queue_params_from_ruleset(live)
         if found_queue is not None:
             queue = {**(queue or {}), **found_queue}

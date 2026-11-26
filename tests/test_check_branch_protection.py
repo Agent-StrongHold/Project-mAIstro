@@ -655,6 +655,15 @@ class TestRulesetSurfaceReading:
         assert contexts == ["block", "test"]
         assert strict is False
 
+    def test_overlapping_strictness_reads_most_restrictive(self, gate):
+        """Overlapping rulesets layer as "the most restrictive version of the
+        rule applies" (GitHub docs), so strict=False arriving after strict=True
+        must not downgrade the effective live read."""
+        strict_on = _live_ruleset(1, ["test"], strict=True)
+        strict_off = _live_ruleset(2, ["block"], strict=False)
+        assert gate._ruleset_requirement([strict_on, strict_off])[1] is True
+        assert gate._ruleset_requirement([strict_off, strict_on])[1] is True
+
     def test_a_ruleset_without_the_rule_reads_empty_not_crash(self, gate):
         ruleset = {"id": 1, "rules": [{"type": "creation"}]}
         assert gate.required_contexts_from_ruleset(ruleset) == ([], None)
@@ -705,6 +714,17 @@ class TestVerifyRulesets:
         monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
         assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
         assert "strict_required_status_checks_policy is False live" in capsys.readouterr().out
+
+    def test_strictness_over_overlapping_rulesets_is_most_restrictive(
+        self, gate, capsys, monkeypatch
+    ):
+        """A strict ruleset plus a non-strict one still enforces freshness, so
+        the compare must read the combined True regardless of API order."""
+        live = _live_matching_rulesets(gate)
+        live.append(_live_ruleset(99000001, [], strict=False))
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 0
+        assert "strict_required_status_checks_policy" not in capsys.readouterr().out
 
     def test_queue_drift_is_named_against_the_reviewed_posture(self, gate, capsys, monkeypatch):
         """`.github/merge-queue.json` is the reviewed posture; the live rule is
