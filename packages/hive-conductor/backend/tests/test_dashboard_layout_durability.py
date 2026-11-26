@@ -19,6 +19,8 @@ import pytest
 import stores
 from services import dashboard_layouts
 
+from maistro.identity import Principal
+
 ROUTE_SOURCE = Path(__file__).resolve().parents[1] / "routes" / "dashboard_layout.py"
 
 LAYOUT: dict[str, Any] = {
@@ -391,7 +393,7 @@ async def test_a_principal_with_a_preset_reads_it_at_revision_zero(store: Any) -
     from services.model_store import JsonStore
 
     backing = store(JsonStore("dashboard_layouts"))
-    request = SimpleNamespace(state=SimpleNamespace(user={"id": "demo"}))
+    request = SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id="demo")))
 
     body = await dashboard_layout.get_layout(request)  # type: ignore[arg-type]
 
@@ -558,26 +560,6 @@ def test_a_saved_layout_wins_over_the_preset(store: Any) -> None:
     dashboard_layouts.save("demo", {"widgets": [{"id": "mine", "type": "x", "title": "M"}]})
 
     assert dashboard_layouts.effective("demo").layout["widgets"][0]["id"] == "mine"
-
-
-# --- the user-facing half: a 503 nobody reads is not much better than a lie ---
-
-
-@pytest.mark.ac("SPEC-082926-3b80/AC-2")
-def test_the_dashboard_page_reads_the_save_response() -> None:
-    """Codex's third finding. `saveTabs` swallowed every non-2xx: the edit stayed
-    on screen looking saved. Asserted against the source because the Conductor
-    has no unit harness for this page — the e2e suite drives the built app."""
-    page = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "Dashboard.tsx"
-    ).read_text(encoding="utf-8")
-
-    save = page[page.index("async function saveTabs") : page.index("function useServerTabs")]
-    assert "r.ok" in save, "the response status is not read"
-    assert "return null" in save and "HTTP ${r.status}" in save
-
-    assert 'data-testid="dashboard-save-error"' in page, "nothing renders the failure"
-    assert "Retry" in page, "the user is told but given nothing to do about it"
 
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-2")

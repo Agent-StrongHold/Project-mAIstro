@@ -15,10 +15,29 @@ except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/u
     __version__ = "0.9.0-dev"
 
 from maistro_canvas.canvas.composition import (
+    AssetInstanceSurface,
     CanvasRuntime,
     bind_canvas_runner_lifecycle,
+    build_asset_instance_surface,
     build_canvas_router,
     build_canvas_runtime,
+    plan_asset_render,
+)
+from maistro_canvas.canvas.publishing import (
+    DesignExportProvider,
+    ExportError,
+    ExportFailed,
+    ExportFormatUnsupported,
+    ExportRequest,
+    ExportResult,
+    ExportRunSpine,
+    ExportStore,
+    ExportVersion,
+    ExportVersionExistsError,
+    GovernedCanvasExporter,
+    InMemoryExportStore,
+    canvas_state_digest,
+    export_media_type,
 )
 from maistro_canvas.export import (
     ExporterDependencyError,
@@ -58,6 +77,7 @@ from maistro_canvas.layers import (
 from maistro_canvas.protocols import (
     AssetRegistry,
     AssetSheetService,
+    CanvasJobStore,
     CanvasStore,
     CompositorService,
     ImageData,
@@ -73,6 +93,7 @@ from maistro_canvas.types import (
     CanvasTier,
     GenerationJobRecord,
     JobAction,
+    JobQueueStats,
     JobStatus,
     LayerRecord,
     LayerType,
@@ -97,6 +118,7 @@ __all__ = [
     # ADR-039 errors
     "AssetDefinitionNotFoundError",
     "AssetInstance",
+    "AssetInstanceSurface",
     "AssetRegistry",
     "AssetSheet",
     "AssetSheetNotFoundError",
@@ -105,6 +127,7 @@ __all__ = [
     # Existing canvas primitives
     "BlendMode",
     "CanvasError",
+    "CanvasJobStore",
     "CanvasRecord",
     "CanvasRuntime",
     "CanvasStore",
@@ -112,17 +135,33 @@ __all__ = [
     "CharacterPose",
     "ChildProfile",
     "CompositorService",
+    # Governed Design Studio publish/export (M3-B4, #94): the capability owner
+    # a deployed composition root wires onto app.state.canvas_exporter.
+    "DesignExportProvider",
+    # Governed export domain errors and payloads (M3-B4, #94)
+    "ExportError",
+    "ExportFailed",
+    "ExportFormatUnsupported",
     # Structured exporters (SPEC-070426-457b)
     "ExportLayer",
     "ExportPage",
+    "ExportRequest",
+    "ExportResult",
+    "ExportRunSpine",
+    "ExportStore",
     "ExportText",
+    "ExportVersion",
+    "ExportVersionExistsError",
     "ExporterDependencyError",
     "FoundationFootprint",
     "GenerationJobRecord",
+    "GovernedCanvasExporter",
     "GroundPlane",
     "ImageData",
     "ImageGenClient",
+    "InMemoryExportStore",
     "JobAction",
+    "JobQueueStats",
     "JobStatus",
     "LayerKind",
     "LayerRecord",
@@ -151,12 +190,16 @@ __all__ = [
     "WorldStylePartial",
     "__version__",
     "bind_canvas_runner_lifecycle",
+    "build_asset_instance_surface",
     "build_canvas_router",
     "build_canvas_runtime",
+    "canvas_state_digest",
     "export_html",
+    "export_media_type",
     "export_pptx",
     "layer_type_to_kind",
     "merge_world_style",
     "normalise_rotation",
+    "plan_asset_render",
     "validate_canvas_dimensions",
 ]

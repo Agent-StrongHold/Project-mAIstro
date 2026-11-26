@@ -270,6 +270,12 @@ TOOL_EFFECTS: dict[str, str] = {
     "favorite_model": TOOL_EFFECT_MUTATE,
     "hill_climb": TOOL_EFFECT_MUTATE,
     "mutate_workflow": TOOL_EFFECT_MUTATE,
+    # Workspace Home (#1048): composing the unpinned space and recording an
+    # adaptive dismissal both write durable Home state through the canonical
+    # services, so they are mutations with the same authorization bar as the
+    # other preference writes.
+    "compose_home_adaptive": TOOL_EFFECT_MUTATE,
+    "dismiss_home_adaptive": TOOL_EFFECT_MUTATE,
     # destroy — privileged effect, approval independent of the model required
     "remove_agent_button": TOOL_EFFECT_DESTROY,
     "memory_delete": TOOL_EFFECT_DESTROY,

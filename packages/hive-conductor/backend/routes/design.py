@@ -6,20 +6,31 @@ GET /design/projects — list org projects
 GET /design/skills — list available skills
 GET /design/skills/{slug}/discovery — get skill discovery form
 GET /design/systems — list registered design systems + catalog state
+GET /design/packs — list domain packs (one uniform selector listing; #793)
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from services.design_service import (
+    get_design_canonical_execution_for_principal,
     get_design_engine,
     get_design_status,
     get_design_store,
     get_renderer_registry,
 )
+from services.request_principal import require_actor_id
+from services.safe_projection import public_failure
 
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S
+from maistro.runs.concurrency import RunConcurrencyExceeded
+from maistro_design.consistency import (
+    CreativeProjectSnapshot,
+    evaluate_project_snapshot,
+)
+from maistro_design.packs import PackRegistry
 from maistro_design.systems.importer import ORIGIN_EXTERNAL
 from maistro_design.types import (
     DesignError,
@@ -73,6 +84,17 @@ CONDUCTOR_ORG_ID = "default-org"
 _ABSENT = object()
 
 
+def _request_principal_id(request: Request) -> str:
+    """Return the authenticated actor id; never invent an actor identity.
+
+    AuthMiddleware stamps ``request.state.principal`` for every authenticated
+    ``/v1/`` request (the same boundary HITL and the layout routes use), so
+    the canonical helper — not a locally re-derived user mapping — supplies
+    the principal the canonical spine records as the actor.
+    """
+    return require_actor_id(request)
+
+
 def _get_org_id(request: Request) -> str:
     """The scope this request's design projects belong to.
 
@@ -99,18 +121,48 @@ def _require_store() -> Any:
     service returns ``None`` for a disabled store during startup and older
     callers can still expose its initialization ``RuntimeError``; normalize
     both forms to the same explicit unavailable response.
+
+    When startup recorded a store cause (#1826), that sanitized failure is the
+    answer — a configured database whose engine would not build must not be
+    reported with the same words as one nobody named, and not as a durable
+    success either.
     """
+    status = get_design_status()
     try:
         store = get_design_store()
     except RuntimeError as exc:
+        # Startup degraded before it could build the store. Its recorded cause
+        # is the truth; a ready service with no cause is the deliberate
+        # no-database mode (#1826); anything else is a service that never
+        # started, and the initialization error is the honest answer for it.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            ) from None
+        if status.ready:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence unavailable (no database URL configured)",
+            ) from None
         raise HTTPException(
             status_code=503,
             detail=f"Design persistence unavailable: {exc}",
         ) from None
     if store is None:
+        # Two ways to be here (#1826): nothing configured -- the supported
+        # no-database mode -- or a URL that was configured and failed. The
+        # second carries its own recorded, sanitized cause, and answering it
+        # with "DATABASE_URL not set" is exactly the conflation that kept a
+        # broken deployment indistinguishable from a deliberate one.
+        if status.store_cause:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Design persistence unavailable: {status.store_cause}",
+            )
         raise HTTPException(
             status_code=503,
-            detail="Design persistence unavailable (DATABASE_URL not set)",
+            detail="Design persistence unavailable (no database URL configured)",
         )
     return store
 
@@ -143,13 +195,31 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # "Project preparation failed: 403: No design scope resolved", hiding an
     # authorization decision behind a 500.
     org_id = _get_org_id(request)
+    principal_id = _request_principal_id(request)
+    # Admission scope is the caller's, resolved per request (#52 review): the
+    # startup binding is a wiring probe, so a personal-default-Workspace user
+    # never files Runs into a Workspace they hold no membership in.
+    canonical = await get_design_canonical_execution_for_principal(principal_id)
+    if canonical is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Design execution unavailable: canonical execution spine is not wired",
+        )
     try:
         # A project preparation response is durable state, never a successful
         # in-memory substitute when persistence is not configured.
         _require_store()
         engine = get_design_engine()
-        project = await engine.generate(discovery, org_id=org_id, team_id=None)
-        return project.to_dict()
+
+        async def _generate() -> Any:
+            return await engine.generate(discovery, org_id=org_id, team_id=None)
+
+        project = await canonical.generate(
+            discovery=discovery,
+            operation=_generate,
+            actor_principal_id=principal_id,
+        )
+        return cast(dict[str, Any], project.to_dict())
     except HTTPException:
         raise
     except SkillNotFoundError as e:
@@ -160,8 +230,24 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
         raise HTTPException(status_code=400, detail=str(e)) from None
     except DesignError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
+    except RunConcurrencyExceeded as exc:
+        # Canonical admission backpressure (#1182), not a preparation failure:
+        # the RunStore refused a new root before any project state existed, so
+        # the same request is admissible once a slot frees. Same contract as
+        # the DAG and chat admission surfaces: retryable 429, scoped detail
+        # (the ceiling kind, never the exception text) and Retry-After.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
+        # The operation's name plus the exception KIND — never its text, which
+        # carries paths and provider replies (#2465, CodeQL
+        # py/stack-trace-exposure). Unclassified failures stay in server logs.
+        raise HTTPException(
+            status_code=500, detail=f"Project preparation failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/projects/{project_id}")
@@ -189,7 +275,9 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Project fetch failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/projects")
@@ -219,7 +307,9 @@ async def list_design_projects(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Project listing failed: {public_failure(e)}"
+        ) from None
 
 
 @router.get("/skills")
@@ -257,7 +347,27 @@ async def list_design_skills() -> list[dict[str, Any]]:
             for s in skills
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Skill listing failed: {public_failure(e)}"
+        ) from None
+
+
+@router.get("/packs")
+async def list_design_packs() -> list[dict[str, Any]]:
+    """List domain packs (M7-A4 #793) — the Design Studio selector payload.
+
+    One listing route over the one pack registry, one uniform entry shape per
+    pack: a pack is a registry entry, never a product identity, so there is
+    deliberately no per-pack route and no pack-specific fields here.
+    Product/game/book are three bundles of the same loop; `execute_backends`
+    is where canvas shows up (a binding), never in `pack_id`.
+
+    Unlike the engine-backed routes above, this does not call
+    `_require_ready()`: packs are in-repo manifests read through
+    `maistro_design.packs.PackRegistry`, not engine state, so the selector
+    renders before (or without) a started DesignEngine.
+    """
+    return [summary.model_dump(mode="json") for summary in PackRegistry.builtin().summaries()]
 
 
 @router.get("/systems")
@@ -326,7 +436,9 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Discovery form unavailable: {public_failure(e)}"
+        ) from None
 
 
 @router.post("/projects/{project_id}/render")
@@ -361,7 +473,49 @@ async def create_render_job(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Render job creation failed: {e!s}") from None
+        raise HTTPException(
+            status_code=500, detail=f"Render job creation failed: {public_failure(e)}"
+        ) from None
+
+
+@router.post("/projects/{project_id}/consistency")
+async def evaluate_project_consistency(
+    project_id: str, snapshot: CreativeProjectSnapshot
+) -> dict[str, Any]:
+    """Inspect one creative family for cross-artifact consistency (#779).
+
+    The Design Studio submits the project's frozen snapshot — brief, persona,
+    design system, shared decisions, artifacts and provided evidence as the
+    creative session holds them — and receives the evaluator's full result
+    contract back: per-dimension verdicts, evidence-backed findings, exact
+    brief/decision/artifact versions that were evaluated, and a refinement
+    proposal for the affected branches only. The evaluation is deliberately
+    read-only: it proposes work, it never rewrites the project — canonical
+    DAG/Run logic decides what actually runs, under the user's locks and
+    control mode. The same evaluation is available as the canonical graph node
+    ``design.consistency_eval`` (kind registered in ``maistro_design.nodes``)
+    when it must run inside a Run with NodeRun/Attempt provenance; this route
+    is the Design Studio's synchronous inspection surface over the identical
+    pure evaluator, so both surfaces cannot disagree.
+
+    Body: a ``CreativeProjectSnapshot``. A snapshot naming a different
+    project than the path is refused (400) instead of silently mis-filing the
+    result — the same canonical-provenance guard the graph node applies.
+
+    Returns:
+      The ``ConsistencyEvaluation`` result contract (passed, provenance,
+      dimension_results, findings, refinement).
+    """
+    _require_ready()
+    if snapshot.project_id != project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snapshot project_id {snapshot.project_id!r} does not match "
+                f"the requested project {project_id!r}"
+            ),
+        )
+    return evaluate_project_snapshot(snapshot).model_dump(mode="json")
 
 
 @router.get("/projects/{project_id}/render/{job_id}")
@@ -389,5 +543,5 @@ async def get_render_job_status(project_id: str, job_id: str, request: Request) 
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail=f"Render job status unavailable: {e!s}"
+            status_code=500, detail=f"Render job status unavailable: {public_failure(e)}"
         ) from None

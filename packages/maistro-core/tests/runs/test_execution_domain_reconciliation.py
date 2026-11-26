@@ -8,6 +8,7 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import AttemptExecutionService, AttemptStatus, InMemoryRunStore, RunStatus
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 @pytest.mark.asyncio
@@ -26,7 +27,7 @@ async def test_domain_can_defer_logical_reconciliation_after_terminal_attempt() 
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from maistro.capabilities.approval_store import (
     ApprovalStatus,
@@ -16,6 +17,7 @@ from maistro.capabilities.approval_store import (
     redact_approval_value,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -27,9 +29,42 @@ from maistro.capabilities.invocation import (
     ReconciliationDisposition,
     UsageExtractor,
 )
+from maistro.capabilities.providers.extension_attribution import (
+    InvalidAttribution,
+    attribution_from_payload,
+)
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.policy.types import Decision, PolicyVerdict
+
+logger = logging.getLogger(__name__)
+
+
+def _extension_provenance(binding: Binding | ResolvedBinding) -> dict[str, Any]:
+    """The declared extension attribution on this binding, as Event provenance.
+
+    M9-I1 (#976): a wiring that carries an extension package identity (an
+    adapter Binding bootstrapped from a declaring spec) rides into the terminal
+    audit event under ``provenance["extension"]`` — beside the canonical
+    caller/Workspace/Run/NodeRun/Attempt/Invocation fields, never inside the
+    correlation namespace. The fragment is decoded fail-soft: telemetry
+    enrichment must never break the effect ledger, so a missing or malformed
+    payload omits the fragment (with a warning) instead of failing the event.
+    """
+
+    raw = binding.config.get("extension_attribution")
+    if raw is None:
+        return {}
+    try:
+        return attribution_from_payload(raw).provenance_payload()
+    except InvalidAttribution as exc:
+        logger.warning(
+            "binding %s carries a malformed extension attribution; "
+            "omitting it from event provenance: %s",
+            binding.binding_id,
+            exc,
+        )
+        return {}
 
 
 @dataclass(frozen=True)
@@ -47,6 +82,7 @@ class InvocationPolicyContext:
     node_run_id: str
     attempt_id: str
     effect_key: str
+    effect_scope: str | None = None
     approved: bool = False
 
 
@@ -77,9 +113,12 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The container composes this wrapper for canonical effect consumers. Policy
-    events and approvals remain governed side effects; neither path may bypass
-    the Invocation service or its effect identity.
+    The container composes this wrapper for canonical effect consumers; the
+    model egress composition uses the default M1 policy path in production.
+    Policy events and approvals remain governed side effects; neither path may
+    bypass the Invocation service or its effect identity. Stronger policy and
+    durable approval stores can be supplied by later compositions without
+    introducing a second execution authority.
     """
 
     def __init__(
@@ -113,20 +152,49 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> Invocation | None:
-        """Expose canonical effect history without bypassing governed execution."""
+        """Expose canonical effect history without bypassing governed execution.
+
+        A non-``None`` ``effect_scope`` widens the read across NodeRuns, exactly
+        as it does on the service beneath. A caller that dispatched under an
+        EFFECT_KEY contract has to be able to ask the same question it was
+        admitted under, or the lookup silently misses its own completed
+        effect.
+        """
 
         return await self._invocations.latest_effect(
             binding=binding,
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
 
     async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
         """Expose stale-effect discovery through the governed composition root."""
 
         return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def record_expected_effect_observation(
+        self, invocation_id: str, observed_post_state: Any
+    ) -> Invocation:
+        """Persist tool prediction observations without exposing the store."""
+
+        return await self._invocations.record_expected_effect_observation(
+            invocation_id, observed_post_state
+        )
+
+    @staticmethod
+    def expected_effect_mismatch_event(invocation: Invocation, *, tool_name: str) -> EventEnvelope:
+        """Build mismatch evidence through the canonical Invocation authority."""
+
+        return cast(
+            EventEnvelope,
+            InvocationExecutionService.expected_effect_mismatch_event(
+                invocation, tool_name=tool_name
+            ),
+        )
 
     async def reconcile(
         self,
@@ -189,7 +257,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=invocation.binding,
             causation_id=(
                 f"capability-reconciliation-{invocation.invocation_id}-"
                 f"{len(invocation.reconciliation_history)}"
@@ -205,16 +272,19 @@ class GovernedInvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        effect_scope: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
-        logical_effect: bool = False,
+        expected_effect: ExpectedEffectEvidence | None = None,
+        actor_id: str = "",
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         try:
             verdict = await self._policy(binding, request, context)
@@ -241,6 +311,7 @@ class GovernedInvocationExecutionService:
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         if existing_approval is not None or verdict.decision is Decision.REQUIRE_APPROVAL:
             policy_event = await self._enforce_approval(
@@ -249,6 +320,7 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
                 request=request,
                 verdict=verdict,
                 policy_event=policy_event,
@@ -262,11 +334,13 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
                 request=request,
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
-                logical_effect=logical_effect,
+                expected_effect=expected_effect,
+                actor_id=actor_id,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(
@@ -289,7 +363,6 @@ class GovernedInvocationExecutionService:
 
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=policy_event.event_id,
         )
         return invocation
@@ -339,6 +412,7 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> DurableApproval | None:
         if self._approvals is None:
             return None
@@ -347,6 +421,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
 
     async def _enforce_approval(
@@ -357,6 +432,7 @@ class GovernedInvocationExecutionService:
         node_run_id: str,
         attempt_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
         request: Any,
         verdict: PolicyVerdict,
         policy_event: EventEnvelope,
@@ -374,35 +450,21 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
             )
         if existing is not None:
-            if existing.request_digest != request_digest:
-                raise InvocationDenied(
-                    f"approval {existing.request.request_id!r} does not match the current request"
-                )
-            if existing.status is ApprovalStatus.APPROVED:
-                return await self._resume_approved_effect(
-                    binding=binding,
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    effect_key=effect_key,
-                    request=request,
-                    policy_event=policy_event,
-                    approval=existing,
-                )
-            if existing.status is ApprovalStatus.DENIED:
-                raise InvocationDenied(f"approval {existing.request.request_id!r} was denied")
-            await self._emit_approval_required(
+            return await self._handle_existing_approval(
                 approval=existing,
+                request_digest=request_digest,
                 binding=binding,
+                run_id=run_id,
+                node_run_id=node_run_id,
                 attempt_id=attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_scope,
+                request=request,
                 verdict=verdict,
                 policy_event=policy_event,
-            )
-            raise InvocationApprovalPending(
-                existing.request.request_id,
-                verdict.reason or "capability invocation requires approval",
             )
 
         approval_request = ApprovalRequest(
@@ -427,9 +489,56 @@ class GovernedInvocationExecutionService:
                 attempt_id=attempt_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope or node_run_id,
                 request_digest=request_digest,
             )
         )
+        await self._emit_approval_required(
+            approval=approval,
+            binding=binding,
+            attempt_id=attempt_id,
+            verdict=verdict,
+            policy_event=policy_event,
+        )
+        raise InvocationApprovalPending(
+            approval.request.request_id,
+            verdict.reason or "capability invocation requires approval",
+        )
+
+    async def _handle_existing_approval(
+        self,
+        *,
+        approval: DurableApproval,
+        request_digest: str,
+        binding: Binding,
+        run_id: str,
+        node_run_id: str,
+        attempt_id: str,
+        effect_key: str,
+        effect_scope: str | None,
+        request: Any,
+        verdict: PolicyVerdict,
+        policy_event: EventEnvelope,
+    ) -> EventEnvelope:
+        """Resume a matching approval or preserve its pending/denied decision."""
+        if approval.request_digest != request_digest:
+            raise InvocationDenied(
+                f"approval {approval.request.request_id!r} does not match the current request"
+            )
+        if approval.status is ApprovalStatus.APPROVED:
+            return await self._resume_approved_effect(
+                binding=binding,
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_scope,
+                request=request,
+                policy_event=policy_event,
+                approval=approval,
+            )
+        if approval.status is ApprovalStatus.DENIED:
+            raise InvocationDenied(f"approval {approval.request.request_id!r} was denied")
         await self._emit_approval_required(
             approval=approval,
             binding=binding,
@@ -450,6 +559,7 @@ class GovernedInvocationExecutionService:
         node_run_id: str,
         attempt_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
         request: Any,
         policy_event: EventEnvelope,
         approval: DurableApproval,
@@ -465,6 +575,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
             approved=True,
         )
         approved_verdict = await self._policy(binding, request, approved_context)
@@ -554,7 +665,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=causation_id,
         )
 
@@ -562,10 +672,16 @@ class GovernedInvocationExecutionService:
         self,
         invocation: Invocation,
         *,
-        binding: Binding | ResolvedBinding,
         causation_id: str,
     ) -> None:
-        """Append one idempotent terminal audit fact for a persisted Invocation."""
+        """Append one idempotent terminal audit fact for a persisted Invocation.
+
+        Provenance reads the Invocation's own resolved snapshot, not the
+        caller's Binding: a programmatically registered declaring adapter
+        (#976) then leaves the same extension attribution evidence as a
+        bootstrapped one, because the snapshot captured the identity of the
+        adapter that actually resolved.
+        """
 
         await self._events.append(
             EventEnvelope(
@@ -573,8 +689,8 @@ class GovernedInvocationExecutionService:
                     f"capability-invocation-{invocation.invocation_id}-{invocation.status.value}"
                 ),
                 type=f"capability.invocation.{invocation.status.value}",
-                workspace_id=binding.workspace_id,
-                project_id=binding.project_id,
+                workspace_id=invocation.binding.workspace_id,
+                project_id=invocation.binding.project_id,
                 run_id=invocation.run_id,
                 node_run_id=invocation.node_run_id,
                 attempt_id=invocation.attempt_id,
@@ -582,6 +698,7 @@ class GovernedInvocationExecutionService:
                 correlation_id=invocation.run_id,
                 causation_id=causation_id,
                 source="maistro.capabilities",
+                provenance=_extension_provenance(invocation.binding),
                 payload={
                     "binding_id": invocation.binding.binding_id,
                     "capability": invocation.binding.capability,

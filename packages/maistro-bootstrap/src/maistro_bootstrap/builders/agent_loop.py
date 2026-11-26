@@ -7,7 +7,7 @@ import logging
 import os
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from maistro_bootstrap.builders.errors import BlockedCommandError
@@ -83,13 +83,17 @@ class AgentLoopConfig:
     # None → resolved per-worker via model_for_worker(); set explicitly to override.
     model: str | None = None
     worker: str = "frank"
+    # Restored at the #777 develop sync (352aea3f4): `system_prompt` had no
+    # readers when the dead-code pass removed it, but M5-B evaluator-oracle
+    # immunity introduced one — maistro_rsi.local_loop.make_builders_apply_patch
+    # falls back to `config.system_prompt` when no genome strategy prompt is
+    # supplied (packages/maistro-rsi/src/maistro_rsi/local_loop.py:755).
     system_prompt: str = (
         "You are a precise coding assistant working inside an isolated git worktree. "
         "Use the provided tools to read files, write changes, and run commands. "
         "Always confirm destructive actions before executing them. "
         "Never access paths outside the workspace root."
     )
-    tool_definitions: list[dict[str, Any]] = field(default_factory=list)
 
     def resolved_model(self) -> str:
         return self.model or model_for_worker(self.worker)
@@ -232,10 +236,8 @@ def _make_sandbox_tools(session: BuilderSession) -> list[dict[str, Any]]:
     Structured tools (run_tests, run_lint, git_status, git_diff) map to fixed
     argv lists executed with shell=False — no LLM-controlled string reaches the
     shell. run_tests' extra args are parsed and validated against a fixed
-    pytest flag allowlist (#811) before exec. run_command is retained for
-    flexibility but is narrowed: the sandbox applies metachar rejection +
-    shlex parsing + path-escape checks, and callers must set
-    requires_human_approval=true for anything outside the common cases.
+    pytest flag allowlist (#811) before exec. run_command uses the same
+    structured argv contract and never accepts an implicit shell string.
     """
     return [
         {
@@ -318,27 +320,27 @@ def _make_sandbox_tools(session: BuilderSession) -> list[dict[str, Any]]:
             "description": "Show git diff of changes in the sandbox workspace.",
             "input_schema": {"type": "object", "properties": {}},
         },
-        # --- free-form command (narrowed; validated by SandboxedShell) ---
+        # --- structured command (validated and executed without a shell) ---
         {
             "name": "run_command",
             "description": (
-                "Run an arbitrary command in the sandbox. "
-                "Shell metacharacters (;|&<>`$\\) are rejected. "
-                "Use structured tools (run_tests, run_lint, git_status) when possible. "
-                "Set requires_human_approval=true for any destructive or network operation."
+                "Run one constrained command as argv in the sandbox. The command and "
+                "arguments are passed without a shell; shell text, pipes, redirects, "
+                "and command strings are not accepted. The executable must be a bare "
+                "command name or a path inside the sandbox workspace."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "cmd": {"type": "string"},
-                    "timeout": {"type": "integer", "default": 30},
-                    "requires_human_approval": {
-                        "type": "boolean",
-                        "description": "Set true for destructive/network commands.",
-                        "default": False,
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
                     },
+                    "timeout": {"type": "integer", "default": 30},
                 },
-                "required": ["cmd"],
+                "required": ["argv"],
+                "additionalProperties": False,
             },
         },
         {
@@ -383,6 +385,20 @@ def _dispatch_safe_tool(sandbox: Any, name: str, inputs: dict[str, Any]) -> str 
     return None
 
 
+def _run_command_argv(inputs: dict[str, Any]) -> str | None:
+    """Return a tool error string, if any, for a model-supplied ``run_command`` argv."""
+    argv = inputs.get("argv")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(token, str) and token for token in argv)
+    ):
+        return "[tool error] run_command requires a non-empty string argv"
+    if any(token in {";", "|", "&", "<", ">", "`"} for token in argv):
+        return "[tool error] shell metacharacters are not valid argv"
+    return None
+
+
 def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -> str:
     sandbox = session.sandbox
     try:
@@ -390,21 +406,17 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
         if result is not None:
             return result
         if name == "run_command":
-            # TODO(#329 / ADR-090726-9a4e): `requires_human_approval` is
-            # model-authored — the same model that wants to run the command
-            # decides whether to flag it — so the gate only binds when the
-            # model cooperates. Phase 1 deliberately does not change these
-            # semantics; the ADR routes the builders' approval gate toward
-            # crypto-bound decisions (WebAuthn presence / Biscuit-delegated
-            # authority) so the flag is not the thing that stands between an
-            # agent and an irreversible command. Residual risk until then.
-            if inputs.get("requires_human_approval"):
-                logger.warning("run_command flagged for human approval — cmd=%r", inputs["cmd"])
-                return (
-                    f"[REQUIRES_HUMAN_APPROVAL] Command not executed automatically: {inputs['cmd']!r}. "
-                    "Confirm in the TUI to proceed."
-                )
-            return sandbox.run_command(inputs["cmd"], timeout=inputs.get("timeout", 30))
+            # This is deliberately run_argv: a model-authored command string
+            # must never become an implicit ``sh -c`` invocation. The former
+            # model-authored requires_human_approval gate (tracked follow-up
+            # #329 / ADR-090726-9a4e) only bound cooperating models, so argv
+            # validation now enforces the constraint at the dispatch layer;
+            # the ADR still routes interactive approval toward crypto-bound
+            # decisions. Residual risk until then.
+            argv_error = _run_command_argv(inputs)
+            if argv_error is not None:
+                return argv_error
+            return str(sandbox.run_argv(inputs["argv"], timeout=inputs.get("timeout", 30)))
     except Exception as exc:
         return f"[tool error] {exc}"
     return f"[unknown tool] {name}"

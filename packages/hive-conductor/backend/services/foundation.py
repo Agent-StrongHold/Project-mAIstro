@@ -56,8 +56,22 @@ class Foundation:
         self.reactor_available = False
 
     async def start(self, settings: Settings) -> None:
-        data_dir = Path(settings.conductor_data_dir).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Before the vault, state, privilege, or reactor touch a single file:
+        # refuse a data directory that cannot hold this deployment's durable
+        # state (unwritable, or — inside a container — sitting on the
+        # container's own root filesystem, i.e. silently ephemeral across
+        # recreate). #331. A refusal here propagates out of the lifespan,
+        # which stops the process (uvicorn refuses to serve after a failed
+        # startup): the alternative to refusing is a Conductor that
+        # provisions accounts and accepts vault entries into storage it is
+        # about to throw away.
+        from services.data_dir_guard import DataDirRefused, verify_durable_data_dir
+
+        try:
+            data_dir = verify_durable_data_dir(Path(settings.conductor_data_dir))
+        except DataDirRefused as exc:
+            logger.error("%s", exc)
+            raise
 
         self._init_vault(settings, data_dir)
         self._init_credentials(data_dir)
@@ -131,6 +145,17 @@ class Foundation:
             from services.dag_run_store import configure_dag_run_store
 
             configure_dag_run_store(stores.dag_runs)
+
+            # Metrics are a query projection of the canonical Run spine. They
+            # share this state database for restart and replica reads; they do
+            # not become a second execution authority. The durable JsonStore is
+            # owned by the service module, not `stores.py`: new durable state is
+            # not a row in the cutover retirement ledger, which only grows by
+            # declaring stores.py surfaces (#1046).
+            from services.node_metrics_store import configure_store as configure_metrics_store
+            from services.node_metrics_store import node_metrics
+
+            configure_metrics_store(node_metrics)
 
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles

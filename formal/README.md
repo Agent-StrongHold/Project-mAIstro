@@ -40,6 +40,7 @@ A security regression suite. Each model exercises one of Maistro's security inva
 | I28 | `test_auth_client.py` | Service key client: auto-injected auth headers, merge/override behavior |
 | I29 | `test_sentinel_validator.py` | Schema validation + repair: fuzzy enum, type coercion, default fill, field rename |
 | I30 | `test_memory_scopes.py` | Memory scope isolation: global→team→user→agent→session hierarchy |
+| I31 | `test_invocation_effect_idempotency.py` | Invocation effect/idempotency: COMPLETED never re-dispatches, UNKNOWN/blocked retries refused, only proven-not-applied FAILED retryable, logical effect identity stable across Attempts (#882) |
 
 ## Quick start
 
@@ -72,6 +73,17 @@ AssertionError: strike_count=2 but scrutiny_level='elevated' (expected 'locked')
 ```
 
 This tells you the exact steps and broken invariant.
+
+## Invariant evidence rules (#410)
+
+Every counted invariant must be able to fail: it is expressed against an
+independent model, a documented contract, or a constructive input class, has
+a documented counterexample class, and has been demonstrated to fail a
+realistic mutant. Tautologies (`counter >= 0` on the machine's own counter),
+empty `pass` invariants, and self-referential impl-vs-impl assertions are
+rejected from the evidence counts. The full inventory — counted properties,
+rejected invariants, informational keeps, and the demonstrated mutants —
+lives in [INVARIANTS.md](INVARIANTS.md).
 
 ## CI
 

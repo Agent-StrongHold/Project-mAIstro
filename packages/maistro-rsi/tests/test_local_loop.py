@@ -17,6 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import maistro_rsi.local_loop as local_loop
+from maistro_rsi.competitors import Competitor
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.protocols import MicroVmSandbox
 
@@ -235,6 +236,52 @@ async def test_apply_patch_factory_model_beats_cycle_model(tmp_path, monkeypatch
     await apply_fn(None, str(tmp_path), "groq/kimi-k2")
 
     assert _FakeResponsesCallable.built_models == ["cli-override"]
+
+
+@pytest.mark.ac("SPEC-082926-a6ab/AC-7")
+def test_the_builders_factory_is_told_which_sandbox_to_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC-082926-a6ab/AC-7: the resolved sandbox reaches the builders factory.
+
+    The apply function is built from the run's own config, so the isolation the
+    run resolved to (and its image) is what the factory is told — a config that
+    says ``container`` cannot silently hand the builders agent a host-worktree
+    sandbox. Since #509 the Conductor's HTTP path dispatches the whole loop
+    into the runner container, so this construction happens inside it; the
+    guarantee is the loop's, wherever it executes, which is why the proof
+    lives against `maistro_rsi.local_loop` directly.
+    """
+    factory_calls: list[dict] = []
+
+    def _factory(objective: str, **kwargs: object) -> None:
+        factory_calls.append({"objective": objective, **kwargs})
+
+    monkeypatch.setattr(local_loop, "make_builders_apply_patch", _factory)
+
+    config = LocalRsiConfig(
+        repo_path=str(tmp_path / "repo"),
+        test_command="python -m pytest -q",
+        work_root=str(tmp_path / "work"),
+        isolation="container",
+        sandbox_image="maistro-rsi-runner:latest",
+    )
+    loop = LocalRsiLoop(config)
+    loop._apply_for_competitor(Competitor(model="some-model"), "improve the thing")
+
+    assert factory_calls == [
+        {
+            "objective": "improve the thing",
+            "model": "some-model",
+            "temperature": None,
+            "reasoning_effort": None,
+            "system_prompt": None,
+            "max_agent_turns": 6,
+            "isolation": "container",
+            "image": "maistro-rsi-runner:latest",
+            "source_repository": str(tmp_path / "repo"),
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -597,16 +644,26 @@ def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monk
     (repo / "x.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add x.py")
-    (repo / "x.py").write_text("x = 2\n", encoding="utf-8")  # uncommitted diff vs HEAD
+    (repo / "x.py").write_text("x = 2\n", encoding="utf-8")
+    # The fail-first contract (#392): a source change needs a changed test that
+    # is red on the base revision, else the candidate is rejected before the
+    # judge ever runs — so this test's candidate carries one.
+    (repo / "test_x.py").write_text(
+        "import x\n\ndef test_x():\n    assert x.x == 2\n", encoding="utf-8"
+    )
+    # The loop commits every candidate before scoring it (the probe restores
+    # source from HEAD), so mirror that invariant here.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "candidate")
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
     monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
 
     scorecard = candidate_fitness.evaluate_candidate(
         str(repo),
-        ["x.py"],
+        ["x.py", "test_x.py"],
         test_command="exit 0",
-        baseline_ref="HEAD",
+        baseline_ref="HEAD~1",
         baseline_coverage=80.0,
         regression_judge_fn=lambda diff, target: JudgeVerdict(
             status="unavailable",
@@ -745,6 +802,106 @@ def test_fitness_trace_carries_inventory_evidence(tmp_path: Path, monkeypatch) -
     assert note.inventory["deleted"] == ["tests/test_value.py::test_two"]
     assert note.inventory["override"] is True
     assert note.gates.get("protected_test_inventory") is True
+
+
+def test_fitness_trace_carries_fail_first_evidence(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end (#392 DoD): a source-touching candidate promotes only with
+    its red→green proof, and that proof rides the promotion's git-notes
+    record — base SHA, failing identities, failure digest, candidate SHA,
+    passing result — so a behavior promotion is replayable from git alone.
+    The candidate fixes a bug in a NEW module, test-first: the test import
+    fails on the baseline (the module is absent there), passes on the
+    candidate. The fail-first probe runs for REAL (git + pytest); only the
+    orthogonal deterministic signals are stubbed."""
+    from maistro_rsi import candidate_fitness
+    from maistro_rsi.trace_notes import read_trace_note
+
+    repo = _mini_pytest_repo(tmp_path / "src")
+
+    def fix(ws: Path) -> None:
+        (ws / "calc.py").write_text("def double(n):\n    return n * 2\n", encoding="utf-8")
+        f = ws / "tests" / "test_value.py"
+        f.write_text(
+            f.read_text(encoding="utf-8")
+            + "\n\nfrom calc import double\n\n\ndef test_double():\n    assert double(2) == 4\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+    monkeypatch.setattr(local_loop.LocalRsiLoop, "_baseline_coverage", lambda self: None)
+    # The mutation probe is orthogonal to this test and runs pytest once per
+    # mutant — hold it out. The red→green probe below is NOT stubbed.
+    monkeypatch.setattr(candidate_fitness, "probe_diff_mutations", lambda *a, **k: None)
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        use_fitness=True,
+        coverage_pytest_args="tests",
+        regression_judge=False,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(fix)).run()
+
+    assert result.promotions == 1
+    note = read_trace_note(Path(result.baseline_dir), result.cycles[0].sha)
+    assert note is not None
+    ff = note.fail_first
+    assert ff is not None, "a promoted behavior change must record its fail-first proof"
+    assert ff["status"] == "valid"
+    # The module is new, so the base probe fails at collection: file-level
+    # identity (ERROR line), exactly as the probe documents.
+    assert ff["failing_tests"] == ["tests/test_value.py"]
+    assert str(ff["failure_digest"]).startswith("sha256:")
+    assert len(ff["base_sha"]) == 40 and len(ff["candidate_sha"]) == 40
+    assert ff["base_sha"] != ff["candidate_sha"]
+    assert ff["passing_on_candidate"] is True
+    assert ff["reproducible"] is True
+    assert ff["config_tainted"] is False
+    assert ff["related"] is True
+    assert note.gates.get("fail_first_evidence") is True
+
+
+def test_fitness_trace_tolerates_scorecard_without_fail_first_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A scorecard without a fail_first_evidence gate (an older composer, a
+    future gate rename) must not crash the promotion record: the loop simply
+    omits the fail_first key instead of writing a null or dying."""
+    from maistro_evolve.scorecard import GateResult, Scorecard
+    from maistro_rsi import candidate_fitness
+    from maistro_rsi.trace_notes import read_trace_note
+
+    repo = _mini_pytest_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        candidate_fitness,
+        "evaluate_candidate",
+        lambda *a, **k: Scorecard(gates=[GateResult("tests_pass", True, "ok")]),
+    )
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        use_fitness=True,
+        coverage_pytest_args="tests",
+        regression_judge=False,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 1
+    note = read_trace_note(Path(result.baseline_dir), result.cycles[0].sha)
+    assert note is not None
+    assert note.fail_first is None
+    assert note.gates == {"tests_pass": True}
 
 
 def test_evaluate_candidate_vetoes_deleted_test_with_real_collection(
@@ -897,16 +1054,20 @@ def test_green_ordinary_change_still_promotes_with_gate(tmp_path: Path) -> None:
 
 
 def test_sensitive_candidate_cannot_promote_without_signed_approval(tmp_path: Path) -> None:
-    """#302 adversarial: a candidate that edits the promotion machinery itself
-    (a sensitive path) and passes the test command is still refused — no
-    reviewer, no approval, no promotion. The --ff-only never runs."""
+    """#302 adversarial: a candidate that edits the containment surface (a
+    sensitive path — Warden's detector, reached via ``maistro/security/``)
+    and passes the test command is still refused — no reviewer, no approval,
+    no promotion. The --ff-only never runs."""
     repo = _make_repo(tmp_path / "src")
 
     def edit_gate(ws: Path) -> None:
-        # Touch the containment surface AND keep the suite green.
-        target = ws / "maistro_rsi" / "local_loop.py"
+        # Touch the containment surface AND keep the suite green. The path is
+        # sensitive (maistro/security/) but NOT evaluator-oracle surface
+        # (#109), so the refusal exercised here is the promotion gate's —
+        # not the earlier oracle-integrity veto.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("# candidate-touched promotion machinery\n", encoding="utf-8")
+        target.write_text("# candidate-touched quarantine policy\n", encoding="utf-8")
         (ws / "value.txt").write_text("1\n", encoding="utf-8")
 
     config = LocalRsiConfig(
@@ -927,13 +1088,51 @@ def test_sensitive_candidate_cannot_promote_without_signed_approval(tmp_path: Pa
     assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
 
 
+def test_candidate_touching_the_loop_itself_is_vetoed_before_scoring(
+    tmp_path: Path,
+) -> None:
+    """Layered defense (#109 x #302): a candidate that edits the promotion
+    machinery itself — ``maistro_rsi/local_loop.py`` — is evaluator-oracle
+    surface, so the #109 integrity veto refuses it BEFORE scoring ever runs;
+    it never even reaches the promotion gate. Either way, the baseline never
+    moves: the --ff-only is unreachable for a candidate that rewrites the
+    machinery that would apply it."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        target = ws / "maistro_rsi" / "local_loop.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched promotion machinery\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and not cycle.promoted
+    assert "evaluator oracle mutated" in cycle.note
+    # The baseline branch never moved.
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
+
+
 def test_sensitive_candidate_with_review_but_unbound_approval_stays_put(tmp_path: Path) -> None:
     """An approval that does not bind to THIS candidate/diff/scope is not
     authority: denial leaves the baseline unchanged."""
     repo = _make_repo(tmp_path / "src")
 
     def edit_gate(ws: Path) -> None:
-        target = ws / "maistro_rsi" / "local_loop.py"
+        # Sensitive (maistro/security/) but not evaluator-oracle surface, so
+        # the binding failure under test is the approval gate's, not the
+        # #109 pre-scoring veto.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# candidate-touched\n", encoding="utf-8")
         (ws / "value.txt").write_text("1\n", encoding="utf-8")
@@ -983,7 +1182,9 @@ def test_sensitive_candidate_promotes_only_with_review_and_valid_approval(tmp_pa
     review = RecordingReview(approve=True)
 
     def edit_gate(ws: Path) -> None:
-        target = ws / "maistro_rsi" / "local_loop.py"
+        # Sensitive (maistro/security/) but not evaluator-oracle surface, so
+        # the full authorized promotion under test crosses the promotion gate.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# reviewed-and-approved edit\n", encoding="utf-8")
         (ws / "value.txt").write_text("1\n", encoding="utf-8")
@@ -1034,11 +1235,13 @@ def test_sensitive_candidate_promotes_only_with_review_and_valid_approval(tmp_pa
 
 def test_candidate_cannot_self_score_through_an_oracle_rewrite(tmp_path: Path) -> None:
     """#302 adversarial + #109: a candidate that rewrites the oracle it is
-    scored against (a sensitive path: the fitness evaluator) cannot use the
-    self-modified score to promote. Even with the test command green, the
-    sensitive-path policy demands authorization the run cannot mint — and the
-    promotion-surface invariant holds by construction (the gate consults
-    matches_sensitive_pattern over the REAL paths, not any candidate flag)."""
+    scored against (the fitness evaluator and the tests that pin it) cannot
+    use the self-modified score to promote. Post-merge the defense is
+    layered: the #109 evaluator-oracle integrity veto refuses the candidate
+    BEFORE its modified oracle is even executed, and the sensitive-path
+    promotion gate remains the backstop for sensitive paths that are not
+    oracle surface (see test_sensitive_candidate_cannot_promote_without_signed_approval).
+    Either layer alone leaves the baseline unmoved."""
     repo = _make_repo(tmp_path / "src")
 
     def rewrite_oracle(ws: Path) -> None:
@@ -1067,5 +1270,32 @@ def test_candidate_cannot_self_score_through_an_oracle_rewrite(tmp_path: Path) -
 
     assert result.promotions == 0
     assert not result.cycles[0].promoted
-    assert "quarantine gate refused" in result.cycles[0].note
+    # The #109 veto fires first: the self-modified oracle is never executed,
+    # so the candidate cannot manufacture acceptance evidence at all.
+    assert "evaluator oracle mutated" in result.cycles[0].note
+    assert not result.cycles[0].tests_passed
     assert _head(Path(config.work_root) / "baseline") == head_before
+
+
+def test_default_campaign_ids_are_unique_per_loop(tmp_path: Path) -> None:
+    """Two loops sharing a provenance store must not collide on a default
+    campaign: each restarts its cycle index at one, so a static default would
+    file the second loop's cycles against the first's terminal Runs."""
+    repo = _make_repo(tmp_path / "src")
+
+    def config() -> LocalRsiConfig:
+        return LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="exit 0",
+            work_root=str(tmp_path / "work"),
+            max_cycles=1,
+        )
+
+    first = LocalRsiLoop(config(), apply_patch=_make_apply(lambda ws: None))
+    second = LocalRsiLoop(config(), apply_patch=_make_apply(lambda ws: None))
+    assert first._campaign_id.startswith("local-loop-")
+    assert second._campaign_id.startswith("local-loop-")
+    assert first._campaign_id != second._campaign_id
+
+    named = LocalRsiLoop(config(), campaign_id="operator-campaign")
+    assert named._campaign_id == "operator-campaign"

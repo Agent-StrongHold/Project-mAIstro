@@ -15,12 +15,14 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import InMemoryBindingStore
+from maistro.capabilities.binding_store import register_boot_binding
+from maistro.capabilities.durable_hitl_approval import admit_self_repair_approval
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
 from maistro.capabilities.slots.infra import ActionResult, InfraAction
+from maistro.capabilities.slots.self_repair import RepairProposal
 from maistro.capabilities.types import Unavailable
 
 if TYPE_CHECKING:
@@ -41,7 +43,7 @@ class _VaultLike(Protocol):
 _TOKEN_KEY = "HOST_HEALTH_TOKEN"
 
 
-def wire_capabilities(
+async def wire_capabilities(
     registry: CapabilityRegistry,
     *,
     settings_model: SettingsModel,
@@ -49,8 +51,13 @@ def wire_capabilities(
     vault: _VaultLike | None = None,
     effect_context: CapabilityEffectContext | None = None,
 ) -> None:
-    """Register host-health providers (if configured) then apply activation."""
-    _register_host_health(
+    """Register host-health providers (if configured) then apply activation.
+
+    Async because boot registration writes a Binding, and on a durable backend
+    that write is I/O. The engine starts this from its own ``start()``, which
+    is already a coroutine, so nothing gains a thread or a loop here.
+    """
+    await _register_host_health(
         registry,
         config,
         vault,
@@ -71,7 +78,7 @@ def _resolve_token(config: Settings, vault: _VaultLike | None) -> str | None:
     return None
 
 
-def _register_host_health(
+async def _register_host_health(
     registry: CapabilityRegistry,
     config: Settings,
     vault: _VaultLike | None,
@@ -84,11 +91,12 @@ def _register_host_health(
         return
     token = _resolve_token(config, vault)
     http = HttpxAsyncHttp(url, token=token)
-    inbox = registry.provider("approval", "inbox")
     registry.register(HostHealthMonitor(http))
-    registry.register(HostHealthAction(http, autonomy=config.infra_autonomy, approval=inbox))
+    # #2405: HostHealthAction is a pure executor. Approval-gated self-repair
+    # admits durable waiting-human NodeRuns; it must not await InboxApproval.
+    registry.register(HostHealthAction(http, autonomy=config.infra_autonomy))
     logger.info("registered host-health infra providers -> %s", url)
-    _register_self_repair(registry, config, effect_context)
+    await _register_self_repair(registry, config, effect_context)
 
 
 def _self_repair_binding() -> Binding:
@@ -129,6 +137,8 @@ def _build_self_repair_effect_invoker(
             if not isinstance(provider, InfraAction):
                 raise TypeError("infra_action Invocation resolved a non-action provider")
             payload = dict(request)
+            # Auto-run path only (reversible under auto_safe). Gated tiers are
+            # admitted as durable waiting-human Runs (#2405), not through here.
             result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
             return {
                 "ok": result.ok,
@@ -157,34 +167,135 @@ def _build_self_repair_effect_invoker(
     return invoke_action
 
 
-def _register_self_repair(
+async def _resolve_self_repair_hitl_scope() -> tuple[str, str]:
+    """Canonical Workspace + Root Project for self-repair approval Runs.
+
+    The effect Binding keeps synthetic ids for ``infra_action`` resolution;
+    HITL discovery (``/v1/hitl``) requires a real Project in
+    ``authorized_project_ids``. Mirror the schedule admission rule: Hive's
+    configured default Workspace and that Workspace's Root Project.
+    """
+    from config import get_settings
+
+    from services.engine import get_engine
+
+    engine = get_engine()
+    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    scope = getattr(container, "project_scope_store", None)
+    if scope is None:
+        raise RuntimeError("project_scope_store unavailable for durable self-repair approval")
+    workspace_id = str(get_settings().hive_default_workspace_id or "").strip()
+    if not workspace_id:
+        raise RuntimeError("hive_default_workspace_id is unset for durable self-repair approval")
+    root = await scope.root_for_workspace(workspace_id)
+    return workspace_id, root.project_id
+
+
+def _build_self_repair_approval_admittor(
+    registry: CapabilityRegistry,
+    effect_context: CapabilityEffectContext,
+    binding: Binding,
+) -> Callable[[RepairProposal, str], Any]:
+    async def admit(proposal: RepairProposal, effect_key: str) -> str:
+        from services.engine import get_engine
+
+        engine = get_engine()
+        store = engine.graph_run_store
+        if store is None:
+            raise RuntimeError("graph_run_store unavailable for durable self-repair approval")
+        workspace_id, project_id = await _resolve_self_repair_hitl_scope()
+
+        async def resolve_provider(candidate: Binding) -> InfraAction:
+            try:
+                authorized = await effect_context.bindings.resolve(
+                    candidate.binding_id,
+                    workspace_id=binding.workspace_id,
+                    project_id=binding.project_id,
+                    node_id=binding.node_id,
+                    capability=binding.capability,
+                )
+            except Exception as exc:
+                raise LookupError("self_repair binding unavailable") from exc
+            if authorized.binding_id != binding.binding_id:
+                raise LookupError("invalid self_repair binding")
+            provider = await registry.resolve("infra_action")
+            if not isinstance(provider, InfraAction):
+                raise LookupError("infra_action unavailable")
+            return provider
+
+        record = await admit_self_repair_approval(
+            store=store,
+            effect_context=effect_context,
+            binding=binding,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            action=proposal.action or "",
+            params=proposal.params,
+            effect_key=effect_key,
+            resolve_provider=resolve_provider,
+            run_store=engine.run_store,
+        )
+        return record.run.run_id
+
+    return admit
+
+
+def _build_self_repair_approval_run_status() -> Callable[[str], Any]:
+    async def status_of(run_id: str) -> str | None:
+        from services.engine import get_engine
+
+        store = get_engine().graph_run_store
+        if store is None:
+            return None
+        record = await store.get(run_id)
+        if record is None:
+            return None
+        return record.run.status.value
+
+    return status_of
+
+
+async def _register_self_repair(
     registry: CapabilityRegistry,
     config: Settings,
     effect_context: CapabilityEffectContext,
 ) -> None:
-    """Register self_repair with decision-time infra_action admission (SPEC-188/#846)."""
+    """Register self_repair with decision-time infra_action admission (SPEC-188/#846).
+
+    Boot registration goes through ``register_boot_binding``, which every
+    backend supports -- in-memory, SQLite and PostgreSQL alike. It previously went
+    through the in-memory store's synchronous ``register``, so this narrowed to
+    that concrete class first and self_repair turned itself off on exactly the
+    deployments that persist anything (#1133). ``put`` has the semantics boot
+    registration needs on all three: idempotent for an identical Binding,
+    `ValueError` for a changed one, and `BindingNotFound` for an identity that
+    has been revoked -- which on a durable store means revoked in some earlier
+    process, by a tombstone that outlived it.
+
+    Approval-gated remediations admit durable waiting-human NodeRuns (#2405)
+    rather than awaiting ``InboxApproval``'s in-process Event.
+    """
     monitor = registry.provider("infra_monitor", "host_health")
     if monitor is None:
         return
-    binding = _self_repair_binding()
-    if not isinstance(effect_context.bindings, InMemoryBindingStore):
-        logger.warning("self_repair disabled: BindingStore has no boot registration seam")
-        return
     try:
-        effect_context.bindings.register(binding)
+        binding = await register_boot_binding(effect_context.bindings, _self_repair_binding())
     except Exception:
         logger.exception("self_repair disabled: failed to register its Binding")
         return
     invoke_action = _build_self_repair_effect_invoker(registry, effect_context, binding)
+    admit_approval = _build_self_repair_approval_admittor(registry, effect_context, binding)
     registry.register(
         RuleBasedRepair(
             infra_monitor=monitor,
             effect_invoker=invoke_action,
+            approval_admittor=admit_approval,
+            approval_run_status=_build_self_repair_approval_run_status(),
             autonomy=config.infra_autonomy,
         )
     )
     logger.info(
-        "registered self_repair provider (Invocation-governed, autonomy=%s)",
+        "registered self_repair provider (Invocation-governed, durable HITL, autonomy=%s)",
         config.infra_autonomy,
     )
 

@@ -10,6 +10,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
@@ -354,6 +355,24 @@ def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
     return lease.expires_at <= now
 
 
+def has_live_execution_lease(attempts: list[Attempt], now: datetime) -> bool:
+    """Whether any of these Attempts still holds an unexpired execution lease.
+
+    The crash-recovery sweeps' "is anyone still executing this?" predicate, in
+    one place: a non-terminal Attempt carrying a lease that has not lapsed as
+    of ``now``. A terminal Attempt holds nothing, and a lease-less Attempt is
+    never treated as live -- the same additive stance ``lease_is_expired``
+    takes -- so a deployment that never asked for a TTL keeps exactly today's
+    behaviour.
+    """
+    return any(
+        attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        and attempt.execution_lease is not None
+        and not lease_is_expired(attempt, now)
+        for attempt in attempts
+    )
+
+
 def renewed_lease(lease: ExecutionLease, *, at: datetime, ttl: timedelta) -> ExecutionLease:
     """The same lease, alive for another ``ttl`` from ``at``.
 
@@ -409,15 +428,209 @@ def renew_attempt_lease(
 
 
 def reclaim_attempt(attempt: Attempt, *, at: datetime | None = None) -> Attempt:
-    """Settle one Attempt whose lease lapsed, naming the holder that went quiet."""
+    """Settle one Attempt whose finite lease lapsed, as CANCELLED+RECOVERED (#2354).
+
+    This is the first authorized RECOVERED writer (#232 P2a): an expired
+    canonical lease under active CREATED/RUNNING. Live leases, leaseless
+    Attempts, infinite leases (``expires_at is None``), and already-terminal
+    rows are refused here so a caller cannot invent recovery evidence. The
+    dedicated orphan/prelaunch writers are separate leaves; generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+
+    Physical ``result`` and ``metrics`` are preserved: reclaim closes the
+    worker proof, it does not erase evidence the Attempt already recorded.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
     lease = attempt.execution_lease
-    holder = lease.holder if lease is not None else "unknown"
-    return transition_attempt(
+    if lease is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with no execution lease; "
+            "leaseless orphan recovery is a dedicated writer, not lease reclaim"
+        )
+    if lease.expires_at is None:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} with an infinite lease; "
+            "a lease without expires_at never lapses"
+        )
+    if lease.expires_at > moment:
+        raise InvalidLifecycleTransition(
+            f"cannot reclaim Attempt {attempt.attempt_id!r} while its lease is still live "
+            f"(expires_at={lease.expires_at.isoformat()}, at={moment.isoformat()})"
+        )
+
+    # Status/error/finished_at via the shared transition table, then stamp
+    # RECOVERED outside ``transition_attempt`` so the generic path never grows
+    # a RECOVERED argument (parent #232: only None or REQUESTED there).
+    settled = transition_attempt(
         attempt,
         RECLAIMED_ATTEMPT_STATUS,
-        at=at,
-        error=reclaimed_attempt_error(holder),
+        at=moment,
+        result=attempt.result,
+        error=reclaimed_attempt_error(lease.holder),
+        metrics=attempt.metrics,
     )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
+def compensate_unlaunched_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    result: object | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle the executor's own CREATED prelaunch failure as CANCELLED+RECOVERED (#2369).
+
+    Third authorized RECOVERED writer (#232 P2d): only CREATED with
+    ``started_at is None`` and no prior ``cancellation_cause``. This is
+    compensation for work that never launched — not a death inference and not
+    a requested stop. RUNNING, already-terminal, launched (``started_at`` set),
+    or already-caused rows are refused so a race winner's cause is never
+    rewritten. Generic ``transition_attempt`` still must not accept
+    ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status is not AttemptStatus.CREATED:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); prelaunch compensation requires CREATED"
+        )
+    if attempt.started_at is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} after it started; "
+            "started_at marks a launched Attempt outside the prelaunch leaf"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot compensate Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result if result is None else result,
+        error=error,
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
+def recover_leaseless_orphaned_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle a lease-less active Attempt under explicit resume as CANCELLED+RECOVERED.
+
+    Dedicated orphan writer (#232 / ADR-082826-08f0): resume of the owning
+    record asserts process death for leaseless work that cannot outlive its
+    process. Live leases belong to ``reclaim_attempt``; prelaunch CREATED with
+    no ``started_at`` belongs to ``compensate_unlaunched_attempt``. Generic
+    ``transition_attempt`` still must not accept ``RECOVERED``.
+    """
+    moment = _now(at)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {attempt.status.value} Attempt "
+            f"({attempt.attempt_id!r}); terminal rows already have an outcome"
+        )
+    if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} in "
+            f"{attempt.status.value!r}; leaseless orphan recovery requires "
+            "CREATED or RUNNING"
+        )
+    if attempt.execution_lease is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that still holds a "
+            "lease; use reclaim_attempt after expiry"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result,
+        error=error or "orphaned physical Attempt recovered after process loss",
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
+
+
+#: Default ``error`` for an explicit owning-record orphan recovery. Shared with
+#: Graph resume so durable disposition tests recognise the artefact by text
+#: without inventing a second spelling of the same leaf (#2417 / #232 P3b).
+ORPHANED_ATTEMPT_ERROR = "orphaned physical Attempt recovered after process loss"
+
+
+def recover_orphaned_attempt(
+    attempt: Attempt,
+    *,
+    at: datetime | None = None,
+    error: str | None = None,
+) -> Attempt:
+    """Settle a leaseless active Attempt as CANCELLED+RECOVERED (#2417 / #232 P3b).
+
+    Second authorized RECOVERED writer: only CREATED/RUNNING with
+    ``execution_lease is None`` and no prior ``cancellation_cause``. The
+    owning-record resume assertion is the death proof — a sweep must never
+    call this leaf, and a still-leased Attempt is refused so live ownership
+    cannot be stolen. Generic ``transition_attempt`` still must not accept
+    ``RECOVERED``.
+    """
+    moment = _now(at)
+    status_label = getattr(attempt.status, "value", attempt.status)
+    if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {status_label} Attempt "
+            f"({attempt.attempt_id!r}) as an orphan; terminal rows already have an outcome"
+        )
+    if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
+        raise InvalidLifecycleTransition(
+            f"cannot recover a {status_label} Attempt "
+            f"({attempt.attempt_id!r}) as an orphan; only CREATED/RUNNING are active"
+        )
+    if attempt.execution_lease is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that still carries an "
+            "execution lease; leased death proof is reclaim_attempt, not orphan recovery"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot recover Attempt {attempt.attempt_id!r} that already carries "
+            f"cancellation_cause={attempt.cancellation_cause.value}"
+        )
+
+    settled = transition_attempt(
+        attempt,
+        RECLAIMED_ATTEMPT_STATUS,
+        at=moment,
+        result=attempt.result,
+        error=ORPHANED_ATTEMPT_ERROR if error is None else error,
+        metrics=attempt.metrics,
+    )
+    values = settled.model_dump(mode="python")
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    return Attempt.model_validate(values)
 
 
 #: What an open NodeRun settles to when its Run terminalizes (ADR-082426-a47f).
@@ -465,6 +678,62 @@ def settle_open_node_run(
     )
 
 
+def refuse_completion_under_terminal_run(run_status: RunStatus, attempt_id: str) -> None:
+    """Refuse a COMPLETED Attempt whose Run is already terminal (#1335).
+
+    The executor's durable Run fence (`_settle_provider_success`) reads the
+    Run and then writes the Attempt -- two awaits with a window between them
+    that a concurrent cancellation can fill: the Run lands CANCELLED, and the
+    stale success used to land as a COMPLETED row underneath it. The
+    Attempt-level transition table cannot see the parent Run, so every store
+    now re-reads the parent *inside the same write lock / transaction that
+    writes the Attempt* and calls this -- the atomicity `transition_run`
+    already gives its own cascade (ADR-082426-a47f).
+
+    Only COMPLETED is refused. FAILED and TIMED_OUT record physical outcomes
+    that stay true after the Run terminalized (a sibling failure, the run
+    watchdog), and CANCELLED is how a run-level cancel and crash reclamation
+    settle the Attempts they find -- refusing those would turn true records
+    into raised errors inside the very handlers unwinding a cancellation.
+    """
+    if run_status in TERMINAL_RUN_STATUSES:
+        raise InvalidLifecycleTransition(
+            f"cannot complete Attempt {attempt_id!r} under a terminal Run ({run_status.value})"
+        )
+
+
+def _refuse_generic_recovered_cause(cancellation_cause: CancellationCause | None) -> None:
+    """Generic transition may not stamp RECOVERED (#2421 / #232 P3c)."""
+    if cancellation_cause is CancellationCause.RECOVERED:
+        raise InvalidLifecycleTransition(
+            "generic transition_attempt cannot stamp RECOVERED; "
+            "use reclaim_attempt / compensate_unlaunched_attempt / recover_orphaned_attempt"
+        )
+    if cancellation_cause is not None and cancellation_cause is not CancellationCause.REQUESTED:
+        raise InvalidLifecycleTransition(
+            f"generic transition_attempt rejects cancellation_cause={cancellation_cause.value}"
+        )
+
+
+def _refuse_illegal_requested_stamp(
+    attempt: Attempt,
+    target: AttemptStatus,
+    cancellation_cause: CancellationCause | None,
+) -> None:
+    """REQUESTED is CANCELLED-only and never rewrites an existing cause."""
+    if cancellation_cause is None:
+        return
+    if target is not AttemptStatus.CANCELLED:
+        raise InvalidLifecycleTransition(
+            f"cancellation_cause requires target CANCELLED, not {target.value}"
+        )
+    if attempt.cancellation_cause is not None:
+        raise InvalidLifecycleTransition(
+            f"cannot rewrite cancellation_cause={attempt.cancellation_cause.value} "
+            f"on Attempt {attempt.attempt_id!r}"
+        )
+
+
 def transition_attempt(
     attempt: Attempt,
     target: AttemptStatus,
@@ -473,11 +742,20 @@ def transition_attempt(
     result: object | None = None,
     error: str | None = None,
     metrics: dict[str, object] | None = None,
+    cancellation_cause: CancellationCause | None = None,
 ) -> Attempt:
+    """Advance an Attempt's status; optionally stamp REQUESTED on CANCELLED.
+
+    Generic callers may pass only ``None`` or ``REQUESTED``. ``RECOVERED`` is
+    refused here — reclaim / compensate / orphan writers own that leaf (#2421 /
+    #232 P3c). An already-caused Attempt refuses a rewrite.
+    """
     if target not in ATTEMPT_TRANSITIONS[attempt.status]:
         raise InvalidLifecycleTransition(
             f"illegal transition: {attempt.status.value} -> {target.value}"
         )
+    _refuse_generic_recovered_cause(cancellation_cause)
+    _refuse_illegal_requested_stamp(attempt, target, cancellation_cause)
 
     timestamp = _now(at)
     values = attempt.model_dump(mode="python")
@@ -490,12 +768,18 @@ def transition_attempt(
         values["started_at"] = timestamp
     if target in TERMINAL_ATTEMPT_STATUSES:
         values["finished_at"] = timestamp
-    return Attempt.model_validate(values)
+    settled = Attempt.model_validate(values)
+    if cancellation_cause is CancellationCause.REQUESTED:
+        stamped = settled.model_dump(mode="python")
+        stamped["cancellation_cause"] = CancellationCause.REQUESTED
+        return Attempt.model_validate(stamped)
+    return settled
 
 
 __all__ = [
     "ATTEMPT_TRANSITIONS",
     "CASCADED_NODE_RUN_STATUS",
+    "ORPHANED_ATTEMPT_ERROR",
     "RECLAIMED_ATTEMPT_ERROR_PREFIX",
     "RECLAIMED_ATTEMPT_STATUS",
     "RUN_TRANSITIONS",
@@ -504,11 +788,15 @@ __all__ = [
     "UnearnedRunCompletion",
     "cascaded_node_run_error",
     "check_completion_is_earned",
+    "compensate_unlaunched_attempt",
     "is_reclaimed_attempt",
     "latest_node_runs",
     "lease_is_expired",
     "reclaim_attempt",
     "reclaimed_attempt_error",
+    "recover_leaseless_orphaned_attempt",
+    "recover_orphaned_attempt",
+    "refuse_completion_under_terminal_run",
     "renew_attempt_lease",
     "renewed_lease",
     "settle_open_node_run",

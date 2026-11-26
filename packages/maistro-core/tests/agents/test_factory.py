@@ -728,3 +728,80 @@ class TestTheBuiltinRow:
         identity alone would persist an empty soul."""
         row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "rendered", "rules")
         assert row["soul"] == "rendered"
+
+
+class TestGovernedLlmClientComposition:
+    def test_explicit_library_client_is_preserved_without_governed_composition(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+
+        llm = object()
+        assert _governed_llm_client(llm, None) is llm
+
+    def test_admitted_calls_compose_a_governed_client(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        calls = object()
+        client = _governed_llm_client(object(), calls)
+        assert isinstance(client, GovernedLLMClient)
+        assert client._calls is calls
+
+    def test_matching_governed_client_is_shared_without_reconstruction(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        calls = object()
+        client = GovernedLLMClient(calls)
+        assert _governed_llm_client(client, calls) is client
+
+    def test_conflicting_governed_authorities_refuse_composition(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        with pytest.raises(ConfigError, match="different admitted model calls"):
+            _governed_llm_client(GovernedLLMClient(object()), object())
+
+
+class TestCreateAgentsGovernedPath:
+    async def test_configured_admitted_calls_wrap_every_agent(self, tmp_path: Path) -> None:
+        """An explicit admitted-call authority replaces the bare injected client."""
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+        _write_agent_dir(tmp_path, "scribe")
+        calls = object()
+        kwargs = _create_agents_kwargs(tmp_path, llm=object(), admitted_calls=calls)
+
+        agents = await create_agents(**kwargs)
+
+        assert isinstance(agents["scribe"]._llm, GovernedLLMClient)
+        assert agents["scribe"]._llm._calls is calls
+
+
+class TestCreateAgentsAuditWiring:
+    """#847: the canonical audit trail reaches every constructed Agent."""
+
+    @pytest.fixture(autouse=True)
+    def _preamble(self, tmp_path: Path) -> None:
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+
+    async def test_audit_log_passed_to_every_agent(self, tmp_path: Path) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        audit_log = InMemoryAuditLog()
+        kwargs = _create_agents_kwargs(tmp_path, audit_log=audit_log)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is audit_log for agent in agents.values())
+
+    async def test_audit_log_defaults_to_none(self, tmp_path: Path) -> None:
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        kwargs = _create_agents_kwargs(tmp_path)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is None for agent in agents.values())

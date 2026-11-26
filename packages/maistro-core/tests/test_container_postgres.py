@@ -38,11 +38,18 @@ async def _fresh_pool():
     loop that created it, so the second test to ask for one gets the first
     test's connections on a loop that has closed, and asyncpg answers
     "another operation is in progress".
+
+    `create_container` also binds the container's PostgreSQL effect context
+    globally; closing the pool without unbinding leaves autouse fixtures
+    holding a closed pool on the next test.
     """
+    from maistro.capabilities.effect_context import default_effect_context
     from maistro.persistence import close_pool
 
+    default_effect_context.cache_clear()
     await close_pool()
     yield
+    default_effect_context.cache_clear()
     await close_pool()
 
 
@@ -128,17 +135,26 @@ def test_no_scheme_in_the_tuple_is_a_prefix_of_another() -> None:
 # ── refusals, which need no server ────────────────────────────────
 
 
-async def test_an_unreachable_server_is_an_error_not_a_fallback() -> None:
-    """The whole point of #122: configuring a database that cannot be reached
-    must never quietly become in-memory stores."""
-    # Port 1 is reserved and never listening.
-    config = _config("postgresql://maistro:maistro@127.0.0.1:1/nope")
+async def test_an_unreachable_server_is_an_error_not_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PostgreSQL connection failure must never quietly select in-memory stores.
 
-    with pytest.raises(Exception) as excinfo:
+    This is a unit assertion about the Container's exception boundary, not a
+    probe of the runner's network routing. Connecting to the nominally closed
+    port 1 blocked for asyncpg's 60-second default on runners that silently
+    drop localhost traffic, exceeding the coverage producer's 30-second test
+    timeout before it could exercise that boundary.
+    """
+
+    async def unreachable_pool(_dsn: str) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("maistro.persistence.get_pool", unreachable_pool)
+    config = _config("postgresql://maistro:maistro@db.example/nope")
+
+    with pytest.raises(ConfigError):
         await create_container(config)
-
-    # Whatever asyncpg raises, it must not be swallowed into a working container.
-    assert excinfo.value is not None
 
 
 @requires_postgres
@@ -264,6 +280,10 @@ async def test_a_lockout_imposed_through_the_gate_survives_a_restart() -> None:
 async def test_sqlite_is_still_selected_by_a_sqlite_url() -> None:
     """The new branch must not have captured the old one."""
     container = await create_container(_config("sqlite://"))
-
-    assert container.pg_pool is None
-    assert container.db_pool is not None
+    try:
+        assert container.pg_pool is None
+        assert container.db_pool is not None
+    finally:
+        # SQLite owns non-daemon worker threads, even in the PostgreSQL job.
+        # The pool fixture closes only asyncpg pools; it cannot release these.
+        await container.aclose()

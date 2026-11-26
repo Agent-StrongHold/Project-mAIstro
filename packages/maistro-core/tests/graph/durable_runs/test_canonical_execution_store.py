@@ -23,13 +23,23 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import (
     AcceptedNodeOutcome,
+    Attempt,
     AttemptResult,
     AttemptStatus,
     InMemoryRunStore,
+    NodeRun,
     RunStatus,
 )
-from maistro.runs.lifecycle import transition_node_run
-from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
+from maistro.runs.lifecycle import InvalidLifecycleTransition, transition_node_run, transition_run
+from maistro.runs.model import CancellationCause, GraphSnapshot, Run
+from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.store import (
+    ActiveAttemptExists,
+    AttemptNotFound,
+    RunIntegrityError,
+    StaleExecutionFence,
+)
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _bound_store() -> tuple[
@@ -47,7 +57,7 @@ async def _bound_store() -> tuple[
         name="Attempt boundary",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await run_store.create_run(graph)
+    run = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await run_store.transition_run(run.run_id, RunStatus.QUEUED)
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -198,6 +208,63 @@ async def test_more_than_one_unmirrored_attempt_is_a_disagreement() -> None:
         await execution_store.create_attempt(node_run_id)
 
 
+async def test_compensate_unlaunched_mirrors_cancelled_recovered_onto_the_projection() -> None:
+    """P2d: Graph execution store must expose the CREATED prelaunch leaf so
+    AttemptExecutionService can accept DurableRunExecutionStore as its store."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="graph launch boom",
+    )
+
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "graph launch boom"
+
+
+async def test_recover_orphaned_mirrors_cancelled_recovered_onto_the_projection() -> None:
+    """P3b: Graph execution store exposes the leaseless orphan leaf (#2417)."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+    assert attempt.execution_lease is None
+    running = await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    settled = await execution_store.recover_orphaned_attempt(
+        running.attempt_id, owning_run_id=record.run_id, error="graph orphan boom"
+    )
+
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "graph orphan boom"
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "graph orphan boom"
+
+
+async def test_recover_orphaned_refuses_wrong_owning_run() -> None:
+    _store, _run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+
+    with pytest.raises(RunIntegrityError, match="owning_run_id"):
+        await execution_store.recover_orphaned_attempt(
+            attempt.attempt_id, owning_run_id="not-this-run"
+        )
+
+
 async def test_reclaim_leaves_alone_an_attempt_whose_holder_renewed() -> None:
     """The projection can be stale by exactly one renewal. Cancelling on that
     evidence would terminalize demonstrably live work, which is the one thing
@@ -244,19 +311,109 @@ async def test_reclaim_reports_an_attempt_something_else_already_settled() -> No
     persisted = await store.get(record.run_id)
     assert persisted is not None
     assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+
+
+async def test_graph_reclaim_persists_recovered_cause_on_canonical_row() -> None:
+    """P3a: Graph reclaim must not drop RECOVERED via generic transition_attempt."""
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=1)
+    )
+    assert attempt.execution_lease is not None
+    after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+
+    reclaimed = await execution_store.reclaim_expired_attempts(now=after)
+
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.status is AttemptStatus.CANCELLED
+    assert canonical.cancellation_cause is CancellationCause.RECOVERED
+    assert canonical.model_dump(mode="json")["cancellation_cause"] == "recovered"
+
+
+async def test_graph_reclaim_does_not_relabel_a_requested_cancellation() -> None:
+    """A requested CANCELLED winner must keep unknown/requested cause, not RECOVERED."""
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await run_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    await run_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="user cancelled",
+    )
+    after = attempt.execution_lease.expires_at + timedelta(days=1)
+
+    reclaimed = await execution_store.reclaim_expired_attempts(now=after)
+
+    assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
+    canonical = await run_store.get_attempt(attempt.attempt_id)
+    assert canonical is not None
+    assert canonical.status is AttemptStatus.CANCELLED
+    assert canonical.cancellation_cause is None
+    assert canonical.error == "user cancelled"
 
 
 class _FenceRaceRunStore(InMemoryRunStore):
-    """Settles the Attempt and then reports the fence, like a lost race does."""
+    """Another recovery wins the exact-ID reclaim; this caller loses the ack."""
 
     race_once = False
 
-    async def transition_attempt(self, attempt_id: str, target: Any, **kwargs: Any) -> Any:
+    async def reclaim_expired_attempt(self, attempt_id: str, *, now: Any = None) -> Any:
         if self.race_once:
             self.race_once = False
-            await super().transition_attempt(attempt_id, target, **kwargs)
-            raise StaleExecutionFence("another recovery settled this Attempt first")
-        return await super().transition_attempt(attempt_id, target, **kwargs)
+            await super().reclaim_expired_attempt(attempt_id, now=now)
+            return None
+        return await super().reclaim_expired_attempt(attempt_id, now=now)
+
+
+class _VanishingAttemptRunStore(InMemoryRunStore):
+    """Reports the canonical row gone at reclaim time, like a hard delete would.
+
+    The exact-ID seam's documented contract is that a missing id raises
+    `AttemptNotFound` — never a silent `None`. The Graph adapter must translate
+    that into `RunIntegrityError`: a projection referencing an identity the
+    canonical store cannot settle is corruption, not an ordinary race where a
+    concurrent writer won.
+    """
+
+    async def reclaim_expired_attempt(self, attempt_id: str, *, now: Any = None) -> Any:
+        raise AttemptNotFound(attempt_id)
+
+
+async def test_a_canonical_attempt_missing_at_reclaim_is_an_integrity_error() -> None:
+    """`AttemptNotFound` from the exact-ID seam becomes `RunIntegrityError`.
+
+    The projection's doomed list is derived from the canonical record, so the
+    only way the seam can report the row missing mid-reclaim is a concurrent
+    hard delete — a state the recovery sweep must surface, not absorb into an
+    empty reclaim result.
+    """
+    store, _run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=1)
+    )
+    assert attempt.execution_lease is not None
+    after = attempt.execution_lease.expires_at + timedelta(seconds=1)
+
+    vanishing = _VanishingAttemptRunStore(project_store=InMemoryProjectScopeStore())
+    rewired = DurableRunExecutionStore(store, run_id=record.run_id, run_store=vanishing)
+
+    with pytest.raises(RunIntegrityError, match="disappeared during reclaim"):
+        await rewired.reclaim_expired_attempts(now=after)
 
 
 async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -> None:
@@ -276,7 +433,7 @@ async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -
         name="Attempt boundary",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await run_store.create_run(graph)
+    run = await run_store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     await run_store.transition_run(run.run_id, RunStatus.QUEUED)
     run = await run_store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await run_store.create_node_run(run.run_id, node_id="node-1")
@@ -302,6 +459,7 @@ async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -
 
     assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
     assert reclaimed[0].status is AttemptStatus.CANCELLED
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
 
 
 # --- run and node-run transitions through the canonical store --------------
@@ -426,3 +584,537 @@ async def test_a_record_that_loses_its_node_run_under_the_transition_is_an_error
 
     with pytest.raises(RunIntegrityError, match="does not exist"):
         await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
+
+
+# ── legacy evidence migration across the delegated transition (#1334) ──
+
+
+async def _complete_one_attempt(
+    execution_store: DurableRunExecutionStore, node_run_id: str
+) -> tuple[Attempt, Attempt]:
+    """Drive one Attempt to physical completion through the delegated path."""
+    attempt = await execution_store.create_attempt(node_run_id, executor_id="graph.node")
+    await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await execution_store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+    return attempt, terminal
+
+
+async def _load_legacy_node_shape(
+    store: InMemoryDurableRunStore,
+    run_store: InMemoryRunStore,
+    record: DurableRunRecord,
+    node_run_id: str,
+    terminal: Attempt,
+) -> NodeRun:
+    """Rewind one completed NodeRun to its pre-acceptance shape, in both stores.
+
+    Writes after acceptance became structural can no longer produce a
+    completed row without evidence, so the strip below is the historical
+    repair fixture — the same one ``tests/runs/test_spine_conformance.py``
+    loads against the store directly — mirrored into the canonical row and
+    the record's projection alike.
+    """
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    completed = await run_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=outcome.result,
+        accepted_outcome=outcome,
+    )
+    legacy = completed.model_copy(update={"accepted_outcome": None}, deep=True)
+    run_store._node_runs[node_run_id] = legacy
+    current = await store.get(record.run_id)
+    assert current is not None
+    await store.update(
+        current.model_copy(
+            update={
+                "node_runs": tuple(
+                    legacy if item.node_run_id == node_run_id else item
+                    for item in current.node_runs
+                ),
+                "version": current.version + 1,
+            }
+        )
+    )
+    return legacy
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_reconciling_a_legacy_completed_node_run_installs_evidence_in_both_stores() -> None:
+    """#1334 regression: the adapter skipped the canonical write whenever the
+    row already held the target status, so a canonical-backed reconciler could
+    not perform the COMPLETED→COMPLETED legacy migration — the accepted
+    outcome vanished from the canonical row, and the projection was then
+    overwritten with that same pre-migration row."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+
+    settled = await AttemptLifecycleReconciler(execution_store).reconcile(terminal)
+
+    physical = AttemptResult.from_attempt(terminal)
+    assert settled.status is RunStatus.COMPLETED
+    assert settled.accepted_outcome is not None
+    assert settled.accepted_outcome.attempt_result == physical
+    assert settled.finished_at == legacy.finished_at
+    assert settled.result == legacy.result
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome is not None
+    assert canonical.accepted_outcome.attempt_result == physical
+    assert canonical.finished_at == legacy.finished_at
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome is not None
+    assert mirrored.accepted_outcome.attempt_result == physical
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_attaching_legacy_evidence_reaches_the_store() -> None:
+    """The delegated transition itself, without the reconciler around it: a
+    COMPLETED→COMPLETED call that carries an outcome the canonical row lacks
+    must still be routed to the store that owns the row."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+
+    migrated = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=legacy.result,
+        error=legacy.error,
+        accepted_outcome=outcome,
+    )
+
+    assert migrated.accepted_outcome == outcome
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome == outcome
+    assert canonical.finished_at == legacy.finished_at
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome == outcome
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_with_already_attached_evidence_stays_a_no_op() -> None:
+    """Replays stay no-ops: the store's validator refuses completed→completed
+    outright, so routing a call whose evidence the row already holds would
+    turn every idempotent replay into a failure. The acceptance clock is what
+    a replay cannot reproduce, so it must not count as disagreement."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    completed = await run_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=outcome,
+    )
+    current = await store.get(record.run_id)
+    assert current is not None
+    await store.update(
+        current.model_copy(
+            update={
+                "node_runs": tuple(
+                    completed if item.node_run_id == node_run_id else item
+                    for item in current.node_runs
+                ),
+                "version": current.version + 1,
+            }
+        )
+    )
+    replay = outcome.model_copy(update={"accepted_at": outcome.accepted_at + timedelta(seconds=1)})
+
+    replayed = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=replay,
+    )
+
+    assert replayed.accepted_outcome is not None
+    assert replayed.accepted_outcome.accepted_at == outcome.accepted_at
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome == outcome
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_same_status_transition_with_conflicting_evidence_surfaces_the_disagreement() -> (
+    None
+):
+    """The store's migration validator, not the adapter, adjudicates legacy
+    evidence: an outcome that disagrees with what the row recorded raises,
+    and neither store is left half-written."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    _attempt, terminal = await _complete_one_attempt(execution_store, node_run_id)
+    legacy = await _load_legacy_node_shape(store, run_store, record, node_run_id, terminal)
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=terminal.result,
+    )
+    conflicting = outcome.model_copy(update={"result": {"different": True}})
+
+    with pytest.raises(InvalidLifecycleTransition, match="legacy completed NodeRun"):
+        await execution_store.transition_node_run(
+            node_run_id,
+            RunStatus.COMPLETED,
+            result=legacy.result,
+            error=legacy.error,
+            accepted_outcome=conflicting,
+        )
+
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.accepted_outcome is None
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None and mirrored.accepted_outcome is None
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-2")
+async def test_a_cancellation_replay_over_the_cascade_settled_row_converges() -> None:
+    """A same-status CANCELLED replay carrying a different error text is a no-op.
+
+    `RunExecutionService.cancel_run` fences the Run through the canonical
+    store, whose cascade settles every open NodeRun with the cascade's own
+    error narrative. The walk's registered executor then replays the
+    cancellation through this adapter (`_cancel_settled_node_runs`) over a
+    projection that still reads running and with the caller's error text. The
+    store refuses to rewrite a closed Run's history -- so routing the replay
+    there cannot repair anything, only abort a cancellation that already
+    happened (#1332's end-to-end regression drives exactly this path).
+    """
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(node_run_id, executor_id="graph.node")
+    await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    # The route's fence: the raw canonical store terminalizes the Run and the
+    # cascade settles the node. The durable record is a separate store and
+    # stays stale until the replay converges it.
+    await run_store.transition_run(record.run_id, RunStatus.CANCELLED, error="execution cancelled")
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None and canonical.status is RunStatus.CANCELLED
+    assert canonical.error == "cancelled because its Run terminalized as cancelled"
+    stale = await execution_store.get_node_run(node_run_id)
+    assert stale is not None and stale.status is RunStatus.RUNNING
+
+    replayed = await execution_store.transition_node_run(
+        node_run_id, RunStatus.CANCELLED, error="execution cancelled"
+    )
+
+    # Converged, not raised: canonical truth wins, including its narrative.
+    assert replayed.status is RunStatus.CANCELLED
+    assert replayed.error == canonical.error
+    reread = await run_store.get_node_run(node_run_id)
+    assert reread is not None and reread.error == canonical.error
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    projected = next(item for item in persisted.node_runs if item.node_run_id == node_run_id)
+    assert projected.status is RunStatus.CANCELLED
+    assert projected.error == canonical.error
+
+
+# --- P2d CI repair: the compensation leaf's untested halves -----------------
+
+
+async def _local_only_store() -> tuple[
+    InMemoryDurableRunStore, DurableRunExecutionStore, DurableRunRecord, str
+]:
+    """The graph-store shape with no canonical RunStore wired.
+
+    Graph execution can run without a canonical store; `compensate_unlaunched_attempt`
+    must then apply the same lifecycle leaf under the record's own run lock,
+    or a prelaunch failure in that mode would strand a CREATED Attempt forever.
+    """
+    graph = Graph(
+        workspace_id="ws-local",
+        project_id="project-local",
+        name="Local compensate",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    run = transition_run(run, RunStatus.QUEUED)
+    run = transition_run(run, RunStatus.RUNNING)
+    node_run = NodeRun(run_id=run.run_id, node_id="node-1", ordinal=1)
+    node_run = transition_node_run(node_run, RunStatus.QUEUED)
+    node_run = transition_node_run(node_run, RunStatus.RUNNING)
+    record = DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(run_id=run.run_id, active_node_ids=("node-1",)),
+        node_runs=(node_run,),
+        version=1,
+    )
+    store = InMemoryDurableRunStore()
+    await store.create(record)
+    return (
+        store,
+        DurableRunExecutionStore(store, run_id=record.run_id),
+        record,
+        node_run.node_run_id,
+    )
+
+
+async def test_compensate_unlaunched_in_local_mode_commits_cancelled_recovered() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    settled = await execution_store.compensate_unlaunched_attempt(
+        attempt.attempt_id,
+        fencing_token=attempt.execution_lease.fencing_token,
+        error="local launch boom",
+    )
+
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "local launch boom"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "local launch boom"
+
+
+async def test_recover_orphaned_in_local_mode_commits_cancelled_recovered() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+    assert attempt.execution_lease is None
+
+    settled = await execution_store.recover_orphaned_attempt(
+        attempt.attempt_id, owning_run_id=record.run_id, error="local orphan boom"
+    )
+
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "local orphan boom"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert persisted.attempts[0].error == "local orphan boom"
+
+
+async def test_recover_orphaned_in_local_mode_refuses_wrong_owning_run() -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(node_run_id)
+
+    with pytest.raises(RunIntegrityError, match="owning_run_id"):
+        await execution_store.recover_orphaned_attempt(
+            attempt.attempt_id, owning_run_id="wrong-owner"
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED
+    assert persisted.attempts[0].cancellation_cause is None
+
+
+async def test_recover_orphaned_in_local_mode_skips_sibling_attempts() -> None:
+    """Multi-attempt records must walk past non-target rows (continue branch)."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    first = await execution_store.create_attempt(node_run_id)
+    await execution_store.transition_attempt(
+        first.attempt_id, AttemptStatus.CANCELLED, error="superseded"
+    )
+    second = await execution_store.create_attempt(node_run_id)
+    assert second.execution_lease is None
+
+    settled = await execution_store.recover_orphaned_attempt(
+        second.attempt_id, owning_run_id=record.run_id, error="sibling orphan"
+    )
+
+    assert settled.attempt_id == second.attempt_id
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    by_id = {attempt.attempt_id: attempt for attempt in persisted.attempts}
+    assert by_id[first.attempt_id].status is AttemptStatus.CANCELLED
+    assert by_id[first.attempt_id].cancellation_cause is None
+    assert by_id[second.attempt_id].cancellation_cause is CancellationCause.RECOVERED
+
+
+async def test_compensate_unlaunched_in_local_mode_refuses_a_stale_fence() -> None:
+    """The record's own lock does not excuse a stale fencing token."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+
+    with pytest.raises(StaleExecutionFence):
+        await execution_store.compensate_unlaunched_attempt(
+            attempt.attempt_id, fencing_token="not-the-token", error="x"
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.CREATED
+    assert persisted.attempts[0].cancellation_cause is None
+    assert persisted.attempts[0].finished_at is None
+
+
+async def test_compensate_unlaunched_in_local_mode_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.compensate_unlaunched_attempt(
+            "missing", fencing_token="tok", error="x"
+        )
+
+
+# --- P4b: leaseless recover + recovered disposition on the durable adapter ---
+
+
+async def test_recover_leaseless_skips_unrelated_attempts_then_settles_target() -> None:
+    """The mutate loop must `continue` past non-matching rows before settling."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    first = await execution_store.create_attempt(node_run_id, executor_id="prior")
+    cancelled = await execution_store.transition_attempt(first.attempt_id, AttemptStatus.CANCELLED)
+    assert cancelled.status is AttemptStatus.CANCELLED
+    orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
+    assert orphan.execution_lease is None
+
+    settled = await execution_store.recover_leaseless_orphaned_attempt(
+        orphan.attempt_id, error="process lost"
+    )
+
+    assert settled.attempt_id == orphan.attempt_id
+    assert settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED
+    assert settled.error == "process lost"
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert [a.attempt_id for a in persisted.attempts] == [first.attempt_id, orphan.attempt_id]
+    assert persisted.attempts[0].status is AttemptStatus.CANCELLED
+    assert persisted.attempts[0].cancellation_cause is None
+    assert persisted.attempts[1].cancellation_cause is CancellationCause.RECOVERED
+
+
+async def test_recover_leaseless_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.recover_leaseless_orphaned_attempt("no-such-attempt")
+
+
+async def test_local_recovered_disposition_missing_attempt_raises() -> None:
+    _store, execution_store, _record, _node_run_id = await _local_only_store()
+
+    with pytest.raises(AttemptNotFound):
+        await execution_store.apply_recovered_attempt_disposition("no-such-attempt")
+
+
+async def test_local_recovered_disposition_missing_node_run_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, execution_store, record, node_run_id = await _local_only_store()
+    orphan = await execution_store.create_attempt(node_run_id, executor_id="orphan")
+    recovered = await execution_store.recover_leaseless_orphaned_attempt(orphan.attempt_id)
+    assert recovered.cancellation_cause is CancellationCause.RECOVERED
+
+    current = await store.get(record.run_id)
+    assert current is not None
+    # DurableRunRecord refuses orphan Attempts on validate; construct a
+    # detached view so the disposition guard (not the record shape) fires.
+    detached = recovered.model_copy(update={"node_run_id": "missing-node-run"})
+    broken = DurableRunRecord.model_construct(
+        run=current.run,
+        graph_state=current.graph_state,
+        node_runs=current.node_runs,
+        attempts=(detached,),
+        version=current.version,
+    )
+
+    async def _broken_record() -> DurableRunRecord:
+        return broken
+
+    monkeypatch.setattr(execution_store, "_get_record", _broken_record)
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await execution_store.apply_recovered_attempt_disposition(detached.attempt_id)
+
+
+async def test_bound_recovered_disposition_mirrors_canonical_parking() -> None:
+    """Wired RunStore path: canonical disposition write + durable Graph mirror."""
+    store, run_store, execution_store, record, node_run_id = await _bound_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-A", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+    reclaimed = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+
+    parked_node, parked_run = await execution_store.apply_recovered_attempt_disposition(
+        reclaimed[0].attempt_id
+    )
+
+    assert parked_node.status is RunStatus.WAITING
+    assert parked_run.status is RunStatus.WAITING
+    canonical_node = await run_store.get_node_run(node_run_id)
+    canonical_run = await run_store.get_run(record.run_id)
+    assert canonical_node is not None and canonical_node.status is RunStatus.WAITING
+    assert canonical_run is not None and canonical_run.status is RunStatus.WAITING
+    durable = await store.get(record.run_id)
+    assert durable is not None
+    assert durable.node_runs[0].status is RunStatus.WAITING
+    assert durable.run.status is RunStatus.WAITING
+
+
+async def test_local_recovered_disposition_happy_path_parks_record() -> None:
+    """No-RunStore path: _apply_local_recovered_disposition parks NodeRun+Run in-record."""
+    store, execution_store, record, node_run_id = await _local_only_store()
+    attempt = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-L", lease_ttl=timedelta(seconds=30)
+    )
+    assert attempt.execution_lease is not None
+    await execution_store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    lease = attempt.execution_lease
+    assert lease.expires_at is not None
+    reclaimed = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED
+
+    parked_node, parked_run = await execution_store.apply_recovered_attempt_disposition(
+        reclaimed[0].attempt_id
+    )
+
+    assert parked_node.status is RunStatus.WAITING
+    assert parked_run.status is RunStatus.WAITING
+    durable = await store.get(record.run_id)
+    assert durable is not None
+    assert durable.node_runs[0].status is RunStatus.WAITING
+    assert durable.run.status is RunStatus.WAITING

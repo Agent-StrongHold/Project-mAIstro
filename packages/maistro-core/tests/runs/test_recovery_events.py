@@ -15,9 +15,11 @@ from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.recovery_events import (
     RECOVERY_EVENT_TYPE,
+    CanonicalEventStoreSink,
     CanonicalRecoveryEventSink,
     RecoveryDispositionEvent,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class _RecordingCanonicalSink:
@@ -51,7 +53,9 @@ async def _running_node() -> tuple[InMemoryRunStore, str, str]:
         name="one step",
         nodes=[Node(node_id="step", node_type="agent")],
     )
-    run = await store.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await store.create_run(
+        graph, initial_status=RunStatus.QUEUED, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     run = await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id="step")
     await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
@@ -66,13 +70,22 @@ def _canonical_recovery_sink(
     return CanonicalRecoveryEventSink(store, recorded), recorded
 
 
-async def _cancelled_attempt(store: InMemoryRunStore, node_run_id: str) -> Any:
+async def _cancelled_attempt(
+    store: InMemoryRunStore,
+    node_run_id: str,
+    *,
+    cause: CancellationCause = CancellationCause.RECOVERED,
+) -> Any:
+    """CANCELLED with a typed cause (#232 P4b refuses unknown)."""
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
-    return await store.transition_attempt(
+    cancelled = await store.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.CANCELLED,
         error="orphaned physical Attempt recovered after process loss",
     )
+    typed = cancelled.model_copy(update={"cancellation_cause": cause})
+    store._attempts[cancelled.attempt_id] = typed
+    return typed
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
@@ -104,7 +117,7 @@ async def test_a_recovered_cancellation_says_so_on_the_canonical_event_stream() 
 @pytest.mark.ac("ADR-082826-08f0/AC-7")
 async def test_a_requested_cancellation_is_a_different_disposition() -> None:
     store, _run_id, node_run_id = await _running_node()
-    attempt = await _cancelled_attempt(store, node_run_id)
+    attempt = await _cancelled_attempt(store, node_run_id, cause=CancellationCause.REQUESTED)
     sink, recorded = _canonical_recovery_sink(store)
 
     await AttemptLifecycleReconciler(store, events=sink).reconcile(
@@ -218,3 +231,71 @@ async def test_a_failed_attempt_parks_and_says_it_parked() -> None:
     assert recorded.events[0].payload["disposition"] == "parked"
     assert recorded.events[0].payload["attempt_status"] == AttemptStatus.FAILED.value
     assert recorded.events[0].payload["error"] == "node raised"
+
+
+class _RecordingEventStore:
+    """Records EventEnvelope append operations."""
+
+    def __init__(self) -> None:
+        self.events: list[EventEnvelope] = []
+
+    async def append(self, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        return event
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-7")
+async def test_canonical_event_store_sink_appends_to_store() -> None:
+    """CanonicalEventStoreSink forwards recovery events to the wrapped EventStore."""
+    recorded = _RecordingEventStore()
+    sink = CanonicalEventStoreSink(recorded)
+
+    envelope = EventEnvelope(
+        type=RECOVERY_EVENT_TYPE,
+        event_id="test-event-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        run_id="run-1",
+        node_run_id="node-1",
+        attempt_id="attempt-1",
+        correlation_id="run-1",
+        source="recovery-test",
+        payload={"disposition": "parked", "error": "worker exited"},
+    )
+    result = await sink.emit(envelope)
+
+    assert len(recorded.events) == 1
+    assert recorded.events[0] is envelope
+    assert result is envelope
+    assert recorded.events[0].type == RECOVERY_EVENT_TYPE
+    assert recorded.events[0].run_id == "run-1"
+    assert recorded.events[0].node_run_id == "node-1"
+    assert recorded.events[0].attempt_id == "attempt-1"
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-7")
+async def test_canonical_event_store_sink_returns_appended_envelope() -> None:
+    """CanonicalEventStoreSink returns the EventEnvelope from the store."""
+    recorded = _RecordingEventStore()
+    sink = CanonicalEventStoreSink(recorded)
+
+    envelope = EventEnvelope(
+        type=RECOVERY_EVENT_TYPE,
+        event_id="test-event-2",
+        workspace_id="ws-2",
+        project_id="project-2",
+        run_id="run-2",
+        node_run_id="node-2",
+        attempt_id="attempt-2",
+        correlation_id="run-2",
+        source="recovery-test",
+        payload={"disposition": "accepted"},
+    )
+    result = await sink.emit(envelope)
+
+    assert result is envelope
+    assert result.type == RECOVERY_EVENT_TYPE
+    assert result.run_id == "run-2"
+    assert result.payload["disposition"] == "accepted"
+    # The same envelope instance is returned.
+    assert result is recorded.events[0]

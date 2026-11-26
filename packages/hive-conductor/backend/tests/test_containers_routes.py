@@ -520,13 +520,50 @@ def test_get_container_logs_socket_present_other_error(admin_client: Any, monkey
 # --------------------------------------------------------------------------- #
 
 
-def test_build_container(admin_client: Any) -> None:
+def test_build_container_is_explicitly_unsupported(admin_client: Any) -> None:
+    """No build is wired; the route refuses instead of faking one (#389)."""
     r = admin_client.post("/v1/containers/build", json={"name": "x", "dockerfile": "FROM x"})
-    assert r.status_code == 200
-    assert r.json() == {"status": "building", "log": "Building..."}
+    assert r.status_code == 501
+    assert "not implemented" in r.json()["detail"]
 
 
-def test_suggest_dockerfile(admin_client: Any) -> None:
+def test_suggest_dockerfile_is_explicitly_unsupported(admin_client: Any) -> None:
     r = admin_client.post("/v1/containers/suggest", json={"description": "a python app"})
-    assert r.status_code == 200
-    assert "FROM python" in r.json()["dockerfile"]
+    assert r.status_code == 501
+
+
+@pytest.mark.parametrize(
+    ("path", "json_body"),
+    [
+        ("/v1/containers/build", {"name": "img", "dockerfile": "FROM python:3.12-slim"}),
+        ("/v1/containers/suggest", {"description": "a python app"}),
+    ],
+)
+def test_unsupported_containers_routes_refuse_even_with_a_reachable_backend(
+    admin_client: Any, monkeypatch, path: str, json_body: dict
+) -> None:
+    """The 501 is a property of the surface, not of backend availability (#382).
+
+    The two tests above run with no Docker socket, so they cannot distinguish
+    "refuses because unimplemented" from "refuses because unreachable". This
+    test makes the backend fully reachable (`_socket_present`) and records
+    every Engine API call the route attempts: a refusal must issue none, so no
+    build input can ever reach the daemon and no success-shaped payload (no
+    status, artifact, or digest) can leak out. If a build path is ever
+    reintroduced without its governed executor, this fails on the request the
+    route can no longer avoid making.
+    """
+    _socket_present(monkeypatch)
+    attempted: list[tuple[str, str]] = []
+
+    def handler(method: str, url: str) -> httpx.Response:
+        attempted.append((method, url))
+        return httpx.Response(200, json={})
+
+    _patch_client(monkeypatch, handler)
+    r = admin_client.post(path, json=json_body)
+    assert r.status_code == 501
+    assert r.json()["detail"]
+    assert attempted == [], f"{path} reached the Docker Engine API: {attempted}"
+    # A refusal carries only its reason: nothing success-shaped alongside it.
+    assert set(r.json()) == {"detail"}

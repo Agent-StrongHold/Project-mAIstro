@@ -29,7 +29,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from services.authorization import principal_has_permission
 from services.hitl_authorization import (
     HITL_ANSWER,
     HITL_CANCEL,
@@ -38,30 +39,40 @@ from services.hitl_authorization import (
     authorize_project,
     authorized_project_ids,
 )
+from services.request_principal import request_principal, require_actor_id, require_principal
 from services.workspace_authority import (
     hitl_membership_mutation_lock,
     is_member,
     list_workspace_ids_for_user,
 )
 
-from maistro.graph.durable_runs import HitlAuthorization, cursor_time, expire_hitl_pauses
+from maistro.capabilities.approval_store import ApprovalStatus, DurableApproval
+from maistro.graph.durable_runs import (
+    HitlAuthorization,
+    HitlDeadlineElapsed,
+    expire_hitl_pauses,
+    pending_hitl_node_ids,
+    pending_hitl_records,
+)
+from maistro.graph.durable_runs.stores import require_answerable_fence
+from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL
+from maistro.identity import Principal
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
 
 router = APIRouter(tags=["hitl"])
 
-#: The pause kind the durable executor stamps for a human pause, as opposed to
-#: a machine wait. `graph_state.metadata["pauses"]` carries it per node, which
-#: is why this listing needs no node-registry lookup: the pause entry declares
-#: what it is.
-_HUMAN_PAUSE_KIND = "hitl"
-
 #: A responder must not be able to name the execution state of the node it is
 #: answering, so the store stamps the real pause under this key *after* the
 #: caller's own keys. Rejected on the way in as well, so a forged value never
 #: reaches the scan budget or the store.
 _RESERVED_ANSWER_KEY = "_pause"
+
+#: Control fields for the durable-approval bridge (#55 / #1192). Not graph
+#: payload — stripped before ``submit_hitl_answer`` so a stale UI cannot stamp
+#: execution state through them.
+_APPROVAL_CONTROL_KEYS = frozenset({"expected_approval_request_id"})
 
 
 class PendingHumanWork(BaseModel):
@@ -80,7 +91,18 @@ class PendingHumanWork(BaseModel):
 
 
 class HumanAnswer(BaseModel):
+    """Answer body for a paused node.
+
+    Ordinary human pauses accept free-form extras. Capability-approval pauses
+    (``awaiting_human_approval``) additionally require a strict boolean
+    ``approved`` and ``expected_approval_request_id`` matching the
+    server-stamped pause receipt (#55 / #1192).
+    """
+
     model_config = ConfigDict(extra="allow")
+
+    approved: StrictBool | None = None
+    expected_approval_request_id: str | None = None
 
 
 def _store() -> Any:
@@ -103,11 +125,23 @@ def _store() -> Any:
 
 
 def _request_user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
+    return require_actor_id(request)
+
+
+def _node_pause(record: Any, node_id: str) -> Mapping[str, Any] | None:
+    pauses = record.graph_state.metadata.get("pauses")
+    if not isinstance(pauses, Mapping):
+        return None
+    pause = pauses.get(node_id)
+    return pause if isinstance(pause, Mapping) else None
+
+
+def _node_pause_metadata(record: Any, node_id: str) -> Mapping[str, Any] | None:
+    pause = _node_pause(record, node_id)
+    if pause is None:
+        return None
+    metadata = pause.get("metadata")
+    return metadata if isinstance(metadata, Mapping) else None
 
 
 def _intended_reviewer(record: Any, node_id: str) -> str | None:
@@ -117,10 +151,8 @@ def _intended_reviewer(record: Any, node_id: str) -> str | None:
     graph records an exact reviewer/approver, mutation must be bound to that
     principal rather than treating Project authority as a blanket approval.
     """
-    pauses = record.graph_state.metadata.get("pauses")
-    pause = pauses.get(node_id) if isinstance(pauses, Mapping) else None
-    metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
-    if not isinstance(metadata, Mapping):
+    metadata = _node_pause_metadata(record, node_id)
+    if metadata is None:
         return None
     for key in (
         "reviewer_id",
@@ -132,6 +164,221 @@ def _intended_reviewer(record: Any, node_id: str) -> str | None:
             value = metadata[key]
             return value.strip() if isinstance(value, str) and value.strip() else ""
     return None
+
+
+def _is_durable_approval_pause(record: Any, node_id: str) -> bool:
+    """True when the pending pause is a governed capability-approval wait."""
+    metadata = _node_pause_metadata(record, node_id)
+    if metadata is None:
+        return False
+    reason = metadata.get("paused_reason")
+    request_id = metadata.get("approval_request_id")
+    return (
+        reason == PAUSE_AWAITING_HUMAN_APPROVAL
+        and isinstance(request_id, str)
+        and bool(request_id.strip())
+    )
+
+
+def _approval_store() -> Any:
+    """The Container-selected DurableApproval store (#1362 / #55).
+
+    Missing composition is unavailable capability — never invent a second
+    approval inbox or fall through to the provider Approval slot.
+    """
+    from services.engine import get_engine
+
+    engine = get_engine()
+    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    effects = getattr(container, "capability_effects", None)
+    store = getattr(effects, "approval_store", None) if effects is not None else None
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="durable ApprovalStore is required for capability-approval answers",
+        )
+    return store
+
+
+def _require_approver_authority(request: Request) -> str:
+    """Admin or elevated ``approvals.resolve`` — intersects with HITL scope."""
+    principal = require_principal(request)
+    if principal.is_admin or principal_has_permission(principal, "approvals.resolve"):
+        return principal.actor_id()
+    log_audit(
+        "hitl_approval_resolve_refused",
+        _session_principal(request),
+        target="approvals.resolve",
+        detail={"refusal_reason": "approver_not_authorized"},
+        severity="warning",
+    )
+    raise HTTPException(
+        status_code=403, detail="Approver is not authorized for durable approval resolution"
+    )
+
+
+def _paused_node_run(record: Any, node_id: str) -> Any:
+    matches = [
+        node_run
+        for node_run in record.node_runs
+        if node_run.node_id == node_id and node_run.status is RunStatus.PAUSED
+    ]
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="node is not awaiting a human answer")
+    return matches[0]
+
+
+def _approval_mismatch(detail: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=detail)
+
+
+def _require_approval_matches_pause(
+    approval: DurableApproval,
+    *,
+    record: Any,
+    node_id: str,
+    expected_request_id: str,
+) -> None:
+    """Refuse mismatched DurableApproval evidence before resolve or queue."""
+    metadata = _node_pause_metadata(record, node_id) or {}
+    pause_request_id = str(metadata.get("approval_request_id") or "").strip()
+    node_run = _paused_node_run(record, node_id)
+
+    checks: list[tuple[bool, str]] = [
+        (
+            expected_request_id == pause_request_id,
+            "expected_approval_request_id does not match the current pause receipt",
+        ),
+        (
+            approval.request.request_id == pause_request_id,
+            "approval request does not match pause receipt",
+        ),
+        (approval.run_id == record.run.run_id, "approval run_id does not match paused Run"),
+        (
+            approval.node_run_id == node_run.node_run_id,
+            "approval node_run_id does not match pause",
+        ),
+        # Binding workspace/project may be synthetic (self-repair effect
+        # Binding uses ``default``/``default`` while the Run is admitted into
+        # hive_default_workspace + Root Project — #2423 Codex P1). Run +
+        # NodeRun identity already binds the approval to this pause; caller
+        # Project authorization is enforced separately against the Run.
+    ]
+    pause_effect_key = str(metadata.get("effect_key") or "").strip()
+    if pause_effect_key:
+        checks.append(
+            (approval.effect_key == pause_effect_key, "approval effect_key does not match pause")
+        )
+    pause_digest = str(metadata.get("request_digest") or "").strip()
+    if pause_digest:
+        checks.append(
+            (
+                approval.request_digest == pause_digest,
+                "approval request_digest does not match pause",
+            )
+        )
+    pause_binding = metadata.get("binding_id")
+    if isinstance(pause_binding, str) and pause_binding.strip():
+        checks.append(
+            (
+                approval.binding_id == pause_binding.strip(),
+                "approval binding_id does not match pause",
+            )
+        )
+    for ok, detail in checks:
+        if not ok:
+            raise _approval_mismatch(detail)
+
+
+def _require_answerable_before_approval_resolve(record: Any, node_id: str) -> None:
+    """Refuse elapsed/unanswerable pauses before ApprovalStore.resolve (#2423)."""
+    try:
+        require_answerable_fence(record, node_id)
+    except HitlDeadlineElapsed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _resolve_durable_approval_for_answer(
+    request: Request,
+    *,
+    record: Any,
+    node_id: str,
+    body: HumanAnswer,
+) -> None:
+    """Settle DurableApproval before queueing the Graph answer (#55 / #1192).
+
+    Ordering is resolve-then-``submit_hitl_answer`` so a still-PAUSED Run never
+    starts physical work from a missing approval decision. Ordinary human
+    pauses skip this path entirely.
+    """
+    if not _is_durable_approval_pause(record, node_id):
+        return
+
+    if body.approved is None:
+        raise HTTPException(
+            status_code=422,
+            detail="capability-approval answers require a strict boolean 'approved'",
+        )
+    expected = (body.expected_approval_request_id or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=422,
+            detail="capability-approval answers require expected_approval_request_id",
+        )
+
+    # Stale-UI precondition before any store mutation: expected id must equal
+    # the current server-stamped pause receipt (#1192).
+    pause_request_id = str(
+        (_node_pause_metadata(record, node_id) or {}).get("approval_request_id") or ""
+    ).strip()
+    if expected != pause_request_id:
+        raise HTTPException(
+            status_code=409,
+            detail="expected_approval_request_id does not match the current pause receipt",
+        )
+
+    actor = _require_approver_authority(request)
+    # Re-check live Project/HITL scope at the mutation boundary (intersection
+    # with approver authority — neither grant bypasses the other).
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_ANSWER,
+        record=record,
+        node_id=node_id,
+    )
+
+    approvals = _approval_store()
+    try:
+        loaded = await approvals.get(expected)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="ApprovalStore unavailable") from exc
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="approval request not found")
+
+    _require_approval_matches_pause(
+        loaded, record=record, node_id=node_id, expected_request_id=expected
+    )
+    _require_answerable_before_approval_resolve(record, node_id)
+
+    try:
+        resolved = await approvals.resolve(expected, approved=bool(body.approved), actor=actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="approval request not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # First-writer-wins: a contrary durable decision must not queue the
+    # caller's new verdict (#1192).
+    wanted = ApprovalStatus.APPROVED if body.approved else ApprovalStatus.DENIED
+    if resolved.status is not wanted:
+        raise HTTPException(
+            status_code=409,
+            detail="approval already resolved with a contrary decision",
+        )
 
 
 async def _require_project_access(
@@ -216,7 +463,7 @@ def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthor
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
-    AuthMiddleware stamps ``request.state.user`` for every authenticated
+    AuthMiddleware stamps ``request.state.principal`` for every authenticated
     ``/v1/`` request after resolving the live session; reading that back keeps
     one resolver and one revocation check (ADR-077) per request. The fallback
     re-resolves from the cookie in case a caller reaches the handler without
@@ -226,22 +473,23 @@ def _session_principal(request: Request) -> str:
     crypto-bound approval record (#329 / ADR-090726-9a4e) exists to prevent —
     a human decision must name a verified human, not a convenient default.
     """
-    user = getattr(request.state, "user", None) or resolve_principal(
-        request.cookies, request.headers.get("Authorization")
-    )
+    principal = request_principal(request)
+    if principal is not None:
+        return principal.audit_label()
+    user = resolve_principal(request.cookies, request.headers.get("Authorization"))
     if user is None:
         return "unauthenticated"
-    return str(user.get("username") or user.get("id") or "unverified")
+    return Principal.from_legacy_dict(user).audit_label()
 
 
 def _pending_items(record: Any) -> list[PendingHumanWork]:
     """The human pauses on one record, or none when it waits on a machine.
 
-    A Run can be PAUSED with several nodes waiting independently, which the
-    frontier tests already exercise, so this yields per node rather than per
-    Run — a queue keyed by Run would hide every pause after the first. The
-    NodeRun check keeps a malformed continuation from exposing a pause that is
-    not present in canonical execution state.
+    Selection is the canonical predicate (`pending_hitl_node_ids`): a durable
+    human pause on a PAUSED NodeRun, per node — a Run can wait on a person at
+    several nodes, and a queue keyed by Run would hide every pause after the
+    first. This maps the surviving nodes onto the disclosed shape; the
+    projected row that nominated the record never discloses by itself.
     """
     pauses = record.graph_state.metadata.get("pauses")
     # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so the
@@ -249,38 +497,20 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
     # went in as. `_answer_record` in the store reads them the same way.
     if not isinstance(pauses, Mapping):
         return []
-    paused_nodes = {
-        node_run.node_id for node_run in record.node_runs if node_run.status is RunStatus.PAUSED
-    }
     items: list[PendingHumanWork] = []
-    for node_id, pause in pauses.items():
-        if str(node_id) not in paused_nodes:
-            continue
-        if not isinstance(pause, Mapping) or pause.get("kind") != _HUMAN_PAUSE_KIND:
-            continue
-        metadata = pause.get("metadata")
+    for node_id in pending_hitl_node_ids(record):
+        pause = pauses[node_id]
+        metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
         items.append(
             PendingHumanWork(
                 run_id=record.run.run_id,
-                node_id=str(node_id),
+                node_id=node_id,
                 project_id=record.run.project_id,
                 payload=dict(metadata) if isinstance(metadata, Mapping) else {},
                 paused_at=str(pause["paused_at"]) if pause.get("paused_at") else None,
             )
         )
     return items
-
-
-#: Ceiling on PAUSED records inspected by one `/pending` request, independent
-#: of how many turn out to carry human work. Bounds one request's cost against
-#: an arbitrarily large run of machine-only pauses (#1109); it is not the
-#: `limit` a caller sees, which bounds *pending items* returned.
-_MAX_PENDING_SCAN_RECORDS = 2000
-
-#: Minimum rows requested per page, regardless of how small the caller's
-#: `limit` is, so a small item target does not force one PAUSED row per
-#: round trip while paging past a long machine-only prefix.
-_PENDING_SCAN_PAGE_SIZE = 100
 
 
 async def _collect_pending_items_for_scope(
@@ -292,46 +522,25 @@ async def _collect_pending_items_for_scope(
     items: list[PendingHumanWork],
     bounded_limit: int,
 ) -> None:
-    """Keyset-walk one authorized Workspace/Project scope into ``items``.
+    """Walk one authorized Workspace/Project scope into ``items``.
 
-    The walk stops at ``bounded_limit`` items or ``_MAX_PENDING_SCAN_RECORDS``
-    inspected rows (#1109), and each item-carrying record is revalidated
-    against live canonical membership immediately before its payload is
-    disclosed (#364).
+    The walk is the canonical `pending_hitl_records` contract (#1109): the
+    store's pause-kind projection decides human eligibility before the limit,
+    so a prefix of machine-only PAUSED Runs, however long, never occupies a
+    page that a human pause behind it needs, and no repeated request rereads
+    the same ineligible prefix. This side only maps the surviving records onto
+    the disclosed shape — the authorization recheck ran per item-carrying
+    record inside the walk, immediately before inclusion (#364).
     """
-    cursor: tuple[str, str] | None = None
-    inspected = 0
-    while len(items) < bounded_limit and inspected < _MAX_PENDING_SCAN_RECORDS:
-        # At least `_PENDING_SCAN_PAGE_SIZE` rows per page even when
-        # `bounded_limit` is small: a small item target must not force one
-        # row per round trip while paging past a long machine-only prefix.
-        page_size = min(
-            max(bounded_limit, _PENDING_SCAN_PAGE_SIZE),
-            _MAX_PENDING_SCAN_RECORDS - inspected,
-        )
-        records = await store.list_by_status(
-            RunStatus.PAUSED,
-            limit=page_size,
-            project_id=project_id,
-            workspace_id=workspace_id,
-            after=cursor,
-        )
-        if not records:
-            return
-        inspected += len(records)
-        for record in records:
-            record_items = _pending_items(record)
-            # Recheck only records about to disclose a payload: a
-            # machine-only pause carries nothing a revocation could
-            # withhold, and the recheck costs one live membership read.
-            if record_items and not await authorization.permits(record.run.workspace_id):
-                continue
-            items.extend(record_items)
-        # Must be the store's own cursor spelling, not a bare isoformat:
-        # `list_by_status` compares the cursor against a UTC-normalized key,
-        # so a `created_at` printed at any other offset would order one way
-        # and filter the other, and this walk would silently stop advancing.
-        cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
+    scan = await pending_hitl_records(
+        store,
+        authorization=authorization,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        limit=bounded_limit - len(items),
+    )
+    for record in scan.records:
+        items.extend(_pending_items(record))
 
 
 @router.get("/pending")
@@ -344,15 +553,15 @@ async def list_pending_human_work(
     answers "what is this Run doing", and answers nothing for a person who
     does not yet know which Run is blocked on them.
 
-    `limit` bounds *pending items* returned, not a fixed prefix of the
-    PAUSED Runs in the store (#1109). Machine-only pauses and pauses outside
-    `project_id` carry no items, so filtering a single fixed-size page after
-    the fact could return an empty answer forever even while real human work
-    sits durably PAUSED further back in the ordering. Instead this pages the
-    store's PAUSED listing with an advancing keyset cursor and keeps reading
-    until it has enough items, the store runs out of PAUSED Runs, or it has
-    inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
-    contract `expire_hitl_pauses` uses (#1056).
+    `limit` bounds *pending items* returned (#1109), and human eligibility is
+    decided by the store's pause-kind projection *before* that limit: the
+    query only ever reads PAUSED Runs whose durable frontier declares a human
+    pause, so machine-only pauses and pauses outside `project_id` cannot
+    occupy a page that real human work behind them needs — there is no
+    prefix, eligible or otherwise, that a repeated request rereads forever.
+    What remains is bounded by the same contract as `expire_hitl_pauses`
+    (#1056): each scope walk stops at `bounded_limit` items,
+    `MAX_PENDING_SCAN_RECORDS` projected rows, or the end of the projection.
     """
     user_id = _request_user_id(request)
 
@@ -383,8 +592,9 @@ async def list_pending_human_work(
     # Three bounds compose here, and none subsumes another. Workspace
     # membership is the security boundary for Run data and is applied by the
     # store, before its page limit, so another tenant's backlog cannot hide
-    # this caller's pending work (#1240); the keyset walk inside each scope is
-    # what stops a long machine-only prefix from hiding real human work within
+    # this caller's pending work (#1240); the pause-kind projection behind
+    # `list_hitl_paused` is what makes human eligibility queryable before the
+    # limit, so a long machine-only prefix cannot hide real human work within
     # it (#1109); and Project authority is resolved from canonical Workspace +
     # Project state before any store query, so a client-supplied `project_id`
     # only ever narrows within the authorized set — a selector, never a grant
@@ -537,6 +747,10 @@ async def answer_human_work(
     not to re-decide the answer — the store is called regardless and its verdict
     is final, so a race between the read and the call surfaces as its error
     rather than as a wrong code.
+
+    Capability-approval pauses additionally settle the selected DurableApproval
+    before the Graph answer is queued (#55 / #1192): resolve, then
+    ``submit_hitl_answer``. Ordinary human pauses are unchanged.
     """
     store = _store()
     # Resolve and authorize the canonical target before validating or scanning
@@ -593,6 +807,12 @@ async def answer_human_work(
             status_code=422,
             detail={"error": "answer failed security scan", "finding_count": finding_count},
         )
+
+    # Durable approval first — never queue a Graph answer that would resume
+    # governed work without the ApprovalStore decision (#55 / #1192).
+    await _resolve_durable_approval_for_answer(request, record=record, node_id=node_id, body=body)
+    for key in _APPROVAL_CONTROL_KEYS:
+        answer.pop(key, None)
 
     try:
         updated = await store.submit_hitl_answer(

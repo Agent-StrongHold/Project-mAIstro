@@ -4,6 +4,7 @@
 ## Closure
 
 - [ ] This PR closes issue(s): `Closes #N` — one per issue, verified the number is an ISSUE not a PR (missing closure keywords force manual closes with receipts; 4+ occurrences this week)
+- [ ] For a slice of unfinished work, say `Part of #N`, `Refs #N` or `Progresses #N` instead — a closing keyword against an epic/milestone/initiative, an issue with open children, or an issue whose registered acceptance criteria are not yet ticked fails `check-closure-targets` (#1141)
 
 ## Why
 

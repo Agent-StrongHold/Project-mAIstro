@@ -20,8 +20,8 @@ and assert the post-#819 contract:
 
 The subprocesses need no PostgreSQL, Redis or LLM: the app boots its in-memory
 spine (`run_store_in_process_only`), and the one seam the tests substitute —
-`conductor.run_task`, the executor `TaskRunner` is constructed with — is the
-package's own injection point. Sandbox workspaces resolve under
+`conductor.run_task`, which `main`'s `runner_executor` calls and `TaskRunner`
+is constructed around — is the package's own injection point. Sandbox workspaces resolve under
 `tempfile.gettempdir()/maistro-workspace`, which
 `maistro.tools.sandbox.workspace.ALLOWED_HOST_ROOTS` already allowlists.
 """
@@ -94,6 +94,8 @@ def _server_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.update(
         {
             "ROUTER_API_KEY": "sigterm-test-router-key",
+            # Startup validates API_KEY identities even when auth is disabled.
+            "API_KEYS": '["sigterm-test:sigterm-test-api-key"]',
             "REQUIRE_AUTH": "false",
             "DEBUG": "true",
         }
@@ -161,7 +163,10 @@ def _submit_task(port: int, workspace: str, timeout_s: float = 15.0) -> str:
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/tasks",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer sigterm-test-api-key",
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
@@ -171,9 +176,11 @@ def _submit_task(port: int, workspace: str, timeout_s: float = 15.0) -> str:
 
 
 def _get_task(port: int, task_id: str, timeout_s: float = 15.0) -> dict:
-    with urllib.request.urlopen(
-        f"http://127.0.0.1:{port}/tasks/{task_id}", timeout=timeout_s
-    ) as response:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/tasks/{task_id}",
+        headers={"Authorization": "Bearer sigterm-test-api-key"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
         return dict(json.loads(response.read()))
 
 
@@ -192,14 +199,34 @@ def _docker_ready() -> bool:
 
 
 def _maistro_sandbox_containers() -> list[str]:
-    """Names of MAIstro-owned sandbox containers (created or exited)."""
+    """Names of MAIstro-owned sandbox containers (created or exited).
+
+    Two name prefixes are MAIstro-owned: the retired direct Docker adapter's
+    `maistro-sandbox-` (historical containers may still exist on a host) and
+    the canonical Kata backend's `kata-` (#76: the selector's vm tier names
+    its containers `kata-<hex>`).
+    """
     completed = subprocess.run(
-        ["docker", "ps", "-a", "--format", "{{.Names}}", "--filter", "name=maistro-sandbox-"],
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--format",
+            "{{.Names}}",
+            "--filter",
+            "name=maistro-sandbox-",
+            "--filter",
+            "name=kata-",
+        ],
         capture_output=True,
         text=True,
         timeout=60,
     )
-    return [name for name in completed.stdout.splitlines() if name.strip()]
+    return [
+        name
+        for name in completed.stdout.splitlines()
+        if name.startswith(("maistro-sandbox-", "kata-"))
+    ]
 
 
 def _container_exists(container_id: str) -> bool:
@@ -288,7 +315,14 @@ class TestSigtermDrainsInflightTask:
             import asyncio, sys
             from pathlib import Path
 
-            async def _unfinished(request):
+            async def _unfinished(request, **_authority):
+                # `main.runner_executor` calls `conductor.run_task` with the
+                # Container's governed egress and the workspace/project it was
+                # built for (#718). A stub that takes only the request raises
+                # TypeError before it can write the marker, and the drain this
+                # test is about never gets an in-flight task to drain. The
+                # kwargs are swallowed on purpose: what crosses that seam is
+                # #718's contract to assert, not this test's.
                 Path({str(started_marker)!r}).write_text("started")
                 await asyncio.Event().wait()
 
@@ -347,7 +381,37 @@ class TestSigtermDrainsInflightTask:
         assert "maistro_engine_stopped" in output
 
 
-@pytest.mark.skipif(not _docker_ready(), reason=f"docker or {_SANDBOX_IMAGE} image unavailable")
+def _canonical_sandbox_placeable() -> bool:
+    """Can the canonical selector place a TRUSTED_TOOL workload here?
+
+    Since the #76 cutover the sandbox registry owns `CanonicalSandboxContainer`
+    instances created through the canonical selector — the retired direct
+    Docker adapter (`maistro.tools.sandbox.docker`) was removed with its
+    module, and no second sandbox API may be re-created for seeding (it is
+    exactly what `packages/maistro-core/tests/sandbox/test_single_authority.py`
+    forbids). On a host whose selector cannot evidence a backend at the
+    policy's tier, seeding fails closed — so this test skips rather than
+    reporting a false result against a host that correctly refused. Same host
+    measurement as the `requires_sandbox_backend` gate in
+    `packages/maistro-evolve/tests/benchmarks/test_sandbox_exec.py`.
+    """
+    try:
+        from maistro.sandbox import build_selector
+        from maistro.sandbox.policy import TRUSTED_TOOL
+
+        build_selector().select(TRUSTED_TOOL)
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not (_docker_ready() and _canonical_sandbox_placeable()),
+    reason=(
+        f"docker or {_SANDBOX_IMAGE} image unavailable, "
+        "or no canonical sandbox backend satisfies TRUSTED_TOOL on this host"
+    ),
+)
 class TestStopRestartLeavesNoOrphanedSandboxes:
     """AC-3 — graceful termination destroys MAIstro-owned sandbox containers."""
 
@@ -374,7 +438,7 @@ class TestStopRestartLeavesNoOrphanedSandboxes:
             from tempfile import gettempdir
 
             from maistro.tools.sandbox import server as sandbox_server
-            from maistro.tools.sandbox.docker import create_sandbox
+            from maistro.tools.sandbox.canonical import create_sandbox
             from maistro.tools.sandbox.workspace import ensure_workspace
 
             ws = ensure_workspace(
@@ -384,7 +448,9 @@ class TestStopRestartLeavesNoOrphanedSandboxes:
             async def _seed():
                 container = await create_sandbox(str(ws))
                 sandbox_server._containers[str(ws)] = container
-                Path({str(seed_marker)!r}).write_text(container.container_id)
+                Path({str(seed_marker)!r}).write_text(
+                    container._instance.metadata["container_id"]
+                )
 
             asyncio.run(_seed())
 

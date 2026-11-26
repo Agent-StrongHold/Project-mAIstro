@@ -6,12 +6,14 @@ cost-aware router, so router/fallback/model-selection policy is preserved
 inside the governed boundary instead of being replaced by it:
 
 - a Binding that pins ``provider_name`` selects exactly that model, and an
-  unavailable pin refuses rather than falling back (fallback cannot widen
-  authorization, ADR-081226-6b46);
+  unknown or unavailable pin refuses rather than falling back (fallback
+  cannot widen authorization, ADR-081226-6b46);
 - an unpinned request naming a model keeps the explicit alias (today's
   gateway behavior);
 - an unpinned request with no alias is selected by ``CostAwareRouter``,
-  including its budget-constrained fallback chain.
+  including its budget-constrained fallback chain — scoped to the
+  Binding's declared adapter when one is recorded in ``config``, so a
+  credential-scoped Binding can never route to a model it cannot pay for.
 
 Token usage is read from the gateway response and cost is computed from
 registry metadata, then attached to the persisted canonical Invocation.
@@ -19,8 +21,12 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import aclosing, contextmanager, suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -31,7 +37,12 @@ from maistro.capabilities.invocation import (
     InvocationUsage,
     ProviderResolver,
 )
+from maistro.capabilities.provider_adapters import (
+    AdapterGatewayProvider,
+    default_adapter_catalog,
+)
 from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
     LlmGatewayProvider,
@@ -39,6 +50,7 @@ from maistro.capabilities.providers.llm_gateway import (
     execute_model_chat,
 )
 from maistro.capabilities.types import Unavailable
+from maistro.observability.correlation import current_execution_context
 from maistro.providers.errors import ModelNotFoundError, NoEligibleModelError
 from maistro.providers.types import (
     ModelMetadata,
@@ -46,21 +58,54 @@ from maistro.providers.types import (
     RoutingTask,
     compute_cost_cents,
 )
+from maistro.quota.usage_report import reported_usage
 
 if TYPE_CHECKING:
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
     from maistro.capabilities.effect_context import CapabilityEffectContext
+    from maistro.capabilities.provider_adapters import ProviderAdapterCatalog
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
-def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
-    """Extract usage/cost metadata from one gateway response body."""
+_DEFAULT_PROJECT_ID = "default"
+_MODEL_EXECUTION_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "model_execution_context", default=None
+)
+
+
+@contextmanager
+def model_execution_context(**values: str) -> Iterator[None]:
+    """Expose the active canonical Run scope to compatibility LLM clients."""
+
+    token = _MODEL_EXECUTION_CONTEXT.set(
+        {key: value for key, value in values.items() if isinstance(value, str) and value}
+    )
+    try:
+        yield
+    finally:
+        _MODEL_EXECUTION_CONTEXT.reset(token)
+
+
+def _gateway_usage(
+    provider: LlmGatewayProvider | AdapterGatewayProvider, body: Any
+) -> InvocationUsage | None:
+    """Extract usage/cost metadata from one canonical response body.
+
+    An adapter's ``usage_from`` hook reports first — it knows where its
+    provider puts the numbers — and the canonical OpenAI-shape parser is the
+    fallback, so usage reaches the canonical Invocation either way.
+    """
 
     if not isinstance(body, dict):
         return None
-    usage = body.get("usage")
-    usage_map = usage if isinstance(usage, dict) else {}
-    input_units = int(usage_map.get("prompt_tokens") or 0)
-    output_units = int(usage_map.get("completion_tokens") or 0)
+    reported: tuple[int, int] | None = None
+    if isinstance(provider, AdapterGatewayProvider):
+        reported = provider.adapter.usage_from(body)
+    if reported is None:
+        reported = reported_usage(body)
+    if reported is None:
+        return None
+    input_units, output_units = reported
     metadata = provider.metadata
     cost_cents = (
         compute_cost_cents(metadata, input_units, output_units) if metadata is not None else None
@@ -76,6 +121,61 @@ def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage |
     )
 
 
+def _adapter_health_refusal(
+    adapters: ProviderAdapterCatalog | None,
+    provider: ResolvedCapabilityProvider,
+) -> str | None:
+    """Why canonical selection refuses an adapter whose latest probe failed.
+
+    Unpinned routing never reaches this refusal on the happy path: recorded
+    health is synced into registry availability, so ``CostAwareRouter.select``
+    skips an unhealthy adapter's models up front and falls through to the next
+    healthy candidate or fallback (ADR-038) — one failed adapter cannot take
+    unpinned traffic offline. The check remains as the fail-closed backstop
+    for catalogs wired without a sync and for pinned/aliased selections,
+    which never fall back by policy.
+    """
+
+    if (
+        adapters is None
+        or not isinstance(provider, AdapterGatewayProvider)
+        or adapters.is_healthy(provider.spec.adapter_id)
+    ):
+        return None
+    return (
+        f"adapter {provider.spec.adapter_id!r} failed its latest health probe; "
+        "canonical selection refuses until it recovers"
+    )
+
+
+def _undeclared_capability(
+    provider: LlmGatewayProvider | AdapterGatewayProvider,
+    request: ModelChatRequest,
+) -> str | None:
+    """Why ``request`` needs a capability the resolved provider does not declare.
+
+    Adapter capabilities fail explicitly (M9-E1): a tools or structured-output
+    request against an adapter that did not declare the feature refuses as a
+    typed unavailable resolution before any HTTP, instead of degrading silently
+    or escaping through some permissive default. Gateway models keep their
+    existing behavior.
+    """
+
+    if not isinstance(provider, AdapterGatewayProvider):
+        return None
+    missing: list[str] = []
+    if (request.tools or request.tool_choice) and not provider.capabilities.tools:
+        missing.append("tools/tool_choice")
+    if request.response_format is not None and not provider.capabilities.structured_output:
+        missing.append("response_format (structured output)")
+    if not missing:
+        return None
+    return (
+        f"model {provider.name!r} on adapter {provider.spec.adapter_id!r} does not declare "
+        f"{', '.join(missing)}; unsupported features fail explicitly"
+    )
+
+
 def resolve_model_chat_provider(
     registry: LLMProviderRegistry,
     router: LLMRouter,
@@ -83,39 +183,327 @@ def resolve_model_chat_provider(
     alias: str = "",
     task: RoutingTask | None = None,
     budget: RouterBudget | None = None,
+    adapters: ProviderAdapterCatalog | None = None,
 ) -> ProviderResolver:
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
     ``alias`` is the model the request itself names (empty means "let the
-    cost-aware router select"). A Binding pin outranks it.
+    cost-aware router select"). A Binding pin outranks it and must already
+    exist in the configured ProviderRegistry; gateway registration alone is
+    not model metadata registration.
+
+    ``adapters`` resolves registered provider-adapter models to adapter
+    providers; every other selection resolves to the shipped gateway exactly
+    as before the adapter SDK existed. Selection policy is untouched: adapter
+    models sit in the same registry, so the cost-aware router picks them under
+    the same cost/latency/fallback rules.
     """
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
         selection = binding.provider_name or alias
-        if selection:
-            try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
-            except ModelNotFoundError:
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
+        # An adapter-backed Binding records its adapter in config. That
+        # authorization ceiling applies equally to a request alias: accepting
+        # an alias first would let the caller replace the Binding's adapter.
+        adapter_id = binding.config.get("adapter_id")
+        if adapter_id and adapters is None:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"adapter-scoped Binding requires catalog {adapter_id!r}; "
+                    "canonical selection refuses without it"
+                ),
+            )
+        if adapter_id and adapters is not None:
+            allowed_models = frozenset(adapters.model_names(str(adapter_id)))
+            if selection and selection not in allowed_models:
+                source = "pinned model" if binding.provider_name else "request alias"
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
-                        f"selected model {selection!r} is unavailable and a pinned "
-                        "selection does not fall back"
+                        f"{source} {selection!r} is outside adapter-scoped Binding "
+                        f"{adapter_id!r}; canonical selection refuses"
                     ),
                 )
-            return LlmGatewayProvider(metadata, model=selection)
+        if selection:
+            return await _resolve_named_model(registry, adapters, binding, selection)
+        # An adapter-backed Binding records its adapter in config. Its
+        # credential_refs authorize only that adapter's reference, so the
+        # router must not select a built-in or other-adapter model here: it
+        # would resolve fine and then fail at credential acquisition. Scope
+        # selection to the declared adapter's models; no eligible model is
+        # Unavailable, never a silently widened re-scope.
         try:
-            selected = await router.select(
-                task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
-                budget,
-            )
+            if adapter_id and adapters is not None:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                    scope=frozenset(adapters.model_names(str(adapter_id))),
+                )
+            else:
+                selected = await router.select(
+                    task if task is not None else RoutingTask(task_type=MODEL_CHAT_CAPABILITY),
+                    budget,
+                )
         except NoEligibleModelError as exc:
             return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=f"no eligible model: {exc}")
+        routed = (
+            adapters.resolve_provider(selected.name, selected) if adapters is not None else None
+        )
+        if routed is not None:
+            # Backstop only: with the availability sync wired (bootstrap),
+            # selection already skipped unhealthy adapter models, so the
+            # router's fallback chain continued past them.
+            refusal = _adapter_health_refusal(adapters, routed)
+            if refusal is not None:
+                return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+            return routed
         return LlmGatewayProvider(selected, model=selected.name)
 
     return resolve
+
+
+async def _resolve_named_model(
+    registry: LLMProviderRegistry,
+    adapters: ProviderAdapterCatalog | None,
+    binding: Binding,
+    selection: str,
+) -> ResolvedCapabilityProvider | Unavailable:
+    """Resolve an explicitly named (pinned or aliased) model selection."""
+
+    try:
+        metadata: ModelMetadata | None = await registry.get_model(selection)
+    except ModelNotFoundError:
+        if binding.provider_name:
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason=(
+                    f"pinned model {selection!r} is unknown; register its metadata "
+                    "in the configured ProviderRegistry before using a Binding pin "
+                    "(provider_config_path); gateway /model/new is not sufficient"
+                ),
+            )
+        metadata = None
+    if metadata is not None and not registry.is_available(metadata.name):
+        source = "pinned model" if binding.provider_name else "request alias"
+        return Unavailable(
+            slot=MODEL_CHAT_CAPABILITY,
+            reason=(
+                f"{source} {selection!r} is unavailable; an explicit selection does not fall back"
+            ),
+        )
+    resolved = adapters.resolve_provider(selection, metadata) if adapters is not None else None
+    if resolved is not None:
+        refusal = _adapter_health_refusal(adapters, resolved)
+        if refusal is not None:
+            return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
+        return resolved
+    return LlmGatewayProvider(metadata, model=selection)
+
+
+class GovernedLLMClient:
+    """LLMClient adapter that sends every completion through AdmittedModelCalls.
+
+    Agent strategies keep their existing LLMClient shape, while the actual
+    provider call uses the configured :class:`AdmittedModelCalls` to join
+    persisted execution, actor and operator Binding authority. No scope or
+    Binding is synthesized by this client. ``set_turn`` is a small runtime
+    context seam used by Agent.handle; it does not dispatch or own a second
+    ledger.
+
+    Turn identity is the canonical execution identity (#1827): ``set_turn``
+    reads the Run/NodeRun/Attempt triple that canonical execution already bound
+    on the correlation context — ``RunExecutionService`` binds ``run_id``;
+    ``AttemptExecutionService.execute_claimed`` binds ``node_run_id`` and
+    ``attempt_id`` — and never fabricates an agent-turn/agent-node/agent-attempt
+    id to make an unadmitted call look governed. These values provide
+    correlation, not authorization: Binding/credential/policy checks remain at
+    the governed effect boundary inside :class:`ModelChatEgress`.
+    """
+
+    def __init__(
+        self, admitted_calls: AdmittedModelCalls, *, workspace_id: str | None = None
+    ) -> None:
+        self._calls = admitted_calls
+        # A definition's Workspace narrows admitted authority; it supplies none.
+        self._workspace_id = workspace_id
+        self._turn: ContextVar[tuple[str, str, str] | None] = ContextVar(
+            "governed_llm_turn", default=None
+        )
+        self._sequence: ContextVar[int] = ContextVar("governed_llm_sequence", default=0)
+        self._effect_scope: ContextVar[tuple[str, int] | None] = ContextVar(
+            "governed_llm_effect_scope", default=None
+        )
+
+    def set_turn(
+        self,
+        run_id: str | None = None,
+        *,
+        agent_name: str = "",
+        delegation_depth: int = 0,
+    ) -> None:
+        """Bind correlation identity for the next turn from canonical execution.
+
+        Stores exactly the (run_id, node_run_id, attempt_id) triple the
+        canonical execution services bound on the correlation context. When
+        any of the three is missing or blank, raises
+        :class:`maistro.runs.store.RunIntegrityError` instead of minting a
+        synthetic identity. A supplied ``run_id`` must equal the bound one —
+        it is checked, never substituted. ``agent_name`` and the existing
+        delegation depth distinguish logical model effects inside one Attempt;
+        neither can manufacture or replace canonical execution identity.
+
+        Failure-atomic: any previously stored turn is dropped *before*
+        validation, so a rejected ``set_turn`` cannot leave an earlier valid
+        tuple usable behind it. On success the per-turn call sequence resets
+        to zero, as before.
+        """
+        # Imported here, not at module level: `maistro.runs` transitively
+        # imports `maistro.graph.nodes`, which imports this module, so an
+        # eager import would make every `maistro.capabilities.model_chat`
+        # import a cycle.
+        from maistro.runs.store import RunIntegrityError
+
+        self._effect_scope.set(None)
+        self._turn.set(None)
+        self._sequence.set(0)
+        context = current_execution_context()
+        bound = (context.run_id, context.node_run_id, context.attempt_id)
+        missing = [
+            name
+            for name, value in zip(("run_id", "node_run_id", "attempt_id"), bound, strict=True)
+            if not value.strip()
+        ]
+        if missing:
+            raise RunIntegrityError(
+                "GovernedLLMClient requires the canonical execution context "
+                "(run_id, node_run_id, attempt_id) bound by canonical execution; "
+                f"missing or blank: {', '.join(missing)}"
+            )
+        if run_id and run_id != bound[0]:
+            raise RunIntegrityError(
+                f"explicit run_id {run_id!r} does not match the bound execution "
+                f"run_id {bound[0]!r}; the bound identity is never replaced"
+            )
+        self._turn.set(bound)
+        if agent_name:
+            self._effect_scope.set((agent_name, delegation_depth))
+
+    def set_agent_turn(self, *, agent_name: str, delegation_depth: int) -> None:
+        """Opt into Agent tail-delegation effect scoping without new identity.
+
+        Agent uses this optional hook so clients with the older ``set_turn``
+        signature still receive only their existing ``agent_name`` argument.
+        """
+        self.set_turn(agent_name=agent_name, delegation_depth=delegation_depth)
+
+    def clear_turn(self) -> None:
+        self._effect_scope.set(None)
+        self._turn.set(None)
+        self._sequence.set(0)
+
+    def _prepare_call(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[ModelChatRequest, tuple[str, str, str], str]:
+        del stream, metadata
+        from maistro.runs.store import RunIntegrityError
+
+        if self._turn.get() is None:
+            # No explicit turn: adopt the currently bound canonical context.
+            # An incomplete context raises RunIntegrityError right here, with
+            # zero egress calls.
+            self.set_turn()
+        context = current_execution_context()
+        live = (context.run_id, context.node_run_id, context.attempt_id)
+        turn = self._turn.get()
+        assert turn is not None
+        if live != turn:
+            # The context has ended or moved to another Attempt: the stored
+            # triple is stale. Drop it and refuse instead of attributing the
+            # call to a dead identity; an explicit set_turn starts the next
+            # turn.
+            self.clear_turn()
+            raise RunIntegrityError(
+                f"current execution context {live} does not match the stored "
+                f"turn {turn}; call set_turn to start the new turn explicitly"
+            )
+        self._sequence.set(self._sequence.get() + 1)
+        request = ModelChatRequest(
+            model=model,
+            messages=[dict(message) for message in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=[dict(tool) for tool in tools] if tools else None,
+            tool_choice=tool_choice,
+        )
+        scope = self._effect_scope.get()
+        effect_key = (
+            f"agent-llm:{scope[0]}:{scope[1]}:{self._sequence.get()}"
+            if scope is not None
+            else f"agent-llm-{self._sequence.get()}"
+        )
+        return request, turn, effect_key
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request, identity, effect_key = self._prepare_call(
+            messages,
+            model,
+            tools=tools,
+            tool_choice=tool_choice,
+            stream=stream,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            metadata=metadata,
+        )
+        result = await self._calls.complete(
+            request=request,
+            identity=identity,
+            effect_key=effect_key,
+            required_workspace_id=self._workspace_id,
+        )
+        return result.body
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield admitted incremental chunks and close the canonical stream.
+
+        Consumers that stop early must close this iterator (for example with
+        ``contextlib.aclosing``) before leaving their execution context.
+        """
+        request, identity, effect_key = self._prepare_call(messages, model, **kwargs)
+        async with aclosing(
+            self._calls.stream(
+                request=request,
+                identity=identity,
+                effect_key=effect_key,
+                required_workspace_id=self._workspace_id,
+            )
+        ) as chunks:
+            async for chunk in chunks:
+                yield chunk
 
 
 class ModelCallResult(BaseModel):
@@ -130,7 +518,12 @@ class ModelCallResult(BaseModel):
 
 
 class ModelChatEgress:
-    """Cross the one governed model boundary on behalf of an effect consumer."""
+    """Cross the one governed model boundary on behalf of an effect consumer.
+
+    ``adapters`` selects registered provider-adapter models (M9-E1); ``None``
+    means the process default, and an unconfigured default leaves the egress
+    gateway-only — an adapter can add a destination, never a second boundary.
+    """
 
     def __init__(
         self,
@@ -139,11 +532,13 @@ class ModelChatEgress:
         registry: LLMProviderRegistry,
         router: LLMRouter,
         endpoint: GatewayEndpoint,
+        adapters: ProviderAdapterCatalog | None = None,
     ) -> None:
         self._effects = effects
         self._registry = registry
         self._router = router
         self._endpoint = endpoint
+        self._adapters = adapters if adapters is not None else default_adapter_catalog()
 
     async def complete(
         self,
@@ -155,6 +550,8 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
+        actor_id: str = "",
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -164,13 +561,27 @@ class ModelChatEgress:
         (e.g. a gateway's model registration) must be passed here rather than
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
+
+        ``on_chunk`` is the streaming observer (SPEC-285): a streaming request's
+        normalized chunks are handed to it as the provider emits them, while
+        the Invocation is still RUNNING. It carries no authority — admission,
+        dedup, policy, usage, and terminalization are untouched — so a stream
+        consumer cannot end up with effects the ledger does not own.
         """
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
-        selected: list[LlmGatewayProvider] = []
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+            adapters=self._adapters,
+        )
+        selected: list[LlmGatewayProvider | AdapterGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             provider = await resolver(candidate)
-            if isinstance(provider, LlmGatewayProvider):
+            if isinstance(provider, (LlmGatewayProvider, AdapterGatewayProvider)):
+                refusal = _undeclared_capability(provider, request)
+                if refusal is not None:
+                    return Unavailable(slot=MODEL_CHAT_CAPABILITY, reason=refusal)
                 selected[:] = [provider]
             return provider
 
@@ -180,12 +591,12 @@ class ModelChatEgress:
                     "model-chat physical execution requires a Binding-scoped credential"
                 )
             base = provider.base
-            if not isinstance(base, LlmGatewayProvider):
+            if not isinstance(base, (LlmGatewayProvider, AdapterGatewayProvider)):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()
             endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
-            return await execute_model_chat(base, payload, endpoint=endpoint)
+            return await execute_model_chat(base, payload, endpoint=endpoint, on_chunk=on_chunk)
 
         routing = self._effects.credential_routing()
         routed_resolver = routing.resolver(tracked_resolve)
@@ -206,6 +617,7 @@ class ModelChatEgress:
             resolver=routed_resolver,
             executor=routed_executor,
             usage_from=usage_from,
+            actor_id=actor_id,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(
@@ -216,9 +628,334 @@ class ModelChatEgress:
         )
 
 
+class GovernedModelChatClient:
+    """Compatibility LLM client backed exclusively by :class:`ModelChatEgress`.
+
+    Domain adapters can keep their existing LLM interfaces while this client
+    supplies the execution correlation and active Binding required by the
+    canonical boundary. It intentionally exposes no transport or provider
+    objects to callers.
+    """
+
+    def __init__(
+        self,
+        egress: ModelChatEgress,
+        binding: Binding,
+        *,
+        protocol: str = "chat_completions",
+    ) -> None:
+        self._egress = egress
+        self._binding = binding
+        self._protocol = protocol
+
+    def _merged_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        """Turn scope: the ambient execution context, then the explicit caller."""
+
+        from maistro.observability.correlation import current_execution_context
+
+        return {
+            **current_execution_context().as_log_fields(),
+            **(_MODEL_EXECUTION_CONTEXT.get() or {}),
+            **(metadata or {}),
+        }
+
+    def _request(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+        temperature: float | None,
+        response_format: dict[str, Any] | None,
+        stream: bool,
+        tool_choice: str | None,
+    ) -> ModelChatRequest:
+        return ModelChatRequest(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.7,
+            response_format=response_format,
+            protocol=("chat_completions" if tools else self._protocol),
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+
+    def _scoped_binding(self, metadata: dict[str, Any]) -> Binding:
+        """The active Binding, re-scoped when the turn carries its own scope.
+
+        A caller-specified Workspace/Project derives a scoped copy rather than
+        reaching past the caller's authority: the copy names the same gateway
+        credential reference, and registration below is what makes it the
+        active Binding that admission resolves — in the caller's scope only.
+        """
+
+        workspace_id = str(metadata.get("workspace_id") or self._binding.workspace_id)
+        project_id = str(metadata.get("project_id") or self._binding.project_id)
+        if workspace_id == self._binding.workspace_id and project_id == self._binding.project_id:
+            return self._binding
+        return self._binding.model_copy(
+            update={
+                "binding_id": f"model-chat:{workspace_id}:{project_id}",
+                "workspace_id": workspace_id,
+                "project_id": project_id,
+            }
+        )
+
+    @staticmethod
+    def _execution_identity(metadata: dict[str, Any]) -> dict[str, str]:
+        """Run/NodeRun/Attempt/effect identity from the caller that holds one.
+
+        The canonical tuple wins when present; a compatibility caller with none
+        derives a correlation-scoped identity — unique per call and recorded on
+        the ledger, never an all-blank best-effort tuple.
+        """
+
+        correlation = str(metadata.get("correlation_id") or uuid4().hex)
+        return {
+            "run_id": str(metadata.get("run_id") or correlation),
+            "node_run_id": str(metadata.get("node_run_id") or f"llm:{correlation}"),
+            "attempt_id": str(metadata.get("attempt_id") or f"attempt:{correlation}"),
+            "effect_key": str(metadata.get("effect_key") or f"llm:{correlation}"),
+        }
+
+    async def _call(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        stream: bool = False,
+        tool_choice: str | None = None,
+        on_chunk: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ModelCallResult:
+        merged = self._merged_metadata(metadata)
+        binding = self._scoped_binding(merged)
+        # Registration is idempotent and keeps compatibility callers on the
+        # same active Binding authority as graph/effect consumers.
+        await self._egress._effects.bindings.put(binding)
+        request = self._request(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        identity = self._execution_identity(merged)
+        # The actor crosses exactly like the identity: from the execution
+        # scope a caller that authenticated one has bound, never invented
+        # here. A caller that supplies none still records "" — the ledger's
+        # own "no actor" reading, not a fabricated principal (#1084: the
+        # compatibility path used to drop an actor the caller held, leaving
+        # every chat/voice Invocation unattributed while its Run carried the
+        # authenticated principal).
+        return await self._egress.complete(
+            binding=binding,
+            request=request,
+            run_id=identity["run_id"],
+            node_run_id=identity["node_run_id"],
+            attempt_id=identity["attempt_id"],
+            effect_key=identity["effect_key"],
+            actor_id=str(merged.get("actor_id") or ""),
+            on_chunk=on_chunk,
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            metadata=metadata,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        return result.body
+
+    async def stream_chunks(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the provider's chunks as they arrive, inside one Invocation.
+
+        The governed lifecycle is unchanged from :meth:`complete`: this call is
+        admitted before dispatch, and its Invocation terminalizes only when the
+        provider stream is exhausted, fails, or is abandoned (SPEC-285). What
+        changes is delivery — chunks cross to the caller live through the
+        egress observer while the Invocation is still RUNNING, instead of being
+        held until the terminal record exists. Cancellation is truthful too: a
+        consumer that stops early cancels the dispatch, and the Invocation
+        records the provider outcome as UNKNOWN, never a fabricated success.
+        """
+
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        def observe(chunk: dict[str, Any]) -> None:
+            queue.put_nowait(chunk)
+
+        async def run() -> ModelCallResult:
+            try:
+                return await self._call(
+                    messages,
+                    model,
+                    tools=tools,
+                    metadata=metadata,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tool_choice=tool_choice,
+                    stream=True,
+                    on_chunk=observe,
+                )
+            finally:
+                queue.put_nowait(_STREAM_ENDED)
+
+        pump = asyncio.ensure_future(run())
+        delivered = 0
+        result: ModelCallResult | None = None
+        try:
+            async for item in _pump_chunks(queue, pump):
+                delivered += 1
+                if isinstance(item, dict):
+                    yield item
+            result = await pump
+        except BaseException:
+            if not pump.done():
+                pump.cancel()
+            raise
+        finally:
+            if not pump.done():
+                pump.cancel()
+            with suppress(BaseException):
+                await pump
+        if delivered == 0:
+            # No live chunk crossed: either admission replayed a prior
+            # completed Invocation for this effect, or the provider finished
+            # without chunks. The terminal record is the truth to replay.
+            for chunk in _replay_result_chunks(result):
+                yield chunk
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        async for chunk in self.stream_chunks(messages, model, **kwargs):
+            # A chunk may carry no choices at all: the chat.completions
+            # terminal usage frame is {"usage": …, "choices": []}. It is a
+            # real chunk on the wire, not text, so it is skipped here rather
+            # than crashing the text view.
+            choices = chunk.get("choices") or []
+            delta = choices[0].get("delta", {}) if choices else {}
+            if isinstance(delta, dict) and delta.get("content"):
+                yield str(delta["content"])
+
+
+_STREAM_ENDED: Any = object()
+
+
+async def _pump_chunks(queue: asyncio.Queue[Any], pump: asyncio.Future[Any]) -> AsyncIterator[Any]:
+    """Yield live chunks until the governed pump signals it is done."""
+
+    while True:
+        item = await queue.get()
+        if item is _STREAM_ENDED:
+            return
+        yield item
+
+
+def _replay_result_chunks(result: ModelCallResult | None) -> Any:
+    """Replay a terminal record's chunks for a stream that saw none live."""
+
+    if result is None:
+        return
+    chunks = result.body.get("_stream_chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks:
+            if isinstance(chunk, dict):
+                yield chunk
+        return
+    content = ""
+    with suppress(KeyError, IndexError, TypeError):
+        content = str(result.body["choices"][0]["message"].get("content") or "")
+    yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+
+
+def build_model_chat_client(
+    *,
+    endpoint: GatewayEndpoint,
+    workspace_id: str = "default",
+    project_id: str = _DEFAULT_PROJECT_ID,
+    effects: CapabilityEffectContext | None = None,
+    registry: LLMProviderRegistry | None = None,
+    router: LLMRouter | None = None,
+    protocol: str = "chat_completions",
+    binding: Binding | None = None,
+) -> GovernedModelChatClient:
+    """Compose the canonical compatibility client for an app boundary."""
+
+    if effects is None:
+        from maistro.capabilities.effect_context import default_effect_context
+
+        effects = default_effect_context()
+    if registry is None:
+        from maistro.providers.registry import InMemoryProviderRegistry
+
+        registry = InMemoryProviderRegistry()
+    if router is None:
+        from maistro.providers.router import CostAwareRouter
+
+        router = CostAwareRouter(registry)
+    active_binding = binding or Binding(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+    return GovernedModelChatClient(egress, active_binding, protocol=protocol)
+
+
 __all__ = [
+    "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
+    "GovernedLLMClient",
+    "GovernedModelChatClient",
     "ModelCallResult",
     "ModelChatEgress",
+    "ModelChatRequest",
+    "build_model_chat_client",
+    "model_execution_context",
     "resolve_model_chat_provider",
 ]

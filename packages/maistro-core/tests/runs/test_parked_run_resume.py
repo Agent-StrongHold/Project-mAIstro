@@ -37,6 +37,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -253,6 +254,7 @@ async def _parked_run(container: Container, kind: str, *, workspace: str) -> str
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert await container.execute_admitted_runs() == 1
     parked = await container.run_store.get_run(run.run_id)
@@ -450,10 +452,20 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         graph,
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
-    # Leave room for a real PostgreSQL round trip while keeping the recovery
-    # window short enough to exercise the heartbeat and expiry boundary.
-    ttl = timedelta(seconds=0.5)
+    # The lease must outlive worst-case event-loop latency on a loaded,
+    # coverage-instrumented runner: the heartbeat ticks at ttl/3, and a
+    # first tick that lands after the expiry boundary is refused
+    # (`renew_attempt_lease` raises on a lapsed lease) and stops the
+    # heartbeat permanently — correct production behavior for a worker
+    # silent past its TTL, but here it reads as "never renewed" and fails
+    # the poll below (seen as a flaky "not renewed by the heartbeat" on
+    # the no-services coverage job, run 40142381555; reproduced locally by
+    # stalling the loop for 1s after resume with ttl=0.5s). 5s keeps the
+    # first tick ~1.7s, far inside the lease, while the recovery tick's
+    # explicit clock keeps the expiry boundary itself deterministic.
+    ttl = timedelta(seconds=5)
     executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
 
     parked = await executor.execute(run)
@@ -481,24 +493,28 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        # The deadline is generous wall-clock rather than a multiple of the
-        # heartbeat interval: on a coverage-instrumented CI runner, leaked
-        # background threads and disk stalls can starve this loop's cooperative
-        # tasks for whole seconds while loop.time() keeps advancing, so a tight
-        # budget can expire without the heartbeat ever getting a turn (seen as
-        # a flaky "not renewed by the heartbeat" on the no-services coverage
-        # job -- same head, adjacent pass and fail runs).
-        loop = asyncio.get_running_loop()
+        # The budget is completed poll iterations, not wall-clock: on a
+        # coverage-instrumented CI runner, leaked background threads and disk
+        # stalls can starve this loop's cooperative tasks (the heartbeat with
+        # them) for whole seconds while any clock keeps advancing, so a
+        # wall-clock deadline can expire without the heartbeat ever getting a
+        # turn (seen as a flaky "not renewed by the heartbeat" on the
+        # no-services coverage job and again on the coverage (PostgreSQL)
+        # job's sqlite leg, adjacent pass and fail runs on the same head).
+        # Each completed iteration proves the loop was scheduled; once it is,
+        # the heartbeat's lapsed timer fires within a few iterations, so an
+        # exhausted budget means the heartbeat genuinely never renewed.
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 15.0
+        polls_left = 150
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if loop.time() >= renewal_deadline:
+            if polls_left <= 0:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
@@ -718,7 +734,7 @@ class TestWhatTheTickRefusesToTouch:
         assert resumable_pause(node_run, [failed], now=datetime.now(UTC)) is None
 
     async def test_a_run_whose_every_attempt_was_reclaimed_stays_parked(self) -> None:
-        """Looking past reclaimed Attempts can run out of Attempts.
+        """Looking past typed RECOVERED Attempts can run out of Attempts.
 
         Reading past a recovery artefact only works because a real pause was
         recorded before it. A NodeRun whose every physical try was reclaimed
@@ -726,20 +742,31 @@ class TestWhatTheTickRefusesToTouch:
         must stay parked rather than be resumed on an invented one.
         """
         from maistro.runs.consumption import resumable_pause
-        from maistro.runs.lifecycle import reclaimed_attempt_error
-        from maistro.runs.model import Attempt, NodeRun
+        from maistro.runs.lifecycle import reclaim_attempt
+        from maistro.runs.model import Attempt, ExecutionLease, NodeRun
 
         node_run = NodeRun(run_id="r", node_id="n1", ordinal=1, status=RunStatus.WAITING)
-        reclaimed = [
-            Attempt(
+        reclaimed = []
+        for ordinal in (1, 2):
+            running = Attempt(
                 node_run_id=node_run.node_run_id,
                 ordinal=ordinal,
-                status=AttemptStatus.CANCELLED,
-                error=reclaimed_attempt_error(f"worker-{ordinal}"),
-                finished_at=datetime.now(UTC),
+                status=AttemptStatus.RUNNING,
+                started_at=datetime.now(UTC),
             )
-            for ordinal in (1, 2)
-        ]
+            running = running.model_copy(
+                update={
+                    "execution_lease": ExecutionLease(
+                        attempt_id=running.attempt_id,
+                        node_run_id=running.node_run_id,
+                        lease_epoch=1,
+                        holder=f"worker-{ordinal}",
+                        issued_at=datetime.now(UTC) - timedelta(seconds=2),
+                        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                    )
+                }
+            )
+            reclaimed.append(reclaim_attempt(running, at=datetime.now(UTC)))
 
         assert resumable_pause(node_run, reclaimed, now=datetime.now(UTC)) is None
         assert resumable_pause(node_run, [], now=datetime.now(UTC)) is None
@@ -761,6 +788,10 @@ class TestThePollDeadlineCanNowBeReached:
             run_id="r",
             dag_id="d",
             node_id="n1",
+            workspace_id="w1",
+            project_id="p1",
+            node_run_id="nr1",
+            attempt_id="a1",
             metadata={RESUMED_PAUSE_KEY: {"first_seen": long_ago}},
         )
 
@@ -772,10 +803,10 @@ class TestThePollDeadlineCanNowBeReached:
         monkeypatch.setattr(jira_module, "_fetch_subtask_statuses", _statuses)
         result = await node.run(
             {
-                "base_url": "https://jira.example.com",
+                "binding_id": "test-jira-subtasks-binding",
                 "parent_key": "PROJ-100",
-                "pat": "x",
                 "timeout_seconds": 60,
+                "poll_interval_seconds": 60,
             },
             ctx,
         )
@@ -982,6 +1013,24 @@ class TestWhatCountsAsAReadablePause:
         assert (
             resumable_pause(
                 node_run, [self._elapsed_pause(node_run), cancelled], now=datetime.now(UTC)
+            )
+            is None
+        )
+
+    def test_spoofed_reclaim_error_text_is_not_looked_past(self) -> None:
+        """String-prefix reclaim evidence is not look-past authority (#232 P5a)."""
+        from maistro.runs.consumption import resumable_pause
+        from maistro.runs.lifecycle import reclaimed_attempt_error
+
+        node_run = self._parked_node_run()
+        spoofed = self._attempt(node_run, None, status=AttemptStatus.CANCELLED).model_copy(
+            update={"ordinal": 2, "error": reclaimed_attempt_error("worker-spoof")}
+        )
+        assert spoofed.cancellation_cause is None
+
+        assert (
+            resumable_pause(
+                node_run, [self._elapsed_pause(node_run), spoofed], now=datetime.now(UTC)
             )
             is None
         )
@@ -1393,6 +1442,7 @@ class TestAMultiNodeRunIsNotThisTicksToResume:
             graph,
             provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
             initial_status=RunStatus.QUEUED,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
         await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         await container.run_store.transition_run(run.run_id, RunStatus.WAITING)

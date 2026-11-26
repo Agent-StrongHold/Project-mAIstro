@@ -181,17 +181,25 @@ def prior_message_context(messages: Sequence[Mapping[str, object]]) -> list[Ward
     return context_from_messages(messages[:latest_user])
 
 
+def _coerce_provenance(value: object) -> Literal["trusted", "untrusted"]:
+    """Validate one untyped mapping value into the provenance literal union."""
+    if value == "trusted":
+        return "trusted"
+    if value == "untrusted":
+        return "untrusted"
+    raise ValueError("Warden context provenance must be 'trusted' or 'untrusted'")
+
+
 def _coerce_context_item(item: WardenContext | str | Mapping[str, object]) -> WardenContext:
     if isinstance(item, WardenContext):
         return item
     if isinstance(item, str):
         return WardenContext(item)
     role = str(item.get("role", ""))
-    provenance = item.get("provenance")
-    if provenance is None:
-        provenance = "trusted" if role in {"system", "developer"} else "untrusted"
-    if provenance not in {"trusted", "untrusted"}:
-        raise ValueError("Warden context provenance must be 'trusted' or 'untrusted'")
+    raw_provenance = item.get("provenance")
+    if raw_provenance is None:
+        raw_provenance = "trusted" if role in {"system", "developer"} else "untrusted"
+    provenance = _coerce_provenance(raw_provenance)
     boundary = item.get("boundary")
     if boundary is None:
         boundary = f"conversation:{role or 'unknown'}"
@@ -412,7 +420,7 @@ def _scan_reject_patterns(scan_content: str) -> list[str]:
 
 
 class Warden:
-    """Threat detector. Runs at user_input and tool_result boundaries only.
+    """Threat detector used by every wired trust boundary.
 
     ``policy_version`` identifies this canonical detector mechanism for audit
     correlation; consumers must not replace it with a product-local policy.
@@ -421,6 +429,8 @@ class Warden:
     Layer 3 (LLM) is optional -- requires an LLM client and model to be configured.
     """
 
+    # Stable identifier included in boundary audit evidence. Detector changes
+    # must update this value when the applicable policy meaningfully changes.
     policy_version = WARDEN_POLICY_VERSION
 
     def __init__(

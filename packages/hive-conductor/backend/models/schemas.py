@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS
+
 
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -25,6 +27,7 @@ class ChatSession(BaseModel):
 
     id: str
     user_id: str = ""
+    workspace_id: str | None = None
     title: str
     messages: list[ChatMessage] = Field(default_factory=list)
     created_at: datetime
@@ -36,9 +39,17 @@ class ChatSessionSummary(BaseModel):
 
     id: str
     user_id: str = ""
+    workspace_id: str | None = None
     title: str
     message_count: int
     updated_at: datetime
+
+
+class CreateSessionBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = "New chat"
+    workspace_id: str
 
 
 class ChatCompletionRequest(BaseModel):
@@ -56,6 +67,7 @@ class Mission(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    run_id: str | None = None
     user_id: str = ""
     name: str
     description: str
@@ -112,6 +124,12 @@ class Schedule(BaseModel):
     # unbounded, which is what every schedule predating this column was.
     # Enforced on the canonical cursor (`maistro.scheduling`), not here.
     max_runs: int | None = None
+    # How far back missed fires are backfilled, in seconds (#1200). Defaulted
+    # like `timezone` so a row persisted before the column keeps loading and
+    # keeps firing with the substrate's own default. The routes bound what a
+    # client may request (`schedule_max_catchup_window_s`); the canonical
+    # definition model enforces its own absolute ceiling on top.
+    catchup_window_seconds: float = DEFAULT_CATCHUP_WINDOW_SECONDS
     last_run: datetime | None = None
     # The Run that claimed the most recent occurrence. A projection of the
     # canonical cursor's `last_run_id`, so a caller holding a schedule can
@@ -189,6 +207,14 @@ class MCPServer(BaseModel):
     last_ping: datetime | None = None
     version: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    # Host-owned supply-chain facts. A request body cannot set these because
+    # CreateServerBody deliberately has a smaller schema.
+    approved: bool = False
+    approved_by: str = ""
+    trust_tier: str = "t3"
+    provenance: str = ""
+    content_hash: str = ""
+    allowed_tools: list[str] = Field(default_factory=list)
 
 
 class MCPTool(BaseModel):
@@ -201,6 +227,7 @@ class MCPTool(BaseModel):
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)
     category: str = "general"
+    content_hash: str = ""
 
 
 class Container(BaseModel):
@@ -235,6 +262,12 @@ class MemoryEntry(BaseModel):
     created_at: datetime
     updated_at: datetime
     accessed_count: int = 0
+    #: Contradiction count — durable record of how many times this entry was
+    #: contradicted through `POST /v1/memory/entries/{id}/contradict` (#389).
+    #: The route used to acknowledge a contradiction it never stored; the
+    #: count lives on the entry itself so the acknowledgment and the state
+    #: change are the same write through the one durable store.
+    contradictions: int = 0
     ttl_seconds: int | None = None
 
 
@@ -263,7 +296,7 @@ class CapabilitySetting(BaseModel):
 class SettingsModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    api_base_url: str = "http://127.0.0.1:8101"
+    api_base_url: str = "http://127.0.0.1:8101"  # DevSkim: ignore DS162092 until 2027-12-31
     default_model: str = "cerebras-qwen-3-235b-a22b-2507"
     temperature: float = 0.2
     max_tokens: int = 8192
@@ -321,3 +354,7 @@ class ReadyResponse(BaseModel):
 
     ready: bool
     checks: dict[str, bool]
+    # #290: actionable diagnostics for degraded-but-ready instances — a
+    # broken zone database or idle scheduler leaves `ready` keyed on its own
+    # checks, and this is where the reason lives. Empty when fully healthy.
+    warnings: list[str] = []

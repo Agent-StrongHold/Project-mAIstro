@@ -49,6 +49,24 @@ class DetailedHealthResponse(BaseModel):
     persistence: dict[str, dict[str, str | bool]]
 
 
+def _run_concurrency_ceilings(settings: Settings) -> dict[str, int | None]:
+    """The effective root-Run ceilings every RunStore enforces (#1182).
+
+    Rides the admin payload beside `effective_resource_policy` rather than
+    inside it: the opt-in system-wide ceiling has no numeric baseline to be
+    weakenable against, so `None` is the honest value — and the policy dict
+    carries only the governed floors. Assembled into the response payload
+    (which has `response_model=None`) rather than declared as another model
+    field, which vulture would score as dead code for exactly the reason this
+    endpoint exists: a field only serialization reads is invisible to it.
+    """
+    return {
+        "per_principal": settings.max_active_root_runs_per_principal,
+        "per_workspace": settings.max_active_root_runs_per_workspace,
+        "system": settings.max_active_root_runs_system,
+    }
+
+
 def _admin_diagnostics_authorized(
     credentials: HTTPAuthorizationCredentials | None, settings: Settings
 ) -> bool:
@@ -61,7 +79,7 @@ def _admin_diagnostics_authorized(
     facts (backend/durable per store family) ride the same gate: they are
     operator diagnostics, not public surface.
     """
-    if not settings.api_keys:
+    if not settings.api_keys and not settings.admin_api_keys:
         return False
     token = credentials.credentials if credentials is not None else ""
     principal = resolve_token_principal(token, settings)
@@ -225,10 +243,25 @@ async def readiness(
     )
     postgres_result = await _check_postgres(settings)
 
-    circuit_state = circuit_breaker.llm_circuit.state
+    circuit_domains = circuit_breaker.llm_circuits.snapshot()
+    unhealthy = [row for row in circuit_domains if row["state"] != "closed"]
+    # Domain names are sanitized endpoint x routing target — no credentials.
+    # Any open or recovering domain marks the LLM dependency not-ready; the
+    # detailed (admin-only) payload names which domain, so an operator can
+    # tell a single provider outage from a shared-gateway one.
+    _MAX_CIRCUIT_DETAIL = 8
+    detail = "all circuits closed" if circuit_domains else "no circuits registered"
+    if unhealthy:
+        shown = ", ".join(
+            f"{row['name']}={row['state']}" for row in unhealthy[:_MAX_CIRCUIT_DETAIL]
+        )
+        remaining = len(unhealthy) - _MAX_CIRCUIT_DETAIL
+        if remaining > 0:
+            shown += f"; +{remaining} more"
+        detail = f"unhealthy domains: {shown}"
     llm_result = ProbeResult(
-        status="ok" if circuit_state == "closed" else "error",
-        detail=f"circuit={circuit_state}",
+        status="ok" if not unhealthy else "error",
+        detail=f"circuits={detail}",
     )
 
     # The outbound pool is a process resource rather than an external
@@ -273,10 +306,21 @@ async def readiness(
 
     if not all_ok:
         if result is not None:
-            return JSONResponse(content=result.model_dump(), status_code=503)
+            return JSONResponse(
+                content={
+                    **result.model_dump(),
+                    "run_concurrency_limits": _run_concurrency_ceilings(settings),
+                },
+                status_code=503,
+            )
         # Do not disclose which dependency, policy, or backend failed to an
         # anonymous probe; operators use the secured metrics path instead.
         return JSONResponse(content={"status": "not_ready"}, status_code=503)
     if result is not None:
-        return result
+        return JSONResponse(
+            content={
+                **result.model_dump(),
+                "run_concurrency_limits": _run_concurrency_ceilings(settings),
+            }
+        )
     return {"status": "ok"}

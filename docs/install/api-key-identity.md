@@ -4,12 +4,16 @@ Every entry in `API_KEYS` names its **explicit canonical principal**
 ([#843](https://github.com/Agent-StrongHold/Project-mAIstro/issues/843)):
 
 ```dotenv
-API_KEYS=["ops:9f2c1d0e…", "alice:7b3a9e11…", "build:admin:5d8f2c40…"]
+API_KEYS=["ops:9f2c1d0e…", "alice:7b3a9e11…", "build:5d8f2c40…"]
+ADMIN_API_KEYS=["root:8a4d2c10…"]
 ```
 
 * `principal:secret` — the principal is everything before the first colon,
-  the secret is everything after it (secrets containing colons keep working).
-* `principal:admin:secret` — additionally grants the `admin` role.
+  and the secret is everything after it. Every later colon is secret material.
+* `ADMIN_API_KEYS` uses the same syntax; membership in this separate setting
+  grants the `admin` role. Authority is never inferred from a secret segment.
+* `principal:admin:` is rejected as the empty-secret spelling of the retired
+  role form, rather than being accepted with a different meaning.
 
 Clients still present only the **bare secret** as the bearer token
 (`Authorization: Bearer 9f2c1d0e…`). The principal prefix is server-side
@@ -61,13 +65,55 @@ rate limits are keyed to the principal (not to the credential —
 [#842](https://github.com/Agent-StrongHold/Project-mAIstro/issues/842)),
 rotation does not reset that principal's quota or abuse history.
 
+## No-auth development mode (`API_KEYS` empty)
+
+With no `API_KEYS` configured, authentication is disabled and requests are
+**not** attributed to a principal — there is no synthetic "dev" principal.
+Rate limiting (#1101) keys every request to the bounded pre-auth client
+identity: the address the connection came from.
+
+* The `Authorization` header has no effect on the bucket. Headerless
+  requests, arbitrary Bearer values, and malformed schemes from one client
+  all share that client's single bucket — header content can neither mint a
+  second quota nor escape an exhausted one.
+* Two development clients at different addresses have independent buckets;
+  they never collapse into a shared synthetic-principal quota.
+* Delegation envelopes are not honoured in this mode (there is no
+  authenticated service principal to verify one against).
+
+This mode is for development only; a production deployment configures
+`API_KEYS` and gets the per-principal semantics above.
+
 ## Rules the server enforces
 
-* Every entry must parse as `principal:secret` (or `principal:admin:secret`);
-  `sk-`-prefixed entries are secret-shaped and rejected as plain.
+* Every entry must parse as `principal:secret`; `sk-`-prefixed entries are
+  secret-shaped and rejected as plain.
 * Empty principals (`":secret"`) and empty secrets (`"alice:"`) are rejected.
+* One credential resolves to exactly one principal and authority
+  ([#1095](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1095)):
+  the same secret under two entries — two principals, or the user list and
+  `ADMIN_API_KEYS` — is a collision, and the server refuses to start on it.
+  Which identity a bearer credential carries must never depend on the order
+  of the entries; if the startup gate is bypassed, the collided credential
+  authenticates nobody rather than the last entry's principal. The full
+  `principal:secret` entries on both sides keep working.
 * Key material is never a principal id, log label, metric label, or
   rate-limit bucket id — boot errors describe a bad entry by position and
   defect, never by content.
 * Revocation is removing the entry; the secret immediately resolves to
   nothing.
+
+## Ownership migration
+
+The installer migration from the historical plain key is a database migration,
+not only an `.env` rewrite. On the next container start, Alembic records the
+explicit `default -> conductor` mapping and migrates live ownership columns for
+Workspace memberships, Project memberships, memory/outcome records, Canvas
+scope, and other durable ownership references in one transaction. Canonical Run
+and event actor references are migrated as well; the mapping row preserves the
+historical `default -> conductor` identity fact. The migration is idempotent and runs under
+the entrypoint's PostgreSQL advisory migration lock, so a crashed process rolls
+back and two replicas converge before either serves requests. Mixed old/new
+rows are merged without dropping existing grants. `tests/migrations/
+test_legacy_principal_ownership_live.py` runs all three claims against a real
+PostgreSQL (`MAISTRO_TEST_DATABASE_URL`, wired into the `postgres` CI job).

@@ -1,5 +1,17 @@
 """PostgreSQL persistence for Canvas Studio (spec 1189).
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): the ``layers``/LayerRecord
+persistence this module serves is the legacy layer model, retained while
+consumers migrate to the ADR-039/044 AssetInstance model
+(``asset_store``/``asset_compositor``/``asset_routes``/``asset_tool``). It
+cannot regain authority: new layer-model work belongs on the AssetInstance
+path only. Deletion is gated on the ADR-044 Phase 2 bridge and Phase 3
+backfill (neither has landed) plus ADR-046 — deleting it now would strand
+persisted Canvas state, which ADR-045 forbids. The ``generation_jobs`` queue
+this module also hosts is NOT transitional: it is the SPEC-203 queue the
+shipped ``maistro-canvas-worker`` and the server-composed ``CanvasJobRunner``
+claim from, and its convergence is owned by #735.
+
 All queries use raw SQL via sqlalchemy text() — same pattern as
 pg_agents.py.  Z-index invariants are enforced inside transactions to
 prevent races; the DB schema uses a UNIQUE constraint on
@@ -20,12 +32,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from maistro_canvas.canvas.retry_policy import DEFAULT_RETRY_BACKOFF, RetryBackoff
 from maistro_canvas.types import (
     _MAX_LAYERS,
     CanvasNotFoundError,
@@ -36,6 +50,8 @@ from maistro_canvas.types import (
     IncompleteReorderError,
     JobLeaseLostError,
     JobNotFoundError,
+    JobQueueStats,
+    JobStatus,
     LayerLimitExceededError,
     LayerNotFoundError,
     LayerRecord,
@@ -45,9 +61,41 @@ from maistro_canvas.types import (
 _MAX_LAYERS_CONST = _MAX_LAYERS
 
 
+@dataclass(frozen=True)
+class CanvasBlobRecord:
+    """One ``canvas_blobs`` row: bytes plus the identity to serve them with.
+
+    ``format`` is the media type the bytes were stored under and ``metadata``
+    carries the write-time stamps (source, canonical Workspace/Project scope)
+    the authorized byte-serving route reads. Immutable on purpose: a stored
+    blob's identity does not change after the write (#2311).
+    """
+
+    id: str
+    data: bytes
+    format: str
+    metadata: dict[str, Any]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Row coercion helpers
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _coerce_blob_metadata(raw: object) -> dict[str, Any]:
+    """The ``metadata`` JSONB column as a plain dict.
+
+    asyncpg hands jsonb back as a ``str``; a driver that decodes it natively
+    (psycopg) hands a ``dict``. Both shapes mean the same row, so both
+    coerce here rather than at every caller. Anything else reads as empty —
+    an unparseable stamp is a missing anchor for the serving route, which
+    already fails closed on one.
+    """
+    if isinstance(raw, str):
+        return cast(dict[str, Any], json.loads(raw))
+    if isinstance(raw, dict):
+        return cast(dict[str, Any], raw)
+    return {}
 
 
 def _coerce_canvas(row: Any) -> CanvasRecord:
@@ -108,6 +156,24 @@ def _coerce_layer(row: Any) -> LayerRecord:
     )
 
 
+def _coerce_job_status(raw: object) -> str:
+    """Hydrate a receipt status as a :class:`JobStatus` member when possible.
+
+    The driver hands back the column as a plain ``str``. Identity comparisons
+    against ``JobStatus`` members (``status is JobStatus.RUNNING``) then fail
+    silently, so :meth:`CanvasCanonicalExecution.reconcile_admissions`'s
+    live-lease guard never fired for Postgres-hydrated receipts and a second
+    worker could claim a live-leased job (#93 live evidence). Coercing here
+    makes every consumer see the same shape the in-memory stores produce.
+    An unrecognized value is passed through untouched rather than crashing a
+    read path over a legacy row.
+    """
+    try:
+        return JobStatus(str(raw))
+    except ValueError:
+        return str(raw)
+
+
 def _coerce_job(row: Any) -> GenerationJobRecord:
     d = dict(row)
     result_paths_raw = d.get("result_paths", [])
@@ -121,7 +187,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         layer_id=str(d["layer_id"]),
         canvas_id=str(d["canvas_id"]),
         action=d.get("action", "generate"),
-        status=d.get("status", "pending"),
+        status=_coerce_job_status(d.get("status", JobStatus.PENDING)),
         model_id=d.get("model_id", ""),
         prompt=d.get("prompt", ""),
         params=params_raw or {},
@@ -135,6 +201,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         max_attempts=int(d.get("max_attempts", 3)),
         leased_by=d.get("leased_by"),
         lease_expires_at=d.get("lease_expires_at"),
+        next_retry_at=d.get("next_retry_at"),
         org_id=str(d.get("org_id", "")),
     )
 
@@ -162,8 +229,18 @@ def _coerce_composite(row: Any) -> CompositeResult:
 class PgCanvasStore:
     """Canvas Studio persistence layer using async PostgreSQL."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        retry_backoff: RetryBackoff = DEFAULT_RETRY_BACKOFF,
+    ) -> None:
         self._engine = engine
+        # The reaper writes the same backoff schedule the runner does (#398).
+        # Composition passes one ``RetryBackoff`` to both so a requeue from
+        # either path waits on the same schedule; the defaults here and in
+        # ``CanvasJobRunner`` are the same object's values.
+        self._retry_backoff = retry_backoff
 
     # ── Canvases ──────────────────────────────────────────────────────
 
@@ -699,6 +776,7 @@ class PgCanvasStore:
             "max_attempts": job.max_attempts,
             "leased_by": job.leased_by,
             "lease_expires_at": job.lease_expires_at,
+            "next_retry_at": job.next_retry_at,
             "expected_leased_by": expected_leased_by,
             "expected_attempts": expected_attempts,
             "expected_status": expected_status,
@@ -721,7 +799,8 @@ class PgCanvasStore:
                         started_at = :start, completed_at = :done,
                         attempts = GREATEST(attempts, :attempts),
                         max_attempts = :max_attempts,
-                        leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        leased_by = :leased_by, lease_expires_at = :lease_expires_at,
+                        next_retry_at = :next_retry_at
                     WHERE id = :id AND layer_id IN
                         (SELECT l.id FROM layers l
                          JOIN canvases c ON c.id = l.canvas_id
@@ -802,6 +881,12 @@ class PgCanvasStore:
         the provider past its retry limit. An over-budget ``pending`` row
         (which no current writer produces) is terminalized by
         ``reap_expired_leases`` instead of being stranded.
+
+        A receipt waiting out its retry backoff (#398) is not claimable
+        either: ``next_retry_at`` is written by the requeueing writer and
+        cleared by the claim that finally takes the attempt, so a requeued
+        job waits its scheduled delay instead of being retried in a tight
+        claim loop.
         """
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
@@ -815,6 +900,7 @@ class PgCanvasStore:
                         JOIN canvases c ON c.id = l.canvas_id
                         WHERE j.status = 'pending'
                           AND j.attempts < j.max_attempts
+                          AND (j.next_retry_at IS NULL OR j.next_retry_at <= now())
                         ORDER BY j.created_at ASC
                         FOR UPDATE OF j SKIP LOCKED
                         LIMIT 1
@@ -824,6 +910,7 @@ class PgCanvasStore:
                         attempts = j.attempts + 1,
                         leased_by = :worker,
                         lease_expires_at = now() + (:lease_seconds * INTERVAL '1 second'),
+                        next_retry_at = NULL,
                         started_at = COALESCE(j.started_at, now())
                     FROM candidate
                     WHERE j.id = candidate.id
@@ -877,7 +964,14 @@ class PgCanvasStore:
         no holder, an already-expired lease stamp): ``claim_next_pending``
         refuses it, so without this it would sit ``pending`` forever instead
         of being failed through canonical reconciliation.
+
+        A requeued candidate's ``next_retry_at`` (#398) comes from the same
+        shared schedule the runner's failure path uses: persisted in this
+        statement, so a worker that dies right after requeueing cannot lose
+        the backoff and let the next claim loop on the job.
         """
+        backoff_base = self._retry_backoff.base_seconds
+        backoff_cap = self._retry_backoff.cap_seconds
         async with AsyncSession(self._engine) as session:
             requeued = await session.execute(
                 text("""
@@ -893,11 +987,19 @@ class PgCanvasStore:
                     UPDATE generation_jobs AS j
                     SET status = 'pending',
                         leased_by = NULL,
-                        lease_expires_at = NULL
+                        lease_expires_at = NULL,
+                        next_retry_at = CASE
+                            WHEN :backoff_base > 0 THEN now()
+                                + (LEAST(:backoff_cap,
+                                         :backoff_base * POWER(2, GREATEST(j.attempts, 1) - 1))
+                                   * INTERVAL '1 second')
+                            ELSE NULL
+                        END
                     FROM candidate
                     WHERE j.id = candidate.id
                     RETURNING j.id
                 """),
+                {"backoff_base": backoff_base, "backoff_cap": backoff_cap},
             )
             requeued_ids = [row[0] for row in requeued]
 
@@ -921,7 +1023,8 @@ class PgCanvasStore:
                         lease_expires_at = CASE
                             WHEN j.status = 'pending' THEN now()
                             ELSE j.lease_expires_at
-                        END
+                        END,
+                        next_retry_at = NULL
                     FROM candidate
                     WHERE j.id = candidate.id
                     RETURNING j.id
@@ -992,6 +1095,60 @@ class PgCanvasStore:
             await session.commit()
             return renewed
 
+    async def job_queue_stats(self, *, org_id: str) -> JobQueueStats:
+        """Health counts for one org's generation-job queue (#398).
+
+        One aggregate statement, org-scoped through the same canvas join every
+        other job read uses (#857): another org's jobs are not a zero section
+        here, they are absent from the count entirely. The classifications
+        mirror the store's own writers so a stat cannot describe a state no
+        query produces:
+
+        - ``stuck`` — ``running`` past its lease: awaiting a reaper sweep.
+        - ``retrying`` — ``pending`` with a charged attempt: waiting out (or
+          due for) a scheduled retry, not fresh work.
+        - ``exhausted`` — out of budget and not terminal: the reaper has
+          surfaced them and canonical reconciliation still owes a terminal
+          write (including over-budget ``pending`` rows that can no longer be
+          claimed).
+        """
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE j.status = 'pending') AS pending,
+                        COUNT(*) FILTER (WHERE j.status = 'running') AS running,
+                        COUNT(*) FILTER (
+                            WHERE j.status = 'running'
+                              AND j.lease_expires_at IS NOT NULL
+                              AND j.lease_expires_at < now()
+                        ) AS stuck,
+                        COUNT(*) FILTER (
+                            WHERE j.status = 'pending' AND j.attempts > 0
+                        ) AS retrying,
+                        COUNT(*) FILTER (
+                            WHERE j.attempts >= j.max_attempts
+                              AND j.status IN ('pending', 'running')
+                        ) AS exhausted
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE c.org_id = :org
+                """),
+                {"org": org_id},
+            )
+            row = result.mappings().first()
+            if row is None:  # pragma: no cover - a grouped aggregate always yields one row
+                raise RuntimeError("job_queue_stats aggregate returned no rows")
+            return JobQueueStats(
+                org_id=org_id,
+                pending=int(row["pending"]),
+                running=int(row["running"]),
+                stuck=int(row["stuck"]),
+                retrying=int(row["retrying"]),
+                exhausted=int(row["exhausted"]),
+            )
+
     # ── Composites ────────────────────────────────────────────────────
 
     async def save_composite(self, result: CompositeResult, *, org_id: str) -> CompositeResult:
@@ -1044,6 +1201,45 @@ class PgCanvasStore:
             return _coerce_composite(row) if row else None
 
     # ── Blobs ─────────────────────────────────────────────────────────
+
+    async def get_blob(self, blob_id: str) -> bytes | None:
+        """One stored blob's bytes, or None when the id is unknown (#2311).
+
+        The read side of :meth:`store_blob`, added so the governed image
+        egress can satisfy its ``ImageBlobStore`` contract over this table —
+        the durable home for generated image bytes that
+        ``maistro.capabilities.image_generation`` deliberately leaves to the
+        package owning ``canvas_blobs``.
+        """
+        record = await self.read_blob(blob_id)
+        return record.data if record is not None else None
+
+    async def read_blob(self, blob_id: str) -> CanvasBlobRecord | None:
+        """One stored blob with its media type and metadata, or None (#2311).
+
+        The whole row the authorized byte-serving route needs: bytes to serve,
+        the media type they were stored under (the response's Content-Type),
+        and the metadata the governed egress stamped at write time — the
+        canonical Workspace/Project scope that anchors the route's
+        authorization. An unknown id reads as ``None``, exactly like every
+        other scoped read in this store: existence itself is scoped
+        information, and a guessed id has no answer but absence.
+        """
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("SELECT id, data, format, metadata FROM canvas_blobs WHERE id = :id"),
+                {"id": blob_id},
+            )
+            row = result.first()
+            if row is None:
+                return None
+        d = dict(row._mapping)
+        return CanvasBlobRecord(
+            id=str(d["id"]),
+            data=bytes(d["data"]),
+            format=str(d.get("format") or ""),
+            metadata=_coerce_blob_metadata(d.get("metadata")),
+        )
 
     async def store_blob(
         self,

@@ -7,6 +7,7 @@ thumbs-down BOTH flow into the next-run prompt for the same project.
 
 from __future__ import annotations
 
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.memory.types import Outcome
 
@@ -57,7 +58,7 @@ async def _record_thumb_down(
 
 
 async def test_failures_in_project_a_do_not_pollute_project_b_narrative() -> None:
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await _record_failure(store, task_type="reporting", error="LLMTimeout", project_id="proj-a")
     await _record_failure(
         store, task_type="reporting", error="JsonDecodeError", project_id="proj-a"
@@ -81,7 +82,7 @@ async def test_failures_in_project_a_do_not_pollute_project_b_narrative() -> Non
 async def test_empty_project_id_returns_cross_project_narrative() -> None:
     """Backward-compat: callers that don't pass project_id get the global
     narrative across all projects (so legacy callers don't break)."""
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await _record_failure(store, task_type="poll", error="Net1", project_id="proj-a")
     await _record_failure(store, task_type="poll", error="Net2", project_id="proj-b")
     await _record_failure(store, task_type="poll", error="NetGlobal", project_id="")  # legacy
@@ -96,7 +97,7 @@ async def test_empty_project_id_returns_cross_project_narrative() -> None:
 
 
 async def test_thumbs_down_appears_in_experience_context() -> None:
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     # The node ran successfully — but the user thumbed it down.
     await _record_thumb_down(
         store,
@@ -113,7 +114,7 @@ async def test_thumbs_down_appears_in_experience_context() -> None:
 
 async def test_thumb_down_in_one_project_does_not_leak_to_another() -> None:
     """Critical isolation check — the whole point of per-project memory."""
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await _record_thumb_down(
         store,
         task_type="reporting",
@@ -130,7 +131,7 @@ async def test_thumb_down_in_one_project_does_not_leak_to_another() -> None:
 async def test_failure_and_thumbs_down_appear_in_same_narrative() -> None:
     """Both signal types render in distinct sections so the LLM can
     distinguish 'we failed here' from 'human disliked this output'."""
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await _record_failure(store, task_type="poll", error="JiraAuthFailed", project_id="p")
     await _record_thumb_down(
         store,
@@ -151,7 +152,7 @@ async def test_failure_and_thumbs_down_appear_in_same_narrative() -> None:
 
 
 async def test_tool_name_filter_combines_with_project_id() -> None:
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     await store.record(
         Outcome(
             task_type="research",
@@ -176,7 +177,7 @@ async def test_tool_name_filter_combines_with_project_id() -> None:
 
 
 async def test_limit_applies_per_section() -> None:
-    store = InMemoryOutcomeStore()
+    store = InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
     for i in range(10):
         await _record_failure(store, task_type="x", error=f"E{i}", project_id="p")
     narrative = await store.get_experience_context("x", project_id="p", limit=3)

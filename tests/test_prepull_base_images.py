@@ -15,7 +15,9 @@ accounted for.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -30,7 +32,11 @@ COMPOSE_FILE = ROOT / "packages" / "hive-conductor" / "docker-compose.test.yml"
 #: The Dockerfiles `docker-build` actually builds, and so the ones the pre-pull
 #: step is given. Kept beside the assertion that they are covered, rather than
 #: only in the workflow, so a change to one without the other fails here.
-BUILT_DOCKERFILES = ("Dockerfile", "packages/hive-conductor/Dockerfile")
+BUILT_DOCKERFILES = (
+    "Dockerfile",
+    "packages/hive-conductor/Dockerfile",
+    "Dockerfile.rsi-runner",
+)
 
 #: The Dockerfiles `packages/hive-conductor/docker-compose.test.yml` builds
 #: (the `hive`, `api-tests` and `e2e-tests` services). This is the coverage a
@@ -73,6 +79,46 @@ JOB_TARGET_SERVICE = {
 }
 
 _FROM_RE = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+
+
+def _dockerfile_from_images(text: str) -> list[str]:
+    """External `FROM` images in a Dockerfile, skipping RUN/COPY heredoc bodies.
+
+    Mirrors `scripts/prepull-base-images.sh`: a Python `from X import ...` line
+    inside `RUN python - <<'PY'` is not a Dockerfile instruction (#2271).
+    """
+    images: list[str] = []
+    aliases: set[str] = set()
+    heredoc: str | None = None
+    heredoc_strip = False
+    for raw in text.splitlines():
+        if heredoc is not None:
+            line = raw.lstrip("\t") if heredoc_strip else raw
+            if line == heredoc:
+                heredoc = None
+                heredoc_strip = False
+            continue
+        opened = _HEREDOC_OPEN_RE.search(raw)
+        if opened is not None:
+            heredoc = opened.group(1)
+            heredoc_strip = "<<-" in raw
+            # Fall through: the opener line may still be a real instruction.
+        match = _FROM_RE.match(raw)
+        if match is None:
+            continue
+        tokens = [t for t in match["rest"].split() if not t.startswith("--")]
+        if not tokens or "import" in {t.lower() for t in tokens[1:]}:
+            continue
+        image = tokens[0]
+        if "as" in [t.lower() for t in tokens]:
+            idx = [t.lower() for t in tokens].index("as")
+            if idx + 1 < len(tokens):
+                aliases.add(tokens[idx + 1].lower())
+        if image.lower() == "scratch" or image.lower() in aliases:
+            continue
+        images.append(image)
+    return images
 
 
 def _compose_services() -> dict[str, Any]:
@@ -140,20 +186,7 @@ def test_every_shipped_from_line_is_accounted_for() -> None:
     pulled = set(_list(*BUILT_DOCKERFILES))
 
     for name in BUILT_DOCKERFILES:
-        text = (ROOT / name).read_text()
-        aliases: set[str] = set()
-        for line in text.splitlines():
-            match = _FROM_RE.match(line)
-            if match is None:
-                continue
-            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
-            image = tokens[0]
-            if "as" in [t.lower() for t in tokens]:
-                idx = [t.lower() for t in tokens].index("as")
-                if idx + 1 < len(tokens):
-                    aliases.add(tokens[idx + 1].lower())
-            if image.lower() == "scratch" or image.lower() in aliases:
-                continue
+        for image in _dockerfile_from_images((ROOT / name).read_text()):
             assert image in pulled, (
                 f"{name} builds on {image!r}, which the pre-pull step does not "
                 f"cover. It pulls: {sorted(pulled)}"
@@ -161,12 +194,95 @@ def test_every_shipped_from_line_is_accounted_for() -> None:
 
 
 def test_the_built_dockerfiles_are_the_ones_the_workflow_builds() -> None:
-    """`BUILT_DOCKERFILES` above must match `ci.yml`, or this test guards nothing."""
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    job = workflow.split("docker-build:", 1)[1].split("\n  workflow-lint:", 1)[0]
+    """Check actual pre-pull arguments and ordering, not mentions anywhere in CI.
 
-    for name in BUILT_DOCKERFILES:
-        assert name in job, f"{name} is not built by ci.yml's docker-build job"
+    The old test checked only that two hand-listed Dockerfiles appeared in the
+    job. It stayed green while the RSI canary built a third Dockerfile with
+    neither its Python base nor its external uv COPY source pre-pulled.
+    """
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    commands = [
+        (index, shlex.split(line, comments=True))
+        for index, step in enumerate(workflow["jobs"]["docker-build"]["steps"])
+        for line in step.get("run", "").replace("\\\n", " ").splitlines()
+    ]
+    [(pull_index, pull_command)] = [
+        (index, command)
+        for index, command in commands
+        if command and command[0] == "scripts/prepull-base-images.sh"
+    ]
+    assert set(pull_command[1:]) == set(BUILT_DOCKERFILES)
+
+    # Derive the daemon-build inputs independently of BUILT_DOCKERFILES. This
+    # catches deleting a Dockerfile from both the tuple and the pre-pull step.
+    daemon_builds = [
+        (index, command)
+        for index, command in commands
+        if any(command[i : i + 2] == ["docker", "build"] for i in range(len(command) - 1))
+    ]
+    assert daemon_builds, "the dual-builder canary must still exercise docker build"
+    for index, command in daemon_builds:
+        dockerfile = command[command.index("-f") + 1] if "-f" in command else "Dockerfile"
+        assert dockerfile in pull_command[1:], f"{dockerfile} is built without retried pulls"
+        assert pull_index < index, f"{dockerfile} is built before its retried pulls"
+
+
+@pytest.mark.parametrize("failures", [1, 99], ids=["transient-429", "persistent-429"])
+def test_rsi_canary_sources_keep_the_bounded_fetch_only_retry(
+    tmp_path: Path, failures: int
+) -> None:
+    """Both pinned canary sources use the existing three-attempt pull contract."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls, count = tmp_path / "calls", tmp_path / "count"
+    count.write_text("0")
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        '[[ "$1" == pull ]] || exit 97\n'
+        'if [[ "$2" == ghcr.io/astral-sh/uv:* ]]; then\n'
+        '  n=$(cat "$COUNT"); n=$((n + 1)); echo "$n" > "$COUNT"\n'
+        "  if (( n <= FAILURES )); then\n"
+        '    echo "toomanyrequests: 429 Too Many Requests" >&2; exit 1\n'
+        "  fi\n"
+        "fi\n"
+    )
+    docker.chmod(0o755)
+    sleep = bin_dir / "sleep"
+    sleep.write_text('#!/usr/bin/env bash\nprintf "sleep %s\\n" "$*" >> "$CALLS"\n')
+    sleep.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "CALLS": str(calls),
+        "COUNT": str(count),
+        "FAILURES": str(failures),
+    }
+    env.pop("PREPULL_ATTEMPTS", None)
+    result = subprocess.run(
+        [str(SCRIPT), "Dockerfile.rsi-runner"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    log = calls.read_text().splitlines()
+    assert count.read_text().strip() == str(min(failures + 1, 3))
+    assert [line for line in log if line.startswith("sleep ")] == (
+        ["sleep 5"] if failures == 1 else ["sleep 5", "sleep 10"]
+    )
+    assert all(line.startswith(("pull ", "sleep ")) for line in log)
+    if failures == 1:
+        assert result.returncode == 0, result.stderr
+        assert {line.removeprefix("pull ") for line in log if line.startswith("pull ")} == set(
+            _list("Dockerfile.rsi-runner")
+        )
+    else:
+        assert result.returncode == 1
+        assert "could not pull ghcr.io/astral-sh/uv:" in result.stderr
+        assert "after 3 attempts" in result.stderr
 
 
 def test_every_compose_from_line_is_accounted_for() -> None:
@@ -179,20 +295,7 @@ def test_every_compose_from_line_is_accounted_for() -> None:
     pulled = set(_list(*COMPOSE_DOCKERFILES))
 
     for name in COMPOSE_DOCKERFILES:
-        text = (ROOT / name).read_text()
-        aliases: set[str] = set()
-        for line in text.splitlines():
-            match = _FROM_RE.match(line)
-            if match is None:
-                continue
-            tokens = [t for t in match["rest"].split() if not t.startswith("--")]
-            image = tokens[0]
-            if "as" in [t.lower() for t in tokens]:
-                idx = [t.lower() for t in tokens].index("as")
-                if idx + 1 < len(tokens):
-                    aliases.add(tokens[idx + 1].lower())
-            if image.lower() == "scratch" or image.lower() in aliases:
-                continue
+        for image in _dockerfile_from_images((ROOT / name).read_text()):
             assert image in pulled, (
                 f"{name} builds on {image!r}, which the pre-pull step does not "
                 f"cover. It pulls: {sorted(pulled)}"
@@ -276,7 +379,7 @@ def test_a_plain_from_is_pulled(tmp_path: Path) -> None:
 
 
 def test_a_named_stage_is_pulled_by_its_image(tmp_path: Path) -> None:
-    assert _list(_write(tmp_path, "FROM node:22-alpine AS frontend\n")) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, "FROM node:26-alpine AS frontend\n")) == ["node:26-alpine"]
 
 
 def test_a_platform_flag_is_not_mistaken_for_the_image(tmp_path: Path) -> None:
@@ -290,6 +393,24 @@ def test_lowercase_from_is_recognised(tmp_path: Path) -> None:
     assert _list(_write(tmp_path, "from python:3.12-slim as base\n")) == ["python:3.12-slim"]
 
 
+def test_python_from_import_inside_run_heredoc_is_not_an_image(tmp_path: Path) -> None:
+    """#2271 image smoke embeds `from datetime import ...` in a RUN heredoc.
+
+    Case-insensitive Dockerfile parsing must not treat that as `FROM datetime`
+    (or `FROM maistro.scheduling.cron`) and try to pull it from Docker Hub.
+    """
+    body = (
+        "FROM python:3.13.16-slim-bookworm AS runtime\n"
+        "RUN python - <<'PY'\n"
+        "from datetime import UTC, datetime\n"
+        "from maistro.scheduling.cron import parse_cron\n"
+        "print(parse_cron, datetime, UTC)\n"
+        "PY\n"
+    )
+
+    assert _list(_write(tmp_path, body)) == ["python:3.13.16-slim-bookworm"]
+
+
 def test_the_same_image_twice_is_pulled_once(tmp_path: Path) -> None:
     body = "FROM cgr.dev/chainguard/python:latest-dev AS builder\nFROM cgr.dev/chainguard/python:latest-dev\n"
 
@@ -301,11 +422,11 @@ def test_images_from_several_dockerfiles_are_merged(tmp_path: Path) -> None:
     two = tmp_path / "two"
     one.mkdir()
     two.mkdir()
-    (one / "Dockerfile").write_text("FROM node:22-alpine\n")
+    (one / "Dockerfile").write_text("FROM node:26-alpine\n")
     (two / "Dockerfile").write_text("FROM python:3.12-slim\n")
 
     assert _list(one / "Dockerfile", two / "Dockerfile") == [
-        "node:22-alpine",
+        "node:26-alpine",
         "python:3.12-slim",
     ]
 
@@ -315,15 +436,15 @@ def test_images_from_several_dockerfiles_are_merged(tmp_path: Path) -> None:
 
 def test_a_stage_reference_is_not_pulled(tmp_path: Path) -> None:
     """`FROM builder` names an earlier stage; pulling it would 404."""
-    body = "FROM node:22-alpine AS builder\nFROM builder\nRUN true\n"
+    body = "FROM node:26-alpine AS builder\nFROM builder\nRUN true\n"
 
-    assert _list(_write(tmp_path, body)) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, body)) == ["node:26-alpine"]
 
 
 def test_a_stage_reference_is_matched_case_insensitively(tmp_path: Path) -> None:
-    body = "FROM node:22-alpine AS Builder\nFROM builder\n"
+    body = "FROM node:26-alpine AS Builder\nFROM builder\n"
 
-    assert _list(_write(tmp_path, body)) == ["node:22-alpine"]
+    assert _list(_write(tmp_path, body)) == ["node:26-alpine"]
 
 
 def test_scratch_is_not_pulled(tmp_path: Path) -> None:
@@ -347,7 +468,7 @@ def test_an_image_that_shares_a_name_with_a_later_stage_is_still_pulled(
 
 def test_an_unresolved_build_arg_is_reported_not_silently_dropped(tmp_path: Path) -> None:
     """It cannot be pulled without build args, so it must not vanish quietly."""
-    path = _write(tmp_path, "ARG BASE=python:3.12-slim\nFROM ${BASE}\nFROM node:22-alpine\n")
+    path = _write(tmp_path, "ARG BASE=python:3.12-slim\nFROM ${BASE}\nFROM node:26-alpine\n")
 
     result = subprocess.run(
         [str(SCRIPT), "--list", str(path)],
@@ -357,7 +478,7 @@ def test_an_unresolved_build_arg_is_reported_not_silently_dropped(tmp_path: Path
         check=True,
     )
 
-    assert result.stdout.splitlines() == ["node:22-alpine"]
+    assert result.stdout.splitlines() == ["node:26-alpine"]
     assert "cannot resolve" in result.stderr
 
 

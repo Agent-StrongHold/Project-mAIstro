@@ -191,8 +191,11 @@ def execute_source(
     shutil.copy2(rows_path, checkpoint_dir / rows_path.name)
 
     artifact_name = f"mutation-checkpoint-{run_id}-{identifier}-attempt-{run_attempt}"
-    upload_env = dict(os.environ)
-    run(["node", str(uploader), artifact_name, str(checkpoint_dir)], env=upload_env)
+    if str(uploader) != "none":
+        # "none" is the explicit no-upload mode used by local and scheduled
+        # runs without a GitHub artifact context; anything else must exist.
+        upload_env = dict(os.environ)
+        run(["node", str(uploader), artifact_name, str(checkpoint_dir)], env=upload_env)
     return checkpoint
 
 
@@ -204,7 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
-    parser.add_argument("--uploader", type=Path, required=True)
+    parser.add_argument(
+        "--uploader",
+        type=Path,
+        required=True,
+        help="node artifact uploader script; pass the literal 'none' to skip uploads",
+    )
     args = parser.parse_args(argv)
 
     environment = json.loads(args.environment.read_text(encoding="utf-8"))

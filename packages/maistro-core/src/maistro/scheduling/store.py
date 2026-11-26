@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -94,17 +95,57 @@ class ScheduleStore(Protocol):
 
     async def get(self, schedule_id: str) -> Schedule | None: ...
 
-    async def delete(self, schedule_id: str) -> bool: ...
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
+        """Remove the row; ``tombstone`` records the removal as durable (#2467).
+
+        The default is a deliberate schedule deletion: ``tombstoned_ids``
+        reports the id so no surviving projection is resurrected. Passing
+        ``tombstone=False`` removes a definition the schedule's own retained
+        projection outlives -- clearing a bound template -- and leaves no
+        marker, because the schedule itself was not deleted.
+        """
+        ...
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         """Every schedule filed in one Project, enabled or not."""
         ...
 
+    async def list_all(self) -> list[Schedule]:
+        """Every stored schedule, enabled or not, scoped or not.
+
+        The projection-repair direction needs this (#2467): startup must see
+        every canonical definition to surface one whose Hive row went
+        missing in a create's two-write window — ``list_for_project`` cannot,
+        because it needs a scope the orphan's absent projection can no longer
+        name.
+        """
+        ...
+
+    async def tombstoned_ids(self) -> AbstractSet[str]:  # noqa: V105
+        """Schedule ids whose canonical deletion is durable (#2467).
+
+        ``delete`` is what makes a deletion deliberate, so every delete
+        leaves its id here. A projection row for a tombstoned id is stale by
+        definition: startup removes it instead of re-importing it, so a
+        schedule the canonical store deleted cannot be resurrected by the
+        Hive row a crash left behind. ``put`` of the same id clears the
+        marker — a later create is a new, authoritative definition.
+
+        The only callers are the Hive scheduler's startup and read paths
+        (``services/scheduler.py``), outside the ``packages/*/src`` tree
+        this scan covers — hence the noqa, like the other
+        consumed-outside-the-scan surfaces.
+        """
+        ...
+
     async def due(self, *, now: datetime) -> list[Schedule]:
-        """Enabled schedules whose next_due_at has arrived.
+        """Enabled schedules requiring recurrence evaluation or manual recovery.
 
         Schedules with no recorded next_due_at are returned too: an unknown
-        cursor must be evaluated, never silently treated as not-due.
+        cursor must be evaluated, never silently treated as not-due. Pending
+        manual-fire markers also require evaluation even with a future due
+        cursor; the admitter owns their lease check and settlement. Disabled
+        schedules remain excluded, including those with pending markers.
         """
         ...
 
@@ -384,7 +425,9 @@ def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
 
 
 def _is_due(schedule: Schedule, *, now: datetime) -> bool:
-    return schedule.enabled and (schedule.next_due_at is None or schedule.next_due_at <= now)
+    return schedule.enabled and (
+        bool(schedule.pending_fires) or schedule.next_due_at is None or schedule.next_due_at <= now
+    )
 
 
 class InMemoryScheduleStore:
@@ -392,17 +435,28 @@ class InMemoryScheduleStore:
 
     def __init__(self) -> None:
         self._schedules: dict[str, Schedule] = {}
+        self._deleted: set[str] = set()
 
     async def put(self, schedule: Schedule) -> Schedule:
         stored = _merged(self._schedules.get(schedule.schedule_id), schedule)
         self._schedules[schedule.schedule_id] = stored
+        self._deleted.discard(schedule.schedule_id)
         return stored
 
     async def get(self, schedule_id: str) -> Schedule | None:
         return self._schedules.get(schedule_id)
 
-    async def delete(self, schedule_id: str) -> bool:
-        return self._schedules.pop(schedule_id, None) is not None
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
+        deleted = self._schedules.pop(schedule_id, None) is not None
+        if deleted and tombstone:
+            self._deleted.add(schedule_id)
+        return deleted
+
+    async def list_all(self) -> list[Schedule]:
+        return list(self._schedules.values())
+
+    async def tombstoned_ids(self) -> AbstractSet[str]:  # noqa: V105
+        return frozenset(self._deleted)
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         return [
@@ -473,6 +527,18 @@ CREATE TABLE IF NOT EXISTS schedules (
     enabled INTEGER NOT NULL,
     next_due_at REAL,
     definition TEXT NOT NULL
+)
+"""
+
+# The durable deletion marker (#2467). `delete` is what makes a deletion
+# deliberate, so every delete records its id here in the same serialized
+# write that removes the row — a crash cannot separate them. Startup reads
+# this table to refuse re-importing a schedule the canonical store deleted,
+# however intact the Hive row a crash left behind is.
+_TOMBSTONE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schedule_deletions (
+    schedule_id TEXT PRIMARY KEY,
+    deleted_at REAL NOT NULL
 )
 """
 
@@ -563,6 +629,7 @@ class SqliteScheduleStore:
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_TOMBSTONE_SCHEMA)
             # The tick runs this query on every pass; without the index it is a
             # full scan that grows with every schedule ever created.
             await self._conn.execute(
@@ -582,6 +649,12 @@ class SqliteScheduleStore:
             # are the ones on disk *now*, not the ones the caller read.
             stored = _merged(await self.get(schedule.schedule_id), schedule)
             await self._upsert(stored)
+            # A live definition is authority saying this id is not deleted:
+            # a create after a delete replaces the tombstone, never sits
+            # behind it (#2467).
+            await self._conn.execute(
+                "DELETE FROM schedule_deletions WHERE schedule_id = ?", (schedule.schedule_id,)
+            )
         return stored
 
     async def _upsert(self, schedule: Schedule) -> None:
@@ -611,12 +684,19 @@ class SqliteScheduleStore:
             row = await cursor.fetchone()
         return self._row_to_schedule(row[0]) if row else None
 
-    async def delete(self, schedule_id: str) -> bool:
+    async def delete(self, schedule_id: str, *, tombstone: bool = True) -> bool:
         async with self._serialized_write():
             cursor = await self._conn.execute(
                 "DELETE FROM schedules WHERE schedule_id = ?", (schedule_id,)
             )
-            return bool(cursor.rowcount)
+            deleted = bool(cursor.rowcount)
+            if deleted and tombstone:
+                await self._conn.execute(
+                    "INSERT OR IGNORE INTO schedule_deletions (schedule_id, deleted_at) "
+                    "VALUES (?, ?)",
+                    (schedule_id, datetime.now(UTC).timestamp()),
+                )
+            return deleted
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         async with self._conn.execute(
@@ -627,10 +707,23 @@ class SqliteScheduleStore:
             rows = await cursor.fetchall()
         return [self._row_to_schedule(row[0]) for row in rows]
 
+    async def list_all(self) -> list[Schedule]:
+        async with self._conn.execute(
+            "SELECT definition FROM schedules ORDER BY schedule_id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._row_to_schedule(row[0]) for row in rows]
+
+    async def tombstoned_ids(self) -> AbstractSet[str]:  # noqa: V105
+        async with self._conn.execute("SELECT schedule_id FROM schedule_deletions") as cursor:
+            rows = await cursor.fetchall()
+        return frozenset(row[0] for row in rows)
+
     async def due(self, *, now: datetime) -> list[Schedule]:
         async with self._conn.execute(
             "SELECT definition FROM schedules WHERE enabled = 1 "
-            "AND (next_due_at IS NULL OR next_due_at <= ?) ORDER BY schedule_id",
+            "AND (next_due_at IS NULL OR next_due_at <= ? "
+            "OR json_array_length(definition, '$.pending_fires') > 0) ORDER BY schedule_id",
             (now.timestamp(),),
         ) as cursor:
             rows = await cursor.fetchall()

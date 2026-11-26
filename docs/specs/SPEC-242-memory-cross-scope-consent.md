@@ -41,9 +41,10 @@ no widening workflow, and there is no consent-task queue.
 
 ## Goals
 
-- `can_read(reader: Principal, memory: EpisodicMemory) -> bool`: true iff the reader's scope matches
-  the memory's scope, or the memory is marked `shared` and the reader's scope is at-or-above the
-  memory's origin scope.
+- `can_read(reader: Principal, memory: EpisodicMemory) -> bool`: true iff the reader owns the memory
+  on the owner axis at its own scope (USER-scope compares the canonical `user_id`, AGENT-scope
+  compares `agent_id` — matching scope alone is not sufficient), or the memory is marked `shared`
+  and the reader's scope is at-or-above the memory's origin scope.
 - `propose_widen(memory, target_scope) -> ConsentTask`: builds a consent task naming the memory's
   summary and the proposed wider scope, addressed to the memory's owner/admin.
 - A `ConsentTask` data shape and an `approve`/`reject` resolution path that, on approval, widens the
@@ -101,6 +102,27 @@ It writes an audit entry and creates no `ConsentTask`. Widening to another
 user, or to TEAM, ORGANIZATION or GLOBAL scope, still requires the
 `propose_widen -> resolve_consent -> apply_widen` flow above.
 
+## Clarification: an authorized same-user agent read is not a cross-agent share
+
+"Cross-agent sharing to another principal" and "an authorized Workspace Agent reading canonical
+user-scope memory for the same authenticated user" are different cases, and only the first trips
+the consent/shareable machinery of this SPEC:
+
+- A Workspace Agent authorized as user *U* presents *U*'s canonical principal (`scope: USER`,
+  `user_id: U`). Reading a USER-scope memory whose `user_id` is *U* is an **own-scope read**
+  (`can_read` returns true through the exact-scope branch): no `ConsentTask`, no `shared` marker,
+  and nothing is widened for any other principal.
+- A read that reaches a **different principal** still follows this SPEC. Another user's memory
+  needs consent ([ADR-092526-4391](../adr/ADR-092526-4391-same-user-user-model-promotion-is-self-consented.md)
+  keeps cross-user widening behind `propose_widen -> resolve_consent -> apply_widen`), and another
+  agent's AGENT-scope memory needs the owner to mark it shareable — even when both records belong
+  to the same user. Authorization to act for a user is not authorization to read that user's
+  agents' private memories.
+
+Durable cross-Workspace reuse itself stays on canonical PostgreSQL/pgvector user-model state with
+provenance, confidence and temporal semantics (ADR-092526-4391); Ladybug working memory remains a
+disposable per-Workspace graph that is never traversed cross-Workspace.
+
 ## Acceptance criteria
 
 - [x] `can_read` returns true for a reader in the memory's exact scope.
@@ -120,6 +142,10 @@ user, or to TEAM, ORGANIZATION or GLOBAL scope, still requires the
   cases.
 - New unit tests for the `propose_widen` -> `resolve_consent` -> `apply_widen` flow, both approve and
   reject paths.
+- New unit tests pinning the same-user distinction: an authorized same-user Workspace Agent reads
+  that user's USER-scope memory without a `shared` marker (and leaves it unshared); a different
+  user's agent does not; and the user's Workspace Agent does not read another agent's AGENT-scope
+  memory without sharing, even when both records belong to the same user.
 
 ## Open questions
 

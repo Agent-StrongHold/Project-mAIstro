@@ -8,6 +8,13 @@ Items can be in three states:
 Manual dismissals live in kv_store under store_name='setup_checklist',
 key = item_id, value = {"dismissed_at": ISO8601}. The 7-day expiry is computed
 at read time — no background job needed.
+
+Scope, versus the other two "first-run state" notions (#443): this catalog
+answers "which optional post-provisioning steps remain" (LLM provider key,
+first chat, interview, integration PATs) for an already-authenticated user.
+It is deliberately NOT a first-run gate and never decides whether setup may
+run — that is ``routes/setup.py::_is_setup_complete`` alone, which this
+module's items presuppose has already gone terminal.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from services import user_credentials as cred_svc
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["setup-checklist"])
 logger = logging.getLogger(__name__)
@@ -28,11 +36,7 @@ _DISMISS_TTL_DAYS = 7
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 def _kv() -> Any | None:
@@ -322,19 +326,18 @@ def _llm_provider_activated() -> bool:
 def _has_chat_session(user_id: str) -> bool:
     """Has this person started a chat of their own?
 
-    This test was dead until #312: nothing wrote `user_id`, so it compared
-    every session against a value none of them had and the checklist item could
-    never complete. Binding ownership makes it live, which is also what makes
-    the seed exclusion necessary — the starter session is handed to the user,
-    not written by them, and counting it would tick the item for someone who
-    has never opened chat.
+    Workspace-scoped conversation sessions (#1822) are the create authority;
+    legacy `stores.chat_sessions` rows (including Welcome seeds) do not count.
     """
     try:
-        import stores
-        from services.owned_records import Owner, owned_chat_sessions
+        from services import conversation_sessions
 
-        owned = owned_chat_sessions(Owner(id=user_id))
-        return any(not s.id.startswith(stores.SEED_SESSION_PREFIX) for s in owned.values())
+        store = conversation_sessions.session_meta_store
+        for key in list(store.keys()):
+            raw = store.get(key)
+            if isinstance(raw, dict) and raw.get("user_id") == user_id:
+                return True
+        return False
     except Exception:
         return False
 

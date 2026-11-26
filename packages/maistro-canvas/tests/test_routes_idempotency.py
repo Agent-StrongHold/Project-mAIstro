@@ -215,3 +215,10 @@ async def test_conflicting_retry_after_terminal_is_409_not_500(
     )
 
     assert conflicting.status_code == 409, conflicting.text
+    body = conflicting.json()
+    assert body["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    assert body["detail"] == "idempotency key reused with different inputs"
+    # Seeded/internal RunIntegrityError text must not reach the client
+    # (CodeQL py/stack-trace-exposure).
+    assert "retried with different inputs" not in body["detail"]
+    assert "Canvas operation" not in conflicting.text

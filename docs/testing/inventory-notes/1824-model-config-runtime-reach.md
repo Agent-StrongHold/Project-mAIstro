@@ -1,0 +1,323 @@
+---
+inventory-delta:
+  packages/hive-conductor/backend/tests: +18
+  packages/maistro-server/tests: +5
+---
+
+# #1824 installed model configuration reaches the runtime's Binding and gateway credential
+
+Seventeen node IDs in
+`packages/hive-conductor/backend/tests/test_effective_gateway_key.py` (new) and
+seven in `packages/maistro-server/tests/test_worker_yaml_config_startup.py`
+(new) — eighteen since the CI-repair round below — plus two existing server
+node IDs rewritten in place
+(`test_startup.py::TestRouterApiKeyValidation`, same count): they pin the
+environment-only ROUTER_API_KEY refusal, which now requires pinning the YAML
+singleton to None, because the worker — correctly — loads the documented
+config into it during every lifespan boot.
+
+**Hive +17** pin the one effective-key contract
+(`services.secrets.effective_llm_gateway_key`): the precedence matrix
+(only-`MAISTRO_LLM_API_KEY`, only-`LITELLM_API_KEY`, both supported proxy
+aliases, alias ordering, vault-first on both names, conflict resolution,
+empty-string-falls-through, none-is-`None`); `sk-noop` removal (the legacy
+roster client refuses complete/stream *before any HTTP* when unconfigured,
+with a sanitized message carrying no key material); the embedded runtime
+building its roster client and governed endpoint from the effective key (and
+holding no key at all when nothing is configured); and the governed egress
+endpoint resolving the same credential through the same contract as the roster
+client.
+
+**Hive +1 (CI-repair round, diff-coverage)**:
+`test_configured_client_dispatches_with_the_effective_credential` covers the
+second arc of `_HttpOpenAILLMClient._require_credential`'s credential branch
+(`adapters/maistro_core.py`) — the one the merge-queue coverage gate measured
+at 50% of 2 branch arcs because every prior test drove the empty-key refusal.
+The new test pins the other half of the fail-closed contract: a client built
+with the effective key is *not* refused — it dispatches to the gateway it
+names, carrying that credential as the bearer token. `stream` delegates to
+`complete`, so one passage covers the guard for both entry points.
+
+**Server +3** prove the installed configuration reaches the runtime's scoped
+Binding: the declared `model.chat` Binding resolves through the real Container
+the worker itself built (existing bootstrap + scope routing; no transport; no
+test singleton injection), in-process and in a fresh shipped-entrypoint
+process. The loader semantics those two proofs ride on — the worker-side YAML
+hook, the fail-closed missing-file contract, and the sanitized refusal of a
+malformed/type-invalid file — are owned by develop's
+`test_model_config_process_startup.py` (see the reconciliation below), not
+duplicated here. Three further nodes (see "Credential-door proof" below) pin the credential
+half of the issue title, taking this note's server delta from **+2** to **+5**.
+
+## Develop-merge reconciliation (no node-ID delta)
+
+The branch was synced to develop `2f56be40a` (merge `b3b386da5`). The merge
+kept this note's +17/+7 exactly: no node IDs were added, removed or renamed by
+the reconciliation, so the front-matter deltas above are unchanged. Three
+develop-side test files predated the one-contract contract and were repaired
+for stub fidelity / cache hygiene, not for behavior:
+
+- `test_effective_gateway_key.py` — develop's `AdmittedModelCalls` wiring in
+  `_construct_runtime` reads `container.run_store`/`provider_adapter_catalog`
+  (real Container attributes, always present); the two runtime-construction
+  stubs now mirror them. `test_endpoint_resolves_the_effective_key` gained the
+  same `get_settings.cache_clear()` hygiene its sibling already documented:
+  develop's e2e module seeds the lru-cached Settings with its own gateway key,
+  which otherwise outranks the alias this test states.
+- `test_provider_pin_registration.py` — the `get_settings` stub now carries
+  `maistro_llm_api_key`, mirroring what pydantic-settings produces from the
+  env the same fixture sets (the effective-key contract reads that field).
+- `test_graph_runner.py` — the `_S` settings stub carries
+  `maistro_llm_api_key` (unconfigured), mirroring the real Settings field the
+  governed `_endpoint` reads on the canonical DAG path.
+
+The `tests/` suite drift this merge reports (`expected 5260, collected 5261`)
+is inherited, not introduced by #1824: no #1824 surface touches `tests/`, and
+this note's own deltas target `packages/hive-conductor/backend/tests` and
+`packages/maistro-server/tests` only. The drift has two carried components,
+now recorded: the #1881 oracle files (`1881-restore-oracle-snapshot-consistency.md`,
++19, merged from `2f56be40a`) and PR #1993's sentinel registry-parity node
+(`auto-1824-carried-1993-sentinel-registry-parity.md`, +1) whose delta was
+lost when develop's tip (`c2a22e55d`) rewrote the history the branch merged —
+develop tip collects 5241 for `tests/`, this branch 5261. (The original text
+of this paragraph claimed `tests/` was byte-identical to develop; that was
+true against `2f56be40a` and false after develop's rewrite — corrected here.)
+
+## Isolation repair: the `governed_env` settings window closes its cache
+
+Correction to the reconciliation claim above: one of those develop-side
+repairs *did* leave a behavioral cross-file effect — an order-dependent test
+isolation regression, not a production behavior change. The
+`governed_env` fixture in `test_legacy_dag_governed_quota.py` (branch-added
+suite) set `MAISTRO_LLM_BASE_URL`/`MAISTRO_LLM_API_KEY` without closing the
+`config.get_settings()` lru-cache window. When a preceding file left the
+cache empty (e.g. `test_runtime_wires_container_authorities`, whose
+`finally: cache_clear()` is itself the documented seam), the governed DAG run
+inside the window rebuilt the process-wide Settings singleton from the
+transient env — and the singleton kept `litellm_api_base='http://gateway.test'`
+after monkeypatch reverted the variables. The next readers then saw a
+"configured" gateway: `dag_node_runtime` composed a governed runtime for the
+canonical DAG spine tests in `test_graph_runner.py`, whose
+`canonical_graph_spine` context deliberately carries no policy evaluator, so
+the node's model call crossed the governed egress and was refused with
+"capability invocation policy unavailable" — two spine tests failed
+(`test_execute_dag_builds_config_and_returns_shape`,
+`test_execute_dag_entry_node_fallback_to_first_node`) whenever
+`test_governed_model_consumers.py` + `test_legacy_dag_governed_quota.py` ran
+before them, while each file alone passed and the full-suite order masked the
+pair.
+
+Repair (test-only, in `test_legacy_dag_governed_quota.py`): `governed_env`
+now brackets the transient env window with `config.get_settings.cache_clear()`
+on both sides — the same seam `test_runtime_wires_container_authorities` and
+`test_effective_gateway_key.py` already document. No node IDs added, removed
+or renamed; the front-matter deltas are unchanged. Verified: the exact
+previously-failing quartet order
+(`test_governed_model_consumers.py test_legacy_dag_governed_quota.py
+test_provider_pin_registration.py test_graph_runner.py`) passes 51/51, and the
+reverse orders (quota-first, graph-runner-first) pass unchanged.
+
+Residual (pre-existing on develop, out of this branch's surfaces):
+`test_dag_model_tools.py` sets the same gateway env in a yield fixture without
+patching or clearing the settings cache — the identical latent hazard, dormant
+today because the cache is populated when it runs.
+
+## Exact-debt-ledger repair (this CI-repair round)
+
+Two ledgers recorded the pre-#1824 deadness of code this issue makes live;
+both were pruned per each file's own protocol, not weakened:
+
+- `quality/vulture-baseline.json`: removed the one stale row
+  `maistro.config.loader::unused function 'load_yaml_config'` (618 → 617
+  findings). `maistro_server/main.py`'s worker startup now calls the function
+  (the #1824 boundary-3 change), so vulture no longer reports it unused.
+- `quality/reachability-baseline.json` + `reachability-dispositions.json`:
+  removed `maistro.config.loader` from the unreachable set (169 → 168) and its
+  `config-loader` CONNECT disposition group. The worker startup import gives
+  the module a production entry point; the baseline's own `_comment` requires
+  pruning entries that become reachable, and the dispositions checker rejects
+  a group naming a module outside the baseline. Consequence carried through:
+  the `Shared contracts and config` row of
+  `docs/architecture/CONVERGENCE-MATRIX.md` moves `few` → `none` (0 of 85
+  modules unreachable), per the checker's census.
+
+Verified: `check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` → OK (169 → 168 shrink is the allowed direction);
+`check-reachability.py`, `check-reachability-provenance.py`,
+`check-reachability-dispositions.py`, `check-reachability-dispositions-provenance.py`,
+`check-ac-state.py`, `check-promotion-surface.py`, `check-convergence-matrix.py`,
+`check-test-duplicates.py`, `check-suite-inventory.py` all exit 0; the four
+reachability-baseline identity tests pass (they failed at the round's starting
+head `0485b254d` and pass on develop tip — the drift was the branch's own
+ revived module).
+
+## Develop-sync conflict resolution (merge of `e708451b3887` / `fad17a87`)
+
+The develop sync left one unresolved conflict in
+`packages/maistro-server/src/maistro_server/main.py`: the branch (#1824) had
+added `_load_documented_yaml_config` and develop (#1880) had added
+`_load_operator_yaml`, both as the first YAML consumer in `_runtime_lifespan`.
+The two are the same behavior with contradictory failure semantics, so the
+merge keeps one.
+
+Resolution: develop's `_load_operator_yaml` wins. Its docstring states the
+reason the branch's version is not kept — the branch re-raised
+`RuntimeError(...) from exc`, and the chained cause is a parser/pydantic
+error whose message embeds raw file content (`_load_raw_yaml`'s
+"Invalid YAML in ...", a type-invalid value echoing the operator's input).
+That publishes secret material to stderr in the traceback, which violates the
+issue's "sanitized diagnostics" requirement; develop's `from None` cuts the
+chain and logs only the path and the exception type. The branch's duplicate
+function and its local `load_yaml_config` import are removed; the module-level
+import develop's function uses stays.
+
+Test consequence: the branch's
+`test_worker_yaml_config_startup.py` had seven node IDs. Five pinned the
+loader semantics (missing-file, malformed refusal, type-invalid refusal,
+sanitized-message, fresh malformed refusal) and asserted the branch's message
+and kept `__cause__`; those are develop's coverage and are dropped rather than
+re-pointed, so the loader keeps one test home. The two that prove the issue's
+actual title — the YAML-declared Binding resolving through the real Container,
+in-process and in a fresh worker process — survive unchanged (they never
+referenced the loader function or its message). Net server delta: **+7 → +2**,
+recorded in the front matter above; `1880-worker-yaml-load.md` keeps its +6
+for develop's own file, so the suite's expected collected count is unchanged
+in total. No quality-ledger rows move: `maistro.config.loader` stays live
+through the surviving module-level import.
+
+## Credential-door proof (merge-queue CI-repair round at `64b98c763`)
+
+`maistro_server.main._gateway_credential` had **no test**: no node in the tree
+named it, and no server test set `LITELLM_API_KEY`, so the acceptance criterion
+"bundled and external gateways use intended credentials" was carried by prose
+in that function's docstring only. It is exactly the drift the issue's baseline
+paragraph names — "Server construction used to read only the bundled
+`LITELLM_MASTER_KEY` setting" — so the unproven half was the half that had
+already regressed once.
+
+`test_worker_yaml_config_startup.py::TestInstalledGatewayCredential` (+3 nodes;
+this file is the only branch-added node source in the suite, so its note delta
+moves **+2 -> +5**) now pins it, one node per door:
+
+- `test_an_external_gateway_key_outranks_the_bundled_master_key` — with
+  `LITELLM_API_KEY` stated, both `_gateway_credential(settings)` and
+  `_agent_config(settings).litellm_key` (the value `create_container` registers
+  the scoped `model.chat` credential from) carry the external key, not the
+  bundled master key;
+- `test_a_bundled_stack_keeps_its_master_key` — the degenerate path: nothing
+  but the bundled proxy configured keeps `LITELLM_MASTER_KEY` as the credential
+  instead of resolving to `""`;
+- `test_the_governed_egress_carries_the_same_credential` — drives the real
+  composition point `_build_container` (in-memory Container, no DB) with
+  `GatewayEndpoint` instrumented, and asserts the governed egress endpoint is
+  built with the same external key the `AgentConfig` handed the Container: the
+  two doors read one decision, not two resolutions of it.
+
+Both fixtures are the shipped shape (env-only, no singleton injection).
+Mutation evidence, run in this round: reverting `_gateway_credential` to
+`return settings.litellm.master_key` fails the first and third nodes only;
+changing only the egress endpoint in `_build_container` back to
+`settings.litellm.master_key` fails the third node alone. Unmutated:
+`uv run pytest packages/maistro-server/tests/test_worker_yaml_config_startup.py
+-q` -> 5 passed. Suite inventory: `check-suite-inventory.py` ->
+`ok: 21 suite(s) match the recorded inventory`.
+
+## Inherited blocker: `maistro.runs.admission_identity` (NOT this branch)
+
+The merge-queue `test` gate is red for this candidate, and the failure is
+develop's, not #1824's. `pytest tests/ --ignore=tests/tools/registry` at
+`64b98c763` is **5394 passed, 3 failed** and the three are
+`tests/test_check_reachability.py::test_baseline_matches_the_tree` plus both
+`tests/test_reachability_baseline_identity.py` identity nodes, all reporting the
+same single module:
+
+    maistro.runs.admission_identity  (newly unreachable, absent from the baseline)
+
+Provenance of that module is PR #1936 (`auto-1851`, merge `e20e9f52e`, now in
+`develop`): it added `packages/maistro-core/src/maistro/runs/admission_identity.py`
+plus vulture rows but **no** `quality/reachability-baseline.json` row. The
+module's own docstring calls it "an inactive contract leaf — nothing in
+production imports it yet", which is the case the baseline exists to bank. Not
+fixable here:
+
+- `quality/reachability-baseline.json` and `quality/ratchet-authorizations.json`
+  are byte-identical to `origin/develop` on this branch
+  (`git diff --numstat origin/develop...HEAD -- quality/` is empty) and the
+  branch touches no `runs/` path, so nothing this lane changed produced it.
+- `scripts/check-reachability-provenance.py` reads authorizations **from the
+  merge base** (`prov.load_authorizations("reachability", base=trusted.base_sha)`)
+  and fails with "NEW unreachable module absent from trusted base and not
+  previously authorized" for any candidate-side ledger edit. Banking it needs
+  the two-merge sequence on `develop` — grant first, row second — which is the
+  `auto-1851`/`#1845` owner's call, not this lane's.
+
+Same root cause, the other red checks at `fac3f6c38` (check-runs captured for
+this job): `Quality / Reachability` (the gate itself), `exact-debt-ledger`
+(`check-ratchet-provenance.py` -> `FAIL: ratchet provenance inventory is
+incomplete - check-reachability-provenance.py: trusted-base gate returned 1`)
+and the `Coverage gate`, whose combine step re-runs the same root `tests/`
+suite. The vulture ledger itself is green:
+`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+'*/third_party/*'` -> `1326 reviewed identities -> 1326 findings`, exit 0, and
+`check-shipped-surface-truth.py` -> complete. `Supply chain (pip-audit)` reds
+with no dependency delta (`uv.lock`/`pyproject.toml` unchanged vs
+`origin/develop`), i.e. a disclosed CVE, not a branch change.
+
+Environment note for the next round: `scripts/check-ac-state.py` writes a
+gitignored `quality/ac-state.json`, and while that file exists in a worktree
+`tests/test_branch_independence_repository.py::test_every_quality_json_state_surface_is_classified_once`
+fails ("unclassified quality state"). It does not exist in a CI checkout — the
+root-suite run above was taken with it moved aside; do not read it as a
+regression.
+
+## Develop sync: merge of `8a9139bc5` (trunk CI unblock) — the last two red gates
+
+Fresh check-runs captured for head `39bfe2aa2` show the section above
+resolved on the candidate: `test`, `exact-debt-ledger`, `Quality /
+Reachability` and `Quality / Vulture` all report success (the three
+`admission_identity` reachability nodes pass at this head — re-verified
+locally). The only remaining reds were `security` and `Supply chain
+(pip-audit)`, and develop's next commit is exactly their fix:
+`8a9139bc5` bumps certifi 2026.4.22 → 2026.10.19 (GHSA-6q48-6c7w-9gw2),
+pillow → 13.0.0, and npm-audit-fixes the canvas frontend's launch-editor.
+This round merges `origin/develop` into the branch (merge commit
+`f9a15e30f0ce`, clean — the branch touches none of the three files the
+commit changes, so no conflict resolution was needed).
+
+Post-merge validation, all on the merged tree:
+
+- ci.yml `security` job shape: `uv sync --locked --extra dev`, `uv pip
+  install pip-audit`, `uv pip freeze --exclude-editable`, `pip-audit
+  --strict --format=json` → only the pre-allowlisted `ecdsa==0.19.2
+  PYSEC-2026-1325`; `scripts/pip_audit_gate.py` → exit 0. Same for the
+  security.yml `Supply chain (pip-audit)` shape (`uv sync --locked
+  --all-extras` first). `scripts/check-dependency-namespaces.py` → exit 0.
+- `uv run ruff check .` / `ruff format --check .` clean; vulture ratchet
+  1326/1326 exit 0; `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py`, `check-reachability.py`,
+  `check-reachability-dispositions.py` all OK with base now `8a9139bc5`.
+- Targeted suites: hive `test_effective_gateway_key.py` +
+  `test_governed_model_consumers.py` + `test_graph_runner.py` +
+  `test_legacy_dag_governed_quota.py` +
+  `test_legacy_dag_node_container_composition.py` +
+  `test_provider_pin_registration.py` → 72 passed; server
+  `test_startup.py` + `test_worker_yaml_config_startup.py` → 21 passed;
+  core `test_admitted_model_calls.py` + `test_model_chat_egress.py` +
+  `test_credential_routing.py` → 99 passed; `test_loader.py` +
+  `providers/test_config.py` + `test_model_config_process_startup.py` →
+  40 passed.
+- Full root `test` gate (`pytest tests/ --ignore=tests/tools/registry`,
+  CI env shape): 5396 passed, 138 skipped, and the single failure is the
+  documented `quality/ac-state.json` worktree artifact — reproduced
+  passing with the gitignored file moved aside (restored byte-identical;
+  worktree clean). `check-suite-inventory.py` → ok, 21 suites.
+- Compose rendering (`docker compose config` with required install vars
+  set): an external-key stack renders `LITELLM_API_KEY`/`LITELLM_PROXY_KEY`
+  = the external key on **both** `hive-conductor` and `maistro-engine`, and
+  `MAISTRO_LLM_API_KEY` on the conductor; a bundled-only stack derives both
+  services' `LITELLM_API_KEY` from `LITELLM_MASTER_KEY` with
+  `MAISTRO_LLM_API_KEY` empty — the two compositions the issue's
+  precedence matrix must survive.
+
+No node IDs added, removed or renamed by this round; the front-matter
+deltas are unchanged.

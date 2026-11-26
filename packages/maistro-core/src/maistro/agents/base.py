@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import logging as _logging
 from collections import deque
+from copy import deepcopy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
 from maistro.security.normalize import to_scan_string
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import AgentResponse
+from maistro.types.tool import ToolCall
 
 # Bounded tool-result analysis context. Tool output is untrusted; a payload
 # split across individually-benign results is only visible when the later
@@ -119,16 +124,18 @@ _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
 }
 
 
-def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, object]:
+def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, Any] | None:
     if registry is not None:
         defn = registry.get(name)
         if defn is not None:
+            if not isinstance(defn.parameters, dict) or defn.parameters.get("type") != "object":
+                return None
             return {
                 "type": "function",
                 "function": {
                     "name": defn.name,
                     "description": defn.description,
-                    "parameters": defn.parameters,
+                    "parameters": deepcopy(defn.parameters),
                 },
             }
 
@@ -136,20 +143,16 @@ def _build_tool_schema(name: str, *, registry: Any = None) -> dict[str, object]:
     if schema:
         return {
             "type": "function",
-            "function": {"name": name, **schema},
+            "function": {"name": name, **deepcopy(schema)},
         }
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": f"Run {name}",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
+    # An Agent declaration is not a schema. Unknown tools must neither be
+    # exposed as unrestricted input nor admitted by the shared tool boundary.
+    return None
 
 
 if TYPE_CHECKING:
     from maistro.agents.context_builder import ContextBuilder
+    from maistro.protocols.coins import CoinLedger
     from maistro.protocols.llm import LLMClient
     from maistro.protocols.memory import LearningStore, OutcomeStore, SessionStore
     from maistro.protocols.prompts import PromptManager
@@ -237,11 +240,12 @@ class Agent:
         outcome_store: OutcomeStore | None = None,
         session_store: SessionStore | None = None,
         quota_tracker: QuotaTracker | None = None,
-        coin_ledger: Any = None,
+        coin_ledger: CoinLedger | None = None,
         tracer: TracingBackend | None = None,
         tool_executor: Any = None,
         tool_registry: Any = None,
         agent_resolver: Any = None,
+        audit_log: Any = None,
     ) -> None:
         self.identity = identity
         self._strategy = strategy
@@ -264,6 +268,9 @@ class Agent:
         self._tracer = tracer
         # Resolves a sub-agent name -> Agent for delegation. Callable or mapping.
         self._agent_resolver = agent_resolver
+        # Canonical audit trail for refusals that happen before Sentinel
+        # pre_call (#847): the strategy gate and this boundary's own denials.
+        self._audit_log = audit_log
 
     async def handle(
         self,
@@ -276,6 +283,10 @@ class Agent:
         status_callback: Any = None,
         classified_task_type: str = "",
         turn_id: str | None = None,
+        goal_id: str | None = None,
+        run_id: str | None = None,
+        invocation_id: str | None = None,
+        delegation_scope: str | None = None,
         _delegation_depth: int = 0,
     ) -> AgentResponse:
         # `intent` was accepted and never read — line 219 was the only mention of
@@ -308,6 +319,10 @@ class Agent:
                 status_callback=status_callback,
                 classified_task_type=classified_task_type,
                 turn_id=turn_id,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                delegation_scope=delegation_scope,
                 _delegation_depth=_delegation_depth,
             )
         except Exception as exc:
@@ -353,6 +368,10 @@ class Agent:
         status_callback: Any,
         classified_task_type: str,
         turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
@@ -380,18 +399,21 @@ class Agent:
 
         tool_defs: list[dict[str, Any]] | None = None
         if self.identity.tools:
-            tool_defs = [
-                _build_tool_schema(name, registry=self._tool_registry)
-                for name in self.identity.tools
-            ]
+            tool_defs = self._tool_definitions() or None
 
         model = model_override or self.identity.model
         strategy_kwargs = self._build_strategy_kwargs(
             auth, trace, status_callback, classified_task_type
         )
 
-        result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+        result = await self._run_strategy_for_turn(
+            context_messages,
+            model,
+            tool_defs,
+            strategy_kwargs,
+            trace,
+            turn_id,
+            delegation_depth=_delegation_depth,
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -418,6 +440,10 @@ class Agent:
                 depth=_delegation_depth,
                 trace=trace,
                 turn_id=turn_id,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                delegation_scope=delegation_scope,
             )
             if delegated is not None:
                 return await self._sanitize_agent_response(delegated, trace)
@@ -442,9 +468,6 @@ class Agent:
 
         await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
-        if self._learning_promoter and injected_learning_ids:
-            await self._learning_promoter.check_and_promote(org_id=org_id)
-
         await self._persist_run(
             result,
             auth=auth,
@@ -457,6 +480,14 @@ class Agent:
             injected_learning_ids=injected_learning_ids,
             turn_id=turn_id,
         )
+
+        # Promote only after the current Run's outcome is recorded:
+        # `_persist_run` -> `mark_outcome` updates the confidence counters this
+        # turn just paid for, and checking first would promote on the previous
+        # turn's evidence (e.g. promoting 3/4=0.75 at a 0.7 floor even though
+        # this turn's failure should have dropped it to 3/5).
+        if self._learning_promoter and injected_learning_ids:
+            await self._learning_promoter.check_and_promote(org_id=org_id)
 
         self._finalize_trace_if_present(
             trace, result, model, session_history_count, injected_learning_ids
@@ -504,6 +535,14 @@ class Agent:
         if status_callback:
             strategy_kwargs["status_callback"] = status_callback
         strategy_kwargs["identity"] = self.identity
+        # The declaration is an effective allowlist at execution time; a model
+        # response cannot add names merely because a provider accepts them.
+        strategy_kwargs["allowed_tools"] = frozenset(self.identity.tools)
+        # #847: refusals at the strategy gate precede Sentinel.pre_call, so
+        # they carry their own scoped denial evidence through the canonical
+        # audit log rather than only an error string.
+        if self._audit_log is not None:
+            strategy_kwargs["audit_log"] = self._audit_log
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs
@@ -560,6 +599,15 @@ class Agent:
                 success=not tool_had_failures,
                 org_id=org_id,
             )
+            if tool_had_failures and self._learning_promoter:
+                # Failure knowledge capture (#121, ADR-100126-8c2d): this turn's
+                # recorded failure is the evidence that just moved. When a
+                # learning's recorded failures now dominate its successes,
+                # the promoter reclassifies it as retained ANTI_PATTERN
+                # knowledge, so later Runs stop re-buying the failure.
+                # Reclassification is not validation: the repertoire still
+                # requires the Gauntlet like any other learning.
+                await self._learning_promoter.capture_anti_patterns(org_id)
 
     async def _prepare_user_input(
         self,
@@ -690,6 +738,44 @@ class Agent:
             )
         return context_messages, injected_learning_ids
 
+    async def _run_strategy_for_turn(
+        self,
+        context_messages: list[dict[str, Any]],
+        model: str,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+        trace: Any,
+        turn_id: str | None,
+        *,
+        delegation_depth: int = 0,
+    ) -> Any:
+        """Set canonical LLM correlation for one turn, then clear it."""
+        set_agent_turn = getattr(self._llm, "set_agent_turn", None)
+        set_turn = getattr(self._llm, "set_turn", None)
+        clear_turn = getattr(self._llm, "clear_turn", None)
+        if callable(set_agent_turn):
+            # In-agent delegation is one tail-call chain inside one Attempt
+            # (ADR-082426-6201). Its existing depth distinguishes revisits to
+            # the same Agent without inventing canonical execution records.
+            set_agent_turn(agent_name=self.identity.name, delegation_depth=delegation_depth)
+        elif callable(set_turn):
+            # Domain turn/session ids are not canonical Run ids. The client
+            # adopts the identity already bound by the Attempt executor.
+            del turn_id
+            set_turn(agent_name=self.identity.name)
+        try:
+            return await self._run_strategy(
+                context_messages,
+                model,
+                tool_defs,
+                strategy_kwargs,
+                trace,
+                delegation_depth=delegation_depth,
+            )
+        finally:
+            if callable(clear_turn):
+                clear_turn()
+
     async def _run_strategy(
         self,
         context_messages: list[dict[str, Any]],
@@ -697,10 +783,14 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
         trace: Any,
+        *,
+        delegation_depth: int = 0,
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
-        governed_executor = self._governed_tool_executor(tool_defs, strategy_kwargs)
+        governed_executor = self._governed_tool_executor(
+            tool_defs, strategy_kwargs, delegation_depth=delegation_depth
+        )
         try:
             if not trace:
                 return await self._strategy.reason(
@@ -753,27 +843,54 @@ class Agent:
                 trace.score("strategy_error", 0.0, "Strategy raised an exception")
             return None
 
+    def _tool_definitions(self) -> list[dict[str, Any]]:
+        return [
+            schema
+            for name in self.identity.tools
+            if (schema := _build_tool_schema(name, registry=self._tool_registry)) is not None
+        ]
+
     def _governed_tool_executor(
         self,
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
-    ) -> Any:
+        *,
+        delegation_depth: int = 0,
+    ) -> ToolCallExecutor:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
+        # Strategies receive writable model exposures. Keep a host-owned deep
+        # snapshot so replacing a definition or editing nested properties
+        # cannot widen the contract at dispatch time.
+        host_tool_defs = deepcopy(tool_defs)
+        if host_tool_defs is None:
+            host_tool_defs = self._tool_definitions()
         # Analysis context of prior tool results, bounded by turns regardless
         # of how many tool calls the strategy makes. The sanitized string is
         # what flows back into model context, so that is what aggregates.
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
-        async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
-            raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
+        async def execute(
+            call: ToolCall, _agent_name: str, _delegation_depth: int, tool_round: int
+        ) -> str:
+            # Only the Agent owns its name and delegation depth. Hook callers
+            # cannot replace them with model arguments or strategy metadata.
+            raw_result = await self._authorize_and_invoke(
+                call.name,
+                call.arguments,
+                auth,
+                host_tool_defs,
+                tool_call_id=call.id,
+                delegation_depth=delegation_depth,
+                tool_round=tool_round,
+            )
             sanitized = await self._sanitize_tool_result(
-                tool_name, to_scan_string(raw_result), auth, context=list(tool_context)
+                call.name, to_scan_string(raw_result), auth, context=list(tool_context)
             )
             tool_context.append(WardenContext(sanitized))
             return sanitized
 
-        return execute
+        return ToolCallExecutor(execute)
 
     async def _authorize_and_invoke(
         self,
@@ -781,7 +898,25 @@ class Agent:
         tool_args: dict[str, Any],
         auth: Any,
         tool_defs: list[dict[str, Any]] | None,
+        *,
+        tool_call_id: str = "",
+        delegation_depth: int = 0,
+        tool_round: int = 0,
     ) -> Any:
+        # Declarations only narrow authority: a host Sentinel grant cannot
+        # expose an undeclared tool. Check the Agent-owned identity here,
+        # not the mutable tool schemas handed to strategy implementations.
+        # Model-selected and strategy-authored calls share this boundary.
+        if tool_name not in self.identity.tools:
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="tool not in agent allowlist",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
+            return f"Error: Permission denied for undeclared tool '{tool_name}'"
         if self._sentinel is None or auth is None:
             _logging.getLogger("maistro.agent").warning(
                 "Denied tool '%s' for agent '%s': no %s to authorize it",
@@ -789,30 +924,105 @@ class Agent:
                 self.identity.name,
                 "Sentinel" if self._sentinel is None else "caller auth",
             )
+            if self._audit_log is not None:
+                await log_scoped_tool_denial(
+                    self._audit_log,
+                    tool_name=tool_name,
+                    reason="no sentinel or caller auth to authorize tool",
+                    auth=auth,
+                    agent_name=self.identity.name,
+                )
             return f"Error: Permission denied for tool '{tool_name}'"
-        verdict = await self._sentinel.pre_call(
-            tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
+        refusal = await self._validate_tool_request(tool_name, tool_args, auth, tool_defs)
+        if refusal is not None:
+            return refusal
+        return await self._invoke_raw_tool(
+            tool_name,
+            tool_args,
+            tool_call_id=tool_call_id,
+            delegation_depth=delegation_depth,
+            tool_round=tool_round,
         )
+
+    async def _validate_tool_request(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        auth: Any,
+        tool_defs: list[dict[str, Any]] | None,
+    ) -> str | None:
+        """Check the host schema and Sentinel's materialized input before dispatch."""
+        schema = self._tool_schema(tool_name, tool_defs)
+        if schema is None:
+            return await self._tool_contract_refusal(
+                tool_name,
+                auth,
+                reason="no schema registered for requested tool",
+                message=f"Error: no schema is registered for tool '{tool_name}'",
+            )
+        verdict = await self._sentinel.pre_call(tool_name, tool_args, auth, deepcopy(schema))
         if not verdict.allowed:
             return f"Error: Permission denied for tool '{tool_name}'"
-        if verdict.repaired_data:
+        if verdict.repaired_data is not None:
             tool_args.clear()
             tool_args.update(verdict.repaired_data)
-        return await self._invoke_raw_tool(tool_name, tool_args)
+        # Sentinel may repair arguments. Validate the exact materialized input,
+        # including empty repairs and unsupported schema types, before dispatch.
+        try:
+            validate_tool_arguments(schema, tool_args)
+        except ToolArgumentError as exc:
+            return await self._tool_contract_refusal(
+                tool_name,
+                auth,
+                reason="invalid tool arguments",
+                message=f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            )
+        return None
+
+    async def _tool_contract_refusal(
+        self, tool_name: str, auth: Any, *, reason: str, message: str
+    ) -> str:
+        if self._audit_log is not None:
+            await log_scoped_tool_denial(
+                self._audit_log,
+                tool_name=tool_name,
+                reason=reason,
+                auth=auth,
+                agent_name=self.identity.name,
+            )
+        return message
 
     @staticmethod
-    def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
+    def _tool_schema(
+        tool_name: str, tool_defs: list[dict[str, Any]] | None
+    ) -> dict[str, Any] | None:
         for tool in tool_defs or []:
             function = tool.get("function", {})
             if function.get("name") == tool_name:
-                parameters = function.get("parameters", {})
-                return parameters if isinstance(parameters, dict) else {}
-        return {}
+                parameters = function.get("parameters")
+                if isinstance(parameters, dict) and parameters.get("type") == "object":
+                    return parameters
+                return None
+        return None
 
-    async def _invoke_raw_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
+    async def _invoke_raw_tool(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        tool_call_id: str = "",
+        delegation_depth: int = 0,
+        tool_round: int = 0,
+    ) -> Any:
         if not (self._tool_executor and callable(self._tool_executor)):
             return f"Tool '{tool_name}' not available"
-        return await self._tool_executor(tool_name, tool_args)
+        return await dispatch_tool_call(
+            self._tool_executor,
+            ToolCall(id=tool_call_id, name=tool_name, arguments=tool_args),
+            agent_name=self.identity.name,
+            delegation_depth=delegation_depth,
+            tool_round=tool_round,
+        )
 
     async def _sanitize_tool_result(
         self,
@@ -940,16 +1150,25 @@ class Agent:
             "charged_microchips": 0,
             "pricing_version": "",
         }
-        # The turn's own execution, not its conversation. `session_id` was
-        # passed here, which makes every turn of one session share a key: a
-        # ledger that dedupes on it drops every charge after the first, and one
-        # that only groups reports per session what was spent per turn. The Run
-        # is right under both readings, which is why it is the correction made
-        # without the ledger's contract in hand (ADR-083026-56ee).
+        # Audit and idempotency are separate fields under the coin-ledger
+        # contract (ADR-100826-c0e1, #827). `charge_key` names the billable
+        # unit — the canonical Run, which every governed admission mints and
+        # every retry preserves — so canonical retries charge exactly once and
+        # unrelated operations cannot collide. `request_id` is audit
+        # correlation and may be a client-supplied `X-Request-ID`, so it must
+        # never become the dedup key: a turn with no Run in scope charges
+        # under no key at all rather than under a value the client chose, and
+        # a conforming ledger records an unkeyed charge unconditionally. (The
+        # Run-as-key choice itself predates the contract — ADR-083026-56ee —
+        # which is why the turn, not its conversation, is what is billed.)
         context = current_execution_context()
         if self._coin_ledger:
+            # The idempotency identity is the canonical Run id, or None when
+            # this turn ran outside any Run — never a client-supplied value.
+            charge_key = context.run_id or None
             charge_info = await self._coin_ledger.charge_usage(
-                request_id=context.run_id or context.request_id,
+                charge_key=charge_key,
+                request_id=context.request_id,
                 org_id=org_id,
                 team_id=team_id,
                 user_id=getattr(auth, "user_id", ""),
@@ -1051,6 +1270,10 @@ class Agent:
         classified_task_type: str,
         depth: int,
         turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
         trace: Any,
     ) -> AgentResponse | None:
         """Invoke the sub-agent chosen by the reasoning strategy.
@@ -1090,6 +1313,25 @@ class Agent:
             return None
 
         delegate_text = result.delegate_message or ""
+
+        # When Sentinel is wired (the production composition root), the
+        # manifest's roster is only a request. Host policy must issue the
+        # exact grant and the child receives only its effective action subset.
+        delegated_auth, refusal = await self._authorize_delegation(
+            auth=auth,
+            target=target,
+            delegate_text=delegate_text,
+            session_id=session_id,
+            turn_id=turn_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            delegation_scope=delegation_scope,
+            log=log,
+        )
+        if refusal is not None:
+            return refusal
+
         delegate_messages = [{"role": "user", "content": delegate_text}]
 
         if trace:
@@ -1097,7 +1339,7 @@ class Agent:
 
         delegated = await target.handle(
             messages=delegate_messages,
-            auth=auth,
+            auth=delegated_auth,
             session_id=session_id,
             model_override=model_override,
             status_callback=status_callback,
@@ -1107,6 +1349,10 @@ class Agent:
             # own -- so the identity has to reach it, or a retried delegated
             # turn is the one that duplicates (#327).
             turn_id=turn_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            delegation_scope=delegation_scope,
             _delegation_depth=depth + 1,
         )
         # Record who asked, on the way back out. The delegate's response is
@@ -1118,6 +1364,121 @@ class Agent:
             delegated,
             delegation_chain=(self.identity.name, *delegated.delegation_chain),
         )
+
+    async def _authorize_delegation(
+        self,
+        *,
+        auth: Any,
+        target: Agent,
+        delegate_text: str,
+        session_id: str | None,
+        turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
+        log: Any,
+    ) -> tuple[Any, AgentResponse | None]:
+        """Resolve delegated authority from host policy (#845, ADR-068).
+
+        The manifest's roster is only a request. Sentinel (when wired) must
+        issue the exact grant; the child receives only its effective action
+        subset. Returns ``(auth_for_target, refusal)`` — ``refusal`` is set
+        exactly when host policy denies the delegation.
+        """
+        authorize_delegation = getattr(self._sentinel, "authorize_delegation", None)
+        if authorize_delegation is None:
+            return auth, None
+        from dataclasses import replace as replace_dataclass
+
+        from maistro.security.sentinel.authz_types import Principal
+
+        owner_id = str(getattr(auth, "user_id", "") or "")
+        if not owner_id:
+            return auth, AgentResponse(
+                content="Delegation refused: no owning principal.",
+                agent_name=self.identity.name,
+            )
+        principal = Principal(
+            id=self.identity.name,
+            kind="agent",
+            roles=tuple(getattr(auth, "roles", ()) or ()),
+            scopes=tuple(
+                value
+                for value in (
+                    getattr(auth, "org_id", ""),
+                    getattr(auth, "team_id", ""),
+                    getattr(auth, "project_id", ""),
+                    f"agent:{self.identity.name}",
+                )
+                if value
+            ),
+            owner=owner_id,
+        )
+        decision = await authorize_delegation(
+            principal=principal,
+            owner_id=owner_id,
+            delegating_agent_id=self.identity.name,
+            target_agent_id=target.identity.name,
+            goal_id=self._first_set(goal_id, getattr(auth, "goal_id", ""), session_id),
+            run_id=self._first_set(run_id, getattr(auth, "run_id", ""), turn_id),
+            invocation_id=self._first_set(
+                invocation_id, getattr(auth, "invocation_id", ""), turn_id
+            ),
+            scope=self._first_set(
+                delegation_scope,
+                getattr(auth, "project_id", ""),
+                getattr(auth, "team_id", ""),
+                getattr(auth, "org_id", ""),
+                owner_id,
+            ),
+            requested_actions=frozenset(self._delegated_target_actions(target)),
+            artifact=delegate_text,
+        )
+        if not decision.allowed:
+            log.warning(
+                "Delegation refused by host policy: agent=%s target=%s reason=%s",
+                self.identity.name,
+                target.identity.name,
+                decision.reason,
+            )
+            return auth, AgentResponse(
+                content=f"Delegation refused: {decision.reason}",
+                agent_name=self.identity.name,
+            )
+        if not hasattr(auth, "delegated_actions"):
+            return auth, AgentResponse(
+                content="Delegation refused: authorization envelope cannot be carried.",
+                agent_name=self.identity.name,
+            )
+        log.info(
+            "Delegation authorized by host policy: agent=%s target=%s grant_ref=%s granted_by=%s",
+            self.identity.name,
+            target.identity.name,
+            decision.grant_ref,
+            decision.granted_by,
+        )
+        delegated_auth = replace_dataclass(
+            auth,
+            delegated_actions=decision.effective_actions,
+            delegation_grant_ref=decision.grant_ref,
+            delegation_expires_at=decision.expires_at,
+            on_behalf_of=self.identity.name,
+        )
+        return delegated_auth, None
+
+    @staticmethod
+    def _first_set(*values: str | None) -> str:
+        """First non-empty string, mirroring the ``a or b or c`` fallbacks."""
+        for value in values:
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _delegated_target_actions(target: Agent) -> tuple[str, ...]:
+        """Return advertised tools as requests, never as authority."""
+        return tuple(target.identity.tools)
 
     def _resolve_agent(self, name: str) -> Agent | None:
         """Look up a sub-agent by name via the configured resolver.

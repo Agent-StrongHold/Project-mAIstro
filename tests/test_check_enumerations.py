@@ -98,3 +98,83 @@ def test_committed_baseline_is_well_formed(module):
     for key in tolerated:
         check = key.split("::", 1)[0]
         assert check in known, f"baseline entry {key!r} names unknown check {check!r}"
+
+
+class TestInvokeSuffixCarveOutRemoved:
+    """#403: ``_route_is_scoped`` no longer blesses a path for ending in
+    "/invoke". The old shortcut mirrored the middleware carve-out it modeled
+    and inherited its flaw: any future route choosing the suffix skipped
+    classification — an unclassified mutation waved through by URL naming.
+    A route is now scoped only through a registered capability prefix or an
+    explicit ROUTE_EXEMPT entry with a named reason."""
+
+    def test_unclassified_future_invoke_route_is_a_gap(self, module):
+        """An .../invoke route with no policy resolution is NOT scoped —
+        check A reports it and the build fails."""
+        protected = {"POST": {"/v1/agents": "agents.write"}}
+        assert not module._route_is_scoped("/v1/future-thing/invoke", "POST", protected)
+
+    def test_invoke_route_scopes_only_through_registered_capability(self, module):
+        """The same route IS scoped when its prefix carries a registered
+        capability — the identifier binds, the suffix is irrelevant."""
+        protected = {"POST": {"/v1/agents": "agents.write"}}
+        assert module._route_is_scoped("/v1/agents/x/invoke", "POST", protected)
+
+    def test_invoke_route_unscoped_only_via_explicit_reviewed_exemption(self, module):
+        """The one legitimate way a future .../invoke route skips a scope
+        entry is a documented ROUTE_EXEMPT decision, same as any other
+        route — /v1/chat is exempt-by-declaration, /v1/containers is not."""
+        assert module._route_is_scoped("/v1/chat/foo/invoke", "POST", {})
+        assert not module._route_is_scoped("/v1/containers/x/invoke", "POST", {})
+
+
+class TestEvaluatorOracleSurface:
+    """#109 check B2: the evaluator-oracle enumeration.
+
+    The oracle tier protects the artifacts that DEFINE success for an RSI
+    candidate — the scorer, its pinning tests, the scenario corpora, the
+    ratchet baselines, the AC trees. The enumeration is only as strong as its
+    pattern list, so the checker runs the REAL matcher over one representative
+    path per score-defining surface and ratchets patterns that match nothing.
+    These nodes prove the check both passes on the tree it ships with and
+    fires when a probe escapes the patterns — a checker that cannot fail is
+    decoration, not a ratchet (this file's own docstring, one tier deeper).
+    """
+
+    def test_oracle_surface_is_fully_covered_on_this_tree(self, module):
+        """Every score-defining probe matches EVALUATOR_ORACLE_PATTERNS and
+        every oracle pattern matches a tracked file — the shipped tree is
+        protected, with no bit-rotted pattern reading as if it guarded
+        anything."""
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert error is None
+        assert gaps == []
+
+    def test_escaped_oracle_probe_is_reported_as_a_gap(self, module, monkeypatch):
+        """A score-defining path the patterns stop matching (the failure mode
+        this check exists for: a rename, a move, a deleted pattern) is a named
+        gap against the `evaluator_oracle` check — never silence."""
+        quarantine = pytest.importorskip("maistro_rsi.quarantine")
+        real_match = quarantine.matches_evaluator_oracle_pattern
+        escaped_probe = "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py"
+
+        def escaped(path: str) -> bool:
+            if path == escaped_probe:
+                return False
+            return real_match(path)
+
+        monkeypatch.setattr(quarantine, "matches_evaluator_oracle_pattern", escaped)
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert error is None
+        assert [g.key() for g in gaps] == [f"evaluator_oracle::{escaped_probe}"]
+
+    def test_unimportable_oracle_module_is_an_error_not_silence(self, module, monkeypatch):
+        """If the oracle patterns cannot be imported at all, the check reports
+        an error — which main() turns into a failure — rather than an empty
+        gap list that would read as a pass (same contract as
+        test_check_that_cannot_run_is_a_failure_not_a_skip)."""
+        monkeypatch.setitem(sys.modules, "maistro_rsi.quarantine", None)
+        gaps, error = module.check_evaluator_oracle_paths()
+        assert gaps == []
+        assert error is not None
+        assert "could not import oracle patterns" in error

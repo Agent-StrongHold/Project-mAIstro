@@ -42,6 +42,10 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         # the authorization identity of one execution, which must never be
         # reused: a template carrying it would run later work as that principal
         "actor_principal_id",
+        # Delegated execution provenance is also per-Run state and must not be
+        # carried into a reusable Graph template.
+        "initiating_principal_id",
+        "acting_principal_id",
         # lease, checkpoint and settled-outcome state -- compound names with no
         # plausible reading as definition data
         "execution_lease",
@@ -50,6 +54,11 @@ RUNTIME_STATE_FIELDS: frozenset[str] = frozenset(
         "resume_checkpoint_id",
         "accepted_outcome",
         "retention_expires_at",
+        # the runtime cancellation evidence of one physical Attempt (#1884):
+        # which of the two meanings AttemptStatus.CANCELLED carries -- requested
+        # stop vs process-death recovery. A compound execution-outcome name,
+        # like accepted_outcome, with no reading as reusable definition data
+        "cancellation_cause",
     }
 )
 
@@ -105,6 +114,8 @@ RUNTIME_STATE_ADMITTED: dict[str, str] = {
     "graph": "the definition an execution names, not execution state",
     "persona_id": "a definition-time binding, not execution state",
     "provenance": "template provenance is TemplateProvenance, a distinct field",
+    "goal_id": "admission provenance (#1572): immutable after admission, so a template can never supply it",
+    "goal_revision": "admission provenance (#1572): the desired-state revision the Run was admitted against, immutable after admission",
 }
 
 
@@ -460,6 +471,7 @@ class GraphTemplate(BaseModel):
         project_id: str,
         graph_id: str | None = None,
         name: str | None = None,
+        workspace_id: str | None = None,
     ) -> Graph:
         node_id_map = {node.node_id: _id() for node in self.nodes}
         nodes = [
@@ -487,7 +499,7 @@ class GraphTemplate(BaseModel):
                 metadata[key] = node_id_map[reference]
         return Graph(
             graph_id=graph_id or _id(),
-            workspace_id=self.workspace_id,
+            workspace_id=workspace_id if workspace_id is not None else self.workspace_id,
             project_id=project_id,
             name=name if name is not None else self.name,
             description=self.description,

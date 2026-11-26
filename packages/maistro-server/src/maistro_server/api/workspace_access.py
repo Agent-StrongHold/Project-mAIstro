@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from typing import TypeVar
+
 from fastapi import HTTPException, status
 
 from maistro.workspaces import (
@@ -12,6 +15,8 @@ from maistro.workspaces import (
     WorkspaceStore,
 )
 from maistro_server.api.principal import AuthenticatedPrincipal
+
+_T = TypeVar("_T")
 
 _workspace_store: WorkspaceStore | None = None
 
@@ -36,6 +41,40 @@ def user_id(auth: AuthenticatedPrincipal | None) -> str:
     return auth.user_id if auth is not None else "dev"
 
 
+def workspace_denial(exc: WorkspaceAuthorizationDenied) -> HTTPException:
+    """Render a Workspace authorization refusal as the route's own answer.
+
+    The canonical store re-resolves the acting principal's authority inside
+    the store call (#1150), so a revocation that lands between a route's own
+    check and the store call arrives here as a refusal. A principal who is
+    still a member but lost the action gets the route's 403; a principal who
+    is no longer a member gets the same 404 an unknown Workspace gets. The
+    refusal never escapes as a 500 and never becomes an existence oracle.
+    """
+    if exc.membership is not None:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workspace owner permission required",
+        )
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Workspace not found",
+    )
+
+
+async def authorized(coro: Awaitable[_T]) -> _T:
+    """Await a canonical store call and render its refusal as the route's answer.
+
+    The store boundary is the authority (#1150); this is only the translation
+    of its refusal into the answer the route already gives for the same
+    situation.
+    """
+    try:
+        return await coro
+    except WorkspaceAuthorizationDenied as exc:
+        raise workspace_denial(exc) from exc
+
+
 async def _require(
     store: WorkspaceStore,
     workspace_id: str,
@@ -45,15 +84,7 @@ async def _require(
     try:
         return await WorkspaceAuthorizer(store).require(requester_user_id, workspace_id, action)
     except WorkspaceAuthorizationDenied as exc:
-        if exc.membership is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Workspace owner permission required",
-            ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found",
-        ) from exc
+        raise workspace_denial(exc) from exc
 
 
 async def require_workspace_membership(
@@ -75,9 +106,11 @@ async def require_workspace_owner(
 
 
 __all__ = [
+    "authorized",
     "configure_workspace_store",
     "get_workspace_store",
     "require_workspace_membership",
     "require_workspace_owner",
     "user_id",
+    "workspace_denial",
 ]

@@ -1,10 +1,15 @@
 import { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { DefaultLandingRedirect } from "./components/DefaultLandingRedirect";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PermissionBoundary } from "./components/Authorization";
+import { AuthorizationProvider } from "./context/AuthorizationContext";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
+// #1420: the startup probes' explicit instrumentation (see lib/rum.ts).
+import { instrumentedGet } from "./lib/rum";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Login from "./pages/Login";
 import Setup from "./pages/Setup";
@@ -14,31 +19,29 @@ import Setup from "./pages/Setup";
 // Setup and Login (above) stay eager -- one of them is needed for the very
 // first paint of every session, so splitting them would only add a round
 // trip with nothing to show meanwhile.
-const Agents = lazy(() => import("./pages/Agents"));
+const Approvals = lazy(() => import("./pages/Approvals"));
+const Attention = lazy(() => import("./pages/Attention"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
+const Backlog = lazy(() => import("./pages/Backlog"));
+const Capabilities = lazy(() => import("./pages/Capabilities"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
 const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
 const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
-const Evolution = lazy(() => import("./pages/Evolution"));
+const Goals = lazy(() => import("./pages/Goals"));
+const Home = lazy(() => import("./pages/Home"));
 const RSI = lazy(() => import("./pages/RSI"));
-const MCP = lazy(() => import("./pages/MCP"));
 const Memory = lazy(() => import("./pages/Memory"));
-const MessageBoard = lazy(() => import("./pages/MessageBoard"));
 const Missions = lazy(() => import("./pages/Missions"));
-const OptimizationInbox = lazy(() => import("./pages/OptimizationInbox"));
 const Quotas = lazy(() => import("./pages/Quotas"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Profile = lazy(() => import("./pages/Profile"));
 const Credentials = lazy(() => import("./pages/Credentials"));
-const Skills = lazy(() => import("./pages/Skills"));
-const Topology = lazy(() => import("./pages/Topology"));
 const WorkItems = lazy(() => import("./pages/WorkItems"));
 const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase"));
 
@@ -95,7 +98,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   async function loadSession(): Promise<UserInfo | null> {
-    const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
+    const whoRes = await instrumentedGet("/v1/auth/whoami");
     return whoamiToUser(await whoRes.json());
   }
 
@@ -110,8 +113,8 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // Setup wizard: on a fresh, unconfigured instance a slow or
         // never-settling whoami must not hold up detecting that setup isn't
         // done, so whoami is only awaited once setup is confirmed complete.
-        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
-        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupPromise = instrumentedGet("/v1/setup/status");
+        const whoPromise = instrumentedGet("/v1/auth/whoami");
         const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
@@ -149,10 +152,12 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   return (
     <UserCtx.Provider value={user}>
-      <WorkspaceProvider>
-        <OnboardingGate />
-        {children}
-      </WorkspaceProvider>
+      <AuthorizationProvider>
+        <WorkspaceProvider>
+          <OnboardingGate />
+          {children}
+        </WorkspaceProvider>
+      </AuthorizationProvider>
     </UserCtx.Provider>
   );
 }
@@ -178,14 +183,35 @@ function AppRoutes() {
             <Suspense fallback={<AppShellSkeleton />}>
               <Routes>
                 <Route path="/" element={<AppShell />}>
-                  <Route index element={<Navigate to="dashboard" replace />} />
-                  <Route path="dashboard" element={<Dashboard />} />
+                  {/* #1048 / #1050: default landing is Workspace Home unless
+                      the user set preferences.workspace_default_landing on
+                      the canonical profile. #2274: legacy Dashboard page is
+                      deleted — /dashboard redirects to Home. */}
+                  <Route index element={<DefaultLandingRedirect />} />
+                  <Route path="home" element={<Home />} />
+                  <Route path="dashboard" element={<Navigate to="/home" replace />} />
                   <Route path="chat" element={<Chat />} />
+                  {/* #1049: Attention is the Workspace orchestration inbox
+                      (read-only projection). Home links default here. */}
+                  <Route path="attention" element={<Attention />} />
                   <Route path="missions" element={<Missions />} />
+                  <Route path="backlog" element={<Backlog />} />
+                  {/* #2278 / Parity P-1: approvals projection over the same
+                      /v1/capabilities/approvals and /v1/hitl/* doors as CLI. */}
+                  <Route path="approvals" element={<Approvals />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
+                  <Route path="goals" element={<Goals />} />
                   <Route path="schedules" element={<Schedules />} />
-                  <Route path="agents" element={<Agents />} />
+                  {/* #2273: Capabilities is the only product surface for slots /
+                      providers. Legacy /agents /mcp /skills /topology deep
+                      links redirect here — they must not revive the deleted
+                      page modules. */}
+                  <Route path="capabilities" element={<Capabilities />} />
+                  <Route path="agents" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="skills" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="mcp" element={<Navigate to="/capabilities" replace />} />
+                  <Route path="topology" element={<Navigate to="/capabilities" replace />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
                   {/* #311 M0 containment lifted: the M2 Deck sanitizer
@@ -193,12 +219,12 @@ function AppRoutes() {
                       render sink, so the keyboard-complete Deck editor (#769)
                       is reachable at /decks and from Design Studio. */}
                   <Route path="decks" element={<DeckBuilder />} />
-                  <Route path="skills" element={<Skills />} />
-                  <Route path="mcp" element={<MCP />} />
-                  <Route path="topology" element={<Topology />} />
-                  <Route path="optimizer" element={<OptimizationInbox />} />
-                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
-                  <Route path="messages" element={<MessageBoard />} />
+                  {/* #1049 MERGE: MessageBoard + OptimizationInbox fold into
+                      Attention. Old URLs redirect so bookmarks do not revive
+                      the deleted modules. */}
+                  <Route path="optimizer" element={<Navigate to="/attention" replace />} />
+                  <Route path="optimization-inbox" element={<Navigate to="/attention" replace />} />
+                  <Route path="messages" element={<Navigate to="/attention" replace />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
@@ -213,8 +239,15 @@ function AppRoutes() {
                   <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
-                  <Route path="evolution" element={<Evolution />} />
-                  <Route path="rsi" element={<RSI />} />
+                  {/* #2275 / conductor-411: Evolution is HIDE for v1.0 — no
+                      shipped route, no stub claiming availability. The page
+                      module stays in-tree for v1.2 restore (#51). Direct
+                      /evolution hits fall through the shell outlet empty
+                      rather than advertise a product surface. */}
+                  {/* #373: the RSI page's controls fail 403 without the
+                      rsi.execute scope; the boundary renders the safe
+                      explanation + elevation entry instead of the page. */}
+                  <Route path="rsi" element={<PermissionBoundary permission="rsi.execute"><RSI /></PermissionBoundary>} />
                   <Route path="memory" element={<Memory />} />
                   <Route path="settings" element={<Settings />} />
                   <Route path="profile" element={<Profile />} />

@@ -20,10 +20,11 @@ GitAgent format on disk:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,11 +35,57 @@ from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
 
+if TYPE_CHECKING:
+    from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.protocols.coins import CoinLedger
+
 logger = logging.getLogger("maistro.agents.factory")
 
 _STRATEGY_REGISTRY: dict[str, Any] = {
     "direct": DirectStrategy,
 }
+
+
+async def _upsert_agent_soul(
+    prompt_manager: Any,
+    name: str,
+    content: str,
+    *,
+    label: str = "production",
+) -> list[Any] | None:
+    """Upsert a soul prompt, recording a structured diff when production content changes.
+
+    Roots ``maistro.prompts.diff.compute_diff`` on the agent factory seed/load
+    path (ADR-060-shaped prompt compare; disposition root).
+    """
+    from maistro.prompts.diff import compute_diff
+
+    previous = ""
+    getter = getattr(prompt_manager, "get", None)
+    if callable(getter):
+        fetched = getter(name, label=label)
+        if inspect.isawaitable(fetched):
+            fetched = await fetched
+        previous = "" if fetched is None else str(fetched)
+    diff: list[Any] | None = None
+    if previous and previous != content:
+        diff = compute_diff(
+            previous,
+            content,
+            old_label=f"{name}@{label}",
+            new_label="incoming",
+        )
+        adds = sum(1 for line in diff if line.op == "add")
+        removes = sum(1 for line in diff if line.op == "remove")
+        logger.info(
+            "Prompt soul change for %s: +%d -%d lines (%d diff entries)",
+            name,
+            adds,
+            removes,
+            len(diff),
+        )
+    await prompt_manager.upsert(name, content, label=label)
+    return diff
 
 
 def register_strategy(name: str, cls: type) -> None:
@@ -378,7 +425,8 @@ async def _load_agents_from_db(
         souls = await registry.souls()
         agents: dict[str, Agent] = {}
         for identity in identities:
-            await prompt_manager.upsert(
+            await _upsert_agent_soul(
+                prompt_manager,
                 f"agent.{identity.name}.soul",
                 souls.get(identity.name, ""),
                 label="production",
@@ -493,7 +541,8 @@ async def _seed_agent_directory(
     rendered_preamble = _render_preamble(preamble, manifest)
     full_soul = rendered_preamble + soul
 
-    await prompt_manager.upsert(
+    await _upsert_agent_soul(
+        prompt_manager,
         f"agent.{identity.name}.soul",
         full_soul,
         label="production",
@@ -512,6 +561,24 @@ async def _seed_agent_directory(
     )
 
 
+def _governed_llm_client(llm: Any, admitted_calls: AdmittedModelCalls | None) -> Any:
+    """Reuse the configured runtime client or wrap its admitted-call authority.
+
+    Standalone library callers may supply their own LLMClient explicitly. A
+    production composition supplies its canonical AdmittedModelCalls, never
+    an incomplete set of stores that silently falls back to a raw client.
+    """
+    if admitted_calls is None:
+        return llm
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    if isinstance(llm, GovernedLLMClient):
+        if llm._calls is not admitted_calls:
+            raise ConfigError("Agent client has different admitted model calls than the factory")
+        return llm
+    return GovernedLLMClient(admitted_calls)
+
+
 async def create_agents(
     *,
     agents_dir: str | Path,
@@ -527,7 +594,7 @@ async def create_agents(
     session_store: Any,
     quota_tracker: Any,
     tracer: Any,
-    coin_ledger: Any = None,
+    coin_ledger: CoinLedger | None = None,
     tool_executor: Any = None,
     sa_engine: Any = None,
     rca_extractor: Any = None,
@@ -535,8 +602,20 @@ async def create_agents(
     tool_registry: Any = None,
     a2a_delegator: Any = None,
     require_agents: bool = False,
+    admitted_calls: AdmittedModelCalls | None = None,
+    # Retained for call-site compatibility; admission is via admitted_calls.
+    capability_effects: Any = None,
+    provider_registry: Any = None,
+    llm_router: Any = None,
+    model_endpoint: Any = None,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
+    audit_log: Any = None,
 ) -> dict[str, Agent]:
+    del capability_effects, provider_registry, llm_router, model_endpoint, workspace_id, project_id
     _register_custom_strategies()
+
+    llm = _governed_llm_client(llm, admitted_calls)
 
     deps = {
         "llm": llm,
@@ -556,12 +635,16 @@ async def create_agents(
         "rca_extractor": rca_extractor,
         "learning_promoter": learning_promoter,
         "tool_registry": tool_registry,
+        # #847: the canonical audit trail reaches the Agent so pre-Sentinel
+        # tool denials leave scoped authorization evidence.
+        "audit_log": audit_log,
     }
 
     if sa_engine:
         db_agents = await _load_agents_from_db(sa_engine, prompt_manager, deps)
         if db_agents is not None:
             _register_delegation_capabilities(db_agents, a2a_delegator)
+            _wire_agent_runtime_extensions(db_agents, llm=llm, prompt_manager=prompt_manager)
             return db_agents
 
     agents_path = Path(agents_dir)
@@ -595,4 +678,17 @@ async def create_agents(
         logger.warning("No agents loaded from %s", agents_dir)
 
     _register_delegation_capabilities(agents, a2a_delegator)
+    _wire_agent_runtime_extensions(agents, llm=llm, prompt_manager=prompt_manager)
     return agents
+
+
+def _wire_agent_runtime_extensions(
+    agents: dict[str, Agent],
+    *,
+    llm: Any,
+    prompt_manager: Any,
+) -> None:
+    """Attach auditor/feedback/spawner/store/tournament onto the live roster (#2312)."""
+    from maistro.agents.wiring import wire_agent_implementations
+
+    wire_agent_implementations(agents, llm=llm, prompt_manager=prompt_manager)

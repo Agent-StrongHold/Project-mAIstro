@@ -13,9 +13,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from maistro.runs.lifecycle import (
-    InvalidLifecycleTransition,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_leaseless_orphaned_attempt,
+    recover_orphaned_attempt,
     renew_attempt_lease,
     renewed_lease,
     transition_attempt,
@@ -28,10 +30,16 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     NodeRun,
     Run,
     RunStatus,
+    evidence_values_equal,
+)
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
 )
 from maistro.runs.store import (
     DEFAULT_RECLAIM_BATCH,
@@ -44,6 +52,58 @@ from maistro.runs.store import (
 
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+
+def _supplies_new_evidence(
+    node_run: NodeRun,
+    *,
+    accepted_outcome: AcceptedNodeOutcome | None,
+) -> bool:
+    """Whether a same-status transition call carries evidence the row lacks (#1334).
+
+    A same-status call that carries nothing new must stay a no-op: the store's
+    own validator refuses a completed->completed transition outright, so
+    re-deriving an idempotent replay through it would turn every replay into a
+    failure. An accepted outcome the canonical row does not hold yet is the
+    one same-status call the store can still adjudicate -- the legacy
+    migration the reconciler performs on a pre-acceptance COMPLETED NodeRun
+    -- and skipping the store there silently dropped the accepted outcome
+    from both the canonical row and this record's projection. The store's
+    migration validator -- not this adapter -- decides whether the
+    attachment is a repair or a disagreement.
+
+    A differing ``result`` or ``error`` text is deliberately not evidence.
+    The lifecycle table has no same-status edges, so outside that one
+    migration the canonical store can never accept a same-status move: the
+    call could not repair anything, only convert the idempotent replay into
+    a guaranteed failure. The race every in-flight cancellation runs (#1332's
+    regression) is exactly that replay: `RunExecutionService.cancel_run`
+    fences the Run through the canonical store, whose cascade settles open
+    NodeRuns with the cascade's own error narrative; the walk's registered
+    executor then replays the cancellation through this adapter over a
+    projection that still reads running and a caller-supplied error text.
+    `RunStore._refuse_under_terminal_run` rightly freezes that closed history
+    -- so the adapter must not ask. The replay below converges the projection
+    to the canonical row instead of raising.
+    """
+    held = node_run.accepted_outcome
+    return accepted_outcome is not None and not _same_accepted_facts(held, accepted_outcome)
+
+
+def _same_accepted_facts(
+    held: AcceptedNodeOutcome | None,
+    supplied: AcceptedNodeOutcome,
+) -> bool:
+    """Compare accepted logical facts while ignoring acceptance wall-clock time."""
+    if held is None:
+        return False
+    return (
+        held.node_run_id == supplied.node_run_id
+        and held.attempt_result == supplied.attempt_result
+        and held.logical_status is supplied.logical_status
+        and evidence_values_equal(held.result, supplied.result)
+        and held.error == supplied.error
+    )
 
 
 def _require_same_creation_contract(
@@ -182,7 +242,10 @@ class DurableRunExecutionStore:
             canonical_node = await self._run_store.get_node_run(node_run_id)
             if canonical_node is None:
                 raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
-            if canonical_node.status is not target:
+            if canonical_node.status is not target or _supplies_new_evidence(
+                canonical_node,
+                accepted_outcome=accepted_outcome,
+            ):
                 canonical_node = await self._run_store.transition_node_run(
                     node_run_id,
                     target,
@@ -385,6 +448,127 @@ class DurableRunExecutionStore:
         assert renewed is not None
         return renewed.model_copy(deep=True)
 
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle CREATED prelaunch failure as CANCELLED+RECOVERED (#2369 / #232 P2d).
+
+        When a canonical RunStore is wired, that store is the write authority;
+        this view mirrors the settled Attempt into the durable graph projection.
+        Local-only mode applies the same lifecycle leaf under the run lock.
+        """
+        if self._run_store is not None:
+            canonical = await self._run_store.compensate_unlaunched_attempt(
+                attempt_id,
+                fencing_token=fencing_token,
+                at=at,
+                result=result,
+                error=error,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
+        settled: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                self._validate_fence(attempt, fencing_token)
+                settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+                attempts[index] = settled
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert settled is not None
+        return settled.model_copy(deep=True)
+
+    async def recover_leaseless_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Stamp CANCELLED+RECOVERED for a lease-less orphan under explicit resume.
+
+        Durable-graph local writer for ADR-082826-08f0's leaseless-under-resume
+        row. Leased work uses ``reclaim_expired_attempt``; prelaunch CREATED uses
+        ``compensate_unlaunched_attempt``.
+        """
+        settled_local: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled_local
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled_local = recover_leaseless_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled_local
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(attempt_id)
+
+        await self._mutate(update)
+        assert settled_local is not None
+        return settled_local.model_copy(deep=True)
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under Graph resume (#2417 / #232 P3b).
+
+        When a canonical RunStore is wired, that store is the write authority and
+        enforces ``owning_run_id`` lineage; this view mirrors the settled Attempt.
+        Local-only mode applies the same lifecycle leaf under the run lock after
+        verifying the durable record's run_id matches ``owning_run_id``.
+        """
+        if self._run_store is not None:
+            canonical = await self._run_store.recover_orphaned_attempt(
+                attempt_id,
+                owning_run_id=owning_run_id,
+                at=at,
+                error=error,
+            )
+            await self._mutate(lambda record: self._replace_attempt(record, canonical))
+            return canonical.model_copy(deep=True)
+
+        settled: Attempt | None = None
+
+        def update(record: DurableRunRecord) -> DurableRunRecord:
+            nonlocal settled
+            if record.run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {record.run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            attempts = list(record.attempts)
+            for index, attempt in enumerate(attempts):
+                if attempt.attempt_id != attempt_id:
+                    continue
+                settled = recover_orphaned_attempt(attempt, at=at, error=error)
+                attempts[index] = settled
+                return record.model_copy(update={"attempts": tuple(attempts)})
+            raise AttemptNotFound(f"Attempt {attempt_id!r} does not exist")
+
+        await self._mutate(update)
+        assert settled is not None
+        return settled.model_copy(deep=True)
+
     async def reclaim_expired_attempts(
         self,
         *,
@@ -470,42 +654,35 @@ class DurableRunExecutionStore:
     ) -> tuple[Attempt, bool]:
         """Settle one lapsed canonical Attempt, or report what it actually is.
 
-        Three answers, and only one of them is a reclaim. Already terminal: the
-        canonical row won a race, so the projection is repaired and it counts
-        as reclaimed only if it settled the way reclaim would have. Still live:
-        the holder renewed before recovery observed the expiry, so the stale
-        projection is repaired rather than the live work cancelled. Otherwise
-        it is genuinely lapsed and is settled here.
+        Exact-ID reclaim under the RunStore lock (#2366 / #232 P3a) is the only
+        write path: ``reclaim_expired_attempt`` commits CANCELLED+RECOVERED
+        together via ``reclaim_attempt``. A generic ``transition_attempt`` must
+        never carry this leaf — it would drop the cause. Already terminal or
+        still live: nothing new is written; the projection is repaired from
+        canonical truth. CANCELLED winners (including a concurrent reclaim)
+        still count as reclaimed for the returned list; COMPLETED/FAILED/etc.
+        do not.
         """
         assert self._run_store is not None
+        try:
+            written = await self._run_store.reclaim_expired_attempt(
+                projected.attempt_id, now=moment
+            )
+        except AttemptNotFound as exc:
+            raise RunIntegrityError(
+                f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
+            ) from exc
+        if written is not None:
+            return written, True
+
         canonical = await self._run_store.get_attempt(projected.attempt_id)
         if canonical is None:
             raise RunIntegrityError(
                 f"canonical Attempt {projected.attempt_id!r} disappeared during reclaim"
             )
         if canonical.status in TERMINAL_ATTEMPT_STATUSES:
-            return canonical, canonical.status is reclaim_attempt(projected, at=moment).status
-        if not lease_is_expired(canonical, moment):
-            return canonical, False
-        lease = canonical.execution_lease
-        # `lease_is_expired` above is false for a leaseless Attempt, so reaching
-        # here means there is one. Asserted rather than re-checked: a branch
-        # nothing can take is a branch nothing can test.
-        assert lease is not None
-        settled = reclaim_attempt(canonical, at=moment)
-        try:
-            return await self._run_store.transition_attempt(
-                canonical.attempt_id,
-                settled.status,
-                at=moment,
-                error=settled.error,
-                fencing_token=lease.fencing_token,
-            ), True
-        except (InvalidLifecycleTransition, StaleExecutionFence):
-            refreshed = await self._run_store.get_attempt(canonical.attempt_id)
-            if refreshed is None or refreshed.status not in TERMINAL_ATTEMPT_STATUSES:
-                raise
-            return refreshed, True
+            return canonical, canonical.status is AttemptStatus.CANCELLED
+        return canonical, False
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:
         record = await self._get_record()
@@ -525,6 +702,80 @@ class DurableRunExecutionStore:
             if attempt.node_run_id == node_run_id
         ]
 
+    async def _apply_local_recovered_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None,
+    ) -> tuple[NodeRun, Run]:
+        """In-record recovered parking when no canonical RunStore is wired."""
+        record = await self._get_record()
+        attempt = next(
+            (item for item in record.attempts if item.attempt_id == attempt_id),
+            None,
+        )
+        if attempt is None:
+            raise AttemptNotFound(attempt_id)
+        node_run = next(
+            (item for item in record.node_runs if item.node_run_id == attempt.node_run_id),
+            None,
+        )
+        if node_run is None:
+            raise RunIntegrityError(f"NodeRun {attempt.node_run_id!r} does not exist")
+        attempts_by_node_run: dict[str, list[Attempt]] = {
+            nr.node_run_id: [item for item in record.attempts if item.node_run_id == nr.node_run_id]
+            for nr in record.node_runs
+        }
+        plan = plan_recovered_attempt_disposition(
+            attempt=attempt,
+            run=record.run,
+            node_run=node_run,
+            all_node_runs=list(record.node_runs),
+            attempts_by_node_run=attempts_by_node_run,
+        )
+        settled_node, settled_run = materialize_recovered_disposition_plan(
+            plan, run=record.run, node_run=node_run, attempt=attempt, at=at
+        )
+
+        def update(current: DurableRunRecord) -> DurableRunRecord:
+            updated = current
+            if plan.park_node_run:
+                updated = self._replace_node_run(updated, settled_node)
+            if plan.park_run:
+                updated = updated.model_copy(update={"run": settled_run})
+            return updated
+
+        await self._mutate(update)
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a).
+
+        When a canonical RunStore is wired, the disposition write is that
+        store's atomic method; this adapter mirrors the resulting NodeRun/Run
+        into the durable Graph record so AttemptLifecycleReconciler can use
+        DurableRunExecutionStore as AttemptLifecycleStore (mypy / #2425).
+        """
+        if self._run_store is None:
+            return await self._apply_local_recovered_disposition(attempt_id, at=at)
+
+        settled_node, settled_run = await self._run_store.apply_recovered_attempt_disposition(
+            attempt_id, at=at
+        )
+        self._require_run_id(settled_run.run_id)
+
+        def mirror(record: DurableRunRecord) -> DurableRunRecord:
+            updated = self._replace_node_run(record, settled_node)
+            return updated.model_copy(update={"run": settled_run})
+
+        await self._mutate(mirror)
+        return settled_node.model_copy(deep=True), settled_run.model_copy(deep=True)
+
     async def transition_attempt(
         self,
         attempt_id: str,
@@ -535,6 +786,7 @@ class DurableRunExecutionStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         if self._run_store is not None:
             canonical = await self._run_store.transition_attempt(
@@ -545,6 +797,7 @@ class DurableRunExecutionStore:
                 error=error,
                 metrics=metrics,
                 fencing_token=fencing_token,
+                cancellation_cause=cancellation_cause,
             )
             await self._mutate(lambda record: self._replace_attempt(record, canonical))
             return canonical.model_copy(deep=True)
@@ -562,6 +815,7 @@ class DurableRunExecutionStore:
                     result=result,
                     error=error,
                     metrics=metrics,
+                    cancellation_cause=cancellation_cause,
                 )
                 return record.model_copy(update={"attempts": tuple(attempts)})
             raise RunIntegrityError(f"Attempt {attempt_id!r} does not exist")

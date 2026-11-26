@@ -266,5 +266,6 @@ A template/object implementation complies when:
 ## References
 
 - `ADR-081226-9944`: Canonical Product Hierarchy and Ownership
-- `docs/analysis/ECOSYSTEM-INVENTORY.md`
-- `docs/analysis/ARCHITECTURE-CONVERGENCE-MATRIX.md`
+- Historical ecosystem inventory (removed `docs/analysis/ECOSYSTEM-INVENTORY.md`; see
+  [BACKLOG.md](../../BACKLOG.md) and git history)
+- [`docs/architecture/CONVERGENCE-MATRIX.md`](../architecture/CONVERGENCE-MATRIX.md)

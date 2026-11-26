@@ -180,5 +180,11 @@ async def run_bfcl(genome: PipelineGenome, llm_call: Any) -> EvalResult:
         cost_usd=round(total_cost, 4),
         duration_seconds=round(elapsed, 3),
         samples_evaluated=evaluated,
-        metadata={"total_samples": samples, "fidelity": "proxy"},
+        metadata={
+            "total_samples": samples,
+            "fidelity": "proxy",
+            # Champion-selection provenance (#384): every point comes from the
+            # JSON-structured call match — never from prose (#852).
+            "evidence": {"method": "structured-call-match"},
+        },
     )

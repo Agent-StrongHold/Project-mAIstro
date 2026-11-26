@@ -18,7 +18,15 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    _clear_default_effect_context,
+    binding_scope_policy,
+    configure_default_effect_context,
+    default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
+)
 from maistro.capabilities.governed_invocation import InvocationApprovalRequired
 
 
@@ -91,3 +99,142 @@ async def test_legacy_read_effect_resolves_through_binding_scope() -> None:
     )
 
     assert invocation.result == {"committed": {"value": 2}}
+
+
+def _tool_binding() -> Binding:
+    return Binding(
+        binding_id="binding-tool-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="node-1",
+        capability="tool.deploy",
+    )
+
+
+@pytest.mark.asyncio
+async def test_irreversible_tool_admission_fact_requires_approval() -> None:
+    """The #57 tool floor: an irreversible tier carried as an admission fact is
+    gated at the canonical boundary, before any provider dispatch.
+
+    GovernedToolExecutor resolves the tier from the host-owned registry and
+    attaches it to the request as ``_tool_reversibility`` -- a caller-chosen
+    string must not be able to pick its own approval tier, and a tier the
+    registry resolved as irreversible must not inherit a workflow admission
+    approval (the same non-inheritance rule the legacy mutate/destroy floor
+    pins above).
+    """
+    context = new_effect_context(policy_evaluator=binding_scope_policy)
+    executed: list[Any] = []
+
+    async def executor(_provider: Any, request: Any) -> dict[str, Any]:
+        executed.append(request)
+        return {"committed": request}
+
+    with pytest.raises(InvocationApprovalRequired):
+        await context.invocations.invoke(
+            binding=_tool_binding(),
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="tool:deploy:1",
+            request={"_tool_reversibility": "irreversible", "arguments": {"env": "prod"}},
+            resolver=_resolver,
+            executor=executor,
+        )
+
+    assert executed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["internal", "reversible"])
+async def test_reversible_tool_admission_resolves_through_binding_scope(tier: str) -> None:
+    """Only the irreversible tier trips the floor; the others stay scope-gated."""
+    context = new_effect_context(policy_evaluator=binding_scope_policy)
+
+    async def executor(_provider: Any, request: Any) -> dict[str, Any]:
+        return {"committed": request}
+
+    request = {"_tool_reversibility": tier, "arguments": {"env": "staging"}}
+    invocation = await context.invocations.invoke(
+        binding=_tool_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        effect_key=f"tool:deploy:{tier}",
+        request=request,
+        resolver=_resolver,
+        executor=executor,
+    )
+
+    assert invocation.result == {"committed": request}
+
+
+class TestNestedContainersHandTheDefaultBack:
+    """Containers nest, so the process default has to be a stack.
+
+    A test or an embedder can build a second Container inside the lifetime of
+    the first. With one slot, closing the inner one left the process with no
+    published context at all, so every later registry-constructed node -- the
+    bare `RunConsumer` fallback among them -- got a fresh empty context and
+    failed Binding resolution while a perfectly usable Container was still
+    open (Codex, #1362).
+    """
+
+    @staticmethod
+    def _published() -> CapabilityEffectContext:
+        return new_effect_context(policy_evaluator=binding_scope_policy)
+
+    def setup_method(self) -> None:
+        _clear_default_effect_context()
+
+    def teardown_method(self) -> None:
+        _clear_default_effect_context()
+
+    def test_closing_the_inner_container_restores_the_outer(self) -> None:
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+        assert default_effect_context() is inner
+
+        release_default_effect_context(inner)
+
+        assert default_effect_context() is outer
+
+    def test_closing_out_of_order_leaves_the_rest_in_place(self) -> None:
+        """An embedder may close the outer Container first."""
+
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+
+        release_default_effect_context(outer)
+
+        assert default_effect_context() is inner
+
+    def test_the_last_release_falls_back_rather_than_returning_none(self) -> None:
+        only = self._published()
+        configure_default_effect_context(only)
+
+        release_default_effect_context(only)
+
+        fallback = default_effect_context()
+        assert fallback is not only
+        # Still one shared instance, so nodes do not each get a private ledger.
+        assert default_effect_context() is fallback
+
+    def test_republishing_does_not_leave_a_stale_duplicate(self) -> None:
+        """Re-publishing moves a context to the top, it does not record it twice.
+
+        Otherwise one release would withdraw only the newer entry and the
+        older duplicate would keep answering as the default.
+        """
+
+        outer, inner = self._published(), self._published()
+        configure_default_effect_context(outer)
+        configure_default_effect_context(inner)
+        configure_default_effect_context(outer)
+        assert default_effect_context() is outer
+
+        release_default_effect_context(outer)
+
+        assert default_effect_context() is inner

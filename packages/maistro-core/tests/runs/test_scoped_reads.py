@@ -7,6 +7,7 @@ missing or mismatched id, gets one `RunNotVisible`.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,8 @@ class _Tree:
 class _World:
     reader: ScopedRunReader
     runs: RunStore
+    workspaces: Any
+    projects: ProjectScopeStore
     a: _Tree
     b: _Tree
 
@@ -85,6 +88,12 @@ async def _tree(
 
 
 @pytest.fixture
+def stores_kind(request: pytest.FixtureRequest) -> str:
+    """The `stores` fixture param, so pins can match what the store can expose."""
+    return request.node.callspec.params["stores"]
+
+
+@pytest.fixture
 async def world(stores: Any) -> _World:
     runs, workspaces, projects = stores
     ws_a = await workspaces.create(creator_user_id="alice", name="A")
@@ -93,6 +102,8 @@ async def world(stores: Any) -> _World:
     return _World(
         reader=ScopedRunReader(runs, workspaces, projects),
         runs=runs,
+        workspaces=workspaces,
+        projects=projects,
         a=await _tree(runs, projects, ws_a.workspace_id, "alice"),
         b=await _tree(runs, projects, ws_b.workspace_id, "bob"),
     )
@@ -115,6 +126,63 @@ async def test_a_member_reads_the_whole_run_tree_whoever_initiated_it(
     assert attempt.attempt_id == a.attempt.attempt_id
     attempts = await got.list_attempts(a.run.run_id, a.node_run.node_run_id, principal_id=reader)
     assert [item.attempt_id for item in attempts] == [a.attempt.attempt_id]
+
+
+async def test_recent_discovery_uses_membership_not_actor(world: _World) -> None:
+    assert await world.reader.list_recent_runs(world.a.run.workspace_id, principal_id="carol") == [
+        world.a.run
+    ]
+    refusals = []
+    for workspace, principal in (
+        (world.b.run.workspace_id, "alice"),
+        ("missing", "alice"),
+        (world.a.run.workspace_id, ""),
+    ):
+        with pytest.raises(RunNotVisible) as caught:
+            await world.reader.list_recent_runs(workspace, principal_id=principal)
+        refusals.append(str(caught.value))
+    assert len(set(refusals)) == 1
+
+
+async def test_recent_discovery_refilters_rows_answered_out_of_scope(
+    world: _World,
+) -> None:
+    """A store that stops pre-filtering by Workspace cannot leak a foreign Run.
+
+    `list_recent_runs` re-checks every row's Workspace itself: the reader,
+    not the store, is the boundary. No shipped store answers discovery out
+    of scope (admission refuses cross-Workspace graphs, and every store
+    filters before pagination), so the test wraps one — a store that drops
+    the filter must lose nothing but the foreign row it leaks, and the
+    member still sees exactly their own history.
+    """
+
+    class UnscopedStore:
+        """Answers every stored Run for every Workspace, as if scopeless."""
+
+        def __init__(self, inner: RunStore, runs: list[Run]) -> None:
+            self._inner = inner
+            self._runs = runs
+
+        async def list_recent_runs(
+            self, workspace_id: str, *, limit: int = 100, offset: int = 0
+        ) -> list[Run]:
+            del workspace_id, limit, offset
+            return [await self._inner.get_run(run.run_id) for run in self._runs]
+
+    # Carol belongs to BOTH Workspaces, so Project admission would admit the
+    # foreign row too: the only filter left to drop it is the row's own
+    # Workspace check. The reader — not the store — is the boundary.
+    await world.workspaces.set_membership(
+        world.b.run.workspace_id, user_id="carol", role=WorkspaceRole.MEMBER
+    )
+    reader = ScopedRunReader(
+        UnscopedStore(world.runs, [world.a.run, world.b.run]),
+        world.workspaces,
+        world.projects,
+    )
+    visible = await reader.list_recent_runs(world.a.run.workspace_id, principal_id="carol")
+    assert [run.run_id for run in visible] == [world.a.run.run_id]
 
 
 async def _denials(reader: ScopedRunReader, tree: _Tree, principal: str) -> list[RunNotVisible]:
@@ -287,3 +355,78 @@ async def test_get_runs_skips_an_unreadable_run_and_keeps_the_rest(world: _World
 
     assert list(await world.reader.get_runs([b, a], principal_id="bob")) == []
     assert list(await world.reader.get_runs([b, a], principal_id="alice")) == [a]
+
+
+class _CountingRunStore:
+    """Wraps a `RunStore`, recording how far `get_run` reads ever overlap.
+
+    Two windows are tracked. `dispatched` brackets the real store call: a
+    second increment can only land while an earlier read is suspended inside
+    the wrapped store -- for `SqliteRunStore` that is its first
+    `aiosqlite.Connection.execute`, queued to the connection's worker.
+    `scheduled` counts reads set in motion before a cooperative yield, the
+    deepest window `InMemoryRunStore` offers: its `get_run` is a synchronous
+    dict hit with no await point of its own, so the `sleep(0)` there stands
+    in for the suspension a durable store provides itself.
+    """
+
+    def __init__(self, inner: RunStore) -> None:
+        self._inner = inner
+        self.lookups = 0
+        self.dispatched = 0
+        self.max_dispatched = 0
+        self.scheduled = 0
+        self.max_scheduled = 0
+
+    async def get_run(self, run_id: str, *, principal_id: str | None = None) -> Run | None:
+        self.lookups += 1
+        self.scheduled += 1
+        self.max_scheduled = max(self.max_scheduled, self.scheduled)
+        try:
+            await asyncio.sleep(0)
+            self.dispatched += 1
+            self.max_dispatched = max(self.max_dispatched, self.dispatched)
+            try:
+                return await self._inner.get_run(run_id)
+            finally:
+                self.dispatched -= 1
+        finally:
+            self.scheduled -= 1
+
+
+async def test_get_runs_overlaps_the_page_lookups_instead_of_serializing_them(
+    world: _World,
+    stores_kind: str,
+) -> None:
+    """One batched page must not wait on one `get_run` round trip per row (#1333).
+
+    The Recent Runs list hands the reader a whole page (up to 100 rows over a
+    durable store); the per-row canonical lookups are independent, so they
+    overlap. Pinned against the sequential regression, under which the store
+    never observes two reads in flight. Dedup happens before lookup: the
+    duplicate id costs one store read, not two.
+    """
+    counting = _CountingRunStore(world.runs)
+    reader = ScopedRunReader(counting, world.reader.workspace_store, world.reader.project_store)
+    page = [
+        world.a.run.run_id,
+        world.b.run.run_id,
+        "missing-run",
+        world.a.run.run_id,
+    ]
+
+    found = await reader.get_runs(page, principal_id="bob")
+
+    assert list(found) == [world.b.run.run_id]
+    assert counting.lookups == len(set(page))
+    if stores_kind == "sqlite":
+        # Real reads, not merely scheduled coroutines: read two was dispatched
+        # into the store while read one was already suspended inside it, at
+        # its own aiosqlite await. The page's store calls overlap and pipeline
+        # through the connection worker instead of waiting on one full round
+        # trip per row.
+        assert counting.max_dispatched >= 2
+    else:
+        assert counting.max_scheduled >= 2
+    assert counting.dispatched == 0
+    assert counting.scheduled == 0
