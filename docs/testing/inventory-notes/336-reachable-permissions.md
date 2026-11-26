@@ -206,3 +206,22 @@ tested commit: `ok: 16 raw fetch and 71 hand-typed declaration(s) tolerated,
 none new`. Browser evidence re-established at the same content: permissions
 suite 6/6 (intercepted) and `setup.spec.ts` 8/8 against a real clean-setup
 backend on :8102 serving this production build.
+
+## Independent verification round (head `ba3907e34f`, 2026-11-26)
+
+Every material claim from the repair and sync rounds was re-executed first-hand
+at the final head; no code changed in this round. Environment note: the
+reference app's runtime deps (maistro-design/maistro-canvas) are not part of
+the root dev env — `uv pip install -e packages/maistro-design` restores the
+bootable state (the app hard-imports maistro_design; `uv sync --locked
+--all-extras` alone does not).
+
+- `RATCHET_BASE_REV=origin/develop uv run python scripts/check-frontend-typed-client.py` -> exit 0, "16 raw fetch and 71 hand-typed tolerated, none new" (the prior round's blocking finding, closed).
+- `scripts/check-conductor-permission-matrix.py` -> OK: 51 API entries, 23 UI mutations (CI-exact, `quality.yml:1114`).
+- `uv run ruff check .` / `uv run ruff format --check .` -> pass (3683 files).
+- `scripts/check-suite-inventory.py` -> 21 suites match (37176 unique identities).
+- Policy test set (permission_policy, setup_guard, auth_middleware, workspace_restore_policy, workspace_authority, home_routes, auth_routes) -> **155 passed**; `test_default_workspace.py` -> **18 passed** (default route + `workspaces.write` gate).
+- Full backend package `uv run pytest packages/hive-conductor/backend/tests -x -q` -> **4544 passed, 112 skipped** (229.7s).
+- Browser, permissions config (intercepted): **6/6** (restore elevation success/cancel/wrong-password-retry, membership denial surfacing, Attention optimizer+HITL doors).
+- Browser, live clean setup: `setup.spec.ts` **8/8** against a throwaway backend on :8102 (fresh `CONDUCTOR_DATA_DIR`, `.venv` uvicorn, fresh `vite build`, no LLM gateway).
+- Residual (unchanged, recorded, not regressed): the literal per-role live-browser walk of every advertised mutation (and the chat step, which needs a model gateway this environment lacks) remains covered at the API/policy layer by the 155+4544-test evidence; UI elevation task IDs are synthetic `ui-*` retired by TTL only.
