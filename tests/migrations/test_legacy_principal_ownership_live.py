@@ -505,8 +505,10 @@ def _assert_losslessly_migrated() -> None:
     # deletion-marker table (#2467) — `064` when written on this branch's
     # previous tip — renumbers past that landed run as `069` under the same
     # convention (test_goal_installed_base_upgrade carries the same head).
-    # #1064's Evolve domain store renumbers past that landed run as `070`.
-    assert _versions() == {"070"}
+    # #1064's Evolve domain store renumbers past that landed run as `070`,
+    # and the per-Workspace working log (#301, M4-H; #105) appends past
+    # that as `071`.
+    assert _versions() == {"071"}
 
 
 class TestMixedDataMigratesLosslessly:
