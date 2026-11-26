@@ -253,3 +253,92 @@ completed/revoked; only TTL expiry retires them (covered by
 elevation-lifecycle repair stays open for the integration stage.
 
 No closure keywords were added anywhere; the PR/issue state is untouched.
+
+## Repair round at `2941907adb` (2026-11-26)
+
+The merge-queue evaluation at this head failed five CI gates. Each defect was
+reproduced locally before repair; none was addressed by scanner guesswork.
+
+- `exact-debt-ledger` / vulture per-identity ledger: `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` -> **passes at this head** (1219 reviewed
+  identities -> 1219 findings, unclassified 0, never_allowlist 0). The
+  failing step in that workflow is `check-shipped-surface-truth.py` (it runs
+  in the same job, `vulture-ratchet.yml`), not the vulture comparison
+  itself. `quality/vulture-baseline.json` was therefore **not** amended —
+  there is no unbanked identity to bank and no fixed identity to retire.
+- Shipped-surface truth: the typed-client repair (`55204762ae`) moved the
+  Evolution/RSI mutating calls from `pages/` into `lib/evolution.ts` /
+  `lib/rsi.ts`, leaving five stale matrix rows (pages) and five unclassified
+  surfaces (lib). The five rows in `quality/shipped-surface-truth.json` were
+  re-pointed to the lib sources (the two RSI rows also picked up the
+  renamed interpolations `${runId}`); dispositions, reasons and effect
+  owners are unchanged. `check-shipped-surface-truth.py` -> complete;
+  `tests/test_shipped_surface_truth.py` -> 2 passed.
+- Credential field labels: the new elevation dialog rendered a raw
+  `type="password"` input. Replaced with the shared `SecretField` (label
+  "Account password", show/hide control, `autoComplete="current-password"`,
+  Enter-to-submit preserved). `check-secret-field-labels.py` -> OK;
+  `tests/test_check_secret_field_labels.py` -> 2 passed.
+- Quality-split profile: `quality-enumerations` gained the
+  `check-conductor-permission-matrix.py` step without recording its digest
+  in `tests/fixtures/ci_quality_obligations.json`. Added the step's sha256
+  (`ca0a407d…`) to the fixture. `tests/test_ci_quality_split.py` -> passed
+  (9/9 incl. parametrized).
+- `hive-conductor-e2e-ui` (reproduced with the exact CI compose command,
+  plus a local-only ports override because an orphan proxy from a previous
+  session holds host 127.0.0.1:8101; the Playwright suite addresses the
+  compose-network hostname, so the outcome is unaffected): first run
+  208 passed / 4 failed / 20 skipped, exactly matching CI. Four root
+  causes, all fixed:
+  1. `tests/Dockerfile.playwright` copies a frontend whitelist into the
+     test image; `WorkspaceTabs.tsx` now imports `./Elevation`, so the
+     skeleton spec's esbuild bundle died with `Could not resolve
+     "./Elevation"`. Added `Elevation.tsx` + `lib/elevation.ts` to the
+     whitelist (their own imports — `lib/api`, `shared` — are already
+     copied).
+  2. The skeleton harness mounted `WorkspaceTabs` without
+     `ElevationProvider`; `useAuthorizedAction` throws outside the
+     provider, so the component crashed before rendering the skeleton.
+     The harness entry now wraps in `ElevationProvider`, mirroring the
+     shipped `App` composition.
+  3. `DagBuilder.handleRun` forced `requestElevation("dags.write")` for
+     every non-admin. The setup-provisioned daily user legitimately holds
+     `dags.write` (policy inventory), so this stranded exactly the
+     ordinary workflow #336 unblocks and blocked the PM-driven DAG specs.
+     The gate is removed; the run socket is still enforced server-side
+     (`routes/ws.py` authenticates the upgrade with
+     `permission="dags.write"`), which the page surfaces verbatim.
+  4. `workspace-a11y`'s invite-refusal case relied on the daily user being
+     refused `workspaces.write` by the permission table — a premise #336
+     deliberately removed (and `set_member` never validates user
+     existence, so the invite now succeeds). The refusal is now stubbed at
+     the network layer with the route's own 403 copy ("only an owner can
+     add workspace members"), keeping the a11y contract under test (the
+     panel's error region is an alert) independent of the permission
+     matrix. The message intentionally does not name `workspaces.write`,
+     so the elevation affordance stays closed.
+  After the fixes: **232 passed, 0 failed** (~3.5m).
+- The lane's own permission specs (`frontend/e2e`, standalone
+  `playwright.permissions.config.ts`) initially failed on the SecretField
+  change: `dialog.getByLabel("Account password")` strict-matches both the
+  labeled textbox and the "Show Account password" reveal button. The two
+  helpers now use `getByRole("textbox", { name: "Account password" })`.
+  Suite result: **6 passed** (elevation success, wrong-password refusal,
+  cancel-without-replay, retry, denial scoping) — the issue's
+  approval/elevation success/refusal/retry evidence.
+- Frontend `tsc --noEmit` -> clean; the compose build compiles the SPA
+  with these changes (the hive image built successfully three times).
+- Full re-validation at the repaired tree: `uv run pytest
+  packages/hive-conductor/backend/tests -q` -> **4544 passed, 112
+  skipped** (= recorded inventory 4656); `uv run pytest tests/ -q` ->
+  **6429 passed, 140 skipped**; `uv run ruff check .` +
+  `ruff format --check .` -> clean; `check-conductor-permission-matrix.py`
+  -> OK (51 API / 23 UI); `check-ratchet-provenance.py`,
+  `check-frontend-typed-client.py`, and the other `lint-and-type-check`
+  static steps all exit 0; `check-suite-inventory.py` -> 21 suites match
+  the recorded inventory (no pytest-collected test added or removed, so no
+  inventory delta is owed).
+
+No ledger/grant file was edited in this round; no closure keywords added;
+no remote mutation performed.

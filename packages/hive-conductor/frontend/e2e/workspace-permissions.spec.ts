@@ -53,7 +53,7 @@ async function archivedWorkspace(page: Page, membershipDenied = false) {
 async function confirm(page: Page, password = "own-password") {
   const dialog = page.getByRole("dialog", { name: "Permission elevation" });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel("Account password").fill(password);
+  await dialog.getByRole("textbox", { name: "Account password" }).fill(password);
   await dialog.getByRole("button", { name: "Elevate for this task" }).click();
   return dialog;
 }

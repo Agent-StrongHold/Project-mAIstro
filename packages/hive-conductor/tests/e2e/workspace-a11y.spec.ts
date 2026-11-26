@@ -56,12 +56,26 @@ test("a refused workspace invite is announced as an alert", async () => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: /^Share \(/ }).click();
   await page.getByLabel("Invite user id", { exact: true }).fill("nobody-of-that-name");
-  // Adding a member is a protected write; the daily-user account is refused,
-  // and that refusal is the message the audit found silent.
+  // Adding a member used to be refused to the daily user by the permission
+  // table itself (#336 granted workspaces.write to it), so the refusal now
+  // comes from the route's own ownership rule. Stub it at the network layer
+  // — with the route's own refusal copy — so this test pins the a11y
+  // contract (the panel's error region is an alert) rather than whichever
+  // account happens to hold the permission today. The message deliberately
+  // does not name "workspaces.write", so the elevation affordance stays
+  // closed and the panel renders its own alert region.
+  await page.route("**/v1/workspaces/*/members", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "only an owner can add workspace members" }),
+    }),
+  );
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const alert = page.getByRole("alert");
   await expect(alert).toBeVisible({ timeout: 15000 });
   await expect(alert).not.toHaveText("");
+  await page.unroute("**/v1/workspaces/*/members");
 });
 
 test("persona wizard fields are named by their visible labels", async () => {

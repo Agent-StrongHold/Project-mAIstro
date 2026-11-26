@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { ApiError } from "../lib/api";
 import { elevateTask, type ElevationContextValue, type ElevationRequest } from "../lib/elevation";
+import { SecretField } from "./shared";
 
 const ElevationContext = createContext<ElevationContextValue | null>(null);
 
@@ -73,16 +74,14 @@ export function ElevationProvider({ children }: { children: ReactNode }) {
             <p style={{ fontFamily: "var(--hand)", fontSize: 14, margin: "0 0 12px" }}>
               This action needs <strong>{request.permission}</strong>. Confirm with your own account password; elevation is limited to this task.
             </p>
-            <input
+            <SecretField
+              label="Account password"
               autoFocus
-              type="password"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={setPassword}
               onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-              placeholder="Account password"
-              aria-label="Account password"
               autoComplete="current-password"
-              className="input-field"
+              style={{ marginBottom: 8 }}
             />
             {error && <div style={{ color: "var(--danger)", fontFamily: "var(--mono)", fontSize: 9, marginTop: 8 }}>{error}</div>}
             <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 12 }}>

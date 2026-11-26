@@ -38,6 +38,12 @@ COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/S
 # frontend file the harness needs. The #1421 workspace skeleton specs bundle
 # the shipped WorkspaceTabs/WorkspaceContext against the same shared.tsx.
 COPY frontend/src/components/WorkspaceTabs.tsx /tests/frontend/src/components/WorkspaceTabs.tsx
+# #336: WorkspaceTabs asks the canonical elevation affordance before a
+# protected write, and the affordance lives in these two files. Without them
+# the skeleton spec's esbuild bundle dies with "Could not resolve
+# ./Elevation".
+COPY frontend/src/components/Elevation.tsx /tests/frontend/src/components/Elevation.tsx
+COPY frontend/src/lib/elevation.ts /tests/frontend/src/lib/elevation.ts
 COPY frontend/src/components/shared.tsx /tests/frontend/src/components/shared.tsx
 COPY frontend/src/components/RichTooltip.tsx /tests/frontend/src/components/RichTooltip.tsx
 COPY frontend/src/context/WorkspaceContext.tsx /tests/frontend/src/context/WorkspaceContext.tsx

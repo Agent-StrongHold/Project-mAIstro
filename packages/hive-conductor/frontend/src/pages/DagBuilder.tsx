@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
-import { useAuthorizedAction, useElevation } from "../components/Elevation";
-import { useUser } from "../App";
+import { useAuthorizedAction } from "../components/Elevation";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   ConfirmDialog,
@@ -113,9 +112,7 @@ function detachLiveRun(run: LiveRun): void {
 
 export default function DagBuilder() {
   const toast = useToast();
-  const user = useUser();
   const authorizedAction = useAuthorizedAction();
-  const { requestElevation } = useElevation();
   const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [dags, setDags] = useState<DAGFile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -334,19 +331,18 @@ export default function DagBuilder() {
     }
   }, [dag, selectedNode, toast, authorizedAction]);
 
-  const handleRun = useCallback(async () => {
+  const handleRun = useCallback(() => {
     if (!dag) return;
     if (!workspacesReady || !activeWorkspaceId) {
       toast("Select a Workspace before running a DAG", "error");
       return;
     }
-    if (user?.role !== "admin") {
-      try {
-        await requestElevation("dags.write");
-      } catch {
-        return;
-      }
-    }
+    // No elevation pre-flight: the setup-provisioned daily user holds
+    // `dags.write` legitimately (services/permission_policy.py), and forcing
+    // a password per run would strand exactly the ordinary workflow #336
+    // unblocks. A principal without the grant is refused explicitly by the
+    // run socket itself (routes/ws.py authenticates the upgrade with
+    // permission="dags.write"), which the log below surfaces verbatim.
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
     // One Run at a time: retire a socket a previous run could have left
@@ -440,7 +436,7 @@ export default function DagBuilder() {
       if (run.detach) return;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection closed before the Run reported a final state"] }));
     };
-  }, [activeWorkspaceId, dag, toast, user?.role, requestElevation, workspacesReady]);
+  }, [activeWorkspaceId, dag, toast, workspacesReady]);
 
   const handleActivate = useCallback(async () => {
     if (!dag) return;
