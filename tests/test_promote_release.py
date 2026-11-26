@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import subprocess
 import sys
 import zipfile
@@ -909,3 +910,259 @@ def test_shipping_workflow_promotes_rc_artifacts_on_finals():
         and "soak-evidence" in json.dumps(s)
     ]
     assert evidence_uploads, "the final run must publish the soak evidence it promoted on"
+
+
+# --- fail-closed seams (#89 coverage-gate repair) -----------------------------
+#
+# The gate that promotes a release must fail closed on malformed evidence and
+# on GitHub transport errors. The CLI tests above stub `_gh`/`_fetch_run_id`/
+# `_artifact_id`/`_download_artifact` wholesale, which is right for workflow
+# wiring — but it left the seams' own rejection arms unexercised, and the
+# coverage gate named exactly those arms. These tests drive the REAL seam
+# bodies (GitHub access injected one layer lower), so a silent acceptance of
+# malformed evidence fails here rather than on PyPI's doorstep.
+
+
+def test_evidence_that_is_not_an_object_is_rejected(promote_mod):
+    assert promote_mod.validate_evidence("release.log", version="1.0.0", rc_tag="v1.0.0-rc1") == [
+        "release evidence must be a JSON object"
+    ]
+
+
+def test_images_that_are_not_a_digest_map_are_rejected(promote_mod):
+    errors = promote_mod.validate_evidence(
+        make_evidence(images="registry.example/maistro-engine:1.0.0"),
+        version="1.0.0",
+        rc_tag="v1.0.0-rc1",
+    )
+    assert any("images: must be a {image: sha256:...} map" in e for e in errors)
+
+
+def test_soak_binding_that_is_not_an_object_is_rejected(promote_mod):
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["artifact_binding"] = "deploy/soak/compose.yaml"
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("artifact_binding: required" in e for e in errors)
+
+
+def test_soak_checks_that_are_not_a_map_are_rejected(promote_mod):
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["checks"] = ["clean_install", "real_model"]
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("checks: required" in e for e in errors)
+
+
+def test_findings_that_are_not_a_list_are_rejected(promote_mod):
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["findings"] = "no findings, trust me"
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("findings: must be a list" in e for e in errors)
+
+
+def test_findings_reject_non_object_entries_and_missing_ids(promote_mod):
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["findings"] = [42, {"severity": "low", "invalidates_invariant": False}]
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("findings: each entry must be an object" in e for e in errors)
+    assert any("findings: every finding needs a non-empty id" in e for e in errors)
+
+
+def test_findings_invalidate_flag_must_be_boolean(promote_mod):
+    """A truthy string must not smuggle an invariant invalidation past the gate."""
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["findings"] = [{"id": "F-9", "invalidates_invariant": "no"}]
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("invalidates_invariant must be a boolean" in e for e in errors)
+
+
+def test_soak_that_is_not_an_object_is_rejected(promote_mod):
+    evidence = make_evidence()
+    assert promote_mod.validate_soak("soak-console-dump.txt", evidence=evidence) == [
+        "soak evidence must be a JSON object"
+    ]
+
+
+def test_soak_with_a_foreign_schema_is_rejected(promote_mod):
+    """A soak record from another schema is not this gate's evidence (#860)."""
+    evidence = make_evidence()
+    soak = make_soak(evidence)
+    soak["schema"] = 999
+    errors = promote_mod.validate_soak(soak, evidence=evidence)
+    assert any("schema: expected 1, got 999" in e for e in errors)
+
+
+def test_gh_returns_stdout_and_wraps_failures(promote_mod, monkeypatch):
+    monkeypatch.setattr(
+        promote_mod.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "run-line", ""),
+    )
+    assert promote_mod._gh(["api", "repos/o/r/actions/runs"]) == "run-line"
+
+    monkeypatch.setattr(
+        promote_mod.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "Bad credentials"),
+    )
+    with pytest.raises(RuntimeError, match="Bad credentials"):
+        promote_mod._gh(["api", "repos/o/r/actions/runs"])
+
+
+def test_fetch_run_id_parses_gh_output_and_returns_the_latest_success(promote_mod, monkeypatch):
+    runs = [rc_run(1), rc_run(2, conclusion="failure"), rc_run(9)]
+    monkeypatch.setattr(promote_mod, "_gh", lambda args: "\n".join(json.dumps(run) for run in runs))
+    assert promote_mod._fetch_run_id("org/repo", "v1.0.0-rc1") == 9
+
+
+def test_fetch_run_id_fails_closed_when_the_latest_attempt_failed(promote_mod, monkeypatch):
+    """`gh` output is parsed the way the CLI pipes it: one JSON object per line,
+    and a candidate whose latest attempt failed must SystemExit, not fall back."""
+    runs = [rc_run(3, conclusion="success"), rc_run(7, conclusion="failure")]
+    monkeypatch.setattr(promote_mod, "_gh", lambda args: "\n".join(json.dumps(run) for run in runs))
+    with pytest.raises(SystemExit, match="::error::"):
+        promote_mod._fetch_run_id("org/repo", "v1.0.0-rc1")
+
+
+def test_artifact_id_skips_expired_artifacts(promote_mod, monkeypatch):
+    """An expired soak artifact must never be adopted as promotion evidence."""
+    artifacts = [
+        {"id": 5, "name": promote_mod.SOAK_ARTIFACT, "expired": True},
+        {"id": 9, "name": promote_mod.SOAK_ARTIFACT, "expired": False},
+    ]
+    monkeypatch.setattr(
+        promote_mod, "_gh", lambda args: "\n".join(json.dumps(a) for a in artifacts)
+    )
+    assert promote_mod._artifact_id("org/repo", 42, promote_mod.SOAK_ARTIFACT) == 9
+
+
+def test_artifact_id_fails_closed_when_the_artifact_is_missing(promote_mod, monkeypatch):
+    monkeypatch.setattr(promote_mod, "_gh", lambda args: "")
+    with pytest.raises(SystemExit, match=f"has no '{promote_mod.SOAK_ARTIFACT}' artifact"):
+        promote_mod._artifact_id("org/repo", 42, promote_mod.SOAK_ARTIFACT)
+
+
+def test_load_json_fails_closed_on_unreadable_evidence(promote_mod, tmp_path):
+    with pytest.raises(SystemExit, match="release evidence is unreadable"):
+        promote_mod._load_json(tmp_path / "absent.json", "release evidence")
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    with pytest.raises(SystemExit, match="release evidence is unreadable"):
+        promote_mod._load_json(broken, "release evidence")
+
+
+def test_record_evidence_refuses_a_present_but_artifact_free_dist(promote_mod, tmp_path, capsys):
+    """The empty-dist rejection fires on a directory that EXISTS but holds no
+    artifacts — distinct from the missing-directory arm the CLI tests above hit."""
+    empty = tmp_path / "empty-dist"
+    empty.mkdir()
+    assert (
+        promote_mod.main(
+            [
+                "record-evidence",
+                "--tag",
+                "v1.0.0-rc1",
+                "--version",
+                "1.0.0",
+                "--dist",
+                str(empty),
+                "--output",
+                str(tmp_path / "x.json"),
+            ]
+        )
+        == 1
+    )
+    assert "contains no artifacts" in capsys.readouterr().err
+
+
+def test_adopt_wheels_fails_closed_without_repository_identity(promote_mod, monkeypatch, tmp_path):
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert (
+        promote_mod.main(
+            [
+                "adopt-wheels",
+                "--tag",
+                "v1.0.0",
+                "--version",
+                "1.0.0",
+                "--rc-tag",
+                "v1.0.0-rc1",
+                "--dist-dir",
+                str(tmp_path / "dist"),
+                "--evidence-out",
+                str(tmp_path / "evidence.json"),
+            ]
+        )
+        == 1
+    )
+
+
+def test_adopt_digests_fails_closed_without_repository_identity(promote_mod, monkeypatch, tmp_path):
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert (
+        promote_mod.main(
+            [
+                "adopt-digests",
+                "--evidence",
+                str(tmp_path / "release-evidence.json"),
+                "--version",
+                "1.0.0",
+                "--rc-tag",
+                "v1.0.0-rc1",
+                "--soak-out",
+                str(tmp_path / "soak-evidence.json"),
+            ]
+        )
+        == 1
+    )
+
+
+def test_adopt_digests_prints_each_evidence_error_and_fails(promote_mod, tmp_path, capsys):
+    path = write_evidence(tmp_path, make_evidence(version="0.9.0"))
+    assert (
+        promote_mod.main(
+            [
+                "adopt-digests",
+                "--evidence",
+                str(path),
+                "--version",
+                "1.0.0",
+                "--rc-tag",
+                "v1.0.0-rc1",
+                "--soak-out",
+                str(tmp_path / "soak-evidence.json"),
+                "--repo",
+                "org/repo",
+            ]
+        )
+        == 1
+    )
+    assert "::error::version:" in capsys.readouterr().err
+
+
+def test_cli_entrypoint_propagates_the_exit_code(promote_mod, tmp_path, monkeypatch, capsys):
+    """`python scripts/promote_release.py ...` must propagate main()'s exit
+    code — the workflow's `set -euo pipefail` relies on it."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(PROMOTE),
+            "record-evidence",
+            "--tag",
+            "v1.0.0-rc1",
+            "--version",
+            "1.0.0",
+            "--dist",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "x.json"),
+        ],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(str(PROMOTE), run_name="__main__")
+    assert excinfo.value.code == 1
