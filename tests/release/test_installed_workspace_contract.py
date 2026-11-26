@@ -806,6 +806,86 @@ def test_a_complete_run_passes_every_family_and_writes_the_bundle(harness, tmp_p
     assert results["closeout"]["bundle_verified"] is True
 
 
+@pytest.mark.parametrize(
+    ("family", "slot"),
+    [
+        ("INSTALL", "probe"),
+        ("INSTALL", "login"),
+        ("INSTALL", "workspace"),
+        ("INSTALL", "effective_config"),
+        ("EXECUTE", "client"),
+        ("RESTART", "stop"),
+        ("RESTART", "persistence"),
+        ("RESTART", "new_request"),
+        ("ISOLATE", "positive_control"),
+        ("FAIL_CLOSED", "client"),
+    ],
+)
+@pytest.mark.parametrize("stdout", ["not JSON", "[]"])
+def test_required_observations_cannot_pass_without_a_json_object(
+    harness, tmp_path: Path, family: str, slot: str, stdout: str
+) -> None:
+    manifest = build_manifest(tmp_path)
+    command = _text_command(stdout)
+    if slot == "probe":
+        manifest["target"]["probe"] = command
+    else:
+        scenario = manifest["scenarios"][family.lower()]
+        if family == "FAIL_CLOSED":
+            step = scenario["cases"][0][slot]
+        elif slot == "login":
+            step = scenario[slot]["command"]
+        else:
+            step = scenario[slot]
+        step["command"] = command
+        # These optional manifest expectations must not be the only thing
+        # enforcing the harness's mandatory observation contract.
+        step.pop("expect_json", None)
+        step.pop("payload", None)
+    output = tmp_path / "bundle"
+    exit_code = prove(harness, write_manifest(tmp_path, manifest), output)
+    results = json.loads((output / "results.json").read_text(encoding="utf-8"))
+    assert exit_code == harness.EXIT_EVIDENCE
+    assert results["scenarios"][family]["outcome"] == harness.FAIL
+    assert results["closeout"]["all_families_pass"] is False
+    assert any(
+        check["detail"] == "stdout was not a JSON object"
+        for check in results["scenarios"][family]["subchecks"]
+    )
+    assert harness.verify_bundle(output) == []
+    if slot == "probe":
+        install = json.loads((output / "effective-config.json").read_text(encoding="utf-8"))
+        assert [step["name"] for step in install["steps"]] == ["TARGET_CLEAN"]
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        {"sandboxes_remaining": 0},
+        {"drained": False, "sandboxes_remaining": 0},
+        {"drained": 1, "sandboxes_remaining": 0},
+        {"drained": True, "sandboxes_remaining": False},
+        {"drained": True, "sandboxes_remaining": 0.0},
+        {"drained": True},
+    ],
+)
+def test_restart_requires_observed_lifespan_drain_and_integer_zero_sandboxes(
+    harness, tmp_path: Path, observation: dict[str, Any]
+) -> None:
+    manifest = build_manifest(tmp_path)
+    manifest["scenarios"]["restart"]["stop"]["command"] = _json_command(observation)
+    output = tmp_path / "bundle"
+    exit_code = prove(harness, write_manifest(tmp_path, manifest), output)
+    results = json.loads((output / "results.json").read_text(encoding="utf-8"))
+    checks = subchecks(results, "RESTART")
+    expected = (
+        "LIFESPAN_DRAINED" if observation.get("drained") is not True else "NO_ORPHANED_SANDBOXES"
+    )
+    assert checks[expected]["outcome"] == harness.FAIL
+    assert results["scenarios"]["RESTART"]["outcome"] == harness.FAIL
+    assert exit_code == harness.EXIT_EVIDENCE
+
+
 def test_the_bundle_records_the_effective_environment_and_the_target_probe(
     harness, tmp_path: Path
 ) -> None:

@@ -1052,10 +1052,20 @@ class ProofRun:
         return result
 
     def _run_subcheck(
-        self, result: FamilyResult, step: Step, evidence: list[str]
+        self,
+        result: FamilyResult,
+        step: Step,
+        evidence: list[str],
+        *,
+        require_observation: bool = False,
     ) -> tuple[StepResult, str, str | None]:
         executed = run_step(step, self.env, self.cwd, self.install_log)
         outcome, detail = step_outcome(executed)
+        # Mandatory observations are part of the harness contract, not an
+        # optional expectation a manifest author can omit. Exit zero alone
+        # cannot prove a clean target, authenticated access, or cleanup.
+        if outcome == PASS and require_observation and executed.stdout_json is None:
+            outcome, detail = FAIL, "stdout was not a JSON object"
         _record(result, executed, outcome, detail)
         result.subchecks.append(
             Subcheck(name=step.name, outcome=outcome, detail=detail, evidence=evidence)
@@ -1075,7 +1085,9 @@ class ProofRun:
         # TARGET_CLEAN: the probe both records the machine and proves the
         # clean-target contract the manifest declares.
         probe = build_step({"command": target["probe"]}, "TARGET_CLEAN")
-        executed, outcome, _detail = self._run_subcheck(result, probe, ["install.log"])
+        executed, outcome, _detail = self._run_subcheck(
+            result, probe, ["install.log"], require_observation=True
+        )
         if outcome == PASS and isinstance(executed.stdout_json, dict):
             self.target_probe = executed.stdout_json
             missing = [
@@ -1124,7 +1136,12 @@ class ProofRun:
                     )
                 )
                 continue
-            self._run_subcheck(result, step, ["install.log"])
+            self._run_subcheck(
+                result,
+                step,
+                ["install.log"],
+                require_observation=name in (login_name, "WORKSPACE"),
+            )
             if name == login_name and step.name != login_name:
                 result.subchecks[-1].name = login_name
 
@@ -1147,7 +1164,7 @@ class ProofRun:
 
         effective = build_step(install["effective_config"], "EFFECTIVE_CONFIG")
         executed, outcome, _detail = self._run_subcheck(
-            result, effective, ["effective-config.json"]
+            result, effective, ["effective-config.json"], require_observation=True
         )
         observed = executed.stdout_json if isinstance(executed.stdout_json, dict) else None
         result.observed = observed
@@ -1242,7 +1259,7 @@ class ProofRun:
             return result
         client = build_step(self.manifest["scenarios"]["execute"]["client"], "PROVIDER_RESPONSE")
         executed, outcome, _detail = self._run_subcheck(
-            result, client, ["execution.json#/observed"]
+            result, client, ["execution.json#/observed"], require_observation=True
         )
         observed = executed.stdout_json if isinstance(executed.stdout_json, dict) else None
         result.observed = observed
@@ -1339,10 +1356,21 @@ class ProofRun:
         correlation = self.manifest["scenarios"]["execute"]["correlation"]
 
         stop = build_step(restart["stop"], "LIFECYCLE_STOP")
-        executed, outcome, _detail = self._run_subcheck(result, stop, ["restart.json"])
+        executed, outcome, _detail = self._run_subcheck(
+            result, stop, ["restart.json"], require_observation=True
+        )
         if outcome == PASS and isinstance(executed.stdout_json, dict):
+            if executed.stdout_json.get("drained") is not True:
+                result.subchecks.append(
+                    Subcheck(
+                        name="LIFESPAN_DRAINED",
+                        outcome=FAIL,
+                        detail="stop did not report drained=true",
+                        evidence=["restart.json#/steps"],
+                    )
+                )
             remaining = executed.stdout_json.get("sandboxes_remaining")
-            if remaining != 0:
+            if type(remaining) is not int or remaining != 0:
                 result.subchecks.append(
                     Subcheck(
                         name="NO_ORPHANED_SANDBOXES",
@@ -1357,7 +1385,7 @@ class ProofRun:
 
         persistence = build_step(restart["persistence"], "PERSISTENCE")
         executed, outcome, _detail = self._run_subcheck(
-            result, persistence, ["restart.json#/observed"]
+            result, persistence, ["restart.json#/observed"], require_observation=True
         )
         observed = executed.stdout_json if isinstance(executed.stdout_json, dict) else None
         result.observed = observed
@@ -1407,7 +1435,7 @@ class ProofRun:
             )
             return result
         executed, outcome, _detail = self._run_subcheck(
-            result, new_request, ["restart.json#/steps"]
+            result, new_request, ["restart.json#/steps"], require_observation=True
         )
         if outcome == PASS and isinstance(executed.stdout_json, dict):
             calls = executed.stdout_json.get("provider_calls")
@@ -1433,7 +1461,9 @@ class ProofRun:
             return self._family_gated("ISOLATE", stop_hits)
         isolate = self.manifest["scenarios"]["isolate"]
         control = build_step(isolate["positive_control"], "POSITIVE_CONTROL")
-        executed, outcome, _detail = self._run_subcheck(result, control, ["isolation.json#/steps"])
+        executed, outcome, _detail = self._run_subcheck(
+            result, control, ["isolation.json#/steps"], require_observation=True
+        )
         if outcome == PASS and isinstance(executed.stdout_json, dict):
             if executed.stdout_json.get("accessible") is not True:
                 result.subchecks.append(
@@ -1452,7 +1482,7 @@ class ProofRun:
             name = str(raw.get("name", "probe"))
             step = build_step(raw["command"], f"PROBE_{name}".upper())
             executed, outcome, _detail = self._run_subcheck(
-                result, step, ["isolation.json#/observed"]
+                result, step, ["isolation.json#/observed"], require_observation=True
             )
             observed = executed.stdout_json if isinstance(executed.stdout_json, dict) else None
             if observed is not None:
@@ -1512,7 +1542,7 @@ class ProofRun:
             )
             client = build_step(case["client"], f"CASE_{name}".upper())
             executed, outcome, _detail = self._run_subcheck(
-                result, client, ["fail-closed.json#/observed"]
+                result, client, ["fail-closed.json#/observed"], require_observation=True
             )
             observed = executed.stdout_json if isinstance(executed.stdout_json, dict) else None
             cases_observed.append(

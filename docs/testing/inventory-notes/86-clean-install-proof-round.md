@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +54
+  tests/: +80
 ---
 
 # #86 M3-A4 clean-install/deployment-profile proof — verification round
@@ -10,10 +10,107 @@ This round adds the #86 release proof itself: the harness
 (`docs/testing/installed-workspace-proof-manifest.schema.json`), its runbook
 (`docs/testing/installed-workspace-proof.md`), and the contract suite that
 drives the real script (`tests/release/test_installed_workspace_contract.py`).
-`tests/: +54` is that suite in full — 50 test functions, 54 collected cases
-(`test_a_stop_before_command_blocks_its_family_without_executing` is
-parametrized over the five stop-before categories). No existing test was
-weakened, skipped, or deleted to make room for them.
+`tests/: +80` is that suite in full — the original 54 collected cases plus
+26 observation/drain regression cases added in the focused repair below. No
+existing test was weakened, skipped, or deleted to make room for them.
+
+## Current isolated-worker validation (starting HEAD `7b61c9c3e5`)
+
+**Partial repair, not release proof or integration approval.** Earlier executed
+claims below are historical; they were not assumed true. The assigned job
+`971bce79b16348498ca9b05beccf1dbf` supplied no `check-*.log` files, and its
+referenced prior result file was absent. The clean tree preserved two existing
+lane commits. With no prior abort diagnostic available, this round selected
+the smallest independently reproducible production defect rather than
+rebuilding the lane again.
+
+The unmodified harness falsely returned exit zero/all-family PASS when the
+clean-target probe printed plain text, and when lifecycle stop reported
+`drained: false, sandboxes_remaining: 0`. Required JSON observations were
+previously enforced only by optional manifest expectations/payload fields.
+The repair enforces JSON objects for clean-target, login, Workspace, effective
+configuration, execution, lifecycle stop, persistence, post-restart request,
+isolation controls/probes and fail-closed observations independently of those
+optional fields. Stop must also report exactly `drained: true` and an integer
+(not boolean/float) zero remaining sandboxes. Textual installer/start output
+remains supported.
+
+Tests drive the real CLI implementation with subprocess clients; all synthetic
+observations are **harness contract tests**, not an installed product journey.
+Before the production repair, the added tests produced **25 failures, 1 pass**;
+after it, `uv run pytest tests/release/ -x -q` produced **263 passed** (80
+harness tests plus 183 adjacent envelope/request-chain tests). The six lifecycle
+cases cover missing/false/non-boolean drain and missing/boolean/float counts;
+the 20 observation cases cover text and JSON arrays at ten mandatory steps.
+The clean-probe cases also assert the installer was never launched.
+
+Additional executed validation:
+
+- `uv run ruff check .` — passed.
+- `uv run ruff format --check .` — passed, 3487 files formatted.
+- `uv run python scripts/check-suite-inventory.py --suite tests/` initially
+  reported the expected **+26** drift; after recording it here, the check
+  passed with **5954 collected node IDs**, no duplicate evidence. No baseline,
+  grant or quality ledger changed.
+- `uv run pytest tests/test_llm_gateway_compose.py
+  tests/test_check_install_functions.py tests/test_check_deployment_claims.py
+  tests/test_install_docker_sock.py
+  packages/maistro-bootstrap/tests/test_sandbox_preflight.py
+  packages/maistro-bootstrap/tests/test_delivery.py -x -q` — **84 passed**.
+  These are adjacent rendering/preflight/stub tests, not clean-host evidence.
+- `uv run python scripts/check-doc-links.py` — passed (2979 Markdown files,
+  zero broken links).
+- `uv run python scripts/check_assertion_quality.py` — passed (zero actionable
+  findings; pre-existing invalid-escape SyntaxWarning).
+- `uv run python scripts/check-reachability.py` — passed (1460 production
+  modules, 153 unreachable).
+- `uv run python scripts/check-install-functions.py` and
+  `uv run python scripts/check-deployment-claims.py` — both passed.
+- `git diff --check` — passed.
+
+### Acceptance audit and remaining blockers
+
+No live installation or provider calls were performed: this job supplies no
+reviewed target/support manifest, existing target credential references or
+authorized provider-call budget. Issue #86 explicitly does not authorize
+creating these. All acceptance below remains **UNVERIFIED end-to-end**:
+
+| Criterion | Evidence/limitation |
+| --- | --- |
+| Published/tag-pinned artifacts rather than developer checkout | Manifest/checkout rejection tests pass; no exact installed RC/digest evidence. |
+| Healthy/authenticated supported services | Mandatory observation regression tests pass; no ordinary-user first run or login on an installed service. |
+| Truthful optional/degraded services | Existing fail-closed harness tests pass; no installed required/optional service matrix. |
+| macOS/non-default socket and supported Linux paths | No clean target on either OS was exercised in this round. Stub tests cannot close this host requirement. |
+| External gateway effective Compose/runtime configuration | Existing effective-model mismatch tests pass; no installed external gateway or #87 same-request evidence. |
+| Graceful stop/restart, lifespan cleanup, no orphan sandboxes | New regression tests reject absent/false drain and invalid counts; no installed lifecycle execution/persistent-state proof. |
+| Sandbox/backend prerequisites | No clean-host sandbox capability probe or negative installed execution. ADR-093 floors are unchanged. |
+| Tested commands become quickstart/install docs | Harness runbook exists; no live tested install commands can yet be promoted to quickstart. |
+
+The ordinary-user journey (Workspace/Project access, real model and canonical
+Goal/Graph/Run/NodeRun/Attempt IDs, restart persistence, two-user/two-Workspace
+isolation and all installed failure cases), every advertised support row and
+#87 same-artifact/configuration handoff are likewise UNVERIFIED.
+
+Two additional concrete defects were reproduced and are **not repaired by
+this focused commit**:
+
+1. `write_bundle` serializes raw observed dictionaries. A synthetic
+   `effective_config` command returning `password` and private-message marker
+   fields persists both verbatim in `effective-config.json#/observed`.
+   `install.log` redaction does not sanitize JSON payloads. Do not run this
+   harness with real sensitive output before repairing bundle-wide privacy.
+2. This harness's output is not the existing #1878 envelope format:
+   `uv run python scripts/validate-installed-workspace-proof.py --bundle
+   <synthetic-bundle> --profile <synthetic-profile> --mode structural` exits 1
+   with `SCHEMA_INVALID` at `manifest.json#/files`, `manifest.json#/schema`
+   and `results.json#/scenarios` (independent of the also-invalid minimal
+   synthetic profile). Passing the local `--verify` is not interoperability
+   evidence. An adapter/convergence repair and independent reviewed profile
+   are still required before claiming composition.
+
+Detailed baseline, red-test, release-suite, residual-reproduction and gate logs
+are retained in the assigned job directory. These findings prevent a
+MERGE-READY verdict; do not interpret the historical claims below as closure.
 
 ## Filename reconciliation with #1878
 
@@ -29,9 +126,10 @@ file would break its validator, its 96-case suite, and the `quality.yml`
 fail-closed gate step, so the manifest contract ships under the adjacent name
 `installed-workspace-proof-manifest.schema.json` and every reference (harness
 `SCHEMA_PATH`, contract test, runbook link, Gate C file check) points there.
-The envelope validator remains the fail-closed checker for any evidence
-bundle this harness eventually produces; the two lanes compose rather than
-compete.
+The envelope validator is the intended fail-closed checker for installed
+proof evidence. Filename reconciliation alone does not make these formats
+compose: the current validation addendum above records a reproduced schema
+mismatch that still requires repair.
 
 ## Repair addendum: develop re-apply restored (this round)
 

@@ -4,6 +4,14 @@ This document is the contract for the finite installed proof that issue #86
 asks for: **one reviewed manifest drives one finite proof for one support
 row**, and the proof produces an evidence bundle a reviewer can read.
 
+**Current status: not release-ready.** Contract tests use synthetic clients;
+no clean-host support row or #87 same-path provider journey is proven by them.
+JSON evidence currently persists unfiltered observed fields, and the output
+format does not yet conform to the independent #1878 envelope validator.
+Do not supply sensitive product output or treat local `--verify` success as
+release closeout. See the current validation and blockers in the
+[inventory note](inventory-notes/86-clean-install-proof-round.md).
+
 It is deliberately thin. The harness does not re-implement admission,
 authentication, binding bootstrap, or the executor; those belong to the
 product. The harness launches the *supported* installer/lifecycle commands and
@@ -113,7 +121,10 @@ never the working directory.
 
 All five are mandatory. Each family records `PASS`, `FAIL`, `BLOCKED`, or
 `NOT_RUN`, and each carries named subchecks that point at the payload that
-backs them.
+backs them. Mandatory observations require JSON objects even when a manifest
+omits `expect_json` or `payload`: an exit-zero command printing text, an array,
+or no observation is a failure, not proof. Installer and lifecycle-start
+commands may still print ordinary text.
 
 ### INSTALL
 
@@ -151,9 +162,10 @@ the same-request oracle.
 
 Graceful stop, start, then a fresh client session.
 
-* The stop must report `drained: true` and `sandboxes_remaining: 0` — lifespan
-  cleanup ran and no MAIstro sandbox resource was orphaned. Leftover sandboxes
-  are a `FAIL`.
+* The stop must report boolean `drained: true` and integer
+  `sandboxes_remaining: 0` — lifespan cleanup ran and no MAIstro sandbox
+  resource was orphaned. Missing/false drain, missing or non-integer counts,
+  and leftover sandboxes are a `FAIL`.
 * The persistence check must show the same user/workspace/session and a
   `correlated_run_id` equal to the EXECUTE run's `run_id`. Absent correlation
   is a `FAIL`: the release proof is blocked until the ids actually correlate.
@@ -235,10 +247,11 @@ A bundle is a directory containing:
 | `reviewed-manifest.json` | A copy of the manifest that was run (provenance; excluded from the hash list). |
 | `profile.json` | A copy of the reviewed support-row profile, when the manifest names one. |
 
-Every payload is sanitized on the way in: authorization headers, cookies, and
-sensitive assignments (`api_key`, `token`, `secret`, `password`, `mnemonic`,
-`session_id`, …) are replaced with `<redacted>`. The installer log is capped at
-1 MiB.
+`install.log` applies redaction for authorization headers, cookies and
+sensitive assignments and is capped at 1 MiB. **Known blocker:** JSON payloads
+currently retain raw observed fields; they do not yet satisfy the required
+bundle-wide secret/private-content hygiene. Never collect real sensitive
+output until that gap is repaired.
 
 `manifest.json` cannot hash itself, and the reviewed inputs are provenance
 rather than run output, so `manifest.json`, `reviewed-manifest.json`, and
@@ -269,8 +282,9 @@ reconstruct. `results.json` carries:
 * `budget` — the authorized ceiling, the observed provider calls, and the
   remainder.
 
-No environment dump, no secret, no authorization header, no cookie, no
-recovery material, and no raw private conversation content is written.
+The required privacy contract is: no environment dump, secret, authorization
+header, cookie, recovery material or raw private conversation content may be
+written. The JSON-output blocker above means this requirement is not yet met.
 
 ## What this does not do
 
