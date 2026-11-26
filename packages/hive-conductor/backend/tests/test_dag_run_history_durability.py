@@ -513,8 +513,16 @@ class TestABookkeepingFailureIsNotAnExecutionFailure:
         body = source[source.index("async def _tool_run_workflow") :]
         body = body[: body.index("async def _tool_analyze_dashboard")]
         assert "executed = True" in body
-        assert 'status = "completed" if executed else "failed"' in body
-        assert "finish_run(exec_id, status=status)" in body
+        # The graph's own outcome decides what the failure branch records:
+        # a returned result is recorded as the canonical outcome it is
+        # (#35/#1036 -- the same contract as the success path), and only an
+        # unknown outcome stamps the attempt-local display `failed`, before
+        # the operator warning explains the incomplete history.
+        decided = body.index("if executed:")
+        outcome = body.index("record_outcome(", decided)
+        failed = body.index('finish_run(exec_id, status="failed")', decided)
+        warned = body.index("dag_run_bookkeeping_failed", decided)
+        assert outcome < failed < warned
 
     @pytest.mark.ac("SPEC-083026-2601/AC-2")
     def test_the_flag_is_set_immediately_after_the_execution(self) -> None:

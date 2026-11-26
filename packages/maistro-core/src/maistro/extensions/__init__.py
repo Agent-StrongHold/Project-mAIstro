@@ -1,7 +1,8 @@
 """Canonical public surface of the ``maistro.extensions`` package: the
 governed registry, activation flow, dependency resolution, contract
-negotiation, preflight, certification, and organization/Workspace policy
-(M9-B/M9-C/M9-G/M9-H3, issues #952/#953/#956/#971/#975).
+negotiation, preflight, certification, organization/Workspace policy, and
+attribution evidence (M9-B/M9-C/M9-G/M9-H3/M9-I, issues
+#952/#953/#956/#971/#975/#976).
 
 This package carries the extension surface of epic #938, in four layers:
 
@@ -51,6 +52,11 @@ This package carries the extension surface of epic #938, in four layers:
   (``semver``), a deterministic resolver producing a reproducible
   :class:`LockState` (``resolution``), and lock-driven reinstall through the
   install store (:func:`materialize_lock`).
+- **M9-I1 attribution (issue #976)**: the version-tagged
+  :class:`ExtensionAttribution` evidence payload (``attribution``) — the
+  exact name/version/publisher/digest identity behind one effect, shaped for
+  canonical telemetry (Event provenance, log fields, Binding snapshots) and
+  decodable after the extension is upgraded or removed.
 - **M9-G3 governance (issue #971)**: the organization/Workspace extension
   policy (``policy``) — org allow/deny with Workspace enablement ceilings,
   approved-publisher/version pins, deterministic fixed-order inheritance
@@ -107,8 +113,9 @@ This package carries the extension surface of epic #938, in four layers:
   extension actor can write or clear.
 
 No layer executes extension code: verification, evaluation, authorization,
-resolution, contract negotiation, certification, metering and policy
-evaluation all operate on bytes, declarations, identity and amounts alone.
+resolution, attribution, contract negotiation, certification, metering and
+policy evaluation all operate on bytes, declarations, identity and amounts
+alone.
 
 Naming note: ``ExtensionLifecycleError`` is the governed-install failure base
 (#952/#953). The #950 hook-failure wrapper — the error raised when an
@@ -118,6 +125,17 @@ extension's own ``activate``/``invoke``/``deactivate`` hook raises — is
 
 from __future__ import annotations
 
+from maistro.extensions.attribution import (
+    ATTRIBUTION_FORMAT,
+    ATTRIBUTION_KEYS,
+    ExtensionAttribution,
+    InvalidAttribution,
+    attribution_from_governed_install,
+    attribution_from_install_record,
+    attribution_from_payload,
+    attribution_identity_key,
+    log_fields_suffix,
+)
 from maistro.extensions.authority import (
     AuthorityBaseline,
     AuthorityDelta,
@@ -541,6 +559,8 @@ from maistro.extensions.ui import (
 )
 
 __all__ = [
+    "ATTRIBUTION_FORMAT",
+    "ATTRIBUTION_KEYS",
     "BUNDLE_FORMAT",
     "CATALOG_FORMAT",
     "CERTIFICATION_FORMAT",
@@ -631,6 +651,7 @@ __all__ = [
     "EntryPointPresenceCheck",
     "EventStoreProgressSink",
     "EvidenceKind",
+    "ExtensionAttribution",
     "ExtensionAuthorityEvidence",
     "ExtensionAuthorityInputs",
     "ExtensionBundle",
@@ -725,10 +746,10 @@ __all__ = [
     "InProcessExtensionLoader",
     "IncompatibleContract",
     "InspectionConflict",
-    "InspectionConflict",
     "InstallRecord",
     "InstallRequest",
     "InstallablePackRegistry",
+    "InvalidAttribution",
     "InvalidSemanticVersion",
     "InvalidTransition",
     "InvalidVersionRange",
@@ -839,6 +860,10 @@ __all__ = [
     "WorkspaceExtensionPolicy",
     "assert_snapshot_intact",
     "assert_ui_snapshot_intact",
+    "attribution_from_governed_install",
+    "attribution_from_install_record",
+    "attribution_from_payload",
+    "attribution_identity_key",
     "build_sandbox_config",
     "bundle_digest",
     "canonical_install_payload",
@@ -866,6 +891,7 @@ __all__ = [
     "instantiate_persona_asset",
     "instantiate_rubric_asset",
     "latest_decision",
+    "log_fields_suffix",
     "manifest_snapshot",
     "materialize_lock",
     "negotiate",

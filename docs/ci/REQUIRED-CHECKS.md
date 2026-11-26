@@ -50,6 +50,27 @@ set by the unconditional `integration-scope` aggregate, which verifies every
 classifier-selected specialized leg succeeded. Protected pushes and main
 promotions retain their existing full specialized and release-tier check set.
 
+A workflow-level `paths:` filter on a trigger is a third producer-scoping
+mechanism, and it leaves no check run behind at all: GitHub evaluates
+the filter before any job of the workflow exists, so a pull request outside
+the filter — say a docs-only PR against the mutation workflow's
+`packages/**/*.py` — produces no run, not even `skipped`, and a required
+check that is merely absent stays pending forever. That pending is the
+contract, not a gap to excuse away: the #2434 incident replay pins that a
+head whose every completed producer is green but whose paths-filtered row
+is absent stays PENDING until the producer's trigger scope covers the PR
+and the row lands — the repair is trigger coverage, not evaluator leniency
+(the same doctrine each `mutation.yml` trigger row cites for the surface
+class it adds). `check-required-checks.paths_filters()` remains as the
+reviewed record of which producers carry a workflow-level filter; a real
+run under any other trigger is still judged normally. On a merge group such
+a producer cannot run at all unless it also declares `merge_group`, so PR-only
+producers of this kind — the mutation gate's `pr-gate` job is
+`if: github.event_name == 'pull_request'` — are additionally named in
+`MERGE_GROUP_PR_ONLY_CHECKS` and never requested as evidence for a synthetic
+queue SHA; their PR-event enforcement still covers the diff before the queue,
+and the nightly mutation run measures the full critical set independently.
+
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
 It accepts GitHub queue refs under `gh-readonly-queue/develop/` and refuses any
 other merge-group base. A future `main` queue must extend this resolver in the
@@ -104,6 +125,7 @@ wait forever for an `Expected` result.
 | CI | `docker-build` | every PR |
 | CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -111,21 +133,23 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
-| CodeQL Advanced | `Analyze (actions)` | base `main` |
-| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
-| CodeQL Advanced | `Analyze (python)` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (python)` | base `main`, `develop` |
 | DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
 | quality | `Quality / Acceptance state` | every PR |
 | quality | `Quality / Agent store writes` | every PR |
@@ -169,6 +193,7 @@ wait forever for an `Expected` result.
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
+| security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
 | security | `SAST / Bandit` | every PR |
 | security | `SAST / Gitleaks` | every PR |

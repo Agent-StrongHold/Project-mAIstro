@@ -23,12 +23,27 @@ from routes.audit import log_audit
 def _public_failure(exc: BaseException) -> str:
     """What a caller may learn about an unexpected failure: the kind, not the text.
 
-    Exception messages carry file paths, connection strings, and provider
-    replies; the full detail is in the server log with the traceback, and the
-    response names only the exception class so a client can still tell a
-    timeout from a type error.
+    Delegates to the shared ``safe_projection`` policy so HTTP, WebSocket and
+    the nested result projection all answer from one contract (kind-only,
+    with the ALLOW_STUB_LLM remediation preserved).
     """
-    return f"{type(exc).__name__}: execution failed; see server logs"
+    from services.safe_projection import public_failure
+
+    return public_failure(exc)
+
+
+def _public_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project a settled DAG result for a public receipt body (#2465).
+
+    The canonical executor already projects its result through the shared
+    policy; this re-application is the HTTP boundary's own explicit contract,
+    so a receipt is safe even when the result in hand came from a caller
+    that bypassed the projection (a stub, a replayed exception, a future
+    producer). Idempotent; see ``services.safe_projection``.
+    """
+    from services.safe_projection import safe_dag_result
+
+    return safe_dag_result(result)
 
 
 router = APIRouter(tags=["dags"])
@@ -170,16 +185,20 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        # Terminal only (#1877): `finish_run` stamps the row's `finished_at`,
-        # so calling it for a nonterminal Run would publish a completion time
-        # the canonical Run does not have. A nonterminal Run leaves the row
-        # open at the store's in-flight default; the read overlay (or the
-        # eventual terminal transition) is what gives it its real status.
+        # #1036 terminality contract: terminal → finish_run; nonterminal →
+        # record_status (exact canonical value, finished_at stays null). Never
+        # leave the row stuck at the store's default "running".
         if status in TERMINAL_RUN_STATUSES:
             await store.finish_run(
                 run_id,
                 status=status.value,
                 result=result,
+            )
+        else:
+            await store.record_status(
+                run_id,
+                status=status.value,
+                canonical_run_id=run_id,
             )
     except Exception:
         logger.warning(
@@ -439,27 +458,31 @@ async def run_dag(
             headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
         ) from exc
     except CanonicalDagExecutionError as exc:
-        result = exc.result
+        result = _public_result(exc.result)
         await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
         run_id = result.get("run_id")
+        # Exception text mirrors result["error"] and can carry node/provider
+        # detail; the browser gets the kind only, and the whole body — every
+        # nested field included — passes the shared #2465 projection policy.
+        logger.warning("Canonical DAG execution failed: %s", exc, exc_info=exc)
         return {
             "status": result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
-            "error": str(exc),
+            "error": _public_failure(exc),
             "result": result,
         }
     except Exception as exc:
         logger.warning("Graph execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}
 
-    await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
+    await _record_run_projection(dag_id=dag_id, user_id=actor, result=_public_result(result))
     run_id = result["run_id"]
     return {
         "status": result["status"],
         "execution_id": run_id,
         "run_id": run_id,
-        "result": result,
+        "result": _public_result(result),
     }
 
 
@@ -482,7 +505,7 @@ async def run_champion(
 
         result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
-        return {"execution_id": run_id, "run_id": run_id, "result": result}
+        return {"execution_id": run_id, "run_id": run_id, "result": _public_result(result)}
     except RunConcurrencyExceeded as exc:
         # Same canonical admission backpressure mapping as `run_dag` (#1182):
         # the champion never reached a Run, so a retryable 429 -- not a

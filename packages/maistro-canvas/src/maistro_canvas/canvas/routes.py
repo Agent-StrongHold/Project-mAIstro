@@ -1,5 +1,15 @@
 """Canvas Studio REST API (spec 1189).
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): this legacy
+``/api/canvas`` surface serves the LayerRecord model while downstream
+consumers (the external launchers that mount this router) migrate to the
+ADR-042 AssetInstance routes under ``/v2/canvas``. It cannot regain
+authority: new product surface belongs on the AssetInstance path only.
+ADR-045 permits exactly this coexistence — "direct legacy routes may remain
+only as an explicitly transitional surface" — and deletion is gated on the
+ADR-044 Phase 2/3 bridge+backfill and ADR-046 so persisted Canvas state is
+never stranded.
+
 All routes go through make_canvas_router() so tests can inject fakes
 without touching app.state.  Production wires real deps via the DI
 container.
@@ -45,9 +55,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
+from maistro.identity import Principal
 from maistro.runs.store import RunIntegrityError
 from maistro.tasks.idempotency import InvalidIdempotencyKey, normalize_idempotency_key
-from maistro_canvas.auth import CurrentUser, get_current_user
+from maistro_canvas.auth import get_current_user, scope_org_id
 from maistro_canvas.canvas.limits import load_image_limits, validate_scale
 from maistro_canvas.types import (
     _MAX_GENERATE_COUNT,
@@ -395,7 +406,7 @@ def _register_canvas_routes(
     @router.post("")
     async def create_canvas(
         body: dict[str, Any],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
         # Resolve dimensions
         width, height = _resolve_dimensions(body)
@@ -404,7 +415,7 @@ def _register_canvas_routes(
             validate_canvas_dimensions(width, height)
         except ValueError as exc:
             # Surface field-level 422 with NOT_DIVISIBLE_BY_8 or range errors
-            return _validation_error_response(exc, auth.org_id)
+            return _validation_error_response(exc, scope_org_id(auth))
 
         name = str(body.get("name", "Untitled Canvas")).strip()
         if not name:
@@ -415,25 +426,25 @@ def _register_canvas_routes(
             width=width,
             height=height,
             background_color=str(body.get("background_color", "#FFFFFF")),
-            org_id=auth.org_id,
+            org_id=scope_org_id(auth),
         )
         return JSONResponse(status_code=201, content=canvas.to_dict())
 
     @router.get("")
     async def list_canvases(
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
         include_archived: bool = Query(default=False),
     ) -> JSONResponse:
-        canvases = await store.list_canvases(auth.org_id, include_archived=include_archived)
+        canvases = await store.list_canvases(scope_org_id(auth), include_archived=include_archived)
         return JSONResponse(content=[c.to_dict() for c in canvases])
 
     @router.get("/{canvas_id}")
     async def get_canvas(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
+        canvas = await _require_canvas(store, canvas_id, scope_org_id(auth))
+        layers = await store.list_layers(canvas_id, org_id=scope_org_id(auth))
         data = canvas.to_dict()
         data["layers"] = [lyr.to_dict() for lyr in layers]
         return JSONResponse(content=data)
@@ -442,9 +453,9 @@ def _register_canvas_routes(
     async def update_canvas(
         canvas_id: str,
         body: dict[str, Any],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await _require_canvas(store, canvas_id, auth.org_id)
+        canvas = await _require_canvas(store, canvas_id, scope_org_id(auth))
 
         # Reject dimension change if layers exist
         if ("width" in body or "height" in body) and canvas.layer_count > 0:
@@ -452,23 +463,23 @@ def _register_canvas_routes(
 
         _apply_canvas_updates(canvas, body)
 
-        updated = await store.update_canvas(canvas, org_id=auth.org_id)
+        updated = await store.update_canvas(canvas, org_id=scope_org_id(auth))
         return JSONResponse(content=updated.to_dict())
 
     @router.delete("/{canvas_id}")
     async def delete_canvas(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
-        if canvas is None or canvas.org_id != auth.org_id:
+        canvas = await store.get_canvas(canvas_id, org_id=scope_org_id(auth))
+        if canvas is None or canvas.org_id != scope_org_id(auth):
             raise HTTPException(status_code=404)
 
         # Cancel any active jobs on this canvas before archiving
-        await _cancel_active_jobs(store, executor, canvas_id, auth.org_id)
+        await _cancel_active_jobs(store, executor, canvas_id, scope_org_id(auth))
 
         canvas.archived_at = datetime.now(UTC)
-        await store.update_canvas(canvas, org_id=auth.org_id)
+        await store.update_canvas(canvas, org_id=scope_org_id(auth))
         return JSONResponse(content={"archived": True, "id": canvas_id})
 
 
@@ -484,13 +495,13 @@ def _register_layer_routes(
     async def add_layer(
         canvas_id: str,
         body: dict[str, Any],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
         try:
             layer = await store.add_layer(
                 canvas_id,
-                org_id=auth.org_id,
+                org_id=scope_org_id(auth),
                 name=str(body.get("name", "Layer")).strip(),
                 layer_type=str(body.get("layer_type", "background")),
                 z_index=body.get("z_index"),
@@ -510,10 +521,10 @@ def _register_layer_routes(
     @router.get("/{canvas_id}/layers")
     async def list_layers(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
+        layers = await store.list_layers(canvas_id, org_id=scope_org_id(auth))
         return JSONResponse(content=[lyr.to_dict() for lyr in layers])
 
     @router.patch("/{canvas_id}/layers/{layer_id}")
@@ -521,10 +532,10 @@ def _register_layer_routes(
         canvas_id: str,
         layer_id: str,
         body: dict[str, Any],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
-        layer = await _require_layer(store, canvas_id, layer_id, auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
+        layer = await _require_layer(store, canvas_id, layer_id, scope_org_id(auth))
 
         # Lock guard: positional fields forbidden on locked layers
         positional_changes = _POSITIONAL_FIELDS.intersection(body)
@@ -541,29 +552,34 @@ def _register_layer_routes(
         # ``scale > 0``-only check; nothing is persisted on rejection.
         _apply_layer_updates(layer, body)
 
-        updated = await store.update_layer(layer, org_id=auth.org_id)
+        updated = await store.update_layer(layer, org_id=scope_org_id(auth))
         return JSONResponse(content=updated.to_dict())
 
+    # Named after the store operation it delegates to, like the sibling
+    # handlers above (`update_layer` → ``store.update_layer``,
+    # `reorder_layers` → ``store.reorder_layers``): the legacy DELETE route
+    # stays live on the transitional surface, and the handler carries the
+    # store method's name rather than a second spelling of the HTTP verb.
     @router.delete("/{canvas_id}/layers/{layer_id}")
-    async def delete_layer(
+    async def remove_layer(
         canvas_id: str,
         layer_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id, auth.org_id)
-        await store.remove_layer(layer_id, org_id=auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
+        await _require_layer(store, canvas_id, layer_id, scope_org_id(auth))
+        await store.remove_layer(layer_id, org_id=scope_org_id(auth))
         return JSONResponse(content={"deleted": True, "id": layer_id})
 
     @router.post("/{canvas_id}/layers/reorder")
     async def reorder_layers(
         canvas_id: str,
         assignments: list[dict[str, Any]],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
         try:
-            layers = await store.reorder_layers(canvas_id, assignments, org_id=auth.org_id)
+            layers = await store.reorder_layers(canvas_id, assignments, org_id=scope_org_id(auth))
         except (DuplicateZIndexError, IncompleteReorderError) as exc:
             return _error(exc)
         return JSONResponse(content=[lyr.to_dict() for lyr in layers])
@@ -582,11 +598,11 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         canvas_id: str,
         layer_id: str,
         body: dict[str, Any],
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id, auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
+        await _require_layer(store, canvas_id, layer_id, scope_org_id(auth))
 
         count = int(body.get("count", 1))
         if not (1 <= count <= _MAX_GENERATE_COUNT):
@@ -615,7 +631,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             job = await executor.start_job(
                 canvas_id=canvas_id,
                 layer_id=layer_id,
-                org_id=auth.org_id,
+                org_id=scope_org_id(auth),
                 action=str(body.get("action", "generate")),
                 model_id=body.get("model_id"),
                 prompt=str(body.get("prompt", "")),
@@ -642,10 +658,21 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             # would otherwise fall through to the global exception handler
             # as -- `RunIntegrityError` is a core canonical-execution error,
             # not one of the Canvas domain errors `_error()`/
-            # `_ERROR_STATUS_MAP` above know how to translate.
+            # `_ERROR_STATUS_MAP` above know how to translate. The detail is
+            # fixed public text: exception messages can name operation ids
+            # and internal run state (CodeQL py/stack-trace-exposure).
+            logger.warning(
+                "canvas idempotency conflict for %s: %s",
+                canvas_id,
+                exc,
+                exc_info=True,
+            )
             return JSONResponse(
                 status_code=409,
-                content={"code": "IDEMPOTENCY_KEY_CONFLICT", "detail": str(exc)},
+                content={
+                    "code": "IDEMPOTENCY_KEY_CONFLICT",
+                    "detail": "idempotency key reused with different inputs",
+                },
             )
 
         return JSONResponse(
@@ -657,15 +684,15 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
     async def list_layer_jobs(
         canvas_id: str,
         layer_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id, auth.org_id)
-        jobs = await store.list_jobs_for_layer(layer_id, org_id=auth.org_id)
+        await _require_canvas(store, canvas_id, scope_org_id(auth))
+        await _require_layer(store, canvas_id, layer_id, scope_org_id(auth))
+        jobs = await store.list_jobs_for_layer(layer_id, org_id=scope_org_id(auth))
         return JSONResponse(content=[j.to_dict() for j in jobs])
 
     async def job_queue_health(
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
         """Queue health for the caller's org (#398): stuck / retrying / exhausted.
 
@@ -676,7 +703,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         order in one visible place and the handler name reachable by static
         analysis rather than only through decorator dispatch.
         """
-        stats = await store.job_queue_stats(org_id=auth.org_id)
+        stats = await store.job_queue_stats(org_id=scope_org_id(auth))
         return JSONResponse(content=stats.to_dict())
 
     router.add_api_route("/jobs/health", job_queue_health, methods=["GET"])
@@ -684,19 +711,19 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
     @router.get("/jobs/{job_id}")
     async def get_job(
         job_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        job = await _require_job(store, job_id, auth.org_id)
+        job = await _require_job(store, job_id, scope_org_id(auth))
         return JSONResponse(content=job.to_dict())
 
     @router.delete("/jobs/{job_id}")
     async def cancel_job(
         job_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_job(store, job_id, auth.org_id)
+        await _require_job(store, job_id, scope_org_id(auth))
         try:
-            updated = await executor.cancel_job(job_id, org_id=auth.org_id)
+            updated = await executor.cancel_job(job_id, org_id=scope_org_id(auth))
         except JobAlreadyTerminalError as exc:
             return _error(exc)
         return JSONResponse(content=updated.to_dict())
@@ -705,12 +732,12 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
     async def accept_variant(
         job_id: str,
         variant_index: int,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        await _require_job(store, job_id, auth.org_id)
+        await _require_job(store, job_id, scope_org_id(auth))
         try:
             updated_job, updated_layer = await executor.accept_variant(
-                job_id, variant_index, org_id=auth.org_id
+                job_id, variant_index, org_id=scope_org_id(auth)
             )
         except (JobNotDoneError, JobAlreadyTerminalError) as exc:
             return _error(exc)
@@ -732,17 +759,17 @@ def _register_composite_routes(
     @router.post("/{canvas_id}/composite")
     async def composite_canvas(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
+        canvas = await _require_canvas(store, canvas_id, scope_org_id(auth))
+        layers = await store.list_layers(canvas_id, org_id=scope_org_id(auth))
         try:
             result = await compositor.composite(canvas, layers)
         except (LayerScaleLimitError, LayerPixelBudgetError, CompositeTimeoutError) as exc:
             # #393: explicit typed rejection — nothing is persisted when a
             # layer's scale violates the server image limits.
             return _error(exc)
-        saved = await store.save_composite(result, org_id=auth.org_id)
+        saved = await store.save_composite(result, org_id=scope_org_id(auth))
         return JSONResponse(
             content={
                 "canvas_id": saved.canvas_id,
@@ -755,12 +782,12 @@ def _register_composite_routes(
     @router.get("/{canvas_id}/composite/latest")
     async def latest_composite(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
-        if canvas is None or canvas.org_id != auth.org_id:
+        canvas = await store.get_canvas(canvas_id, org_id=scope_org_id(auth))
+        if canvas is None or canvas.org_id != scope_org_id(auth):
             raise HTTPException(status_code=404)
-        comp = await store.latest_composite(canvas_id, org_id=auth.org_id)
+        comp = await store.latest_composite(canvas_id, org_id=scope_org_id(auth))
         if comp is None:
             raise HTTPException(status_code=404, detail="no composite exists yet")
         return JSONResponse(
@@ -784,12 +811,12 @@ def _register_export_routes(
     @router.get("/{canvas_id}/export")
     async def export_canvas(
         canvas_id: str,
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
         format: str = Query(default="png"),
         quality: int = Query(default=90),
     ) -> Response:
-        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
-        if canvas is None or canvas.org_id != auth.org_id:
+        canvas = await store.get_canvas(canvas_id, org_id=scope_org_id(auth))
+        if canvas is None or canvas.org_id != scope_org_id(auth):
             raise HTTPException(status_code=404)
         if canvas.is_archived():
             raise HTTPException(status_code=404)
@@ -800,13 +827,15 @@ def _register_export_routes(
         if not (1 <= quality <= 100):
             raise HTTPException(status_code=422, detail="quality must be between 1 and 100")
 
-        return await _export_image(store, compositor, canvas, canvas_id, fmt, quality, auth.org_id)
+        return await _export_image(
+            store, compositor, canvas, canvas_id, fmt, quality, scope_org_id(auth)
+        )
 
     # ── Models ─────────────────────────────────────────────────────────
 
     @router.get("/models")
     async def list_models(
-        auth: CurrentUser = Depends(get_current_user),
+        auth: Principal = Depends(get_current_user),
     ) -> JSONResponse:
         # In production, this delegates to the model registry / LiteLLM;
         # the executor's model_registry exposes list_image_models() if available.

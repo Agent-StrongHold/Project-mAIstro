@@ -197,4 +197,9 @@ async def trigger_cycle(request: Request) -> dict:
         # failure, not service availability failure. Preserve its identity.
         raise HTTPException(status_code=500, detail=exc.as_detail()) from None
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # Unexpected failures: kind only — messages stay in the server log
+        # (CodeQL py/stack-trace-exposure).
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(exc).__name__}: evolution failed; see server logs",
+        ) from exc

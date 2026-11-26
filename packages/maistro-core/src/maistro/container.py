@@ -75,7 +75,7 @@ from maistro.memory.working_graph.wiring import (
 )
 from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.quota.default_tracker import set_default_quota_tracker
+from maistro.quota.recorder import set_default_quota_tracker
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -102,6 +102,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
@@ -122,6 +123,8 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.backlog.store import BacklogItemStore
+from maistro.workspaces.backlog.wiring import wire_backlog_store
 from maistro.workspaces.backlog_history.store import BacklogHistoryStore
 from maistro.workspaces.backlog_history.wiring import wire_backlog_history_store
 from maistro.workspaces.campaigns.store import CampaignStore
@@ -292,6 +295,8 @@ class Container:
     #: it lives in the `goal_reader` seam below, over the canonical Workspace
     #: authorization path (#1150).
     goal_store: GoalStore = None  # type: ignore[assignment]  # wired in create_container
+    #: Workspace/Project-scoped BacklogItems (#98), on the Project store's backend.
+    backlog_store: BacklogItemStore = None  # type: ignore[assignment]
 
     @property
     def goal_reader(self) -> ScopedGoalStore:
@@ -477,6 +482,15 @@ class Container:
     # projects each inserted Event onto `event_bus`, so the durable log bridge
     # and legacy triggers/subscribers keep observing recovery facts.
     canonical_event_publisher: CanonicalEventPublisher = None  # type: ignore[assignment]
+    # Recovery dispositions (#2468) announce through the same canonical
+    # authority: the sink `create_container` builds over
+    # `canonical_event_publisher`, injected into the abandoned-Attempt and
+    # terminal-Attempt replay reconcilers so their dispositions persist
+    # through the backend-selected EventEnvelope store before the legacy bus
+    # observes them as a downstream projection. `None` only on a hand-built
+    # Container with no canonical publisher; those sweeps keep the
+    # legacy-only projection (`_recovery_events`), never a second authority.
+    recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: Any = None
@@ -506,6 +520,10 @@ class Container:
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
+    # Compatibility adapters all cross this one canonical model boundary.
+    model_chat_binding: Any = None
+    model_chat_egress: Any = None
+    model_chat_client: Any = None
     # Observability record/replay + PII tier routing (ADR-055).
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
@@ -1335,7 +1353,11 @@ class Container:
         NodeRun stayed ``RUNNING`` forever was durable state still claiming
         work was in flight. Both halves are idempotent, so a crash between
         them heals on any later reconcile of the same Attempt rather than
-        needing this tick to be atomic.
+        needing this tick to be atomic — including a crash between the
+        physical reclaim and that first reconciliation (#1863 / #232 P5a): the
+        replay half re-finds a typed RECOVERED Attempt its NodeRun still shows
+        ``RUNNING`` for, so the stranded Run is parked on the next tick
+        instead of waiting for a reconcile that would never come.
 
         The tick also refreshes the recovery-visibility gauges (#338): how
         many Runs are non-terminal, and how old the oldest one is.
@@ -1404,24 +1426,30 @@ class Container:
         """Settle Attempts whose lease lapsed; the recovery half of the tick."""
         from maistro.observability.metrics import recovered_attempts_total
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.recovered_disposition import RecoveredDispositionRefused
+        from maistro.runs.store import RunIntegrityError
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
-            # The Container's bus, so the sweep's dispositions land on the
-            # canonical Event stream rather than only in Run state (#462). A
-            # Container built without one still sweeps; the events are how the
-            # decision becomes inspectable, not how it is made.
+            # The canonical sink `create_container` wired (#2468): the sweep's
+            # dispositions persist through the backend-selected EventEnvelope
+            # store first and only then reach the legacy bus as a downstream
+            # projection of the persist-first publisher. A Container built
+            # without a canonical publisher still sweeps, projecting on its
+            # bare bus; the events are how the decision becomes inspectable,
+            # not how it is made.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=self._recovery_events(),
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
                 try:
                     await reconciler.reconcile(attempt)
-                except RunIntegrityError:
-                    # The Attempt is already settled; a NodeRun another path
-                    # terminalized concurrently is not this sweep's to rewrite.
+                except (RunIntegrityError, RecoveredDispositionRefused):
+                    # The Attempt is already settled; a NodeRun that never left
+                    # CREATED/QUEUED (or another path terminalized concurrently)
+                    # is not this sweep's to rewrite (#232 P4a refusal table).
                     logger.warning(
                         "reclaimed Attempt %s could not be reconciled",
                         attempt.attempt_id,
@@ -1431,6 +1459,36 @@ class Container:
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
         return len(reclaimed)
 
+    def _recovery_events(self) -> RecoveryEventSink | None:
+        """The authority the recovery reconcilers announce dispositions through (#2468).
+
+        The composition root's `CanonicalRecoveryEventSink` persists each
+        disposition through the one backend-selected EventEnvelope store and
+        only then projects it onto the legacy bus, so repeated sweeps cannot
+        mint a second canonical identity for the same logical recovery fact.
+        A hand-built Container with no canonical publisher keeps its
+        legacy-only projection: there is no canonical store behind it to
+        persist through, and none is invented here.
+        """
+        sink = self.recovery_event_sink
+        # A sink captured at composition time can go stale when a recovery
+        # replica swaps ``run_store`` (crash-window harnesses do this to model
+        # a restart on an independent pool). Re-bind to the live store through
+        # the canonical publisher when that happens, so the Run lookup and the
+        # persisted disposition agree with the store being recovered. The
+        # publisher is the one durable authority; the sink is only its adapter.
+        if sink is not None:
+            runs = getattr(sink, "_runs", None)
+            if runs is None or runs is self.run_store:
+                return sink
+        if self.canonical_event_publisher is not None:
+            from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+            return CanonicalRecoveryEventSink(self.run_store, self.canonical_event_publisher)
+        if sink is not None:
+            return sink
+        return self.event_bus
+
     async def _latest_reconcilable_completed_attempt(
         self, node_run_id: str, *, moment: datetime
     ) -> Attempt | None:
@@ -1439,7 +1497,10 @@ class Container:
         A terminal Attempt a crash interrupted is recoverable only when no
         sibling Attempt still executes the NodeRun under an unexpired lease --
         otherwise this sweep would overwrite an outcome a live walker is about
-        to write itself.
+        to write itself. Reclaimed (``CANCELLED`` + ``RECOVERED``) Attempts do
+        not ride this arm: they are selected by the stranded check below,
+        whose RUNNING/WAITING NodeRun gate is what keeps the #232 P4a refusal
+        table (prelaunch CREATED/QUEUED leaves) out of the replay (#1621).
         """
         from maistro.runs.lifecycle import has_live_execution_lease
 
@@ -1468,30 +1529,109 @@ class Container:
         ``remaining`` bounds this Run's share of the sweep's ``limit``: the
         caller passes the room it has left, so a Run early in the page cannot
         spend the whole budget a second time. Only observed persisted progress
-        (an accepted outcome or a Run settlement) charges the budget (#1850).
+        (an accepted outcome, or a parent Run status change with no NodeRun
+        disposition — the #1621 parent-only heal) charges the budget (#1850):
+        parking is not a settlement.
         """
+        from maistro.runs.model import RunStatus
+        from maistro.runs.recovered_disposition import RecoveredDispositionRefused
         from maistro.runs.store import RunIntegrityError
 
         done = 0
         for node_run in await self.run_store.list_node_runs(run_id):
             if done >= remaining:
                 break
-            completed = await self._latest_reconcilable_completed_attempt(
-                node_run.node_run_id, moment=moment
+            # P5a rediscovery is for mid-flight RUNNING NodeRuns only; a
+            # CREATED/QUEUED leaf under a typed RECOVERED Attempt is the
+            # reclaim half's refusal table (#232 P4a), not rediscovery scope.
+            attempt = await self._replayable_terminal_attempt(
+                node_run.node_run_id,
+                moment=moment,
+                allow_stranded_recovered=node_run.status is RunStatus.RUNNING,
             )
-            if completed is None:
+            if attempt is None:
                 continue
             try:
-                if await self._reconcile_terminal_attempt_progress(completed, reconciler):
+                if await self._reconcile_terminal_attempt_progress(attempt, reconciler):
                     done += 1
-            except RunIntegrityError:
+            except (RunIntegrityError, RecoveredDispositionRefused):
+                # Same catch as `_reclaim_abandoned_attempts`: a refusal from
+                # the disposition planner must not abort the tick after the
+                # physical Attempt is already settled.
                 logger.warning(
                     "terminal Attempt %s could not be reconciled",
-                    completed.attempt_id,
+                    attempt.attempt_id,
                     exc_info=True,
                 )
                 continue
         return done
+
+    async def _stranded_recovered_attempt(
+        self, node_run_id: str, *, moment: datetime
+    ) -> Attempt | None:
+        """A typed RECOVERED Attempt whose reconciliation a crash interrupted (#232 P5a).
+
+        The lease sweep commits the physical ``CANCELLED``+``RECOVERED`` before
+        the Container reconciles it; a process lost in between leaves the
+        NodeRun and its Run ``RUNNING`` with no live work behind them.
+        Rediscovery is deliberately narrow: only when the typed RECOVERED
+        Attempt is still the *newest* row under the NodeRun — a newer Attempt
+        means the window already healed. FAILED, TIMED_OUT, requested /
+        unknown CANCELLED, and spoofed reclaim-looking error text stay with
+        their owners; no string parsing selects rediscovery.
+        """
+        from maistro.runs.lifecycle import has_live_execution_lease
+        from maistro.runs.recovered_disposition import is_typed_recovered_attempt
+
+        attempts = await self.run_store.list_attempts(node_run_id)
+        if not attempts or has_live_execution_lease(attempts, moment):
+            return None
+        latest = max(attempts, key=lambda item: item.ordinal)
+        return latest if is_typed_recovered_attempt(latest) else None
+
+    async def _replayable_terminal_attempt(
+        self,
+        node_run_id: str,
+        *,
+        moment: datetime,
+        allow_stranded_recovered: bool = True,
+    ) -> Attempt | None:
+        """The one Attempt this sweep may replay for a NodeRun, if any.
+
+        A persisted completion keeps its existing priority — replaying it is
+        the older half of this sweep (#804) and must not lose a selection race
+        against rediscovery (#1863 / #232 P5a). Only a NodeRun with no
+        replayable completion falls to the stranded typed-RECOVERED check, and
+        only when ``allow_stranded_recovered`` is true (RUNNING NodeRuns —
+        prelaunch CREATED/QUEUED leaves stay with the reclaim refusal path).
+
+        One exception to that gate (#1621): a WAITING NodeRun takes the
+        stranded check regardless. WAITING is the crash seam between the
+        heal's two writes — the NodeRun parked while its Run is still
+        RUNNING — so the newest typed RECOVERED Attempt there is an unfinished
+        half of this sweep's own heal, and replaying it is a NodeRun no-op
+        while the parent-only park lands. CREATED/QUEUED leaves never reach
+        it: the planner's refusal table (#232 P4a) is their disposition, so
+        they stay unselected unless a caller deliberately opens the gate.
+
+        Existence is checked first because the caller lists a Run's NodeRuns
+        and then selects per NodeRun: a retention purge deleting the Run in
+        between must land here as a quiet "nothing to replay", not as a
+        `NodeRunNotFound` from the Attempt queries that aborts the tick
+        mid-page. `get_node_run` answers None for a purged NodeRun on every
+        backend; `list_attempts` raises for one.
+        """
+        from maistro.runs.model import RunStatus
+
+        node_run = await self.run_store.get_node_run(node_run_id)
+        if node_run is None:
+            return None
+        completed = await self._latest_reconcilable_completed_attempt(node_run_id, moment=moment)
+        if completed is not None:
+            return completed
+        if node_run.status is RunStatus.WAITING or allow_stranded_recovered:
+            return await self._stranded_recovered_attempt(node_run_id, moment=moment)
+        return None
 
     async def _reconcile_unreconciled_terminal_attempts(
         self, *, now: datetime | None, limit: int
@@ -1504,7 +1644,7 @@ class Container:
         moment = now if now is not None else datetime.now(UTC)
         reconciler = AttemptLifecycleReconciler(
             self.run_store,
-            events=self.event_bus,
+            events=self._recovery_events(),
             source="maistro.container.recover_abandoned_attempts",
         )
         reconciled = 0
@@ -1550,12 +1690,15 @@ class Container:
         reconciled = await reconciler.reconcile(attempt)
         after_run = await self.run_store.get_run(before_node.run_id)
         accepted = before_node.accepted_outcome is None and reconciled.accepted_outcome is not None
-        settled = (
-            before_run.status not in TERMINAL_RUN_STATUSES
-            and after_run is not None
-            and after_run.status in TERMINAL_RUN_STATUSES
-        )
-        return accepted or settled
+        node_disposition = before_node.status is not reconciled.status
+        run_disposition = after_run is not None and before_run.status is not after_run.status
+        # A park alongside a NodeRun disposition is the reclaim half's logical
+        # completion replayed: parking is not a settlement (#1850), and the
+        # reclaim already reported that Attempt. The parent Run moving while
+        # every NodeRun record stays put is progress only this half can make —
+        # the #1621 crash seam between parking the NodeRun and parking its Run
+        # — so that, and only that, joins the accepted outcome.
+        return accepted or (run_disposition and not node_disposition)
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
@@ -2315,6 +2458,59 @@ class Container:
             self.catalog_service = CatalogService(store)
         return self.catalog_service
 
+    async def wake_external_graph_result(self, task: Any) -> None:
+        """Write an A2A completion into its canonical parent Graph pause.
+
+        A2A task state is only a transport receipt. The metadata stamped at
+        dispatch identifies the canonical Run and NodeRun that own the pause;
+        this method is the reachable production waker for terminal receipts.
+        """
+        if self.graph_run_store is None:
+            return
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        run_id = str(metadata.get("parent_run_id") or "")
+        node_id = str(metadata.get("parent_node_id") or "")
+        status = getattr(getattr(task, "status", None), "value", None)
+        if not run_id or not node_id or status not in {"completed", "failed", "cancelled"}:
+            return
+        try:
+            await self.graph_run_store.submit_external_result(
+                run_id,
+                node_id,
+                {
+                    "status": status,
+                    "task_id": str(getattr(task, "id", "")),
+                    "result": getattr(task, "result", None),
+                    "error": getattr(task, "error", None),
+                },
+            )
+        except (KeyError, ValueError):
+            # The parent may have timed out, been answered, or been purged
+            # before an at-least-once receipt arrived. Its canonical outcome
+            # remains authoritative and must not be rewritten here.
+            logger.info(
+                "A2A completion did not wake parent Run %s node %s",
+                run_id,
+                node_id,
+            )
+
+    def _schedule_external_graph_result(self, task: Any) -> None:
+        """Schedule the async canonical wake from A2A's synchronous receipt API."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule A2A completion without a running event loop")
+            return
+        scheduled = loop.create_task(
+            self.wake_external_graph_result(task),
+            name=f"a2a-graph-wakeup-{getattr(task, 'id', 'unknown')}",
+        )
+        scheduled.add_done_callback(
+            lambda completed: None if completed.cancelled() else completed.exception()
+        )
+
 
 def _wire_schedule_admission(
     run_store: RunStore,
@@ -2609,6 +2805,11 @@ async def create_container(
         # The configured Workspace is provisioned at composition, not left to
         # the first operator action (#1152 review) — why is on the helper.
         await _provision_configured_workspace(workspace_store, config.workspace_id)
+        backlog_store = await wire_backlog_store(
+            db_pool,
+            project_store=project_scope_store,
+            pg_pool=pg_pool,
+        )
         backlog_history_store = await wire_backlog_history_store(
             history_conn,
             project_store=project_scope_store,
@@ -2682,13 +2883,11 @@ async def create_container(
         router = RouterEngine()
         classifier = ClassifierEngine()
         context_builder = ContextBuilder()
-
         strike_tracker = _wire_strike_tracker(
             enabled=config.security.strike_tracking_enabled, pg_pool=pg_pool
         )
 
         gate = Gate(warden=warden, strike_tracker=strike_tracker)
-
         from maistro.security.permission_policy import (
             build_permission_table,
             describe_permission_table,
@@ -2769,6 +2968,18 @@ async def create_container(
 
         event_bus = EventBus()
 
+        # ADR-086 builtin action handlers + recipe catalog (#2313 CONNECT).
+        # Recipes land disabled so localhost defaults cannot fire until ops arm them.
+        from maistro.events.wiring import wire_legacy_trigger_surface
+
+        wire_legacy_trigger_surface(event_bus)
+
+        # ADR-047 delivery gateway (#2312 CONNECT): process ChannelRegistry with
+        # the default log channel so outbound dispatch is process-reachable.
+        from maistro.delivery.wiring import wire_process_delivery_gateway
+
+        wire_process_delivery_gateway()
+
         async def _persist_bus_event(event: Any) -> None:
             # Bridge: every in-memory bus event is appended to the durable log.
             await durable_event_log.append(**append_from_bus_event(event))
@@ -2844,6 +3055,52 @@ async def create_container(
             provider_registry=provider_registry,
         )
 
+        # One active model Binding per container, composed over the container's
+        # own governed effect context. Compatibility callers may derive a scoped
+        # copy, but they register it in this same BindingStore before the
+        # Invocation starts; no app-specific registry or effect authority
+        # exists. The binding names the deployment's default gateway credential
+        # so acquire() can route the call through the same scoped pool the
+        # operator-declared Bindings use.
+        from maistro.capabilities.binding import Binding
+        from maistro.capabilities.model_chat import GovernedModelChatClient, ModelChatEgress
+        from maistro.capabilities.providers.llm_gateway import (
+            DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            GatewayEndpoint,
+        )
+        from maistro.credentials.types import CredentialRecord
+
+        model_chat_binding = Binding(
+            workspace_id=config.workspace_id,
+            project_id="default",
+            capability="model.chat",
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        )
+        await capability_effects.bindings.put(model_chat_binding)
+        # The deployment's gateway secret, registered under the one reference
+        # the composition root ever registers, so the binding above can acquire
+        # it through the canonical credential router (#1091). Without a key
+        # there is nothing to authorize and every governed call refuses with
+        # CredentialScopeError before reaching the gateway.
+        if config.litellm_key:
+            capability_effects.credentials.add(
+                workspace_id=config.workspace_id,
+                project_id="default",
+                record=CredentialRecord(
+                    key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+                    provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+                    api_key=config.litellm_key,
+                ),
+            )
+        model_chat_egress = ModelChatEgress(
+            capability_effects,
+            registry=provider_registry,
+            router=llm_router,
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+        )
+        model_chat_client = GovernedModelChatClient(model_chat_egress, model_chat_binding)
+
         # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
         wired_harness_adapters = _wire_harness_adapters(harness_adapters)
         # Governed effects hold the backend-selected canonical EventStore chosen
@@ -2855,6 +3112,9 @@ async def create_container(
         canonical_event_publisher = CanonicalEventPublisher(
             capability_effects.event_store, legacy_bus=event_bus
         )
+        from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+        recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
         # Operator-declared model.chat Bindings (#1079/#1522) load into the same
         # canonical Binding authority the provisioning seam above built, so model
         # egress and PM polling egress share one fail-closed door.
@@ -2889,7 +3149,6 @@ async def create_container(
         spawn_harness_node = AgentSpawnHarnessNode(
             adapters=wired_harness_adapters, effect_context=capability_effects
         )
-
         # --- Personas golden records (SPEC-192) --------------------------------
         from maistro.personas.golden import InMemoryGoldenRecordStore
 
@@ -2930,6 +3189,7 @@ async def create_container(
             project_scope_store=project_scope_store,
             workspace_store=workspace_store,
             persona_store=persona_store,
+            backlog_store=backlog_store,
             backlog_history_store=backlog_history_store,
             campaign_store=campaign_store,
             goal_store=goal_store,
@@ -2940,7 +3200,11 @@ async def create_container(
             chat_admitter=chat_admitter,
             template_store=graph_template_store,
             node_template_store=node_template_store,
-            graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+            graph_run_store=CanonicalDurableRunStore(
+                run_store,
+                graph_continuations,
+                events=recovery_event_sink,
+            ),
             schedule_store=schedule_store,
             schedule_admitter=schedule_admitter,
             task_idempotency=task_idempotency,
@@ -2962,6 +3226,7 @@ async def create_container(
             resilience_policies=resilience_policies,
             event_bus=event_bus,
             canonical_event_publisher=canonical_event_publisher,
+            recovery_event_sink=recovery_event_sink,
             durable_event_log=durable_event_log,
             trigger_store=trigger_store,
             invocation_store=capability_effects.invocation_store,
@@ -2971,6 +3236,9 @@ async def create_container(
             goal_reconciliation_store=goal_reconciliation_store,
             provider_registry=provider_registry,
             llm_router=llm_router,
+            model_chat_binding=model_chat_binding,
+            model_chat_egress=model_chat_egress,
+            model_chat_client=model_chat_client,
             record_store=record_store,
             pii_detector=pii_detector,
             identity_store=identity_store,
@@ -3028,7 +3296,6 @@ async def create_container(
             history_conn=history_conn,
         )
         raise
-
     # One word again, and only because this change is what makes it true.
     #
     # #135 had to report the stores and the durable events separately, because
@@ -3054,6 +3321,10 @@ async def create_container(
     # an end-to-end code-execution route is wired (see invoke_code).
     _ = container.code_registry
     _ = container.invoke_code
+    # A2A remains a receipt store; terminal receipts wake the canonical parent
+    # through this container-owned bridge rather than a second lifecycle.
+    a2a_delegator.set_completion_handler(container._schedule_external_graph_result)
+
     logger.info("Container wired (%s stores)", backend)
     return container
 
@@ -3879,7 +4150,15 @@ async def _select_effect_backend(
         pg_quota = PgInvocationQuota(pg_pool, estimate=estimate)
         await pg_quota.ensure_schema()
         await pg_approvals.ensure_schema()
-        bindings, approvals, quota = PgBindingStore(pg_pool), pg_approvals, pg_quota
+        # The boot model-chat Binding registration below `put`s into this
+        # store, and `put` reads the revocation tombstone first (#1133) —
+        # without ensure_schema a container wired against an unmigrated
+        # database dies on `capability_binding_revocations` before it can
+        # come up (durable-events job, #1084 CI repair). Mirrors the SQLite
+        # branch and new_postgres_effect_context, both of which ensure it.
+        bindings = PgBindingStore(pg_pool)
+        await bindings.ensure_schema()
+        approvals, quota = pg_approvals, pg_quota
     elif db_pool is not None:
         sqlite_bindings = SqliteBindingStore(db_pool)
         sqlite_approvals = SqliteApprovalStore(db_pool)

@@ -294,6 +294,31 @@ async function stubV1Routes(scope: BrowserContext): Promise<void> {
       },
     }),
   );
+  // #373: /rsi sits behind PermissionBoundary("rsi.execute"), which reads the
+  // live capability snapshot — without this stub the catch-all above answers
+  // the capabilities fetch with `{}` and the boundary correctly shows the
+  // no-authority notice instead of the page under test. This spec owns the
+  // polling loop, not the authorization matrix, so the mocked principal holds
+  // rsi.execute effectively.
+  await scope.route("**/v1/auth/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        version: "hive-http-capabilities-v1",
+        role: "user",
+        assigned_permissions: ["rsi.execute"],
+        elevated_permissions: ["rsi.execute"],
+        effective_permissions: ["rsi.execute"],
+        elevated_tasks: ["rsi-spec"],
+        elevated_task_expiries: {},
+        capabilities: {
+          "rsi.execute": { assigned: true, elevated: true, effective: true, can_elevate: false, reason: "active elevation" },
+        },
+        surfaces: {
+          rsi: { permission: "rsi.execute", read_path: "/v1/rsi/status", effective: true, can_elevate: false },
+        },
+      },
+    }),
+  );
   await scope.route(/\/v1\/workspaces(\?.*)?$/, (route) =>
     route.fulfill({
       json: [
@@ -511,16 +536,29 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
       .toBe(n0 + 2);
     stamps = await starts();
     expect(stamps.length, "exactly one poll in the first backoff step").toBe(n0 + 2);
+    // The 7.5s deadline sits in VIRTUAL time but flipEnd is anchored in REAL
+    // time (Date.now() above), and outside runFor chunks the fake clock ticks
+    // 1:1 with real time — so every real millisecond the settles and poll
+    // nudges below actually take leaks straight into this bound. On a loaded
+    // runner that drift was observed at ~1s (merge-queue job 133112496460 at
+    // 58cc1eb: received 1000 against a 10ms budget; retry job received 15ms
+    // against the same 10ms budget at the cap assertion below). The original
+    // 10ms slop only budgeted the documented 5ms nudge; 2.5s absorbs the
+    // real-time drift while still proving the cadence — a fixed 5s interval,
+    // unbounded growth, or a missing 75% jitter factor all still fail it by
+    // thousands of milliseconds.
+    const BOUNDARY_SLOP = 2_500;
     expect(
       Math.abs(stamps[n0 + 1] - flipEnd - 7_500),
       "first backoff step = interval·2¹ at pinned jitter, from the rearm instant",
-    ).toBeLessThanOrEqual(10);
+    ).toBeLessThanOrEqual(BOUNDARY_SLOP);
 
     // Each later step: advance the clock by exactly the expected delay. The
     // timer fires AT its deadline (stamp = deadline); its failure rearms
     // during the real settle with the clock frozen at the same virtual
-    // instant, so the next deadline lands exactly one delay later. A tiny
-    // slop of ≤10ms absorbs the 5ms safety nudge between chunks.
+    // instant, so the next deadline lands exactly one delay later. The
+    // boundary slop of ≤2.5s (see BOUNDARY_SLOP above) absorbs the 5ms safety
+    // nudge between chunks plus the real-time drift a loaded runner adds.
     const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
     await settle();
     const gaps: number[] = [];
@@ -543,11 +581,15 @@ test("a prolonged outage backs off exponentially: exact doubling gaps bounded at
     // first step (7.5s) was asserted above; these double from it: 15s = 2×7.5s,
     // 30s = 2×15s, then the cap holds.
     const near = (gap: number, delay: number, label: string) =>
-      expect(Math.abs(gap - delay), `${label}: gap ≈ ${delay}ms (≤10ms boundary slop)`).toBeLessThanOrEqual(10);
+      expect(Math.abs(gap - delay), `${label}: gap ≈ ${delay}ms (≤2.5s boundary slop)`).toBeLessThanOrEqual(
+        BOUNDARY_SLOP,
+      );
     near(gaps[0], 15_000, "second step doubles");
     near(gaps[1], 30_000, "third step doubles again");
-    for (const gap of gaps.slice(2)) expect(gap, "the cap floors the cadence at ~45s").toBeLessThanOrEqual(45_010);
-    for (const gap of gaps) expect(gap, "no gap exceeds the capped delay").toBeLessThanOrEqual(45_010);
+    for (const gap of gaps.slice(2))
+      expect(gap, "the cap floors the cadence at ~45s").toBeLessThanOrEqual(45_000 + BOUNDARY_SLOP);
+    for (const gap of gaps)
+      expect(gap, "no gap exceeds the capped delay").toBeLessThanOrEqual(45_000 + BOUNDARY_SLOP);
 
     // Bounded over the long run: five more virtual minutes at the capped
     // cadence cost ~7 polls, where the old fixed 5s interval would have
@@ -575,15 +617,23 @@ test("a success resets the cadence to base and the failure ladder to fresh", asy
   await page.getByRole("button", { name: "Refresh" }).click();
   await expect(pollBanner()).toHaveCount(0, { timeout: 5_000 });
 
-  // Back under outage: the poll after the success must come at the BASE
-  // interval (the success rearmed base cadence, not a leftover backoff
-  // step), and the one after that at a FRESH first backoff step (7.5s) — an
-  // unreset failure counter would wait 15s there.
+  // Back under outage: sync on the BANNER, not on request counts. A manual
+  // refresh whose click Playwright has to re-verify after the cleared banner
+  // shifts layout can dispatch the refresh handler twice (CI run
+  // 43806818617, job 133099866372: a fixed `counts >= 4` window then indexed
+  // the extra manual refresh as a loop poll and measured the base cadence —
+  // 3.76s — as the "fresh ladder" gap, on both attempts). The banner's
+  // reappearance marks the loop's (or a late duplicate refresh's) first
+  // post-refresh outage poll in every dispatch ordering, so the two gaps
+  // around it ARE the contract: the first proves the success re-armed the
+  // base interval, the second proves the next failure started a fresh first
+  // backoff step (7.5s) instead of a leftover 15s rung.
   setModes("abort");
-  await expect.poll(() => counts.status, { timeout: 15_000 }).toBeGreaterThanOrEqual(4);
-  const n = times.status.length;
-  const gapBase = times.status[n - 2] - times.status[n - 3];
-  const gapFresh = times.status[n - 1] - times.status[n - 2];
+  await expect(pollBanner()).toHaveAttribute("data-health", "unreachable", { timeout: 15_000 });
+  const nFailure = times.status.length;
+  await expect.poll(() => times.status.length, { timeout: 15_000 }).toBe(nFailure + 1);
+  const gapBase = times.status[nFailure - 1] - times.status[nFailure - 2];
+  const gapFresh = times.status[nFailure] - times.status[nFailure - 1];
   expect(gapBase, "success re-arms the base interval (3.75s pinned), not 7.5s").toBeLessThanOrEqual(5_000);
   expect(gapFresh, "a new failure starts a fresh 7.5s ladder, not 15s").toBeGreaterThanOrEqual(6_800);
   expect(gapFresh).toBeLessThanOrEqual(11_000);
@@ -633,7 +683,7 @@ test("an unmount aborts the in-flight patch-feed request and stops both loops", 
 
   // SPA navigation unmounts the page while the fetch is in flight; the app's
   // own AbortController must reject the fetch as AbortError.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   await expect(page.getByRole("link", { name: "RSI" })).toBeVisible();
   await expect
     .poll(abortedReviews, "the in-flight reviews request was aborted on unmount")
@@ -655,7 +705,7 @@ test("a slow patch-feed response never overlaps the next poll", async () => {
   // Leave the page FIRST, then arm the delay and clear the feed counters:
   // with the page unmounted nothing can fire, so the next reviews request is
   // exactly the slow one this test selects.
-  await page.getByRole("link", { name: "Dashboard" }).click();
+  await page.getByRole("link", { name: "Home" }).click();
   ctl.reviewsDelayMs = 2_500;
   counts.reviews = 0;
   times.reviews.splice(0);

@@ -461,7 +461,10 @@ def test_run_loop_captures_cycle_exception(
     monkeypatch.setattr(evo.asyncio, "sleep", _no_sleep)
 
     asyncio.run(asyncio.wait_for(s.run_loop(), timeout=2.0))
-    assert "synthetic cycle error" in (s._last_cycle_error or "")
+    # Public last_error names the kind only — the seeded message stays in logs
+    # (CodeQL py/stack-trace-exposure).
+    assert s._last_cycle_error == "RuntimeError: evolution failed; see server logs"
+    assert "synthetic cycle error" not in (s._last_cycle_error or "")
     assert calls[0] >= 2
 
 
@@ -851,7 +854,10 @@ def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
     assert service.execution_available is False
     out = service.status()
     assert out["running"] is False
-    assert "synthetic:" in str(out["availability_reason"])
+    # Init failure is public-kind text; the seeded "synthetic:" import path
+    # must not reach /status (CodeQL py/stack-trace-exposure).
+    assert "ImportError: evolution failed; see server logs" in str(out["availability_reason"])
+    assert "synthetic:" not in str(out["availability_reason"])
     with pytest.raises(EvolutionUnavailableError) as raised:
         asyncio.run(service._run_one_cycle())
     assert raised.value.availability == "unavailable"

@@ -23,10 +23,10 @@ PostgreSQL server -- `DatabaseSettings.url` hardcodes the scheme -- so making it
 the authoritative source would make `sqlite:` and `memory://` inexpressible.
 `DATABASE_URL` can say all three.
 
-**Configuring nothing is no longer the same as configuring localhost.**
+**Configuring nothing is no longer the same as configuring a loopback database.**
 `DatabaseSettings` defaults every field, so before this `alembic upgrade head`
 with an empty environment silently targeted
-`postgresql://maistro:maistro@localhost:5432/maistro`. A tool that cannot run
+`postgresql://maistro:maistro@<loopback-host>:5432/maistro`. A tool that cannot run
 without a database should say so rather than guess one, which is why
 `require_database_url` exists alongside `resolve_database_url`: the container may
 legitimately run with nothing configured (in-memory, and it warns), and alembic
@@ -160,7 +160,7 @@ def require_database_url(env: Mapping[str, str] | None = None) -> str:
     """`resolve_database_url`, but a missing or unmigratable database is an error.
 
     For callers that cannot proceed without one -- alembic above all. Guessing
-    `localhost` on their behalf turns "you did not configure a database" into
+    a loopback host on their behalf turns "you did not configure a database" into
     "connection refused to a host you never named", which is the same class of
     misdirection this module exists to remove.
     """

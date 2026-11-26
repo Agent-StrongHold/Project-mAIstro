@@ -9,7 +9,9 @@ objects:
 1. A live Goal revision (the canonical Goal system's seam, #458).
 2. A Rubric instantiated from the pack's dimension catalog, bound to that
    Goal revision, with a **planted failing dimension** — the seeded artifact
-   genuinely lacks the evidence the ``claim_evidence`` dimension requires.
+   genuinely lacks the auditability the ``authority`` dimension requires
+   (M7-A9, #985: the thick catalog's successor of the planted
+   claim-evidence dimension).
 3. Explore outputs as durable NodeRun/Attempt artifacts.
 4. Execute through the non-Canvas ``builders`` backend and — when the caller
    says Canvas is available — the ``canvas`` backend, both on the same Run.
@@ -55,12 +57,10 @@ from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_REVIEW, resumed_pause
 from maistro.ontology.rubric import (
     NumericScale,
     PackRubricCatalog,
-    PassFailScale,
     RubricDimension,
     RubricGate,
     RubricProvenance,
     RubricScale,
-    ScoringMethod,
 )
 from maistro.projects.rubric_store import (
     GoalRevisionSnapshot,
@@ -71,6 +71,7 @@ from maistro.runs.lineage import RunLineage, artifact_lineage
 from maistro.runs.model import Attempt, AttemptStatus, EvalMethod, RunEvalScore, RunStatus
 from maistro.runs.store import RunStore
 from maistro_design.packs import PackRegistry, pack_graph_template
+from maistro_design.packs.types import CATALOG_SCALE_MAX, CATALOG_SCALE_MIN
 
 __all__ = [
     "PLANTED_DIMENSION_ID",
@@ -114,18 +115,23 @@ PROOF_GOAL_ID = "goal-proof-single-sku"
 
 #: The dimension the fixture plants a failure on: the seeded artifact makes
 #: the Goal's one claim without evidence, so the dimension genuinely fails.
-PLANTED_DIMENSION_ID = "claim_evidence"
+#: M7-A9 (#985) re-keyed the thick product catalog; the claim-evidence
+#: judgment lives on as ``authority`` (Authority trail: Anonymous →
+#: Auditable) — a claim is auditable exactly when it cites its evidence.
+PLANTED_DIMENSION_ID = "authority"
 
 _UNEVIDENCED_CLAIM = {"text": "Holds 40% more than the leading brand", "evidence": None}
 _CLAIM_EVIDENCE_CITATION = "source:review-notes#12"
 
-#: Deterministic scale assignments for the product pack's dimensions: the
-#: claim dimension is pass/fail, the prose dimensions score 0-100.
-_SCALES: dict[str, RubricScale] = {
-    "clarity_of_offer": RubricScale(numeric=NumericScale()),
-    PLANTED_DIMENSION_ID: RubricScale(pass_fail=PassFailScale()),
-    "channel_fit": RubricScale(numeric=NumericScale()),
-}
+#: The catalog's named-anchor scale (M7-A9, #985): every pack dimension is
+#: scored 1-5 between its `low_anchor` and `high_anchor`. The proof scores
+#: deterministically onto that scale: a pass is the high anchor, a fail the
+#: low anchor — never a synthetic 0 or 100 outside the declared range.
+_PROOF_SCALE = RubricScale(
+    numeric=NumericScale(min_value=float(CATALOG_SCALE_MIN), max_value=float(CATALOG_SCALE_MAX))
+)
+_PASS_SCORE = float(CATALOG_SCALE_MAX)
+_FAIL_SCORE = float(CATALOG_SCALE_MIN)
 
 
 def pack_rubric_catalog(pack_id: str, dimensions: list[RubricDimension]) -> PackRubricCatalog:
@@ -139,16 +145,23 @@ def pack_rubric_catalog(pack_id: str, dimensions: list[RubricDimension]) -> Pack
 
 
 def pack_rubric_dimensions(pack: Any) -> list[RubricDimension]:
-    """The pack manifest's dimensions as scoreable ontology dimensions."""
+    """The pack manifest's dimensions as scoreable ontology dimensions.
+
+    The thickness the manifest ships (M7-A9, #985) rides across intact:
+    weight, the fixed 1-5 anchor scale, and the declared scoring method
+    (defaulting to `model_judge`). Only the planted dimension is marked
+    evidence-required — the proof scores deterministically, so a judge is
+    not consulted.
+    """
     mapped: list[RubricDimension] = []
     for dimension in pack.rubric_dimensions:
         mapped.append(
             RubricDimension(
                 id=dimension.dimension_id,
                 name=dimension.name,
-                weight=1.0,
-                scale=_SCALES.get(dimension.dimension_id, RubricScale(numeric=NumericScale())),
-                method=ScoringMethod.DETERMINISTIC,
+                weight=dimension.weight,
+                scale=_PROOF_SCALE,
+                method=dimension.method,
                 evidence_required=dimension.dimension_id == PLANTED_DIMENSION_ID,
             )
         )
@@ -166,9 +179,16 @@ def _unevidenced_claims(claims: list[dict[str, Any]]) -> list[str]:
 
 def _presence_verdict(value: str, reason: str) -> tuple[float, bool, list[str]]:
     """Score a prose dimension purely on whether the artifact names the field."""
-    if value:
-        return 100.0, True, []
-    return 0.0, False, [reason]
+    if value.strip():
+        return _PASS_SCORE, True, []
+    return _FAIL_SCORE, False, [reason]
+
+
+def _nonempty_verdict(items: list[Any], reason: str) -> tuple[float, bool, list[str]]:
+    """Score a list dimension on whether the artifact carries at least one."""
+    if items:
+        return _PASS_SCORE, True, []
+    return _FAIL_SCORE, False, [reason]
 
 
 def _planted_verdict(
@@ -176,10 +196,10 @@ def _planted_verdict(
 ) -> tuple[float, bool, list[str]]:
     """The planted dimension: passes only when claims exist and all are cited."""
     if not claims:
-        return 0.0, False, ["no claims to evaluate"]
+        return _FAIL_SCORE, False, ["no claims to evaluate"]
     if missing_evidence:
-        return 0.0, False, list(missing_evidence)
-    return 100.0, True, []
+        return _FAIL_SCORE, False, list(missing_evidence)
+    return _PASS_SCORE, True, []
 
 
 def _claim_evidence_pointers(claims: list[dict[str, Any]]) -> list[str]:
@@ -202,22 +222,35 @@ def score_artifact_against_rubric(artifact: dict[str, Any], rubric: Any) -> list
 
     Returns one unsaved :class:`RunEvalScore` per dimension (method
     ``deterministic`` — no judge, no LLM: ADR-061 keeps model calls out of
-    this seam). The ``claim_evidence`` verdict is real: it passes only when
-    every claim on the artifact cites evidence. The ``claim_evidence``
-    record cites its evidence: its ``evidence_pointers`` carry exactly the
-    citations the passing (or attempted) claims carry — empty only when no
-    claim is evidenced, i.e. when the dimension fails.
+    this seam). The thick product catalog (M7-A9, #985) names what each
+    verdict reads: the ``job``/``metric``/``scope``/``surface``/``empty``
+    verdicts are presence checks on the spec's own fields, and the planted
+    ``authority`` verdict is real — it passes only when every claim on the
+    artifact cites evidence. The ``authority`` record cites its evidence:
+    its ``evidence_pointers`` carry exactly the citations the passing (or
+    attempted) claims carry — empty only when no claim is evidenced, i.e.
+    when the dimension fails. Raw scores sit on the catalog's declared 1-5
+    anchor scale: a pass is the high anchor, a fail the low anchor.
     """
     claims = list(artifact.get("claims") or [])
     evidence_pointers = _claim_evidence_pointers(claims)
     verdicts: dict[str, tuple[float, bool, list[str]]] = {
-        "clarity_of_offer": _presence_verdict(
-            str(artifact.get("offer") or "").strip(), "no offer statement on the artifact"
+        "job": _presence_verdict(
+            str(artifact.get("job") or ""), "no job statement on the artifact"
+        ),
+        "metric": _nonempty_verdict(
+            list(artifact.get("metrics") or []), "no success metric on the artifact"
+        ),
+        "scope": _nonempty_verdict(
+            list(artifact.get("non_goals") or []), "no non-goal fence on the artifact"
+        ),
+        "surface": _nonempty_verdict(
+            list(artifact.get("surfaces") or []), "no surface named on the artifact"
+        ),
+        "empty": _presence_verdict(
+            str(artifact.get("empty_state") or ""), "no empty/error state on the artifact"
         ),
         PLANTED_DIMENSION_ID: _planted_verdict(claims, _unevidenced_claims(claims)),
-        "channel_fit": _presence_verdict(
-            str(artifact.get("channel") or "").strip(), "no channel named on the artifact"
-        ),
     }
     scores: list[RunEvalScore] = []
     for dimension in rubric.dimensions:
@@ -289,9 +322,16 @@ class _ExecuteNode(BaseNode[_PhaseIO, _PhaseIO]):
         canvas_available = bool(inputs.payload.get("canvas_available"))
         payload = dict(inputs.payload)
         payload["artifact"] = {
-            "artifact_kind": "store_page",
-            "channel": "store",
-            "offer": "The 32 oz Insulated Bottle, in four colors",
+            # The executed artifact is the product pack's judged payload shape
+            # (M7-A9, #985): the job-to-be-done spec fields the thick catalog's
+            # dimensions read, plus the claims whose authority trail the
+            # planted dimension judges.
+            "artifact_kind": "product_spec",
+            "job": "Keep one hydration promise on a single-SKU store page",
+            "metrics": ["Return rate under 2% in the first 30 days"],
+            "surfaces": ["store"],
+            "non_goals": ["No marketplace listings", "No B2B pricing"],
+            "empty_state": "An empty store page renders the first-product guide, not a blank page",
             # The planted failure: the Goal's one claim, unevidenced. The
             # refine phase repairs exactly this.
             "claims": [dict(_UNEVIDENCED_CLAIM)],

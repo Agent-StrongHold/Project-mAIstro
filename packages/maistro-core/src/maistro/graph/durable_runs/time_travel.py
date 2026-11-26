@@ -90,14 +90,11 @@ from maistro.graph.traversal_commit import (
     TraversalCommit,
     graph_state_hash,
 )
-from maistro.runs.model import Run
+from maistro.runs.model import DURABLE_GRAPH_FORK_PROVENANCE, Run
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore, GraphStateEpoch
 from .types import DurableRunRecord
-
-#: Provenance key on a forked child Run naming where the fork came from.
-DURABLE_GRAPH_FORK_PROVENANCE = "durable_graph_fork"
 
 #: Graph-state metadata keys that name the *source* Run's own visits. A forked
 #: child has no NodeRuns yet, so pause/HITL/deferral entries pointing at the

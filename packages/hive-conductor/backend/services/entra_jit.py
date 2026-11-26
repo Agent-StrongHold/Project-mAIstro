@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 import httpx
 import stores
 from config import Settings
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from routes.audit import log_audit
 
 from maistro.auth.entra import ENTRA_PROVIDER_NAME
@@ -186,7 +186,7 @@ def _candidate_username(identity: OAuthIdentity) -> str:
 class EntraJitProvisioner:
     """The #492 product transaction: group-gated first-login account creation.
 
-    Returns the provisioned (or canonically linked) :class:`HiveUser` on
+    Returns the provisioned (or canonically linked) :class:`HiveAccount` on
     admission and ``None`` on any refusal; every outcome is audited. Never
     raises for policy or membership refusals — those are decisions, not
     faults — so the login seam can stay a single branch.
@@ -207,7 +207,9 @@ class EntraJitProvisioner:
         """JIT is the Entra specialization; generic OIDC providers never JIT."""
         return provider == ENTRA_PROVIDER_NAME
 
-    async def provision(self, identity: OAuthIdentity, exchange: OAuthExchange) -> HiveUser | None:
+    async def provision(
+        self, identity: OAuthIdentity, exchange: OAuthExchange
+    ) -> HiveAccount | None:
         # Lazy import: oauth_login imports this module at its own top level.
         from services import username_registry
         from services.oauth_login import HiveIdentityLinkStore, IdentityLinkConflictError
@@ -245,7 +247,7 @@ class EntraJitProvisioner:
         managed = decision.managed
 
         username = _candidate_username(identity)
-        user = HiveUser(
+        user = HiveAccount(
             id=str(uuid.uuid4()),
             username=username,
             password_hash=ENTRA_JIT_UNUSABLE_PASSWORD_HASH,

@@ -1,14 +1,21 @@
 import { test, expect } from "./fixtures";
 
-test.describe("Dashboard Page", () => {
-  test("loads and shows content", async ({ page }) => {
-    await page.goto("/dashboard");
+test.describe("Workspace Home (#2274)", () => {
+  test("loads and shows Home content", async ({ page }) => {
+    await page.goto("/home");
     await page.waitForTimeout(3000);
-    // Should have the Live Operations header or widget content
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
     const content = await page.textContent("body");
     expect(content?.length).toBeGreaterThan(100);
   });
 
+  test("legacy /dashboard redirects to Home", async ({ page }) => {
+    await page.goto("/dashboard");
+    await page.waitForURL("**/home");
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+  });
+
+  // Backend layout/metrics doors remain for non-UI consumers; the SPA page is gone.
   test("dashboard metrics API responds", async ({ page }) => {
     const response = await page.request.get("/v1/dashboard/metrics");
     expect(response.status()).toBe(200);
@@ -21,24 +28,6 @@ test.describe("Dashboard Page", () => {
     expect(response.status()).toBe(200);
     const data = await response.json();
     expect(data.tabs.length).toBeGreaterThanOrEqual(1);
-  });
-
-  test("widgets render after loading", async ({ page }) => {
-    await page.goto("/dashboard");
-    await page.waitForTimeout(5000);
-    // Widget cards have title text in uppercase
-    const body = await page.textContent("body");
-    expect(body?.length).toBeGreaterThan(500); // page has content
-  });
-
-  test("edit mode shows undo/redo", async ({ page }) => {
-    await page.goto("/dashboard");
-    await page.waitForTimeout(2000);
-    const editBtn = page.getByRole("button", { name: /edit|✎|done|✓/i });
-    if (await editBtn.first().isVisible()) {
-      await editBtn.first().click();
-      await page.waitForTimeout(500);
-    }
   });
 });
 

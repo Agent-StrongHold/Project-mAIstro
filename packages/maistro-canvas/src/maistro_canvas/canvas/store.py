@@ -1,5 +1,17 @@
 """PostgreSQL persistence for Canvas Studio (spec 1189).
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): the ``layers``/LayerRecord
+persistence this module serves is the legacy layer model, retained while
+consumers migrate to the ADR-039/044 AssetInstance model
+(``asset_store``/``asset_compositor``/``asset_routes``/``asset_tool``). It
+cannot regain authority: new layer-model work belongs on the AssetInstance
+path only. Deletion is gated on the ADR-044 Phase 2 bridge and Phase 3
+backfill (neither has landed) plus ADR-046 — deleting it now would strand
+persisted Canvas state, which ADR-045 forbids. The ``generation_jobs`` queue
+this module also hosts is NOT transitional: it is the SPEC-203 queue the
+shipped ``maistro-canvas-worker`` and the server-composed ``CanvasJobRunner``
+claim from, and its convergence is owned by #735.
+
 All queries use raw SQL via sqlalchemy text() — same pattern as
 pg_agents.py.  Z-index invariants are enforced inside transactions to
 prevent races; the DB schema uses a UNIQUE constraint on
@@ -20,6 +32,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -38,6 +51,7 @@ from maistro_canvas.types import (
     JobLeaseLostError,
     JobNotFoundError,
     JobQueueStats,
+    JobStatus,
     LayerLimitExceededError,
     LayerNotFoundError,
     LayerRecord,
@@ -47,9 +61,41 @@ from maistro_canvas.types import (
 _MAX_LAYERS_CONST = _MAX_LAYERS
 
 
+@dataclass(frozen=True)
+class CanvasBlobRecord:
+    """One ``canvas_blobs`` row: bytes plus the identity to serve them with.
+
+    ``format`` is the media type the bytes were stored under and ``metadata``
+    carries the write-time stamps (source, canonical Workspace/Project scope)
+    the authorized byte-serving route reads. Immutable on purpose: a stored
+    blob's identity does not change after the write (#2311).
+    """
+
+    id: str
+    data: bytes
+    format: str
+    metadata: dict[str, Any]
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Row coercion helpers
 # ─────────────────────────────────────────────────────────────────────
+
+
+def _coerce_blob_metadata(raw: object) -> dict[str, Any]:
+    """The ``metadata`` JSONB column as a plain dict.
+
+    asyncpg hands jsonb back as a ``str``; a driver that decodes it natively
+    (psycopg) hands a ``dict``. Both shapes mean the same row, so both
+    coerce here rather than at every caller. Anything else reads as empty —
+    an unparseable stamp is a missing anchor for the serving route, which
+    already fails closed on one.
+    """
+    if isinstance(raw, str):
+        return cast(dict[str, Any], json.loads(raw))
+    if isinstance(raw, dict):
+        return cast(dict[str, Any], raw)
+    return {}
 
 
 def _coerce_canvas(row: Any) -> CanvasRecord:
@@ -110,6 +156,24 @@ def _coerce_layer(row: Any) -> LayerRecord:
     )
 
 
+def _coerce_job_status(raw: object) -> str:
+    """Hydrate a receipt status as a :class:`JobStatus` member when possible.
+
+    The driver hands back the column as a plain ``str``. Identity comparisons
+    against ``JobStatus`` members (``status is JobStatus.RUNNING``) then fail
+    silently, so :meth:`CanvasCanonicalExecution.reconcile_admissions`'s
+    live-lease guard never fired for Postgres-hydrated receipts and a second
+    worker could claim a live-leased job (#93 live evidence). Coercing here
+    makes every consumer see the same shape the in-memory stores produce.
+    An unrecognized value is passed through untouched rather than crashing a
+    read path over a legacy row.
+    """
+    try:
+        return JobStatus(str(raw))
+    except ValueError:
+        return str(raw)
+
+
 def _coerce_job(row: Any) -> GenerationJobRecord:
     d = dict(row)
     result_paths_raw = d.get("result_paths", [])
@@ -123,7 +187,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         layer_id=str(d["layer_id"]),
         canvas_id=str(d["canvas_id"]),
         action=d.get("action", "generate"),
-        status=d.get("status", "pending"),
+        status=_coerce_job_status(d.get("status", JobStatus.PENDING)),
         model_id=d.get("model_id", ""),
         prompt=d.get("prompt", ""),
         params=params_raw or {},
@@ -1137,6 +1201,45 @@ class PgCanvasStore:
             return _coerce_composite(row) if row else None
 
     # ── Blobs ─────────────────────────────────────────────────────────
+
+    async def get_blob(self, blob_id: str) -> bytes | None:
+        """One stored blob's bytes, or None when the id is unknown (#2311).
+
+        The read side of :meth:`store_blob`, added so the governed image
+        egress can satisfy its ``ImageBlobStore`` contract over this table —
+        the durable home for generated image bytes that
+        ``maistro.capabilities.image_generation`` deliberately leaves to the
+        package owning ``canvas_blobs``.
+        """
+        record = await self.read_blob(blob_id)
+        return record.data if record is not None else None
+
+    async def read_blob(self, blob_id: str) -> CanvasBlobRecord | None:
+        """One stored blob with its media type and metadata, or None (#2311).
+
+        The whole row the authorized byte-serving route needs: bytes to serve,
+        the media type they were stored under (the response's Content-Type),
+        and the metadata the governed egress stamped at write time — the
+        canonical Workspace/Project scope that anchors the route's
+        authorization. An unknown id reads as ``None``, exactly like every
+        other scoped read in this store: existence itself is scoped
+        information, and a guessed id has no answer but absence.
+        """
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("SELECT id, data, format, metadata FROM canvas_blobs WHERE id = :id"),
+                {"id": blob_id},
+            )
+            row = result.first()
+            if row is None:
+                return None
+        d = dict(row._mapping)
+        return CanvasBlobRecord(
+            id=str(d["id"]),
+            data=bytes(d["data"]),
+            format=str(d.get("format") or ""),
+            metadata=_coerce_blob_metadata(d.get("metadata")),
+        )
 
     async def store_blob(
         self,
