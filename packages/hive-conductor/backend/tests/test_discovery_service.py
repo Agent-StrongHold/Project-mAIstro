@@ -393,7 +393,7 @@ async def test_cycle_context_carries_fresh_context_notes(
     async def _persona(workspace_id: str) -> list[str]:
         return ["persona domain: photo blogging"]
 
-    async def _user_model(user_id: str) -> list[str]:
+    async def _user_model(user_id: str, workspace_id: str, task_text: str = "") -> list[str]:
         return ["about the user: shoots Canon"]
 
     async def _goals(user_id: str, workspace_id: str) -> list[str]:
@@ -412,6 +412,74 @@ async def test_cycle_context_carries_fresh_context_notes(
     )
     assert context.source_binding_id == ""
     assert context.curator_binding_id == ""
+
+
+async def test_user_model_notes_recall_is_task_scoped_and_gated() -> None:
+    """Curation recalls for the task; it never reads the facts() listing.
+
+    ``facts()`` is the owner's inspection API: it hands back live lineage
+    heads with no privacy gates, so a fact under review, or one with no link
+    to this cycle's watch topics, must not reach the curator's context just
+    because it exists. The old behavior asserted the top-8 facts verbatim;
+    this pins the gates that replaced it.
+    """
+    from maistro.memory.user_model import (
+        FactState,
+        InMemoryUserModelStore,
+        UserModelFact,
+    )
+    from maistro.memory.user_model.service import UserModelService
+    from maistro_server.api import user_model as user_model_api
+
+    class _NoopAudit:
+        async def append(self, *args: Any, **kwargs: Any) -> None: ...
+
+    store = InMemoryUserModelStore()
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-linked",
+            revision=1,
+            supersedes=None,
+            owner_user_id="admin",
+            kind="possession",
+            statement="owns a Canon 7D camera body",
+        )
+    )
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-review",
+            revision=1,
+            supersedes=None,
+            owner_user_id="admin",
+            kind="possession",
+            statement="drives a manual transmission car",
+            state=FactState.UNDER_REVIEW,
+        )
+    )
+    await store.append_revision(
+        UserModelFact(
+            lineage_id="lin-unrelated",
+            revision=1,
+            supersedes=None,
+            owner_user_id="admin",
+            kind="preference",
+            statement="prefers dark mode in the editor",
+        )
+    )
+    service = UserModelService(store=store, audit_log=_NoopAudit())
+    user_model_api.configure_user_model_service(service)
+    try:
+        notes = await discovery._user_model_notes(
+            "admin", "ws-recall", task_text="camera deals for the body"
+        )
+    finally:
+        user_model_api.configure_user_model_service(None)
+
+    # The task-linked ACTIVE fact is asserted; the under-review fact is a
+    # privacy gate the inspection listing would have skipped, and the
+    # unrelated one is a structural zero — facts() would have returned both.
+    assert len(await service.facts("admin")) == 3
+    assert notes == ["about the user: owns a Canon 7D camera body"]
 
 
 async def test_dismissed_category_downweights_future_cycles() -> None:

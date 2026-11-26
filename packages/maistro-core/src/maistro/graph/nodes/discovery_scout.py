@@ -78,16 +78,28 @@ def fingerprint_for(*, entry_id: str, url: str, title: str) -> str:
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]  # nosec: B324 - identity hash
 
 
-def _topics_of(text: str) -> set[str]:
-    return {token.lower() for token in _TOKEN_RE.findall(text)}
+def _tokenize(text: str) -> list[str]:
+    return [token.lower() for token in _TOKEN_RE.findall(text)]
+
+
+def _mentions(tokens: list[str], phrase: list[str]) -> bool:
+    """True when ``phrase`` appears as a contiguous run within ``tokens``."""
+    span = len(phrase)
+    return any(tokens[i : i + span] == phrase for i in range(len(tokens) - span + 1))
 
 
 def _overlap(entry_text: str, topics: list[str]) -> tuple[float, list[str]]:
-    """Fraction of watch topics the entry's text mentions, with which ones."""
+    """Fraction of watch topics the entry's text mentions, with which ones.
+
+    Topics are tokenized like the entry text, so multiword watch topics
+    (``machine learning``) match the same token sequence in the text.
+    """
     if not topics:
         return 0.0, []
-    tokens = _topics_of(entry_text)
-    matched = [topic for topic in topics if topic.strip().lower() in tokens]
+    tokens = _tokenize(entry_text)
+    matched = [
+        topic for topic in topics if (phrase := _tokenize(topic)) and _mentions(tokens, phrase)
+    ]
     if not matched:
         return 0.0, []
     return len(matched) / len(topics), matched

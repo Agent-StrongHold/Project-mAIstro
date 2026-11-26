@@ -375,6 +375,26 @@ async def test_scout_scores_topic_overlap_and_carries_the_evidence() -> None:
     assert candidate.score == pytest.approx(0.5)
 
 
+async def test_scout_matches_multiword_watch_topics_as_token_sequences() -> None:
+    cycle = _Cycle(DiscoveryCycleContext(watch_topics=("machine learning", "tripod")))
+    node = DiscoveryScoutNode(discovery_context=cycle)
+    result = await node.run(
+        {
+            "entries": [
+                _entry("Advances in machine learning tools", "https://x.example.com/ml"),
+                _entry("Unrelated note", "https://x.example.com/none"),
+            ],
+            "min_score": 0.1,
+        },
+        _ctx("n2b"),
+    )
+    assert result.success
+    assert len(result.output.candidates) == 1
+    candidate = result.output.candidates[0]
+    assert candidate.matched_topics == ["machine learning"]
+    assert candidate.score == pytest.approx(0.5)
+
+
 async def test_scout_suppresses_seen_fingerprints_from_the_ledger() -> None:
     fresh = _entry("Fresh", "https://x.example.com/fresh")
     seen_fp = fingerprint_for(entry_id="s1", url="https://x.example.com/seen", title="Seen")

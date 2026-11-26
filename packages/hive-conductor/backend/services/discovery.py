@@ -419,16 +419,32 @@ async def _persona_notes(workspace_id: str) -> list[str]:
         return []
 
 
-async def _user_model_notes(user_id: str) -> list[str]:
-    """Durable user-model statements, read through the one canonical service."""
+async def _user_model_notes(user_id: str, workspace_id: str, task_text: str = "") -> list[str]:
+    """User-model statements via task-scoped recall, not the inspection listing.
+
+    ``facts()`` is the owner's inspection API: it returns live lineage heads
+    with no privacy gates. Only ``recall_for_task`` enforces the surface gates
+    (ACTIVE, reusable, sensitivity cap, validity window), so curation never
+    asserts a fact the owner marked private, expired, or under review.
+    """
     try:
+        from maistro.memory.user_model.retrieval import RecallQuery
+        from maistro.memory.user_model.types import FactSensitivity
         from maistro_server.api.user_model import get_user_model_service
 
         service = get_user_model_service()
-        facts = await service.facts(user_id)
+        scored = await service.recall_for_task(
+            RecallQuery(
+                owner_user_id=user_id,
+                task_text=task_text,
+                workspace_id=workspace_id,
+                max_sensitivity=FactSensitivity.PERSONAL,
+                limit=8,
+            )
+        )
         notes: list[str] = []
-        for fact in facts[:8]:
-            statement = str(getattr(fact, "statement", "") or "").strip()
+        for item in scored:
+            statement = str(getattr(item.fact, "statement", "") or "").strip()
             if statement:
                 notes.append(f"about the user: {statement[:200]}")
         return notes
@@ -482,9 +498,12 @@ async def cycle_context(
             return DiscoveryCycleContext(budget_refusal=refusal)
         _charge(workspace_id, config, ledger, cycle_key=cycle_key, source_count=source_count)
 
+    watch_topics = [str(t) for t in config.get("watch_topics", [])]
     notes = [
         *await _persona_notes(workspace_id),
-        *await _user_model_notes(user_id),
+        # Recall (not the facts() listing) so privacy gates hold; the cycle's
+        # watch topics are the task text the relevance gates score against.
+        *await _user_model_notes(user_id, workspace_id, task_text=" ".join(watch_topics)),
         *await _goal_notes(user_id, workspace_id),
     ]
     downweights = [
@@ -493,7 +512,7 @@ async def cycle_context(
         if weight < 1.0
     ]
     return DiscoveryCycleContext(
-        watch_topics=tuple(str(t) for t in config.get("watch_topics", [])),
+        watch_topics=tuple(watch_topics),
         context_notes=tuple(notes),
         seen_fingerprints=seen_fingerprints(workspace_id),
         category_downweights=tuple(downweights),
