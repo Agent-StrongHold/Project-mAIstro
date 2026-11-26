@@ -571,3 +571,78 @@ program-scale composition plus operator release evidence, not a defect in this
 branch's diff.
 
 Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
+
+## Round 10 — independent verifier re-verification at the round-9 head (job `6c50727e`, repair stage)
+
+Starting HEAD `2bedd230cfad` (exact match), worktree clean; the only change over
+Round 9 is that round's docs-only note. The prior driver run's `check-*.log`
+files (job `cd29c2ab`, same head) were inspected — uv sync OK, `ruff check`
+"All checks passed!", `ruff format --check` "3682 files already formatted",
+42-test pytest pass, suite inventory `ok ... 4689` — then every load-bearing
+result below was re-executed fresh in this round at this head. No code, test,
+ledger, grant, gate or policy file was edited; this section is the only change.
+No test was added, so no suite-inventory delta arises (`check-suite-inventory`
+confirms the recorded 4689 still matches).
+
+### Executed at this head (verifier's own runs, not inherited claims)
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | All checks passed! |
+| `uv run ruff format --check .` | 3682 files already formatted |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | **42 passed** (matches driver log) |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI's exact invocation, `quality.yml:1630-1634`) | exit 0: 1219 reviewed identities -> 1219 findings, unclassified 0 — no unbanked identities, no ledger amendment needed |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-workspace-retirement.py` (CI's invocation, `quality.yml:1148`) | exit 0: 78 -> 78 tolerated importers, OK on 89 entries |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | exit 0: 4689 collected node IDs match the recorded inventory, 0 duplicate evidence |
+| `uv run python scripts/check-release-consistency.py` | exit 0: released none / shipping 0.9.0 / working toward 1.0.0 (row 1) |
+| closure-keyword scan: `git log 3be6b6650c..HEAD --format=%s%n%b` grep `(fixes?\|closes?\|resolves?) #N` | **0 matches** — no premature issue closure |
+| `git diff --numstat origin/develop -- quality/` | exactly the documented lane deltas: `reachability-baseline.json` −1 row (`services.entra_entitlements` now reachable via the #492 JIT wiring), `reachability-dispositions.json` rationale + module-list updated with the same reason; no develop rows lost |
+
+### Negative composition claims re-proven at this head (all true)
+
+- Row 8: `packages/maistro-core/src/maistro/container.py:1409`
+  `if self.goal_reconciliation_policy is None: return 0`; the only source
+  references are the field default (`:519`) and the guard itself — no
+  production assignment or tick caller; `goals/reconciliation/wiring.py:128-135`
+  warns "Goal reconciliation is in-memory despite a PostgreSQL backend" and
+  answers a PostgreSQL pool with `InMemoryGoalStore()`.
+- Row 11: `memory/working_graph/manager.py:38-39` `_embedded_factory` selects
+  `create_backend("embedded", …)`; `memory/working_graph/backend.py:5,114`
+  records the `ladybugdb` distribution as not published to this environment's
+  package registry, so the literal Ladybug backend is not adoptable.
+- Row 12: `promote_evidence` appears in `user_model/promotion.py`, its
+  `__init__` re-export and `service.py` alone — tests and re-export only, no
+  production caller; `recall_for_task` reaches production only through the
+  owner-scoped `maistro_server/api/user_model.py` route.
+- Row 18: `grep -rn "UserModel\|recall_for_task\|Attention"
+  packages/maistro-design/src --include=*.py` → **0 matches**.
+- Rows 2/5: `.github/workflows/release.yml:23-24` still self-declares
+  "NOT YET EXERCISED … has never run"; all 36 local tags are `backup/*` /
+  `orphan-bak/*` / pre-rebase lane tags — no release tags, so RC soak /
+  byte-equivalent promotion has no executed evidence.
+
+### Positive Row-19 seams re-inspected at this head
+
+- `services/oauth_login.py:344-352`: `authenticate` invokes the JIT
+  provisioner only for a verified, unlinked Entra identity; refusal falls
+  through to the uniform denial with the decision audited.
+- Structural pin `test_entra_jit_provisioning.py:890`
+  (`assert not hasattr(entra_jit_module, "stores")`) and the strengthened
+  disabled-JIT refusal test (`:497`) are present and pass in the 42 above.
+
+### Verdict carried forward
+
+Round 5-9 accounting is unchanged at this head and was independently
+re-executed here. Milestone acceptance: **NEEDS-REPAIR** — rows 8 and 18 are
+not met by current production composition; rows 2, 3, 5, 17 are UNVERIFIED
+(operator release-pipeline, clean-machine/live-model, RC-soak and
+discovery-pipeline evidence not obtainable in this environment); rows 4, 7, 9,
+11, 12 are PARTIAL; rows 1, 6, 13 are deterministic-PASS and rows 10, 14, 15,
+16 PASS in the collected backend inventory with live-UI inspection unverified;
+row 19 is deterministic-PASS with declared live-tenant limits. The lane's own
+repairs hold at this head and every CI gate this round touches is green with
+CI's exact arguments, including the vulture per-identity ledger (no unbanked
+identities; no ledger amendment required); what remains is program-scale
+composition plus operator release evidence, not a defect in this branch's diff.
+
+Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
