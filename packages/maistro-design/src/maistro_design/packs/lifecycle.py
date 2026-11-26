@@ -44,12 +44,13 @@ machine (#953) whose shape this follows:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -182,17 +183,69 @@ def snapshot_pack(pack: DomainPack) -> PackManifestSnapshot:
     return PackManifestSnapshot(body=body, sha256=_sha256_hex(body.encode()))
 
 
+def _thicken_thin_snapshot_body(body: dict[str, Any]) -> None:
+    """Migrate a pre-2.0.0 (thin #793) snapshot body to the thick #985 shape.
+
+    A Workspace that activated a 1.0.0 pack stores a snapshot written before
+    `artifact_payload_kind` and the dimension weights/anchors existed, and a
+    snapshot is immutable recorded evidence — the stored bytes are never
+    rewritten. This derives the thick fields deterministically from the thin
+    body itself, at read time, after integrity has passed:
+
+    - equal dimension weights whose sum is exactly 1 (the last dimension
+      absorbs the float remainder, so the migrated defaults are one whole
+      judgment and pass the `DomainPack` weight-sum validator as-is);
+    - anchors named from each dimension's own identity on the fixed 1-5
+      scale (the thin catalog declared no scale ends);
+    - the pack's first declared artifact kind as `artifact_payload_kind`.
+      A thin pack shipped no payload schema, so judged emissions fail closed
+      in `parse_pack_artifact` until the Workspace upgrades to the thick
+      release — which rewrites the snapshot properly. This shim exists so
+      materialization, re-enable, and upgrade preflight (`_authority_delta`)
+      deserialize instead of raising; upgrade remains the sanctioned route
+      that converges the stored record onto a thick snapshot.
+    """
+    dimensions = body.get("rubric_dimensions") or []
+    if dimensions:
+        weight = 1.0 / len(dimensions)
+        accumulated = 0.0
+        for dimension in dimensions[:-1]:
+            dimension["weight"] = weight
+            accumulated += weight
+        dimensions[-1]["weight"] = 1.0 - accumulated
+        for dimension in dimensions:
+            name = dimension.get("name") or dimension.get("dimension_id") or "dimension"
+            dimension["low_anchor"] = f"Scale-1: {name}"
+            dimension["high_anchor"] = f"Scale-5: {name}"
+    artifact_kinds = body.get("artifact_kinds") or []
+    if artifact_kinds:
+        body["artifact_payload_kind"] = artifact_kinds[0]
+
+
 def pack_from_snapshot(snapshot: PackManifestSnapshot, pack_id: PackId) -> DomainPack:
     """Rebuild the pack from its snapshot, refusing tampered evidence.
 
     The digest is checked against the *recorded* value before the body is
     parsed: a snapshot that fails integrity never becomes a pack object.
+
+    Version-aware on read (M7-A9, #985): a body written by a pre-2.0.0
+    release — exactly what a Workspace that activated a 1.0.0 pack has
+    stored — lacks the thick fields the current contract requires. Rather
+    than `ValidationError`-ing every materialization, re-enable, and upgrade
+    preflight into a dead state, the thin body is migrated on read (see
+    `_thicken_thin_snapshot_body`); the stored bytes and digest are untouched,
+    and an explicit `upgrade` is what rewrites the record onto the thick
+    release.
     """
     if _sha256_hex(snapshot.body.encode()) != snapshot.sha256:
         raise SnapshotIntegrityError(
             f"pack {pack_id.value!r} snapshot digest mismatch: stored evidence "
             "does not digest to its recorded sha256"
         )
+    body = json.loads(snapshot.body)
+    if isinstance(body, dict) and "artifact_payload_kind" not in body:
+        _thicken_thin_snapshot_body(body)
+        return DomainPack.model_validate(body)
     return DomainPack.model_validate_json(snapshot.body)
 
 
