@@ -23,7 +23,10 @@ without a second YAML file.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -36,6 +39,7 @@ from maistro_design.packs import (
     GoalRubricCatalog,
     InMemoryPackLifecycleStore,
     InvalidLifecycleOperation,
+    PackActivationRecord,
     PackConcurrentWriteConflict,
     PackConfigurationInvalid,
     PackId,
@@ -43,14 +47,17 @@ from maistro_design.packs import (
     PackLifecycleError,
     PackLifecycleService,
     PackLifecycleState,
+    PackManifestSnapshot,
     PackNotEnabled,
     PackRegistry,
     PackRegistryUpgradeUnavailable,
+    PackTransition,
     PackTransitionKind,
     PackUpgradeBlocked,
     PackUpgradePreflight,
     SnapshotIntegrityError,
     WorkspacePackConfiguration,
+    pack_from_snapshot,
     pack_graph_template,
     snapshot_pack,
 )
@@ -84,6 +91,21 @@ def _service(
 
 def _registry_with(pack: DomainPack) -> PackRegistry:
     return PackRegistry((pack,))
+
+
+def _thin_release_snapshot() -> PackManifestSnapshot:
+    """The exact bytes a pre-#985 (1.0.0) activation stored: the thin #793
+    shape — no `artifact_payload_kind`, no dimension weights/anchors — plus
+    the SHA-256 the 1.0.0 `snapshot_pack` recorded over them."""
+    body: dict[str, Any] = json.loads(PackRegistry.builtin().get(PackId.PRODUCT).model_dump_json())
+    body["version"] = "1.0.0"
+    del body["artifact_payload_kind"]
+    body["rubric_dimensions"] = [
+        {"dimension_id": d["dimension_id"], "name": d["name"], "description": d["description"]}
+        for d in body["rubric_dimensions"]
+    ]
+    encoded = json.dumps(body, sort_keys=True)
+    return PackManifestSnapshot(body=encoded, sha256=hashlib.sha256(encoded.encode()).hexdigest())
 
 
 def _release(
@@ -860,6 +882,94 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
             )
 
 
+# --- pre-2.0.0 snapshots deserialize (read-time migration) -------------------
+
+
+class TestLegacyThinSnapshotsStillDeserialize:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_thin_snapshot_becomes_a_pack_with_derived_thickness(self) -> None:
+        pack = pack_from_snapshot(_thin_release_snapshot(), PackId.PRODUCT)
+        # The recorded release identity is preserved verbatim: migration
+        # derives the thick fields, it does not rewrite what was activated.
+        assert pack.version == "1.0.0"
+        assert pack.artifact_payload_kind in pack.artifact_kinds
+        from math import fsum
+
+        assert fsum(d.weight for d in pack.rubric_dimensions) == 1.0
+        for dimension in pack.rubric_dimensions:
+            assert dimension.low_anchor and dimension.high_anchor
+        # The dimension ids (and everything else thin) ride unchanged — a
+        # Workspace configuration that selected them still validates.
+        assert [d.dimension_id for d in pack.rubric_dimensions] == [
+            d.dimension_id for d in PackRegistry.builtin().get(PackId.PRODUCT).rubric_dimensions
+        ]
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_migrated_thin_pack_fails_closed_on_judged_emissions(self) -> None:
+        # A thin pack shipped no payload schema: deserializing it must not
+        # invent judging power. Emissions fail closed at the schema gate.
+        from maistro_design.packs import parse_pack_artifact
+
+        pack = pack_from_snapshot(_thin_release_snapshot(), PackId.PRODUCT)
+        with pytest.raises(Exception, match="no registered payload schema"):
+            parse_pack_artifact(
+                pack, artifact_kind=pack.artifact_payload_kind, payload={"anything": 1}
+            )
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_tampered_thin_evidence_is_refused_before_migration(self) -> None:
+        thin = _thin_release_snapshot()
+        tampered = PackManifestSnapshot(body=thin.body + " ", sha256=thin.sha256)
+        with pytest.raises(SnapshotIntegrityError, match="digest mismatch"):
+            pack_from_snapshot(tampered, PackId.PRODUCT)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_disabled_legacy_activation_reenables_from_its_snapshot(self) -> None:
+        # The re-enable path reads the stored manifest too: a Workspace that
+        # disabled its 1.0.0 pack must be able to turn it back on.
+        thin = _thin_release_snapshot()
+        now = datetime.now(UTC)
+        store = InMemoryPackLifecycleStore()
+        await store.commit(
+            PackActivationRecord(
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                state=PackLifecycleState.DISABLED,
+                version="1.0.0",
+                manifest=thin,
+                configuration=WorkspacePackConfiguration(),
+                enabled_by=ACTOR,
+                activated_at=now,
+                updated_at=now,
+            ),
+            PackTransition(
+                seq=1,
+                at=now,
+                kind=PackTransitionKind.DISABLE,
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                actor=ACTOR,
+                from_state=PackLifecycleState.ENABLED,
+                to_state=PackLifecycleState.DISABLED,
+                from_version="1.0.0",
+                to_version="1.0.0",
+                reason="paused at 1.0.0",
+            ),
+            expected=None,
+        )
+        service = _service(store=store)
+        await service.enable_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="resume", authorized_backends=GRANTS
+        )
+        record = await service.record(WS_A, PackId.PRODUCT)
+        assert record is not None and record.state is PackLifecycleState.ENABLED
+        assert record.version == "1.0.0"
+
+
 # --- contract edges ----------------------------------------------------------
 
 
@@ -897,6 +1007,62 @@ class TestLifecycleContractEdges:
             await service.configure_pack(
                 WS_A, PackId.PRODUCT, WorkspacePackConfiguration(), actor=ACTOR, reason="r"
             )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    async def test_legacy_thin_snapshots_survive_upgrade_preflight_and_upgrade(self) -> None:
+        # A Workspace that activated a 1.0.0 pack before #985 stores a thin
+        # snapshot: no artifact_payload_kind, no dimension weights/anchors.
+        # Upgrade preflight deserializes that snapshot first, so without the
+        # read-time migration the upgrade itself would dead-end. This test
+        # seeds exactly that durable state and proves the sanctioned escape
+        # hatch — upgrade to the thick release — still works.
+        thin = _thin_release_snapshot()
+        now = datetime.now(UTC)
+        store = InMemoryPackLifecycleStore()
+        await store.commit(
+            PackActivationRecord(
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                state=PackLifecycleState.ENABLED,
+                version="1.0.0",
+                manifest=thin,
+                configuration=WorkspacePackConfiguration(),
+                enabled_by=ACTOR,
+                activated_at=now,
+                updated_at=now,
+            ),
+            PackTransition(
+                seq=1,
+                at=now,
+                kind=PackTransitionKind.ENABLE,
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                actor=ACTOR,
+                from_state=PackLifecycleState.AVAILABLE,
+                to_state=PackLifecycleState.ENABLED,
+                from_version="",
+                to_version="1.0.0",
+                reason="onboard at 1.0.0",
+            ),
+            expected=None,
+        )
+        service = _service(store=store)
+        preflight = await service.preflight_upgrade(
+            WS_A, PackId.PRODUCT, authorized_backends=GRANTS
+        )
+        assert preflight.can_upgrade
+        assert (preflight.current_version, preflight.target_version) == ("1.0.0", "2.0.0")
+        await service.upgrade_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="move to thick", authorized_backends=GRANTS
+        )
+        record = await service.record(WS_A, PackId.PRODUCT)
+        assert record is not None and record.version == "2.0.0"
+        # The upgrade rewrote the snapshot onto a thick release: the stored
+        # evidence is now first-class, no longer riding the read-time shim.
+        assert "artifact_payload_kind" in json.loads(record.manifest.body)
+        upgraded_pack = pack_from_snapshot(record.manifest, PackId.PRODUCT)
+        assert upgraded_pack.version == "2.0.0"
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
