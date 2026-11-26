@@ -7,12 +7,16 @@ canned rows, so tests assert on emitted SQL/params, not just "didn't raise".
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from maistro.persistence.pg_audit import PgAuditLog
+from maistro.security._types import AuditEntry as SentinelAuditEntry
+from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
 
@@ -73,6 +77,43 @@ def log(conn: FakeConnection) -> PgAuditLog:
     return PgAuditLog(FakePool(conn))
 
 
+def test_ephemeral_signing_key_warns_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ADR-073 restart contract needs a configured key: without one this
+    durable store writes proofs no later process can verify, so it must say
+    so at wire time instead of failing silently on the first post-restart
+    ``verify()``."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn))
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    assert SIGNING_KEY_ENV in messages
+    assert "verify" in messages
+
+
+def test_supplied_signing_key_does_not_warn_on_a_durable_store(
+    conn: FakeConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deployment that configured its key chose durability; no warning."""
+    with caplog.at_level(logging.WARNING, logger="maistro.persistence.audit"):
+        PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32)))
+    assert not [r for r in caplog.records if r.name == "maistro.persistence.audit"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_adds_proof_columns_idempotently(conn: FakeConnection) -> None:
+    """Databases created before signed audit records lack the proof columns;
+    wiring runs this upgrade on every start, so it must be the idempotent
+    ADD COLUMN IF NOT EXISTS form covering all three proof columns."""
+    await PgAuditLog(FakePool(conn), signer=AuditSigner(bytes(32))).ensure_schema()
+
+    assert [call.query for call in conn.calls] == [
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_log_inserts_with_team_id_and_tool_name_defaults(
     log: PgAuditLog, conn: FakeConnection
@@ -103,6 +144,9 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
         "ok",
         "t1",
         "r1",
+        log.signer.sign(entry).signature,
+        log.signer.key_id,
+        "Ed25519Signature2020",
     )
 
 
@@ -123,6 +167,64 @@ async def test_log_tool_name_none_becomes_empty_string(
     await log.log(entry)
     call = conn.calls[0]
     assert call.args[5] == ""
+
+
+@pytest.mark.asyncio
+async def test_persisted_deny_row_verifies_as_reconstructed(
+    log: PgAuditLog, conn: FakeConnection
+) -> None:
+    """The row PgAuditLog writes must verify when read back as a durable row.
+
+    Durable stores never serialize the violations tuple, so the INSERT params
+    are the whole persisted record: rebuilding an AuditEntry from them and
+    verifying is the exact restart contract, exercised for a deny decision
+    that carries violations.
+    """
+    await log.log(
+        SentinelAuditEntry(
+            boundary="tool_call",
+            user_id="u1",
+            tool_name="bash",
+            verdict="denied",
+            violations=(
+                SentinelViolation(
+                    boundary="tool_call", rule="dangerous-command", severity="high", detail="d"
+                ),
+            ),
+        )
+    )
+
+    (
+        boundary,
+        user_id,
+        org_id,
+        team_id,
+        agent_id,
+        tool_name,
+        verdict,
+        detail,
+        trace_id,
+        request_id,
+        signature,
+        signing_key_id,
+        proof_type,
+    ) = conn.calls[0].args
+    row = AuditEntry(
+        boundary=boundary,
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team_id,
+        agent_id=agent_id,
+        tool_name=tool_name or None,
+        verdict=verdict,
+        detail=detail,
+        trace_id=trace_id,
+        request_id=request_id,
+        signature=signature,
+        signing_key_id=signing_key_id,
+        proof_type=proof_type,
+    )
+    assert log.verify(row)
 
 
 @pytest.mark.asyncio

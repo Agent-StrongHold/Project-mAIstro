@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
+from services.request_principal import optional_actor_id
 
 router = APIRouter(tags=["evolution"])
 
@@ -12,12 +13,8 @@ def _actor_principal_id(request: Request) -> str | None:
     explicit = getattr(request.state, "user_id", None)
     if explicit:
         return str(explicit)
-    user = getattr(request.state, "user", None) or {}
-    if isinstance(user, dict):
-        value = user.get("id") or user.get("username")
-        if value:
-            return str(value)
-    return None
+    actor = optional_actor_id(request)
+    return actor or None
 
 
 @router.get("/status")

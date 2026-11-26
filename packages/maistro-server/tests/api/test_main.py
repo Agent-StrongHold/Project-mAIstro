@@ -326,7 +326,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -371,7 +371,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -412,7 +412,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -560,3 +560,98 @@ class TestRunStorePool:
         assert await main_module._run_store_pool() is not None
         assert seen and seen[0].startswith("postgresql://")
         assert "db:5432/maistro" in seen[0]
+
+
+class TestCanvasAbilityWiring:
+    """The shipped Canvas surface gets its store from this lifecycle (#851).
+
+    ``/v2/canvas`` is mounted and authenticated unconditionally and answers 503
+    until ``app.state.canvas_store`` exists — nothing assigned it, so the
+    supported server path shipped a permanently-unavailable product surface.
+    These tests pin the three decisions the wiring can make: a PostgreSQL
+    deployment gets the real ``PgCanvasStore`` over the shared engine, a
+    database-less deployment keeps the (truthful) 503, and an already-composed
+    store is never replaced.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _router_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The lifespan builds a Container, and `_validate_startup` refuses to
+        # run without a router key (see TestRunStorePool's same fixture).
+        monkeypatch.setenv("ROUTER_API_KEY", "test-router-key")
+
+    def test_a_real_engine_gets_the_postgres_store(self) -> None:
+        from maistro_canvas.canvas.store import PgCanvasStore
+
+        test_app = FastAPI()
+        engine = MagicMock()
+        assert main_module._wire_canvas_ability(test_app, engine) is True
+        store = test_app.state.canvas_store
+        assert isinstance(store, PgCanvasStore)
+        assert store._engine is engine
+
+    def test_no_engine_keeps_the_503_surface(self) -> None:
+        test_app = FastAPI()
+        assert main_module._wire_canvas_ability(test_app, None) is False
+        assert getattr(test_app.state, "canvas_store", None) is None
+
+    def test_an_already_composed_store_is_not_replaced(self) -> None:
+        test_app = FastAPI()
+        sentinel = object()
+        test_app.state.canvas_store = sentinel
+        assert main_module._wire_canvas_ability(test_app, MagicMock()) is True
+        assert test_app.state.canvas_store is sentinel
+
+    async def test_the_lifespan_wires_the_store_when_an_engine_exists(self) -> None:
+        """Through the real lifespan, not just the helper: the wiring lives in
+        ``_runtime_lifespan``, and a store only tests prove is constructible is
+        still a 503 surface if startup never assigns it."""
+        from types import SimpleNamespace
+
+        test_app = MagicMock()
+        test_app.state = SimpleNamespace()
+        mock_runner = MagicMock()
+        mock_runner.start = AsyncMock()
+        mock_runner.stop = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.dispose = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=mock_engine),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                from maistro_canvas.canvas.store import PgCanvasStore
+
+                assert isinstance(test_app.state.canvas_store, PgCanvasStore)
+                assert test_app.state.canvas_store._engine is mock_engine
+
+    async def test_the_lifespan_without_a_database_wires_nothing(self) -> None:
+        from types import SimpleNamespace
+
+        test_app = MagicMock()
+        test_app.state = SimpleNamespace()
+        mock_runner = MagicMock()
+        mock_runner.start = AsyncMock()
+        mock_runner.stop = AsyncMock()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                pass
+
+        assert getattr(test_app.state, "canvas_store", None) is None

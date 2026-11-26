@@ -8,15 +8,168 @@ product path records one canonical Run with NodeRuns and physical Attempts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
-from maistro.http import shared_client
+from maistro.capabilities.binding_store import BindingNotFound, BindingStore
+from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY, ModelChatEgress, ModelChatRequest
+from maistro.graph.nodes.base import NodeContext
 from maistro.runs.model import RunStatus
+from maistro.runs.store import RunIntegrityError
+from maistro.types.config import ModelBindingConfig
 
 logger = logging.getLogger(__name__)
 
 _service: _EvolutionService | None = None
+
+
+class _GovernedModelCall:
+    """Bind Evolve prompts to the execution and declared model authority it already has.
+
+    No Binding or credential is created here. Container bootstrap owns both;
+    each call resolves the operator declaration in this NodeContext's scope.
+    The Invocation service remains the only dispatch/replay/usage authority.
+    """
+
+    def __init__(
+        self,
+        *,
+        egress: ModelChatEgress,
+        bindings: BindingStore,
+        declarations: tuple[ModelBindingConfig, ...],
+        workspace_id: str,
+        default_model: str,
+    ) -> None:
+        self._egress = egress
+        self._bindings = bindings
+        self._declarations = declarations
+        self._workspace_id = workspace_id
+        self._default_model = default_model
+
+    def _binding_id(self, ctx: NodeContext) -> str:
+        candidates = [
+            declaration
+            for declaration in self._declarations
+            if (declaration.workspace_id.strip() or self._workspace_id) == ctx.workspace_id
+            and declaration.project_id == ctx.project_id
+            and declaration.node_id in ("", ctx.node_id)
+        ]
+        exact = [item for item in candidates if item.node_id == ctx.node_id]
+        selected = exact or candidates
+        if len(selected) != 1:
+            raise BindingNotFound(
+                "Evolve model work requires one unambiguous operator-declared model.chat "
+                f"Binding for Workspace {ctx.workspace_id!r}, Project {ctx.project_id!r} "
+                f"and Node {ctx.node_id!r}"
+            )
+        return selected[0].binding_id
+
+    @contextmanager
+    def for_context(self, ctx: NodeContext) -> Iterator[Callable[..., Any]]:
+        """One call sequence per physical Attempt, with a failure fence before publication.
+
+        Benchmarks may catch provider errors and return a score anyway. Retain
+        the first failure inside this node only, so no such score is published;
+        a later recovery Attempt receives a fresh fence and the same effect keys.
+        """
+        identity = (
+            ctx.run_id,
+            ctx.node_run_id,
+            ctx.attempt_id,
+            ctx.node_id,
+            ctx.workspace_id,
+            ctx.project_id,
+            ctx.user_id,
+        )
+        if any(not value or not value.strip() for value in identity):
+            raise RunIntegrityError("Evolve model work requires a complete canonical NodeContext")
+        call_number = 0
+        failure: BaseException | None = None
+        active = True
+
+        async def call(messages: list[dict[str, Any]] | str, **kwargs: Any) -> str:
+            nonlocal call_number, failure
+            if not active:
+                raise RunIntegrityError("Evolve model callable outlived its NodeContext")
+            if failure is not None:
+                raise RuntimeError("a prior Evolve model effect failed") from failure
+            sequence = call_number
+            call_number += 1
+            try:
+                return await self._complete(ctx, sequence, messages, kwargs)
+            except BaseException as exc:
+                # A benchmark timeout cancels the callable before swallowing
+                # TimeoutError. That also cannot become an accepted score.
+                failure = exc
+                raise
+
+        try:
+            yield call
+            if failure is not None:
+                raise RuntimeError("Evolve model effect failed") from failure
+        finally:
+            active = False
+
+    async def _complete(
+        self,
+        ctx: NodeContext,
+        sequence: int,
+        messages: list[dict[str, Any]] | str,
+        kwargs: dict[str, Any],
+    ) -> str:
+        binding = await self._bindings.resolve(
+            self._binding_id(ctx),
+            workspace_id=str(ctx.workspace_id),
+            project_id=str(ctx.project_id),
+            node_id=ctx.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        request = ModelChatRequest(
+            model=kwargs.get("model") or self._default_model,
+            messages=(
+                [{"role": "user", "content": messages}]
+                if isinstance(messages, str)
+                else [dict(message) for message in messages]
+            ),
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 4096),
+        )
+        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()[:16]
+        result = await self._egress.complete(
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            attempt_id=ctx.attempt_id,
+            effect_key=f"evolve.model:{ctx.node_id}:{sequence}:{digest}",
+            request=request,
+            actor_id=str(ctx.user_id),
+        )
+        choices = result.body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError("evolve: governed gateway returned no choices")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise RuntimeError("evolve: governed gateway returned no content")
+        return content
+
+
+def _default_chat_model() -> str:
+    """The deployment's default chat model alias, or "" (router selects).
+
+    The raw egress read ``settings.chat_default_model``; the governed path
+    keeps the same default so cutover does not change which model Evolve
+    selects — only whose authority the call crosses.
+    """
+    try:
+        from config import get_settings
+
+        return str(get_settings().chat_default_model or "")
+    except Exception:
+        return ""
 
 
 class EvolutionServiceNotStarted(RuntimeError):
@@ -110,6 +263,7 @@ class _EvolutionService:
         self._last_run_status: RunStatus | None = None
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
+        self._archive: Any = None
         # Manual requests and the cadence task share one admission lock. This
         # serializes cycle planning/finalization without making the population
         # store a second execution authority.
@@ -168,11 +322,17 @@ class _EvolutionService:
             self._refresh_execution_availability()
             return
         try:
+            from maistro_evolve.archive import CandidateArchive
             from maistro_evolve.population import PopulationStore
             from maistro_evolve.tournament import EloTournament
 
             self._population = PopulationStore()
             self._tournament = EloTournament()
+            # M4-A6: the candidate archive is Evolve domain state alongside the
+            # population/tournament — immutable candidate lineage snapshots,
+            # surviving cull/retirement for provenance, branching, and
+            # retention evaluation.
+            self._archive = CandidateArchive()
         except Exception as exc:
             self._last_cycle_error = str(exc)
             logger.warning("Evolution population init failed: %s", exc)
@@ -192,6 +352,12 @@ class _EvolutionService:
     @property
     def tournament(self) -> Any:
         return self._tournament
+
+    @property
+    def archive(self) -> Any:
+        """The candidate archive (M4-A6) — may be ``None`` before init, like
+        ``population``/``tournament``."""
+        return self._archive
 
     @property
     def last_run_id(self) -> str | None:
@@ -312,6 +478,7 @@ class _EvolutionService:
             llm_call=self._build_llm_call(),
             actor_principal_id=actor_principal_id,
             cycle_number=self._cycle_count + 1,
+            archive=self._archive,
         )
         self._last_run_id = record.run_id
         self._last_run_status = record.run.status
@@ -336,46 +503,44 @@ class _EvolutionService:
         )
         return record.run_id
 
-    def build_llm_call(self):
+    def build_llm_call(self) -> _GovernedModelCall:
         """Public accessor so a restart-recovery resolver can reconstruct the
         same llm_call this service would have built for a live cycle (#1064).
         """
         return self._build_llm_call()
 
-    def _build_llm_call(self):
+    def _governed_llm_seam(self) -> tuple[Any, Any] | None:
+        """Use the existing engine model egress and its Container-owned Bindings."""
         try:
-            from config import get_settings
+            from services.engine import get_engine
 
-            from services.secrets import litellm_api_key, maistro_llm_api_key
-
-            settings = get_settings()
-            base = settings.litellm_api_base
-            if not base:
-                return None
-            raw_key = maistro_llm_api_key(settings) or litellm_api_key(settings) or ""
-
-            async def _llm_call(messages: list[dict], **kwargs: Any) -> str:
-                headers = {"Content-Type": "application/json"}
-                if raw_key:
-                    headers["Authorization"] = f"Bearer {raw_key}"
-                payload = {
-                    "model": kwargs.get("model", settings.chat_default_model),
-                    "messages": messages,
-                    "temperature": kwargs.get("temperature", 0.3),
-                    "max_tokens": kwargs.get("max_tokens", 4096),
-                }
-                async with shared_client(timeout=120.0) as client:
-                    resp = await client.post(
-                        f"{base}/v1/chat/completions", json=payload, headers=headers
-                    )
-                    resp.raise_for_status()
-                    return resp.json()["choices"][0]["message"]["content"]
-
-            return _llm_call
-        except Exception:
+            engine = get_engine()
+        except RuntimeError:
             return None
+        port = getattr(engine, "agent_port", None) or getattr(engine, "_agent_port", None)
+        egress = getattr(port, "governed_egress", None)
+        container = getattr(port, "container", None)
+        if egress is None or getattr(container, "capability_effects", None) is None:
+            return None
+        return egress, container
 
-    def status(self) -> dict:
+    def _build_llm_call(self) -> _GovernedModelCall:
+        seam = self._governed_llm_seam()
+        if seam is None:
+            raise EvolutionUnavailableError(
+                "Evolve requires the canonical model egress; raw model fallback is disabled",
+                availability="unavailable",
+            )
+        egress, container = seam
+        return _GovernedModelCall(
+            egress=egress,
+            bindings=container.capability_effects.bindings,
+            declarations=tuple(container.config.model_bindings),
+            workspace_id=str(container.config.workspace_id),
+            default_model=_default_chat_model(),
+        )
+
+    def status(self) -> dict[str, Any]:
         self._refresh_execution_availability()
         get_stats = getattr(self._tournament, "get_stats", None)
         tournament_stats = get_stats() if callable(get_stats) else {}
@@ -389,6 +554,7 @@ class _EvolutionService:
             "domain_state_only": not self._execution_available,
             "cycle_count": self._cycle_count,
             "population_size": len(self._population.list_all()) if self._population else 0,
+            "archive_size": len(self._archive) if self._archive is not None else 0,
             "last_error": self._last_cycle_error,
             "last_run_id": self._last_run_id,
             "last_run_status": self._last_run_status.value if self._last_run_status else None,

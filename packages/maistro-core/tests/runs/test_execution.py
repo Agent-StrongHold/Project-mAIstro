@@ -17,7 +17,9 @@ from maistro.runs import (
     RunStatus,
 )
 from maistro.runs.execution import ExecutionYielded
+from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 class RecordingRuntime(PythonExecutionRuntime):
@@ -59,7 +61,7 @@ async def _node_run() -> tuple[InMemoryRunStore, str, str]:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     return store, run.run_id, node_run.node_run_id
 
@@ -237,7 +239,7 @@ async def test_run_cancellation_fences_before_provider_launch() -> None:
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
     started = asyncio.Event()
 
@@ -312,6 +314,83 @@ async def test_run_cancellation_fences_a_provider_that_returns_after_cancel() ->
     attempt = (await store.list_attempts(node_runs[-1].node_run_id))[0]
     assert attempt.status is AttemptStatus.CANCELLED
     assert (await store.get_node_run(node_runs[-1].node_run_id)).status is RunStatus.CANCELLED
+
+
+class _CancelBetweenFenceAndWriteStore:
+    """Commit the Run cancellation after the fence read, before the write (#1335).
+
+    `_settle_provider_success` checks the durable Run fence, then writes the
+    Attempt -- two awaits, and the existing fence test proves the fence wins
+    when cancellation commits before the read. This proxy holds the store the
+    service talks to and forces the other interleaving deterministically: the
+    first COMPLETED write first persists Run=CANCELLED (cascading the open
+    NodeRun, exactly as a real cancellation does), then delegates the write.
+    Every other call passes through untouched, so the service and reconciler
+    see one store throughout.
+    """
+
+    def __init__(self, inner: InMemoryRunStore, run_id: str) -> None:
+        self._inner = inner
+        self._run_id = run_id
+        self.cancelled_before_write = False
+
+    async def transition_attempt(
+        self, attempt_id: str, target: AttemptStatus, **kwargs: Any
+    ) -> Any:
+        if target is AttemptStatus.COMPLETED and not self.cancelled_before_write:
+            await self._inner.transition_run(
+                self._run_id, RunStatus.CANCELLED, error="execution cancelled"
+            )
+            self.cancelled_before_write = True
+        return await self._inner.transition_attempt(attempt_id, target, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_landing_between_the_fence_read_and_the_write_is_refused() -> None:
+    """No COMPLETED Attempt may land under a Run the fence saw go CANCELLED (#1335).
+
+    With the store-side guard, the refusal happens at the write: the stale
+    success never reaches the durable record, and the executor unwinds with
+    the integrity error. Before the guard, this interleaving silently
+    returned the COMPLETED Attempt (with `reconcile_logical=False`, nothing
+    reconciles to detect it) -- so both the raise and the record below are
+    the regression.
+    """
+    store, run_id, _fixture_node_run_id = await _node_run()
+    proxy = _CancelBetweenFenceAndWriteStore(store, run_id)
+    service = RunExecutionService(store=proxy, runtime=PythonExecutionRuntime())
+
+    async def executor(_work: Any, _context: Any) -> str:
+        return "stale success"
+
+    running = asyncio.create_task(
+        service.execute_node(
+            run_id,
+            "node-1",
+            None,
+            None,
+            executor=executor,
+            reconcile_logical=False,
+        )
+    )
+    with pytest.raises(InvalidLifecycleTransition, match="terminal Run"):
+        await running
+    assert proxy.cancelled_before_write
+
+    cancelled_run = await store.get_run(run_id)
+    assert cancelled_run is not None
+    assert cancelled_run.status is RunStatus.CANCELLED
+    executed = (await store.list_node_runs(run_id))[-1]
+    # The cancel cascade settled the logical record; only the physical
+    # Attempt's disposition was left unwritten, which is the honest state --
+    # a COMPLETED row here would claim work the cancelled Run refused.
+    assert executed.status is RunStatus.CANCELLED
+    attempt = (await store.list_attempts(executed.node_run_id))[0]
+    assert attempt.status is not AttemptStatus.COMPLETED
+    assert attempt.status is AttemptStatus.RUNNING
 
 
 @pytest.mark.asyncio
@@ -796,7 +875,7 @@ async def test_cancelling_a_local_run_for_a_missing_run_is_an_integrity_error() 
         name="One node",
         nodes=[Node(node_id="node-1", node_type="agent")],
     )
-    run = await torn.create_run(graph)
+    run = await torn.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     torn._vanished_run_id = run.run_id
     service = AttemptExecutionService(store=torn, runtime=PythonExecutionRuntime())
     with pytest.raises(RunIntegrityError, match="does not exist"):
@@ -843,7 +922,7 @@ async def test_run_cancellation_settles_queue_only_node_runs() -> None:
             Node(node_id="node-3", node_type="agent"),
         ],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     queue_only = await store.create_node_run(run.run_id, node_id="node-1")
     with_live_attempt = await store.create_node_run(run.run_id, node_id="node-2")
     already_terminal = await store.create_node_run(run.run_id, node_id="node-3")
@@ -926,7 +1005,7 @@ async def test_cancel_settled_node_runs_sweeps_exactly_the_queue_only_nodes() ->
             Node(node_id="node-3", node_type="agent"),
         ],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     queue_only = await store.create_node_run(run.run_id, node_id="node-1")
     with_live_attempt = await store.create_node_run(run.run_id, node_id="node-2")
     already_terminal = await store.create_node_run(run.run_id, node_id="node-3")

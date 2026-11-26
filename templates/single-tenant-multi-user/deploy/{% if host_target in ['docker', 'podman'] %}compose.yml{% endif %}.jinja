@@ -4,6 +4,12 @@ services:
       context: ..
       dockerfile: Dockerfile
     command: ["--check"]
+    # Docker/Podman Compose service-level ceilings; deploy.resources is not
+    # effective in the documented non-Swarm deployment mode.
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    cpus: 0.5
     restart: "no"
     read_only: true
     cap_drop:

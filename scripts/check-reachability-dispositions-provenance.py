@@ -22,6 +22,15 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "reachability"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated disposition auditor, which itself loads the convergence-matrix
+#: checker for the required-subsystem census.
+ANALYZER_MANIFEST = (
+    "scripts/check-reachability-dispositions-provenance.py",
+    "scripts/check-reachability-dispositions.py",
+    "scripts/check-convergence-matrix.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -38,6 +47,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _unreachable(payload: object) -> set[str]:
@@ -77,6 +94,7 @@ def main() -> int:
     )
 
     try:
+        tool_version = _tool_version(prov)
         trusted_baseline_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
         trusted_baseline = _unreachable(trusted_baseline_ref.loads(default={"unreachable": []}))
         trusted_ledger_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
@@ -105,6 +123,7 @@ def main() -> int:
             ratchet="reachability-dispositions",
             baseline=trusted_ledger_ref,
             tool="disposition ledger",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted_modules)} dispositioned modules",
             new_value=f"{len(candidate_modules)} dispositioned modules",

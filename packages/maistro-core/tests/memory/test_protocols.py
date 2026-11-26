@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.protocols.memory import EpisodicStore, LearningStore, OutcomeStore
@@ -10,13 +11,19 @@ from maistro.protocols.memory import EpisodicStore, LearningStore, OutcomeStore
 
 class TestProtocolConformance:
     def test_learning_store_conforms(self) -> None:
-        assert isinstance(InMemoryLearningStore(), LearningStore)
+        assert isinstance(
+            InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED), LearningStore
+        )
 
     def test_episodic_store_conforms(self) -> None:
-        assert isinstance(InMemoryEpisodicStore(), EpisodicStore)
+        assert isinstance(
+            InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED), EpisodicStore
+        )
 
     def test_outcome_store_conforms(self) -> None:
-        assert isinstance(InMemoryOutcomeStore(), OutcomeStore)
+        assert isinstance(
+            InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED), OutcomeStore
+        )
 
     def test_non_conforming_class_returns_false(self) -> None:
         class Stub:

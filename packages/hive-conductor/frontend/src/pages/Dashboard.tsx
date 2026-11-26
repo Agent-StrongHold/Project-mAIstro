@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from "react";
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { TemplatePicker } from "../components/TemplatePicker";
 import { sanitizeWidget, sanitizeWidgetChanges } from "../lib/widgetCapabilities";
@@ -99,13 +99,29 @@ function useAgents() {
   return a;
 }
 
-function useMetrics() {
-  const [m, setM] = useState<any>({});
+// Fetch-level states the KPI renderer must show distinctly from payload
+// states (#380): `loading` is the request in flight, `unauthorized` a 401,
+// and `error` covers every other non-OK exchange and a transport failure.
+// A silently-swallowed failure here used to leave every KPI rendering its
+// zero/empty fallback — indistinguishable from a healthy idle deployment.
+type MetricsStatus = "loading" | "ready" | "unauthorized" | "error";
+
+function useMetrics(): { data: Record<string, any> | null; status: MetricsStatus } {
+  const [data, setData] = useState<Record<string, any> | null>(null);
+  const [status, setStatus] = useState<MetricsStatus>("loading");
   useEffect(() => {
+    let cancelled = false;
     fetch("/v1/dashboard/metrics", { credentials: "same-origin" })
-      .then(r => r.json()).then(setM).catch(() => {});
+      .then(r => {
+        if (r.status === 401) { setStatus("unauthorized"); return null; }
+        if (!r.ok) { setStatus("error"); return null; }
+        return r.json();
+      })
+      .then(d => { if (!cancelled && d) { setData(d); setStatus("ready"); } })
+      .catch(() => { if (!cancelled) setStatus("error"); });
+    return () => { cancelled = true; };
   }, []);
-  return m;
+  return { data, status };
 }
 
 // ─── Chat Bar ───────────────────────────────────────────────────────────────
@@ -154,10 +170,12 @@ TYPE "custom" with AIRTABLE LIST (scrollable names):
   Example: create_dashboard_widget(title="Next Candidates", type="custom", size="2", config={source:"airtable", table:"Use Case Submission", filter_formula:"{V2 Migration Status}='Next Candidates'", display_field:"Use Case Name/ Project", max_records:"50"})
 
 TYPE "custom" with METRICS:
-  config = {source: "metrics", metric: "latency"|"ttft"|"cost"|"tokens"|"invocations"|"errors"}
+  config = {source: "metrics", metric: "latency"|"ttft"|"cost"|"tokens"|"invocations"}
+  ("errors" is NOT a metric — nothing counts per-request errors; asking returns 400)
 
 TYPE "kpi":
   config = {field: "active_agents"|"runs_today"|"avg_latency"|"total_cost"|"approval_rate"|"ttft", sub: "description text"}
+  (approval_rate and ttft currently render N/A — no source measures them; prefer the measured fields)
 
 TYPE "agent-orbs": config = {} (no config needed)
 TYPE "invocations": config = {} 
@@ -335,24 +353,132 @@ BEHAVIOR:
 
 // ─── Widget Renderers ───────────────────────────────────────────────────────
 
+// Shape of one /v1/dashboard/metrics entry — the payload side of the contract
+// `services/dashboard_metrics.py` builds (#380).
+type KpiEnvelope = {
+  state: "ok" | "no_data" | "stale" | "unavailable" | "error";
+  value?: number | null;
+  unit: string;
+  query: string;
+  scope: string;
+  window: string;
+  computed_at: string;
+  last_update: string | null;
+  reason?: string | null;
+  // Extras the invocations envelope carries for its widget.
+  latency_ms_p50?: number;
+  latency_ms_p95?: number;
+  tokens_in_total?: number;
+  tokens_out_total?: number;
+};
+
+// Every payload KPI is an envelope from /v1/dashboard/metrics naming its
+// authoritative query, scope, window, unit and freshness (#380). The states
+// below render differently on purpose — the old widget collapsed "no data",
+// "unavailable" and "error" into a plausible-looking 0.
+function kpiValueText(value: KpiEnvelope["value"], unit: string): string {
+  if (unit === "USD") return `$${Number(value).toFixed(2)}`;
+  if (unit === "ms") return Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(2)}s` : `${Math.round(Number(value))}ms`;
+  if (unit === "ratio") return `${Math.round(Number(value) * 100)}%`;
+  return typeof value === "number" ? value.toLocaleString() : String(value);
+}
+
+function shortWindow(window: string): string {
+  if (window.startsWith("trailing ")) return window.slice(0, window.indexOf(" of") > 0 ? window.indexOf(" of") : undefined);
+  if (window.startsWith("today")) return "today";
+  if (window === "current roster") return "roster";
+  if (window.startsWith("process lifetime")) return "since boot";
+  return window;
+}
+
+function shortTime(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function provenanceText(env: KpiEnvelope): string {
+  const parts = [
+    `query: ${env.query}`,
+    `scope: ${env.scope}`,
+    `window: ${env.window}`,
+    `unit: ${env.unit}`,
+    `computed: ${env.computed_at}`,
+    env.last_update ? `last observation: ${env.last_update}` : "no observations yet",
+  ];
+  if (env.reason) parts.push(`note: ${env.reason}`);
+  return parts.join(" · ");
+}
+
+function FetchStateLine({ status }: { status: string }) {
+  if (status === "loading") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", opacity: 0.6 }} aria-busy="true">
+        <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>…</div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6 }}>Loading metrics…</div>
+      </div>
+    );
+  }
+  if (status === "unauthorized") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
+        <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>🔒</div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6 }}>Sign-in required to read metrics</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
+      <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--danger)", lineHeight: 1 }}>⚠</div>
+      <div style={{ fontSize: "var(--text-floor)", color: "var(--danger)", marginTop: 6 }}>Metrics source unreachable — retrying on reload</div>
+    </div>
+  );
+}
+
 // No `title` prop: WidgetCard's header already renders `widget.title`, and this
 // body never read the copy it was passed.
-function KpiWidget({ config, agents, metrics }: { config?: Record<string, any>; agents: any[]; metrics: any }) {
+function KpiWidget({ config, metrics, status }: { config?: Record<string, any>; metrics: any; status: string }) {
   const field = config?.field || "";
-  let value: string | number = "—";
-
-  if (field === "active_agents") value = agents.length || 0;
-  else if (field === "runs_today") value = metrics?.count || 0;
-  else if (field === "avg_latency") { const ms = metrics?.latency_ms_mean || 0; value = ms ? `${(ms / 1000).toFixed(2)}s` : "0ms"; }
-  else if (field === "total_cost") { const c = metrics?.cost_usd_total || 0; value = `$${c.toFixed(2)}`; }
-  else if (field === "approval_rate") { const r = metrics?.approval_rate; value = r ? `${Math.round(r * 100)}%` : "—"; }
-  else if (field === "ttft") { const ms = metrics?.latency_ms_p50 || 0; value = ms ? `${Math.round(ms)}ms` : "0ms"; }
-
+  if (status !== "ready") return <FetchStateLine status={status} />;
+  const env = metrics ? metrics[field] : null;
+  if (!env) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Unknown KPI {field ? `“${field}”` : "(no field configured)"} — the metrics source did not report it</div>
+      </div>
+    );
+  }
+  const footer = [env.unit, shortWindow(String(env.window || "")), shortTime(env.computed_at), env.last_update ? `obs ${shortTime(env.last_update)}` : null]
+    .filter(Boolean).join(" · ");
+  let valueLine: ReactNode;
+  let subLine: string = config?.sub || field;
+  if (env.state === "ok") {
+    valueLine = <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.02em" }}>{kpiValueText(env.value, env.unit)}</div>;
+  } else if (env.state === "stale") {
+    valueLine = (
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.02em" }}>{kpiValueText(env.value, env.unit)}</div>
+        <span style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "#b8860b", border: "1px solid #b8860b", borderRadius: 4, padding: "0 4px" }}>STALE</span>
+      </div>
+    );
+    // Why it is stale is the point of the label, not a hover detail.
+    subLine = env.reason || config?.sub || field;
+  } else if (env.state === "no_data") {
+    valueLine = <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>—</div>;
+    subLine = `No data yet — ${env.reason || "nothing observed"}`;
+  } else if (env.state === "unavailable") {
+    valueLine = <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--pencil)", lineHeight: 1 }}>N/A</div>;
+    subLine = env.reason || "not measured by this deployment";
+  } else {
+    valueLine = <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--danger)", lineHeight: 1 }}>⚠</div>;
+    subLine = env.reason || "metrics source failed";
+  }
   return (
-    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", position: "relative", paddingLeft: 10 }}>
-      <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 2, background: "var(--accent-gradient)" }} />
-      <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.02em" }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
-      <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{config?.sub || field}</div>
+    <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", position: "relative", paddingLeft: 10 }} title={provenanceText(env)}>
+      <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 2, background: env.state === "ok" ? "var(--accent-gradient)" : "var(--rule)" }} />
+      {valueLine}
+      <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{subLine}</div>
+      {env.state === "ok" && <div style={{ fontSize: "calc(var(--text-floor) * 0.9)", color: "var(--pencil)", marginTop: 3, opacity: 0.8, fontFamily: "var(--mono)" }}>{footer}</div>}
     </div>
   );
 }
@@ -375,31 +501,42 @@ function AgentOrbsWidget({ agents }: { agents: any[] }) {
   );
 }
 
-function InvocationsWidget({ metrics }: { metrics: any }) {
-  const count = metrics?.count || 0;
-  if (count === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No invocations yet. Start a conversation to generate data.</div>;
+function InvocationsWidget({ metrics, status }: { metrics: any; status: string }) {
+  if (status !== "ready") return <FetchStateLine status={status} />;
+  const env = metrics?.invocations;
+  if (!env || env.state === "error") return <div style={{ color: "var(--danger)", fontSize: "var(--text-floor)" }}>⚠ {env?.reason || "metrics source failed"}</div>;
+  if (env.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No invocations yet. Start a conversation to generate data.</div>;
+  if (env.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {env.reason || "not measured"}</div>;
+  const count = Number(env.value);
   return (
-    <div>
+    <div title={provenanceText(env)}>
+      {env.state === "stale" && <div style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "#b8860b", marginBottom: 4 }}>STALE — {env.reason}</div>}
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: "1.2rem", fontWeight: 800, color: C.ink }}>{count}</span>
+        <span style={{ fontSize: "1.2rem", fontWeight: 800, color: C.ink }}>{count.toLocaleString()}</span>
         <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>total invocations</span>
       </div>
       <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>
-        <div>p50: {Math.round(metrics.latency_ms_p50 || 0)}ms · p95: {Math.round(metrics.latency_ms_p95 || 0)}ms</div>
-        <div>Tokens in: {metrics.tokens_in_total || 0} · out: {metrics.tokens_out_total || 0}</div>
+        <div>p50: {Math.round(env.latency_ms_p50 || 0)}ms · p95: {Math.round(env.latency_ms_p95 || 0)}ms</div>
+        <div>Tokens in: {env.tokens_in_total ?? 0} · out: {env.tokens_out_total ?? 0}</div>
       </div>
     </div>
   );
 }
 
-function CostDonutWidget({ metrics }: { metrics: any }) {
-  const total = metrics?.cost_usd_total || 0;
-  if (total === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No cost data yet.</div>;
+function CostDonutWidget({ metrics, status }: { metrics: any; status: string }) {
+  if (status !== "ready") return <FetchStateLine status={status} />;
+  const env = metrics?.total_cost;
+  if (!env || env.state === "error") return <div style={{ color: "var(--danger)", fontSize: "var(--text-floor)" }}>⚠ {env?.reason || "metrics source failed"}</div>;
+  if (env.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No cost data yet.</div>;
+  if (env.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {env.reason || "not measured"}</div>;
+  const total = Number(env.value);
+  const invocations = metrics?.invocations;
   return (
-    <div style={{ textAlign: "center" }}>
+    <div style={{ textAlign: "center" }} title={provenanceText(env)}>
+      {env.state === "stale" && <div style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "#b8860b" }}>STALE</div>}
       <div style={{ fontSize: "1.3rem", fontWeight: 800, color: C.ink }}>${total.toFixed(2)}</div>
-      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>Total estimated cost</div>
-      <div style={{ fontSize: "var(--text-floor)", color: C.dim, marginTop: 4 }}>{metrics?.count || 0} invocations</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>Estimated cost{env.state === "stale" ? " (partial window)" : ""}</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.dim, marginTop: 4 }}>{invocations?.state === "ok" || invocations?.state === "stale" ? `${Number(invocations.value).toLocaleString()} invocations` : "invocation count unavailable"}</div>
     </div>
   );
 }
@@ -434,6 +571,22 @@ function JiraWidget({ widget }: { widget: Widget }) {
   if (!cfg.project) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Configure: set a Jira project key.</div>;
   if (loading) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Querying Jira...</div>;
   if (!data || data.error) return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>{data?.error || "No data"}</div>;
+  // Metric envelopes (#380): the named-metric endpoint answers with a state,
+  // not a plausible zero. Every non-ok state says why, distinctly.
+  if (typeof data.state === "string") {
+    if (data.state === "ok") {
+      return (
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }} title={`query: ${data.query} · scope: ${data.scope} · window: ${data.window} · computed: ${data.computed_at}`}>
+          <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{data.unit === "USD" ? `$${Number(data.value).toFixed(2)}` : Number(data.value).toLocaleString()}</div>
+          <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 4 }}>{cfg.sub || `${data.metric} (${data.unit})`}</div>
+        </div>
+      );
+    }
+    if (data.state === "no_data") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>— No data yet{data.reason ? ` — ${data.reason}` : ""}</div>;
+    if (data.state === "stale") return <div style={{ color: "var(--ink)", fontSize: "var(--text-floor)" }}><b style={{ color: "#b8860b" }}>STALE</b> — last known: {data.value} {data.unit}{data.reason ? ` — ${data.reason}` : ""}</div>;
+    if (data.state === "unavailable") return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>N/A — {data.reason || "not measured"}</div>;
+    return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>⚠ {data.reason || "metrics source failed"}</div>;
+  }
 
   // Status breakdown → horizontal bars
   if (display === "status-breakdown" && data.statuses) {
@@ -531,7 +684,8 @@ function UnknownWidget({ widget }: { widget: Widget }) {
         .then(r => r.json()).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
     } else if (cfg.source === "metrics" && cfg.metric) {
       fetch(`/v1/widgets/metrics?metric=${encodeURIComponent(cfg.metric)}&period=${encodeURIComponent(cfg.period || "1h")}`, { credentials: "same-origin" })
-        .then(r => r.json()).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+        .then(async r => { if (!r.ok) { const b = await r.json().catch(() => null); throw new Error(b?.detail || `HTTP ${r.status}`); } return r.json(); })
+        .then(setData).catch((e: Error) => setData({ error: e.message || "request failed" })).finally(() => setLoading(false));
     } else if (cfg.query) {
       // Legacy: natural-language query widgets (pre-deterministic)
       fetch("/v1/chat/complete", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
@@ -896,9 +1050,8 @@ function AirtableCascade({ cfgTable, setCfgTable, cfgGroupBy, setCfgGroupBy, cfg
 // `onResize` used to be threaded in here and was never called: the config
 // panel's size slider (`cfgSize`) already saves through `onUpdate`, so resizing
 // has one working path and had a second, dead one.
-function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
-  widget: Widget; agents: any[]; metrics: any; editing: boolean;
-  onRemove: () => void; onUpdate: (w: Widget) => void;
+function WidgetCard({ widget, agents, metrics, metricsStatus, editing, onRemove, onUpdate }: {
+  widget: Widget; agents: any[]; metrics: any; metricsStatus: string; editing: boolean; onRemove: () => void; onUpdate: (w: Widget) => void;
 }) {
   const [configOpen, setConfigOpen] = useState(false);
   const span = { "1": "span 1", "2": "span 2", "3": "span 3", "4": "span 4", "5": "span 5", "6": "1 / -1" };
@@ -969,11 +1122,11 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
 
   let content;
   switch (widget.type) {
-    case "kpi": content = <KpiWidget config={widget.config} agents={agents} metrics={metrics} />; break;
+    case "kpi": content = <KpiWidget config={widget.config} metrics={metrics} status={metricsStatus} />; break;
     case "jira": content = widget.config?.source === "airtable" ? <UnknownWidget widget={widget} /> : <JiraWidget widget={widget} />; break;
     case "agent-orbs": content = <AgentOrbsWidget agents={agents} />; break;
-    case "invocations": content = <InvocationsWidget metrics={metrics} />; break;
-    case "cost-donut": content = <CostDonutWidget metrics={metrics} />; break;
+    case "invocations": content = <InvocationsWidget metrics={metrics} status={metricsStatus} />; break;
+    case "cost-donut": content = <CostDonutWidget metrics={metrics} status={metricsStatus} />; break;
     case "trace": content = <TraceWidget />; break;
     default: content = <UnknownWidget widget={widget} />;
   }
@@ -1201,7 +1354,7 @@ export default function Dashboard() {
   const [history, setHistory] = useState<Tab[][]>([]);
   const [future, setFuture] = useState<Tab[][]>([]);
   const agents = useAgents();
-  const metrics = useMetrics();
+  const { data: metricsData, status: metricsStatus } = useMetrics();
   const [saveError, setSaveError] = useState<string | null>(null);
   // Every mutation goes through here, so there is one place a failed save is
   // noticed rather than one per call site.
@@ -1329,7 +1482,7 @@ export default function Dashboard() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "0.6rem" }}>
         {widgets.map(w => (
-          <WidgetCard key={w.id} widget={w} agents={agents} metrics={metrics} editing={editing}
+          <WidgetCard key={w.id} widget={w} agents={agents} metrics={metricsData} metricsStatus={metricsStatus} editing={editing}
             onRemove={() => removeWidget(w.id)}
             onUpdate={(updated) => updateWidget(w.id, updated)} />
         ))}

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reference-greeter"
+version = "1.0.0"
+description = "Reference MAIstro extension (M9-A3): a minimal tool extension that builds and tests outside the MAIstro repository"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+# Deliberately empty. The reference extension exercises the declarative
+# manifest contract, so its shipped code needs no runtime dependency at all -
+# not even the SDK package. Everything it declares, a clean environment can
+# install from this wheel alone; that is the property the isolation fixture
+# (scripts/check-reference-extension.py) proves.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reference_greeter"]
+
+# A host discovers an extension through the ``extension.json`` its wheel
+# ships; the installed distribution must carry it or the extension installs
+# but can never be found. The isolation fixture
+# (scripts/check-reference-extension.py) reads the manifest back out of the
+# installed distribution, so packaging that drops it fails there instead of
+# surfacing at a user's first install.
+[tool.hatch.build.targets.wheel.force-include]
+"extension.json" = "reference_greeter/extension.json"
+
+[tool.pytest.ini_options]
+# importlib mode keeps pytest from inserting the rootdir on sys.path, which is
+# exactly the repo-relative rescue this extension must never need: the tests
+# import the *installed* package from the venv's site-packages, or they fail.
+addopts = "--import-mode=importlib --strict-markers"
+testpaths = ["tests"]

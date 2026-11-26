@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.types import Outcome
 from maistro.observability.correlation import observed_provenance
 
@@ -54,12 +55,25 @@ def _dag_matches(record_dag: str, caller_dag: str) -> bool:
 
 
 class InMemoryOutcomeStore:
-    def __init__(self, max_outcomes: int = MAX_OUTCOMES) -> None:
+    """Outcome store with the ADR-057 write-authority gate at `record`.
+
+    Outcome rows are engine bookkeeping about a turn, not agent-curated memory,
+    so the store's default actor is `SYSTEM` — engine telemetry flows under
+    every mode, while a caller recording on the agent's behalf passes
+    `actor=Actor.AGENT` and is denied under `SYSTEM_MANAGED`.
+    """
+
+    def __init__(
+        self,
+        max_outcomes: int = MAX_OUTCOMES,
+        exposure_mode: MemoryExposureMode | None = None,
+    ) -> None:
         self._outcomes: list[Outcome] = []
         self._next_id = 1
         self._max = max_outcomes
+        self._exposure_mode = exposure_mode
 
-    async def record(self, outcome: Outcome) -> int:
+    async def record(self, outcome: Outcome, *, actor: Actor = Actor.SYSTEM) -> int:
         """Record an outcome, naming the execution that produced it.
 
         The ambient provenance is resolved here too, for the reason
@@ -71,7 +85,12 @@ class InMemoryOutcomeStore:
         Assigned onto the caller's object because this store keeps that
         instance and hands it back; a provenance held anywhere else would not
         survive the read.
+
+        The write-authority gate is the first statement (ADR-057): an undeclared
+        mode refuses every record, and an agent-actor record under
+        `SYSTEM_MANAGED` is denied before the list is touched.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=outcome.run_id,
             node_run_id=outcome.node_run_id,

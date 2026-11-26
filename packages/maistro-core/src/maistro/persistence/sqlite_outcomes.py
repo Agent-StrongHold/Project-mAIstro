@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.outcome_scope import scope_predicates
 from maistro.sqlite_schema import serialized_schema_upgrade
@@ -101,10 +102,17 @@ def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> 
 
 
 class SqliteOutcomeStore:
-    """SQLite-backed outcome store implementing the same protocol as PgOutcomeStore."""
+    """SQLite-backed outcome store implementing the same protocol as PgOutcomeStore.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin, with the same
+    `SYSTEM` default actor.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the outcomes table, and upgrade one created before the scope
@@ -143,8 +151,13 @@ class SqliteOutcomeStore:
                 "ON outcomes (org_id, project_id, thumb, created_at)"
             )
 
-    async def record(self, outcome: Outcome) -> int:
-        """Record an outcome. Returns outcome ID."""
+    async def record(self, outcome: Outcome, *, actor: Actor = Actor.SYSTEM) -> int:
+        """Record an outcome. Returns outcome ID.
+
+        The write-authority gate is the first statement (ADR-057): a denial
+        executes no SQL and commits nothing.
+        """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=outcome.run_id,
             node_run_id=outcome.node_run_id,

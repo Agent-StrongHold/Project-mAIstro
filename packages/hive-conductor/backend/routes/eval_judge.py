@@ -32,17 +32,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from services.dag_run_inspection import visible_run_detail, visible_run_ids
 from services.eval_judge import get_verdict, score_run
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["eval-judge"])
 
 
 def _user_id(request: Request) -> str:
     """Principal for this request — set by AuthMiddleware (see routes/feedback.py)."""
-    user = getattr(request.state, "user", None) or {}
-    uid = str(user.get("id") or user.get("username") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return uid
+    return require_actor_id(request)
 
 
 @router.get("/{run_id}")

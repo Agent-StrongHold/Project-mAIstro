@@ -59,10 +59,10 @@ export default function Profile() {
       })
       .catch(() => { setSummary("Could not load memories."); setSummaryLoading(false); });
 
-    // Recent audit activity
+    // Recent audit activity — a page envelope {entries, next_cursor} (#358).
     fetch("/v1/audit", { credentials: "same-origin" })
       .then(r => r.json())
-      .then(d => setActivity(Array.isArray(d) ? d.slice(0, 10) : []))
+      .then(d => setActivity(Array.isArray(d?.entries) ? d.entries.slice(0, 10) : []))
       .catch(() => {});
 
     // Recent chat sessions

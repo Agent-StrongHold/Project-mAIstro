@@ -225,10 +225,25 @@ async def readiness(
     )
     postgres_result = await _check_postgres(settings)
 
-    circuit_state = circuit_breaker.llm_circuit.state
+    circuit_domains = circuit_breaker.llm_circuits.snapshot()
+    unhealthy = [row for row in circuit_domains if row["state"] != "closed"]
+    # Domain names are sanitized endpoint x routing target — no credentials.
+    # Any open or recovering domain marks the LLM dependency not-ready; the
+    # detailed (admin-only) payload names which domain, so an operator can
+    # tell a single provider outage from a shared-gateway one.
+    _MAX_CIRCUIT_DETAIL = 8
+    detail = "all circuits closed" if circuit_domains else "no circuits registered"
+    if unhealthy:
+        shown = ", ".join(
+            f"{row['name']}={row['state']}" for row in unhealthy[:_MAX_CIRCUIT_DETAIL]
+        )
+        remaining = len(unhealthy) - _MAX_CIRCUIT_DETAIL
+        if remaining > 0:
+            shown += f"; +{remaining} more"
+        detail = f"unhealthy domains: {shown}"
     llm_result = ProbeResult(
-        status="ok" if circuit_state == "closed" else "error",
-        detail=f"circuit={circuit_state}",
+        status="ok" if not unhealthy else "error",
+        detail=f"circuits={detail}",
     )
 
     # The outbound pool is a process resource rather than an external

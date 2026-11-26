@@ -271,3 +271,35 @@ def test_delegate_task_dedupes_only_on_a_matching_delegation_key() -> None:
         metadata={"delegation_key": "key-a"},
     )
     assert retried == first
+
+
+def test_delegate_task_dedupes_on_the_legacy_effect_key() -> None:
+    """Callers that address the transport by replay effect_key get the same
+    receipt-side dedupe: one task per logical effect, and a different effect
+    key must still mint a second task."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    first = delegator.delegate_task(
+        "planner",
+        "first",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-1"},
+    )
+    retried = delegator.delegate_task(
+        "planner",
+        "a retry of the same logical hand-off",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-1"},
+    )
+    assert retried == first
+
+    other = delegator.delegate_task(
+        "planner",
+        "second",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-2"},
+    )
+    assert other != first

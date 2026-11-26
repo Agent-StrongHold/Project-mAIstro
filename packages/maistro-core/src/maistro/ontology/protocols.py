@@ -2,8 +2,9 @@
 
 Implementations:
 
-- ``InMemoryOntology`` (this package) — for tests and engine boot.
-- ``PostgresOntology`` (deferred) — SQLAlchemy + pgvector for production.
+- ``InMemoryOntology`` (this package) — the only implementation, in-process
+  and not thread-safe. There is no durable, SQLAlchemy-backed store;
+  connecting a process consumer is tracked by #34.
 
 The Protocol is `runtime_checkable` for adapter-style integration with
 the DI container.

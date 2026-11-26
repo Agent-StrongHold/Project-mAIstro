@@ -72,6 +72,7 @@ Usage
 from __future__ import annotations
 
 import ast
+import functools
 import re
 import sys
 from dataclasses import dataclass, field
@@ -172,7 +173,35 @@ def _fetches_and_guards(tree: ast.Module) -> tuple[bool, int]:
     return fetches, guard_calls
 
 
-def _outbound_fetch_census() -> list[tuple[Path, int]]:
+@functools.cache
+def _core_fetch_census() -> tuple[tuple[Path, int, ast.Module], ...]:
+    """The outbound-fetch census with each member's tree, parsed exactly once.
+
+    Every counted claim recomputes its figures through the projections of this
+    census, and `_unpooled_fetch_modules` re-walks the same trees to classify
+    them — within one process the tree cannot change, so parsing it per call
+    bought nothing. It bought worse than nothing, in fact: a single `main()`
+    run parsed all of maistro-core five times (once per counted claim) and then
+    re-read and re-parsed every census member again for the unpooled
+    classification, which is the runtime that pushed the root suite's
+    `--timeout=30` past its budget on the CI runner (issue #26 repair round;
+    run 37292468211, `test_the_shipped_document_passes`).
+
+    The cache is sound because the census reads only `_CORE_SRC`, a module
+    constant: nothing in the gate or its tests rewrites maistro-core between
+    calls, and the walkers whose roots tests *do* monkeypatch (`ROOT`,
+    `_REPO_PRODUCTION_ROOTS`, `_SIBLING_SRC_ROOTS`) deliberately stay outside
+    it. Returned trees are shared — every consumer only reads them.
+    """
+    census: list[tuple[Path, int, ast.Module]] = []
+    for path, tree in _core_modules():
+        fetches, guard_calls = _fetches_and_guards(tree)
+        if fetches:
+            census.append((path, guard_calls, tree))
+    return tuple(census)
+
+
+def _outbound_fetch_census() -> tuple[tuple[Path, int], ...]:
     """Modules that can open an outbound connection, with their guard-call count.
 
     One census, so the two numbers the document states describe the same set.
@@ -183,13 +212,11 @@ def _outbound_fetch_census() -> list[tuple[Path, int]]:
     a client library at all. "29 modules … only 3 call sites" was therefore a
     ratio between a numerator and a denominator with no member in common — a
     figure that looked like coverage and measured nothing.
+
+    A projection of the parsed-once `_core_fetch_census`, so the five counted
+    claims that call through here share one parse pass instead of five.
     """
-    census: list[tuple[Path, int]] = []
-    for path, tree in _core_modules():
-        fetches, guard_calls = _fetches_and_guards(tree)
-        if fetches:
-            census.append((path, guard_calls))
-    return census
+    return tuple((path, guard_calls) for path, guard_calls, _tree in _core_fetch_census())
 
 
 #: The module that owns the pool. It constructs the clients everything else
@@ -275,12 +302,16 @@ def _unpooled_fetch_modules() -> int:
 
     `http.py` is excluded because it *is* the pool — the constructions there are
     the ones the policy wraps.
+
+    Walks the census's own trees rather than re-reading and re-parsing each
+    member from disk: the census just parsed them, and a second parse per
+    member per claim doubled the census's cost for identical bytes.
     """
     count = 0
-    for path, _guards in _outbound_fetch_census():
+    for path, _guards, tree in _core_fetch_census():
         if path.name == _POOL_OWNER:
             continue
-        if _constructs_private_client(ast.parse(path.read_text(encoding="utf-8"))):
+        if _constructs_private_client(tree):
             count += 1
     return count
 

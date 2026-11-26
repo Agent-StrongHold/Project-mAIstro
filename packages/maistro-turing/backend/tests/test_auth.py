@@ -9,6 +9,39 @@ def test_health_is_public(client):
     assert r.json()["status"] == "ok"
 
 
+def test_readiness_reports_the_configured_service_identity(client):
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["service_identity"] == "turing-internal"
+
+
+def test_readiness_reports_unavailable_without_a_governed_identity(client, monkeypatch):
+    from maistro.auth import ServiceKeyRegistry
+
+    from ..main import app
+
+    monkeypatch.setattr(app.state, "turing_service_registry", ServiceKeyRegistry())
+    r = client.get("/health/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "unavailable"
+    assert "not configured" in body["reason"]
+    # The reason names configuration state, never key material.
+    assert "test-turing-service-key" not in body["reason"]
+
+
+def test_retired_default_credential_cannot_authenticate(client):
+    # The key this deployment used to ship as a built-in fallback must be
+    # rejected on the wire when it is not the explicitly configured key.
+    retired = "sk-svc-turing-dev-" + "internal"
+    r = client.get("/v1/state/snapshot", headers={"X-Service-Key": retired})
+    assert r.status_code == 401
+    r = client.get("/v1/state/snapshot", headers={"Authorization": f"Bearer {retired}"})
+    assert r.status_code == 401
+
+
 def test_unauthenticated_v1_rejected(client):
     r = client.get("/v1/state/snapshot")
     assert r.status_code == 401

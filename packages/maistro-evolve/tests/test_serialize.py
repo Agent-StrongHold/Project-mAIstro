@@ -41,6 +41,7 @@ def _genome() -> PipelineGenome:
         ),
         eval_weights=EvalWeights(),
         eval_scores={"proxy_ifeval": 0.5},
+        eval_evidence={"proxy_ifeval": "rule-checks"},
         harness_params={"k": "v"},
         generation=2,
         parent_a_id="p1",

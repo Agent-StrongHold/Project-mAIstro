@@ -5,6 +5,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
+// #1420: the startup probes' explicit instrumentation (see lib/rum.ts).
+import { instrumentedGet } from "./lib/rum";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Login from "./pages/Login";
 import Setup from "./pages/Setup";
@@ -16,6 +18,7 @@ import Setup from "./pages/Setup";
 // trip with nothing to show meanwhile.
 const Agents = lazy(() => import("./pages/Agents"));
 const AuditLog = lazy(() => import("./pages/AuditLog"));
+const Backlog = lazy(() => import("./pages/Backlog"));
 const Chat = lazy(() => import("./pages/Chat"));
 const CLI = lazy(() => import("./pages/CLI"));
 const Containers = lazy(() => import("./pages/Containers"));
@@ -95,7 +98,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserInfo | null>(null);
 
   async function loadSession(): Promise<UserInfo | null> {
-    const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
+    const whoRes = await instrumentedGet("/v1/auth/whoami");
     return whoamiToUser(await whoRes.json());
   }
 
@@ -110,8 +113,8 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // Setup wizard: on a fresh, unconfigured instance a slow or
         // never-settling whoami must not hold up detecting that setup isn't
         // done, so whoami is only awaited once setup is confirmed complete.
-        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
-        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupPromise = instrumentedGet("/v1/setup/status");
+        const whoPromise = instrumentedGet("/v1/auth/whoami");
         const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
@@ -182,6 +185,7 @@ function AppRoutes() {
                   <Route path="dashboard" element={<Dashboard />} />
                   <Route path="chat" element={<Chat />} />
                   <Route path="missions" element={<Missions />} />
+                  <Route path="backlog" element={<Backlog />} />
                   <Route path="dags" element={<DagBuilder />} />
                   <Route path="dag-runs" element={<DagRuns />} />
                   <Route path="schedules" element={<Schedules />} />
@@ -197,12 +201,25 @@ function AppRoutes() {
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />
                   <Route path="optimizer" element={<OptimizationInbox />} />
-                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
+                  {/* #1417: /optimization-inbox is an alias, not a second
+                      surface -- it redirects to the canonical /optimizer so
+                      a direct hit lands on the one nav-linked destination
+                      instead of rendering the same page with no active nav
+                      entry. */}
+                  <Route path="optimization-inbox" element={<Navigate to="/optimizer" replace />} />
                   <Route path="messages" element={<MessageBoard />} />
                   <Route path="quotas" element={<Quotas />} />
                   <Route path="audit" element={<AuditLog />} />
                   <Route path="cli" element={<CLI />} />
-                  <Route path="cli/canvas" element={<DesignStudio />} />
+                  {/* #95: Design Studio is the product, so its deep link is the
+                      product's name. Capability APIs keep their /v1/canvas and
+                      /v1/design namespaces; the UI route namespace is product
+                      identity and does not borrow the Canvas tool's name. The
+                      implementation-era /cli/canvas path survives only as a
+                      compatibility redirect, asserted by
+                      design-studio-truthfulness.spec.ts. */}
+                  <Route path="design-studio" element={<DesignStudio />} />
+                  <Route path="cli/canvas" element={<Navigate to="/design-studio" replace />} />
                   <Route path="containers" element={<Containers />} />
                   <Route path="docs" element={<Docs />} />
                   <Route path="evolution" element={<Evolution />} />

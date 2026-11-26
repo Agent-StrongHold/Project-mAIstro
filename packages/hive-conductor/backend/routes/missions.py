@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from models.schemas import Mission, MissionStep
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.request_principal import require_actor_id
 from services.workspace_mode import is_workspace_member
 
 from routes.audit import log_audit
@@ -40,6 +41,7 @@ def _task_to_mission(rec: object) -> Mission:
         metadata["error"] = err
     return Mission(
         id=rec.id,  # type: ignore[attr-defined]
+        run_id=getattr(rec, "run_id", None),  # type: ignore[attr-defined]
         name=rec.name,  # type: ignore[attr-defined]
         description=rec.description,  # type: ignore[attr-defined]
         status=rec.mission_status,  # type: ignore[attr-defined]
@@ -56,6 +58,30 @@ def _task_to_mission(rec: object) -> Mission:
     )
 
 
+def _public_mission(mission: Mission) -> Mission:
+    """Do not report an agent a canonical Run did not record.
+
+    A hive mission row is a queue projection, not a Run. ``assigned_agents``
+    used to echo a seed name or the create body, and task detail rendered
+    that name as if the agent had been assigned. Nothing here reads a Run's
+    attempt agent, so the public row names none.
+    """
+    if not mission.assigned_agents:
+        return mission
+    return mission.model_copy(update={"assigned_agents": []})
+
+
+def _public_steps(steps: list[object]) -> list[MissionStep]:
+    """Same rule as ``_public_mission`` for step ``agent_id``."""
+    public: list[MissionStep] = []
+    for raw in steps:
+        step = raw if isinstance(raw, MissionStep) else MissionStep.model_validate(raw)
+        if step.agent_id is not None:
+            step = step.model_copy(update={"agent_id": None})
+        public.append(step)
+    return public
+
+
 @router.get("", response_model=list[Mission])
 def list_missions(request: Request) -> list[Mission]:
     uid = _user_id(request)
@@ -63,8 +89,12 @@ def list_missions(request: Request) -> list[Mission]:
     if engine.is_configured or engine._backend is not None:
         tasks = engine.list_tasks(user_id=uid)
         if tasks:
-            return [_task_to_mission(t) for t in tasks]
-    return [mission for mission in stores.missions.values() if _mission_owned_by(mission, uid)]
+            return [_public_mission(_task_to_mission(t)) for t in tasks]
+    return [
+        _public_mission(mission)
+        for mission in stores.missions.values()
+        if _mission_owned_by(mission, uid)
+    ]
 
 
 class ClearMissionsBody(BaseModel):
@@ -91,11 +121,11 @@ def get_mission(mission_id: str, request: Request) -> Mission:
     if engine.is_configured or engine._backend is not None:
         rec = engine.get_task(mission_id, user_id=uid)
         if rec is not None:
-            return _task_to_mission(rec)
+            return _public_mission(_task_to_mission(rec))
     mission = stores.missions.get(mission_id)
     if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    return mission
+    return _public_mission(mission)
 
 
 @router.get("/{mission_id}/steps", response_model=list[MissionStep])
@@ -117,11 +147,11 @@ def get_steps(mission_id: str, request: Request) -> list[MissionStep]:
                     status=step_status,
                     order=1,
                 )
-            return [step] if step else []
+            return _public_steps([step] if step else [])
     mission = stores.missions.get(mission_id)
     if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    return list(stores.mission_steps.get(mission_id, []))
+    return _public_steps(list(stores.mission_steps.get(mission_id, [])))
 
 
 class CreateMissionBody(BaseModel):
@@ -130,15 +160,10 @@ class CreateMissionBody(BaseModel):
     name: str
     description: str = ""
     priority: str = "medium"
-    assigned_agents: list[str] = []
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = user.get("id") or user.get("username")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(uid)
+    return require_actor_id(request)
 
 
 @router.post("", response_model=Mission)
@@ -161,7 +186,7 @@ async def create_mission(
             logger.warning("workspace_not_routable %s", exc)
             raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
         log_audit("mission_create", _user_id(request), target=rec.id, detail={"name": body.name})
-        return _task_to_mission(rec)
+        return _public_mission(_task_to_mission(rec))
 
     uid = _user_id(request)
     mid = str(uuid4())[:12]
@@ -178,12 +203,11 @@ async def create_mission(
         progress=0.0,
         steps_total=0,
         steps_completed=0,
-        assigned_agents=body.assigned_agents,
     )
     stores.missions[mid] = m
     stores.mission_steps[mid] = []
     log_audit("mission_create", _user_id(request), target=mid, detail={"name": body.name})
-    return m
+    return _public_mission(m)
 
 
 class UpdateMissionStatusBody(BaseModel):
@@ -225,7 +249,7 @@ def update_mission_status(
         _revoke_task_elevation(request, mission_id)
     stores.missions[mission_id] = m
     log_audit("mission_status", uid, target=mission_id, detail={"status": body.status})
-    return m
+    return _public_mission(m)
 
 
 def _revoke_task_elevation(request: Request, task_id: str) -> None:

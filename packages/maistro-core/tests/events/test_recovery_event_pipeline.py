@@ -18,6 +18,7 @@ from maistro.runs.recovery_events import (
     RECOVERY_EVENT_TYPE,
     CanonicalRecoveryEventSink,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _running_attempt() -> tuple[InMemoryRunStore, str, str, str]:
@@ -35,7 +36,11 @@ async def _running_attempt() -> tuple[InMemoryRunStore, str, str, str]:
         name="one step",
         nodes=[Node(node_id="step", node_type="agent")],
     )
-    run = await runs.create_run(graph, initial_status=RunStatus.QUEUED)
+    run = await runs.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     run = await runs.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await runs.create_node_run(run.run_id, node_id="step")
     await runs.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)

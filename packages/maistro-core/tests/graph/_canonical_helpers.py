@@ -27,6 +27,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 LegacyResolver = Callable[[str, dict[str, Any]], BaseNode[Any, Any]]
 
@@ -178,7 +179,7 @@ async def run_legacy_dag_fixture(
         store=store,
         node_resolver=resolver,
         inputs=inputs,
-        actor_principal_id=user_id,
+        actor_principal_id=user_id or DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         run_id=run_id,
     )
 
@@ -211,7 +212,7 @@ def run_at_status(
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
-        actor_principal_id=actor_principal_id,
+        actor_principal_id=actor_principal_id or DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     if status is RunStatus.CREATED:
         return run

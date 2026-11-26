@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "id": "gallery.unit_skill",
+  "name": "Gallery unit skill",
+  "version": "1.0.0",
+  "publisher": "gallery",
+  "api_version": "1.0.0",
+  "permissions": ["workspace.read"],
+  "entry_points": [
+    {
+      "name": "main",
+      "module": "gallery_unit_skill.plugin",
+      "attribute": "PLUGIN"
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "gallery.weather_connector",
+      "range": "1.0.0"
+    }
+  ]
+}

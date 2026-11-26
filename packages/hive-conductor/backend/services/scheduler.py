@@ -1,12 +1,14 @@
 """Background schedule runner — turns due schedules into canonical Runs.
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
-Hive process delegates the complete evaluate -> occurrence claim -> Run admit
--> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring
-ticks and manual ``POST /v1/schedules/{id}/run`` fires alike — then ticks
-the canonical consumer for the admitted Runs.  The historical in-process
-path remains only as a compatibility fallback for standalone/demo contexts
-that have no core Container; it is not the production authority.
+Hive process selects due definitions from the canonical ``ScheduleStore`` and
+admits each occurrence through ``ScheduleRunAdmitter`` — the same Run spine
+task admission writes (``RunStore.create_run`` at ``QUEUED``, then the
+canonical consumer) — for recurring ticks and manual
+``POST /v1/schedules/{id}/run`` fires alike. The Hive row is a projection of
+that definition, not an execution lifecycle. The historical in-process
+definition/cursor adapter remains readable for compatibility. Without a core
+Container its Graph call refuses; it cannot create a standalone execution (#1113).
 """
 
 from __future__ import annotations
@@ -27,11 +29,13 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.sources import canonical_occurrence_instant
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.model import DEFAULT_CATCHUP_WINDOW_SECONDS
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEZONE = "UTC"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_DEFAULT_CATCHUP_WINDOW_SECONDS = DEFAULT_CATCHUP_WINDOW_SECONDS
 
 _runner: _ScheduleRunner | None = None
 
@@ -75,8 +79,9 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
     recurring loop uses — so a manual fire and a scheduled fire of one schedule are
     indistinguishable in Run history apart from their provenance.  The
-    compatibility path below remains only for processes with no core Container
-    at all; a Container that is missing one of its admission collaborators
+    compatibility definition path below remains for processes with no core
+    Container, but cannot execute new Graph work (#1113). A Container missing
+    one of its admission collaborators
     raises :class:`ScheduleAdmissionUnavailable` instead of degrading.
 
     ``fire_id`` is the fire's occurrence identity (#1120): an opaque,
@@ -315,6 +320,9 @@ def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
         or existing.timezone != definition.timezone
         or existing.graph_template_id != definition.graph_template_id
         or existing.max_runs != definition.max_runs
+        # The window is a definition field the routes set (#1200); a PUT that
+        # changed it must reconcile the canonical row, not just the Hive one.
+        or existing.catchup_window_seconds != definition.catchup_window_seconds
         or existing.enabled != definition.enabled
         or existing.workspace_id != definition.workspace_id
         or existing.project_id != definition.project_id
@@ -383,30 +391,96 @@ class _ScheduleRunner:
         await run_self_repair_once(registry)
 
     async def _tick(self) -> None:
-        import stores
-
         now = datetime.now(UTC)
-        for sid, schedule in list(stores.schedules.items()):
-            if not getattr(schedule, "enabled", False):
-                continue
+        container = self._canonical_container()
+        admitter = self._canonical_admitter(container)
+        if container is not None:
             try:
-                await self._evaluate_schedule(sid, schedule, now=now)
+                if admitter is None:
+                    raise ScheduleAdmissionUnavailable(
+                        "configured Container is missing canonical schedule admission"
+                    )
+                await self._tick_due(now, container, admitter)
             except Exception as exc:
-                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
+                # Selection and consumption are independent: a transient due
+                # read failure must not strand Runs that are already QUEUED.
+                logger.warning("Failed to select due canonical schedules: %s", exc)
+        else:
+            import stores
+
+            for sid, schedule in list(stores.schedules.items()):
+                if not getattr(schedule, "enabled", False):
+                    continue
+                try:
+                    await self._evaluate_schedule(sid, schedule, now=now)
+                except Exception as exc:
+                    logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
         # Admission is the submission for schedule work. The same configured
         # process owns the bounded canonical consumer tick, so a Run admitted
         # above cannot remain QUEUED merely because no task receipt exists.
-        container = self._canonical_container()
         if container is not None:
             try:
-                executed = await container.execute_admitted_runs()
-                if executed:
-                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+                accounting = await container.execute_admitted_runs_accounting()
+                if accounting.attempted or accounting.skipped:
+                    # The attempted count alone could present an all-failing
+                    # batch as a fully executed one (#849), so the tick's own
+                    # breakdown is what gets logged.
+                    logger.info(
+                        "Consumed %d admitted canonical Run(s) (succeeded=%d failed=%d "
+                        "parked=%d skipped=%d)",
+                        accounting.attempted,
+                        accounting.succeeded,
+                        accounting.failed,
+                        accounting.parked,
+                        accounting.skipped,
+                    )
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
         self._last_check = now
+
+    async def _tick_due(
+        self,
+        now: datetime,
+        container: Any,
+        admitter: ScheduleRunAdmitter,
+    ) -> None:
+        """Admit every schedule ``ScheduleStore.due`` returns, then stop.
+
+        The occurrence identity is the Run store's claim on
+        ``(schedule_id, scheduled_for)``. A restart that finds the Run already
+        admitted reconciles to it instead of creating another, and a Run left
+        ``QUEUED`` is what ``execute_admitted_runs`` picks up — the schedule
+        row only keeps the cursor.
+        """
+        for candidate in await container.schedule_store.due(now=now):
+            sid = candidate.schedule_id
+            try:
+                # Selection can predate a route edit/delete or another fire.
+                # Re-read canonical truth under the lock those callers share;
+                # neither the selection snapshot nor the Hive projection may
+                # resurrect a deleted row or undo a newly persisted cursor.
+                async with definition_lock(sid):
+                    current = await container.schedule_store.get(sid)
+                    if current is None or not current.enabled:
+                        continue
+                    if (
+                        current.next_due_at is not None
+                        and current.next_due_at > now
+                        and not current.pending_fires
+                    ):
+                        continue
+                    await self._evaluate_canonical(
+                        sid,
+                        current,
+                        now=now,
+                        container=container,
+                        admitter=admitter,
+                        loaded=current,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
         """Project the live ``/v1/schedules`` row onto the canonical definition.
@@ -428,6 +502,17 @@ class _ScheduleRunner:
             timezone=str(getattr(schedule, "timezone", None) or _DEFAULT_TIMEZONE),
             graph_template_id=template_id,
             max_runs=getattr(schedule, "max_runs", None),
+            # The row's own window, bounded at the routes (#1200); rows that
+            # predate the column fall back to the substrate default, exactly
+            # as they do for timezone. ``is not None``, not ``or``: zero is a
+            # legal window ("never backfill", which the routes admit) and a
+            # falsy-value fallback would silently turn it into an hour of
+            # backfill the client refused.
+            catchup_window_seconds=float(
+                row_window
+                if (row_window := getattr(schedule, "catchup_window_seconds", None)) is not None
+                else _DEFAULT_CATCHUP_WINDOW_SECONDS
+            ),
             enabled=bool(getattr(schedule, "enabled", True)),
             overlap_policy=OverlapPolicy.SKIP,
             last_fired_at=getattr(schedule, "last_run", None),
@@ -580,7 +665,7 @@ class _ScheduleRunner:
     async def _audit_canonical_admission(
         self,
         sid: str,
-        schedule: Any,
+        schedule: Schedule,
         admission: Any,
         container: Any,
     ) -> None:
@@ -609,7 +694,9 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": (
+                        template.template_id if template is not None else schedule.graph_template_id
+                    ),
                     "run_id": run_id,
                     "status": run.status.value if run is not None else "unknown",
                     "template_version": (
@@ -623,7 +710,7 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": schedule.graph_template_id,
                     "error": type(exc).__name__,
                 },
             )
@@ -636,15 +723,24 @@ class _ScheduleRunner:
         now: datetime,
         container: Any,
         admitter: ScheduleRunAdmitter,
+        loaded: Schedule | None = None,
     ) -> None:
-        """Configured Hive path: one canonical scheduler authority."""
-        scope = await self._canonical_scope(schedule, container)
-        definition = await self._definition_for(
-            sid, schedule, store=container.schedule_store, scope=scope
-        )
+        """Configured Hive path: one canonical scheduler authority.
+
+        ``loaded`` is canonical state re-read under the definition lock after due selection.
+        When the tick has one, it is the authority and is not rebuilt from
+        the Hive row — that rebuild is what let the product dictionary decide
+        a schedule the store had already judged.
+        """
+        definition = loaded
         if definition is None:
-            logger.debug("Schedule %s names no mission template; nothing to run", sid)
-            return
+            scope = await self._canonical_scope(schedule, container)
+            definition = await self._definition_for(
+                sid, schedule, store=container.schedule_store, scope=scope
+            )
+            if definition is None:
+                logger.debug("Schedule %s names no mission template; nothing to run", sid)
+                return
 
         await self._prime_template(definition, container)
         admission = await admitter.admit_due(
@@ -652,6 +748,30 @@ class _ScheduleRunner:
             now=now,
             active_run=await self._canonical_active_run(definition, container),
         )
+
+        # Operator visibility for the bounded-work contract (#1200): a walk
+        # that hit its budget or step bound ended the tick with backlog it
+        # never looked at — the due cursor was left alone, so the next tick
+        # re-examines it, but an operator watching backlog should see the
+        # tick say so rather than read a clean "nothing due". Same for a
+        # window the host clamped under the schedule's own. Read through
+        # getattr: `ScheduleAdmission` always carries these fields, but a
+        # host may surface a narrower admission object.
+        if getattr(admission, "enumeration_incomplete", False):
+            stopped_at = getattr(admission, "enumeration_stopped_at", None)
+            logger.warning(
+                "Schedule %s catch-up walk stopped at %s, before now=%s; the backlog past "
+                "that point was not examined this tick and is re-examined on the next one",
+                sid,
+                stopped_at.isoformat() if stopped_at is not None else "its budget",
+                now.isoformat(),
+            )
+        if getattr(admission, "window_clamped", False):
+            logger.info(
+                "Schedule %s catch-up window %ss is capped at the host bound this tick",
+                sid,
+                definition.catchup_window_seconds,
+            )
 
         for skipped in admission.skipped:
             logger.info(
@@ -679,7 +799,7 @@ class _ScheduleRunner:
         for exc in admission.failures:
             logger.warning("Schedule %s admission failed: %s", sid, exc)
 
-        await self._audit_canonical_admission(sid, schedule, admission, container)
+        await self._audit_canonical_admission(sid, definition, admission, container)
         recorded = await container.schedule_store.get(sid)
         if recorded is not None:
             self._project_cursor(sid, recorded)
@@ -786,7 +906,7 @@ class _ScheduleRunner:
 
         await self._audit_canonical_admission(
             sid,
-            schedule,
+            definition,
             ScheduleAdmission(run_ids=admission.run_ids),
             container,
         )

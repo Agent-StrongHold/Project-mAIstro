@@ -37,4 +37,8 @@ def test_shipped_docker_cli_source_is_covered_by_retry() -> None:
     result = _list_images(ROOT / "Dockerfile", ROOT / "packages/hive-conductor/Dockerfile")
 
     assert result.returncode == 0
-    assert "docker:29-cli" in result.stdout.splitlines()
+    # The shipped Dockerfiles pin every image by digest (#349), so the docker
+    # CLI source appears as `docker:29-cli@sha256:...`. The coverage contract
+    # is that the tag's image is listed for the retrying pull -- `docker pull`
+    # accepts `name:tag@digest` -- not that the ref carry no digest.
+    assert any(line.startswith("docker:29-cli") for line in result.stdout.splitlines())

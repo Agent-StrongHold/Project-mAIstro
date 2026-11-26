@@ -38,6 +38,7 @@ from maistro.graph.nodes import (
     pause_until,
     register_node,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 from .._canonical_helpers import (
     durable_record,
@@ -937,6 +938,7 @@ async def test_a_synth_dag_whose_child_failed_burns_depth_but_is_not_revisited_i
         _failing_synth_graph({"max_attempts": 2}),
         store=mem_store,
         node_resolver=lambda node_id, graph: _synth_with_failing_child(mem_store),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert result.status == RunStatus.FAILED
@@ -981,6 +983,7 @@ async def test_a_failed_child_still_burns_depth_for_a_continue_on_failure_succes
         _failing_synth_graph({"continue_on_failure": True}, then=_CaptureDepthNode.kind),
         store=mem_store,
         node_resolver=_resolver,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert result.status == RunStatus.COMPLETED

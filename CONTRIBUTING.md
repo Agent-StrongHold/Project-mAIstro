@@ -10,10 +10,10 @@ Author-facing summary of the conventions you need to know to land changes here. 
 Four tiers; work flows **upward**, every promotion is a pull request (never a direct push):
 
 ```
-feat/* bug/* idea/* doc/* chore/*  →  develop  →  integration  →  main
+feat/* bug/* idea/* doc/* docs/* chore/*  →  develop  →  integration  →  main
 ```
 
-- **Topic branches** (`feat/*`, `bug/*`, `idea/*`, `doc/*`, `chore/*`, `fix/*`) — branch off **`develop`**, PR into `develop`.
+- **Topic branches** (`feat/*`, `bug/*`, `idea/*`, `doc/*`, `docs/*`, `chore/*`, `fix/*`) — branch off **`develop`**, PR into `develop`.
 - **`develop`** — active feature-integration tier (PR-gated, 0 approvals).
 - **`integration`** — stabilized QA tier; receives PRs from `develop` (PR-gated, 0 approvals).
 - **`main`** — release-grade; receives PRs from `integration` only (PR-gated, **1 approval**).

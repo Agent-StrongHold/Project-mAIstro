@@ -11,7 +11,7 @@ The Conduit never executes tasks directly — it decides and delegates.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from maistro.types.agent import AgentResponse
@@ -137,7 +137,14 @@ class Conduit:
         session_id: str | None = None,
         intent_hint: str = "",
         turn_id: str | None = None,
+        context_messages: Sequence[dict[str, Any]] = (),
     ) -> dict[str, Any]:
+        """`context_messages` carries machine-generated trusted context — the
+        per-Workspace working-memory block (#776) — that rides ahead of the
+        turn to the answering agent only. The gate scan and the classifier
+        below see the client's conversation alone: projected memory is context,
+        never input to be scanned and never a signal that may reclassify a
+        turn. Callers that pass nothing dispatch exactly as before."""
         last_user_msg = ""
         last_user_index = len(messages)
         for index in range(len(messages) - 1, -1, -1):
@@ -209,13 +216,18 @@ class Conduit:
         intent = await determine_execution_tier(intent, agent)
 
         # 5. Dispatch to agent
+        # The context block joins the dispatch here — after the gate scan and
+        # the classifier have each seen only the client's messages — so the
+        # agent answers with its working memory while neither the boundary nor
+        # the classification of the turn is shaped by it (#776).
+        agent_messages = [*context_messages, *messages]
         try:
             # `classified_task_type` is what reaches strategy construction, RCA
             # tagging and learning scope. Passing only `intent=` left it at its
             # "" default on every live request, so all three ran untyped and the
             # classifier's work above was discarded at the last step.
             result = await agent.handle(
-                messages=messages,
+                messages=agent_messages,
                 intent=intent,
                 auth=auth,
                 session_id=session_id,

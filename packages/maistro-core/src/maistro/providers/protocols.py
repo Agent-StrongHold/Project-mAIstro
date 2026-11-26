@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -49,8 +50,14 @@ class LLMRouter(Protocol):
         self,
         task: RoutingTask,
         budget: RouterBudget | None = None,
+        scope: Collection[str] | None = None,
     ) -> ModelMetadata:
-        """Select the best available model satisfying the budget."""
+        """Select the best available model satisfying the budget.
+
+        ``scope``, when given, constrains selection (and its fallback
+        chains) to those model names; an empty scope elects nothing rather
+        than widening back to the whole registry.
+        """
         ...
 
     async def select_embedding(self, input_size_tokens: int) -> EmbeddingModelMetadata:

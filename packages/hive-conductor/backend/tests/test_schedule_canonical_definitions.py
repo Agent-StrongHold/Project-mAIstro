@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from maistro.identity import Principal
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -383,7 +385,7 @@ def test_clearing_the_template_removes_the_canonical_row(
 
 
 def _request_as_admin() -> Any:
-    return SimpleNamespace(state=SimpleNamespace(user={"id": "admin"}))
+    return SimpleNamespace(state=SimpleNamespace(principal=Principal(user_id="admin")))
 
 
 def test_concurrent_updates_leave_both_rows_agreeing(admin_client: Any, configured: Any) -> None:

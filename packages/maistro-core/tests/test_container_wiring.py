@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -97,6 +98,26 @@ async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     assert container.project_store is container.project_scope_store
     root = await container.project_scope_store.create_root("context-wiring")
     assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -681,8 +702,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -838,7 +869,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -886,7 +917,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -948,7 +979,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -1027,3 +1058,101 @@ async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> 
         )
         is not None
     )
+
+
+# --- Audit log backend selection (ADR-073, #122) ----------------------------
+
+
+class _AuditFakeConnection:
+    """Minimal asyncpg double: records executed SQL so a wiring test can prove
+    `ensure_schema` ran against the selected backend."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.statements.append(query)
+        return "ALTER TABLE"
+
+
+class _AuditFakeAcquireCtx:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _AuditFakeConnection:
+        return self._conn
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class _AuditFakePool:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _AuditFakeAcquireCtx:
+        return _AuditFakeAcquireCtx(self._conn)
+
+
+async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> None:
+    """PostgreSQL is the canonical durable system of record, so it wins when
+    both relational backends are configured — and wiring must run the
+    pre-proof-column schema upgrade, or a database created before signed audit
+    records cannot hold proofs at all (ADR-073)."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    conn = _AuditFakeConnection()
+    sqlite_conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=_AuditFakePool(conn), db_pool=sqlite_conn)
+
+        assert type(audit) is PgAuditLog
+        assert conn.statements == [
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+        ]
+    finally:
+        await sqlite_conn.close()
+
+
+async def test_audit_log_wiring_falls_back_to_sqlite_and_upgrades_its_schema() -> None:
+    """Choosing the SQLite backend must not leave the audit log as the one
+    relational store that silently resets on restart (#122): the sqlite branch
+    wires the durable SQLite store and runs its schema upgrade too."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.sqlite_audit import SqliteAuditLog
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=None, db_pool=conn)
+
+        assert type(audit) is SqliteAuditLog
+        cursor = await conn.execute("PRAGMA table_info(audit_log)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        assert {"signature", "signing_key_id", "proof_type"} <= set(columns)
+    finally:
+        await conn.close()
+
+
+async def test_audit_log_wiring_without_relational_backend_returns_signed_memory_log() -> None:
+    """The ephemeral profile still signs every retained decision before it is
+    stored (ADR-073): the in-memory fallback carries a signer even where the
+    deployment never configured one, so records are verifiable in-process."""
+    from maistro.container import _wire_audit_log
+    from maistro.security._types import AuditEntry
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    audit = await _wire_audit_log(pg_pool=None, db_pool=None)
+
+    assert type(audit) is InMemoryAuditLog
+    assert audit.signer is not None
+    await audit.log(AuditEntry(boundary="tool_call", user_id="u1"))
+    [stored] = await audit.get_entries()
+    assert stored.signature
+    assert audit.verify(stored)
