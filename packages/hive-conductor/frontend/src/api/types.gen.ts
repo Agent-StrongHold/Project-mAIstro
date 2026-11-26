@@ -5016,6 +5016,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{workspace_id}/discovery/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Discovery Config */
+        get: operations["get_discovery_config_v1_workspaces__workspace_id__discovery_config_get"];
+        /** Put Discovery Config */
+        put: operations["put_discovery_config_v1_workspaces__workspace_id__discovery_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/discovery/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Discovery Items */
+        get: operations["get_discovery_items_v1_workspaces__workspace_id__discovery_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/discovery/items/{fingerprint}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Discovery Feedback */
+        post: operations["post_discovery_feedback_v1_workspaces__workspace_id__discovery_items__fingerprint__feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/discovery/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Trigger Discovery */
+        post: operations["trigger_discovery_v1_workspaces__workspace_id__discovery_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/discovery/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Discovery Status */
+        get: operations["get_discovery_status_v1_workspaces__workspace_id__discovery_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/workspaces/{workspace_id}/feedback": {
         parameters: {
             query?: never;
@@ -6404,6 +6490,42 @@ export interface components {
             slug: string;
         };
         /**
+         * DiscoveryConfigBody
+         * @description A partial config update. Only provided fields change.
+         */
+        DiscoveryConfigBody: {
+            /** Curator Binding Id */
+            curator_binding_id?: string | null;
+            /** Curator Model */
+            curator_model?: string | null;
+            /** Daily Curate Budget */
+            daily_curate_budget?: number | null;
+            /** Daily Fetch Budget */
+            daily_fetch_budget?: number | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Max Candidates Per Cycle */
+            max_candidates_per_cycle?: number | null;
+            /** Max Surfaced */
+            max_surfaced?: number | null;
+            /** Min Scout Score */
+            min_scout_score?: number | null;
+            /** Source Binding Id */
+            source_binding_id?: string | null;
+            /** Sources Count */
+            sources_count?: number | null;
+            /** Watch Topics */
+            watch_topics?: string[] | null;
+        };
+        /** DiscoveryFeedbackBody */
+        DiscoveryFeedbackBody: {
+            /**
+             * Action
+             * @description keep | dismiss
+             */
+            action: string;
+        };
+        /**
          * DiscoveryResult
          * @description Collected responses from a skill's discovery form.
          */
@@ -6426,6 +6548,15 @@ export interface components {
             skill_slug: string;
             /** @default t3 */
             trust_tier: components["schemas"]["TrustTier"];
+        };
+        /** DiscoveryTriggerBody */
+        DiscoveryTriggerBody: {
+            /**
+             * Project Id
+             * @description Parent Project for the Run; defaults to the Workspace root
+             * @default
+             */
+            project_id: string;
         };
         /** ElevateBody */
         ElevateBody: {
@@ -17264,6 +17395,217 @@ export interface operations {
                 sourceKind: string;
                 sourceId: string;
             };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_discovery_config_v1_workspaces__workspace_id__discovery_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_discovery_config_v1_workspaces__workspace_id__discovery_config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryConfigBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_discovery_items_v1_workspaces__workspace_id__discovery_items_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_discovery_feedback_v1_workspaces__workspace_id__discovery_items__fingerprint__feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryFeedbackBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_discovery_v1_workspaces__workspace_id__discovery_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryTriggerBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_discovery_status_v1_workspaces__workspace_id__discovery_status_get: {
+        parameters: {
+            query?: never;
             header?: never;
             path: {
                 workspace_id: string;

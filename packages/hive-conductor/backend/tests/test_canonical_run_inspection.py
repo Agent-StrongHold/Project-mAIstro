@@ -11,7 +11,9 @@ standalone keeps only presentation reads with no terminal authority
 
 from __future__ import annotations
 
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -405,3 +407,69 @@ async def test_existing_out_of_scope_projection_blocks_canonical_batch_fallback(
     assert await visible_run_detail(_USER_ID, run.run_id) is None
     assert not await can_inspect_run(_USER_ID, run.run_id)
     assert await visible_run_ids(_USER_ID, [run.run_id, "missing-run"]) == set()
+
+
+# ---------------------------------------------------------------------------
+# _canonical_template_id: the dag_id a canonical-only summary resolves
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_run(definition_json: Any) -> Any:
+    """A canonical Run whose only relevant feature is its Graph snapshot."""
+    graph = None if definition_json is None else SimpleNamespace(definition_json=definition_json)
+    return SimpleNamespace(graph=graph)
+
+
+def test_template_id_resolves_from_the_snapshot_source_template() -> None:
+    from services.dag_run_inspection import _canonical_template_id
+
+    definition = json.dumps({"source_template": {"template_id": "tick-template"}})
+    assert _canonical_template_id(_snapshot_run(definition)) == "tick-template"
+
+
+@pytest.mark.parametrize(
+    ("definition_json", "why"),
+    [
+        (None, "a pre-provenance Graph snapshot is absent entirely"),
+        ("", "an empty snapshot carries no template stamp"),
+        ("{not json", "an unparsable snapshot resolves honestly to nothing"),
+        (json.dumps({"nodes": []}), "a snapshot without source_template"),
+        (json.dumps({"source_template": ["tick-template"]}), "a non-mapping source_template"),
+        (json.dumps({"source_template": {"template_id": ""}}), "a blank template_id"),
+        (json.dumps({"source_template": {"name": "tick-template"}}), "only a name, no id"),
+    ],
+)
+def test_degenerate_snapshots_resolve_to_an_empty_template_id(
+    definition_json: Any, why: str
+) -> None:
+    from services.dag_run_inspection import _canonical_template_id
+
+    assert _canonical_template_id(_snapshot_run(definition_json)) == "", why
+
+
+def test_canonical_only_detail_names_the_snapshot_template_as_dag_id() -> None:
+    from services.dag_run_inspection import _canonical_only_detail
+
+    definition = json.dumps({"source_template": {"template_id": "tick-template"}})
+    run = SimpleNamespace(
+        run_id="sched-run-1",
+        graph=SimpleNamespace(definition_json=definition),
+        status=SimpleNamespace(value="completed"),
+        result={"ok": True},
+        error=None,
+        workspace_id="workspace-1",
+        project_id="project-1",
+        actor_principal_id=_USER_ID,
+        created_at=datetime(2026, 11, 26, 3, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 11, 26, 3, 1, tzinfo=UTC),
+        provenance={},
+    )
+
+    detail = _canonical_only_detail(run)
+    assert detail["dag_id"] == "tick-template"
+    assert detail["id"] == "sched-run-1"
+    assert detail["status"] == "completed"
+    # The event-history fields stay honestly empty: this run has no recorded
+    # projection history.
+    assert detail["events"] == []
+    assert detail["event_count"] == 0

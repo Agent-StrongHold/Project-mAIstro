@@ -401,6 +401,42 @@ async def _collect_run_candidates(user_id: str, workspace_id: str) -> list[dict[
     return candidates
 
 
+async def _collect_discovery_candidates(user_id: str, workspace_id: str) -> list[dict[str, Any]]:
+    """Curated discoveries as unpinned Home candidates (#1051).
+
+    The intentionally small surfaced set — the discovery service already
+    caps it against the cycle's candidate count — each carrying the
+    inspectable `explain` evidence the curator recorded, so "why are you
+    showing me this?" is answerable without exposing hidden reasoning.
+    """
+    from services import discovery as discovery_service
+
+    try:
+        body = await discovery_service.surfaced_items(user_id, workspace_id)
+    except Exception as exc:
+        logger.warning("adaptive discovery candidates unavailable: %s", exc)
+        return []
+    candidates: list[dict[str, Any]] = []
+    for row in body.get("items", []):
+        if not isinstance(row, dict):
+            continue
+        fingerprint = str(row.get("fingerprint") or "")
+        if not fingerprint:
+            continue
+        title = str(row.get("title") or "")[:120]
+        candidates.append(
+            {
+                "key": f"discovery_item:{fingerprint}",
+                "item_type": "discovery_item",
+                "resource_id": fingerprint,
+                "title": title,
+                "explain": str(row.get("explain") or "discovered for this Workspace"),
+                "href": str(row.get("url") or "") or "/home",
+            }
+        )
+    return candidates
+
+
 async def adaptive_items(user_id: str, workspace_id: str) -> dict[str, Any]:
     """What the unpinned space could show now, with the evidence for each choice.
 
@@ -415,13 +451,18 @@ async def adaptive_items(user_id: str, workspace_id: str) -> dict[str, Any]:
     if await workspace_authority.visible_view(user_id, workspace_id) is None:
         raise WorkspaceNotVisible(workspace_id)
 
-    backlog_candidates, run_candidates = await asyncio.gather(
+    backlog_candidates, run_candidates, discovery_candidates = await asyncio.gather(
         _collect_backlog_candidates(user_id, workspace_id),
         _collect_run_candidates(user_id, workspace_id),
+        _collect_discovery_candidates(user_id, workspace_id),
     )
     counts = dismissal_counts(workspace_id)
     candidates = sorted(
-        (c for c in [*backlog_candidates, *run_candidates] if c["key"] not in counts),
+        (
+            c
+            for c in [*backlog_candidates, *run_candidates, *discovery_candidates]
+            if c["key"] not in counts
+        ),
         key=lambda c: c["key"],
     )
     return {
