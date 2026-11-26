@@ -749,3 +749,138 @@ def test_budget_status_reports_exhaustion() -> None:
     assert status["exhausted"] is True
     assert status["cycles_used"] == 0
     assert status["daily_curate_budget"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Scheduled-fire lift: the "while away" path (_lift_pending_scheduled_runs)
+# ---------------------------------------------------------------------------
+
+
+def _schedule_summary(
+    run_id: str,
+    ws: str,
+    *,
+    dag_id: str = discovery.DISCOVERY_DAG_ID,
+    status: str = "completed",
+) -> dict[str, Any]:
+    return {"id": run_id, "workspace_id": ws, "dag_id": dag_id, "status": status}
+
+
+def _install_scheduled_run_source(
+    monkeypatch: Any,
+    summaries: list[dict[str, Any]],
+    records: dict[str, Any] | None,
+) -> list[str]:
+    """Point the lift scan at canned summaries and a canned run store.
+
+    Returns the list of run ids the (fake) canonical run store was asked
+    for, so tests can assert exactly which summaries survived the filters.
+    """
+    from services import dag_agents, dag_run_inspection
+
+    requested: list[str] = []
+
+    async def fake_list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
+        return summaries
+
+    class FakeRunStore:
+        async def get(self, run_id: str) -> Any:
+            requested.append(run_id)
+            return (records or {}).get(run_id)
+
+    monkeypatch.setattr(dag_run_inspection, "list_visible_runs", fake_list_visible_runs)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: FakeRunStore())
+    return requested
+
+
+async def test_a_read_lifts_completed_scheduled_runs_once(
+    monkeypatch: Any,
+) -> None:
+    """The overnight schedule fires with no reader attached; the first
+    authorized Workspace read lifts its curated output, and the second
+    read re-lifts nothing."""
+    ws = await _workspace("admin", "Discovery away lift")
+    _enable(ws)
+    item = _curated_item("fp-away", "Found while away", score=0.85)
+    requested = _install_scheduled_run_source(
+        monkeypatch,
+        [_schedule_summary("sched-run-7", ws)],
+        {"sched-run-7": _fake_record("sched-run-7", [item])},
+    )
+
+    body = await discovery.surfaced_items("admin", ws)
+    assert [i["fingerprint"] for i in body["items"]] == ["fp-away"]
+    assert requested == ["sched-run-7"]
+    assert "sched-run-7" in discovery.store[discovery._lifted_key(ws)]
+
+    # The same read again: the run is already lifted, so the store is never
+    # asked for it a second time and the surface is unchanged.
+    body = await discovery.surfaced_items("admin", ws)
+    assert [i["fingerprint"] for i in body["items"]] == ["fp-away"]
+    assert requested == ["sched-run-7"]
+
+
+async def test_lift_scan_filters_summaries_that_are_not_this_workspace_s_schedule(
+    monkeypatch: Any,
+) -> None:
+    """Only completed proactive-discovery Runs of this Workspace are lift
+    candidates; foreign dag ids, foreign Workspaces, non-terminal statuses
+    and already-lifted ids never reach the run store."""
+    ws = await _workspace("admin", "Discovery lift filters")
+    _enable(ws)
+    other_ws = await _workspace("admin", "Discovery lift other")
+    summaries = [
+        _schedule_summary("run-wrong-dag", ws, dag_id="other-dag"),
+        _schedule_summary("run-foreign-ws", other_ws),
+        _schedule_summary("run-failed", ws, status="failed"),
+        _schedule_summary("run-running", ws, status="running"),
+        _schedule_summary("run-already-lifted", ws),
+    ]
+    requested = _install_scheduled_run_source(monkeypatch, summaries, records={})
+    discovery.store[discovery._lifted_key(ws)] = {"run-already-lifted": "earlier"}
+
+    body = await discovery.surfaced_items("admin", ws)
+    assert body["items"] == []
+    assert requested == []  # every candidate was filtered before any store read
+
+
+async def test_lift_scan_tolerates_an_unreadable_run_record(monkeypatch: Any) -> None:
+    """A run record that cannot be read (store error, record vanished) is
+    skipped per run; the authorized read still answers."""
+    ws = await _workspace("admin", "Discovery lift unreadable")
+    _enable(ws)
+    from services import dag_agents, dag_run_inspection
+
+    async def fake_list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
+        return [_schedule_summary("run-error", ws), _schedule_summary("run-gone", ws)]
+
+    class FlakyRunStore:
+        async def get(self, run_id: str) -> Any:
+            if run_id == "run-error":
+                raise RuntimeError("store unavailable")
+            return None  # admitted run that left no durable record
+
+    monkeypatch.setattr(dag_run_inspection, "list_visible_runs", fake_list_visible_runs)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: FlakyRunStore())
+
+    body = await discovery.surfaced_items("admin", ws)
+    assert body["items"] == []
+    # Neither failed run was marked lifted, so a later read re-attempts them.
+    assert discovery.store.get(discovery._lifted_key(ws)) is None
+
+
+async def test_lift_scan_survives_inspection_being_down(monkeypatch: Any) -> None:
+    """If run inspection is unavailable the read degrades to the plain
+    surface instead of failing the Workspace read."""
+    ws = await _workspace("admin", "Discovery lift degraded")
+    _enable(ws)
+    from services import dag_run_inspection
+
+    async def broken_list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
+        raise RuntimeError("inspection unavailable")
+
+    monkeypatch.setattr(dag_run_inspection, "list_visible_runs", broken_list_visible_runs)
+
+    body = await discovery.surfaced_items("admin", ws)
+    assert body["items"] == []
+    assert body["counts"]["surfaced"] == 0

@@ -25,7 +25,7 @@ what keeps #1049 escalation evidence honest downstream.
 from __future__ import annotations
 
 import json
-import xml.etree.ElementTree as ET  # nosec: B405 - namespace/type helpers only; parsing is defused
+import xml.etree.ElementTree as ET  # nosec: B405  # nosemgrep
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -246,6 +246,12 @@ def _text(element: ET.Element, *paths: str) -> str:
 
 def _children(element: ET.Element, name: str) -> list[ET.Element]:
     return [child for child in element.iter() if _local(child.tag) == name]
+
+
+# The stdlib ET import is suppressed inline (nosec/nosemgrep on its line) because it
+# supplies only the ET.Element alias and the ParseError type; every parse runs through
+# defusedxml's SafeET.fromstring, which refuses entity expansion instead of resolving it
+# (python.lang.security.use-defused-xml fires on the import statement itself).
 
 
 def _parse_rss(source_url: str, body: str, max_entries: int) -> list[dict[str, str]]:
