@@ -377,6 +377,54 @@ class TestJitProvisioningAtTheLoginBoundary:
         assert entries[0]["detail"]["membership_source"] == "resolver"  # type: ignore[index]
 
     @pytest.mark.contract("boundary")
+    @pytest.mark.parametrize(
+        "next_link",
+        [
+            "https://unrelated.example.test/collect",
+            "https://graph.microsoft.com/v1.0/users/someone-else/transitiveMemberOf",
+            42,
+        ],
+    )
+    def test_untrusted_graph_pagination_refuses_login_without_forwarding_the_token(
+        self, jit_harness: JitHarness, next_link: object
+    ) -> None:
+        membership_requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) in {_ENTRA_TOKEN_URL, _ENTRA_JWKS_URL}:
+                return jit_harness.idp.handler(request)
+            membership_requests.append(request)
+            if len(membership_requests) == 1:
+                # An eligible first page must not authorize on partial evidence.
+                return httpx.Response(
+                    200,
+                    json={
+                        "value": [{"id": _GROUP_ELIGIBLE, "@odata.type": "#microsoft.graph.group"}],
+                        "@odata.nextLink": next_link,
+                    },
+                )
+            return httpx.Response(200, json={"value": []})
+
+        async def login() -> httpx.Response:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+                jit_harness.service = OAuthLoginService(
+                    get_settings(), http=http, link_store=jit_harness.links
+                )
+                return _login_once(jit_harness, _client(), code="unsafe-pagination")
+
+        sessions_before = set(stores.sessions.keys())
+        callback = asyncio.run(login())
+
+        assert callback.status_code == 401
+        assert len(membership_requests) == 1
+        assert _new_users(jit_harness.users_before) == []
+        assert stores.oauth_identity_links.get(_identity_link_key("entra", _ENTRA_SUBJECT)) is None
+        assert set(stores.sessions.keys()) == sessions_before
+        entries = _jit_audit_entries()
+        assert entries[0]["detail"]["reason"] == "incomplete_membership"
+        assert "jit-access-token" not in json.dumps(entries)
+
+    @pytest.mark.contract("boundary")
     def test_a_second_login_reuses_the_provisioned_account(self, jit_harness: JitHarness) -> None:
         client = _client()
         assert _login_once(jit_harness, client, code="first-code").status_code == 303
@@ -588,6 +636,50 @@ class TestGraphMembershipResolver:
         assert membership.complete is True
         assert membership.source == "resolver"
         assert set(membership.group_ids) == {_GROUP_ELIGIBLE, _GROUP_OTHER_ELIGIBLE}
+
+    @pytest.mark.parametrize(
+        "next_link",
+        [
+            "https://unrelated.example.test/collect",
+            "http://graph.microsoft.com/v1.0/me/transitiveMemberOf?$skiptoken=2",
+            "https://graph.microsoft.com:444/v1.0/me/transitiveMemberOf?$skiptoken=2",
+            "https://user:secret@graph.microsoft.com/v1.0/me/transitiveMemberOf?$skiptoken=2",
+            "https://graph.microsoft.com/v1.0/users/someone-else/transitiveMemberOf",
+            "https://graph.microsoft.com/v1.0/me/transitiveMemberOf#fragment",
+            "/v1.0/me/transitiveMemberOf?$skiptoken=2",
+            "https://[invalid",
+            "",
+            "   ",
+            None,
+            42,
+            {},
+            False,
+        ],
+    )
+    def test_invalid_continuations_are_incomplete_without_another_request(
+        self, next_link: object
+    ) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "value": [{"id": _GROUP_ELIGIBLE, "@odata.type": "#microsoft.graph.group"}],
+                        "@odata.nextLink": next_link,
+                    },
+                )
+            return httpx.Response(200, json={"value": []})
+
+        async def resolve() -> None:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+                with pytest.raises(IncompleteGroupMembershipError):
+                    await GraphMembershipResolver(http).resolve("token-1")
+            assert len(requests) == 1
+
+        asyncio.run(resolve())
 
     def test_a_graph_error_is_incomplete_membership_never_empty(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

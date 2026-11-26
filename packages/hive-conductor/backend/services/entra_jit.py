@@ -75,6 +75,29 @@ _GRAPH_MAX_PAGES = 10
 _JIT_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,62}[A-Za-z0-9]$")
 
 
+def _graph_membership_continuation(value: object) -> str:
+    """Keep the login credential bound to this Graph origin and subject."""
+    if not isinstance(value, str) or not value.strip():
+        raise IncompleteGroupMembershipError("Graph membership continuation was not a URL")
+    try:
+        url = httpx.URL(value)
+    except httpx.InvalidURL as exc:
+        raise IncompleteGroupMembershipError("Graph membership continuation was invalid") from exc
+    if (
+        url.scheme != "https"
+        or url.host != "graph.microsoft.com"
+        or url.port is not None
+        or url.userinfo
+        or url.fragment
+        or url.path != "/v1.0/me/transitiveMemberOf"
+    ):
+        # Do not echo the untrusted URL: it may contain credentials or tokens.
+        raise IncompleteGroupMembershipError(
+            "Graph membership continuation left the subject endpoint"
+        )
+    return str(url)
+
+
 class GraphMembershipResolver:
     """Authoritative current Entra group membership via Microsoft Graph.
 
@@ -131,10 +154,12 @@ class GraphMembershipResolver:
                 if not isinstance(group_id, str) or not group_id.strip():
                     raise IncompleteGroupMembershipError("Graph group item had no id")
                 group_ids.append(group_id.strip())
-            next_link = payload.get("@odata.nextLink")
-            if not isinstance(next_link, str) or not next_link.strip():
+            if "@odata.nextLink" not in payload:
                 return EntraGroupMembership.complete_resolver(group_ids)
-            url = next_link.strip()
+            # A present but malformed continuation is partial evidence, not a
+            # terminal page. Never send the login token to a different origin
+            # or read a different subject's membership, even on the same host.
+            url = _graph_membership_continuation(payload["@odata.nextLink"])
         raise IncompleteGroupMembershipError(
             f"Graph membership read exceeded {_GRAPH_MAX_PAGES} pages"
         )
