@@ -202,3 +202,40 @@ no grant needed and none used. Validation: targeted battery (pg/sqlite audit +
 sentinel integrity + container wiring) 172 passed / 3 skipped (+3 vs the prior
 169/3); ruff check/format clean; mypy battery 966 files clean;
 vulture-baseline (CI args) exit 0.
+
+## Independent verification round (2026-11-26, head cc15da1701)
+
+Verifier re-executed every acceptance criterion at the assigned head
+`cc15da1701852f02b80a47d313f62c121ba08d5c` (worktree clean, no code or test
+changes in this round; recorded delta stays +61):
+
+- Live PostgreSQL (pgvector/pg18 `maistro-pg-test` at 127.0.0.1:5433, private
+  database `verify69_r1` created and then dropped): `alembic upgrade head`
+  runs 001→071 as one linear chain with a single head
+  (`071_sentinel_decision_integrity`); `MAISTRO_TEST_PG_DSN` pointed there,
+  `test_pg_audit.py` + `test_integrity.py` give 80 passed / 0 skipped,
+  including both real-PG tests (`-k real`: 2 passed).
+- Targeted battery (sentinel integrity + pg/sqlite audit + audit pages +
+  container wiring): 184 passed / 7 skipped (skips are the DSN-gated PG tests).
+  `packages/maistro-core/tests/security` whole subtree: 1500 passed /
+  25 skipped.
+- Gates re-run at this head: `ruff check .` clean; suite-inventory
+  (21 suites, 37229 IDs) ok; vulture-baseline with CI's exact args
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exit 0
+  against base `3be6b66` (1219 → 1218 reviewed identities, matching the
+  one-row `repair_action` prune); mypy AGENTS.md battery 966 files clean;
+  durable-table-inventory, backlog-consistency, adr-index, adr-status-language
+  and doc-links all exit 0.
+- Hands-on (outside pytest): product allowed+denied `Sentinel.authorize`
+  records sign and verify; SQLite persist→reload re-verifies against the
+  pinned keyring; a self-consistent key-swap forgery (attacker key + valid
+  signature over the same payload) is `UNKNOWN_KEY` under pinning and is
+  documented as VERIFIED under embedded-only verification; all 15 protected
+  fields tamper-rejected (violations via add/strip/alter on records that
+  carry them); unsigned legacy row resolves `UNSIGNED`; rotation keeps the
+  retired public key verifying while `DecisionSigner` holds only the active
+  private key; raw `audit_log` rows contain no private-key material.
+- Closure hygiene: no `fixes/closes/resolves` keywords in the PR body or any
+  commit subject/body in `3be6b66..cc15da1701`; PR body says "Refs #69" only.
+  `diff(3be6b66..cc15da1701)` is exactly the 22 declared surfaces;
+  `quality/` vs `origin/develop` is the single vulture-baseline deletion.
