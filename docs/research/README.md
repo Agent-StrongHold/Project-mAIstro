@@ -119,11 +119,14 @@ Every child research epic/leaf defines:
 | [934 — heterogeneous local + cloud fleet benchmark](934-heterogeneous-fleet-benchmark.md) | M8-F1 | leaf [#934](https://github.com/Agent-StrongHold/Project-mAIstro/issues/934), epic #905 | WATCH |
 | [935 — cross-Agent batching, prefix/KV reuse, semantic caching](935-cross-agent-batching-kv-reuse.md) | M8-F2 | leaf [#935](https://github.com/Agent-StrongHold/Project-mAIstro/issues/935), epic #905 | WATCH |
 | [897 — Lean/Leanstral + Rust/Aeneas correctness kernel](897-lean-leanstral-rust-aeneas-correctness-kernel.md) | M8-A | leaf [#897](https://github.com/Agent-StrongHold/Project-mAIstro/issues/897), epic #880 | WATCH |
+| [893 — stateful generated API workflows](893-stateful-api-workflows.md) | M8-A | leaf [#893](https://github.com/Agent-StrongHold/Project-mAIstro/issues/893), epic #880 | GRADUATE (this seam, this scope) |
 
-One leaf holds a GRADUATE disposition (invocation effect/idempotency stateful testing
-#882, scoped to its seam); seven are INCUBATE (execution-lifecycle state machines #881,
-critical-zone mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916,
-plan-search leaf #928, and graph-pattern reuse leaf #929) and the rest are WATCH. Dispositions are owned by
+Two leaves hold a GRADUATE disposition (invocation effect/idempotency stateful testing
+#882 and stateful generated API workflows #893, each scoped to its seam); seven are INCUBATE
+(execution-lifecycle state machines #881, critical-zone mutation #894, fuzzing leaf #896,
+model-routing leaves #914 and #916, plan-search leaf #928, and graph-pattern reuse leaf
+#929) and the rest are WATCH. No leaf
+currently holds a REJECT disposition. Dispositions are owned by
 the individual notes —
 update the note first, then this table.
 
@@ -136,10 +139,11 @@ have produced research notes keep them in this folder ([#881](881-execution-life
 [#884](884-tla-plus-model-checking-execution-concurrency.md), [#885](885-differential-reference-model-testing.md),
 [#887](887-postgresql-concurrency-race-harness.md), [#888](888-replay-checkpoint-equivalence.md),
 [#889](889-metamorphic-testing.md), [#890](890-crosshair-symbolic-execution-pure-invariants.md),
-[#891](891-z3-smt-fire-decision.md), [#894](894-critical-zone-mutation-strategy.md),
-[#896](896-coverage-guided-fuzzing-parser-surfaces.md),
+[#891](891-z3-smt-fire-decision.md), [#893](893-stateful-api-workflows.md),
+[#894](894-critical-zone-mutation-strategy.md), [#896](896-coverage-guided-fuzzing-parser-surfaces.md),
 [#897](897-lean-leanstral-rust-aeneas-correctness-kernel.md), [#918](918-concurrency-model-checking-tla-apalache.md));
-#881, #882, #891, #894, #896, #918, and #897 are registered in the index above.
+#881, #882, #891, #893, #894, #896, #918, and #897 are registered in the index above. #893's suite ships
+in the server test job rather than in `formal/`.
 
 ## Milestone object note
 
