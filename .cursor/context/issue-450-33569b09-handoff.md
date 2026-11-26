@@ -240,8 +240,111 @@ first-hand at `a2b2daf7e2`:
   `vulture-ratchet.yml:84-85`) → exit 0, 1302 identities.
 
 No tests were added; no inventory-note delta applies. The verdict stays
-**NEEDS-DEEP-REVIEW**: checkpoints 5–9 are statements about GitHub closure or
-reclassification state that no tree change can satisfy, and checkpoints 1–4 lack
-only adoption/attestation review that belongs to per-epic governance, not to this
-implementation lane. Final accounting: checked 1, done 0 (initiative), skipped 0,
+**NEEDS-DEEP-REVIEW**: checkpoints 8–9 require explicit issue disposition;
+checkpoints 5–6 also permit documented deferral/disposition, which was not
+established here. Checkpoints 1–4 have bounded passing evidence, not proof that
+adoption/attestation are their only remaining gaps. This implementation lane
+cannot infer initiative-wide acceptance from the subset suites. Final accounting: checked 1, done 0 (initiative), skipped 0,
 errors 0; artifact = this re-verified handoff.
+
+## Addendum 3 — bounded writer round 0a4fe242 (2026-11-26)
+
+Frozen scope: #450 from this job's supplied `dispatch-context.json` only; write
+scope remains this handoff. Starting head `72a85fcb42` has a clean worktree.
+The prior job `d0282878` failed in 0.42 seconds with `agent_exit: 1` and
+`checks: []`, not a reproduced source/test failure. This job supplies no
+`check-*.log` files. Earlier passing claims are historical, not reused evidence.
+
+The smallest defensible change is to correct the overstatement in Addendum 2:
+checkpoints 5–6 allow documented disposition and are not simply GitHub closure
+requirements; bounded passing tests do not establish that only review remains
+for checkpoints 1–4. No source defect has been reproduced to justify changing
+production code or implementing child issues in this parent lane.
+
+ADRs read directly: Accepted ADR-082826-d9f5 (canonical Run store),
+ADR-100126-a9c4 (one promotion contract, incremental family adoption),
+ADR-100126-5445 (learning evidence), ADR-083126-5e62 (evidence is not its judge).
+ADR-100126-8c2d is **Proposed**, not an accepted authority. Reconciliation:
+consume the existing execution and promotion authorities, do not create a new
+scheduler, store, evaluator or authorization path to satisfy the parent issue.
+
+### Fresh executed validation
+
+All commands below exited 0; logs are `writer-*.log` in job directory
+`/home/dev/maistro/jobs/0a4fe242fbf4453a9ad6de0c24f751ca`.
+
+- `uv sync --locked --extra dev`: 468 resolved, 218 checked.
+- `uv run ruff check .`: all checks passed.
+- `uv run ruff format --check .`: 3484 files already formatted.
+- `uv run pytest packages/maistro-evolve/tests -x -q -rs`: **998 passed,
+  6 skipped**. All six skips are official IFEval tests missing `absl`, not
+  evidence of an official benchmark pass. Includes the verdict mutation,
+  fitness-ownership, promotion-governance and real Docker-boundary tests;
+  the Docker-boundary tests were not skipped.
+- `uv run pytest packages/hive-conductor/backend/tests/test_optimizer_candidate_apply.py packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py packages/hive-conductor/backend/tests/test_evolution_canonical_edge_cases.py packages/hive-conductor/backend/tests/test_optimizer.py -x -q -rs`:
+  **124 passed**.
+- `uv run pytest packages/maistro-core/tests/governance packages/maistro-core/tests/repertoire packages/maistro-core/tests/fitness packages/maistro-core/tests/memory -x -q -rs`:
+  **1158 passed, 11 skipped**. All eleven skips are PostgreSQL user-model
+  tests without `MAISTRO_TEST_PG_DSN`; their behavior remains unverified.
+- `uv run python scripts/check-suite-inventory.py`: 21 suites match,
+  34125 unique identities, zero byte-identical test groups. Collection is not
+  full-tree execution. No tests changed/added, so no inventory delta applies.
+- `uv run python scripts/check-backlog-consistency.py`: 167 items OK.
+- `uv run python scripts/check-adr-index.py`: index matches front matter.
+- `git diff --check`: passed before commit.
+
+### Reachability and all nine checkpoints
+
+Production paths were re-opened, not inferred from test names. Hive's HTTP
+cycle route (`backend/routes/evolution.py:165`) calls the live service
+(`backend/services/evolution.py:473`), which admits through the Container's
+canonical Run store and traverses the graph with that same Run identity
+(`backend/services/evolution_graph.py:919`). The service explicitly uses
+**proxy** fidelity (`services/evolution.py:472`), not official benchmark
+results. The canonical graph tests execute the adapter and real Run store,
+with cycle/harness doubles; they do not prove a deployed improvement campaign.
+
+Host-owned verdict grading (`maistro_evolve/benchmarks/sandbox_exec.py:186`),
+objective-owned fitness (`fitness.py:197`), eligibility and audited activation
+(`population.py:141,284`) and candidate-only optimizer application
+(`backend/services/optimizer_candidates.py:279,365`) match the tested paths.
+Learning Gauntlet validation remains an embedding seam: the literal-constructor
+scan of `packages/*/src` finds only the explanatory whitelist comment
+(`maistro-core/src/_vulture_whitelist.py:354`), not product construction.
+`memory/learnings/promoter.py:94` dispatches to the Gauntlet only when injected.
+This is a proof boundary, not a newly established wiring defect.
+
+| Steering checkpoint | This round's disposition |
+|---|---|
+| Gate A, including #854/#861 | **UNVERIFIED overall**; eligibility/incumbent rejection and candidate apply paths passed. Adoption across all families, measured later effect and deployed end-to-end evidence are not established. |
+| Benchmark verdict integrity #852 | **UNVERIFIED overall**; host-owned adversarial grading and Docker tests passed; six official IFEval tests skipped. No complete external-harness/published-evidence attestation. |
+| Population fitness #853 | **UNVERIFIED overall**; full Evolve suite includes ownership, pessimistic missing data and hard-gate tests. No independent production campaign attestation. |
+| Gate B validated collective learning | **UNVERIFIED overall**; library governance/learning tests passed; embedding-host independent validation and measured reuse not demonstrated. |
+| Population/curriculum/harness complete or deferred | **UNVERIFIED**; Evolve suite exercises subsets; no accepted epic-wide completion or explicit deferral established. |
+| Retrieval/benchmark/memory/executor/workspace dispositioned | **UNVERIFIED**; no complete disposition/evidence matrix established for these five substrate epics. |
+| EVENTUALLY zero/reclassified | **NOT MET in snapshot**; 20/21 leaves closed, #389 still open, no reclassification established. Closed tracking state is not behavioral proof. |
+| Ten epics closed/reclassified | **NOT MET in snapshot**; #21–#26 and #104–#107 remain open, no accepted reclassification established. |
+| #8 closed | **NOT MET in snapshot**; #8 remains open. No closure mutation attempted. |
+
+Captured state was read once from this job's frozen dispatch, recorded in
+`writer-captured-state.log`; no GitHub refresh or mutation occurred. The supplied
+base resolves but is not an ancestor of HEAD (merge-base `4de7e906d9`). Against
+that local ancestor the starting head changes only three context notes; a direct
+diff against the newer supplied base must not be called an isolated lane diff.
+No merge conflict is present, and no develop-sync repair was attempted.
+
+**Verdict: NEEDS-DEEP-REVIEW.** No reproduced source/gate failure warrants a
+production repair. This commit corrects an evidence-reporting error, preserves
+prior artifacts and records fresh bounded validation; it does not implement or
+approve initiative closeout. Progress: Promotion loop UNVERIFIED; Evaluation
+truth bounded tests green; Population fitness bounded tests green; Collective
+learning library green/host UNVERIFIED; Search/curriculum/harness disposition
+UNVERIFIED; Experimental substrate UNVERIFIED; Product closeout 20/21 captured
+closed/acceptance UNVERIFIED. No acceptance fraction is inferred from test counts.
+
+Next authorized action: per-epic acceptance/disposition in the issue's order
+(M1/M2/M3 prerequisites → Gate A → Gate B → search/curriculum/harness and
+substrate lanes → product closeout → tracker disposition). This worker starts no
+child items or PRs. Final accounting: **checked 1, done 0 (initiative), skipped 0,
+errors 0**; completed local artifact is this corrected acceptance handoff. No
+source, tests, gates, grants, ledgers or inventory baselines changed.
