@@ -178,6 +178,7 @@ def test_interim_and_final_checkpoints_written(tmp_path: Path) -> None:
         max_cycles=5,
         report_every=2,
         report_dir=str(reports),
+        promotion_review=False,
     )
     result = LocalRsiLoop(config, apply_patch=_make_apply(_bump)).run()
     assert result.promotions == 5
