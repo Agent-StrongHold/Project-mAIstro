@@ -138,6 +138,30 @@ on:
       # absence; the job still fails closed whenever a critical file does
       # change.
       - '.trivyignore.yaml'
+      # JS/npm dependency metadata is a recurring non-Python PR surface
+      # (every dependabot npm bump in a package frontend): the bump edits
+      # packages/*/frontend/package.json and package-lock.json, neither of
+      # which 'packages/**/*.py' can match, so such PRs never triggered this
+      # workflow and the required-set row has no check-run on the candidate
+      # head and gates-ran stays pending forever. Measured on #2485's head
+      # d329b1a07c (@eslint/js 9.39.5 -> 10.0.1 in
+      # packages/hive-conductor/frontend) with the CI-exact evaluator
+      # (check-gates-ran.py --require-complete --base-branch develop
+      # --event-name pull_request --changed-files <measured envelope>): 73/74
+      # required checks present, "Mutation gate (changed critical lines)"
+      # absent -> PENDING (the same failure mode #2120 fixed for image pins,
+      # #2371 for grant ledgers and inventory notes, #2432 for gate scripts,
+      # #2345 for dev-tool requirements and #2450 for uv.lock/pyproject.toml
+      # metadata; every producer had completed, so no later publisher run
+      # could ever flip the verdict). Both paths are class-motivated:
+      # dependabot npm bumps touch exactly the package manifest and the
+      # lockfile under a package frontend. Listing them here produces real
+      # zero-overlap evidence ("No mutation-critical file changed") instead
+      # of permanent absence: every mutation-critical source is a .py file,
+      # so manifest/lockfile diffs are zero-overlap by construction, and the
+      # job still fails closed whenever a critical file does change.
+      - 'packages/**/package.json'
+      - 'packages/**/package-lock.json'
   workflow_dispatch:
 
 concurrency:

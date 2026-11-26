@@ -430,9 +430,10 @@ class TestPathsFilters:
     #: #2120 added the image-pin registry, #2371 the grant ledger and the
     #: testing-inventory notes, #2432 gate scripts, #2345 dev-tool
     #: requirements and repair notes, #2450 lock/manifest metadata and the
-    #: Trivy suppression registry -- each a PR surface class that otherwise
-    #: never triggered the producer and left its required row permanently
-    #: absent (rationale in mutation.yml itself).
+    #: Trivy suppression registry, #2485 the npm package manifest and
+    #: lockfile under package frontends -- each a PR surface class that
+    #: otherwise never triggered the producer and left its required row
+    #: permanently absent (rationale in mutation.yml itself).
     SHIPPED: ClassVar[dict[str, list[str]]] = {
         "Mutation gate (changed critical lines)": [
             "packages/**/*.py",
@@ -448,6 +449,8 @@ class TestPathsFilters:
             "uv.lock",
             "packages/**/pyproject.toml",
             ".trivyignore.yaml",
+            "packages/**/package.json",
+            "packages/**/package-lock.json",
         ]
     }
 
