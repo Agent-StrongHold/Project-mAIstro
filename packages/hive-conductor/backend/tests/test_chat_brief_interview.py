@@ -415,7 +415,7 @@ def _goal_route(client, ws: str) -> list[dict[str, Any]]:
     return r.json()
 
 
-@pytest.mark.ac("#1823/AC-1")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-10")
 def test_a_confirmed_interview_commits_one_goal_and_one_brief(
     authed_client, llm, brief_commit_facade
 ) -> None:
@@ -482,7 +482,7 @@ def test_a_confirmed_interview_commits_one_goal_and_one_brief(
     assert len(run_store._runs) == runs_before, "the commit admitted no Run"
 
 
-@pytest.mark.ac("#1823/AC-2")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-11")
 def test_cancel_creates_no_goal_and_the_next_model_turn_still_admits_a_run(
     authed_client, llm, brief_commit_facade
 ) -> None:
@@ -508,7 +508,7 @@ def test_cancel_creates_no_goal_and_the_next_model_turn_still_admits_a_run(
     assert len(run_store._runs) == runs_before + 1, "the model turn admitted a Run"
 
 
-@pytest.mark.ac("#1823/AC-3")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-12")
 def test_a_replayed_confirmation_after_a_lost_response_returns_the_same_commit(
     authed_client, llm, brief_commit_facade
 ) -> None:
@@ -537,7 +537,7 @@ def test_a_replayed_confirmation_after_a_lost_response_returns_the_same_commit(
     assert brief_commit_facade.briefs.brief_rows() == [(brief["commit"]["brief_id"], 1)]
 
 
-@pytest.mark.ac("#1823/AC-5")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-13")
 def test_a_non_owner_confirmation_is_refused_without_writing(
     admin_client, authed_client, llm, brief_commit_facade
 ) -> None:
@@ -554,7 +554,7 @@ def test_a_non_owner_confirmation_is_refused_without_writing(
     assert brief_commit_facade.briefs.brief_rows() == []
 
 
-@pytest.mark.ac("#1823/AC-8")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-14")
 def test_an_unavailable_brief_store_is_an_explicit_recoverable_limitation(
     authed_client, llm
 ) -> None:
