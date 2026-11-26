@@ -269,7 +269,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    It used to be a function each call site had to remember to call. That is still visible in the
    code and is worth stating, because it is the thing this change makes *stop* mattering:
-   measured (`measured-outbound-http`), of the **33** modules in `maistro-core` that can open an
+   measured (`measured-outbound-http`), of the **34** modules in `maistro-core` that can open an
    outbound connection, **5** call the guard directly. Read as a coverage figure that number is
    wrong now, and it was the honest figure before — which is the whole argument for moving the
    control. The fifth call site is not a call site at all but a second enforcement seam:
@@ -279,7 +279,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
-   shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
+   shared pool. Measured (`measured-outbound-seam`) — **34** of the census route through the pool
    and **0** build their own client. Redirect hops are validated per hop, because httpx re-enters
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
@@ -287,7 +287,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    clients and were moved onto the pool so the seam actually reaches them. The connector/source
    SDK joins the census the same way: `connectors/sync.py` imports `httpx` to normalize upstream
    failures at the engine boundary, and every request it drives rides the pooled session the
-   host hands the connector, so the seam reaches it without its own client.
+   host hands the connector, so the seam reaches it without its own client. The proactive-
+   discovery fetch (#1051) joins it the same way: `capabilities/providers/discovery_source.py`
+   imports `httpx` to classify connect failures, and its governed feed fetch rides
+   `shared_client` from `maistro.http`, so the seam reaches it without its own client.
 
    The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
    pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports
