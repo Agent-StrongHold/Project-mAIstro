@@ -22,6 +22,7 @@ merely waited a long time keeps the class it had on day one.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import Counter
 from collections.abc import Callable
@@ -48,6 +49,8 @@ from services.workspace_authority import hitl_membership_mutation_lock, is_membe
 
 DISMISSALS_STORE = "attention_dismissals"
 dismissal_store: JsonStore = stores.register_json_store(JsonStore(DISMISSALS_STORE))
+
+logger = logging.getLogger("hive.attention")
 
 #: Priority ladder (#1049), most important first:
 #: severity > time_sensitive > blocking > queued > follow_up > proactive.
@@ -387,6 +390,89 @@ def _optimizer_items(*, workspace_id: str) -> list[_Item]:
     return items
 
 
+def _discovery_item(
+    row: dict[str, Any], *, workspace_id: str, now: datetime, horizon: timedelta
+) -> _Item | None:
+    """Surfaced discovery item → proactive Waiting by default (#1051).
+
+    Escalation follows the #1049 rule that time alone never promotes: the
+    only class above proactive a discovery can hold is `time_sensitive`, and
+    only when the item carries a source-declared expiry inside the horizon
+    (e.g. a sale window). A discovery never reads as severity or blocking —
+    ordinary proactive content waits.
+    """
+    fingerprint = str(row.get("fingerprint") or "")
+    if not fingerprint:
+        return None
+    title = str(row.get("title") or "")[:120]
+    explain = str(row.get("explain") or "").strip()
+    reason = f"Discovered for you: {title}" + (f" — {explain}" if explain else "")
+    deadline: datetime | None = None
+    expires = str(row.get("expires_at") or "").strip()
+    if expires:
+        try:
+            stamp = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            deadline = stamp
+        except ValueError:
+            deadline = None
+    attention_class = (
+        "time_sensitive"
+        if deadline is not None and datetime.now(UTC) < deadline <= now + horizon
+        else "proactive"
+    )
+    return _Item(
+        source_kind="discovery_item",
+        source_id=fingerprint,
+        workspace_id=workspace_id,
+        attention_class=attention_class,
+        reason=reason,
+        evidence={
+            "title": title,
+            "url": str(row.get("url") or ""),
+            "category": str(row.get("category") or ""),
+            "explain": explain,
+            "matched_topics": row.get("matched_topics") or [],
+            "expires_at": expires or None,
+            "relevance": row.get("relevance"),
+            "novelty": row.get("novelty"),
+            "confidence": row.get("confidence"),
+            "curated_run_id": str(row.get("run_id") or ""),
+            "strategy": str(row.get("strategy") or ""),
+            "interruption": INTERRUPTION_FOR_CLASS[attention_class],
+        },
+        answer_href=None,
+    )
+
+
+async def _discovery_items(
+    *, user_id: str, workspace_id: str, now: datetime, horizon: timedelta
+) -> list[_Item]:
+    """Surfaced discovery items in this Workspace, via the discovery service.
+
+    The discovery service owns the items; this projection only reads. If the
+    service cannot answer, discovery contributes nothing to the page rather
+    than degrading Attention as a whole.
+    """
+    from services import discovery as discovery_service
+
+    try:
+        body = await discovery_service.surfaced_items(user_id, workspace_id)
+    except Exception as exc:
+        logger.warning("discovery attention source unavailable: %s", exc)
+        return []
+    if not isinstance(body, dict):
+        return []
+    items: list[_Item] = []
+    for row in body.get("items", []):
+        if isinstance(row, dict):
+            item = _discovery_item(row, workspace_id=workspace_id, now=now, horizon=horizon)
+            if item is not None:
+                items.append(item)
+    return items
+
+
 def _dismissal_key(workspace_id: str, source_kind: str, source_id: str) -> str:
     return f"{workspace_id}:{source_kind}:{source_id}"
 
@@ -544,6 +630,11 @@ async def list_attention(
     # second lifecycle store. Proactive/optimizer suggestions default to Waiting.
     items.extend(_message_items(workspace_id=workspace_id))
     items.extend(_optimizer_items(workspace_id=workspace_id))
+    # Curated discoveries (#1051): proactive Waiting by default; a discovery
+    # may rise to time_sensitive only on source-declared expiry evidence.
+    items.extend(
+        await _discovery_items(user_id=user_id, workspace_id=workspace_id, now=now, horizon=horizon)
+    )
     hidden = dismissed_source_ids(workspace_id)
     dismissed_count = 0
     if hidden and not include_dismissed:
