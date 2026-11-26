@@ -24,7 +24,7 @@ from maistro.graph.durable_runs import (
     RunStatus,
     run_durable_graph,
 )
-from maistro.graph.seeds import daily_status_seed
+from maistro.graph.seeds import daily_status_seed, proactive_discovery_seed
 from maistro.graph.template_adapter import descriptor_to_template
 from services.node_metrics_store import record_run_completion
 
@@ -114,6 +114,9 @@ def _resolve_nodes_with(*, container: Any = None) -> Callable[[str, Any], Any]:
         # of constructing one that reports success for a sub-graph nothing
         # ran. Distinct from `run_store` on purpose — see get_run_store().
         graph_run_store=container.graph_run_store,
+        # Per-cycle discovery context (#1051): the Container-owned provider
+        # the adapter wired at creation.
+        discovery_context=container.discovery_context,
     )
 
 
@@ -150,6 +153,10 @@ def get_registry() -> DagRegistry:
     if _registry is None:
         _registry = DagRegistry()
         _registry.register(daily_status_seed())
+        # Bounded proactive discovery (#1051): registered beside the other
+        # seeds so a canonical Schedule can target it and `_prime_template`
+        # persists it into the template store like any bundled seed.
+        _registry.register(proactive_discovery_seed())
     return _registry
 
 
