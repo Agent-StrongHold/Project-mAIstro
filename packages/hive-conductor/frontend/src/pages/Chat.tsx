@@ -28,12 +28,41 @@ const SOURCE_LABEL: Record<BriefField["source"], string> = {
 };
 
 function BriefSoFar({ brief }: { brief: BriefView }) {
+  const commit = brief.commit;
+  if (commit && (commit.status === "committed" || commit.status === "already_committed")) {
+    return (
+      <aside className="brief-panel card" aria-label="Committed brief">
+        <div className="brief-panel-head">
+          <span>Committed</span>
+          <span className="brief-panel-meta">
+            {commit.status === "already_committed" ? "same commit — no duplicate" : "durable"}
+          </span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Goal</span>
+          <span className="brief-row-value">{commit.goal_id}</span>
+          <span className="brief-tag">r{commit.goal_revision}</span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Brief</span>
+          <span className="brief-row-value">{commit.brief_id}</span>
+          <span className="brief-tag">v{commit.brief_version}</span>
+        </div>
+        <a className="brief-panel-meta" href="/goals">
+          Open on the Goals board →
+        </a>
+      </aside>
+    );
+  }
   if (brief.draft) {
+    const retrying = commit && (commit.status === "failed" || commit.status === "unavailable");
     return (
       <aside className="brief-panel card" aria-label="Brief draft">
         <div className="brief-panel-head">
           <span>Draft ready</span>
-          <span className="brief-panel-meta">nothing written yet</span>
+          <span className="brief-panel-meta">
+            {retrying ? `commit ${commit.status} — say "commit it" to retry` : "nothing written yet"}
+          </span>
         </div>
         {Object.entries(brief.draft.fields).map(([key, value]) => (
           <div key={key} className={`brief-row${brief.draft?.assumed.includes(key) ? " brief-row--assumed" : ""}`}>
