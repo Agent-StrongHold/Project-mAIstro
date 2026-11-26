@@ -12,7 +12,8 @@ under a durable commit record that replays, concurrent tabs and process death
 all resume into the same logical commit.
 
 `packages/hive-conductor/backend/tests/test_brief_commit.py` holds the
-boundary itself (20 tests): one test per acceptance criterion group — commit
+boundary itself (21 async boundary tests plus 2 payload-shape unit tests =
+23 collected): one test per acceptance criterion group — commit
 shape and provenance read-back, restart read-back over re-opened PostgreSQL
 pools, unconfirmed/incomplete refusal, replay and concurrent-confirmation
 idempotency, forced crashes before/between the writes recovered from the
