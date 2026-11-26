@@ -74,7 +74,19 @@ class _StubWarden:
 def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True) -> Any:
     reg = get_engine().capabilities
     harness = _FakeHarness(healthy=healthy)
-    reg.register(harness)
+    if not reg.register(harness):
+        # Duplicate registration is a registry no-op, so activate() below would
+        # resolve whichever provider won the first race for this name. That is
+        # benign when the incumbent is this file's own fake (an earlier test in
+        # this module installed it), but a foreign provider -- e.g. one
+        # registered by another suite in the same session-wide engine -- must
+        # fail here with attribution instead of serving wrong session ids.
+        incumbent = reg.provider(SLOT_NAME, "fake")
+        assert isinstance(incumbent, _FakeHarness), (
+            "a foreign provider named 'fake' is already installed for the "
+            f"harness slot: {type(incumbent).__module__}.{type(incumbent).__name__}; "
+            "activate() would resolve that impostor"
+        )
     reg.activate(SLOT_NAME, "fake")
     reg.set_enabled(SLOT_NAME, enabled)
     effects = new_effect_context(policy_evaluator=binding_scope_policy)
