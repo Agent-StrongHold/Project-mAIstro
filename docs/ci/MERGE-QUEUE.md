@@ -87,6 +87,14 @@ The active default-branch ruleset named `Pr merge`, read back on 2026-08-30, rep
 
 This differs from the bootstrap file's `3`/`3` build/group limits. That is configuration drift to reconcile explicitly; it is **not** evidence that the queue is inactive. The live ruleset is the authority for whether GitHub currently serializes merges.
 
+Re-read 2026-11-26: the live queue had moved again — `max_entries_to_merge` 15,
+`min_entries_to_merge_wait_minutes` 5, grouping `HEADGREEN`, timeout 90 minutes —
+and `gates-ran` was no longer among the live `develop` required contexts. The
+canonical dated record now lives in
+[BRANCH-PROTECTION.md](BRANCH-PROTECTION.md), and
+`scripts/check-branch-protection.py --verify-rulesets` is the mechanical
+detector that flags the next movement (#564).
+
 The same read-back shows `gates-ran` among the required contexts and strict freshness still enabled. It does not currently list `autonomous-merge-admissibility` among those required contexts, so the older rollout checklist's desired protection alignment should not be described as completed merely because the queue itself is live.
 
 ## Required workflow contract
