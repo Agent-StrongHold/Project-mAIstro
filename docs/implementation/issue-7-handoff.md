@@ -743,3 +743,95 @@ consumption composition, and operator release evidence — program-scale work
 plus actions outside this lane's authority.
 
 Progress: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "compose #805 policy semantics and hive-side UserModelService consumption (row 18) on canonical seams; obtain operator release evidence"}`.
+
+## Round 12 — composition repair for row 18: Design Studio consumes the shared surfaces (repair stage)
+
+Job `073074952f4c475299767068eee8ed5b`; starting HEAD `183445ae`
+(the round-11 commit); worktree clean on arrival; no incoming uncommitted patch.
+
+The verify round at this head re-proved row 18 NOT MET: no reachable
+production path made Design Studio consume the persistent Agent's shared
+user-memory/Attention surfaces (#777/#773). This round lands exactly that
+composition, on canonical seams only:
+
+- **`packages/hive-conductor/backend/services/user_model.py` (new)** —
+  composes the ONE `maistro.memory.user_model.service.UserModelService` (the
+  same service `maistro_server.main` wires, `packages/maistro-core`) over the
+  deployment's PostgreSQL session factory — the same factory the design
+  services resolve, and the same PostgreSQL-only shape (ADR-092526-4391).
+  Recall-only: no write surface, no second read path, and **no in-memory
+  lookalike** — without the configured PostgreSQL the resolver answers
+  `None` and callers degrade by recalling nothing. The user model's writes
+  (correct/forget/promotion) stay on the Agent and API surfaces that own
+  them.
+- **`services/brief_chat.py`** — the interview opening (the flow where
+  Design Studio opens work) now consumes both shared surfaces: recalled,
+  provenance-bearing user-model facts (`user_context`, capped at
+  `DESIGN_RECALL_LIMIT`, PERSONAL sensitivity — the `RecallQuery` default)
+  and the Workspace's shared Attention projection
+  (`services.attention.list_attention`, #1049). Both ride the payload as
+  data; the deterministic interview phrasing is untouched (ADR-091726-7c2a
+  preserved). `payload()` now also exposes the turn's `citations` (the
+  field existed; it was never serialized) and omits an unavailable
+  surface's key entirely — never an empty list dressed up as a read model.
+- `packages/maistro-design` gains nothing, by design: it is the creative
+  projection library (#774/#775), holds no memory of its own, and the exit
+  condition forbids exactly that private variant. The product surface that
+  consumes is the hive backend where Design Studio composes.
+
+### Red-first regression proof (structure, not wall-clock)
+
+The six tests in `test_design_shared_surfaces.py` were run against the
+pre-repair head `183445ae` in a throwaway worktree with the same file
+copied in: **3 failed, 2 errors, 1 passed**. The two shared-surface HTTP
+tests and the resolver test failed; the recall unit tests errored on the
+absent `services.user_model` module (the composition did not exist); only
+the outage-degradation control passed, because "the key is omitted" is the
+invariant that test pins across both repair states. Post-repair: 6 passed.
+`test_chat_brief_interview.py` → 19 passed; `test_attention_projection.py`
++ `test_brief_commit.py` → 38 passed, 32 skipped (no regression on the
+touched surfaces).
+
+### Fresh validation (all exit 0, this round, this head)
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4585 passed, 113 skipped** (233.4s; 4579 + the 6 new tests) |
+| `uv run ruff check` / `ruff format --check` | clean |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | ok: baseline + recorded +6 delta |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI args) | no unbanked identities, no ledger amendment |
+| `uv run python scripts/check-release-consistency.py` | released none / shipping 0.9.0 / working toward 1.0.0 (row 1) |
+
+Inventory note: `docs/testing/inventory-notes/issue-7-design-studio-shared-surfaces.md`
+(records the +6 delta and the red-first evidence).
+
+### Updated acceptance accounting (delta on Rounds 5–11)
+
+- **Row 18: NOT MET → composition landed for the user-memory/Attention
+  halves.** Design Studio's work opening now demonstrably consumes the same
+  `UserModelService` and the shared Attention projection through the
+  backend, with red-first tests. What remains for full row-18 closure is
+  the #804 consumption half — Design Studio consuming the persistent
+  Workspace Agent/Goal-reconciliation APIs rather than instantiating
+  private ones (#777's criterion 1/3/4 verification boundary) — which is
+  the #805 policy composition below, not a Design-Studio-private fix.
+- **Row 8: PARTIAL, unchanged this round.** The tick-caller half landed in
+  Round 11. The remaining halves are (a) the #805 `ReconciliationPolicy`
+  production composition — decision semantics deliberately not invented in
+  a repair lane, because a guessed policy would be a second authority —
+  and (b) the reconciliation control plane's PostgreSQL twin (#1572 owns
+  the canonical Goal PG store; this plane's PG twin is the tracked
+  follow-up).
+- **Rows 2, 3, 5, 17: UNVERIFIED, unchanged** — release-pipeline execution,
+  clean-machine/live-model E2E, RC soak/promotion and discovery evidence
+  require operator/release actions (and GitHub mutations this lane is
+  prohibited from performing).
+- Rows 4, 7, 9, 11, 12 PARTIAL and rows 1, 6, 10, 13–16, 19 PASS carry
+  forward from Rounds 5–10 unchanged by this diff.
+
+**Verdict: NEEDS-REPAIR for milestone acceptance stands** — but the
+code-level row-18 gap this round was named for is repaired with red-first
+tests on canonical seams; the remaining gaps are the #805 policy
+composition, the control-plane PG twin, and operator release evidence.
+
+Progress: `{checked: 19, done: 2, skipped: 0, errors: 0, next: "compose #805 reconciliation policy on canonical seams (row 8); obtain operator release evidence (rows 2/3/5)"}`.
