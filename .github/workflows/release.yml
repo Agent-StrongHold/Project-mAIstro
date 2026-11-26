@@ -81,10 +81,14 @@ jobs:
       # ADR §2: package versions never carry the rc suffix, so `vX.Y.Z` and
       # `vX.Y.Z-rcN` both have to equal VERSION once `-rcN` is stripped. The
       # script also runs scripts/bump_version.py --check (all 32 version sites)
-      # and asserts CHANGELOG.md carries a `## [X.Y.Z]` heading.
-      - name: Version + CHANGELOG guard
+      # and asserts CHANGELOG.md carries a `## [X.Y.Z]` heading. For finals,
+      # require the exact tree of the numerically latest same-version RC:
+      # a promotion merge may change the commit ID, never the soaked source.
+      # This is necessary but does not prove artifact identity across rebuilds
+      # or replace the exact-RC soak evidence required by #89.
+      - name: Version + CHANGELOG + RC source-tree guard
         id: guard
-        run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
+        run: python scripts/release_guard.py --tag "${GITHUB_REF_NAME}" --verify-rc-tree --github-output "${GITHUB_OUTPUT}"
 
       # The guard above proves the tag matches VERSION and that notes exist for
       # it. This proves the surrounding story is still whole at tag time (#83):
