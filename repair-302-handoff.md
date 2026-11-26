@@ -52,3 +52,36 @@ mypy unchanged on the touched files (13 pre-existing import-untyped/no-any-retur
 notes, none added; maistro-rsi is outside the CI mypy gate set);
 packages/maistro-rsi/tests 1828 passed, 4 skipped; tests/test_complexity_gate_scope.py
 + test_promotion_gate.py 34 passed.
+
+## Round 4 (2026-11-26, diff-coverage repair at 28f63b86)
+
+The failing run (45877223503, job 140123561112) was read in full. The blocking
+failure was NOT the round-3 coverage-postgres producer (that job succeeded in
+this run) and the "Event loop is closed" lines are pytest
+PytestUnhandledThreadExceptionWarning noise from aiosqlite teardown threads in
+suites this branch does not touch. The gate failed on its final step:
+
+- packages/maistro-rsi/src/maistro_rsi/__main__.py: 25.0% of 12 changed lines
+  (uncovered 1081-1097 _print_genome_summary body, 1174 its call site);
+- packages/maistro-rsi/src/maistro_rsi/local_loop.py: 85.7% of 84 changed
+  lines (uncovered 2432/2439 merge-mismatch guard, 2455/2457 kept-review
+  persistence, 2530/2531/2537 crashed-gate refusal, 2634 mechanical keep,
+  2659 p>=theta keep, 2677-2679 unavailable-review park).
+
+Repair: nine tests execute those fail-closed paths — six in test_local_loop.py
+(crashed quarantine scanner refuses; gate evidence naming an unlanded commit
+refuses; the mechanical floor is exclusive (at-floor kept judge-free, just-
+below escalates and cold-start parks); a p>=theta judgment promotion persists
+its kept-review record only after the merge; unavailable judgment machinery
+parks) and a new test_run_genome_summary.py (summary printout shape,
+empty-population degenerate path, --genome-db wiring). Every test pins the
+#302 fail-closed guarantee the uncovered lines implement.
+
+Evidence: full RSI suite under the coverage-unit producer's exact command
+(1837 passed, 4 skipped), coverage.xml, then scripts/check-diff-coverage.py
+with CI's exact base 7926d9ab4dda — ok, exit 0, post-commit. ruff check +
+format clean; verifier's targeted pytest command 150 passed; vulture gate
+(CI's exact args) exit 0; suite inventory +9 recorded in
+docs/testing/inventory-notes/auto-302-diffcov-repair.md, check ok (1841);
+promotion-surface exit 0. No production source changed in this round, so the
+radon/xenon/vulture ledgers are untouched by construction.
