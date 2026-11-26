@@ -2324,6 +2324,36 @@
       "effect_owner": "Workspace BacklogItem store"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "POST",
+      "route": "/{item_id}/claim",
+      "handler": "claim_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "takes the item's atomic claim/lease (#100): policy-gated, fenced, records claimant/Run; submits no Run and touches no Goal",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "POST",
+      "route": "/{item_id}/claim/renew",
+      "handler": "renew_backlog_item_claim",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "extends the live claim's lease at the same fence generation (holder-only)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "POST",
+      "route": "/{item_id}/claim/release",
+      "handler": "release_backlog_item_claim",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "releases the live claim; holder fields clear and the fence advances",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/runs.py",
       "method": "POST",
       "route": "/{run_id}/cancel",

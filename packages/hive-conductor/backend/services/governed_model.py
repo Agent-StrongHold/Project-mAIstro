@@ -41,6 +41,8 @@ from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
+    POST_TERMINAL_CHILD_PROVENANCE,
+    TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
@@ -490,16 +492,30 @@ async def mint_operation_identity(
         name=operation,
         nodes=[Node(node_id=operation, node_type="control-plane", name=operation)],
     )
+    minted_provenance: dict[str, Any] = {
+        "admission_source": "control-plane-operation",
+        "operation": operation,
+        **(provenance or {}),
+    }
+    if parent_run is not None and parent_run.status in TERMINAL_RUN_STATUSES:
+        # The Run store refuses late child admission under a terminal Run
+        # (#1621) except when the child's own provenance carries an
+        # identity-bound fact naming that parent. An operation minted after
+        # its requesting Run terminalized — a judge beneath a COMPLETED Run,
+        # a settle racing its requester's outcome — is exactly that child.
+        minted_provenance[POST_TERMINAL_CHILD_PROVENANCE] = {
+            "parent_run_id": parent_run_id,
+            "reason": (
+                f"control-plane operation {operation!r} minted after its "
+                "requesting Run terminalized"
+            ),
+        }
     run = await store.create_run(
         graph,
         parent_run_id=parent_run_id or None,
         initial_status=RunStatus.QUEUED,
         actor_principal_id=require_admitted_actor(resolved_actor),
-        provenance={
-            "admission_source": "control-plane-operation",
-            "operation": operation,
-            **(provenance or {}),
-        },
+        provenance=minted_provenance,
     )
     run = await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id=operation)

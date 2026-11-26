@@ -275,11 +275,11 @@ class TestSetupRecordsModelAvailability:
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
         import stores
-        from models.schemas import HiveUser
+        from models.schemas import HiveAccount
         from routes import setup as setup_routes
         from services.model_store import JsonStore, ModelStore
 
-        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
         monkeypatch.setattr(stores, "username_claims", JsonStore("username_claims"))
         monkeypatch.setattr(setup_routes, "_get_kv", lambda: None)
 
