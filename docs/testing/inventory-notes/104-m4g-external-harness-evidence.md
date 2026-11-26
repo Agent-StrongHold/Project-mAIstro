@@ -450,3 +450,49 @@ removed, or moved in this round — the `inventory-delta` above is unchanged.
 - `scripts/check-workflow-inventory.py` (33 workflows dispositioned) and
   `scripts/check-workflow-write-safety.py` → ok after the
   `quality.yml` edit; `quality.yml` still parses as YAML.
+
+## Re-verification round at the merged head (2026-11-26, this lane)
+
+The gate-repair round above was re-executed at the branch head
+`5b4fde4690` — i.e. *after* the develop merge (`3be6b6650c`) — so the
+numbers below cover the merge's own additions too, not just the repair
+commit. Every command used CI's exact arguments. Results, all unchanged
+from the repair round:
+
+- `scripts/check-radon-baseline.py` → 124 current C/D/E/F blocks, 124
+  baseline entries, **0 new / 0 regressed / 0 improved / 0 stale**
+  (provenance base `3be6b6650caa`, candidate `5b4fde469079` — the same
+  merge base CI derives for this PR);
+- xenon, CI's exact arguments → **124 block identities** (= baseline
+  124), 0 module-rank, 0 project-average;
+- `tests/test_complexity_gate_scope.py` → 5 passed;
+- `pytest packages/maistro-evolve/tests -q` → **1211 passed, 12
+  skipped**; `pytest formal/models/ -q --timeout=300 --hypothesis-seed=0`
+  (with `maistro-evolve` installed, as CI's formal-conformance job does
+  via `pip install -e packages/maistro-evolve`) → the two RSI conformance
+  suites **10 passed**; running that pair *without* the install fails at
+  collection (`ModuleNotFoundError: maistro_evolve`) — environment, not
+  code, since `maistro-evolve` is deliberately not a uv workspace member;
+- `uv run ruff check .` / `ruff format --check .` → clean;
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact arguments) → **1219 reviewed
+  identities, 0 unclassified**, gate green, no ledger amendment;
+- `uv run mypy --strict packages/maistro-core/src` → Success, 848 files
+  (this needs `uv sync --locked --all-extras` + the evolve install —
+  CI's mypy job environment; a plain `--extra dev` sync misses the
+  `maistro_bootstrap` extra and reports one `import-not-found`);
+- branch coverage over the two refactored files from the 85
+  lift/manifest nodes: `lift_matrix.py` **100%** (0 missed statements,
+  0 partial branches), `evidence_manifest.py` **99%** (1 missed
+  statement, 2 partial branches — pre-existing);
+- `check-suite-inventory.py --suite packages/maistro-evolve/tests` → ok,
+  **1223** nodes match; `check-workflow-inventory.py` and
+  `check-workflow-write-safety.py` → ok (33 workflows);
+- CI check-runs captured at `5b4fde4690` show `Quality / Radon` —
+  **success**, Mutation gate **success**, 23 success / 3 skipped / **0
+  failures** across all reported checks (remaining checks queued at
+  capture time); the previously failing `gates-ran` is a downstream
+  status publisher over those checks and cannot stay red once they are.
+
+No test was added, removed, or moved in this round — the
+`inventory-delta` above is unchanged.
