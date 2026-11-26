@@ -430,3 +430,79 @@ Progress: `{checked: 4, done: 2, skipped: 0, errors: 0, next: "implement rows 8/
 Here `checked` counts the four CI failures, `done` the two repaired
 (retirement + its Quality-gate aggregate); the other two carry the disposition
 above.
+
+## Round 8 — independent verifier re-verification at the develop-merged head (job `809cf362a1aa48018243da895ba8e6de`)
+
+Starting HEAD `b9a42614c3` (exact match), worktree clean; the only change over
+Round 7 is the merge of develop `3be6b6650c` (Design-loop-start WIP, installed-
+workspace proof harness, gate-c/mutation workflow changes — no `quality/`, no
+JIT/auth files touched by the merge). Driver-supplied `check-*.log` files were
+inspected, then every load-bearing result below was re-executed fresh in this
+round. No code, test, ledger, grant, gate or policy file was edited; this
+section is the only change.
+
+### Executed at this head (verifier's own runs, not inherited claims)
+
+| Command | Result |
+| --- | --- |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | **42 passed** (matches driver log) |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-workspace-retirement.py` | exit 0: 78 -> 78 tolerated importers, OK on 89 entries (the Round-7 repair holds at the merged head) |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | exit 0: 4689 collected node IDs match the recorded inventory, 0 duplicate evidence (the merge's `test_design_loop_start_contract.py` is included) |
+| `uv run python scripts/check-release-consistency.py` | exit 0: released none / shipping 0.9.0 / target 1.0.0 |
+| closure-keyword scan: `git log <base>..HEAD --format=%s%n%b` pattern `(fixes\|closes\|resolves\|fix\|resolve) #N` | **0 matches**; PR #2529 body says "Refs #7" only — no premature issue closure |
+| `git diff --numstat origin/develop -- quality/` + content diff | exactly the documented lane deltas (`reachability-baseline.json` −1, `reachability-dispositions.json` +1/−1 with the entra_entitlements rationale); no develop rows lost by the merge |
+
+### Negative composition claims re-proven at the merged head (all true)
+
+- Row 8: `maistro/container.py:1409` returns 0 without a policy; the only
+  non-test `goal_reconciliation_policy` references are the field default
+  (`:519`) and the guard itself — no production assignment or tick caller;
+  `goals/reconciliation/wiring.py:134,139` answers a PostgreSQL pool with
+  `InMemoryGoalStore()`.
+- Row 11: `working_graph/manager.py:38-39,63` selects `create_backend("embedded", …)`;
+  `working_graph/backend.py` records `ladybugdb` as unpublished (literal Ladybug
+  backend not adoptable).
+- Row 12: `promote_evidence` has no caller outside `user_model/promotion.py` /
+  `__init__` re-export; `recall_for_task` is reachable only through the
+  owner-scoped `maistro_server/api/user_model.py` route.
+- Row 18: `packages/maistro-design/src` has no UserModel/Attention/recall code
+  consumer (only prose mentions in DESIGN.md catalogs).
+- Row 2/5: `.github/workflows/release.yml:23-24` still self-declares "NOT YET
+  EXERCISED … never run"; all 36 local tags are `backup/*` / `orphan-bak/*` /
+  pre-rebase lane tags — no release tags, so RC soak / byte-equivalent promotion
+  has no executed evidence.
+
+### Positive Row-19 inspection at the merged head
+
+- `services/oauth_login.py:344-352`: `authenticate` invokes the JIT provisioner
+  only for a verified, unlinked Entra identity; refusal falls through to the
+  uniform denial with the decision audited.
+- `services/entra_jit.py:64-65,82-100,156-161`: continuations validated to the
+  HTTPS `graph.microsoft.com` origin, default port, exact
+  `/v1.0/me/transitiveMemberOf` subject path, no userinfo/fragment, and the
+  untrusted URL is never echoed; malformed present continuations refuse rather
+  than admit on partial evidence; `_GRAPH_MAX_PAGES = 10` bounds paging.
+- `services/entra_jit.py` no longer binds the retiring `stores` module
+  (grep: no match); the structural pin
+  (`test_entra_jit_provisioning.py:890` `assert not hasattr(entra_jit_module, "stores")`)
+  and the strengthened disabled-JIT test (`:497-524`: real callback, 401, no
+  Graph membership request, no account/link/session/audit side effects) are
+  present and pass in the 42 above.
+- KNOWN-GAPS.md: all 15 entries carry an explicit shipped/deferred/limited
+  statement and a `Tracking:` line where limits remain (row 6 disposition
+  accounting re-confirmed by reading every entry).
+
+### Verdict carried forward
+
+Round 5/6/7 accounting is unchanged by the develop merge and independently
+re-confirmed here. Milestone acceptance: **NEEDS-REPAIR** — rows 8 and 18 are
+not met by current production composition; rows 2, 3, 5, 17 are UNVERIFIED
+(operator release-pipeline, clean-machine/live-model, RC-soak and
+discovery-pipeline evidence not obtainable in this environment); rows 4, 7, 9,
+11, 12 are PARTIAL; row 19 is deterministic-PASS with the live-tenant and
+reconciliation limits already declared. The lane's own repairs (pagination
+binding, disabled-JIT proof, retirement re-route) are sound and hold at this
+head; what remains is program-scale composition work, not a defect in this
+branch's diff.
+
+Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
