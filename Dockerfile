@@ -43,7 +43,7 @@
 # linux/amd64 present) — the images are simply unbuildable/unshippable on
 # it. Re-attempt only when every linux-relevant locked distribution ships a
 # cp315 binary artifact.
-FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
+FROM python:3.15.1-slim-bookworm@sha256:575f8bc12ec26542e0678bc6b60e385218248019d433157ec327264a78c3a853 AS builder
 WORKDIR /app
 # uv is the installer tool image — digest-pinned to the 0.12.21 release
 # (#349): a `:latest` tag could swap the installer under every build with no
@@ -240,7 +240,7 @@ RUN apk add --no-cache git && \
 # base-digest bump (#1152) additionally invalidated the previously cached
 # apt layer. Same base as the builder — see the #2430 rejection note above:
 # 3.15.2 is unbuildable for this image's locked install set.
-FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS runtime-apt
+FROM python:3.15.1-slim-bookworm@sha256:575f8bc12ec26542e0678bc6b60e385218248019d433157ec327264a78c3a853 AS runtime-apt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get upgrade -y \
