@@ -35,7 +35,6 @@ history:
 
 # ADR-074: Policy ⇄ ADR Deconfliction
 
-**Status:** Accepted
 **Date:** 2026-05-30
 **Closes a hole opened by:** ADR-073 (online-mutable policy) + ADR-068 (adaptive RLPHD) + ADR-070
 (Compose auto-adds learned entries) — together these let learned policy **silently drift** from the

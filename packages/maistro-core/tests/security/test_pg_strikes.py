@@ -458,3 +458,227 @@ async def test_rate_limiter_check_and_record_deletes_expired_windows(
         if c.method == "execute" and "DELETE FROM security_rate_limits" in c.query
     ]
     assert len(delete_calls) == 1
+
+
+async def test_purge_publishes_the_violation_evidence_volume(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """`security_violations` was the issue's named unbounded-evidence table:
+    the purge publishes its stored level, size and oldest retained record, so
+    a bounded mechanism nobody drives is visible in the level instead of
+    invisible in a zero delete count (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import (
+        retention_oldest_record_timestamp,
+        retention_table_bytes,
+        retention_table_rows,
+    )
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # The purge's RETURNING fetch, then the probe's to_regclass, sample row
+    # (one retained violation at `old`), and size row.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    assert await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC)) == 0
+
+    def _series(metric: Any) -> list[float]:
+        return [
+            float(s["value"])
+            for s in metric.collect()
+            if s.get("labels", {}) == {"table": "security_violations", "backend": "postgres"}
+        ]
+
+    assert _series(retention_table_rows) == [1.0]
+    assert _series(retention_table_bytes) == [8192.0]
+    assert _series(retention_oldest_record_timestamp) == [pytest.approx(old.timestamp())]
+
+    # Throttled per store: a second purge inside the interval probes nothing.
+    probe_calls_before = len([c for c in conn.calls if c.method == "fetchrow"])
+    conn.queue_fetch([])
+    await tracker.purge_expired(before=dt(2026, 8, 3, tzinfo=UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probe_calls_before
+
+
+async def test_the_two_security_stores_probe_independently(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """The throttle ledger is per store: `PgStrikeTracker` and `PgRateLimiter`
+    must not share a probe key, or a sweep loop driving both back-to-back
+    starves whichever purges second — one of the two security tables'
+    series would never publish, forever (#325).
+
+    Ran against the shared-key regression: the limiter's purge below issued
+    no probe queries at all and `security_rate_limits` published nothing,
+    because the tracker's purge had just stamped the only key.
+    """
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_table_rows
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # Tracker purge: RETURNING fetch, then its probe's to_regclass, sample
+    # and size rows.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    # Rate limiter purge, back-to-back in the same interval: its own probe
+    # must still run (to_regclass, sample, size) — a shared key would
+    # throttle it into publishing nothing.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 2, "oldest": old})
+    conn.queue_fetchrow({"b": 4096})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    def _rows(table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "postgres"}
+        ]
+
+    assert _rows("security_violations") == [1.0]
+    assert _rows("security_rate_limits") == [2.0]
+
+
+async def test_the_limiter_purge_leaves_the_trackers_probe_slot_free(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """Same contract, limiter-first ordering: the limiter's purge publishes
+    under its own key, so the tracker's probe gate is untouched and a sweep
+    loop that purges rate limits before strike violations still publishes
+    `security_violations` every interval (#325).
+
+    Ran against the miskeyed publication: the limiter's `min_interval_s=0`
+    publish re-stamped `security:postgres`, the tracker's gate below saw a
+    fresh probe and skipped sampling, so `security_violations` never
+    published for as long as each sweep kept that ordering.
+    """
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+    from maistro.observability.metrics import retention_table_rows
+
+    retention_health._LAST_PROBE.clear()
+    old = dt(2026, 8, 1, tzinfo=UTC)
+    # Rate limiter purge first: RETURNING fetch, then its probe's to_regclass,
+    # sample and size rows.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 2, "oldest": old})
+    conn.queue_fetchrow({"b": 4096})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    # Tracker purge, back-to-back in the same interval: its own gate must
+    # still be due — a shared key would throttle it into publishing nothing.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 1, "oldest": old})
+    conn.queue_fetchrow({"b": 8192})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+
+    def _rows(table: str) -> list[float]:
+        return [
+            float(s["value"])
+            for s in retention_table_rows.collect()
+            if s.get("labels", {}) == {"table": table, "backend": "postgres"}
+        ]
+
+    assert _rows("security_rate_limits") == [2.0]
+    assert _rows("security_violations") == [1.0]
+
+
+async def test_tracker_purge_rejects_a_nonpositive_limit(
+    patch_asyncpg: FakePool,
+) -> None:
+    """The bounded batch is bounded: a nonpositive limit is a broken sweep
+    loop, refused before any pool I/O."""
+    from datetime import datetime as dt
+
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await tracker.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC), limit=0)
+
+
+async def test_limiter_purge_rejects_a_nonpositive_limit(
+    patch_asyncpg: FakePool,
+) -> None:
+    """Same bounded-batch contract for the throttle ledger's purge."""
+    from datetime import datetime as dt
+
+    limiter = PgRateLimiter(db_url="postgres://x")
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC), limit=0)
+
+
+async def test_tracker_purge_legal_hold_compiles_the_held_scoped_query(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """A legal hold scopes the DELETE in SQL — `user_id <> ALL($2::text[])`
+    with the batch limit moved to $3 — so a held principal's violation
+    evidence is never in the deleted set, whatever rows qualify by age
+    (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    # The purge's RETURNING fetch, then its probe's to_regclass/sample/size.
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 0, "oldest": None})
+    conn.queue_fetchrow({"b": 0})
+    before = dt(2026, 8, 2, tzinfo=UTC)
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    await tracker.purge_expired(before=before, limit=250, legal_hold_user_ids=("held",))
+
+    purges = [
+        c
+        for c in conn.calls
+        if c.method == "fetch" and "DELETE FROM security_violations" in c.query
+    ]
+    assert len(purges) == 1
+    assert "user_id <> ALL($2::text[])" in purges[0].query
+    assert "LIMIT $3" in purges[0].query
+    assert purges[0].args == (before.astimezone(UTC), ["held"], 250)
+
+
+async def test_a_second_limiter_purge_inside_the_probe_interval_probes_nothing(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    """The throttle ledger's stored-volume probe is amortized like every
+    other store's: two purges inside one interval sample the table once
+    (#325)."""
+    from datetime import datetime as dt
+
+    from maistro.observability import metrics as retention_health
+
+    retention_health._LAST_PROBE.clear()
+    conn.queue_fetch([])
+    conn.queue_fetchrow({"ok": True})
+    conn.queue_fetchrow({"n": 0, "oldest": None})
+    conn.queue_fetchrow({"b": 0})
+    limiter = PgRateLimiter(db_url="postgres://x")
+    await limiter.purge_expired(before=dt(2026, 8, 2, tzinfo=UTC))
+    probes_after_first = len([c for c in conn.calls if c.method == "fetchrow"])
+    assert probes_after_first >= 1
+
+    # Inside the interval: the purge still runs, the probe does not.
+    conn.queue_fetch([])
+    await limiter.purge_expired(before=dt(2026, 8, 3, tzinfo=UTC))
+    assert len([c for c in conn.calls if c.method == "fetchrow"]) == probes_after_first

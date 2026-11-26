@@ -48,6 +48,8 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     ProtectedOperation("DELETE", "/v1/dags", "dags.write", "delete DAGs"),
     ProtectedOperation("DELETE", "/v1/schedules", "schedules.write", "delete schedules"),
     ProtectedOperation("DELETE", "/v1/workspaces", "workspaces.write", "delete workspaces"),
+    # Project onboarding wizard (#34 CONNECT); in-route ownership still applies.
+    ProtectedOperation("DELETE", "/v1/projects", "projects.write", "delete projects"),
     ProtectedOperation("POST", "/v1/settings", "config.write", "change settings"),
     ProtectedOperation("POST", "/v1/mcp", "mcp.write", "change MCP configuration"),
     ProtectedOperation("POST", "/v1/agents", "agents.write", "change agents"),
@@ -71,6 +73,12 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     ProtectedOperation("POST", "/v1/credentials", "credentials.write", "test a credential"),
     ProtectedOperation("POST", "/v1/harness", "harness.execute", "run harness sessions"),
     ProtectedOperation("POST", "/v1/rsi", "rsi.execute", "run RSI"),
+    # Scoring a Run is an evaluated-effect mutation, not a read (#2470):
+    # the trigger launches a billed model call and writes the shared
+    # improvement evidence the optimizer ranks on. It must never ride the
+    # read permission Workspace membership grants (develop; the GET
+    # carve-out lives in services/authorization.py).
+    ProtectedOperation("POST", "/v1/eval-judge", "eval.score", "score a run"),
     # Resolving an approval is an authority-bearing decision, not a
     # generic configuration write. Require the dedicated approver scope;
     # the route applies the action-specific policy on top of this.
@@ -80,6 +88,10 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
     ),
     ProtectedOperation("POST", "/v1/capabilities", "config.write", "change capabilities"),
     ProtectedOperation("POST", "/v1/providers", "config.write", "activate providers"),
+    # Project onboarding wizard (intake/scan/deploy). The external-build
+    # webhook is carved out in services/authorization.py — it authenticates
+    # via EXTERNAL_BUILD_CALLBACK_TOKEN, not projects.write.
+    ProtectedOperation("POST", "/v1/projects", "projects.write", "run the project wizard"),
     ProtectedOperation("PUT", "/v1/settings", "config.write", "change settings"),
     ProtectedOperation("PUT", "/v1/providers", "config.write", "store provider keys"),
     ProtectedOperation("PUT", "/v1/mcp/servers", "mcp.write", "change MCP servers"),

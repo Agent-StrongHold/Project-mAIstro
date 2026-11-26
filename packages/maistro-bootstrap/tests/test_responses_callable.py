@@ -7,6 +7,9 @@ agent silently degrades to stub responses.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from maistro_bootstrap.builders.responses_callable import (
@@ -62,3 +65,34 @@ def test_unconfigured_returns_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     result = LiteLLMCallable()(messages=[{"role": "user", "content": "hi"}])
     assert result["stop_reason"] == "end_turn"
     assert "not configured" in result["content"]
+
+
+def test_docker_compose_litellm_hostname_rewrites_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compose-internal `litellm` host is rewritten for host-side builders."""
+    from maistro_bootstrap.builders import responses_callable as rc
+
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LITELLM_URL", "http://litellm:4000")
+    monkeypatch.setattr(rc, "_env_loaded", False)
+    assert _base_url() == "http://127.0.0.1:4000"
+
+
+def test_ensure_env_loaded_rewrites_after_dotenv_outside_pytest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-pytest path: load .env then rewrite compose hostnames (diff-coverage)."""
+    from maistro_bootstrap.builders import responses_callable as rc
+
+    (tmp_path / ".env").write_text("LITELLM_URL=http://litellm:4000\n", encoding="utf-8")
+
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(rc, "_env_loaded", False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(
+        "maistro_bootstrap.repo_root.find_maistro_engine_root",
+        lambda: tmp_path,
+    )
+    rc._ensure_env_loaded()
+    assert os.environ.get("LITELLM_URL") == "http://127.0.0.1:4000"

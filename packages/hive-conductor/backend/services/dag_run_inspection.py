@@ -61,8 +61,20 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any
 
-from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS, get_dag_run_store
+from services.dag_run_store import (
+    MAX_EVENTS_PER_RUN,
+    MAX_RUNS,
+    DagRunStore,
+    get_dag_run_store,
+)
 from services.workspace_authority import list_views_for_user
+
+
+def _fresh_store() -> DagRunStore:
+    """Refresh the shared projection before every production inspection."""
+    store = get_dag_run_store()
+    store.reload()
+    return store
 
 
 def _canonical_run_id(record: dict[str, Any]) -> str:
@@ -373,7 +385,7 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     # canonical execution truth before the caller's limit is applied.
     in_scope = [
         summary
-        for summary in get_dag_run_store().list_runs(limit=MAX_RUNS)
+        for summary in _fresh_store().list_runs(limit=MAX_RUNS)
         if _in_scope(summary, allowed)
     ]
     # One batched canonical read for the page, not one membership resolution
@@ -434,7 +446,7 @@ async def can_inspect_run(user_id: str, run_id: str) -> bool:
     through the scoped reader (#1036): readable means inspectable, and every
     reader refusal (absent, down, foreign) stays closed.
     """
-    record = get_dag_run_store().get_run(run_id)
+    record = _fresh_store().get_run(run_id)
     if record is None:
         return bool(await _readable_canonical_runs([run_id], user_id))
     allowed = await authorized_workspace_ids(user_id)
@@ -451,7 +463,7 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     any producer that left no projection row is answered from the canonical
     Run itself, by its own id, through the same scoped reader (#1036).
     """
-    record = get_dag_run_store().get_run(run_id)
+    record = _fresh_store().get_run(run_id)
     if record is None:
         runs = await _readable_canonical_runs([run_id], user_id)
         run = runs.get(run_id)
@@ -506,6 +518,36 @@ async def canonical_runs_for(user_id: str, run_ids: Iterable[str]) -> dict[str, 
     return await _readable_canonical_runs([str(run_id) for run_id in run_ids if run_id], user_id)
 
 
+async def visible_aliases_for_canonical_run(
+    user_id: str, canonical_run_id: str, workspace_id: str
+) -> list[str]:
+    """The projection aliases this caller may reach one canonical Run under.
+
+    Evidence recorded before canonical keying (#2470) lives under the alias a
+    producer minted — an id the caller may not hold when they address the Run
+    by its canonical id. Discovery walks the retained projection for rows
+    correlating to that Run and returns only aliases that pass the same
+    boundary every read uses (#1174): the row is filed in the canonical Run's
+    own Workspace, which must itself sit inside the caller's Workspace
+    universe — the same association rule the POST gate and the read-side
+    canonical fallback apply, so a cross-linked row can never name evidence
+    across a boundary. The canonical id itself is never returned: it is not
+    an alias.
+    """
+    canonical_run_id = str(canonical_run_id)
+    workspace_id = str(workspace_id)
+    if not canonical_run_id or not workspace_id:
+        return []
+    if workspace_id not in await authorized_workspace_ids(user_id):
+        return []
+    return [
+        str(row.get("id") or "")
+        for row in _fresh_store().rows_for_canonical(canonical_run_id)
+        if str(row.get("workspace_id") or "") == workspace_id
+        and str(row.get("id") or "") not in ("", canonical_run_id)
+    ]
+
+
 def retention_bounds() -> dict[str, Any]:
     """What this deployment keeps, and whether it keeps it across a restart.
 
@@ -556,7 +598,7 @@ async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:
     absent from the result, exactly as it is invisible to the by-id readers.
     """
     allowed = await authorized_workspace_ids(user_id)
-    store = get_dag_run_store()
+    store = _fresh_store()
     candidates = [str(run_id) for run_id in run_ids]
     visible: set[str] = set()
     projectionless: list[str] = []

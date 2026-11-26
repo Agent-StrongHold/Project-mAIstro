@@ -1,9 +1,7 @@
 """Phase 5 — Signal #3 endpoints for eval-judge.
 
   POST /v1/eval-judge/{run_id}
-      Manually trigger eval-judge on a DurableRun. The caller MUST pass
-      the run record (typically pulled from /v1/dag-runs/{run_id}).
-      Returns the verdict.
+      Manually trigger eval-judge on a canonical Run. Returns the verdict.
 
   GET /v1/eval-judge/{run_id}
       Read the persisted verdict for one run.
@@ -11,18 +9,46 @@
   GET /v1/eval-judge
       List recent verdicts (capped to `limit`, newest first).
 
-The manual trigger is what the optimizer's scheduler will call between
-user runs once Phase 6 lands; for now it lets a user click 'Score this
-run' from DagRuns.tsx and read the eval-judge's rationale + topology
-proposal verbatim.
+Authorization is split by method, because the two halves of this surface are
+different kinds of act (#2470):
 
-The trigger and both read routes — GET /v1/eval-judge/{run_id} (one
-verdict) and GET /v1/eval-judge (recent verdicts) — read through
-`services.dag_run_inspection`, the same scoped door the dag-runs routes use
-(#1174): a run outside the caller's Workspace universe is refused with the
-run's usual non-existence response, not scored for whoever asks, and its
-verdict — if one was ever recorded — is neither served nor listed
-cross-Workspace.
+* The reads — GET /{run_id} and GET / — stay the #1174 in-route scoped read:
+  `services.dag_run_inspection` answers both, a run outside the caller's
+  Workspace universe is refused with the run's usual non-existence response,
+  and its verdict — if one was ever recorded — is neither served nor listed
+  cross-Workspace. Workspace membership admits reads (#1152).
+
+* The POST is an evaluated-effect mutation, never a read: it launches a real
+  LiteLLM model call (billed provider spend) and writes the verdict rows the
+  optimizer consumes as improvement-ranking evidence. Three gates stand
+  between a request and that effect, each fail-closed:
+
+  1. The HTTP capability `eval.score` (services.authorization PROTECTED_OPS):
+     an assigned-and-elevated capability like rsi.execute — the permission
+     the #2470 role rule makes an admin's assignment decision, never a
+     side effect of Workspace membership.
+  2. The canonical mutation gate: the target Run is resolved through the
+     shared `RunStoreBoundary.require_run_mutation` — the same
+     initiator/administrator rule the #2466 cancel control applies — so only
+     the Run's initiating principal or a Workspace administrator gets past,
+     and a projection row cannot delegate write authority across Workspaces.
+     (No separate "evaluator delegation" authority exists in this tree; until
+     one lands, the gate is exactly initiator-or-administrator — fail-closed.)
+  3. Terminality: only a terminal Run (completed/failed/cancelled/timed out)
+     can be scored; a live Run's evidence is not settled yet.
+
+Evidence semantics (#2470): the verdict is keyed by the canonical Run id and
+protected by services.eval_judge — a valid verdict is terminal evidence, so
+retrying returns it verbatim (no second model effect, no restart double-fire),
+and a later failing/unparseable/unavailable attempt can never downgrade it.
+A valid verdict a producer recorded before canonical keying lives under the
+projection alias; the route resolves it for the authorized Run whichever id
+the caller holds, honoring it verbatim
+keeps one paid model effect per logical score across the upgrade and writes
+nothing. There is deliberately no automatic re-score or supersede here:
+replacing a valid verdict is a governed decision the M2 policy owns, not a
+side effect of calling POST again. Audit records the successful scoring
+effect with its canonical actor; refused requests mutate nothing.
 """
 
 from __future__ import annotations
@@ -30,8 +56,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from services.dag_run_inspection import visible_run_detail, visible_run_ids
-from services.eval_judge import get_verdict, score_run
+from services.dag_run_inspection import (
+    visible_aliases_for_canonical_run,
+    visible_run_detail,
+    visible_run_ids,
+)
+from services.eval_judge import get_verdict, is_valid_verdict, score_run
 from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["eval-judge"])
@@ -49,13 +79,82 @@ async def read_verdict(run_id: str, request: Request) -> dict[str, Any]:
     # non-existence answer — identical to a missing run's — so the response
     # never confirms a run (or a verdict for it) exists beyond the caller's
     # boundary. "No verdict" is only answerable for a run the caller may
-    # already inspect.
-    if await visible_run_detail(_user_id(request), run_id) is None:
+    # already inspect. Evidence is keyed by canonical Run id (#2470), so a
+    # projection-id read falls back to the canonical id — but only after the
+    # alias itself is proven: the overlay leaves a cross-linked projection
+    # row untouched, so its canonical_run_id is not read authorization. The
+    # fallback resolves the Run through the scoped reader and requires the
+    # projection's own Workspace before serving canonical-keyed evidence.
+    detail = await visible_run_detail(_user_id(request), run_id)
+    if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
     v = get_verdict(run_id)
     if v is None:
+        v = await _canonical_keyed_verdict(_user_id(request), detail)
+    if v is None:
+        v = await _legacy_alias_verdict(_user_id(request), run_id, detail)
+    if v is None:
         raise HTTPException(status_code=404, detail="no verdict for run_id")
     return v
+
+
+async def _legacy_alias_verdict(
+    uid: str, run_id: str, detail: dict[str, Any]
+) -> dict[str, Any] | None:
+    """A pre-canonical verdict under this Run's projection alias, if visible.
+
+    The read-side twin of the POST's legacy-evidence discovery (#2470): a
+    caller addressing the Run by its canonical id gets the same evidence an
+    alias read serves, so one logical score is visible through either id.
+    Discovery runs through the inspection seam — only rows filed in the
+    canonical Run's own Workspace, inside this caller's universe, are
+    considered, so a cross-linked row never names evidence here. Every
+    refusal degrades to the ordinary "no verdict" answer.
+    """
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id or str(detail.get("id") or "") != canonical_run_id:
+        # Alias-keyed reads already answered via the direct alias lookup.
+        return None
+    for alias_id in await visible_aliases_for_canonical_run(
+        uid, canonical_run_id, str(detail.get("workspace_id") or "")
+    ):
+        v = get_verdict(alias_id)
+        if is_valid_verdict(v):
+            return v
+    return None
+
+
+async def _canonical_keyed_verdict(uid: str, detail: dict[str, Any]) -> dict[str, Any] | None:
+    """The projection's canonical-keyed verdict, only when the alias is proven.
+
+    ``detail["canonical_run_id"]`` alone is not read authorization: the
+    inspection overlay deliberately leaves a projection row unchanged when
+    its canonical Run is unreadable or filed in another Workspace, so the id
+    can name a foreign Run whose verdict must never surface here. The alias
+    is honored only when the scoped reader admits this caller to the Run
+    itself and the Run is filed in the projection's own Workspace — the
+    read-side twin of the POST gate's association check. Every refusal
+    degrades to the ordinary "no verdict" answer, indistinguishable from a
+    missing one, so nothing about the foreign Run is confirmed.
+    """
+    from services.engine import get_engine
+
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id:
+        return None
+    try:
+        reader = get_engine().run_reader
+    except Exception:
+        return None
+    if reader is None:
+        return None
+    try:
+        run = await reader.get_run(canonical_run_id, principal_id=uid)
+    except Exception:
+        return None
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        return None
+    return get_verdict(canonical_run_id)
 
 
 @router.get("")
@@ -78,34 +177,172 @@ async def list_verdicts(request: Request, limit: int = 25) -> list[dict[str, Any
     return [v for v in verdicts if str(v.get("run_id") or "") in visible][: max(1, min(limit, 100))]
 
 
+async def _canonical_scoreable_run(uid: str, run_id: str, detail: dict[str, Any]) -> Any:
+    """Resolve the canonical target Run through the shared mutation gate.
+
+    The same object shapes the #2466 cancel control answers from: the engine
+    bridge's wired reader triple when one is wired, otherwise the embedded
+    Workspace authority fallback (whose refusals stay fail-closed). Absent,
+    foreign, and initiator/admin-refused targets all answer the seam's one
+    non-disclosing 404; an unreachable canonical authority answers 503.
+    """
+    from services.engine import get_engine
+    from services.workspace_authority import EmbeddedRuntimeUnavailable, canonical_workspace_store
+
+    from maistro.runs.scoped_reads import RunNotVisible
+    from maistro.runs.store_boundary import RunStoreBoundary
+
+    canonical_run_id = str(detail.get("canonical_run_id") or detail.get("id") or run_id)
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from None
+    store = getattr(engine, "run_store", None)
+    reader = getattr(engine, "run_reader", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    try:
+        if reader is None:
+            # Degraded bridge, exactly as the cancel control degrades: the
+            # embedded fallback Workspace authority, fail-closed refusals.
+            workspace_store = await canonical_workspace_store()
+            boundary = RunStoreBoundary(store, workspace_store, workspace_store.project_store)
+        else:
+            boundary = RunStoreBoundary(
+                reader.run_store, reader.workspace_store, reader.project_store
+            )
+        run = await boundary.require_run_mutation(canonical_run_id, principal_id=uid)
+    except RunNotVisible as exc:
+        # Absent, foreign, and initiator/admin-refused targets are the same
+        # non-disclosing 404 the read seam answers with (#1152, #2466).
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except EmbeddedRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    # Projection-to-Run association (#2466): a row filed in one Workspace
+    # cannot delegate scoring of a canonical Run filed in another, even when
+    # the caller is authorized against that Run's own Workspace. The direct
+    # canonical route remains open to whoever the mutation gate admits.
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        raise HTTPException(status_code=404, detail="run not found")
+    return run
+
+
+async def _legacy_alias_evidence(
+    uid: str, run_id: str, canonical_run_id: str, workspace_id: str
+) -> dict[str, Any] | None:
+    """Pre-canonical evidence for this Run, whichever id the caller holds.
+
+    When the caller holds the alias itself, the direct lookup honors it: the
+    alias was proven by the same authorized read that resolved this Run.
+    When the caller holds only the canonical id, no direct lookup is
+    possible, so discovery through the inspection seam resolves the
+    projection alias this Run was recorded under (#2470). Either way the
+    valid durable row is the score — one paid model effect per logical
+    score across the upgrade, no canonical-keyed duplicate for the
+    optimizer to count twice — and nothing is mutated.
+    """
+    if run_id != canonical_run_id:
+        evidence = get_verdict(run_id)
+        if is_valid_verdict(evidence):
+            return evidence
+    for alias_id in await visible_aliases_for_canonical_run(uid, canonical_run_id, workspace_id):
+        evidence = get_verdict(alias_id)
+        if is_valid_verdict(evidence):
+            return evidence
+    return None
+
+
 @router.post("/{run_id}")
 async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
-    """Score the run captured in dag_run_store. For Phase 5 we score off
-    the dag_run_store's run-record-shaped summary (DurableRunRecord
-    integration lands when the executor publishes the durable record
-    into dag_run_store; until then, this endpoint accepts whatever
-    dag_run_store returns and gracefully scores it).
+    """Score a terminal canonical Run.
 
-    Scoped like every other run reader (#1174): the projection is read
-    through the inspection service, so an out-of-scope run gets the same
-    404 a missing one gets — and is never scored.
+    Read visibility never admits a scoring effect (#2470): the POST first
+    resolves the canonical target through the mutation gate (initiator or
+    Workspace administrator — membership alone refuses like a missing run),
+    then requires terminality, then honors the evidence contract — an
+    existing valid verdict IS the score and is returned verbatim without a
+    second model effect. Only then does the governed scorer run, writing the
+    verdict under the canonical Run id with its canonical actor/scope
+    provenance; a successful score is audited. Every refusal above happens
+    before any model call, verdict write, proposal, usage or audit mutation.
     """
-    run = await visible_run_detail(_user_id(request), run_id)
-    if run is None:
+    uid = _user_id(request)
+    detail = await visible_run_detail(uid, run_id)
+    if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
 
-    # dag_run_store's get_run returns a dict; wrap it in a tiny adapter
-    # so the eval_judge service can read .run_id / .node_records / etc.
+    run = await _canonical_scoreable_run(uid, run_id, detail)
+
+    from maistro.runs.model import TERMINAL_RUN_STATUSES
+
+    if run.status not in TERMINAL_RUN_STATUSES:
+        # A live Run's evidence is not settled: running/waiting/paused/queued
+        # targets refuse with a conflict the authorized caller can act on.
+        # The initiator/admin gate already admitted this caller, so the
+        # answer may name the refusal honestly (unlike the non-disclosing
+        # 404s above, which hide existence from non-mutators).
+        raise HTTPException(
+            status_code=409, detail="run is not terminal; only a terminal run can be scored"
+        )
+
+    canonical_run_id = run.run_id
+
+    # Idempotent scoring (#2470): a valid persisted verdict for this canonical
+    # Run is the score. Retry — double-click, replay after restart — returns
+    # it verbatim and pays for no new model effect. Replacing it is a
+    # governed decision, not a re-POSTable side effect.
+    existing = get_verdict(canonical_run_id)
+    if is_valid_verdict(existing):
+        return existing
+    alias_evidence = await _legacy_alias_evidence(
+        uid, run_id, canonical_run_id, str(run.workspace_id)
+    )
+    if is_valid_verdict(alias_evidence):
+        return alias_evidence
+
     class _Adapter:
         def __init__(self, d: dict[str, Any]) -> None:
-            self.run_id = d.get("id", run_id)
+            # Evidence is keyed by the canonical identity the gate just
+            # admitted, never by a projection alias (#2470).
+            self.run_id = canonical_run_id
             self.dag_id = d.get("dag_id", "")
             self.project_id = d.get("project_id", "")
             self.status = d.get("status", "")
             # Convert events → minimal node-record shape for the rubric.
             self.node_records = _events_to_node_records(d.get("events") or [])
 
-    return await score_run(_Adapter(run))
+    verdict = await score_run(
+        _Adapter(detail),
+        actor_id=uid,
+        workspace_id=str(detail.get("workspace_id") or ""),
+        canonical_run_id=canonical_run_id,
+    )
+    stored = get_verdict(canonical_run_id)
+    if is_valid_verdict(verdict):
+        from routes.audit import log_audit
+
+        log_audit(
+            "eval_judge_score",
+            uid,
+            target=canonical_run_id,
+            detail={
+                "run_id": run_id,
+                "canonical_run_id": canonical_run_id,
+                "dag_id": str(detail.get("dag_id") or ""),
+                "workspace_id": str(detail.get("workspace_id") or ""),
+                "score": verdict.get("score"),
+                "evaluator_version": verdict.get("evaluator_version"),
+            },
+        )
+    if is_valid_verdict(stored):
+        # The caller sees exactly what the evidence store holds — the same
+        # row a retry will return (#2470).
+        return stored
+    return verdict
 
 
 def _events_to_node_records(events: list[dict[str, Any]]) -> list[Any]:

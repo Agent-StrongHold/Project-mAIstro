@@ -24,6 +24,20 @@ layering the Workspace lifecycle over all of it.
 from __future__ import annotations
 
 from maistro.graph.definitions import Node
+from maistro_design.packs.artifacts import (
+    BookPages,
+    BookSpread,
+    ForeignArtifactKindError,
+    GameLoop,
+    PackArtifactError,
+    PackArtifactKind,
+    PackArtifactRecord,
+    ProductSpec,
+    parse_pack_artifact,
+    parse_thesis_artifact,
+    payload_model,
+    persist_thesis_artifact,
+)
 from maistro_design.packs.graphs import pack_graph_template
 from maistro_design.packs.lifecycle import (
     InMemoryPackLifecycleStore,
@@ -87,12 +101,41 @@ _VULTURE_EXECUTE_BACKENDS = (
     ExecuteBackend.TEXT_ARTIFACT_TREE,
     ExecuteBackend.MEDIA,
 )
+# M7-A9 (#985): the payload-kind enum's members are named by YAML manifest
+# values and resolved dynamically through `payload_model`, so no scanned call
+# site names a member literally — same shape as the pack id/backend enums.
+_VULTURE_PACK_ARTIFACT_KINDS = (
+    PackArtifactKind.PRODUCT_SPEC,
+    PackArtifactKind.GAME_LOOP,
+    PackArtifactKind.BOOK_PAGES,
+)
 _VULTURE_WHITELIST = (
     PackRegistry.builtin,
     PackRegistry.summaries,
     DomainPack._validate_pack,
     PackGraphShape._validate_shape,
     DomainPack.instantiate_rubric_catalog,
+    # M7-A9 (#985) artifact surface: the payload models are constructed by
+    # pydantic validation and their fields read by tests/consumers outside
+    # the src scan; `read_record` is the read-back seam of the persisted
+    # form. Vulture counts attribute loads only — model_construct keyword
+    # names are never counted — so each carried field name is an attribute
+    # load on a constructed instance (the scan-input repair for the
+    # exact-debt-ledger gate, #985: the previous kwargs form banked
+    # nothing). Names vulture sees used elsewhere in the scan (`job`,
+    # `metrics`, `surfaces`, `verb`, `loop`, `session`, `fail`, `n`,
+    # `text`, `spreads`) need no entry; these four do.
+    ProductSpec.model_construct(job="", metrics=(), surfaces=(), non_goals=()).non_goals,
+    BookSpread.model_construct(n=1, text="", art="").art,
+    GameLoop.model_construct(verb="", loop="", session="", fail="", feel=()).feel,
+    BookPages.model_construct(spreads=())._ordered_from_one,
+    PackArtifactRecord.read,
+    PackArtifactRecord.persist,
+    parse_pack_artifact,
+    parse_thesis_artifact,
+    persist_thesis_artifact,
+    payload_model,
+    GoalRubricCatalog.weight_sum,
     # M9-F3 (#968) lifecycle surface: the service and store methods are the
     # governed seams deployments and the conformance tests consume; the
     # Design Studio route sits outside the ``packages/*/src`` scan, so the
@@ -134,14 +177,21 @@ _VULTURE_WHITELIST = (
 )
 
 __all__ = [
+    "BookPages",
+    "BookSpread",
     "DomainPack",
     "ExecuteBackend",
     "FencePoint",
+    "ForeignArtifactKindError",
+    "GameLoop",
     "GoalRubricCatalog",
     "GoalRubricDimension",
     "InMemoryPackLifecycleStore",
     "InvalidLifecycleOperation",
     "PackActivationRecord",
+    "PackArtifactError",
+    "PackArtifactKind",
+    "PackArtifactRecord",
     "PackConcurrentWriteConflict",
     "PackConfigurationInvalid",
     "PackGraphShape",
@@ -164,6 +214,7 @@ __all__ = [
     "PackTransitionKind",
     "PackUpgradeBlocked",
     "PackUpgradePreflight",
+    "ProductSpec",
     "RubricDimension",
     "SnapshotIntegrityError",
     "UnknownPackError",
@@ -171,6 +222,10 @@ __all__ = [
     "pack_from_snapshot",
     "pack_graph_template",
     "parse_manifest",
+    "parse_pack_artifact",
     "parse_pack_version",
+    "parse_thesis_artifact",
+    "payload_model",
+    "persist_thesis_artifact",
     "snapshot_pack",
 ]

@@ -437,6 +437,52 @@ class TestRuntimeMaterialization:
         assert isinstance(agent._strategy, DirectStrategy)
         assert agent.identity.tools == ("poll_jira",)
 
+    async def test_workspace_binding_prompt_fragment_is_appended_to_soul(self) -> None:
+        """#2276 — sticky prompt_fragment lands in the upserted soul body."""
+        from datetime import UTC, datetime
+
+        from models.workspace import AgentToolBinding, WorkspacePresentation
+        from services.workspace_authority import presentation_store
+
+        container, wired, prompts = _runtime_container()
+        register_runtime_source(container=container, llm=object(), preamble="Preamble.")
+        presentation_store()["ws-bind"] = WorkspacePresentation(
+            workspace_id="ws-bind",
+            persona_template_id="pm_fleet",
+            tool_bindings=[
+                AgentToolBinding(
+                    agent_id="Sprint Check",
+                    tools=["poll_jira"],
+                    prompt_fragment="Always cite the ticket.",
+                )
+            ],
+            updated_at=datetime.now(UTC),
+        )
+        t = stores.now()
+        defn = Agent(
+            id="ws-bind.Sprint Check",
+            workspace_id="ws-bind",
+            name="Sprint Check",
+            description="Check the sprint",
+            model="gemini-3.5-flash",
+            status="idle",
+            capabilities=["poll_jira", "create_epic"],
+            skills=[],
+            tasks_completed=0,
+            avg_response_time_ms=0.0,
+            last_active=t,
+            created_at=t,
+            config={"soul": "Base soul."},
+        )
+
+        await materialize_runtime(defn)
+
+        agent = wired["Sprint Check"]
+        assert agent.identity.tools == ("poll_jira",)
+        _name, body, _label = prompts.upserted[0]
+        assert "Base soul." in body
+        assert "Always cite the ticket." in body
+
     async def test_without_a_runtime_the_row_is_stamped_and_no_agent_is_fabricated(self) -> None:
         """StubAgentPort honesty: a stored definition must not wear the shape
         of an executable agent when no runtime exists behind the process."""

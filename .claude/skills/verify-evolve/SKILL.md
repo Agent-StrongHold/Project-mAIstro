@@ -1,6 +1,6 @@
 ---
 name: verify-evolve
-description: Run the maistro-evolve test suite (83 tests covering tournament selection, fitness, cycle detection, diversity, population, harness). Use when touching packages/maistro-evolve/.
+description: "Run the maistro-evolve test suite (83 tests covering tournament selection, fitness, cycle detection, diversity, population, harness). Use when touching packages/maistro-evolve/."
 ---
 
 Run the maistro-evolve tests:

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BRANCH_INDEPENDENCE_REGISTRY = ROOT / "quality" / "branch-independence.json"
 BRANCH_INDEPENDENCE_CHECKER = ROOT / "scripts" / "check-branch-independence.py"
 QUALITY_PREFIX = "quality/"
-BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated"})
+BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated", "folded_notes"})
 
 AUTO_PREFIXES = (
     "claude/",
@@ -140,7 +140,22 @@ class Assessment:
         if self.merge_group:
             self.eligible = not self.red_reasons
         elif self.autonomous:
-            self.eligible = self.risk == "green"
+            # Machine-derived quality evidence (base_derived/generated
+            # baselines) is validated by its own gates: a candidate cannot
+            # game the ledger without also editing the checker, and the
+            # checker is a TRUSTED_PATTERN (always RED). Amending these
+            # baselines is the designed CI-repair-round behavior, so a yellow
+            # consisting ONLY of branch-independent-evidence reasons — and
+            # no integrity finding — remains autonomously eligible.
+            # Blast-radius yellows (pyproject, requirements, auth surfaces)
+            # and integrity findings keep requiring the human path.
+            _evidence_prefix = "branch-independent quality evidence changed"
+            self.eligible = self.risk == "green" or (
+                self.risk == "yellow"
+                and not self.integrity_reasons
+                and bool(self.yellow_reasons)
+                and all(reason.startswith(_evidence_prefix) for reason in self.yellow_reasons)
+            )
         else:
             self.eligible = True
         return self

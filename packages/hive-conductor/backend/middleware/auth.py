@@ -1,6 +1,8 @@
 """Auth middleware — session cookies, role-based access, task-scoped elevation.
 
-Public paths (setup, login, health, static) bypass auth.
+Public paths (login, health, static) bypass auth; the setup wizard API is
+public only inside the pre-setup window (#313), and the bootstrap status
+and preset reads the SPA needs on both sides of that line stay public.
 Admin role is blocked from /v1/chat/ routes (break-glass only).
 Protected ops require elevation bound to a task — permissions die with the task.
 """
@@ -16,8 +18,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import Request
 from routes import auth as auth_routes
 from routes import setup as setup_routes
-from services import voice_identity
-from services.permission_policy import protected_ops_by_method
+from services import authorization, voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
@@ -25,9 +26,14 @@ from maistro.identity import Principal
 
 logger = logging.getLogger("hive.auth_middleware")
 
-_PUBLIC_PREFIXES = (
+_PUBLIC_PREFIXES = ("/health",)
+
+#: Wizard APIs that are public only inside the pre-setup window (#313): the
+#: wizard runs when no account exists yet to authenticate with, and normal
+#: auth applies once setup goes terminal. Same fail-closed boundary for both.
+_PRE_SETUP_PUBLIC_PREFIXES = (
+    "/v1/install/",
     "/v1/setup/",
-    "/health",
 )
 
 #: Authenticated like everything else, but by a device credential rather than a
@@ -61,8 +67,12 @@ _PUBLIC_EXACT = frozenset(
 # blocked from chat so it can never become the daily driver.
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
-# Generated from the shared policy inventory. Do not add route permissions here.
-_PROTECTED_OPS: dict[str, dict[str, str]] = protected_ops_by_method()
+# Compatibility export for tests and callers that inspect the policy table.
+# scripts/check_enumerations.py imports this alias; the single table lives in
+# services/authorization.py beside the UI contract it feeds. Issue #336's
+# services/permission_policy.py must generate this exact table —
+# scripts/check-conductor-permission-matrix.py fails when the two drift.
+_PROTECTED_OPS = authorization.PROTECTED_OPS
 
 
 def _matches_public_prefix(path: str, prefix: str) -> bool:
@@ -116,16 +126,7 @@ def resolve_principal(
         return None
 
 
-def principal_has_permission(user: Principal | Mapping[str, Any], perm: str) -> bool:
-    if isinstance(user, Principal):
-        return user.has_permission(perm)
-    if user.get("role") == "admin":
-        return True
-    user_perms = user.get("permissions", [])
-    if perm not in user_perms:
-        return False
-    elevated = user.get("elevated_permissions", [])
-    return perm in elevated
+principal_has_permission = authorization.principal_has_permission
 
 
 def origin_allowed(origin: str | None, host: str | None = None) -> bool:
@@ -135,12 +136,12 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
 
     1. **Same-origin.** The page that opened the socket is served by this very
        server (`Origin`'s authority == the request's own `Host`). CORS never
-       applies to same-origin requests, so a deployment reached at
-       `http://192.0.2.1:8101` — where the SPA and the API share an origin —
-       has never had any reason to list itself in `CORS_ORIGINS`, and most
-       don't. Checking the configured list alone would reject the app's own
-       front end on every non-localhost deployment, because the defaults in
-       `config.py` only cover localhost.
+       applies to same-origin requests, so a deployment reached at a
+       same-host URL — where the SPA and the API share an origin — has never
+       had any reason to list itself in `CORS_ORIGINS`, and most don't.
+       Checking the configured list alone would reject the app's own front
+       end on every non-loopback deployment, because the defaults in
+       `config.py` only cover loopback origins.
     2. **No Origin at all.** curl and other non-browser callers send none.
        Origin-based rules only bind browsers; such a caller still needs a valid
        session.
@@ -175,11 +176,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
-        # The install wizard API is only useful before first-run provisioning,
-        # when no account exists yet to authenticate with. Public pre-setup;
-        # normal auth applies once setup completes (same one-shot boundary as
-        # /v1/setup/complete's 409 guard).
-        if _matches_public_prefix(path, "/v1/install/") and not self._setup_complete():
+        # The install wizard and setup wizard APIs are only useful before
+        # first-run provisioning, when no account exists yet to authenticate
+        # with (#313). Public pre-setup; normal auth applies once setup goes
+        # terminal (same one-shot boundary as /v1/setup/complete's 409
+        # guard). The status and preset reads the SPA needs on both sides of
+        # that line stay public via _PUBLIC_EXACT, and _setup_complete fails
+        # closed, so an unreadable setup state requires auth.
+        if (
+            any(_matches_public_prefix(path, p) for p in _PRE_SETUP_PUBLIC_PREFIXES)
+            and not self._setup_complete()
+        ):
             return await call_next(request)
 
         if request.method == "OPTIONS":
@@ -295,79 +302,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
 
     def _required_permission(self, request: Request) -> str | None:
-        method_perms = _PROTECTED_OPS.get(request.method, {})
-        path = request.url.path
-        # Creating a workspace tab is a normal authenticated-user action. The
-        # route makes the caller its owner, so requiring task-scoped elevation
-        # here made the first-run daily account's workspace UI unusable.
-        if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
-            return None
-        # No URL-suffix carve-outs (#403): the former endswith("/invoke")
-        # exemption — written for POST /v1/agents/{id}/invoke, a route that
-        # no longer exists — would have granted any future route with that
-        # suffix a silent elevation bypass decided purely by URL naming.
-        # Elevation binds only to the capability identifiers registered in
-        # _PROTECTED_OPS (prefix -> permission) plus the named, reviewed
-        # exceptions in this method; a path's spelling grants no authority.
-        # A new mutating route that needs no elevation is a conscious,
-        # documented decision in ROUTE_EXEMPT — scripts/check_enumerations.py
-        # fails the build until it is classified (#403).
-        # Thumbs +/- feedback (POST /v1/dag-runs/{id}/feedback,
-        # POST /v1/workspaces/{id}/feedback) is a low-stakes reaction, not a
-        # mutating operation on the thing itself — any authenticated member
-        # can leave it, same posture as dag-runs' pre-existing unrestricted
-        # feedback route. The route itself still checks workspace membership.
-        if path.endswith("/feedback"):
-            return None
-        # Workspace Home (#1048): /v1/workspaces/{id}/home/... is the member's
-        # presentation surface — saving the layout, pinning a region, composing
-        # adaptive space, dismissing an adaptive candidate. Same posture as
-        # PUT /v1/dashboard/layout (below): a per-member preference write, not
-        # a workspace-identity mutation. The routes check Workspace membership
-        # and refuse viewers themselves, and the Workspace Agent's chat tools
-        # reach the very same services with no HTTP elevation at all — so
-        # gating only the route would break Agent/API parity while protecting
-        # nothing. (Segment-matched, not substring: PUT
-        # /v1/workspaces/{id}/home/* only; /tool-bindings and /members keep
-        # their workspaces.write scope.)
-        _parts = path.split("/")
-        if (
-            request.method in {"PUT", "POST"}
-            and len(_parts) >= 5
-            and _parts[1] == "v1"
-            and _parts[2] == "workspaces"
-            and _parts[4] == "home"
-        ):
-            return None
-        # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
-        # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
-        # read side over the same runs (GET /v1/eval-judge verdict list,
-        # GET /v1/eval-judge/{run_id}) — is deliberately NOT elevation-gated,
-        # because elevation adds no boundary here: the responses are scoped to
-        # the caller's canonical Workspace universe inside the routes
-        # themselves, through services/dag_run_inspection (#1174) — the same
-        # authority the workspace/agents routes answer through. Authentication
-        # alone is not authorization: a member of no Workspace sees an empty
-        # list, and an out-of-scope run id gets the same 404 a missing run
-        # gets, so the response never confirms a run exists beyond the
-        # caller's boundary. (Spell the GET match out rather than listing the
-        # routes in _PROTECTED_OPS: these routes stay None on purpose, and the
-        # comment above is the reason.) The /feedback POST sub-routes above
-        # keep their own pre-existing posture; /v1/dag-runs/retention is
-        # covered by this match too and carries deployment constants, not run
-        # data. The eval-judge trigger (POST /v1/eval-judge/{run_id}) is
-        # likewise authenticated-only and scoped in-route by the same
-        # inspection door before anything is scored.
-        if request.method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
-            return None
-        if request.method == "GET" and (
-            path == "/v1/eval-judge" or path.startswith("/v1/eval-judge/")
-        ):
-            return None
-        for prefix, perm in method_perms.items():
-            if path.startswith(prefix):
-                return perm
-        return None
+        # The single policy table and its reviewed carve-outs live in
+        # services/authorization.py beside the browser contract; the
+        # middleware and /v1/auth/capabilities must never drift apart (#373).
+        return authorization.required_permission(request.method, request.url.path)
 
     def _check_permission(self, user: Principal | Mapping[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)

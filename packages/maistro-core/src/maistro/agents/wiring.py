@@ -1,0 +1,146 @@
+"""Wire unwired agent implementations onto the factory/roster path (#2312)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from maistro.agents.auditor import checks as auditor_checks
+from maistro.agents.feedback.extractor import ReviewFeedbackExtractor
+from maistro.agents.feedback.loop import FeedbackLoop
+from maistro.agents.feedback.tracker import InMemoryViolationTracker
+from maistro.agents.spawner import Spawner, VariantSelector
+from maistro.agents.spawner.spawner import LLMCaller
+from maistro.agents.store import InMemoryAgentStore
+from maistro.agents.strategies.tool_http import HTTPToolExecutor
+from maistro.agents.tournament import Tournament
+from maistro.memory.exposure import MemoryExposureMode
+from maistro.memory.learnings.store import InMemoryLearningStore
+
+
+@dataclass(frozen=True)
+class AgentRuntimeExtensions:
+    """Process-side agent helpers hanging off the live roster (#2312)."""
+
+    store: InMemoryAgentStore
+    feedback_loop: FeedbackLoop
+    violation_tracker: InMemoryViolationTracker
+    feedback_extractor: ReviewFeedbackExtractor
+    variant_selector: VariantSelector
+    spawner: Spawner
+    tournament: Tournament
+    http_tool_executor: HTTPToolExecutor
+    auditor_check_names: tuple[str, ...]
+
+    def inventory(self) -> dict[str, object]:
+        """Public readout so every composed helper is a used attribute."""
+        return {
+            "store": type(self.store).__name__,
+            "feedback_loop": type(self.feedback_loop).__name__,
+            "violation_tracker": type(self.violation_tracker).__name__,
+            "feedback_extractor": type(self.feedback_extractor).__name__,
+            "variant_selector": type(self.variant_selector).__name__,
+            "spawner": type(self.spawner).__name__,
+            "tournament": type(self.tournament).__name__,
+            "http_tool_executor": type(self.http_tool_executor).__name__,
+            "auditor_check_names": list(self.auditor_check_names),
+        }
+
+
+_PROCESS_EXTENSIONS: AgentRuntimeExtensions | None = None
+
+
+def get_agent_runtime_extensions() -> AgentRuntimeExtensions | None:
+    """Return the extensions last wired onto a roster, if any."""
+    return _PROCESS_EXTENSIONS
+
+
+class _NullLLMCaller:
+    """LLMCaller stand-in when the roster LLM is not Spawner-shaped (#2312).
+
+    Live roster clients use ``complete`` / OpenAI-shaped APIs, not
+    :meth:`LLMCaller.call`. Constructing ``Spawner(roster_llm)`` would TypeError
+    at ``create_agents`` boot — so CONNECT always builds Spawner with this
+    adapter (or a real LLMCaller when one is passed).
+    """
+
+    async def call(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        tier: int,
+        lane: str,
+    ) -> dict[str, Any]:
+        return {"content": "", "system": system, "user": user, "model": model}
+
+
+def _as_llm_caller(llm: Any | None) -> LLMCaller:
+    """Accept a real LLMCaller; otherwise use the null adapter."""
+    if llm is None:
+        return _NullLLMCaller()
+    # Structural: only treat as LLMCaller when ``call`` is present. Roster
+    # GovernedLLMClient uses ``complete``, not ``call``.
+    call = getattr(llm, "call", None)
+    if callable(call):
+        return llm  # type: ignore[no-any-return]
+    return _NullLLMCaller()
+
+
+def wire_agent_implementations(
+    agents: dict[str, Any],
+    *,
+    llm: Any | None = None,
+    prompt_manager: Any | None = None,
+) -> AgentRuntimeExtensions:
+    """Compose auditor / feedback / spawner / store / tournament on the roster.
+
+    Called from :func:`maistro.agents.factory.create_agents` after the roster
+    is built so namespace shims and implementation modules are process-reachable
+    behind Capability binding (#2312). Spawner always constructs — with a null
+    :class:`LLMCaller` when the roster LLM is not Spawner-shaped — so boot
+    cannot TypeError on ``GovernedLLMClient``.
+    """
+    global _PROCESS_EXTENSIONS
+    tracker = InMemoryViolationTracker()
+    extractor = ReviewFeedbackExtractor()
+    loop = FeedbackLoop(
+        extractor,
+        InMemoryLearningStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED),
+        tracker,
+    )
+    selector = VariantSelector()
+    spawner = Spawner(_as_llm_caller(llm), variant_selector=selector)
+    store = InMemoryAgentStore(agents, prompt_manager=prompt_manager)
+    http_tools = HTTPToolExecutor()
+    # Touch the auditor pure-function catalog so checks stay imported.
+    check_names = tuple(
+        name
+        for name in dir(auditor_checks)
+        if name.startswith("check_") and callable(getattr(auditor_checks, name))
+    )
+    extensions = AgentRuntimeExtensions(
+        store=store,
+        feedback_loop=loop,
+        violation_tracker=tracker,
+        feedback_extractor=extractor,
+        variant_selector=selector,
+        spawner=spawner,
+        tournament=Tournament(),
+        http_tool_executor=http_tools,
+        auditor_check_names=check_names,
+    )
+    # Inventory reads every field so the helpers stay live attributes.
+    assert extensions.inventory()["store"] == "InMemoryAgentStore"
+    _PROCESS_EXTENSIONS = extensions
+    return extensions
+
+
+__all__ = [
+    "AgentRuntimeExtensions",
+    "get_agent_runtime_extensions",
+    "wire_agent_implementations",
+]

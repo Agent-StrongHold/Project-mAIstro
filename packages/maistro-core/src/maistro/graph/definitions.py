@@ -471,6 +471,7 @@ class GraphTemplate(BaseModel):
         project_id: str,
         graph_id: str | None = None,
         name: str | None = None,
+        workspace_id: str | None = None,
     ) -> Graph:
         node_id_map = {node.node_id: _id() for node in self.nodes}
         nodes = [
@@ -498,7 +499,7 @@ class GraphTemplate(BaseModel):
                 metadata[key] = node_id_map[reference]
         return Graph(
             graph_id=graph_id or _id(),
-            workspace_id=self.workspace_id,
+            workspace_id=workspace_id if workspace_id is not None else self.workspace_id,
             project_id=project_id,
             name=name if name is not None else self.name,
             description=self.description,

@@ -1,7 +1,7 @@
 ---
 name: repo-mine
-description: Durable, crash-safe sweep of a large repo (or cross-repo comparison) using general-purpose Task subagents with a checkpoint contract. Partitions the target into small slices, checkpoints every finding to docs/mining/ and commits after each slice so nothing is lost to crashes, stalls, or session limits; resumable at any point. Produces a ranked INVENTORY.md. Use for repo-scale audits, gap-mining a sibling codebase, or any search too big for one context. Args - source path/repo, optional diff target, optional question, e.g. /repo-mine ../stronghold vs packages/maistro-core
-disable-model-invocation: false
+description: "Durable, crash-safe sweep of a large repo (or cross-repo comparison) using general-purpose Task subagents with a checkpoint contract. Partitions the target into small slices, checkpoints every finding to docs/mining/ and commits after each slice so nothing is lost to crashes, stalls, or session limits; resumable at any point. Produces a ranked INVENTORY.md. Use for repo-scale audits, gap-mining a sibling codebase, or any search too big for one context. Args - source path/repo, optional diff target, optional question, e.g. /repo-mine ../stronghold vs packages/maistro-core
+disable-model-invocation: false"
 ---
 
 The user wants a durable large-repo sweep. Arguments: $ARGUMENTS (source [vs target] [question]).
