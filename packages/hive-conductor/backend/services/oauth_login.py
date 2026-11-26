@@ -19,7 +19,7 @@ from config import (
     get_settings,
     is_valid_oauth_provider_name,
 )
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from routes.audit import log_audit
 
 from maistro.auth.entra import build_entra_provider_config
@@ -201,7 +201,7 @@ class HiveIdentityLinkStore:
 
 @dataclass(frozen=True)
 class OAuthLoginResult:
-    user: HiveUser
+    user: HiveAccount
     provider: str
     subject: str
 

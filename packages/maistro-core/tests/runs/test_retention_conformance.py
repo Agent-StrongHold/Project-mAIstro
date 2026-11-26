@@ -193,12 +193,18 @@ async def test_a_parent_run_is_not_purged_while_a_child_exists(spine: Any) -> No
     so it is not a candidate itself — only the parent is, and it must be
     skipped rather than attempted and failed."""
     store, workspace, project_id = spine
-    parent = await _terminal_run(spine, expires_at=EXPIRED)
-    await store.create_run(
+    parent = await _run(spine, expires_at=EXPIRED)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    child = await store.create_run(
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
+    parent = await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     purged = await store.purge_expired_runs(_scope(spine), now=NOW)
 
@@ -212,12 +218,15 @@ async def test_a_run_whose_node_run_a_child_descends_from_is_not_purged(spine: A
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(parent.run_id, node_id="node-1")
-    await store.create_run(
+    child = await store.create_run(
         _graph(workspace, project_id),
         parent_run_id=parent.run_id,
         parent_node_run_id=node_run.node_run_id,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     purged = await store.purge_expired_runs(_scope(spine), now=NOW)

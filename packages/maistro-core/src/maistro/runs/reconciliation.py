@@ -13,7 +13,11 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
-from maistro.runs.lifecycle import InvalidLifecycleTransition, latest_node_runs
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    is_reclaimed_attempt,
+    latest_node_runs,
+)
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     TERMINAL_ATTEMPT_STATUSES,
@@ -99,6 +103,7 @@ class AttemptLifecycleStore(Protocol):
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun: ...
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None: ...
@@ -225,7 +230,11 @@ class AttemptLifecycleReconciler:
             await self._announce(persisted, paused, cancellation or CancellationCause.RECOVERED)
             return paused
 
-        parked = await self._park_node_run(node_run, attempt)
+        parked = await self._park_node_run(
+            node_run,
+            attempt,
+            require_current=is_reclaimed_attempt(attempt),
+        )
         await self._park_run_if_inactive(parked.run_id)
         await self._announce(persisted, parked, cancellation or CancellationCause.RECOVERED)
         return parked
@@ -256,7 +265,11 @@ class AttemptLifecycleReconciler:
             logical_status=RunStatus.COMPLETED,
             result=physical.result,
         )
-        settled = await self._accept_node_outcome(node_run, outcome)
+        settled = await self._accept_node_outcome(
+            node_run,
+            outcome,
+            expected_current_attempt_id=persisted.attempt_id,
+        )
         await self._settle_run_if_fully_observed(settled.run_id)
         await self._announce(persisted, settled, announce_cause)
         return settled
@@ -370,7 +383,11 @@ class AttemptLifecycleReconciler:
         if physical != outcome.attempt_result:
             raise RunIntegrityError("accepted outcome differs from persisted Attempt evidence")
         await self._require_current_attempt(outcome.node_run_id, persisted.attempt_id)
-        settled = await self._accept_node_outcome(node_run, outcome)
+        settled = await self._accept_node_outcome(
+            node_run,
+            outcome,
+            expected_current_attempt_id=persisted.attempt_id,
+        )
         await self._settle_run_if_fully_observed(settled.run_id)
         return settled
 
@@ -480,6 +497,8 @@ class AttemptLifecycleReconciler:
         self,
         node_run: NodeRun,
         outcome: AcceptedNodeOutcome,
+        *,
+        expected_current_attempt_id: str,
     ) -> NodeRun:
         accepted = node_run.accepted_outcome
         if accepted is not None:
@@ -493,6 +512,7 @@ class AttemptLifecycleReconciler:
                 result=node_run.result,
                 error=node_run.error,
                 accepted_outcome=outcome,
+                expected_current_attempt_id=expected_current_attempt_id,
             )
         if node_run.status is not RunStatus.RUNNING:
             raise RunIntegrityError("completed Attempt requires a running logical NodeRun")
@@ -502,9 +522,16 @@ class AttemptLifecycleReconciler:
             result=outcome.result,
             error=outcome.error,
             accepted_outcome=outcome,
+            expected_current_attempt_id=expected_current_attempt_id,
         )
 
-    async def _park_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:
+    async def _park_node_run(
+        self,
+        node_run: NodeRun,
+        attempt: Attempt,
+        *,
+        require_current: bool = False,
+    ) -> NodeRun:
         if node_run.status in TERMINAL_RUN_STATUSES or node_run.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -516,6 +543,7 @@ class AttemptLifecycleReconciler:
             node_run.node_run_id,
             RunStatus.WAITING,
             error=attempt.error,
+            expected_current_attempt_id=attempt.attempt_id if require_current else None,
         )
 
     async def _pause_node_run(self, node_run: NodeRun, attempt: Attempt) -> NodeRun:

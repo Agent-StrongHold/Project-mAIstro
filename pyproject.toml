@@ -52,6 +52,8 @@ dependencies = [
     # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
     # past all four; every fix version satisfies the pre-existing >= 1.27
     # floor, so this only ever affects which temporalio the lock resolves.
+    # This lane's independent evidence trail for the same finding:
+    # docs/testing/inventory-notes/cr2059-temporalio-zip-floor.md.
     "temporalio>=1.36.1",
 ]
 
@@ -254,11 +256,11 @@ constraint-dependencies = [
     # 2026-10-22, #891/#2238 round): gitpython arrives via cosmic-ray,
     # graphql-core via moto[server]. CVE-2026-114145 is fixed in gitpython
     # 3.2.1; CVE-2026-75507/75508 in graphql-core 3.3.0 (stable, 2026-09-27;
-    # the advisory text still names the 3.3.0rc1 fix line). Both packages
-    # are test-infrastructure only; neither ships in the runtime images.
+    # the advisory text still names the 3.3.0rc1 fix line), and
+    # CVE-2026-119286 in 3.3.0 is fixed in 3.3.1 (pip-audit gate,
+    # 2026-11-16, #2110 CI-repair round). Test-infrastructure only; neither
+    # ships in the runtime images.
     "gitpython>=3.2.1",
-    # CVE-2026-119286 (pip-audit gate, 2026-11-15, #1995 CI-repair round) moved
-    # the fix line to 3.3.1; still moto[server]-only test infrastructure.
     "graphql-core>=3.3.1",
     # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
     # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
@@ -273,26 +275,20 @@ constraint-dependencies = [
     # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
     # authlib arrives via fastmcp / browser-use; dnspython via email-validator
     # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
-    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0. Neither is a
-    # direct production pin — floors keep the frozen dev env above the advisories.
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0 and
+    # CVE-2026-128089 in 2.9.2 (pip-audit gate, 2026-11-16, #2110 CI-repair
+    # round). Neither is a direct production pin — floors keep the frozen
+    # dev env above the advisories.
     "authlib>=1.9.1",
-    "dnspython>=2.9.0",
-    # Same shape again (pip-audit gate, 2026-11-04, PR #2389 CI-repair round,
-    # workflow runs 41768658312/41768658412): dnspython arrives via
-    # email-validator (pydantic[email]), graphql-core via moto[server],
-    # joserfc via authlib / fastmcp-slim / moto, and opentelemetry-api is
-    # maistro-core's direct telemetry dependency caught in the frozen dev
-    # env. CVE-2026-128089 (GHSA-vvf4-9x63-8xvv) is fixed in dnspython
-    # 2.9.2; CVE-2026-119286 (GHSA-mpqx-q82w-9x46) in graphql-core 3.3.1;
-    # CVE-2026-119284 (GHSA-9pg5-8c7x-5hfx) in joserfc 1.7.6; CVE-2026-126360
-    # (GHSA-mf5v-w3w3-f6cg) in opentelemetry-api 1.45.2. Every fix version
-    # satisfies the floors already declared here or in
-    # packages/maistro-core (opentelemetry-api >= 1.30, < 2), so only the
-    # lock moves; floors keep it above the advisories on the next resolve.
-    # (The #1995 branch landed the same floors independently at 35c005ea4d;
-    # develop's CR1373 round supersedes that comment block.)
     "dnspython>=2.9.2",
-    "graphql-core>=3.3.1",
+    # Same shape again (pip-audit gate, 2026-11-16, #2110 CI-repair round):
+    # joserfc arrives via authlib / fastmcp-slim / moto and ships in no
+    # runtime image (same extras reasoning as fastmcp above);
+    # CVE-2026-119284 is fixed in joserfc 1.7.6. opentelemetry-api is a
+    # direct runtime dependency (maistro-core telemetry) that DOES ship in
+    # the images; CVE-2026-126360 is fixed in 1.45.2, a patch release on the
+    # resolved 1.45.x line, so the floor tracks the advisory without moving
+    # the >= 1.30 compatibility floor in the manifests.
     "joserfc>=1.7.6",
     "opentelemetry-api>=1.45.2",
     # Same shape again (Container scan + SBOM + cosign gate, PR #2389
@@ -527,6 +523,21 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
+
+# cosmic-ray ships no py.typed marker and exists only in the dev
+# toolchain (the mutation gate's dependency, PR #1994). The single module that
+# imports it (maistro.mutation_operator_provider, loaded by the
+# cosmic_ray.operator_providers entry point) is reached by no runtime import
+# graph; this override covers the missing stubs for that dev-only surface, and
+# the disallow_subclassing_any relief below is the only way to implement
+# cosmic-ray's untyped Operator base inside a strict scan.
+[[tool.mypy.overrides]]
+module = ["cosmic_ray", "cosmic_ray.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["maistro.mutation_operator_provider"]
+disallow_subclassing_any = false
 
 # aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note
 # above: this covers missing *stubs*, not a missing install. Deliberately not
