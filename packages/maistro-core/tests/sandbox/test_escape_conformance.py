@@ -385,6 +385,7 @@ async def test_setuid_binaries_are_visible_but_cannot_escalate(sandbox) -> None:
 # --- host-side file boundary -------------------------------------------------
 
 
+@requires_bwrap
 async def test_host_side_file_transfer_keeps_symlinked_results_beneath_workdir(
     tmp_path: Path,
 ) -> None:

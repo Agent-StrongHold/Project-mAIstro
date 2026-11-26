@@ -7,8 +7,8 @@ never inferred from secret text. A plain secret-only entry is the legacy form
 that authenticated everything as the invented user ``default``; it no longer
 authenticates at all and the server refuses to start while one is configured
 (see ``_validate_startup``). API keys authenticate into the same canonical
-``AuthenticatedPrincipal`` model used by every other identity provider — there
-is no API-key-only user store or authorization path (#843 stop condition).
+``Principal`` model used by every other identity provider — there is no
+API-key-only user store or authorization path (#843 stop condition).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from maistro.config.settings import Settings, get_settings
 from maistro.security.secret_equal import secret_equal
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 
 security_scheme = HTTPBearer(auto_error=False)
 
@@ -138,13 +138,13 @@ def _configured_entries(settings: Settings) -> tuple[tuple[str, bool], ...]:
     )
 
 
-def resolve_token_principal(token: str, settings: Settings) -> AuthenticatedPrincipal | None:
+def resolve_token_principal(token: str, settings: Settings) -> Principal | None:
     """Resolve bearer secret to principal, or None if invalid."""
     if not settings.api_keys and not settings.admin_api_keys:
         # nosec B106 — auth is DISABLED (both key lists are empty), so we
-        # construct a dev principal with an empty token literal. The empty
-        # string is a sentinel, not a hardcoded credential.
-        return AuthenticatedPrincipal(user_id="dev", token="", roles=frozenset({"admin", "user"}))  # nosec B106
+        # construct a dev principal. Auth-off is a sentinel path, not a
+        # hardcoded credential.
+        return Principal(user_id="dev", roles=frozenset({"admin", "user"}))  # nosec B106
     index = _build_token_index(settings)
     for secret, principal in index.items():
         if principal is not None and secret_equal(token, secret):
@@ -152,7 +152,7 @@ def resolve_token_principal(token: str, settings: Settings) -> AuthenticatedPrin
     return None
 
 
-def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal | None]:
+def _build_token_index(settings: Settings) -> dict[str, Principal | None]:
     """Map bearer secret -> principal for configured key entries.
 
     Legacy plain secret-only entries are deliberately absent from the index
@@ -172,14 +172,14 @@ def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal |
     (`ambiguous_api_key_entries`) rejects the configuration outright; this is
     the fail-closed half for a gate that is bypassed.
     """
-    index: dict[str, AuthenticatedPrincipal | None] = {}
+    index: dict[str, Principal | None] = {}
     for entry, is_admin in _configured_entries(settings):
         parsed = _parse_api_key_entry(entry)
         if parsed is None:
             continue
         user_id, secret, _ = parsed
         roles = frozenset({"admin", "user"}) if is_admin else frozenset({"user"})
-        principal = AuthenticatedPrincipal(user_id=user_id, token=secret, roles=roles)
+        principal = Principal(user_id=user_id, roles=roles)
         for credential in (secret, entry.strip()):
             if credential not in index:
                 index[credential] = principal
@@ -193,13 +193,13 @@ def _build_token_index(settings: Settings) -> dict[str, AuthenticatedPrincipal |
 def verify_api_key(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(security_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> AuthenticatedPrincipal | None:
+) -> Principal | None:
     """Verify bearer token. Returns None only when auth is disabled (no API keys)."""
     if not settings.api_keys and not settings.admin_api_keys:
         # nosec B106 — auth is DISABLED (both key lists are empty), so we
-        # construct a dev principal with an empty token literal. The empty
-        # string is a sentinel, not a hardcoded credential.
-        return AuthenticatedPrincipal(user_id="dev", token="", roles=frozenset({"admin", "user"}))  # nosec B106
+        # construct a dev principal. Auth-off is a sentinel path, not a
+        # hardcoded credential.
+        return Principal(user_id="dev", roles=frozenset({"admin", "user"}))  # nosec B106
 
     if credentials is None:
         raise HTTPException(
@@ -219,4 +219,4 @@ def verify_api_key(
     )
 
 
-RequireAuth = Annotated[AuthenticatedPrincipal | None, Depends(verify_api_key)]
+RequireAuth = Annotated[Principal | None, Depends(verify_api_key)]
