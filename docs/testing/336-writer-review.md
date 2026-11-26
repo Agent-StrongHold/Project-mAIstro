@@ -342,3 +342,68 @@ reproduced locally before repair; none was addressed by scanner guesswork.
 
 No ledger/grant file was edited in this round; no closure keywords added;
 no remote mutation performed.
+
+## Round: salvage resolution + exact-debt-ledger re-proof (this round)
+
+Incoming state: HEAD `287f4163e8be2726004cbad3f1b20ef305ec8e60`, branch
+`auto-336`, with one uncommitted edit left by the previous worker
+(preserved for salvage review):
+
+- `packages/hive-conductor/frontend/playwright.permissions.config.ts`:
+  an inline `// DevSkim: ignore DS162092 -- test-only loopback URL.`
+  comment appended to the `webServer.url: BASE_URL` line.
+  Backed up verbatim to
+  `/home/dev/maistro/jobs/7f81271929164cff8376dbd66eb85d8e/incoming-336-salvage.patch`
+  before any further tree change.
+
+Salvage verdict: **kept and committed** (preservation rule), with the
+review finding recorded here. DS162092 in this repository always rides on
+a line that embeds a literal `http://` URL (every other suppression in the
+tree does: `backend/config.py`, `vite.config.ts`, and
+`playwright.model-discovery.config.ts`, whose `url:` line embeds the
+literal `` `http://127.0.0.1:${PORT}` ``). The guarded line here is
+`url: BASE_URL,` — an identifier with no URL literal — so a line-scoped
+DS162092 scan cannot fire on it and the suppression is defensive, not
+evidence-driven. An empirical DevSkim run was attempted (the CLI exists
+at `~/.dotnet/tools`) but aborted: the local tool cannot resolve a .NET
+runtime (`libhostfxr.so` not found), so the verdict rests on the
+rule/repo evidence above, not on a local scan. The comment is harmless to
+every gate (no test asserts this file's content; DevSkim suppression
+comments are inert; `npm` lint does not reject trailing comments) and
+stylistically matches the two suppressions already in the same file, so
+it is preserved rather than discarded.
+
+Re-validation at this head (nothing taken on trust from prior rounds):
+
+- exact-debt-ledger (the gate flagged by the last merge-queue evaluation),
+  each step with CI's exact arguments from `.github/workflows/vulture-ratchet.yml`:
+  1. `uv run python scripts/check-ratchet-provenance.py` -> OK (all eight
+     ratchets clean, 55 quality JSON consumers have provenance);
+  2. `uv run python scripts/check-shipped-surface-truth.py` ->
+     "matrix is complete";
+  3. `uv run python scripts/check-vulture-baseline.py packages/*/src
+     --min-confidence 60 --exclude '*/third_party/*'` -> exit 0,
+     1219 reviewed identities == 1219 findings, unclassified 0.
+  Base-resolution proof: local `origin/develop` is `80242f28521b` (the
+  lane's target tip) and `git merge-base HEAD origin/develop` is
+  `3be6b6650caa` — exactly the baseline every ratchet reported, so the
+  local runs see the same comparison the merge-queue synthetic merge
+  resolves.
+- Previously-failing root gates re-run: `uv run pytest
+  tests/test_shipped_surface_truth.py tests/test_check_secret_field_labels.py
+  tests/test_ci_quality_split.py -q` -> **165 passed**;
+  `uv run python scripts/check-frontend-typed-client.py` -> OK (16 raw
+  fetch / 71 hand-typed, none new); `uv run ruff check .` and
+  `ruff format --check .` -> clean.
+- Issue acceptance spot-checks at this head:
+  `scripts/check-conductor-permission-matrix.py` -> OK (51 API entries,
+  23 UI mutations); `scripts/check-route-permissions.py` -> exit 0;
+  `uv run pytest packages/hive-conductor/backend/tests/test_permission_policy.py
+  packages/hive-conductor/backend/tests/test_setup_guard.py -q` ->
+  **26 passed**.
+- No tests were added or removed by this round, so no inventory delta is
+  owed (`check-suite-inventory.py` was green in the driver logs and no
+  test file changed).
+
+No ledger/grant file was edited in this round; no closure keywords added;
+no remote mutation performed.

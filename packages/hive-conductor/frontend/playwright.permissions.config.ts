@@ -16,7 +16,7 @@ export default defineConfig({
   webServer: {
     // devskim: ignore DS162092 -- ephemeral test-only loopback server.
     command: `npm run dev -- --port ${PORT} --strictPort --host 127.0.0.1`,
-    url: BASE_URL,
+    url: BASE_URL, // DevSkim: ignore DS162092 -- test-only loopback URL.
     reuseExistingServer: false,
     timeout: 90_000,
   },
