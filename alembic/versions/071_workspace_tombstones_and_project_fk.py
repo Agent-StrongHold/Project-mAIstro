@@ -1,7 +1,11 @@
 """Deleted Workspaces stay deleted, and new Projects cannot outlive the fact.
 
-Revision ID: 069
-Revises: 068
+Revision ID: 071
+Revises: 070
+
+(Numbered 069 when written against the pre-sync base; develop landed its own
+069 (`069_schedule_deletions`) and a 070 first, so the branch rebased this
+revision behind them to keep a single alembic head.)
 
 Two fences for the one-Workspace-authority contract (#37), both appended
 behind the shipped stores rather than rewritten into them:
@@ -54,8 +58,8 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import text
 
-revision = "069"
-down_revision = "068"
+revision = "071"
+down_revision = "070"
 branch_labels = None
 depends_on = None
 

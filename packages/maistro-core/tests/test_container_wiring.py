@@ -1307,7 +1307,7 @@ async def test_parent_only_recovery_progress_consumes_budget() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-budget")).project_id
+    project_id = await _provisioned_root(container, "recovery-budget")
     graph = Graph(
         workspace_id="recovery-budget",
         project_id=project_id,
@@ -1423,7 +1423,7 @@ async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() 
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-heal")).project_id
+    project_id = await _provisioned_root(container, "recovery-heal")
     graph = Graph(
         workspace_id="recovery-heal",
         project_id=project_id,
@@ -1520,7 +1520,7 @@ async def test_the_replay_does_not_park_a_requested_cancellation() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-asked")).project_id
+    project_id = await _provisioned_root(container, "recovery-asked")
     graph = Graph(
         workspace_id="recovery-asked",
         project_id=project_id,
@@ -1584,7 +1584,7 @@ async def test_the_replay_does_not_park_under_a_live_retry() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-retry")).project_id
+    project_id = await _provisioned_root(container, "recovery-retry")
     graph = Graph(
         workspace_id="recovery-retry",
         project_id=project_id,
@@ -1632,7 +1632,7 @@ async def test_replay_does_not_park_over_a_retry_committed_after_selection() -> 
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-race")).project_id
+    project_id = await _provisioned_root(container, "recovery-race")
     graph = Graph(
         workspace_id="recovery-race",
         project_id=project_id,

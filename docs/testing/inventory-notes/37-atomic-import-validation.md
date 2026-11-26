@@ -1,5 +1,7 @@
 ---
-inventory-delta: {}
+inventory-delta:
+  packages/maistro-core/tests: +0
+  packages/hive-conductor/backend/tests: +0
 ---
 
 # Validation record for the #37 atomic initial-roster follow-up
