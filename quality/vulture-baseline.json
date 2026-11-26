@@ -472,7 +472,6 @@
         "packages/maistro-core/src/maistro/observability/metrics.py::unused variable 'circuit_breaker_state'",
         "packages/maistro-core/src/maistro/observability/replay.py::unused variable 'accessed_at'",
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'agent_recipe'",
-        "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'head_sha'",
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'wave_a'",
         "packages/maistro-core/src/maistro/orchestrator/waves/types.py::unused variable 'wave_b'",
         "packages/maistro-core/src/maistro/personas/expander.py::unused variable 'soul_prompt'",
