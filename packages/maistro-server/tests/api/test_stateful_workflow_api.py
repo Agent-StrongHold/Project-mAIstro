@@ -84,17 +84,17 @@ from hypothesis.stateful import (
 )
 from schemathesis import GenerationMode
 
-from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.concurrency import RunConcurrencyLimits
+from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.idempotency import MAX_IDEMPOTENCY_KEY_LENGTH, InMemoryTaskIdempotencyStore
 from maistro.tasks.queue import configure_task_queue
-from maistro.workspaces import InMemoryWorkspaceStore
+from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import runs as runs_api
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 from maistro_server.api.projects import router as projects_router
 from maistro_server.api.runs import router as runs_router
 from maistro_server.api.tasks import IDEMPOTENCY_KEY_HEADER, WORKSPACE_ID_HEADER
@@ -148,7 +148,11 @@ async def surface() -> AsyncIterator[_Surface]:
     previous_queue = queue_module._queue
     queue_module._queue = None
     (
-        _scope,
+        # The spine wired its own scope store; production uses ONE store for
+        # admission, the projects API, and the Run authorization boundary, so
+        # the fixture must not split them (a boundary on a different store
+        # than the one that owns the runs' projects refuses every read).
+        projects,
         run_store,
         admitter,
         _templates,
@@ -164,8 +168,17 @@ async def surface() -> AsyncIterator[_Surface]:
         # relations.
         concurrency_limits=RunConcurrencyLimits(per_principal=10_000, per_workspace=10_000),
     )
-    projects = InMemoryProjectScopeStore()
     workspaces = InMemoryWorkspaceStore(project_store=projects)
+    # Run reads are Workspace-membership scoped (#1152, #364): the spine's
+    # single mount Workspace exists in the store and admits both principals
+    # as plain members. A neutral third principal owns it, so neither
+    # alice nor bob carries administer authority and cross-principal Run
+    # mutation stays refused while membership admits the read.
+    await workspaces.create(
+        creator_user_id="dev", name="test-workspace", workspace_id="test-workspace"
+    )
+    for member in PRINCIPALS:
+        await workspaces.set_membership("test-workspace", user_id=member, role=WorkspaceRole.MEMBER)
     app = FastAPI()
     app.state.container = SimpleNamespace(project_scope_store=projects)
     app.include_router(workspace_api.router)
@@ -174,6 +187,7 @@ async def surface() -> AsyncIterator[_Surface]:
     app.include_router(runs_router)
     workspace_api.configure_workspace_store(workspaces)
     runs_api.configure_run_store(run_store)
+    runs_api.configure_run_boundary(RunStoreBoundary(run_store, workspaces, projects))
     configure_task_queue(admitter=admitter, idempotency_store=InMemoryTaskIdempotencyStore())
 
     schema = schemathesis.openapi.from_asgi("/openapi.json", app)
@@ -183,10 +197,11 @@ async def surface() -> AsyncIterator[_Surface]:
     client = TestClient(app)
     holder = {"user": "alice"}
 
-    def _auth() -> AuthenticatedPrincipal:
-        return AuthenticatedPrincipal(
+    def _auth() -> Principal:
+        # maistro.identity.Principal (P0.1) carries no bearer token field;
+        # identity rides the overridden verify_api_key dependency.
+        return Principal(
             user_id=holder["user"],
-            token=f"token-{holder['user']}",
             roles=frozenset({"user"}),
         )
 
@@ -197,6 +212,7 @@ async def surface() -> AsyncIterator[_Surface]:
     app.dependency_overrides.clear()
     workspace_api.configure_workspace_store(None)
     runs_api.configure_run_store(None)
+    runs_api.configure_run_boundary(None)
     queue_module._queue = previous_queue
 
 
@@ -405,12 +421,28 @@ class WorkflowMachine(RuleBasedStateMachine):
         assert response.json()["status"] == entry.receipt_status
 
     @rule(entry=task_entries)
-    def a_foreign_principal_gets_nothing(self, entry: _Receipt) -> None:
-        """Cross-principal access is a 404 — no leak, no half-answer — and
-        the resource is untouched afterwards for its owner."""
+    def cross_principal_authority_is_scoped_by_surface(self, entry: _Receipt) -> None:
+        """Authorization variants over one admitted task, per production
+        semantics at this head: task receipts are actor-scoped (a foreign
+        principal gets the enumeration-safe 404 on read, cancel and delete),
+        while canonical Run *reads* are Workspace-membership scoped (#1152,
+        #364) — a peer member reads the Run and its true status, but Run
+        *mutation* stays with the initiating principal or a Workspace
+        administrator, so the peer's cancel is the same no-enumeration 404
+        and the owner's resource is untouched afterwards.
+
+        This oracle changed shape at the develop sync: the leaf's base commit
+        scoped Run reads to the initiating principal; develop moved read
+        visibility to Workspace membership and left mutation actor-scoped.
+        The suite failed on the merge and named the route pair that changed —
+        the stateful form's whole argument in one red build.
+        """
         self._switch(self._other(entry.owner))
         assert self.surface.client.get(f"/tasks/{entry.task_id}").status_code == 404
-        assert self.surface.client.get(f"/runs/{entry.run_id}").status_code == 404
+        peer_read = self.surface.client.get(f"/runs/{entry.run_id}")
+        assert peer_read.status_code == 200, peer_read.text
+        assert peer_read.json()["run_id"] == entry.run_id
+        assert peer_read.json()["status"] == entry.run_status
         assert self.surface.client.post(f"/runs/{entry.run_id}/cancel").status_code == 404
         assert self.surface.client.delete(f"/tasks/{entry.task_id}").status_code == 404
         self._switch(entry.owner)
@@ -479,13 +511,18 @@ class WorkflowMachine(RuleBasedStateMachine):
     @rule(entry=task_entries)
     def node_runs_are_a_safe_read(self, entry: _Receipt) -> None:
         """The node-run listing answers its owner (empty before execution) and
-        404s a foreign principal — reading never mutates state."""
+        the identical tree to a peer Workspace member — Run reads are
+        membership-scoped (#1152), so both members see the same truth — and
+        reading never mutates state."""
         self._switch(entry.owner)
         owned = self.surface.client.get(f"/runs/{entry.run_id}/node-runs")
         assert owned.status_code == 200
         assert isinstance(owned.json(), list)
+        owner_view = owned.json()
         self._switch(self._other(entry.owner))
-        assert self.surface.client.get(f"/runs/{entry.run_id}/node-runs").status_code == 404
+        peer = self.surface.client.get(f"/runs/{entry.run_id}/node-runs")
+        assert peer.status_code == 200, peer.text
+        assert peer.json() == owner_view
 
     @rule()
     def stale_identifiers_stay_404(self) -> None:

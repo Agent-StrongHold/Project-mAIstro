@@ -76,9 +76,16 @@ invariant pin relations, not endpoints:
   reconciled it, the run-cancel receipt projection closed that asymmetry, and
   the suite went red on the merge naming the exact route pair (*Develop sync*
   below);
-- cross-principal probes of tasks, runs, node-runs, workspaces, and the
-  project tree are 404 without existence leaks, leave state untouched, and
-  listings never show another principal's receipt;
+- cross-principal authority is scoped by surface: task receipts stay
+  actor-scoped (a foreign principal's read, cancel and delete are 404s
+  without existence leaks, listings never show another principal's receipt),
+  while canonical Run *reads* are Workspace-membership scoped (#1152, #364) —
+  a peer member reads the Run and its true status and the identical
+  node-run tree, but Run *mutation* (cancel) stays with the initiating
+  principal or a Workspace administrator, so the peer's cancel is the same
+  no-enumeration 404 and the owner's resource is untouched. **This oracle
+  changed shape at the second develop sync** (runs routes moved to the
+  `RunStoreBoundary`); the suite went red naming `GET /runs/{id}`;
 - fabricated identifiers are 404s on both surfaces for any principal; the
   workspace-scope header without the Hive HMAC proof is a 403 that mints
   nothing; oversized keys are 422.
@@ -181,6 +188,36 @@ the repair was checked in both directions:
 Two oracles, two heads, each red against the other's production behavior. A
 stateless endpoint test written at the leaf base would have kept passing on
 both heads while asserting nothing about the route pair.
+
+**Second develop sync: the runs routes moved onto the authorization boundary.**
+Develop replaced the actor-scoped run reads with the `RunStoreBoundary`
+(`maistro_server.api.runs` → `RunStoreBoundary.require_run`), implementing the
+#1152/#364 decision: read visibility is Workspace membership — the initiating
+principal is provenance, not a gate — while mutation (cancel) stays with the
+initiating principal or a Workspace administrator. Against the merged head the
+committed fixture failed with a one-line, correctly-located red:
+
+```
+assert 503 == 404   # GET /runs/{ghost} — "No Run authorization boundary is configured"
+test_stateful_workflow_api.py:502 in stale_identifiers_stay_404
+```
+
+The repair mirrors the production lifespan wiring (one scope store serves
+admission, the projects API, and the boundary; the mount Workspace exists with
+both principals as plain members under a neutral owner, so neither carries
+administer authority) and reshapes the two run-read oracles to the membership
+contract. The repair was checked in both directions:
+
+- with the boundary unconfigured the suite stays red at the assertion above —
+it names the exact dependency the lifespan wires;
+- dropping one principal's membership (scratch experiment, not committed) turns
+the peer-read rules red with `assert 404 == 200` / `{"detail":"Run not
+found"}` — so the new assertions are mediated by precisely the membership
+relation that landed, not accidentally green.
+
+Fresh validation at this head: PR profile green (6.5–7.2s), deep 100×20
+randomized green at 33.9s, full server job 742 passed / 18 skipped,
+suite-inventory gate ok, ruff clean.
 
 **Stateless-vs-stateful comparison, per the issue's evidence ask:**
 
