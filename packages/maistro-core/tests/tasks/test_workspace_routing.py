@@ -343,6 +343,43 @@ async def test_a_cached_admitter_stops_admitting_once_the_workspace_is_deleted()
         await spine.projects.root_for_workspace(workspace_id)
 
 
+async def test_deleting_the_default_workspace_leaves_existing_run_operations_working() -> None:
+    """Existing-run operations survive a deleted default Workspace (#37 review).
+
+    `record_transition`, `run_for_task_receipt`, `lookup_run` and
+    `find_task_run` are Workspace-independent: the Run exists and names its
+    own Project. The deletion APIs allow removing a default Workspace that
+    owns no Runs, so routing these reads through `admitter_for(None)` — which
+    now fences on canonical existence — would strand every transition and
+    lookup for Runs admitted under other, still-live Workspaces. The fence
+    stays on admissions; these operations never consult it.
+    """
+    spine = _AuthorizedSpine()
+    await spine.provision("default")
+    await spine.provision("w-live")
+    queue = TaskQueue(admitter=spine.router)
+
+    # Only the live Workspace owns a Run: the default must stay empty so its
+    # deletion is legal, exactly the deployment shape the finding describes.
+    stranded = await queue.submit(TaskCreate(description="Live work"), workspace_id="w-live")
+
+    await spine.workspaces.delete("default", principal_id="owner")
+
+    # Admissions into the deleted default are still fenced ...
+    with pytest.raises(WorkspaceNotFound):
+        await queue.submit(TaskCreate(description="After delete"))
+
+    # ... while the existing Run in the live Workspace stays fully reachable.
+    assert await spine.router.record_transition(stranded.run_id or "", TaskStatus.CODING) is True
+    assert await spine.router.run_for_task_receipt(stranded.task_id) == stranded.run_id
+    found = await spine.router.lookup_run(stranded.run_id or "")
+    assert found is not None
+    assert found.workspace_id == "w-live"
+    task_run = await spine.router.find_task_run(stranded.task_id)
+    assert task_run is not None
+    assert task_run.run_id == stranded.run_id
+
+
 async def test_a_cached_admitter_is_stable_while_the_workspace_lives() -> None:
     """Per-call verification must not rebuild the admitter every time.
 
