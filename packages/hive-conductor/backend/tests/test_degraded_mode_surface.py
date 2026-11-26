@@ -68,8 +68,12 @@ def test_health_names_degraded_optional_router_with_cause(
     startup log line: recorded, but not answerable by any client. /health is
     the queryable surface, and the entry must be specific enough to act on.
     """
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: pytest >=9.2 snapshots setattr's old value from
+    # `target.__dict__`, which starlette's State never writes (its
+    # `__setattr__` proxies to `_state`), so the undo would `delattr` the
+    # entry instead of restoring it and the next setattr would find nothing.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
         # Simulate a pre-sanitization recording (Type: raw message). /health
         # must reduce it to the public kind-only form.
@@ -92,8 +96,10 @@ def test_health_optional_router_baseexception_is_kind_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A live exception object on optional_routers never publishes its message."""
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
         {"routes.design": ImportError("cannot import name 'engine' from secret.module")},
     )
@@ -110,8 +116,10 @@ def test_health_optional_router_preserves_already_sanitized(
 ) -> None:
     """Kind-only strings recorded at mount time pass through unchanged."""
     public = "ModuleNotFoundError: router failed to mount; see server logs"
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
         {"routes.canvas": public},
     )
@@ -151,8 +159,10 @@ def test_health_reports_no_degradation_when_everything_is_healthy(
     F3 work closed for the LLM gateway.
     """
     monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.example")
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
         {"routes.design": None, "routes.canvas": None},
     )
