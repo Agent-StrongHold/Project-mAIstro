@@ -245,6 +245,15 @@ DEFAULT_STRANDED_ADMISSION_AGE = timedelta(minutes=5)
 _CHAT_SLOT_RECLAIM_LIMIT = 100
 
 
+def _bare_discovery_context() -> Any:
+    """The contributes-nothing discovery context (#1051), lazily imported so
+    the Container's module import never pulls the node package earlier than
+    it already does."""
+    from maistro.graph.nodes.discovery_context import default_discovery_context
+
+    return default_discovery_context()
+
+
 @dataclass
 class Container:
     """Holds all wired dependencies."""
@@ -352,6 +361,13 @@ class Container:
     #: `list_by_status` like every other Run. Optional the same way the rest of
     #: the spine is -- a Container built directly still routes requests.
     graph_run_store: DurableRunStore | None = None
+    #: Per-cycle bounded-discovery context (#1051). The host product supplies
+    #: its own implementation (Hive's Workspace config, budgets and fresh
+    #: Persona/user-model/Goal reads); the default provides nothing, so
+    #: discovery nodes then run context-free — Bindings still gate every
+    #: fetch. A Container-owned field so the resolver hands the node the same
+    #: instance every other authority comes from.
+    discovery_context: Any = field(default_factory=lambda: None)
     #: Durable home for Schedule definitions and their fire cursors (#231).
     #: The live scheduler reads it, so an occurrence claim survives a restart
     #: and two replicas share one cursor instead of keeping private ones.
@@ -1329,6 +1345,7 @@ class Container:
             graph_run_store=self.graph_run_store,
             provider_registry=self.provider_registry,
             llm_router=self.llm_router,
+            discovery_context=self.discovery_context,
         )
 
     async def recover_abandoned_attempts(
@@ -2612,6 +2629,7 @@ async def create_container(
     capability_bindings: Iterable[Binding] = (),
     capability_credentials: CredentialRouter | None = None,
     provider_adapter_catalog: ProviderAdapterCatalog | None = None,
+    discovery_context: Any | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -3239,6 +3257,7 @@ async def create_container(
             model_chat_binding=model_chat_binding,
             model_chat_egress=model_chat_egress,
             model_chat_client=model_chat_client,
+            discovery_context=discovery_context or _bare_discovery_context(),
             record_store=record_store,
             pii_detector=pii_detector,
             identity_store=identity_store,
@@ -4357,6 +4376,7 @@ def build_node_resolver(
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
     graph_run_store: DurableRunStore | None = None,
+    discovery_context: Any | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -4440,5 +4460,10 @@ def build_node_resolver(
         "provider_registry": provider_registry,
         "llm_router": llm_router,
         "node_resolver": _resolver,
+        # Per-cycle discovery context (#1051): the host's bounded-discovery
+        # provider, when the deployment wires one. Bare callers keep None and
+        # discovery nodes run context-free (Binding-gated fetches still
+        # refuse without a Binding) — the authority never widens execution.
+        "discovery_context": discovery_context,
     }
     return _resolver

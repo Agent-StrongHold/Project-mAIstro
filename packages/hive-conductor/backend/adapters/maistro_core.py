@@ -138,7 +138,12 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         model_bindings=settings.maistro_model_bindings,
     )
 
-    container = await create_container(config)
+    # Bounded proactive discovery (#1051): the host's per-cycle context
+    # provider is a Container-owned authority like the rest, so resolver-built
+    # discovery nodes read the same instance every other authority comes from.
+    from services.discovery import discovery_context_provider
+
+    container = await create_container(config, discovery_context=discovery_context_provider())
 
     # Agent calls and Hive chat share the Container-owned governed client;
     # there is no adapter-local HTTP authority. The fallback only supports

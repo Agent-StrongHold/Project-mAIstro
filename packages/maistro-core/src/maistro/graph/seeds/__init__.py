@@ -16,10 +16,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .daily_status import daily_status_seed
+from .proactive_discovery import proactive_discovery_seed
 
 # Registry: use_case → list of seed factories.
 SEEDS_BY_USE_CASE: dict[str, list[Callable[[], dict[str, Any]]]] = {
     "pm_fleet": [daily_status_seed],
+    "workspace_agent": [proactive_discovery_seed],
     # canvas_creative + engineering_rfc + others get their default seeds
     # in later phases.
 }
@@ -30,4 +32,4 @@ def list_seeds_for(use_case: str) -> list[Callable[[], dict[str, Any]]]:
     return list(SEEDS_BY_USE_CASE.get(use_case, ()))
 
 
-__all__ = ["SEEDS_BY_USE_CASE", "daily_status_seed", "list_seeds_for"]
+__all__ = ["SEEDS_BY_USE_CASE", "daily_status_seed", "list_seeds_for", "proactive_discovery_seed"]

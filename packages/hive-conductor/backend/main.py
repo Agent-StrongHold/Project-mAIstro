@@ -34,6 +34,7 @@ from routes import (
     dag_runs,
     dags,
     dashboard_layout,
+    discovery,
     eval_judge,
     feedback,
     goals,
@@ -396,6 +397,7 @@ def create_app() -> FastAPI:
     app.include_router(backlog.router)
     app.include_router(workspaces.router, prefix="/v1/workspaces")
     app.include_router(attention.router, prefix="/v1/workspaces")
+    app.include_router(discovery.router, prefix="/v1/workspaces")
     # Workspace Home (#1048): same /v1/workspaces prefix as Attention, so the
     # route-permissions registry's existing entry covers it — no new prefix,
     # no new exemption.

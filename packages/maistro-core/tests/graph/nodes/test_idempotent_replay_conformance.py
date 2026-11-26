@@ -331,6 +331,101 @@ async def test_design_explore_replay_leaves_one_wave_envelope(
 # --- the registry sweep -----------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_discovery_source_fetch_replay_is_read_only_and_stable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The discovery fetch poll: replay re-GETs the declared source only."""
+    kind = "discovery.source_fetch"
+    rss = (
+        '<rss version="2.0"><channel>'
+        "<item><title>Tripod</title><link>https://feeds.example.com/t</link>"
+        "<guid>t1</guid><description>x</description></item>"
+        "</channel></rss>"
+    )
+    seen: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+        headers: dict[str, str] = {"content-type": "application/rss+xml"}
+        text = rss
+
+    class _Client:
+        is_closed = False
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None: ...
+
+        async def get(self, url: str, **kwargs: Any) -> _Resp:
+            seen.setdefault("methods", []).append("GET")
+            seen["url"] = url
+            return _Resp()
+
+    for verb in ("post", "patch", "put", "delete"):
+
+        def _make_mutate(verb_name: str) -> Any:
+
+            async def _mutate(url: str, **kwargs: Any) -> _Resp:
+                seen.setdefault("methods", []).append(verb_name.upper())
+                raise AssertionError(f"idempotent replay issued a mutating {verb_name} to {url}")
+
+            return _mutate
+
+        setattr(_Client, verb, _make_mutate(verb))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(
+        Binding(
+            binding_id="discovery-source-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="discovery.source",
+            provider_name="discovery-source",
+            config={"sources": [{"url": "https://feeds.example.com/rss", "category": "deals"}]},
+        )
+    )
+    node = get_node(kind)(effect_context=effects)
+    inputs = {"binding_id": "discovery-source-binding", "max_age_hours": 0}
+    first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
+    second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
+    assert first.success and second.success
+    methods = seen["methods"]
+    assert methods and all(method == "GET" for method in methods)
+    assert second.output == first.output
+
+
+@pytest.mark.asyncio
+async def test_discovery_scout_replay_is_pure_and_stable() -> None:
+    """The scout has no effect channel at all: replay is byte-identical."""
+    kind = "discovery.scout"
+    node = get_node(kind)()
+    inputs = {
+        "entries": [
+            {
+                "id": "t1",
+                "url": "https://feeds.example.com/t",
+                "title": "Tripod stand",
+                "summary": "",
+                "category": "deals",
+                "source_url": "https://feeds.example.com/rss",
+                "published_at": "",
+            }
+        ],
+        "watch_topics": ["tripod"],
+        "min_score": 0.1,
+    }
+    first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
+    second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
+    assert first.success and second.success
+    assert second.output == first.output
+
+
 def test_every_idempotent_kind_has_a_conformance_case() -> None:
     """Declaring IDEMPOTENT is a promise; this is where the promise is kept.
 
@@ -346,6 +441,8 @@ def test_every_idempotent_kind_has_a_conformance_case() -> None:
         "jira.poll",
         "airtable.poll",
         "jira.wait_for_subtasks",
+        "discovery.source_fetch",
+        "discovery.scout",
     }
     assert _idempotent_kinds() == covered, (
         "IDEMPOTENT declarations and conformance cases disagree; "
