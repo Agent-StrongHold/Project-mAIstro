@@ -495,19 +495,37 @@ class TestJitProvisioningAtTheLoginBoundary:
             username_registry.rollback_users([occupied])
 
     def test_jit_disabled_refuses_unlinked_identities_exactly_as_before(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, jit_harness: JitHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("OAUTH_PROVIDERS", json.dumps(_entra_provider_document()))
-        monkeypatch.setenv("OAUTH_PUBLIC_ORIGIN", _PUBLIC_ORIGIN)
+        # Keep valid eligible-group configuration, but use the shipped default
+        # for activation. Prove refusal at the real callback, not just that the
+        # builder returns None: the login path must not provision by another seam.
         monkeypatch.delenv("ENTRA_JIT_ENABLED", raising=False)
         get_settings.cache_clear()
-        idp = FakeIdentityProvider()
-        http = httpx.AsyncClient(transport=httpx.MockTransport(idp.handler))
-        links = HiveIdentityLinkStore()
-        service = OAuthLoginService(get_settings(), http=http, link_store=links)
-        assert service._jit is None
-        asyncio.run(http.aclose())
-        get_settings.cache_clear()
+        membership_requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "graph.microsoft.com":
+                membership_requests.append(request)
+            return jit_harness.idp.handler(request)
+
+        async def login() -> httpx.Response:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+                jit_harness.service = OAuthLoginService(
+                    get_settings(), http=http, link_store=jit_harness.links
+                )
+                assert jit_harness.service._jit is None
+                return _login_once(jit_harness, _client(), code="disabled-jit-code")
+
+        sessions_before = set(stores.sessions.keys())
+        callback = asyncio.run(login())
+
+        assert callback.status_code == 401
+        assert membership_requests == []
+        assert _new_users(jit_harness.users_before) == []
+        assert stores.oauth_identity_links.get(_identity_link_key("entra", _ENTRA_SUBJECT)) is None
+        assert set(stores.sessions.keys()) == sessions_before
+        assert _jit_audit_entries() == []
 
 
 class TestJitConfigurationIsFailClosed:

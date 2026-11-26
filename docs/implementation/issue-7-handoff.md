@@ -72,7 +72,10 @@ The supplied develop base `7ba29c1cd0` was **not** an ancestor of the branch: th
 | `uv run python scripts/check-suite-inventory.py --suite packages/maistro-rsi` | exit 0, matches recorded inventory |
 | `uv run ruff check` / `ruff format --check` on all files touched by this round | exit 0 (one reformat applied to `entra_jit.py` after the rename lengthened a signature) |
 
-## Milestone acceptance accounting (all 19 frozen exit conditions)
+## Round 4 acceptance accounting (historical; superseded by Round 5 below)
+
+The PASS labels in this historical table are **not current acceptance claims**.
+Round 5 distinguishes exercised primitives from reachable complete product behavior.
 
 | # | Criterion | Evidence / disposition |
 | --- | --- | --- |
@@ -96,7 +99,7 @@ The supplied develop base `7ba29c1cd0` was **not** an ancestor of the branch: th
 | 18 | Design Studio uses shared Agent/user-memory/Attention | PASS (deterministic, execution-level): `packages/maistro-design` suite 724 passed — `creative_graph.py` plans/instantiates/runs one canonical Graph per CreativeBrief through `run_durable_graph`, binding Goal identity/revision and Agent delegation provenance into the canonical Run (no product-private execution or Goal authority); `test_design_scope.py` refuses creation without canonical execution or an authenticated principal. Agent-runtime memory/Attention consumption stays with the deferred producer (row 12/17 limits). |
 | 19 | Entra first login creates users only for eligible groups, with configured grants | PASS (deterministic production-path tests): 39 JIT tests plus full backend suite, including verified OIDC route, real settings/builder/resolver, account/link/session assertions, unknown-group/outage/config-ceiling refusals, and 17 new regression cases. Live tenant/deployment Graph scopes remain UNVERIFIED. |
 
-## Handoff / residual risks
+## Historical handoff / residual risks (superseded by Round 5)
 
 - This repair is complete locally, not milestone completion or integration approval. Recommended verdict: NEEDS-DEEP-REVIEW for the milestone-level handoff.
 - No live Entra tenant was available; operators must configure delegated Graph membership scopes. Existing JIT semantics are first-login only: already-provisioned users retain grants after group removal, as explicitly declared in KNOWN-GAPS.md.
@@ -153,4 +156,110 @@ Fresh targeted validation (all exit 0, this round, HEAD `1507434b5`):
 
 **Defect found and repaired — KNOWN-GAPS #1047 disposition was false against reachable production code** (same class as the Round-3 #82 correction). The entry claimed "None of it has a production call path — nothing in the conductor process or maistro-server constructs a `UserModelStore`". In fact maistro-server constructs `PostgresUserModelStore` + `UserModelService` at startup (`main.py::_configure_user_model`, invoked from lifespan) and mounts the owner-scoped `/user-model` routes twice (`main.py:977` under `/v1`, `:993`), with 503-offline fallback and passing API tests. The entry is rewritten to the truthful shipped-with-limits state: owner control plane + relevance-gated same-user retrieval ship; the autonomous Dreaming→`promote_evidence` producer and the Agent-runtime recall consumer remain deferred to #1046. The stale heading ("specified but not reachable") and the false sentence are gone; the Release-Notes paragraph never mentioned the user model, so no other text needed correction.
 
-Updated acceptance accounting: rows 4, 8, 9, 10, 11, 13, 14, 15, 16, 18 now PASS with deterministic evidence; row 12 is SPLIT (retrieval/promotion PASS, producer deferred); row 17 stays UNVERIFIED (#1051 open, in-flight in separate lanes); rows 2, 3, 5 stay UNVERIFIED (require release-pipeline execution, clean-machine/live-model environments, RC soak — not reachable as local evidence in a bounded round and prohibited from remote mutation). Deterministic passes stand at 14 of 19 rows (counting row 12's proven half), with 5 rows UNVERIFIED for declared environment or in-flight-lane reasons.
+Historical Round 4 accounting claimed 14 of 19 rows, including a partially proven row. That tally is withdrawn: it conflated library/fixture proofs with operational product acceptance. Round 5 below is the current assessment.
+
+## Round 5 — current handoff (job `b3e579978d2845ce87b7ea75ffc76993`)
+
+Starting HEAD `4e931b1a6c429f597e08199bda22759dd5be16c5`, branch `auto-7`,
+worktree initially clean. The supplied dispatch snapshot was read locally;
+no remote enumeration, GitHub mutation, merge, or discarded work. No driver
+`check-*.log` files existed in the job directory. This round's actual logs
+are `worker-*.log` in that directory. Previous commits remain intact.
+
+### Evidence-backed changes
+
+1. **Disabled-JIT test was not testing refusal.** Its body only constructed
+   `OAuthLoginService` and asserted `_jit is None`. It now uses the real OAuth
+   callback, signed nonce-bound Entra token and valid eligible-group config
+   with activation absent. It asserts 401, no membership request, no account,
+   no identity link and no session. A validation-only external pytest plugin
+   injected an activation bypass inside `authenticate` (leaving the builder's
+   `_jit is None` assertion intact): the strengthened test failed at
+   **303 != 401**. Without that mutant the JIT suite is **39 passed**. No
+   production code was mutated on disk. Inventory note
+   `issue-7-disabled-login.md` records zero node-count delta.
+2. **Release-note text contradicted the documented/shipped queue.** The
+   `KNOWN-GAPS.md` copy-ready block said every restart loses queued/active
+   tasks; its first entry and production `maistro_server/main.py:665–679`
+   document durable admission and `queue.recover(run_store)` when configured.
+   Corrected to conditional durability, per-process dispatch, and explicit
+   no-database loss. The core task suite exercises recovery; the live PG
+   process-restart test was **skipped**, not counted as proof.
+3. **Acceptance overclaims corrected here.** In particular, a tested fencing
+   primitive is not an operational Workspace Agent, an embedded dictionary
+   graph is not a Ladybug adapter, and canonical Design execution alone is
+   not shared memory/Attention consumption. These are concrete code-path
+   gaps, not scanner guesses. No attempt was made to patch them by adding
+   a competing scheduler, Goal store, authorization path or memory authority.
+
+### Fresh validation
+
+All commands below exited 0 unless explicitly described as a negative control.
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv sync --locked --extra dev` | success |
+| `uv run ruff check .` / `uv run ruff format --check .` | success (also rerun after final changes) |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_entra_entitlements.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -x -q` | 53 passed before test strengthening |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py -x -q` | 39 passed after strengthening |
+| `PYTHONPATH=<job-dir> uv run pytest -p disabled_jit_mutant packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py -q -k jit_disabled` | expected exit 1: 1 failed, 38 deselected, assertion 303 != 401 |
+| `uv run pytest packages/hive-conductor/backend/tests -x -q` | **4571 passed, 113 skipped**, 35 warnings |
+| `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/memory/user_model packages/maistro-core/tests/memory/working_graph packages/maistro-core/tests/memory/working -x -q` | **311 passed, 35 skipped** (PG-gated tests not proven) |
+| `uv run pytest packages/maistro-server/tests/api/test_user_model_api.py -x -q` | 6 passed |
+| `uv run pytest packages/maistro-design/tests -x -q` | 724 passed, 1 skipped |
+| `uv run pytest packages/maistro-core/tests/tasks -x -q` | 801 passed, 22 skipped |
+| `uv run pytest packages/maistro-server/tests/test_task_restart_recovery.py -x -q` | **1 skipped** (no PG DSN); live restart proof UNVERIFIED |
+| `uv run pytest packages/hive-conductor/backend/tests/test_backup_restore_drill.py -x -q -rs` | 14 passed, real age/Fernet decrypt proofs |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | 4684 collected, matches inventory, no duplicate evidence |
+| `uv run python scripts/check-release-consistency.py` | released none / shipping 0.9.0 / target 1.0.0 |
+| `uv run python scripts/check-contract-markers.py` | success |
+| `uv run python scripts/check-backlog-consistency.py` | success |
+| `uv run python scripts/check-reachability.py` / `check-reachability-dispositions.py` | success |
+| `uv run python scripts/check-reachability-provenance.py` / `check-reachability-dispositions-provenance.py` | success; no ledger edits |
+
+### Current acceptance accounting — all 19 frozen issue #7 exit conditions
+
+**PASS (deterministic)** is limited to the stated behavior. **PARTIAL** is
+not a completed exit condition. No live service, UI deployment or release
+exercise is inferred from a mocked provider, injected policy or skipped test.
+
+| # | Criterion | Current evidence and remaining acceptance |
+| --- | --- | --- |
+| 1 | VERSION / CHANGELOG / package metadata consistent | PASS (deterministic): fresh release-consistency gate. This does not claim a released 1.0.0. |
+| 2 | Existing release workflows verified | UNVERIFIED: no workflow execution records supplied or run; workflow existence is not execution proof. |
+| 3 | Clean-machine install/deploy + real-model Graph E2E | UNVERIFIED: local locked dependency sync and mocked-provider tests are not clean-machine/live-model evidence. |
+| 4 | Backup/restore including Conductor credentials and escrow | PARTIAL: 14 tests source the real verification script over generated SQLite, age and Fernet artifacts; pinned decrypt and tamper refusals pass. Full database/volume capture, restore and deployed operation were not exercised. |
+| 5 | RC soak and byte-equivalent final promotion | UNVERIFIED: no RC artifacts, soak record or promotion byte comparison supplied. |
+| 6 | Every KNOWN-GAPS item explicitly shipped/deferred | PASS for disposition accounting: read every entry; limited/deferred/closed states are explicit, including backlog and user-model limits. Repaired the contradictory queue release text. This is not certification of every inherited factual statement or acceptance of every deferral. |
+| 7 | Durable backlog/claim/campaign path cut over or release-deferred | PARTIAL: the SQLite control plane and HTTP/CLI seams exist; KNOWN-GAPS declares missing PostgreSQL BacklogItem storage and autonomous claim-to-Run consumer. A PostgreSQL deployment falls back to process-local BacklogItems, so generic durable cutover is not proven. Release-owner acceptance of these limits is UNVERIFIED. |
+| 8 | Operational persistent Workspace Agent discovers/progresses/waits/delegates/replans owned Goals and survives restart/failover | NOT MET by current production composition: `container.py:1399–1424` returns 0 without an injected policy, has no physical admitter, and the production caller scan found no configured policy or caller of this tick. `goals/reconciliation/wiring.py:105–148` explicitly uses in-memory state for PostgreSQL (cannot fence replicas or survive restart). `test_goal_container_wiring.py` proves the no-policy and PG-fallback behavior; injected-policy/SQLite tests prove primitives only. Do not activate this by inventing a second execution authority. |
+| 9 | Goal completion evidence-backed, never inferred from latest Run | PARTIAL: goals and inspection suites prove Run completion does not automatically complete a Goal. A reachable operational reconciler establishing evidence-backed desired-state completion is not demonstrated (row 8); that half remains UNVERIFIED. |
+| 10 | Canonical Workspace/Project/Goal/Agent/reconciliation/Run inspection | PASS for deterministic backend inspection: full backend suite includes `test_goal_inspection.py` and `test_canonical_run_inspection.py` with scope refusals and NodeRun/Attempt views. Live UI inspection was not rerun. |
+| 11 | Minimum disposable isolated per-Workspace Ladybug working graph | PARTIAL: container chat context uses `working_memory_context_message` (`container.py:822`), and isolation/hydration/eviction tests pass. But manager `_embedded_factory` selects `create_backend("embedded", ...)`; `working_graph/backend.py:109–124` is dictionaries, explicitly a reference stand-in. No production Ladybug registration was found. Accepted ADR-082226-5104 chooses Ladybug, so an equivalent-role test cannot certify literal backend adoption. |
+| 12 | Dreaming produces provenance-bearing user facts; same-user Agent recall only when relevant | PARTIAL: promotion/retrieval primitives and owner HTTP APIs pass. Production constructs the PostgreSQL service (`maistro_server/main.py:89–117`); no production caller of `promote_evidence` or Agent-runtime `recall_for_task` was found. Test-local Workspace Agent harnesses are not the production consumer. Full producer-to-Agent behavior is UNVERIFIED. |
+| 13 | Workspace-private scope distinct from same-user personalization | PASS (deterministic boundary): user-model tests refuse colliding other-user/private facts and Persona-based authorization widening. This does not fill row 12's missing runtime wiring. |
+| 14 | Optional Home composition; partial/100% pinning | PASS for deterministic backend contract: full backend suite exercises home layout/routes, pinned revisions, scoped references and unpinned composition. Browser rendering was not rerun; no Home dependency was introduced into execution. |
+| 15 | Adaptive restoration through durable explicit/learned settings contract | PASS for deterministic backend contract: full backend suite includes landing preference, restore policy, settings durability and preference calibration. Deployed browser restoration remains UNVERIFIED. |
+| 16 | Durable Attention/Waiting, prescribed ordering and evidence-backed escalation | PASS for deterministic backend projection: full backend suite covers `test_attention_projection.py`; `services/attention.py` derives from canonical durable sources and persists only defer/dismiss preferences. Exact priority ladder and refusal of age-only escalation pass; no second Attention authority is introduced. |
+| 17 | Bounded proactive discovery under canonical Run/Invocation/security seams | UNVERIFIED: no shipped discovery/scout/curation producer demonstrated on this HEAD. The existing `proactive` Attention classification is a destination, not a discovery pipeline. Other-lane attempts are not evidence for this branch. |
+| 18 | Design Studio consumes shared persistent Agent/user-memory/Attention | NOT PROVEN: Design tests prove canonical execution, authenticated scope and provenance, not consumption of the missing Agent recall or discovery paths. Production `maistro-design/src` scan found no UserModel/Attention/recall consumer. Canonical execution is necessary but insufficient; row 18's earlier PASS is withdrawn. |
+| 19 | Entra group-gated first-login provisioning with only configured grants | PASS (deterministic first-login behavior): real callback + builder/resolver tests, negative controls, 39 JIT tests and complete backend suite. Live tenant Graph scopes UNVERIFIED. This is NOT #492 completion: subsequent-login group-removal reconciliation, durable SSO/local grant provenance and atomic user/link/entitlement transaction are not proven; `OAuthLoginService.authenticate` skips JIT for linked users and provisioner creates user then link separately. |
+
+### Disposition / next owner
+
+**NEEDS-REPAIR for milestone acceptance, not integration approval.** The
+bounded first-login repair has passing focused and package validation; the
+milestone does not satisfy its operational Agent, Dreaming, literal Ladybug,
+proactive-discovery and shared Design consumption requirements, and still
+needs operator release evidence. The previous deep-review ambiguity is now
+an actionable gap list, not a request to assume missing work has shipped.
+
+No production authority, quality ledger, grant or policy was changed. Read
+accepted ADR-068, ADR-080 and ADR-082226-5104 plus Proposed ADR-059; preserved
+their authorization/memory/execution boundaries. Remaining implementation
+must compose the existing canonical `Goal -> Graph -> Run -> NodeRun -> Attempt`
+seams, not replace them. This round adds no competing store or scheduler.
+
+Progress: `{checked: 19, done: 8, skipped: 0, errors: 0, next: "repair operational composition gaps; obtain live release evidence"}`.
+Here `done` counts only the eight explicitly bounded deterministic/disposition
+PASS rows (1, 6, 10, 13–16, 19), not complete milestone acceptance.

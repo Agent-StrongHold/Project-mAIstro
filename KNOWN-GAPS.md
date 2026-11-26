@@ -384,8 +384,10 @@ is the seam) before advertising group removal as revocation.
 
 The following text is intended to be copied verbatim into the release notes.
 
-> v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Memory write-authority enforcement (ADR-057) is active at every
+> Task admission is durable when a database is configured: startup recovers
+> queued canonical Runs, while dispatch remains per-process. Without a database,
+> admitted tasks are lost on restart. Memory write-authority enforcement
+> (ADR-057) is active at every
 > memory store boundary — deployments run agent-managed by default and can set
 > `system_managed` to strip agent write authority — but read-path gating,
 > hybrid per-block tags and denial events are not wired, and no product-level
