@@ -568,6 +568,40 @@ async def test_a_signed_decision_survives_the_write_and_reverifies(log, conn) ->
 
 
 @pytest.mark.asyncio
+async def test_get_page_preserves_signed_decision_evidence(log, conn) -> None:
+    """The paginated read path (Hive's ``audit_bridge``) must hand back the
+    same reconstructed evidence ``get_entries`` does: a signed row that loses
+    its integrity through ``get_page`` would present itself as unsigned."""
+    signer = DecisionSigner()
+    entry = AuditEntry(
+        boundary="policy.decision",
+        user_id="owner-1",
+        org_id="org-1",
+        action="deploy",
+        verdict="denied",
+        policy_snapshot='{"permission_table":{"deploy":["admin"]}}',
+        payload='{"authorized":false}',
+        inputs_hash="3f7868f23fd7ecf0",
+    )
+    entry = replace(entry, integrity=signer.sign(entry))
+    await log.log(entry)
+    stored_row = _row_as_stored(conn.calls[0].query, conn.calls[0].args)
+    stored_row["id"] = 1
+    conn.queue_fetch([stored_row])
+
+    page = await log.get_page(org_id="org-1")
+    (row_id, stored) = page.records[0]
+    assert row_id == 1
+    assert page.next_cursor is None
+    assert stored.integrity == entry.integrity
+    assert stored.inputs_hash == "3f7868f23fd7ecf0"
+    assert stored.policy_snapshot == entry.policy_snapshot
+    assert stored.violations == ()
+    assert stored.signature
+    assert inspect_decision(stored, trusted_keys=signer.keyring) is IntegrityStatus.VERIFIED
+
+
+@pytest.mark.asyncio
 async def test_get_entries_rejects_unknown_keyword(log: PgAuditLog) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
         await log.get_entries(status="denied")  # type: ignore[call-arg]

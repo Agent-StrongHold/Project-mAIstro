@@ -61,6 +61,13 @@ class Violation:
         # violations inherits redacted text. (The sentinel-side Violation in
         # `maistro.security._types` applies the identical rule.)
         object.__setattr__(self, "detail", _redact(self.detail))
+        # repair_action rides the same signed-and-persisted path, and paths
+        # like schema-default substitution can embed credential values. Scrub
+        # at construction too -- before signing -- so the signature covers
+        # only redacted text. `redact` is idempotent, so rebuilding Violation
+        # objects from a persisted row yields identical decision bytes.
+        if self.repair_action:
+            object.__setattr__(self, "repair_action", _redact(self.repair_action))
 
 
 @dataclass(frozen=True)

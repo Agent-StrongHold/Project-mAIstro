@@ -201,11 +201,15 @@ class Sentinel:
         self,
         action: str,
         principal: Principal,
-        table: PermissionTable | None = None,
+        table: PermissionTable | None,
     ) -> str | None:
-        """Why this (action, principal) is denied right now, or None when permitted."""
-        if table is None:
-            table = await self._effective_table()
+        """Why this (action, principal) is denied right now, or None when permitted.
+
+        ``table`` is the already-resolved permission table for this decision,
+        including ``None`` for an unavailable source: it is never re-resolved
+        here, so authorization and its signed snapshot always rest on the same
+        read and an unavailable source denies fail-closed.
+        """
         if table is None:
             return f"permission source unavailable for '{action}'; denied fail-closed"
         authorized = check_permission(

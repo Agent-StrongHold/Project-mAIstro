@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +58
+  packages/maistro-core/tests: +61
 ---
 
 Coverage for tamper-evident Sentinel decisions (issue #69, ADR-073). The delta
@@ -160,3 +160,45 @@ Re-validation evidence (all commands run fresh on this round's tree):
   durable-table-inventory, adr-index, adr-status-language, backlog-
   consistency, vulture-baseline (CI args), reachability, promotion-surface
   and radon-baseline gates all green.
+
+## Paginated-read parity round (2026-11-26, salvage commit on auto-69)
+
+The verify round left uncommitted work in the worktree; this round validated
+and committed it. The gap it closes: ``get_entries`` reconstructs the signed
+decision envelope and the store proof columns, but the shared page mapper
+(``audit_pages.make_page``) did not, so any paginated read — Hive's
+``audit_bridge`` included — handed back a signed row looking unsigned (#69).
+``make_page`` now carries ``signature``/``signing_key_id``/``proof_type`` and
+reuses ``decision_fields`` for the envelope, byte-for-byte the same readers
+``get_entries`` uses. Two supporting decision-record repairs rode along:
+
+- ``Sentinel._permission_denial_reason`` takes the already-resolved permission
+  table instead of re-resolving it, so the denial reason and the signed
+  ``policy_snapshot`` rest on one read and an unavailable source denies
+  fail-closed (``authorize`` resolves once and passes it through).
+- ``repair_action`` never carries evidence text unscrubbed: the
+  missing-required-with-default rule names the field instead of echoing the
+  schema default (a default can be a credential), and ``Violation`` redacts
+  ``repair_action`` at construction, before signing — same invariant ``detail``
+  has had since #1159. ``redact`` is idempotent, so rebuilding violations from
+  a persisted row yields identical signed bytes.
+
+New tests (+3 node IDs, delta re-derived +58 → +61):
+``test_get_page_preserves_signed_decision_evidence`` (PG, mocked conn feeding
+``make_page`` a row reconstructed from the store's own INSERT column list) and
+the SQLite pair ``test_get_page_preserves_signed_decision_evidence`` /
+``test_get_page_carries_decision_columns_from_durable_rows`` (real file-backed
+store: signed round-trip through ``get_page`` re-verifies against a pinned
+keyring; store-written decision columns survive the shared mapper).
+
+Ledger note: the ``repair_action`` redaction reads ``self.repair_action``,
+which flips vulture's classification of the field from unused to used. The
+stale debt row
+(``types/security.py::unused variable 'repair_action'``) was pruned from the
+candidate ledger via ``--update`` with CI's exact scan args — 1219 → 1218
+reviewed identities, one deletion, no additions — the gate's own
+"fixed debt must be pruned" direction, not new banking and not a floor raise;
+no grant needed and none used. Validation: targeted battery (pg/sqlite audit +
+sentinel integrity + container wiring) 172 passed / 3 skipped (+3 vs the prior
+169/3); ruff check/format clean; mypy battery 966 files clean;
+vulture-baseline (CI args) exit 0.
