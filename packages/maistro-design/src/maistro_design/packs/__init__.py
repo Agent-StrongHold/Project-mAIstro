@@ -125,8 +125,8 @@ _VULTURE_WHITELIST = (
     # nothing). Names vulture sees used elsewhere in the scan (`job`,
     # `metrics`, `surfaces`, `verb`, `loop`, `session`, `fail`, `n`,
     # `text`, `spreads`) need no entry; these four do.
-    ProductSpec.model_construct(non_goals=()).non_goals,
-    BookSpread.model_construct(art="").art,
+    ProductSpec.model_construct(job="", metrics=(), surfaces=(), non_goals=()).non_goals,
+    BookSpread.model_construct(n=1, text="", art="").art,
     GameLoop.model_construct(verb="", loop="", session="", fail="", feel=()).feel,
     BookPages.model_construct(spreads=())._ordered_from_one,
     PackArtifactRecord.read,
