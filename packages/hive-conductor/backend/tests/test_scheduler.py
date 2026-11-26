@@ -1292,6 +1292,7 @@ async def _canonical_manual_fixture(*, template: bool = True) -> tuple[Any, Any]
         schedule_store=schedule_store,
         schedule_admitter=ScheduleRunAdmitter(run_store, template_store, schedule_store),
         project_scope_store=projects,
+        discovery_context=None,
     )
     if template:
         await container.template_store.put(

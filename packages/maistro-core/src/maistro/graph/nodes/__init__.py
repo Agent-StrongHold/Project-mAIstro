@@ -61,6 +61,11 @@ AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
         # everywhere; `scan_inbound` fails closed when the policy is absent.
         "warden",
         "audit_log",
+        # Per-cycle discovery context (#1051): Workspace config, budgets and
+        # fresh Persona/user-model/Goal notes, read at execution time so a
+        # scheduled fire with no HTTP caller still runs a bounded, configured
+        # cycle. Optional everywhere; the bare default provides nothing.
+        "discovery_context",
     }
 )
 
@@ -245,6 +250,9 @@ def _import_node_modules() -> None:
         "airtable_poll",  # registers "airtable.poll"
         "compliance_block",  # registers "compliance.block"
         "dashboard_append_section",  # registers "dashboard.append_section"
+        "discovery_curate",  # registers "discovery.curate"
+        "discovery_scout",  # registers "discovery.scout"
+        "discovery_source_fetch",  # registers "discovery.source_fetch"
         "human_approve_draft",  # registers "human.approve_draft"
         "human_ask_question",  # registers "human.ask_question"
         "human_delegate_to_role",  # registers "human.delegate_to_role"
