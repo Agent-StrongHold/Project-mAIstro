@@ -381,6 +381,80 @@ class TestDependencyBumpPrSurfacesStillTrigger:
         assert "-- packages" in workflow
 
 
+class TestJsDependencyBumpPrSurfacesStillTrigger:
+    """PRs whose diff is exactly JS/npm dependency metadata in a package
+    frontend are the most recurring non-Python surface in the repository
+    (every dependabot npm bump), and 'packages/**/*.py' cannot match them: a
+    bump edits packages/*/frontend/package.json and package-lock.json. With
+    no matching trigger path such a PR never started this job, so the
+    required "Mutation gate (changed critical lines)" row had no check-run
+    on the candidate head and gates-ran stayed pending forever — measured on
+    #2485's head d329b1a07c (@eslint/js 9.39.5 -> 10.0.1 in
+    packages/hive-conductor/frontend) with the CI-exact evaluator
+    (check-gates-ran.py --require-complete --base-branch develop
+    --event-name pull_request --changed-files <measured envelope>): 73/74
+    required checks present, the mutation row absent -> exit 2 (PENDING).
+    The same failure mode was fixed for image pins (#2120), grant ledgers /
+    inventory notes (#2371), gate scripts (#2432), dev-tool requirements
+    (#2345) and Python lock/manifest metadata (#2450); this pins the npm
+    manifest and lockfile surfaces #2485 hit.
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+    CRITICAL_LIST: ClassVar[Path] = REPO / "quality" / "mutation-critical-files.json"
+
+    def _declared_paths(self) -> list[str]:
+        """The workflow's declared pull_request paths patterns."""
+        import yaml
+
+        doc = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        triggers = doc.get(True, doc.get("on"))  # YAML 1.1 parses `on:` as True
+        paths = triggers["pull_request"]["paths"]
+        assert isinstance(paths, list) and all(isinstance(p, str) for p in paths)
+        return paths
+
+    def test_the_js_dependency_surfaces_actually_exist(self):
+        """If they did not, the honest fix would be deleting the trigger
+        entries rather than adding path filters for nothing."""
+        assert (REPO / "packages" / "hive-conductor" / "frontend" / "package.json").is_file()
+        assert (REPO / "packages" / "hive-conductor" / "frontend" / "package-lock.json").is_file()
+
+    def test_an_npm_manifest_bump_pr_triggers_the_gate(self):
+        """The #2485 surface: a PR whose content bump is the package.json
+        dependency row (@eslint/js 9.39.5 -> 10.0.1) must start the job; the
+        trigger must reach any package frontend depth."""
+        assert _paths_match(
+            self._declared_paths(),
+            ["packages/hive-conductor/frontend/package.json"],
+        )
+
+    def test_an_npm_lockfile_bump_pr_triggers_the_gate(self):
+        """Dependabot regenerates the lockfile alongside the manifest; the
+        trigger must reach it at the same depth."""
+        assert _paths_match(
+            self._declared_paths(),
+            ["packages/hive-conductor/frontend/package-lock.json"],
+        )
+
+    def test_js_dependency_surfaces_stay_zero_overlap_by_construction(self):
+        """The added triggers produce *evidence*, not mutation coverage:
+        every mutation-critical source is a .py file under packages/, so an
+        npm manifest/lockfile-only diff can never intersect the critical set
+        and resolves to the zero-overlap summary instead of mutating
+        anything. If a package.json or lockfile path ever became
+        mutation-critical, the trigger addition above would silently change
+        gate semantics and this pin must be revisited.
+        """
+        import json
+
+        critical = json.loads(self.CRITICAL_LIST.read_text(encoding="utf-8"))
+        sources = [entry["source"] for entry in critical["entries"]]
+        assert sources, "critical list must not be empty"
+        assert all(source.endswith(".py") for source in sources)
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        assert "-- packages" in workflow
+
+
 class TestEvidenceOnlyPrSurfacesStillTrigger:
     """A PR whose diff touches exactly a governance/evidence surface never
     started this workflow, so its required "Mutation gate (changed critical
