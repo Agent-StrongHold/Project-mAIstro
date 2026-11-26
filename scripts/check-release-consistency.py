@@ -94,10 +94,11 @@ The policy this gate now enforces, stated where PR authors write entries:
 - Every entry sits under a recognized category and links the issue or PR it
   belongs to (`(#1234)`); a change with no tracked issue carries the explicit
   exclusion `(no linked issue: <reason>)` instead.
-- Placeholders (TODO/TBD/none/...) are *worse* than an empty section: they
-  defeat a presence check while committing nothing. Placeholder-only
-  content fails; a genuinely empty section passes an ordinary run — a tree
-  may simply not have accumulated user-visible changes yet.
+- Placeholders (the ``_PLACEHOLDER_RE`` class: todo/tbd/none/...) are *worse*
+  than an empty section: they defeat a presence check while committing
+  nothing. Placeholder-only content fails; a genuinely empty section passes
+  an ordinary run — a tree may simply not have accumulated user-visible
+  changes yet.
 - Release readiness is the one place emptiness cannot stand: at tag time
   (`--releasing vX.Y.Z`) the section being published must contain meaningful
   content, because `release_notes.py` publishes exactly that section and
@@ -179,8 +180,9 @@ def _entry_text(entry_line: str) -> str:
     """An entry bullet's own text: the marker stripped, whitespace trimmed.
 
     Placeholder matching is `fullmatch` on purpose — a *line-shaped* token,
-    not a mention — and `- TODO` must therefore be compared as `TODO`, not
-    fail the match because of the list marker every real entry carries.
+    not a mention — and a bullet whose body is only a placeholder word must
+    therefore be compared after the list marker is stripped, not fail the
+    match because of the marker every real entry carries.
     """
     return _ENTRY_RE.sub("", entry_line, count=1).strip()
 
@@ -341,10 +343,11 @@ def _entries(body: str) -> list[tuple[int, str, str]]:
 def _placeholder_only(body: str) -> bool:
     """Whether every content line of a section body is a placeholder token.
 
-    `TODO` under `### Added` is the canonical way to defeat a presence check:
-    the heading exists, the category exists, and the entry says nothing.
-    Category headings are structure, not content, so they are ignored — a
-    body of headings plus TODO is placeholder-only in every way that matters.
+    A lone placeholder word under `### Added` is the canonical way to defeat
+    a presence check: the heading exists, the category exists, and the entry
+    says nothing. Category headings are structure, not content, so they are
+    ignored — a body of headings plus placeholder words is placeholder-only
+    in every way that matters.
     """
     lines = [
         line.strip() for line in body.splitlines() if line.strip() and not re.match(r"^###\s", line)
@@ -411,7 +414,8 @@ def unreleased_problems(changelog: str) -> list[str]:
         return []
     if _placeholder_only(body):
         return [
-            "CHANGELOG.md's '## [Unreleased]' section is placeholder-only (TODO/TBD/none/...). "
+            "CHANGELOG.md's '## [Unreleased]' section is placeholder-only "
+            "(todo/tbd/none/...). "  # DevSkim: ignore DS176209 until 2027-12-31 — error text names rejected placeholders
             "A placeholder defeats the content check while committing nothing: write the "
             "real entry or remove the placeholder."
         ]

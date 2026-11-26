@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import dispatch_tool_call
 from maistro.quota.usage_report import reported_usage
+from maistro.security.sentinel.audit import log_scoped_tool_denial
 from maistro.security.warden.detector import WardenContext
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
 from maistro.types.tool import ToolCall
 
@@ -23,6 +25,59 @@ if TYPE_CHECKING:
     from maistro.protocols.tracing import Trace
 
 logger = logging.getLogger("maistro.strategies.react")
+
+
+def _raw_arguments_error(raw_args: str, tool_name: str) -> str | None:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return f"Error: malformed arguments for tool '{tool_name}'"
+    if not isinstance(parsed, dict):
+        return f"Error: arguments for tool '{tool_name}' must be an object"
+    return None
+
+
+def _validate_model_tool_call(
+    tools: list[dict[str, Any]] | None,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    allowed_tools: frozenset[str] | None,
+    raw_error: str | None,
+) -> tuple[bool, str | None, dict[str, Any], str]:
+    """Return a refusal, if any, before Sentinel/provider dispatch.
+
+    The fourth element is the host-owned denial reason for the scoped audit
+    record (#847); it is empty when the call is admitted.
+    """
+    schema = _find_tool_schema(tools, tool_name)
+    if allowed_tools is None:
+        return False, None, schema, ""
+    if raw_error is not None:
+        return True, raw_error, schema, "malformed tool arguments"
+    if tool_name not in allowed_tools:
+        return (
+            True,
+            f"Error: tool '{tool_name}' is not in the Agent allowlist",
+            schema,
+            "tool not in agent allowlist",
+        )
+    if not schema:
+        return (
+            True,
+            f"Error: no schema is registered for tool '{tool_name}'",
+            schema,
+            "no schema registered for requested tool",
+        )
+    try:
+        validate_tool_arguments(schema, tool_args)
+    except ToolArgumentError as exc:
+        return (
+            True,
+            f"Error: invalid arguments for tool '{tool_name}': {exc}",
+            schema,
+            "invalid tool arguments",
+        )
+    return False, None, schema, ""
 
 
 def _find_tool_schema(
@@ -37,6 +92,27 @@ def _find_tool_schema(
             params: dict[str, Any] = fn.get("parameters", {})
             return params
     return {}
+
+
+def _model_message(response: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
+    """Extract the assistant message and its tool calls from one completion."""
+    choices = response.get("choices", [])
+    choice = choices[0] if choices else {}
+    message = choice.get("message", {})
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return message, []
+    return message, tool_calls
+
+
+def _truncate_tool_result(tool_result: Any) -> str:
+    tool_result_str = str(tool_result)
+    if len(tool_result_str) <= 16384:
+        return tool_result_str
+    return (
+        tool_result_str[:16384]
+        + f"\n[... truncated, {len(str(tool_result)) - 16384} bytes omitted]"
+    )
 
 
 class ReactStrategy:
@@ -77,6 +153,11 @@ class ReactStrategy:
         tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
+        # #847: the Agent wires its audit log so a refusal here leaves scoped
+        # authorization-denied evidence, not only a returned error string.
+        audit_log = kwargs.get("audit_log")
+        identity = kwargs.get("identity")
+        agent_name = getattr(identity, "name", "") if identity is not None else ""
 
         for round_num in range(self.max_rounds + 1):
             if round_num > 0:
@@ -92,12 +173,7 @@ class ReactStrategy:
                 total_output_tokens += reported[1]
                 reported_calls += 1
 
-            choices = response.get("choices", [])
-            choice = choices[0] if choices else {}
-            message = choice.get("message", {})
-            tool_calls = message.get("tool_calls")
-            if not isinstance(tool_calls, list):
-                tool_calls = []
+            message, tool_calls = _model_message(response)
 
             if not tool_calls or round_num >= self.max_rounds:
                 content = message.get("content", "")
@@ -121,9 +197,14 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    allowed_tools=(
+                        frozenset(kwargs["allowed_tools"]) if "allowed_tools" in kwargs else None
+                    ),
                     context=list(tool_context),
                     security_pipeline=security_pipeline,
                     tool_round=round_num,
+                    audit_log=audit_log,
+                    agent_name=agent_name,
                 )
                 tool_context.append(WardenContext(tool_result_str))
 
@@ -199,10 +280,13 @@ class ReactStrategy:
             logger.warning("Tool args too large for %s: %d bytes", tool_name, len(raw_args))
             return {}, f"Error: Tool arguments too large ({len(raw_args)} bytes)"
         try:
-            return json.loads(raw_args), None
+            parsed = json.loads(raw_args)
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
             return {}, None
+        if not isinstance(parsed, dict):
+            return {}, f"Error: arguments for tool '{tool_name}' must be an object"
+        return parsed, None
 
     async def _run_tool(
         self,
@@ -269,6 +353,79 @@ class ReactStrategy:
             pass
         return tool_result_str
 
+    async def _sentinel_admission(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_schema: dict[str, Any],
+        *,
+        sentinel: Any,
+        auth: Any,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Run Sentinel pre-call admission; returns ``(args, refusal_or_None)``."""
+        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
+        if not sentinel_verdict.allowed:
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'"
+        if not sentinel_verdict.repaired_data:
+            return tool_args, None
+        repaired = sentinel_verdict.repaired_data
+        if tool_schema:
+            try:
+                validate_tool_arguments(tool_schema, repaired)
+            except ToolArgumentError as exc:
+                return tool_args, f"Error: repaired arguments are invalid: {exc}"
+        return repaired, None
+
+    async def _admit_tool_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        raw_args: str,
+        error_result: str | None,
+        *,
+        tools: list[dict[str, Any]] | None,
+        sentinel: Any,
+        auth: Any,
+        allowed_tools: frozenset[str] | None,
+        security_pipeline: bool,
+    ) -> tuple[bool, str | None, dict[str, Any], str, dict[str, Any]]:
+        """Admission gate before Sentinel/provider dispatch (#57/#847).
+
+        Returns ``(blocked, refusal, schema, denial_reason, tool_args)`` where
+        ``tool_args`` carries Sentinel's repaired arguments when admission
+        repaired them. The refusal and the host-owned denial reason travel
+        together so the caller can audit the decision at the same boundary
+        that made it.
+        """
+        # The model can return a name outside the Agent declaration or a name
+        # absent from the host schema even when the provider accepts it. Both
+        # cases are hard refusals before Sentinel/provider dispatch (#57).
+        raw_error = _raw_arguments_error(raw_args, tool_name)
+        blocked, refusal, schema, denial_reason = _validate_model_tool_call(
+            tools, tool_name, tool_args, allowed_tools, raw_error
+        )
+        blocked = blocked or error_result is not None
+        if error_result is not None and not denial_reason:
+            denial_reason = "malformed tool arguments"
+        if blocked or security_pipeline:
+            return blocked, refusal, schema, denial_reason, tool_args
+
+        if sentinel is None or auth is None:
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            return (
+                True,
+                f"Error: Permission denied for tool '{tool_name}'",
+                schema,
+                "no sentinel or caller auth to authorize tool",
+                tool_args,
+            )
+        tool_args, refusal = await self._sentinel_admission(
+            tool_name, tool_args, schema, sentinel=sentinel, auth=auth
+        )
+        return blocked or refusal is not None, refusal, schema, denial_reason, tool_args
+
     async def _execute_one_tool_call(
         self,
         tc: dict[str, Any],
@@ -279,36 +436,41 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        allowed_tools: frozenset[str] | None = None,
         context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
         tool_round: int = 0,
+        audit_log: Any = None,
+        agent_name: str = "",
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
-        tool_args, error_result = self._parse_tool_args(tool_name, fn.get("arguments", "{}"))
+        raw_args = fn.get("arguments", "{}")
+        tool_args, error_result = self._parse_tool_args(tool_name, raw_args)
 
-        # NOTE: a parse error sets a placeholder result but does NOT block — the
-        # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only an authorization denial blocks execution.
-        tool_result: Any = error_result
-        tool_blocked = False
+        tool_blocked, refusal, _tool_schema, denial_reason, tool_args = await self._admit_tool_call(
+            tool_name,
+            tool_args,
+            raw_args,
+            error_result,
+            tools=tools,
+            sentinel=sentinel,
+            auth=auth,
+            allowed_tools=allowed_tools,
+            security_pipeline=security_pipeline,
+        )
+        tool_result: Any = refusal or error_result
 
-        if not security_pipeline and (sentinel is None or auth is None):
-            logger.warning(
-                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+        if tool_blocked and refusal is not None and audit_log is not None:
+            await log_scoped_tool_denial(
+                audit_log,
+                tool_name=tool_name,
+                reason=denial_reason or "refused before sentinel dispatch",
+                auth=auth,
+                agent_name=agent_name,
             )
-            tool_result = f"Error: Permission denied for tool '{tool_name}'"
-            tool_blocked = True
-        elif not security_pipeline:
-            tool_schema = _find_tool_schema(tools, tool_name)
-            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
-            if not sentinel_verdict.allowed:
-                tool_result = f"Error: Permission denied for tool '{tool_name}'"
-                tool_blocked = True
-            elif sentinel_verdict.repaired_data:
-                tool_args = sentinel_verdict.repaired_data
 
         if not tool_blocked:
             tool_result = await self._run_tool(
@@ -319,13 +481,10 @@ class ReactStrategy:
                 tool_call_id=tc.get("id", ""),
                 tool_round=tool_round,
             )
+        elif refusal is not None:
+            tool_result = refusal
 
-        tool_result_str = str(tool_result)
-        if len(tool_result_str) > 16384:
-            tool_result_str = (
-                tool_result_str[:16384]
-                + f"\n[... truncated, {len(str(tool_result)) - 16384} bytes omitted]"
-            )
+        tool_result_str = _truncate_tool_result(tool_result)
 
         tool_result_str = await self._sanitize_tool_result(
             tool_name,

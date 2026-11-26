@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import stores
-from models.schemas import HiveUser
+from models.schemas import HiveAccount
 from services.model_store import JsonStore
 from services.oauth_login import HiveIdentityLinkStore, IdentityLinkConflictError
 
@@ -18,8 +18,8 @@ OBJECT = "99999999-8888-7777-6666-555555555555"
 SUBJECT = f"{TENANT}:{OBJECT}"
 
 
-def _user() -> HiveUser:
-    return HiveUser(
+def _user() -> HiveAccount:
+    return HiveAccount(
         id="entra-user",
         username="entra-user",
         password_hash="unused",

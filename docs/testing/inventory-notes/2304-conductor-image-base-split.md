@@ -1,0 +1,31 @@
+---
+inventory-delta:
+  tests/: +4
+---
+
+# Issue #2304 Conductor image builder/runtime base split
+
+The Conductor image repair for #2304 splits the dependabot base bump across
+stages: `pybuild` stays on the registered `python:3.13.16-slim-bookworm` pin
+(the identity-contract interpreter the build smoke asserts), `runtime-apt`
+takes the `python:3.15.0-slim-bookworm` bump, and the final stage grafts the
+builder's exact CPython 3.13.16 installation so the copied venv's interpreter
+symlinks resolve without a managed download.
+
+`tests/test_hive_conductor_image_split.py` adds four tests holding that
+structure closed: the builder pin against its `quality/image-pins.json` row
+(and the venv still created from the system 3.13 interpreter), the runtime
+digest registered and deliberately different from the builder base, the graft
+(binary + libpython + stdlib + `ldconfig`) present in the shipped stage, and
+the build-time identity smoke untouched (`(3, 13, 16)` plus the
+bip-utils/coincurve/pynacl ARG pins). The first and third tests fail against
+the pre-repair Dockerfile — the state that shipped the `AssertionError:
+3.13.15` CI failures — so they name the regression they prevent.
+
+Update (2026-11-16, #2304 container-gate round): the pins this note names are
+superseded by the grype-driven refresh recorded in
+`REPAIR-NOTES-2304-python-315-base-bump.md` round 7 — pybuild now on the
+registered `python:3.13.18-slim-bookworm` digest (smoke asserts `(3, 13,
+18)`), runtime-apt on `python:3.15.2-slim-bookworm`. The four tests above
+still hold, with their asserted constants moved to the refreshed values;
+test count unchanged.

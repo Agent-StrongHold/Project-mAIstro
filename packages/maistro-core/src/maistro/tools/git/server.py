@@ -216,7 +216,7 @@ def _validate_local_clone_source(parts: SplitResult, url: str) -> tuple[str, str
     for root in _ALLOWED_LOCAL_SOURCE_ROOTS:
         root_resolved = Path(root).resolve()
         if source == root_resolved or root_resolved in source.parents:
-            return "file", "localhost"
+            return "file", "localhost"  # DevSkim: ignore DS162092 until 2027-12-31
     raise ClonePolicyError(
         f"Blocked: local clone source is not under a verified root: {url}",
         "blocked_local_source",

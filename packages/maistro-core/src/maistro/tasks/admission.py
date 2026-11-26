@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work, direct_work_graph
+from maistro.runs.cancellation import CancellationReceipt
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE
@@ -131,6 +132,18 @@ class TaskAdmitter(Protocol):
         """
         ...
 
+    async def find_task_run(self, task_id: str) -> Run | None:
+        """The Run admitted for one task receipt id (#1690), or None.
+
+        The cross-replica half of the same projection contract: a replica that
+        never accepted the `POST /tasks` still owes `GET /tasks/{id}` an
+        answer, and the Run — committed before the accepting replica answered
+        202 — is the admission fact any replica can resolve it from. None
+        means no Run claims the id; callers decide what that is worth, exactly
+        as they do for a `lookup_run` miss.
+        """
+        ...
+
     async def cancel_run(self, run_id: str) -> bool:
         """Cancel the canonical Run and signal its physical Attempt owner.
 
@@ -147,6 +160,22 @@ class TaskAdmitter(Protocol):
         work nothing signalled. Implement the member to make cancellation
         physically reach admitted Runs; leaving it absent opts out of
         physical cancellation, visibly (cancel refuses), never silently.
+        """
+        ...
+
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """The physical evidence behind one canonical cancellation (#1242).
+
+        ``cancel_run``'s bool says the *logical fence* is durable; it cannot
+        say whether the provider stopped, and a caller that renders "cancelled"
+        from it is rendering a stop nobody proved. This member returns the
+        receipt that separates the two.
+
+        Optional, probed with ``getattr`` exactly like ``cancel_run`` was
+        (#1338): an adapter that predates it keeps working, and the queue then
+        reports ``UNCERTAIN`` for its admitted work rather than borrowing a
+        confidence it has no evidence for. ``None`` means the Run was not
+        found, which callers read as they read a ``lookup_run`` miss.
         """
         ...
 
@@ -346,6 +375,19 @@ class TaskRunAdmitter:
             return False
         return updated.status is RunStatus.CANCELLED
 
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """Cancel through the canonical service and return its evidence."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            return await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run_receipt(run_id)
+        except ValueError:
+            return None
+
     async def record_transition(
         self,
         run_id: str,
@@ -428,6 +470,16 @@ class TaskRunAdmitter:
     async def lookup_run(self, run_id: str) -> Run | None:
         """The canonical Run behind a receipt, or None when it does not exist."""
         return await self._runs.get_run(run_id)
+
+    async def find_task_run(self, task_id: str) -> Run | None:
+        """The Run admitted for one task receipt id (#1690), or None.
+
+        Scoped to this queue's own admission source: the ``task_id``
+        provenance key is written by the task admission path, and a foreign
+        Run that happened to carry the same key must never answer a task
+        receipt read.
+        """
+        return await self._runs.find_run_by_task_id(task_id, admission_source=TASK_QUEUE_SOURCE)
 
     def _is_phase_only_transition(self, current: RunStatus, target: RunStatus) -> bool:
         """Whether a RUNNING target is only a phase of an in-flight execution.
@@ -545,6 +597,19 @@ class WorkspaceRoutingAdmitter:
             return False
         return updated.status is RunStatus.CANCELLED
 
+    async def cancel_run_receipt(self, run_id: str) -> CancellationReceipt | None:
+        """Cancel through the shared canonical store, as ``cancel_run`` does."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            return await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run_receipt(run_id)
+        except ValueError:
+            return None
+
     async def record_transition(
         self,
         run_id: str,
@@ -593,6 +658,16 @@ class WorkspaceRoutingAdmitter:
         """
         admitter = await self.admitter_for(None)
         return await admitter.lookup_run(run_id)
+
+    async def find_task_run(self, task_id: str) -> Run | None:
+        """Resolve a task receipt id the same Workspace-independent way.
+
+        A task's Run knows its own Project the moment it exists (#1690), so
+        the read routes through the default binding rather than re-deriving a
+        Workspace the request no longer carries.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.find_task_run(task_id)
 
 
 __all__ = [

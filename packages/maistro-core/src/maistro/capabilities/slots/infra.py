@@ -42,7 +42,10 @@ class InfraMonitor(CapabilityProvider, Protocol):
 @runtime_checkable
 class InfraAction(CapabilityProvider, Protocol):
     def allowed_actions(self) -> tuple[str, ...]: ...
-    async def act(self, action: str, params: dict[str, Any]) -> ActionResult: ...
+
+    async def act(
+        self, action: str, params: dict[str, Any], *, approved: bool = False
+    ) -> ActionResult: ...
 
 
 if TYPE_CHECKING:

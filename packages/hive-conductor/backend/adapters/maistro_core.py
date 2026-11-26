@@ -2,18 +2,13 @@
 
 StubAgentPort  — explicit unavailable response when maistro-core is not configured.
 MaistroCoreBridge — embeds maistro-core in-process; chat routes through Container.route_request().
-HttpOpenAILLMClient — thin httpx wrapper implementing maistro.protocols.llm.LLMClient.
+The Agent roster receives the Container's canonical model client.
 """
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
-
-from maistro.agents.types import LLMProviderError
-from maistro.http import shared_client
 
 if TYPE_CHECKING:
     from config import Settings
@@ -43,85 +38,6 @@ class StubAgentPort:
         raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
-class _HttpOpenAILLMClient:
-    """Concrete LLMClient (maistro.protocols.llm.LLMClient) backed by an OpenAI-compatible endpoint."""
-
-    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
-        self._base = base_url.rstrip("/")
-        self._key = api_key
-        self._model = model
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
-
-    def _require_credential(self) -> None:
-        """Refuse before dispatch when no gateway credential was configured (#1824).
-
-        A deployment with no effective key (see
-        ``services.secrets.effective_llm_gateway_key``) has no model
-        authorization; this client used to paper over that with a placeholder
-        ``sk-noop`` bearer token, which turned "not configured" into a
-        gateway-dependent 401 that looked like an outage. Absent configuration
-        is a sanitized unavailable/error *before* any HTTP dispatch instead,
-        and the message names no secret material because there is none.
-        """
-        if not self._key:
-            raise LLMProviderError(
-                "model gateway credential is not configured; "
-                "model dispatch is unavailable (set MAISTRO_LLM_API_KEY or "
-                "LITELLM_API_KEY)"
-            )
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        *,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
-        stream: bool = False,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        self._require_credential()
-        payload: dict[str, Any] = {
-            "model": model or self._model,
-            "messages": messages,
-            "stream": False,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-
-        async with shared_client(timeout=120.0) as client:
-            r = await client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        # Minimal streaming: fall back to non-streaming and yield as single chunk
-        result = await self.complete(messages, model, **kwargs)
-        content = ""
-        with contextlib.suppress(KeyError, IndexError):
-            content = result["choices"][0]["message"]["content"]
-        yield content
-
-
 class EmbeddedRuntime(NamedTuple):
     """What composing an embedded runtime built and must keep holding.
 
@@ -143,6 +59,7 @@ class EmbeddedRuntime(NamedTuple):
     llm: Any
     preamble: str
     governed_egress: Any
+    admitted_calls: Any = None
 
 
 async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
@@ -158,11 +75,13 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     """
     import os
 
+    from services.governed_tools import HiveToolExposureRegistry
     from services.secrets import effective_llm_gateway_key
     from services.tool_executor import admitted_tool_executor
 
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.capabilities.admitted_model import AdmittedModelCalls
+    from maistro.capabilities.model_chat import GovernedLLMClient, build_model_chat_client
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
@@ -172,15 +91,17 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     llm_base = (settings.litellm_api_base or "").strip()
     # The one effective gateway credential per the documented precedence
     # matrix (#1824): vault -> MAISTRO_LLM_API_KEY -> LITELLM_API_KEY ->
-    # supported proxy aliases -> None. Empty is fail-closed: the legacy client
-    # below refuses dispatch on it and no scoped credential is registered,
-    # rather than dispatching under a placeholder key.
+    # supported proxy aliases -> None. Empty is fail-closed: every governed
+    # door below (the Container's roster client, the admitted model calls and
+    # this runtime's governed egress) then dispatches under no credential at
+    # all -- there is no placeholder key to bear, and no adapter-local HTTP
+    # path left that could synthesize one (#1084).
     llm_key = effective_llm_gateway_key(settings) or ""
-    model = settings.maistro_model
 
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
-        litellm_url=llm_base or "http://localhost:4000",
+        litellm_url=llm_base
+        or "http://localhost:4000",  # DevSkim: ignore DS162092 until 2027-12-31
         litellm_key=llm_key,
         agents_dir=settings.maistro_agents_dir,
         # Stated, not inherited (#158). Core defaults this to "default" too,
@@ -219,20 +140,23 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
+    # Agent calls and Hive chat share the Container-owned governed client;
+    # there is no adapter-local HTTP authority. The fallback only supports
+    # container-shaped test seams and still composes the same core boundary.
+    # Direct attribute read required by the wiring-reads ratchet (#1084).
+    llm_client = container.model_chat_client
+    if llm_client is None:
+        llm_client = build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+            workspace_id=config.workspace_id,
+        )
     # The deployment's gateway base, resolved once for both the roster's
     # model clients and this runtime's governed egress (#718) so the two
     # doors cannot drift onto different credentials or bases.
-    gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
-    llm_client = _HttpOpenAILLMClient(
-        base_url=gateway_base,
-        # No ``or "sk-noop"`` (#1824): an unconfigured credential must reach
-        # the gateway as a sanitized refusal before dispatch, not as a fake
-        # bearer token a real gateway can only answer with a 401.
-        api_key=llm_key,
-        model=model,
-    )
     model_endpoint = GatewayEndpoint(
-        base_url=gateway_base, api_key=llm_key, base_url_is_api_base=True
+        base_url=config.litellm_url,
+        api_key=config.litellm_key,
+        base_url_is_api_base=True,
     )
     admitted_calls = AdmittedModelCalls(
         container.capability_effects,
@@ -243,6 +167,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         binding_ids=tuple(binding.binding_id for binding in config.model_bindings),
         adapters=getattr(container, "provider_adapter_catalog", None),
     )
+    # Boot Agents and later materialization share one AdmittedModelCalls helper;
+    # no fabricated agent-runtime Binding or ambient credential (#1084). The
+    # factory wraps the roster client; RuntimeSource.llm keeps the admitted
+    # authority for Workspace-narrowed materialization.
+    admitted_llm = GovernedLLMClient(admitted_calls)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
@@ -257,6 +186,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         context_builder=container.context_builder,
         warden=container.warden,
         sentinel=container.sentinel,
+        # #847: pre-Sentinel tool denials (strategy allowlist gate and the
+        # Agent's own undeclared-tool boundary) audit through the same
+        # canonical trail as Sentinel decisions.
+        audit_log=container.audit_log,
         learning_store=container.learning_store,
         # ADR-091's Layer 0-4 assembly. The container has always built this
         # and nothing read it back, so the episodic memories the Conductor
@@ -267,11 +200,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
-        capability_effects=container.capability_effects,
-        provider_registry=container.provider_registry,
-        llm_router=container.llm_router,
-        model_endpoint=model_endpoint,
-        workspace_id=config.workspace_id,
+        admitted_calls=admitted_calls,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so
@@ -280,7 +209,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # against hive's real tool functions instead of silently refusing via
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
-        tool_executor=admitted_tool_executor(admitted_calls),
+        tool_executor=admitted_tool_executor(admitted_calls, container=container),
+        # Tool declarations do not supply schemas. Project the same host-owned
+        # contracts the Invocation adapter enforces into Agent/model exposure.
+        tool_registry=HiveToolExposureRegistry(),
         # Project the same roster allow-lists into the Container-owned A2A
         # receipt service. Without this, construction was wired but every
         # in-process delegation still refused as "no capabilities" (#147).
@@ -314,9 +246,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     return EmbeddedRuntime(
         container=container,
         agents=agents,
-        llm=llm_client,
+        llm=admitted_llm,
         preamble=preamble,
         governed_egress=governed_egress,
+        admitted_calls=admitted_calls,
     )
 
 
@@ -342,6 +275,7 @@ class MaistroCoreBridge:
     def __init__(self) -> None:
         self._container: Any = None
         self._governed_egress: Any = None
+        self._admitted_calls: Any = None
 
     @property
     def container(self) -> Any:
@@ -359,10 +293,16 @@ class MaistroCoreBridge:
         """
         return self._governed_egress
 
+    @property
+    def admitted_calls(self) -> Any:
+        """Configured model calls requiring persisted execution admission."""
+        return self._admitted_calls
+
     async def start(self, settings: Settings) -> None:
         runtime = await _construct_runtime(settings)
         self._container = runtime.container
         self._governed_egress = runtime.governed_egress
+        self._admitted_calls = runtime.admitted_calls
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves

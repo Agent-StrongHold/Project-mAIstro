@@ -76,6 +76,44 @@ class PopulationStore:
     def get_cycle_marker(self, marker_id: str) -> dict[str, Any] | None:
         return self._cycle_markers.get(marker_id)
 
+    # --- Durable reconstruction (#1064) -------------------------------------
+    #
+    # Genomes and cycle markers serialize for the durable Evolve domain
+    # snapshot the Conductor writes at admission and finalize publication
+    # boundaries. A genuinely new process rebuilds this store from that
+    # snapshot (via ``restore_genomes_snapshot``/``restore_cycle_markers``)
+    # so recovery holds the exact population the interrupted Run was
+    # admitted against, never a fabricated fresh one.
+
+    def export_genomes_snapshot(self) -> list[str]:
+        """Versioned genome serialization: one ``model_dump_json`` string per genome.
+
+        Sorted by id so two exports of the same population are identical.
+        """
+        return [
+            genome.model_dump_json() for genome in sorted(self._store.values(), key=lambda g: g.id)
+        ]
+
+    def restore_genomes_snapshot(self, genomes: list[str]) -> None:
+        """Replace this store's population with the snapshot's genomes.
+
+        ``PipelineGenome.model_validate_json`` parses each entry; a malformed
+        entry raises ``ValueError`` rather than silently dropping a genome
+        from the recovered population.
+        """
+        restored: dict[str, PipelineGenome] = {}
+        for raw in genomes:
+            genome = PipelineGenome.model_validate_json(raw)
+            restored[genome.id] = genome
+        self._store = restored
+
+    def export_cycle_markers(self) -> dict[str, dict[str, Any]]:
+        """The idempotency ledger, for the durable snapshot."""
+        return dict(self._cycle_markers)
+
+    def restore_cycle_markers(self, markers: dict[str, dict[str, Any]]) -> None:
+        self._cycle_markers = dict(markers)
+
     def _init_db(self) -> None:
         assert self._db_path is not None
         conn = sqlite3.connect(self._db_path)

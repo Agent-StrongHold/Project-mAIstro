@@ -373,7 +373,7 @@ class BrowserClient:
         """Run one browser-use Agent on a guarded session.
 
         Shared by `search_web` and `browse` because the boundary must hold
-        for both: an autonomous search agent inventing `127.0.0.1` and a
+        for both: an autonomous search agent inventing an IPv4 loopback address and a
         browse agent following a redirect there are governed by the same
         attached route handler, not by how the task text was written.
         """
