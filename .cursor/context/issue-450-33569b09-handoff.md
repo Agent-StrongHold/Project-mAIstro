@@ -200,3 +200,48 @@ No next PR is created or proposed by this worker.
 Final item accounting: **checked: 1, done: 0 (initiative), skipped: 0, errors: 0**;
 completed artifact: fresh acceptance handoff. All validation commands exited 0;
 17 broader-suite skips remain unproved, and collection is not execution.
+
+## Addendum 2 — verifier/writer round bf58f7ee (2026-11-26)
+
+A second independent pass re-checked every claim above without assuming any prior
+result. There are no `check-*.log` files in this job's directory (`checks: []` in
+its manifest), so no driver validation was assumed; all evidence below is
+first-hand at `a2b2daf7e2`:
+
+- **Branch isolation re-proven:** `git diff 4de7e906d9..HEAD --stat` = exactly the
+  three `.cursor/context` notes (350 insertions, 0 deletions). The supplied base
+  `7ba29c1cd` is still not an ancestor of HEAD — the branch predates current
+  develop by the full develop delta, which no note may paper over.
+- **Checkpoint state re-derived from the frozen capture:** sources index confirms
+  #21–#26 and #104–#107 open, #8 open, #389 open; #852/#853/#854/#861,
+  #110/#112/#113/#115/#116, #117–#121, #384, #301 and 20 of 21 EVENTUALLY leaves
+  closed. Identical to the audit above.
+- **Line citations re-opened and verified:** `benchmarks/sandbox_exec.py:186`
+  (host-owned `_grade_case`), `fitness.py:134/197/369` (hard gates, population
+  objective), `population.py:141/284` (eligible champion, `promote_audited`),
+  `memory/learnings/gauntlet.py:238` + `promoter.py:81/176`,
+  `_vulture_whitelist.py:354`, `backend/tests/test_evolution_canonical_graph.py:227`,
+  `backend/services/optimizer_candidates.py:279/365`. All resolve as described.
+- **Gauntlet seam re-confirmed by source scan:** `grep` finds no construction of
+  `LearningPromoter(` or `IndependentTrialsGauntlet(` in any `packages/*/src`
+  path outside the whitelist comment itself — product host wiring remains
+  unproven, as recorded; not a new defect.
+- **Validation battery re-executed, all exit 0:** `ruff check .` (all passed);
+  `ruff format --check .` (3484 files); the four proof-layer test files
+  (`test_verdict_mutation_killers.py`, `test_fitness_ownership.py`,
+  `test_promotion_governance.py`, `benchmarks/test_sandbox_exec.py`) → **87 passed**;
+  hive `test_optimizer_candidate_apply.py` + `test_evolution_canonical_graph.py` +
+  `test_evolution_canonical_edge_cases.py` → **64 passed**; full
+  `packages/maistro-evolve/tests` → **998 passed, 6 skipped**;
+  `scripts/check-suite-inventory.py` → 21 suites, 34125 unique identities, 0
+  byte-identical groups; `scripts/check-backlog-consistency.py` → OK (167);
+  `scripts/check-adr-index.py` → OK; `scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (CI's exact args,
+  `vulture-ratchet.yml:84-85`) → exit 0, 1302 identities.
+
+No tests were added; no inventory-note delta applies. The verdict stays
+**NEEDS-DEEP-REVIEW**: checkpoints 5–9 are statements about GitHub closure or
+reclassification state that no tree change can satisfy, and checkpoints 1–4 lack
+only adoption/attestation review that belongs to per-epic governance, not to this
+implementation lane. Final accounting: checked 1, done 0 (initiative), skipped 0,
+errors 0; artifact = this re-verified handoff.
