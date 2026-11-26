@@ -32,5 +32,9 @@ Three encode decisions rather than mechanics:
   thing job names cannot show
 
 No production code changed. `scripts/`, `.github/workflows/`,
-`quality/image-inventory.json` and `Dockerfile.research` are the other
+`quality/image-inventory.json`, `Dockerfile.research` and `Dockerfile.rsi-runner` are the other
 paths touched.
+
+Additionally, as part of issue #348, the RSI runner's Dockerfile was updated
+to build from the resolved lockfile, ensuring exact dependency versions and
+hashes for its selected extras/platform.

@@ -1,5 +1,12 @@
 """Sentinel: policy enforcement at every boundary."""
 
+from maistro.security.sentinel.delegation import (
+    DelegationAuthority,
+    DelegationDecision,
+    DelegationGrant,
+    DelegationRequest,
+    InMemoryDelegationAuthority,
+)
 from maistro.security.sentinel.integrity import (
     DecisionSignature,
     DecisionSigner,
@@ -12,6 +19,11 @@ from maistro.security.sentinel.integrity import (
 __all__ = [
     "DecisionSignature",
     "DecisionSigner",
+    "DelegationAuthority",
+    "DelegationDecision",
+    "DelegationGrant",
+    "DelegationRequest",
+    "InMemoryDelegationAuthority",
     "IntegrityStatus",
     "VerificationKey",
     "inspect_decision",

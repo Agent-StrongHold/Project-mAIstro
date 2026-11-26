@@ -218,3 +218,70 @@ async def test_repair_retry_after_success_does_not_double_charge() -> None:
     (row,) = [r for r in await tracker.get_all_usage() if r["provider"] == "openai"]
     assert row["request_count"] == 1
     assert len(log.events_for("openai")) == 1
+
+
+class _StubVerifier:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def verify(self, scope_key: str) -> Any:
+        from maistro.quota.rate_profile import LimitUnit
+        from maistro.quota.reconciliation import ProviderQuotaSnapshot
+
+        self.calls += 1
+        return ProviderQuotaSnapshot(
+            scope_key=scope_key,
+            unit=LimitUnit.CREDITS_USD,
+            remaining=10.0 - float(self.calls),
+            checked_at=float(self.calls),
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_runs_maybe_reconcile_when_verifier_installed() -> None:
+    """#2318: explicit verification rides the Invocation record path."""
+    from maistro.quota.rate_profile import LimitUnit
+    from maistro.quota.recorder import ScopedReconciliationRegistry
+
+    log = InMemoryUsageLog()
+    tracker = InMemoryQuotaTracker()
+    verifier = _StubVerifier()
+    registry = ScopedReconciliationRegistry()
+    recorder = CanonicalInvocationUsageRecorder(
+        log, tracker, verifier=verifier, reconciliation=registry
+    )
+
+    await recorder.record(_invocation(usage=InvocationUsage(input_units=1, output_units=1)))
+    assert verifier.calls == 1
+
+    # Make the adaptive policy due again for a second Invocation.
+    state = registry.get_or_create("openai", LimitUnit.CREDITS_USD)
+    state.last_explicit_check_at = 0.0
+    state.policy._current_interval_s = 0.01
+    await recorder.record(
+        _invocation(
+            invocation_id="inv-2",
+            usage=InvocationUsage(input_units=2, output_units=2),
+        )
+    )
+    assert verifier.calls == 2
+
+
+def test_default_invocation_quota_verifier_idle_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.quota.recorder import default_invocation_quota_verifier
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert default_invocation_quota_verifier() is None
+
+
+def test_default_invocation_quota_verifier_builds_openrouter_when_keyed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.quota.recorder import default_invocation_quota_verifier
+    from maistro.quota.verifiers import OpenRouterKeyVerifier
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-openrouter")
+    verifier = default_invocation_quota_verifier()
+    assert isinstance(verifier, OpenRouterKeyVerifier)

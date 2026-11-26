@@ -14,10 +14,12 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from maistro.events.publisher import CanonicalEventPublisher
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     RunStatus,
+    poll_external_results,
     recover_queued_graph_runs,
     resume_due_graph_runs,
     run_durable_graph,
@@ -25,6 +27,7 @@ from maistro.graph.durable_runs import (
 from maistro.graph.policies import resolve_max_cycles, resolve_node_timeout_s
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
+from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 from services.dag_agents import _container, require_graph_execution_spine
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.governed_model import dag_node_runtime
@@ -35,6 +38,37 @@ from services.scan_continuations import scan_continuation
 logger = logging.getLogger(__name__)
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
+
+
+def _host_principal_roles(user_id: str) -> tuple[str, ...]:
+    """The acting user's host-assigned role, read from the user store.
+
+    The node adapter's Sentinel permission gate is a role intersection over
+    the deployment's fail-closed permission table (#1165), so the principal a
+    node presents must carry the roles the host actually assigned -- resolved
+    here, server-side, from the user record keyed by the authenticated user
+    id. Never a request field: a caller-declared role would be exactly the
+    request-declared authority #845 forbids. Unknown user (or a store that
+    cannot be read) resolves to no roles, and the fail-closed gate denies --
+    a standalone boot without a user store stays deny-by-default.
+    """
+    if not user_id:
+        return ()
+    try:
+        from services import registration_policy
+
+        role = registration_policy.host_user_role(user_id)
+    except Exception:  # pragma: no cover - store unavailable in isolation
+        return ()
+    roles: list[str] = []
+    if role:
+        roles.append(str(role))
+    # Every authenticated human carries the canonical base role, so the
+    # shipped host tier record (armed for "user") applies to admins too
+    # without widening the tier policy to every stored role (#845).
+    if roles and "user" not in roles:
+        roles.append("user")
+    return tuple(roles)
 
 
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -408,6 +442,9 @@ def _resolver(
     effect_context: Any = None,
     governed_runtime: Any = None,
     progress: Any = None,
+    sentinel: Any = None,
+    host_mode: str | None = None,
+    principal_roles: tuple[str, ...] = (),
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -424,9 +461,42 @@ def _resolver(
             effect_context=effect_context,
             governed_runtime=governed_runtime,
             progress=progress,
+            sentinel=sentinel,
+            host_mode=host_mode,
+            principal_roles=principal_roles,
         )
 
     return resolve
+
+
+def _host_execution_authority(container: Any) -> tuple[Any, str | None]:
+    """Pair the Sentinel with the host mode Sentinel actually produced.
+
+    ``host_mode`` is a Sentinel verdict, never a default. A container that
+    wires the canonical stores but no Sentinel yields ``(None, None)`` so
+    node classification fails closed to sandbox (untrusted nodes block)
+    instead of inheriting an authorized inline mode Sentinel never granted.
+    """
+
+    if container is None:
+        # No container at all: standalone / test execution keeps the historical
+        # inline floor. A container that wires canonical stores but no Sentinel
+        # is the fail-closed case below.
+        return None, "async"
+    sentinel = getattr(container, "sentinel", None)
+    if sentinel is not None:
+        return sentinel, "async"
+    # A container that carries the canonical stores but no Sentinel never
+    # received host authorization: fail closed to (None, None) so node
+    # classification lands on the sandbox floor instead of an unearned inline
+    # mode. Containers without the spine (test doubles, partial fakes) keep
+    # the compatibility inline floor.
+    if (
+        getattr(container, "run_store", None) is not None
+        or getattr(container, "graph_run_store", None) is not None
+    ):
+        return None, None
+    return None, "async"
 
 
 def _recovery_resolver(run: Run):
@@ -446,6 +516,7 @@ def _recovery_resolver(run: Run):
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     container = _container()
+    sentinel, host_mode = _host_execution_authority(container)
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -462,6 +533,9 @@ def _recovery_resolver(run: Run):
         llm_builder=None,
         effect_context=(getattr(container, "capability_effects", None) if container else None),
         governed_runtime=dag_node_runtime(container),
+        sentinel=sentinel,
+        host_mode=host_mode,
+        principal_roles=_host_principal_roles(run.actor_principal_id or ""),
     )
 
 
@@ -476,7 +550,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         admission_source="hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
         # that resumes where the last stopped crosses a foreign-owned QUEUED
@@ -493,34 +567,96 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     its own persisted Run facts, by the same ownership rule the bootstrap
     half uses. The resolver is rebuilt per Run because which legacy node
     implementation may execute is durable Run metadata, not state this
-    process holds. Crash dispositions reach the Container's canonical Event
-    bus exactly as ``recover_abandoned_attempts`` reports them (#62).
+    process holds. Crash dispositions reach the Container's canonical
+    EventStore exactly as ``recover_abandoned_attempts`` reports them (#62).
     """
     container = _container()
     if container is None or container.graph_run_store is None:
         return 0
-    return await resume_due_graph_runs(
+
+    # Completion polling is the cross-process counterpart to the in-process
+    # A2A receipt callback. A successful poll queues the canonical parent, so
+    # the normal queued recovery path consumes it without a second lifecycle.
+    # Containers without delegation surfaces (and partial test doubles) have
+    # nothing to poll, so the timed half proceeds on its own.
+    guest_peers = getattr(container, "guest_peers", None)
+    harness_adapters = getattr(container, "harness_adapters", None) or {}
+    polled = 0
+    if guest_peers is not None or harness_adapters:
+        polled = await poll_external_results(
+            store=container.graph_run_store,
+            guest_peers=guest_peers,
+            harness_adapters=harness_adapters,
+            limit=limit,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        )
+    recovered = 0
+    if polled:
+        recovered = await recover_queued_graph_runs(
+            store=container.graph_run_store,
+            run_store=container.run_store,
+            node_resolver_factory=_recovery_resolver,
+            eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+            admission_source="hive_legacy_dag",
+            events=_canonical_recovery_events(container),
+            limit=limit,
+        )
+    resumed = await resume_due_graph_runs(
         store=container.graph_run_store,
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
         scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
+    return recovered + resumed
+
+
+def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:
+    """Route recovery facts through the Container's canonical Event publisher.
+
+    Persistence lands in the canonical EventStore first; the same publisher
+    then projects each inserted Event onto the legacy ``EventBus``, so the
+    durable-log bridge and configured triggers/subscribers keep firing on
+    recovered and resumed runs exactly as the pre-canonical path did.
+    """
+    publisher = container.canonical_event_publisher
+    if not isinstance(publisher, CanonicalEventPublisher):
+        raise RuntimeError("canonical recovery Event publisher is not configured")
+    return CanonicalRecoveryEventSink(container.run_store, publisher)
 
 
 def _node_results(
     record: Any, raw_by_id: Mapping[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
+    """The projected node results, under the shared #2465 disclosure policy.
+
+    A failed node's ``response`` used to be its raw error text — the same
+    evidence the top-level error policy exists to hide, leaking back in
+    through the nested mapping (#2465). Projection applies
+    ``safe_projection.node_failure_text`` here, once, so every transport that
+    projects this mapping (HTTP receipt, websocket frames, SSE recorder)
+    inherits the policy; the raw error remains on the canonical NodeRun for
+    authorized inspection. Successful nodes' responses are the caller's own
+    task output and cross verbatim.
+    """
+    from services.safe_projection import node_failure_text
+
     projected: dict[str, dict[str, Any]] = {}
     for node_run in record.node_runs:
         raw = raw_by_id.get(node_run.node_id, {})
         result = node_run.result if isinstance(node_run.result, Mapping) else {}
+        success = node_run.status is RunStatus.COMPLETED
+        response = (
+            str(result.get("response") or "")
+            if success
+            else node_failure_text(result.get("response") or node_run.error)
+        )
         projected[node_run.node_id] = {
             "role": str(result.get("role") or raw.get("role") or "worker"),
-            "response": str(result.get("response") or node_run.error or ""),
-            "success": node_run.status is RunStatus.COMPLETED,
+            "response": response,
+            "success": success,
             "model": result.get("model") or raw.get("model"),
             **({"isolation": result.get("isolation")} if result.get("isolation") else {}),
         }
@@ -614,6 +750,7 @@ async def execute_dag(
     )
     container = _container()
     require_graph_execution_spine(container)
+    sentinel, host_mode = _host_execution_authority(container)
     canonical_run_store = container.run_store
     graph = graph_from_legacy_dag(
         dag_data,
@@ -668,6 +805,9 @@ async def execute_dag(
             progress=on_event,
             effect_context=(getattr(container, "capability_effects", None) if container else None),
             governed_runtime=dag_node_runtime(container),
+            sentinel=sentinel,
+            host_mode=host_mode,
+            principal_roles=_host_principal_roles(user_id),
         )
 
     record = await run_durable_graph(

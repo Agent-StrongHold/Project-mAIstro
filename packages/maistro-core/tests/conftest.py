@@ -37,7 +37,15 @@ def _reset_singletons() -> Iterator[None]:
 
     get_settings.cache_clear()
 
+    # Gateway RateLimitCoordinator / ContextProbe are process singletons
+    # (#2318); a planted 429 or seeded window must not poison later suites.
+    from maistro.capabilities.providers.llm_gateway import reset_gateway_resilience_state
+
+    reset_gateway_resilience_state()
+
     yield
+
+    reset_gateway_resilience_state()
 
     # Task queue
     import maistro.tasks.queue as queue_module
@@ -58,7 +66,7 @@ def _reset_singletons() -> Iterator[None]:
     # Process default quota ledger: container-creating tests register it via
     # the composition root, and a leaked registration would route a later
     # test's ungoverned-fallback evidence into an unrelated tracker (#718).
-    from maistro.quota.default_tracker import set_default_quota_tracker
+    from maistro.quota.recorder import set_default_quota_tracker
 
     set_default_quota_tracker(None)
 
@@ -147,10 +155,14 @@ _PG_SCRATCH_TABLES = (
     # test principals; a leftover valid grant from a previous run would sit at
     # the top of find_valid's id DESC ordering and answer for the wrong test.
     "elevation_grants",
+    # (#845) Host delegation grants carry deterministic test principals for the
+    # same reason: a leftover valid grant would answer for the wrong test.
+    "delegation_grants",
     "handler_invocations",
     "trigger_definitions",
     "event_log",
     "schedules",
+    "schedule_deletions",
     "graph_templates",
     "graph_continuations",
     # (#563) Absent from this list, rows survived between runs — and these

@@ -262,24 +262,19 @@ def test_projections_are_membership_scoped(admin_client, authed_client) -> None:
     assert r.status_code == 404
 
 
-def test_the_goals_section_names_its_unavailable_rather_than_reading_the_retiring_store(
+def test_the_goals_section_reads_goal_inspection_not_the_retiring_missions_store(
     admin_client, authed_client
 ) -> None:
-    """The only Goal rows in this backend live in `stores.missions`, a surface
-    the cutover retirement ledger (#1046) froze to new consumers — and Home's
-    projection reader is exactly the consumer the freeze exists to stop. The
-    section must therefore say why it cannot answer even when Goal rows sit
-    right there, and the adaptive half must offer no Goal candidate sourced
-    from them: an honest `unavailable` is the contract, a plausible projection
-    off a retiring store is the bug.
+    """Home Goals (#65) projects through `goal_inspection` — never
+    `stores.missions`, which the cutover retirement ledger froze. A Mission
+    row planted under the caller's id must not appear; empty inspection is
+    `empty`, not `unavailable` from a missing service.
     """
     from models.schemas import Mission
 
     ws = _create_workspace(admin_client)
     _add_member(admin_client, ws, "user", "editor")
 
-    # The temptation this test pins the refusal against: rows that would
-    # project perfectly well if the reader reached for the retiring store.
     t = datetime.now(UTC)
     stores.missions["home-goal-seed"] = Mission(
         id="home-goal-seed",
@@ -298,15 +293,58 @@ def test_the_goals_section_names_its_unavailable_rather_than_reading_the_retirin
         body = authed_client.get(f"/v1/workspaces/{ws}/home/projections").json()
         sections = {s["kind"]: s for s in body["sections"]}
         goals = sections["goals"]
-        assert goals["status"] == "unavailable"
-        assert goals["items"] == []
-        assert "canonical Goal service" in goals["reason"]
+        assert goals["status"] in {"ok", "empty"}
         assert "home-goal-seed" not in body_text_of(goals)
+        assert all(item.get("resource_id") != "home-goal-seed" for item in goals["items"])
 
         adaptive = authed_client.get(f"/v1/workspaces/{ws}/home/adaptive").json()
-        assert all(c["item_type"] != "goal" for c in adaptive["candidates"])
+        assert all(c.get("resource_id") != "home-goal-seed" for c in adaptive["candidates"])
     finally:
         stores.missions.pop("home-goal-seed", None)
+
+
+def test_goal_items_maps_inspection_views_and_skips_blank_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_goal_items` covers skip/title/runs branches the empty Home path never hits."""
+    from services import goal_inspection
+
+    async def _views(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        return [
+            {"goal_id": "", "desired_state": "ignored"},
+            {
+                "goal_id": "g-desired",
+                "desired_state": "Ship cutover",
+                "runs": [
+                    {"started_at": 10.0},
+                    "not-a-dict",
+                    {"started_at": 40.0},
+                    {"started_at": None},
+                ],
+            },
+            {
+                "goal_id": "g-state",
+                "goal_state": "open",
+                "runs": "not-a-list",
+            },
+            {
+                "goal_id": "g-disposition",
+                "execution_disposition": "waiting_human",
+            },
+            {"goal_id": "g-fallback"},
+        ]
+
+    monkeypatch.setattr(goal_inspection, "list_goal_views", _views)
+    items = asyncio.run(home_projections._goal_items("user", "ws-goals-map"))
+    by_id = {item["resource_id"]: item for item in items}
+    assert set(by_id) == {"g-desired", "g-state", "g-disposition", "g-fallback"}
+    assert by_id["g-desired"]["title"] == "Ship cutover"
+    assert by_id["g-desired"]["href"] == "/goals?goal=g-desired"
+    assert by_id["g-desired"]["updated_at"] == 40.0
+    assert by_id["g-state"]["title"] == "open"
+    assert by_id["g-state"]["updated_at"] is None
+    assert by_id["g-disposition"]["title"] == "waiting_human"
+    assert by_id["g-fallback"]["title"] == "g-fallback"
 
 
 def body_text_of(section: dict[str, Any]) -> str:
@@ -744,48 +782,36 @@ def test_the_runs_section_projects_only_this_workspaces_runs(
 def test_the_chat_section_titles_sessions_from_their_first_real_message(
     admin_client, authed_client
 ) -> None:
+    """Home chat section reads #1822 conversation_sessions (Workspace-scoped)."""
     ws = _create_workspace(admin_client)
     _add_member(admin_client, ws, "user", "editor")
 
-    from models.schemas import ChatMessage, ChatSession
+    from services import conversation_sessions
 
-    now = datetime.now(UTC)
-    stores.chat_sessions["sess-a"] = ChatSession(
-        id="sess-a",
-        user_id="user",
-        title="Saved title",
-        messages=[ChatMessage(id="m1", role="user", content="x" * 100)],
-        created_at=now,
-        updated_at=now,
-    )
-    stores.chat_sessions["sess-b"] = ChatSession(
-        id="sess-b",
-        user_id="user",
-        title="Saved title",
-        messages=[ChatMessage(id="m2", role="user", content="   ")],
-        created_at=now,
-        updated_at=now,
-    )
-    stores.chat_sessions["sess-c"] = ChatSession(
-        id="sess-c",
-        user_id="user",
-        title="Empty but honest",
-        messages=[],
-        created_at=now,
-        updated_at=now,
-    )
+    conversation_sessions.reset_for_tests()
+
+    async def _seed() -> tuple[str, str, str]:
+        a = await conversation_sessions.create("user", ws, "Saved title")
+        await conversation_sessions.append_turn(
+            a.session_id, [{"role": "user", "content": "x" * 100}]
+        )
+        b = await conversation_sessions.create("user", ws, "Saved title")
+        await conversation_sessions.append_turn(b.session_id, [{"role": "user", "content": "   "}])
+        c = await conversation_sessions.create("user", ws, "Empty but honest")
+        return a.session_id, b.session_id, c.session_id
+
     try:
+        sess_a, sess_b, sess_c = asyncio.run(_seed())
         body = authed_client.get(f"/v1/workspaces/{ws}/home/projections").json()
         chat = next(s for s in body["sections"] if s["kind"] == "chat")
         assert chat["status"] == "ok"
         by_id = {i["resource_id"]: i for i in chat["items"]}
-        assert by_id["sess-a"]["title"] == "x" * 80  # truncated to the title cap
-        assert by_id["sess-b"]["title"] == "Saved title"  # whitespace is not a title
-        assert by_id["sess-c"]["title"] == "Empty but honest"  # no messages at all
-        assert by_id["sess-a"]["href"] == "/chat?session=sess-a"
+        assert by_id[sess_a]["title"] == "x" * 80  # truncated to the title cap
+        assert by_id[sess_b]["title"] == "Saved title"  # whitespace is not a title
+        assert by_id[sess_c]["title"] == "Empty but honest"  # no messages at all
+        assert by_id[sess_a]["href"] == f"/chat?session={sess_a}"
     finally:
-        for sid in ("sess-a", "sess-b", "sess-c"):
-            stores.chat_sessions.pop(sid, None)
+        conversation_sessions.reset_for_tests()
 
 
 def test_the_design_section_reads_the_real_status_object(

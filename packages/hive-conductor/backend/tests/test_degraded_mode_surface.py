@@ -7,7 +7,8 @@ degraded capability masquerade as a working one. These tests pin the three
 halves the issue names:
 
 - **Reporting** — /health names every degraded capability (`degraded_services`)
-  and exposes the raw optional-router mount outcomes (`optional_routers`);
+  and exposes optional-router mount outcomes as kind-only public text
+  (`optional_routers`);
 - **Auditability** — a degraded router entry lands in the /v1/audit trail as a
   warning, next to the capability changes it resembles, not only in a log;
 - **Recovery** — the same surface that reports degradation reports recovery:
@@ -67,20 +68,65 @@ def test_health_names_degraded_optional_router_with_cause(
     startup log line: recorded, but not answerable by any client. /health is
     the queryable surface, and the entry must be specific enough to act on.
     """
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: pytest >=9.2 snapshots setattr's old value from
+    # `target.__dict__`, which starlette's State never writes (its
+    # `__setattr__` proxies to `_state`), so the undo would `delattr` the
+    # entry instead of restoring it and the next setattr would find nothing.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
+        # Simulate a pre-sanitization recording (Type: raw message). /health
+        # must reduce it to the public kind-only form.
         {"routes.design": "ImportError: cannot import name 'engine'"},
     )
 
     data = client.get("/health").json()
 
-    assert data["optional_routers"]["routes.design"] == "ImportError: cannot import name 'engine'"
+    public = "ImportError: router failed to mount; see server logs"
+    assert data["optional_routers"]["routes.design"] == public
+    assert "cannot import name" not in data["optional_routers"]["routes.design"]
     assert {
         "service": "router:routes.design",
-        "reason": "ImportError: cannot import name 'engine'",
+        "reason": public,
     } in data["degraded_services"]
     assert data["degraded"] is True
+
+
+def test_health_optional_router_baseexception_is_kind_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live exception object on optional_routers never publishes its message."""
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
+        "optional_routers",
+        {"routes.design": ImportError("cannot import name 'engine' from secret.module")},
+    )
+
+    data = client.get("/health").json()
+
+    public = "ImportError: router failed to mount; see server logs"
+    assert data["optional_routers"]["routes.design"] == public
+    assert "secret.module" not in data["optional_routers"]["routes.design"]
+
+
+def test_health_optional_router_preserves_already_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kind-only strings recorded at mount time pass through unchanged."""
+    public = "ModuleNotFoundError: router failed to mount; see server logs"
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
+        "optional_routers",
+        {"routes.canvas": public},
+    )
+
+    data = client.get("/health").json()
+
+    assert data["optional_routers"]["routes.canvas"] == public
 
 
 def test_health_lists_each_degraded_capability_with_reason(
@@ -113,8 +159,10 @@ def test_health_reports_no_degradation_when_everything_is_healthy(
     F3 work closed for the LLM gateway.
     """
     monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.example")
-    monkeypatch.setattr(
-        app.state,
+    # setitem, not setattr: see the note in
+    # test_health_names_degraded_optional_router_with_cause.
+    monkeypatch.setitem(
+        app.state._state,
         "optional_routers",
         {"routes.design": None, "routes.canvas": None},
     )
@@ -122,6 +170,19 @@ def test_health_reports_no_degradation_when_everything_is_healthy(
         patch_memory_decay(state="running"),
         patch_redaction(True),
         patch_identity_disabled(),
+        # #290 (develop integration): the scheduler and its timezone database
+        # joined the `degraded` fold. This test runs without the app lifespan
+        # (module-level TestClient), so both probes would truthfully read
+        # broken; stub them healthy so the assertion stays about the
+        # capabilities this test names.
+        patch(
+            "routes.health._scheduler_state",
+            return_value={"running": True, "error": None},
+        ),
+        patch(
+            "routes.health._timezone_database_state",
+            return_value={"status": "available", "source": "tzdata-wheel:test", "error": None},
+        ),
     ):
         data = client.get("/health").json()
 
@@ -141,7 +202,9 @@ def test_degraded_router_entry_is_auditable() -> None:
     probe = FastAPI()
     _include_optional_router(probe, _BROKEN_MODULE)
 
-    assert probe.state.optional_routers[_BROKEN_MODULE]  # the cause is recorded
+    recorded = probe.state.optional_routers[_BROKEN_MODULE]
+    assert recorded  # the failure is recorded
+    assert "router failed to mount; see server logs" in recorded
     entries = [
         e
         for e in stores.audit_log.values()
@@ -150,7 +213,9 @@ def test_degraded_router_entry_is_auditable() -> None:
     assert entries, "expected an optional_router_degraded audit entry"
     assert entries[-1]["severity"] == "warning"
     assert entries[-1]["actor"] == "system"
-    assert entries[-1]["detail"]["error"]
+    assert entries[-1]["detail"]["error"] == recorded
+    # Full import text stays on the audit cause for operators, not on /health.
+    assert "cause" in entries[-1]["detail"]
 
 
 def test_audit_failure_never_breaks_startup(

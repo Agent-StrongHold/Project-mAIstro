@@ -31,6 +31,33 @@ class RunStoreBoundary:
     async def require_run(self, run_id: str, *, principal_id: str) -> Run:
         return await self._reader().get_run(run_id, principal_id=principal_id)
 
+    async def require_run_mutation(self, run_id: str, *, principal_id: str) -> Run:
+        """Admit a lifecycle mutation on one visible Run.
+
+        Workspace membership admits reads (#1152), never writes: cancellation
+        is a lifecycle mutation, so it stays with the Run's initiating
+        principal or a Workspace administrator. An ordinary member's refusal
+        is the read seam's one `RunNotVisible`, so the route keeps answering
+        its no-enumeration 404.
+        """
+        run = await self.require_run(run_id, principal_id=principal_id)
+        if run.actor_principal_id == principal_id:
+            return run
+        from maistro.runs.scoped_reads import RunNotVisible
+        from maistro.workspaces.authorization import (
+            WorkspaceAction,
+            WorkspaceAuthorizationDenied,
+            WorkspaceAuthorizer,
+        )
+
+        try:
+            await WorkspaceAuthorizer(self._workspace_store).require(
+                principal_id, run.workspace_id, WorkspaceAction.ADMINISTER
+            )
+        except WorkspaceAuthorizationDenied:
+            raise RunNotVisible from None
+        return run
+
     async def require_node_run(self, node_run_id: str, *, principal_id: str) -> NodeRun:
         from maistro.runs.scoped_reads import RunNotVisible
 

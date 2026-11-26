@@ -326,19 +326,18 @@ def _llm_provider_activated() -> bool:
 def _has_chat_session(user_id: str) -> bool:
     """Has this person started a chat of their own?
 
-    This test was dead until #312: nothing wrote `user_id`, so it compared
-    every session against a value none of them had and the checklist item could
-    never complete. Binding ownership makes it live, which is also what makes
-    the seed exclusion necessary — the starter session is handed to the user,
-    not written by them, and counting it would tick the item for someone who
-    has never opened chat.
+    Workspace-scoped conversation sessions (#1822) are the create authority;
+    legacy `stores.chat_sessions` rows (including Welcome seeds) do not count.
     """
     try:
-        import stores
-        from services.owned_records import Owner, owned_chat_sessions
+        from services import conversation_sessions
 
-        owned = owned_chat_sessions(Owner(id=user_id))
-        return any(not s.id.startswith(stores.SEED_SESSION_PREFIX) for s in owned.values())
+        store = conversation_sessions.session_meta_store
+        for key in list(store.keys()):
+            raw = store.get(key)
+            if isinstance(raw, dict) and raw.get("user_id") == user_id:
+                return True
+        return False
     except Exception:
         return False
 

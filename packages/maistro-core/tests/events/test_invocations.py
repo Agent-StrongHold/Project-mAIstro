@@ -75,6 +75,16 @@ class TestInvocationStore:
             (InvocationStatus.RETRYING, False),
             (InvocationStatus.SUCCESS, True),
             (InvocationStatus.FAILED, True),
+            # #1060: UNKNOWN is settled-for-cursor (visible, not replayed) —
+            # and `is_terminal` has always meant "the cursor may pass".
+            (InvocationStatus.UNKNOWN, True),
         ]:
             inv.status = status
             assert inv.is_terminal is terminal
+            assert inv.settled_for_cursor is terminal
+        # "Terminal" is delivery-settled, never "successful delivery": only
+        # SUCCESS is that.
+        inv.status = InvocationStatus.UNKNOWN
+        assert not inv.is_successful_delivery
+        inv.status = InvocationStatus.SUCCESS
+        assert inv.is_successful_delivery

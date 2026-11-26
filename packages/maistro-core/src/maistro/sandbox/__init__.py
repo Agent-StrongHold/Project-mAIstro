@@ -1,4 +1,18 @@
-"""Sandbox subsystem — protocol, policy, selector, backends."""
+"""Sandbox subsystem — protocol, policy, selector, backends.
+
+One name resolves lazily (PEP 562): `StaleExecutionFence` lives in
+`maistro.runs.store`. Importing it eagerly here would couple this facade to
+the whole execution stack — `maistro.runs` -> `maistro.graph` ->
+`maistro.capabilities` -> the opencode provider -> the tools-layer microVM
+backend — so `import maistro.sandbox` would drag the runner into every
+importer (and any future edge from that stack back into a `maistro.sandbox`
+leaf would close an import-order cycle; the subsystem stays import-light
+toward the execution model it fences, pinned by
+tests/sandbox/test_import_layering.py). The error resolves on first attribute
+access instead; the class itself is owned and raised by the store.
+"""
+
+from typing import Any
 
 from maistro.sandbox.commit import fenced_commit
 from maistro.sandbox.credential_boundary import (
@@ -10,7 +24,6 @@ from maistro.sandbox.credential_boundary import (
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
 from maistro.sandbox.fence import (
     SandboxFence,
-    StaleExecutionFence,
     assert_fence_is_current,
 )
 from maistro.sandbox.network import (
@@ -22,6 +35,7 @@ from maistro.sandbox.network import (
 from maistro.sandbox.policy import (
     BENCHMARK_EVAL,
     BROWSER_AUTOMATION,
+    BUILDER_AGENT,
     DEV_ONLY,
     MODE_FLOORS,
     TRUSTED_TOOL,
@@ -50,6 +64,7 @@ from maistro.sandbox.wiring import build_selector
 __all__ = [
     "BENCHMARK_EVAL",
     "BROWSER_AUTOMATION",
+    "BUILDER_AGENT",
     "CANDIDATE_BASE_ENV",
     "DEFAULT_OUTPUT_CAPTURE_BYTES",
     "DENY_ALL",
@@ -84,3 +99,16 @@ __all__ = [
     "redact_env",
     "tier_satisfies",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    # The one lazy slot (see module docstring). Anything else is a genuine
+    # AttributeError, so typos in eagerly-imported names still fail loudly.
+    if name == "StaleExecutionFence":
+        import importlib
+
+        _runs_store = importlib.import_module("maistro.runs.store")
+        value = _runs_store.StaleExecutionFence
+        globals()[name] = value  # cache: repeated access skips the import
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

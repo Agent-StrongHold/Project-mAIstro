@@ -72,6 +72,17 @@ bcrypt = [
 re2 = [
     "google-re2>=1.1",
 ]
+# The RESEARCH browser surface (#348): `tools/browser/client.py` lazy-imports
+# browser_use, falls back to the openai SDK directly, and drives Chromium
+# through playwright. Optional because the API image deliberately ships
+# browser-free (Dockerfile) — deployments that want the web tool install this
+# extra (Dockerfile.research selects it), and the resolution lives in uv.lock
+# so image builds cannot re-resolve it.
+browser = [
+    "browser-use>=0.1.40",
+    "playwright>=1.49",
+    "openai>=1.40,<4",
+]
 # The Archive tier (ADR-082226-f436) — cold records below durable memory, on any
 # S3-compatible store. Optional because the homelab deployment uses
 # `FilesystemArchiveStore`, which needs nothing, and because a deployment that
@@ -93,7 +104,9 @@ s3 = [
 # API directly (see observability/tracing.py); installing this extra + setting an OTLP
 # endpoint routes spans to any backend (Arize/Phoenix, Langfuse, Honeycomb, Jaeger).
 observability = [
-    "opentelemetry-api>=1.30,<2",
+    # Floor is the pip-audit gate's security floor (CVE-2026-126360, fixed in
+    # 1.45.2; #1995 CI-repair round, 2026-11).
+    "opentelemetry-api>=1.45.2,<2",
     "opentelemetry-sdk>=1.30,<2",
     "opentelemetry-exporter-otlp>=1.30,<2",
 ]
@@ -103,7 +116,8 @@ tui = [
 ]
 builders = [
     "textual>=0.61,<9",
-    "anthropic>=0.28,<2",
+    "anthropic>=0.28,<3",
+    "aiosqlite>=0.20,<1",
     "maistro-bootstrap[builders]",
 ]
 # Homelab/single-instance persistence backend (no Postgres server required).
@@ -153,6 +167,17 @@ dev = [
     "ruff>=0.9,<1",
     "mypy>=1.14,<3",
 ]
+
+# The in-repo cosmic-ray operator provider (PR #1994): loaded only by stevedore
+# inside the dev-only mutation toolchain (`cosmic_ray.plugins` reads this group
+# exactly as it reads cosmic-ray's own `core` provider). The module imports
+# cosmic-ray/parso behind a guarded import — the workspace dev environment is
+# the only place those ship, so the published-install contract (module resolves
+# everywhere, provider names name the missing toolchain) lives in the module's
+# docstring and is pinned by packages/maistro-core/tests/
+# test_mutation_operator_provider.py.
+[project.entry-points."cosmic_ray.operator_providers"]
+maistro = "maistro.mutation_operator_provider:MaistroMutationOperators"
 
 [build-system]
 requires = ["hatchling>=1.27"]

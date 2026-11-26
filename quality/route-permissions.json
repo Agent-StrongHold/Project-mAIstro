@@ -104,10 +104,10 @@
       "reason": "The evolution tournament is the self-improvement loop's other door; GET and POST require rsi.execute."
     },
     "/v1/eval-judge": {
-      "exempt_reason": "authenticated-only",
+      "permission": "eval.score",
       "owner": "@BlakeMatthews-dev",
       "disposition": "permanent",
-      "reason": "Verdict reads and the trigger POST are scoped in-route through the same dag_run_inspection door as /v1/dag-runs; elevation adds no boundary (#1174)."
+      "reason": "Method split (#2470): the scoring POST is an evaluated-effect mutation - it launches a billed model call and writes the shared verdict evidence the optimizer ranks on - so it requires the eval.score capability in _PROTECTED_OPS plus the in-route canonical initiator/administrator gate and terminality check in routes/eval_judge. Verdict reads stay the #1174 in-route Workspace-scoped read (the GET carve-out in authorization.required_permission), like /v1/dag-runs."
     },
     "/v1/harness": {
       "permission": "harness.execute",
@@ -162,6 +162,12 @@
       "owner": "@BlakeMatthews-dev",
       "disposition": "permanent",
       "reason": "Onboarding coaching state for the caller; progress and dismissals stay within the member's own program record."
+    },
+    "/v1/projects": {
+      "permission": "projects.write",
+      "owner": "@BlakeMatthews-dev",
+      "disposition": "permanent",
+      "reason": "Project onboarding wizard mutates intake/scan/deploy state; POST/DELETE require projects.write. Distinct from Workspace/Project scope (maistro.projects)."
     },
     "/v1/providers": {
       "permission": "config.write",
@@ -251,7 +257,7 @@
       "permission": "workspaces.write",
       "owner": "@BlakeMatthews-dev",
       "disposition": "permanent",
-      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware."
+      "reason": "Membership, persona authoring, tool bindings and archive/delete gate on workspaces.write; POST /v1/workspaces tab creation is explicitly exempt in middleware. GET reads under the prefix (listing/detail, Home #1048, Attention #1049, Goal inspection #65) are authenticated-only and scoped in-route to the caller's membership: not a member and not a Workspace are the same 404."
     }
   }
 }

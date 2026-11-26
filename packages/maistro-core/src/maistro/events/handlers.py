@@ -10,7 +10,7 @@ import logging
 from typing import Any
 
 from maistro.auth.client import ServiceKeyClient
-from maistro.events.bus import Event, Trigger
+from maistro.events.bus import Event, EventBus, Trigger
 from maistro.http import shared_client
 
 logger = logging.getLogger("maistro.events.handlers")
@@ -89,7 +89,10 @@ async def webhook_action(trigger: Trigger, event: Event) -> None:
 
 
 async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get("conductor_url", "http://localhost:8100")
+    base_url = trigger.action_config.get(
+        "conductor_url",
+        "http://localhost:8100",  # DevSkim: ignore DS162092 until 2027-12-31
+    )
     api_key = trigger.action_config.get("api_key", "")
     model = trigger.action_config.get("model", "auto")
     message_template = trigger.action_config.get("message", "")
@@ -129,7 +132,10 @@ async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
 
 
 async def coinswarm_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get("coinswarm_url", "http://localhost:8080")
+    base_url = trigger.action_config.get(
+        "coinswarm_url",
+        "http://localhost:8080",  # DevSkim: ignore DS162092 until 2027-12-31
+    )
     endpoint = trigger.action_config.get("endpoint", "")
     params = trigger.action_config.get("params", {})
 
@@ -149,7 +155,10 @@ async def coinswarm_action(trigger: Trigger, event: Event) -> None:
 
 
 async def ha_action(trigger: Trigger, event: Event) -> None:
-    base_url = trigger.action_config.get("ha_url", "http://localhost:8123")
+    base_url = trigger.action_config.get(
+        "ha_url",
+        "http://localhost:8123",  # DevSkim: ignore DS162092 until 2027-12-31
+    )
     token = trigger.action_config.get("ha_token", "")
     domain = trigger.action_config.get("domain", "automation")
     service = trigger.action_config.get("service", "trigger")
@@ -230,3 +239,14 @@ BUILTIN_HANDLERS = {
     "ntfy": ntfy_action,
     "log": log_action,
 }
+
+
+def install_builtin_handlers(bus: EventBus) -> None:
+    """Subscribe ADR-086 builtin action handlers on a legacy :class:`EventBus`.
+
+    Process entry points call this once when constructing the bus so trigger
+    ``action_type`` values resolve to real handlers (#2313 / #836): an unhandled
+    action type must not manufacture firing evidence.
+    """
+    for action_type, handler in BUILTIN_HANDLERS.items():
+        bus.register_handler(action_type, handler)
