@@ -97,8 +97,22 @@ _FOLLOWER_WAIT_SECONDS = 20.0
 
 _POLL_SECONDS = 0.05
 
-#: Record statuses before the durable result exists; both are resumable.
+#: Live-driver statuses for the wait/takeover race.
 _INFLIGHT = frozenset({"pending", "revising"})
+
+#: The statuses an *interrupted* protocol carries: a live driver passes
+#: through the stage statuses between writes, and process death (which never
+#: runs the ``except`` handler) leaves a record parked on whichever stage it
+#: had reached. Startup recovery resumes exactly these — a record whose
+#: status is a settled outcome is never auto-driven again:
+#: ``committed`` already carries the durable result, and ``failed`` is a
+#: caught, reported failure whose draft the user may have cancelled
+#: ("never mind") or edited into a replacement afterwards. Auto-driving
+#: such a record at startup would commit abandoned intent (AC-2); only the
+#: principal's own re-confirmation of the same draft — the chat's "commit
+#: it" retry — resumes it, from the recorded stage and with the same
+#: pre-minted identities (AC-4: safely retryable).
+_RESUMABLE = frozenset({"pending", "revising", "brief_created", "goal_revised", "brief_revised"})
 
 
 class CommitPrerequisiteUnavailable(RuntimeError):
@@ -277,13 +291,25 @@ def _resolve_brief_store(override: Any = None) -> Any:
     design services use. Its insert is PostgreSQL-shaped
     (``CAST(:payload AS jsonb)`` — SQLite's CAST affinity would destroy the
     payload), so a deployment without a configured PostgreSQL database gets
-    the explicit limitation rather than a corrupted brief."""
+    the explicit limitation rather than a corrupted brief.
+
+    Which spellings count as "PostgreSQL" is the shared configuration's
+    call, not a local whitelist: every spelling ``_MIGRATABLE_SCHEMES`` accepts
+    normalises through ``to_async_url`` to ``postgresql+asyncpg://``, while
+    non-PostgreSQL URLs pass through untouched. Normalising first mirrors
+    ``design_service._get_async_engine`` and keeps the two answers — "is a
+    database configured" and "is it PostgreSQL" — consistent across services."""
     if override is not None:
         return override
-    from maistro.config.database import resolve_database_url
+    from maistro.config.database import resolve_database_url, to_async_url
 
-    url = resolve_database_url()
-    if not url.startswith(("postgresql://", "postgres://", "postgresql+asyncpg://")):
+    # ``to_async_url`` rewrites every supported PostgreSQL spelling
+    # (``postgresql://``, ``postgres://``, ``postgresql+asyncpg://``,
+    # ``postgresql+psycopg://``) to the async driver's scheme and leaves
+    # non-PostgreSQL URLs untouched, so this one check accepts exactly what
+    # the shared configuration accepts.
+    url = to_async_url(resolve_database_url())
+    if not url.startswith("postgresql+asyncpg://"):
         raise CommitPrerequisiteUnavailable(
             "CreativeBrief persistence is unavailable: it requires the configured "
             "PostgreSQL database, and no PostgreSQL database URL is set"
@@ -367,6 +393,20 @@ def _revision_draft(draft: dict[str, Any], agent_id: str) -> GoalRevisionDraft:
     )
 
 
+def _supervision_constraints(fields: dict[str, Any]) -> tuple[str, ...]:
+    """Supervision constraints recorded on the canonical brief.
+
+    Keeps the interview's selected control mode alongside its provenance so
+    downstream consumers (creative_nodes.shared_context_from_brief) still see
+    the review cadence the user asked for (#mode preservation).
+    """
+    constraints = [f"source: {fields.get('source', '')}"]
+    mode = str(fields.get("mode") or "").strip()
+    if mode:
+        constraints.append(f"control mode: {mode}")
+    return tuple(constraints)
+
+
 def _brief_from_draft(
     *,
     draft: dict[str, Any],
@@ -424,7 +464,7 @@ def _brief_from_draft(
                 requirements=requirements,
             ),
         ),
-        supervision_constraints=(f"source: {fields.get('source', '')}",),
+        supervision_constraints=(*_supervision_constraints(fields),),
         change_note=change_note,
         created_by=principal_id,
     )
@@ -661,6 +701,32 @@ async def _revise_protocol(
     revise_goal = bool(revises.get("revise_goal", True))
 
     goal = await goal_reader.get_goal(goal_id, principal_id=user_id)
+    if str(goal.workspace_id) != workspace_id:
+        # ``get_goal``/``append_revision`` authorize against the Goal's own
+        # Workspace, so a principal administering two Workspaces could reach
+        # across them; pin the Goal to the Workspace this commit is scoped
+        # to before any write mutates it under this Workspace's Project,
+        # agent and presentation.
+        raise CommitRejected(
+            f"goal {goal_id} belongs to workspace {goal.workspace_id}, not "
+            f"{workspace_id}; revises must stay within the requested Workspace"
+        )
+    # The lineage must live in the requested Workspace too: both lookups
+    # are Workspace-scoped, so a foreign lineage (or brief id) resolves to
+    # nothing here. Rejecting before the Goal append keeps a cross-Workspace
+    # ``revises`` from minting an orphan brief bound to another Workspace's
+    # Goal.
+    brief = await brief_store.get(brief_id, workspace_id=workspace_id)
+    prior = (
+        None
+        if brief is not None
+        else await brief_store.latest(lineage_id, workspace_id=workspace_id)
+    )
+    if brief is None and prior is None:
+        raise CommitRejected(
+            f"lineage {lineage_id} has no CreativeBrief in workspace {workspace_id}; "
+            "revises must name a lineage committed in the requested Workspace"
+        )
     new_draft = _revision_draft(record["draft"], agent_id)
     if revise_goal:
         revision = goal.current_revision
@@ -674,14 +740,29 @@ async def _revise_protocol(
             revision = goal.current_revision
         else:
             # Resume after a crash that landed the append but not the record
-            # update: adopt the tail iff it is this commit's revision.
+            # update: adopt the tail iff it is this commit's revision — the
+            # successor the CAS append would have minted, with the complete
+            # content this draft produces. desired_state alone is not unique
+            # (subject/outcome shared, deadline differs), so every field is
+            # compared; anything else means another writer moved the Goal.
             revisions = await goal_reader.list_goal_revisions(goal_id, principal_id=user_id)
-            if not revisions or revisions[-1].desired_state != new_draft.desired_state:
+            tail = revisions[-1] if revisions else None
+            if (
+                tail is None
+                or tail.revision != expected_revision + 1
+                or (tail.desired_state, tail.success_conditions, tail.stop_conditions, tail.author)
+                != (
+                    new_draft.desired_state,
+                    new_draft.success_conditions,
+                    new_draft.stop_conditions,
+                    new_draft.author,
+                )
+            ):
                 raise CommitRejected(
                     f"goal {goal_id} moved to revision {goal.current_revision}; "
                     "re-check the current state before revising"
                 )
-            revision = revisions[-1].revision
+            revision = tail.revision
     else:
         if goal.current_revision != expected_revision:
             raise CommitRejected(
@@ -692,9 +773,7 @@ async def _revise_protocol(
     record["status"] = "goal_revised" if revise_goal else "brief_revised"
     _put_record(record)
 
-    brief = await brief_store.get(brief_id, workspace_id=workspace_id)
     if brief is None:
-        prior = await brief_store.latest(lineage_id, workspace_id=workspace_id)
         brief = _brief_from_draft(
             draft=record["draft"],
             workspace_id=workspace_id,
@@ -891,15 +970,24 @@ async def recover_pending_commits(
     before either write, between writes, or after the durable commit but
     before the response all converge on the one logical commit. Recovery is
     the protocol's own completion, not a new authorization decision; the
-    per-step authorization still applies inside the seam."""
+    per-step authorization still applies inside the seam.
+
+    Settled outcomes are not recovery's to revisit: a ``failed`` attempt was
+    caught and reported to its principal in-chat — who may have answered
+    "never mind" or edited the draft into a replacement — so it is retried
+    only by that principal's explicit re-confirmation, never silently
+    completed at startup (the cancelled draft creates no Goal, AC-2; the
+    failed commit stays safely retryable, AC-4)."""
     outcomes: list[CommitOutcome] = []
     for key in sorted(_commits.keys()):
         record = _get_record(key)
-        if (
-            record is None
-            or record.get("status") not in (*_INFLIGHT, "failed")
-            or record.get("status") == "committed"
-        ):
+        # Sweep exactly the interrupted protocol stages: process death never
+        # runs the ``except`` handler, so a kill between writes parks a record
+        # on ``brief_created``/``goal_revised``/``brief_revised`` (or on a
+        # live-driver status) and each resumes into the same pair. A settled
+        # outcome — ``committed`` or ``failed`` — is left alone: recovery
+        # must not commit intent the principal cancelled or replaced.
+        if record is None or record.get("status") not in _RESUMABLE:
             continue
         if user_id is not None and record.get("user_id") != user_id:
             continue
