@@ -22,17 +22,27 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.interop.contract import INTEROP_ONTOLOGY_V1
+from maistro.ontology.rubric import ScoringMethod
 from maistro_design.packs.types import PackId, RubricDimension
 
 
 class GoalRubricDimension(BaseModel):
-    """One rubric dimension grounded onto a Goal."""
+    """One rubric dimension grounded onto a Goal.
+
+    Carries the pack dimension's thickness (M7-A9, #985): the weight it
+    contributes, the named 1-5 anchors, and the scoring method — so a Goal's
+    instantiated catalog is the pack's judgment, not just its dimension names.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dimension_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
+    weight: float = Field(gt=0.0, le=1.0)
+    low_anchor: str = Field(min_length=1)
+    high_anchor: str = Field(min_length=1)
+    method: ScoringMethod = ScoringMethod.MODEL_JUDGE
 
 
 class GoalRubricCatalog(BaseModel):
@@ -54,6 +64,20 @@ class GoalRubricCatalog(BaseModel):
     #: only — a later pack upgrade never rewrites an instantiated catalog.
     pack_version: str = Field(min_length=1, pattern=r"^\d+\.\d+\.\d+$")
     dimensions: tuple[GoalRubricDimension, ...] = Field(min_length=1)
+
+    @property
+    def weight_sum(self) -> float:
+        """The catalog's total weight.
+
+        The pack's shipped defaults sum to 1 (enforced at `DomainPack`). A
+        Workspace configuration that narrowed the dimension set instantiates
+        a partial judgment: the declared weights ride unchanged as provenance
+        of what the pack ships — no silent renormalization — so this sum is
+        1.0 exactly when the full default catalog was instantiated.
+        """
+        from math import fsum
+
+        return fsum(dimension.weight for dimension in self.dimensions)
 
     @classmethod
     def instantiate(
@@ -85,6 +109,10 @@ class GoalRubricCatalog(BaseModel):
                     dimension_id=dimension.dimension_id,
                     name=dimension.name,
                     description=dimension.description,
+                    weight=dimension.weight,
+                    low_anchor=dimension.low_anchor,
+                    high_anchor=dimension.high_anchor,
+                    method=dimension.method,
                 )
                 for dimension in dimensions
             ),
