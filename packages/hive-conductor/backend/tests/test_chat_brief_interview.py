@@ -574,3 +574,79 @@ def test_an_unavailable_brief_store_is_an_explicit_recoverable_limitation(
 
     brief2, _ = _stream(authed_client, "commit it", ws)
     assert brief2["event"] == "unavailable", "the retry reaches the same honest answer"
+
+
+def test_a_failed_write_names_the_retry_and_keeps_the_interview_open(
+    authed_client, llm, brief_commit_facade, monkeypatch
+) -> None:
+    """A mid-protocol write failure is caught and reported (AC-4): the reply
+    names the failure, `written` stays empty — nothing durable happened — and
+    the draft survives so the same confirmation can retry."""
+
+    class _LosingStore:
+        """Resolves, reads, then loses the write — the crash-minus-death case."""
+
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def create(self, brief: Any) -> None:
+            raise RuntimeError("simulated lost brief write")
+
+    from services import brief_commit as brief_commit_mod
+
+    losing = _LosingStore(brief_commit_facade.brief_store)
+    monkeypatch.setattr(
+        brief_commit_mod,
+        "_resolve_brief_store",
+        lambda override: override if override is not None else losing,
+    )
+
+    ws = _user_owned_workspace(authed_client)
+    _root_project(brief_commit_facade, ws)
+    _interview_to_ready(authed_client, ws)
+
+    brief, done = _stream(authed_client, "commit it", ws)
+    assert brief["event"] == "failed"
+    assert brief["commit"]["status"] == "failed"
+    assert "simulated lost brief write" in brief["commit"]["reason"]
+    assert brief["written"] == [], "a failed commit is not a durable commitment"
+    assert brief["interview"] is not None, "the retryable draft is kept"
+    assert "commit it" in done["content"], "the reply says the same confirmation can retry"
+    assert "did not go through" in done["content"]
+    assert _goal_route(authed_client, ws) == []
+    assert brief_commit_facade.briefs.brief_rows() == []
+
+
+def test_written_names_only_the_identities_the_record_carries() -> None:
+    """AC-8 truthfulness at the seam: `written` reports what a durable record
+    carries, never more — a one-sided record (a resumed attempt that has only
+    reached one write) names that one side, and nothing is reported for a
+    commit that is not durable, whatever ids it mentions."""
+    from services.brief_chat import BriefTurn
+
+    def turn(commit: dict[str, Any]) -> list[dict[str, Any]]:
+        brief_turn = BriefTurn(
+            text="",
+            event="committed",
+            brief={"interview": None, "summary": None, "question": None},
+            commit=commit,
+        )
+        return brief_turn.payload()["written"]
+
+    # The protocol writes the brief first (fresh intake), so a record resumed
+    # between the writes carries only the brief.
+    assert turn(
+        {"status": "committed", "brief_id": "b1", "lineage_id": "l1", "brief_version": 2}
+    ) == [{"kind": "creative_brief", "brief_id": "b1", "lineage_id": "l1", "version": 2}]
+    # A revision record resumed after the Goal append but before its brief
+    # counterpart carries only the Goal.
+    assert turn({"status": "already_committed", "goal_id": "g1", "goal_revision": 3}) == [
+        {"kind": "goal", "goal_id": "g1", "revision": 3}
+    ]
+    # Non-durable outcomes never report ids as written — not even ones the
+    # attempt pre-minted.
+    assert turn({"status": "failed", "goal_id": "g1", "brief_id": "b1"}) == []
+    assert turn({"status": "unavailable"}) == []

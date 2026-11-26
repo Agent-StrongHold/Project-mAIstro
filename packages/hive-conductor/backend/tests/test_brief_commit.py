@@ -1500,3 +1500,471 @@ def test_the_brief_store_accepts_every_shared_postgresql_spelling(monkeypatch) -
     )
     with pytest.raises(CommitPrerequisiteUnavailable, match="PostgreSQL"):
         _resolve_brief_store()
+
+
+# ---------------------------------------------------------------------------
+# Seams the commit protocol leans on: refusals, degenerate records and the
+# recovery sweep's own filters. Each line here is a boundary behaviour, not
+# plumbing: the refuses-before-write and truthfulness contracts the issue's
+# acceptance criteria hang on.
+# ---------------------------------------------------------------------------
+
+
+def test_revalidate_rejects_an_empty_draft_and_a_fieldless_draft() -> None:
+    """The boundary's own gate (scope item 1): a draft that is not a draft,
+    or carries no fields, is rejected before any identity is minted."""
+    from services.brief_commit import CommitRejected, revalidate_draft
+
+    with pytest.raises(CommitRejected, match="no interview draft"):
+        revalidate_draft({})
+    with pytest.raises(CommitRejected, match="no fields"):
+        revalidate_draft({"script": "video_brief", "fields": "not-a-dict"})
+
+
+def test_an_engine_that_cannot_start_leaves_the_prerequisites_unavailable(
+    monkeypatch,
+) -> None:
+    """`get_engine` raising (no embedded runtime) is the AC-8 limitation, not
+    a crash: both Goal and Project seams answer the same typed refusal."""
+    import services.engine as engine_mod
+    from services.brief_commit import (
+        CommitPrerequisiteUnavailable,
+        _resolve_goal_reader,
+        _resolve_project_store,
+    )
+
+    def _raising_engine() -> Any:
+        raise RuntimeError("the embedded runtime is not running")
+
+    monkeypatch.setattr(engine_mod, "get_engine", _raising_engine)
+    with pytest.raises(CommitPrerequisiteUnavailable, match="Goal store"):
+        _resolve_goal_reader()
+    with pytest.raises(CommitPrerequisiteUnavailable, match="Project store"):
+        _resolve_project_store()
+
+
+def test_the_engines_project_store_is_used_when_the_runtime_is_up(monkeypatch) -> None:
+    """Production resolves the Project store off the engine's Container —
+    the override parameter exists for tests; the engine path is what ships."""
+    import services.engine as engine_mod
+    from services.brief_commit import _resolve_project_store
+
+    marker = object()
+    monkeypatch.setattr(
+        engine_mod, "get_engine", lambda: SimpleNamespace(project_scope_store=marker)
+    )
+    assert _resolve_project_store() is marker
+
+
+def test_a_postgres_url_with_no_session_factory_is_still_the_limitation(
+    monkeypatch,
+) -> None:
+    """A configured PostgreSQL URL whose design session factory never started
+    (design service down) cannot write briefs: the same typed refusal."""
+    import services.design_service as design_service_mod
+    from services.brief_commit import (
+        CommitPrerequisiteUnavailable,
+        _resolve_brief_store,
+    )
+
+    import maistro.config.database as database_mod
+
+    monkeypatch.setattr(
+        database_mod,
+        "resolve_database_url",
+        lambda: "postgresql://u:p@h:5432/db",
+    )
+    monkeypatch.setattr(design_service_mod, "_get_async_session_factory", lambda: None)
+    with pytest.raises(CommitPrerequisiteUnavailable, match="session factory did not start"):
+        _resolve_brief_store()
+
+
+async def test_a_view_by_a_principal_outside_the_workspace_is_refused(stack) -> None:
+    """AC-5's read half, at the seam: `list_commitments` authorizes through
+    the same workspace authority before it answers, so a non-member cannot
+    even enumerate another's intake."""
+    from services.brief_commit import CommitNotAuthorized, _require_view
+
+    with pytest.raises(CommitNotAuthorized):
+        await _require_view(_OTHER, stack.workspace.id)
+
+
+def test_a_record_with_no_parseable_timestamp_is_not_fresh() -> None:
+    """A degenerate record (no `updated_at`, or garbage in it) must not read
+    as a live driver: takeover proceeds instead of waiting out a phantom."""
+    from services.brief_commit import _fresh
+
+    assert _fresh({}, takeover_after=60.0) is False
+    assert _fresh({"updated_at": "not-a-timestamp"}, takeover_after=60.0) is False
+
+
+def test_an_outcome_from_an_unsettled_record_is_failed_and_truthful() -> None:
+    """Records parked on a live stage (or poisoned) are not successes: the
+    follower's answer names the recorded failure, or says the attempt did
+    not complete — never the ids of a pair that does not exist."""
+    from services.brief_commit import _outcome_from_record
+
+    outcome = _outcome_from_record({"status": "failed", "failure": "boom"}, recovered=True)
+    assert outcome.status == "failed"
+    assert outcome.reason == "boom"
+    assert outcome.durable is False
+
+    unnamed = _outcome_from_record({"status": "brief_created"}, recovered=True)
+    assert unnamed.status == "failed"
+    assert unnamed.reason == "commit did not complete"
+
+
+async def test_the_sweep_skips_records_that_do_not_belong_to_the_request() -> None:
+    """The operations-facing filters (user/workspace) select exactly the
+    records asked for; a non-matching record is left untouched."""
+    from services import brief_commit as brief_commit_mod
+    from services.brief_commit import _candidate, _get_record, recover_pending_commits
+
+    draft = _final_draft()
+    key = brief_commit_mod.commit_key(_USER, "ws-under-sweep", draft)
+    record = _candidate(
+        key,
+        user_id=_USER,
+        workspace_id="ws-under-sweep",
+        project_id="p",
+        agent_id="a",
+        draft=draft,
+        revises=None,
+    )
+    brief_commit_mod._put_record(record)
+    try:
+        assert await recover_pending_commits(user_id=_OTHER) == []
+        assert await recover_pending_commits(workspace_id="another-ws") == []
+        after = _get_record(key)
+        assert after is not None and after["status"] == "pending", "the sweep left it alone"
+    finally:
+        brief_commit_mod._commits.pop(key, None)
+
+
+def test_forget_commit_refuses_everything_but_a_settled_record_of_the_owners() -> None:
+    """`forget_commit` is the principal's way to drop a settled attempt's
+    queryable record: it declines a missing record, a foreign principal, and
+    an attempt still in flight — and only then removes the record."""
+    from services import brief_commit as brief_commit_mod
+    from services.brief_commit import _candidate, commit_key
+
+    draft = _final_draft()
+    key = commit_key(_USER, "ws-forget", draft)
+    settled = _candidate(
+        key,
+        user_id=_USER,
+        workspace_id="ws-forget",
+        project_id="p",
+        agent_id="a",
+        draft=draft,
+        revises=None,
+    )
+    settled["status"] = "failed"
+    settled["failure"] = "boom"
+    brief_commit_mod._commits[key] = settled
+    try:
+        assert brief_commit_mod.forget_commit("missing-key", user_id=_USER) is False
+        assert brief_commit_mod.forget_commit(key, user_id=_OTHER) is False
+        assert key in brief_commit_mod._commits, "a foreign principal removed nothing"
+
+        settled["status"] = "pending"
+        assert brief_commit_mod.forget_commit(key, user_id=_USER) is False
+        assert key in brief_commit_mod._commits, "an in-flight attempt is not forgettable"
+
+        settled["status"] = "failed"
+        assert brief_commit_mod.forget_commit(key, user_id=_USER) is True
+        assert key not in brief_commit_mod._commits
+    finally:
+        brief_commit_mod._commits.pop(key, None)
+
+
+async def test_the_sweep_resolves_the_agent_for_a_record_that_never_pinned_one(
+    stack,
+) -> None:
+    """A record written before the accountable-agent pin (or by a path that
+    could not resolve it) resumes with the Workspace's stable agent resolved
+    from the canonical authority — the sweep, not the record, owns that
+    identity when it is absent."""
+    from services import brief_commit as brief_commit_mod
+    from services.agent_materialization import workspace_agent_id
+    from services.brief_commit import (
+        _candidate,
+        _get_record,
+        _put_record,
+        commit_key,
+        recover_pending_commits,
+    )
+
+    draft = _final_draft()
+    key = commit_key(_USER, stack.workspace.id, draft)
+    record = _candidate(
+        key,
+        user_id=_USER,
+        workspace_id=stack.workspace.id,
+        project_id=str(stack.root.project_id),
+        agent_id="",
+        draft=draft,
+        revises=None,
+    )
+    _put_record(record)
+    try:
+        outcomes = await recover_pending_commits(
+            goal_reader=stack.goal_reader,
+            project_store=stack.projects,
+            brief_store=stack.brief_store,
+        )
+        assert [o.status for o in outcomes] == ["committed"], outcomes
+        goals = await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER)
+        assert [g.goal_id for g in goals] == [outcomes[0].goal_id]
+        assert goals[0].agent_id == workspace_agent_id(stack.workspace.id)
+        assert await _brief_rows(stack) == [(outcomes[0].brief_id, 1)]
+        assert _get_record(key)["status"] == "committed"
+    finally:
+        brief_commit_mod._commits.pop(key, None)
+
+
+async def test_the_sweep_reports_each_interrupted_records_own_failure(stack) -> None:
+    """Recovery is per-record: one record whose resume hits an unavailable
+    prerequisite reports `unavailable`, one that hits a write error reports
+    `failed`, and neither stops the sweep from finishing the others."""
+    from services import brief_commit as brief_commit_mod
+    from services.brief_commit import (
+        CommitPrerequisiteUnavailable,
+        _candidate,
+        _get_record,
+        _put_record,
+        commit_key,
+        recover_pending_commits,
+    )
+
+    class _FlakyStore:
+        """Loses the first write loudly-unavailable, the second as a crash."""
+
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+            self.calls = 0
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def create(self, brief: Any) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise CommitPrerequisiteUnavailable("brief store lost mid-sweep")
+            raise RuntimeError("brief store crashed mid-sweep")
+
+    keys = []
+    for subject in ("first interrupted", "second interrupted"):
+        draft = _final_draft(subject=subject)
+        key = commit_key(_USER, stack.workspace.id, draft)
+        _put_record(
+            _candidate(
+                key,
+                user_id=_USER,
+                workspace_id=stack.workspace.id,
+                project_id=str(stack.root.project_id),
+                agent_id="a",
+                draft=draft,
+                revises=None,
+            )
+        )
+        keys.append(key)
+    try:
+        outcomes = await recover_pending_commits(
+            goal_reader=stack.goal_reader,
+            project_store=stack.projects,
+            brief_store=_FlakyStore(stack.brief_store),
+        )
+        assert [o.status for o in outcomes] == ["unavailable", "failed"], outcomes
+        assert "brief store lost mid-sweep" in (outcomes[0].reason or "")
+        assert "RuntimeError" in (outcomes[1].reason or "")
+        # Both records settled as failures the sweep reported — neither is
+        # left in flight, and neither wrote a Goal.
+        for key in keys:
+            assert _get_record(key)["status"] == "failed"
+        assert await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER) == []
+    finally:
+        for key in keys:
+            brief_commit_mod._commits.pop(key, None)
+
+
+async def test_concurrent_identical_commits_converge_on_one_failed_result(stack) -> None:
+    """The follower half of AC-3's concurrency promise: when the driver's
+    attempt fails, the concurrent identical confirmation reports the same
+    failed record — it does not start a second protocol on a second record."""
+
+    class _SlowLosingStore:
+        """Resolves and reads, then loses the write after a real window, so
+        the concurrent confirmation observes a live driver."""
+
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def create(self, brief: Any) -> None:
+            await asyncio.sleep(0.2)
+            raise RuntimeError("forced concurrent lost write")
+
+    draft = _final_draft(subject="concurrent failure")
+    first, second = await asyncio.gather(
+        _commit(stack, draft, brief_store=_SlowLosingStore(stack.brief_store)),
+        _commit(stack, draft, brief_store=_SlowLosingStore(stack.brief_store)),
+    )
+    statuses = {first.status, second.status}
+    assert statuses == {"failed"}, (first, second)
+    assert await _brief_rows(stack) == [], "neither attempt wrote a brief"
+    assert await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER) == []
+
+
+async def test_a_revision_cannot_bind_a_lineage_from_another_workspace(stack) -> None:
+    """The lineage pin: the Goal may legitimately belong to the requested
+    Workspace, but `revises` naming a lineage that lives in another is
+    refused before any brief version is minted against it."""
+    from services import workspace_authority
+    from services.brief_commit import commit_draft
+
+    first = await _commit(stack, _final_draft())
+
+    other_workspace = await workspace_authority.create_workspace(
+        creator_user_id=_USER,
+        name=f"Brief Commit lineage pin {uuid.uuid4().hex[:8]}",
+        persona_template_id="content_creator",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    other_projects = stack.projects.__class__()
+    other_root = await other_projects.create_root(other_workspace.id)
+    from services.agent_materialization import workspace_agent_id
+
+    from maistro.goals import GoalRevisionDraft
+
+    goal = await stack.goal_reader.create_goal(
+        principal_id=_USER,
+        workspace_id=other_workspace.id,
+        project_id=str(other_root.project_id),
+        agent_id=workspace_agent_id(other_workspace.id),
+        draft=GoalRevisionDraft(
+            desired_state="own workspace goal — Teach it",
+            success_conditions=("Teach it",),
+            stop_conditions=(),
+            author=workspace_agent_id(other_workspace.id),
+        ),
+    )
+    from sqlalchemy import text
+
+    async with stack.server.factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO canonical_projects (project_id, workspace_id, is_root, "
+                "payload) VALUES (:p, :w, TRUE, CAST(:payload AS jsonb)) "
+                "ON CONFLICT (project_id) DO NOTHING"
+            ),
+            {
+                "p": str(other_root.project_id),
+                "w": other_workspace.id,
+                "payload": '{"name": "brief-commit-lineage-pin"}',
+            },
+        )
+        await session.commit()
+    try:
+        outcome = await commit_draft(
+            _USER,
+            other_workspace.id,
+            _final_draft(subject="lineage pin probe"),
+            confirmed=True,
+            revises={
+                "goal_id": goal.goal_id,
+                "expected_revision": goal.current_revision,
+                "lineage_id": first.lineage_id,
+                "revise_goal": False,
+            },
+            goal_reader=stack.goal_reader,
+            project_store=other_projects,
+            brief_store=stack.brief_store.__class__(session_factory=stack.server.factory),
+        )
+        assert outcome.status == "failed"
+        assert "no CreativeBrief in workspace" in (outcome.reason or "")
+        # The foreign lineage gained no version, and the own-Workspace Goal
+        # gained no revision either.
+        assert await _brief_rows_for(stack.server.factory, other_workspace.id) == []
+        revisions = await stack.goal_reader.list_goal_revisions(goal.goal_id, principal_id=_USER)
+        assert [r.revision for r in revisions] == [1]
+    finally:
+        async with stack.server.factory() as session:
+            await session.execute(
+                text("DELETE FROM design_creative_briefs WHERE workspace_id = :w"),
+                {"w": other_workspace.id},
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM canonical_goal_transitions WHERE goal_id IN "
+                    "(SELECT goal_id FROM canonical_goals WHERE workspace_id = :w)"
+                ),
+                {"w": other_workspace.id},
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM canonical_goal_revisions WHERE goal_id IN "
+                    "(SELECT goal_id FROM canonical_goals WHERE workspace_id = :w)"
+                ),
+                {"w": other_workspace.id},
+            )
+            await session.execute(
+                text("DELETE FROM canonical_goals WHERE workspace_id = :w"),
+                {"w": other_workspace.id},
+            )
+            await session.execute(
+                text("DELETE FROM canonical_projects WHERE workspace_id = :w"),
+                {"w": other_workspace.id},
+            )
+            await session.commit()
+
+
+async def test_a_creative_only_revision_with_a_stale_revision_refuses(stack) -> None:
+    """A creative-only change re-reads the Goal it annotates: naming a
+    revision the Goal is no longer at refuses cleanly — nothing is written,
+    and the caller re-reads before retrying."""
+    from services.brief_commit import commit_draft
+
+    first = await _commit(stack, _final_draft())
+    outcome = await commit_draft(
+        _USER,
+        stack.workspace.id,
+        _final_draft(subject="stale creative-only probe"),
+        confirmed=True,
+        revises={
+            "goal_id": first.goal_id,
+            "expected_revision": first.goal_revision + 7,
+            "lineage_id": first.lineage_id,
+            "revise_goal": False,
+        },
+        goal_reader=stack.goal_reader,
+        project_store=stack.projects,
+        brief_store=stack.brief_store,
+    )
+    assert outcome.status == "failed"
+    assert "re-read it before changing the brief" in (outcome.reason or "")
+    assert await _brief_rows(stack) == [(first.brief_id, 1)], "no version was minted"
+
+
+async def test_an_unresolvable_workspace_agent_is_the_explicit_limitation(
+    stack, monkeypatch
+) -> None:
+    """Without a stable accountable Workspace Agent there is nothing to be
+    accountable for: the boundary refuses loudly, writes nothing, and the
+    confirmation stays retryable once the agent resolves."""
+    from services import brief_commit as brief_commit_mod
+    from services.brief_commit import WorkspaceNotFound
+
+    async def _no_agent(workspace_id: str) -> Any:
+        raise WorkspaceNotFound(f"no agent for {workspace_id}")
+
+    monkeypatch.setattr(brief_commit_mod, "resolve_workspace_agent", _no_agent)
+    outcome = await _commit(stack, _final_draft())
+    assert outcome.status == "unavailable"
+    assert "accountable agent" in (outcome.reason or "")
+    assert await _brief_rows(stack) == []
+    assert await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER) == []
