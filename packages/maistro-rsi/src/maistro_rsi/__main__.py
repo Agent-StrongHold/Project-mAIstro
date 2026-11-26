@@ -217,7 +217,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--approval-dir",
         default=None,
         help="Directory of pre-signed promotion approvals (#302), one "
-        "`<candidate-sha12>.approval.json` per sensitive candidate. Without it a "
+        "`<candidate-sha[:12]>.approval.json` per sensitive candidate. Without it a "
         "diff touching the containment surface can never promote — approval "
         "must exist BEFORE the run, bound to the candidate/diff sha, scope, "
         "approver, policy version and expiry.",
@@ -1076,6 +1076,27 @@ def _test_argv(raw: str) -> tuple[str, ...]:
     return tuple(parsed)
 
 
+def _print_genome_summary(loop: LocalRsiLoop) -> None:
+    """Print the population summary after a genome-db run."""
+    summary = loop._population_summary()
+    print(
+        f"\nEvolution: {summary['population_size']} genome(s), generations={summary['generations']}"
+    )
+    for g in summary["top_genomes"]:
+        print(
+            f"  champion: {g['name']} (gen {g['generation']}, {g['model']}) "
+            f"fitness={g['fitness']} tdd_rigor={g['tdd_rigor']} "
+            f"test_style={g['test_style']}"
+        )
+    if summary["reliability"]:
+        print(
+            "  reliability: "
+            + ", ".join(f"{m}={round(v, 3)}" for m, v in sorted(summary["reliability"].items()))
+        )
+    if summary["benched_models"]:
+        print(f"  benched: {', '.join(summary['benched_models'])}")
+
+
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
@@ -1150,24 +1171,7 @@ def _run(args: argparse.Namespace) -> int:
     result = loop.run()
     print("\n" + result.summary())
     if config.genome_db:
-        summary = loop._population_summary()
-        print(
-            f"\nEvolution: {summary['population_size']} genome(s), "
-            f"generations={summary['generations']}"
-        )
-        for g in summary["top_genomes"]:
-            print(
-                f"  champion: {g['name']} (gen {g['generation']}, {g['model']}) "
-                f"fitness={g['fitness']} tdd_rigor={g['tdd_rigor']} "
-                f"test_style={g['test_style']}"
-            )
-        if summary["reliability"]:
-            print(
-                "  reliability: "
-                + ", ".join(f"{m}={round(v, 3)}" for m, v in sorted(summary["reliability"].items()))
-            )
-        if summary["benched_models"]:
-            print(f"  benched: {', '.join(summary['benched_models'])}")
+        _print_genome_summary(loop)
     return 0
 
 

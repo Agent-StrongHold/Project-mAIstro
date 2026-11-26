@@ -173,6 +173,37 @@ _REQUIRED_FIELDS = (
 )
 
 
+def _malformed_reason(approval: SignedPromotionApproval, now: datetime | None) -> str | None:
+    """The malformed-evidence reason a structurally unsound record deserves.
+
+    Covers the required-field shape (a non-string or empty field), a wrong
+    policy version, and an unparsable expiry; ``None`` means the record is
+    well-formed enough to authenticate. ``now`` is accepted for probe parity
+    with :func:`_expired_reason` and unused.
+    """
+    for name in _REQUIRED_FIELDS:
+        value = getattr(approval, name, None)
+        if not isinstance(value, str) or not value:
+            return f"malformed_approval:{name}"
+    if approval.policy_version != APPROVAL_POLICY_VERSION:
+        return "policy_version_mismatch"
+    try:
+        datetime.fromisoformat(approval.expires_at)
+    except ValueError:
+        return "malformed_expiry"
+    return None
+
+
+def _expired_reason(approval: SignedPromotionApproval, now: datetime | None) -> str | None:
+    """``approval_expired`` when the (well-formed) expiry has passed."""
+    expiry = datetime.fromisoformat(approval.expires_at)
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    if expiry <= (now or datetime.now(UTC)):
+        return "approval_expired"
+    return None
+
+
 def verify_promotion_approval(
     approval: SignedPromotionApproval,
     secret: str,
@@ -188,21 +219,10 @@ def verify_promotion_approval(
     holds those live values; this function verifies the record is internally
     sound and authentic.
     """
-    for name in _REQUIRED_FIELDS:
-        value = getattr(approval, name, None)
-        if not isinstance(value, str) or not value:
-            return False, f"malformed_approval:{name}"
-    if approval.policy_version != APPROVAL_POLICY_VERSION:
-        return False, "policy_version_mismatch"
-    try:
-        expiry = datetime.fromisoformat(approval.expires_at)
-    except ValueError:
-        return False, "malformed_expiry"
-    current = now or datetime.now(UTC)
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=UTC)
-    if expiry <= current:
-        return False, "approval_expired"
+    for probe in (_malformed_reason, _expired_reason):
+        reason = probe(approval, now)
+        if reason:
+            return False, reason
     if not secret or not approval.signature:
         return False, "unsigned"
     if not verify_approval_authority(_authority_for(approval), secret):
@@ -215,6 +235,8 @@ ApprovalProvider = Callable[[str, str, str], "SignedPromotionApproval | None"]
 
 class DirectoryApprovalStore:
     """An on-disk approval source the operator provisions BEFORE a run.
+
+    M1 product-local projection: Approval
 
     Each pre-signed approval lives as ``<candidate_sha[:12]>.approval.json`` —
     the canonical JSON of a `SignedPromotionApproval` — under ``root``. The
@@ -259,6 +281,71 @@ class PromotionGateVerdict:
     # (approver, both shas, policy version, expiry, signature) — persisted onto
     # the promotion's trace note so the audit trail names WHO authorized it.
     approval: dict[str, Any] | None = None
+
+
+def _approve_or_refuse(
+    *,
+    approval_provider: ApprovalProvider,
+    candidate_sha: str,
+    diff_digest: str,
+    scope: str,
+    sensitive: tuple[str, ...],
+    flags: tuple[str, ...],
+    signing_secret: str | None,
+    now: datetime | None,
+) -> tuple[PromotionGateVerdict | None, SignedPromotionApproval | None]:
+    """Collect and authenticate an approval for a sensitive diff.
+
+    Returns ``(verdict, approval)``: on any failure the verdict is a refusal
+    (cleared False) and the approval is ``None`` — an absent, unavailable,
+    malformed, unauthentic, or unbound approval never authorizes. On success
+    the verdict is ``None`` and the approval is the authenticated record.
+    """
+
+    def refuse(reason: str) -> PromotionGateVerdict:
+        return PromotionGateVerdict(
+            cleared=False,
+            requires_approval=True,
+            sensitive_paths=sensitive,
+            reason=reason,
+            flags=flags,
+        )
+
+    digest = diff_digest
+    try:
+        approval = approval_provider(candidate_sha, digest, scope)
+    except Exception as exc:
+        # An approval source that errors is UNAVAILABLE, not approving.
+        return refuse(f"approval_unavailable:{type(exc).__name__}"), None
+
+    if isinstance(approval, dict):
+        # A JSON-shaped record (an HTTP approval service, a pre-staged file)
+        # coerces to the typed record; a record missing/wrongly-typing a field
+        # is MALFORMED EVIDENCE, never approval.
+        try:
+            approval = SignedPromotionApproval(**approval)
+        except (TypeError, ValueError):
+            return refuse("approval_invalid:malformed_approval"), None
+
+    if approval is None:
+        return refuse("approval_required:none_found"), None
+
+    valid, reason = verify_promotion_approval(
+        approval, signing_secret or approval_signing_secret(), now=now
+    )
+    if not valid:
+        return refuse(f"approval_invalid:{reason}"), None
+
+    # The record must bind to THIS candidate, THIS diff and THIS scope — a
+    # validly-signed approval for a different change authorizes nothing here.
+    if (
+        approval.candidate_sha != candidate_sha
+        or approval.diff_sha256 != digest
+        or approval.scope != scope
+    ):
+        return refuse("approval_binding_mismatch"), None
+
+    return None, approval
 
 
 async def evaluate_promotion(
@@ -312,69 +399,19 @@ async def evaluate_promotion(
         )
 
     digest = diff_sha256(diff)
-    try:
-        approval = approval_provider(candidate_sha, digest, scope)
-    except Exception as exc:
-        # An approval source that errors is UNAVAILABLE, not approving.
-        return PromotionGateVerdict(
-            cleared=False,
-            requires_approval=True,
-            sensitive_paths=sensitive,
-            reason=f"approval_unavailable:{type(exc).__name__}",
-            flags=quarantine.flags,
-        )
-
-    if isinstance(approval, dict):
-        # A JSON-shaped record (an HTTP approval service, a pre-staged file)
-        # coerces to the typed record; a record missing/wrongly-typing a field
-        # is MALFORMED EVIDENCE, never approval.
-        try:
-            approval = SignedPromotionApproval(**approval)
-        except (TypeError, ValueError):
-            return PromotionGateVerdict(
-                cleared=False,
-                requires_approval=True,
-                sensitive_paths=sensitive,
-                reason="approval_invalid:malformed_approval",
-                flags=quarantine.flags,
-            )
-
-    if approval is None:
-        return PromotionGateVerdict(
-            cleared=False,
-            requires_approval=True,
-            sensitive_paths=sensitive,
-            reason="approval_required:none_found",
-            flags=quarantine.flags,
-        )
-
-    valid, reason = verify_promotion_approval(
-        approval, signing_secret or approval_signing_secret(), now=now
+    refusal, approval = _approve_or_refuse(
+        approval_provider=approval_provider,
+        candidate_sha=candidate_sha,
+        diff_digest=digest,
+        scope=scope,
+        sensitive=sensitive,
+        flags=quarantine.flags,
+        signing_secret=signing_secret,
+        now=now,
     )
-    if not valid:
-        return PromotionGateVerdict(
-            cleared=False,
-            requires_approval=True,
-            sensitive_paths=sensitive,
-            reason=f"approval_invalid:{reason}",
-            flags=quarantine.flags,
-        )
-
-    # The record must bind to THIS candidate, THIS diff and THIS scope — a
-    # validly-signed approval for a different change authorizes nothing here.
-    if (
-        approval.candidate_sha != candidate_sha
-        or approval.diff_sha256 != digest
-        or approval.scope != scope
-    ):
-        return PromotionGateVerdict(
-            cleared=False,
-            requires_approval=True,
-            sensitive_paths=sensitive,
-            reason="approval_binding_mismatch",
-            flags=quarantine.flags,
-        )
-
+    if refusal is not None:
+        return refusal
+    assert approval is not None  # the helper returns both-or-neither
     return PromotionGateVerdict(
         cleared=True,
         requires_approval=True,
