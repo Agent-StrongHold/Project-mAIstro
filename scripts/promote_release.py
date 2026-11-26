@@ -46,6 +46,17 @@ The soak itself is produced outside this script (the soak harness uploads a
 Promotion without it fails here, loudly — the same deliberate fail-loud
 posture as the PyPI publisher before its trusted publisher exists.
 
+Cross-lane contract (#860 / PR #1672): the soak harness's native record
+(`m3a-soak-evidence.json` — `thresholds.checks.<name>.ok` booleans) does NOT
+satisfy this gate. The soak lane must publish an Actions artifact named
+exactly `soak-evidence` on the RC release run, in the `soak-evidence.json`
+schema below (schema 1: `artifact_binding` over the record's wheel sha256 map
+and image digests plus a config digest; the five REQUIRED_SOAK_CHECKS each
+`status == "pass"` with cited evidence; invariant-invalidating findings
+carrying `routed_issue`). Until that artifact exists, `adopt-digests` fails
+closed — by design; adapting this gate to the harness's boolean schema would
+weaken it.
+
 Record shapes
 -------------
 release-evidence.json (schema 1)::
