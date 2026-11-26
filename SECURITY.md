@@ -32,13 +32,55 @@ in **[ADR-072](docs/adr/ADR-072-threat-model.md)**. It is not duplicated here; t
 | **1. Gate** | Untrusted-input entry point into the Conduit pipeline | `maistro/conduit.py` |
 | **2. Warden** | Trust-boundary scanner: fast-tier heuristics (regex/pattern/anomaly, free) escalate only ambiguous input to an LLM judge (risk `0..1`). Scans user input, tool results, and — at the MCP boundary — both ingress and egress | `maistro/security/warden/detector.py`, `heuristics.py`, `semantic.py`, `llm_classifier.py`, `sanitizer.py`, `patterns.py` |
 | **3. Sentinel (AuthZ / elevation)** | Policy decision + enforcement point (PDP/PEP) at the tool-call boundary. Evaluates CLASSIFY → AUTHORIZE → BUDGET → GATE (ADR-068) in order, stopping at first deny | `maistro/security/sentinel/policy.py`, `validator.py`, `elevation.py`, `approver_graph.py`, `rlphd.py` |
-| **4. Skill / tool trust tiers** | Skill body size cap + `security_scan()` (exec/eval/subprocess/credential/injection patterns) at import; dangerous-command and dangerous-tool-name detection at call time. **Reversibility classification does NOT currently gate anything** — `ReversibilityRegistry` is never constructed and `Sentinel.resolve_tier` never consults it (#346). Skill scanning runs on the CRUD write paths and `POST /v1/skills/scan` (#347), but those are content-only: skills created that way do not pass `import_pipeline.import_skill`, so no signing, T3 sandboxing, or rescan-on-use binding applies to them | `maistro/skills/parser.py`, `skills/import_pipeline.py`, `security/dangerous_tools.py`, `tools/reversibility_registry.py` |
+| **4. Skill / tool trust tiers** | Skill body size cap + `security_scan()` (exec/eval/subprocess/credential/injection patterns) at import; dangerous-command and dangerous-tool-name detection at call time. Governed tool contracts construct `ReversibilityRegistry` and resolve host-owned classifications before canonical Invocation dispatch (`tools/contracts.py`); caller-supplied tier strings cannot override them. This does **not** establish reversibility-based approval gating: `Sentinel.resolve_tier` still does not consult the registry (#346). Skill scanning runs on the CRUD write paths and `POST /v1/skills/scan` (#347), but those are content-only: skills created that way do not pass `import_pipeline.import_skill`, so no signing, T3 sandboxing, or rescan-on-use binding applies to them | `maistro/skills/parser.py`, `skills/import_pipeline.py`, `security/dangerous_tools.py`, `tools/reversibility_registry.py` |
 | **5. Resource protection** | Quota tracking, per-key rate limiting, circuit breakers/retry/fallback, secret redaction on log output, result-size truncation (see inventory below) | `maistro/quota/tracker.py`, `security/rate_limiter.py`, `resilience/`, `security/redact.py` + `security/log_redaction.py`, `security/sentinel/token_optimizer.py` |
 | **6. Sandbox isolation** | Untrusted agent/tool code MUST run behind a hardware-VM boundary (microVM), not a shared-kernel container; the Docker-socket-mounting sandbox is deprecated for untrusted workloads (ADR-093) | `maistro/tools/sandbox/`, `maistro/sandbox/protocol.py` |
 
 This is the engine's version of Stronghold's Gate → Warden → Identity → Skill → Resource
 five-layer model, with sandbox isolation (ADR-093) called out as its own layer because it is a
 harder guarantee (hypervisor boundary) than the container/RBAC layers above it.
+
+### Scan result states (#288)
+
+Every security scan surface (agent config scans, the skills content scan, the HITL answer
+gate) distinguishes four states, and a scan that did not run is never allowed to read as
+clean. The MCP server-record scan has no scanner wired and is the explicit-unsupported case
+(`501`, #389) rather than a fabricated verdict:
+
+- **clean** — the analysis *completed* and found nothing. Scan-route results say what ran and
+  on what: `scanner.name` / `scanner.policy_version` (Warden's `WARDEN_POLICY_VERSION` for the
+  agent and HITL scans; the skills content scanner's `SKILL_SECURITY_SCAN_VERSION` for
+  `POST /v1/skills/scan`), `target` (kind and id of the artifact walked), `scanned_at`
+  (completion timestamp), and `scanned_values` (how many strings the walk judged). Agent
+  definitions written through a scanned write path (CRUD, Forge, chat-tool) persist the same
+  stamp in `config["provenance"]["scan"]` — and Forge's artifact records it again in
+  `config["forge"]["scan"]` — so a stored `clean` row can always show the completed analysis
+  behind it. (Persona-spawn and canonical-roster materialization are not scanned write paths;
+  they project trusted internal content and carry no scan stamp rather than a fabricated one.)
+- **flagged (findings)** — the analysis completed and found patterns; each finding names the
+  path inside the target where it hit (`config.prompt: …`), so a human can act on it.
+- **unknown / failed** — the scanner could not run, raised, or timed out. The HTTP scan routes
+  answer `503` with *no findings list* (a client must not be able to mistake a failed scan for
+  an empty one); each route also bounds the whole walk at `SCAN_TIMEOUT_SECONDS` (the same wall
+  the chat gate uses) and runs the synchronous Warden walk on a worker thread, so a CPU-bound
+  detector cannot starve the deadline: a detector that hangs produces the same explicit unknown
+  instead of a hung request. Definition writes fail closed with nothing stored
+  (`AgentScannerUnavailable`, surfaced as `503` on the Forge route); the chat gate refuses the
+  turn with its scanner-error / scanner-timeout reasons. Warden's per-pattern regex timeout
+  fails closed too: it becomes a `regex_error:` finding, i.e. flagged — never silently clean.
+- **unsupported** — no scanner is wired for the target, so the surface refuses with `501`
+  (the MCP server-record scan) instead of reporting a verdict it did not compute.
+- **over-budget** — the target exceeds the bounded walk (nesting depth, value count, string
+  size) and is refused with `413` (`ScanBudgetExceeded`) rather than truncated into a
+  partial — and therefore unearned — clean.
+
+The surface set itself is checked, not trusted:
+`packages/hive-conductor/backend/tests/test_scan_contract.py` enumerates every `POST …/scan`
+route from the live app and must find each one backed by its registered handler. A surface
+with no scanner wired is pinned to an explicit `501` refusal, never a `clean` result, and the
+test parses `routes/` and `services/` to forbid the unconditional
+`{"findings": [], "status": "clean"}` literal anywhere in production code — the shape the
+agent scan used to answer before #418 and the MCP server-record scan answered until #389.
 
 ### Account credential storage
 
@@ -152,10 +194,39 @@ its floor, and it exists for development and deliberate unsafe deployments.
 not a flag another subsystem might set for unrelated reasons. Non-positive values
 are rejected in every mode, unsafe included.
 
+The anonymous health endpoints intentionally return only liveness/readiness
+status. The secured metrics interface and deployment policy are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md); do
+not add operational configuration or dependency details to public probes.
+
+### Metrics endpoint
+
+`GET /metrics` requires the canonical service-key registry and its dedicated
+`admin:metrics` scope. Scraper identity, TLS, trusted-proxy, network-policy,
+label, and cardinality-backstop requirements are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md).
+
+### Readiness diagnostics
+
 `GET /health/ready` reports the effective values under
 `effective_resource_policy`, including `unsafe_overrides_enabled`, so what a
 process is actually enforcing can be read rather than inferred from the
-environment it was supposed to have been given.
+environment it was supposed to have been given — but only when the request
+carries a valid admin-scoped bearer token against an auth-enabled deployment.
+Every other caller gets the status-only minimal contract, because `/health`
+is unauthenticated and exempt from rate limiting, and dependency/policy/backend
+detail helps an attacker size an attack.
+The same admin-gated response carries `container_limits`: the cgroup v2 memory,
+PID and CPU ceilings set at the hierarchy root. Under a private cgroup
+namespace, which is the Docker/containerd default on v2 hosts, that root is the
+container's own cgroup. `"unbounded"` means no limit is set at that level,
+though an enclosing cgroup may still impose one. `"unknown"` means nothing
+readable is there: cgroup v1, a non-namespaced host-root view, or unparseable
+content. Deployment capacity helps an attacker size a resource-exhaustion
+attempt, so `container_limits` — like the rest of the detailed payload — is
+withheld from non-admin callers, and an auth-disabled deployment serves the
+minimal contract to everyone. The engine reports these values but does not
+enforce them, and the supported Compose profiles do not set them yet (#862).
 
 ### Gaps against Stronghold's inventory
 
@@ -163,7 +234,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 | Stronghold had | Engine has | Status |
 | --- | --- | --- |
-| Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
+| Tool-argument size/depth limit (100 KiB / 32 container levels, JSON-bomb protection) | **Present** — `security/sentinel/argument_limits.py::check_argument_limits` runs in `Sentinel.pre_call` before schema validation and execution; it measures compact UTF-8 JSON bytes, checks depth iteratively, and fails closed for non-JSON values | ✅ (SPEC-082126-7a31) |
 | SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
@@ -213,7 +284,10 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
    network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
-   clients and were moved onto the pool so the seam actually reaches them.
+   clients and were moved onto the pool so the seam actually reaches them. The connector/source
+   SDK joins the census the same way: `connectors/sync.py` imports `httpx` to normalize upstream
+   failures at the engine boundary, and every request it drives rides the pooled session the
+   host hands the connector, so the seam reaches it without its own client.
 
    The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
    pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports
@@ -239,10 +313,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    lookups is not caught; and a transport that fabricates responses (`httpx.MockTransport`, which
    is how the test suite avoids the network) is not wrapped, because it opens no socket.
 
-2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
-   (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
-   a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
-3. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
+2. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
    signed VC; the current `InMemoryAuditLog` (`security/sentinel/audit.py`) records decisions but
    does not sign them. A compromised process with write access to the audit store could forge
    history.
@@ -300,6 +371,31 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
    establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
    against hostile code, which is what Tiers 1 and 2 are still for.
+   The Builder sandbox has the matching conformance evidence (#80, M2-B5, reconciled onto
+   M2-B1's canonical selector, #2241): the production `ContainerBuilderSandbox` no longer
+   carries a private Docker path — it asks the host-evidenced `maistro.sandbox` selector for
+   a backend satisfying `BUILDER_AGENT`'s vm-tier floor and **refuses**
+   (`NoSuitableBackendError`) without one. That fail-closed refusal is the lane-level proof
+   where no vm-tier backend is evidenced: CI's `sandbox-conformance` job executes exactly
+   that proof on a runner with none, then provisions a rootless userns daemon and runs the
+   real `maistro-builders` image contract on it — non-root uid, `--network=none`, enforced
+   `--memory`. `packages/maistro-bootstrap/tests/test_container_sandbox.py` instantiates the
+   production adapter everywhere: policy admission and the denylist seed boundary (proven
+   not to copy `.env`, `.git/config`, `.git/hooks` or key-shaped files, and never to
+   materialize what a worktree symlink points at), isolation until the explicit sync-back
+   (which never brings `.git` back), path escapes, exec bridging and teardown; where the
+   Kata profile is evidenced, that file's live lane asserts network default-deny and host
+   isolation against the real VM. Backend conformance and escape coverage itself lives in
+   `packages/maistro-core/tests/sandbox/` — filesystem, process, namespace, device,
+   host-socket, credential and privilege surfaces, memory/CPU/file-size exhaustion and
+   post-timeout cleanup against a real kernel, network default-deny against the namespace,
+   and the construction-level credential boundary — executed in CI by the `coverage
+   (no services)` producer with bubblewrap installed, and against the selected Kata VM by
+   its live conformance suite where that profile is evidenced. The supported-backend matrix
+   (including the builder adapter section) is
+   [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md); the
+   M2-B1 reconciliation of this lane is recorded in
+   [`docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md`](docs/testing/inventory-notes/cr1450-develop-sync-m2b1-reconciliation.md).
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced

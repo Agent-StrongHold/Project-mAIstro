@@ -43,4 +43,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/measure-ci-cost.py --pr "${{ inputs.pr }}"
+          PR_NUMBER: ${{ inputs.pr }}
+          MEASUREMENT_RUN_ID: ${{ github.run_id }}
+        # When measuring this same head, do not wait for the measurement's own
+        # job to finish. The script validates and discloses this one exclusion.
+        run: >-
+          python3 scripts/measure-ci-cost.py --pr "$PR_NUMBER"
+          --exclude-measurement-run "$MEASUREMENT_RUN_ID"

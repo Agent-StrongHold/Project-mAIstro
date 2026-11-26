@@ -49,7 +49,6 @@ owners:
 
 # SPEC-081226-bb3a: Template, Object and Provenance Semantics
 
-- **Status:** Active
 - **Date:** 2026-08-12
 - **ADR:** `ADR-081226-bb3a`
 - **Technical Area:** Reusable definitions, workspace objects, provenance, versioning
@@ -315,5 +314,6 @@ This specification does not define:
 
 - `ADR-081226-bb3a`
 - `ADR-081226-9944`
-- `docs/analysis/ECOSYSTEM-INVENTORY.md`
-- `docs/analysis/ARCHITECTURE-CONVERGENCE-MATRIX.md`
+- Historical ecosystem inventory (removed `docs/analysis/ECOSYSTEM-INVENTORY.md`; see
+  [BACKLOG.md](../../BACKLOG.md) and git history)
+- [`docs/architecture/CONVERGENCE-MATRIX.md`](../architecture/CONVERGENCE-MATRIX.md)

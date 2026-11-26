@@ -145,7 +145,12 @@ class ContextBuilder:
                 )
 
         if learning_store and identity.memory_config.get("learnings") and budget_chars > 0:
-            promoted = await learning_store.get_promoted(org_id=org_id)
+            promoted = await learning_store.get_promoted(
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
             budget_chars = _apply_learnings(
                 promoted,
                 kind="promoted",
@@ -170,6 +175,8 @@ class ContextBuilder:
             relevant = await learning_store.find_relevant(
                 user_text,
                 agent_id=agent_id,
+                user_id=user_id,
+                team_id=team_id,
                 org_id=org_id,
             )
             budget_chars = _apply_learnings(

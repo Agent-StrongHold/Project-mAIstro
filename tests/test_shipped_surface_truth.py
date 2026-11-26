@@ -36,6 +36,24 @@ def _matrix() -> dict:
     }
 
 
+def test_discovers_oauth_get_security_routes(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/auth.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/oauth/{provider}/callback")
+async def callback(request):
+    return authenticate(request)
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route, item.handler) for item in surfaces] == [
+        ("GET", "/oauth/{provider}/callback", "callback"),
+    ]
+
+
 def test_discovers_mutating_route_decorators_and_api_route_methods(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
@@ -75,6 +93,39 @@ def status(): return {}
     assert [(item.method, item.route) for item in surfaces] == [
         ("WEBSOCKET", "/tasks/{task_id}"),
     ]
+
+
+def test_discovers_starlette_add_websocket_route(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+
+async def stream(websocket):
+    await websocket.accept()
+
+app.add_websocket_route(path="/runs", endpoint=stream)
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route, item.handler) for item in surfaces] == [
+        ("WEBSOCKET", "/runs", "stream"),
+    ]
+
+
+def test_missing_registered_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+app.add_websocket_route("/runs", socket)
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified backend surface" in error and "WEBSOCKET" in error for error in errors)
 
 
 def test_missing_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
@@ -169,6 +220,87 @@ def test_discovers_literal_mutating_frontend_api_call(tmp_path: Path) -> None:
     )
 
 
+def test_discovers_variable_frontend_fetch_target(tmp_path: Path) -> None:
+    """A hoisted endpoint constant is still a shipped mutating call (#1144)."""
+    _write(
+        tmp_path / "frontend/client.js",
+        """
+const CHAT_PATH = "/api/llm/chat";
+await fetch(CHAT_PATH, { method: "POST", body: JSON.stringify(payload) });
+""",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/api/llm/chat",
+    )
+
+
+def test_discovers_frontend_fetch_with_hoisted_options(tmp_path: Path) -> None:
+    """A named RequestInit object must not hide a mutating fetch (#1144)."""
+    _write(
+        tmp_path / "frontend/client.js",
+        """
+const opts = {
+  headers: {"Content-Type": "application/json"},
+  method: "POST",
+  body: JSON.stringify(payload),
+};
+fetch("/v1/runs", opts);
+""",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/v1/runs",
+    )
+
+
+def test_unresolved_frontend_fetch_options_are_matrix_required(tmp_path: Path) -> None:
+    """An unreadable named options object may select a mutating method."""
+    _write(tmp_path / "frontend/client.js", 'fetch("/v1/runs", requestOptions);\n')
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert surface.method == DYNAMIC_METHODS
+    assert surface.route == "/v1/runs"
+
+
+def test_unresolved_frontend_fetch_target_is_matrix_required(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "frontend/client.js",
+        "await fetch(endpoint, { method: requestMethod, body: JSON.stringify(payload) });\n",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert surface.method == DYNAMIC_METHODS
+    assert surface.route.startswith("<dynamic-route:1:")
+
+
+def test_discovers_express_mutating_routes_and_dynamic_targets(tmp_path: Path) -> None:
+    """Express registrations in shipped JavaScript need the same fail-closed
+    treatment as Python routes, including a non-literal route expression."""
+    _write(
+        tmp_path / "frontend/server.js",
+        """
+const PREFIX = "/api";
+app.post(`${PREFIX}/runs`, handler);
+app.delete(ROUTE_PATH, handler);
+""",
+    )
+    surfaces = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert len(surfaces) == 2
+    routes = {surface.method: surface for surface in surfaces}
+    assert routes["POST"].route == "${PREFIX}/runs"
+    assert routes["DELETE"].route.startswith("<dynamic-route:4:")
+
+
+def test_missing_new_express_route_disposition_fails_closed(tmp_path: Path) -> None:
+    _write(tmp_path / "frontend/server.js", "app.post(ROUTE_PATH, handler);\n")
+    (tmp_path / "backend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified frontend execution surface" in error for error in errors)
+
+
 def test_missing_new_route_disposition_fails_closed(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
@@ -250,6 +382,37 @@ def test_disabled_surface_requires_owner_and_is_not_production_enabled(tmp_path:
     assert any("cannot be production_enabled" in error for error in errors)
 
 
+def test_product_status_claim_is_checked_against_matrix_surface(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/render")\ndef render(): return unavailable()\n',
+    )
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "README.md").write_text("| render | **Partial** |", encoding="utf-8")
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/render",
+            "handler": "render",
+            "disposition": "disabled",
+            "production_enabled": False,
+            "owner_issue": 286,
+            "reason": "rendering is unavailable",
+        }
+    ]
+    matrix["product_status_checks"] = [
+        {
+            "surface": "backend/routes.py:POST:/render:render",
+            "file": "README.md",
+            "contains": "| render | **TODO** |",
+        }
+    ]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("product status claim missing" in error for error in errors)
+
+
 def test_fake_success_survives_logging_and_assignment_before_the_return(tmp_path: Path) -> None:
     """The exact #1144 fixture: a literal success-shaped return preceded by
     ordinary non-branching statements must still be caught."""
@@ -267,6 +430,91 @@ def build():
     )
     [surface] = discover_backend_surfaces(tmp_path, ["backend"])
     assert surface.obvious_fake_success is True
+
+
+def test_unused_object_placeholder_does_not_hide_fake_success(tmp_path: Path) -> None:
+    """A harmless local ``object()`` placeholder is not canonical work."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    unused = object()
+    return {"status": "completed", "id": "fixture-123"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is True
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/build",
+            "handler": "build",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted fake-success fixture",
+        }
+    ]
+    assert any(
+        "production success-shaped no-op" in error for error in validate_matrix(tmp_path, matrix)
+    )
+
+
+def test_boolean_success_fixture_is_rejected_as_fake_success(tmp_path: Path) -> None:
+    """A ``success: true`` response is just as success-shaped as a status field."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    build_id = "fixture-123"
+    return {"success": True, "id": build_id}
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is True
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/build",
+            "handler": "build",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted boolean-success fixture",
+        }
+    ]
+    assert any(
+        "production success-shaped no-op" in error for error in validate_matrix(tmp_path, matrix)
+    )
+
+
+def test_arbitrary_call_assigned_to_a_local_still_counts_as_work(tmp_path: Path) -> None:
+    """The inert exception must not make real call results look like no-ops."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    result = build_artifact()
+    return {"status": "completed", "artifact": result}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is False
 
 
 def test_fake_success_detection_does_not_flag_a_handler_that_does_real_work(
@@ -333,6 +581,44 @@ router.add_api_route("/build", build, methods=["POST"])
     [surface] = discover_backend_surfaces(tmp_path, ["backend"])
     assert (surface.method, surface.route, surface.handler) == ("POST", "/build", "build")
     assert surface.obvious_fake_success is True
+
+
+def test_discovers_starlette_add_route_positional_methods(tmp_path: Path) -> None:
+    """Starlette's supported ``add_route`` form may pass methods positionally."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+
+def build():
+    log("build requested")
+    return {"status": "completed"}
+
+app.add_route("/build", build, ["POST"])
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route, surface.handler) == ("POST", "/build", "build")
+    assert surface.obvious_fake_success is True
+
+
+def test_add_route_with_a_dynamic_methods_value_is_not_dropped(tmp_path: Path) -> None:
+    """An unreadable positional methods value remains matrix-required."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+METHODS = ["POST"]
+
+def build(): return work()
+
+app.add_route("/build", build, METHODS)
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route) == (DYNAMIC_METHODS, "/build")
 
 
 def test_add_api_route_with_an_unresolvable_endpoint_is_still_discovered(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ engine checkout's .env, used by docker-compose. `_ensure_env_loaded()` fills
 that gap once per process: find the engine root (MAISTRO_REPO_ROOT env var,
 then an upward walk from CWD), load its .env for any of the above keys that
 aren't already real env vars, and rewrite the Docker-internal `litellm`
-hostname to 127.0.0.1 since that's not reachable from the host. Already-set
+hostname to the IPv4 loopback address since that's not reachable from the host. Already-set
 env vars are never overridden — this only fills gaps.
 
 Falls back to a stub response when the gateway is not configured so the TUI
@@ -32,6 +32,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,17 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _rewrite_compose_litellm_hosts() -> None:
+    """Rewrite Compose-internal ``litellm`` hostnames to loopback for host use."""
+    for key in ("LITELLM_URL", "LITELLM_BASE_URL", "LITELLM_PROXY_URL"):
+        val = os.environ.get(key, "")
+        if "://litellm:" in val:
+            os.environ[key] = val.replace(
+                "://litellm:",
+                "://127.0.0.1:",  # DevSkim: ignore DS162092 until 2027-12-31
+            )
+
+
 def _ensure_env_loaded() -> None:
     global _env_loaded
     if _env_loaded:
@@ -76,7 +90,9 @@ def _ensure_env_loaded() -> None:
     # silently picking up a real .env from a nearby engine-root checkout would
     # break that isolation. PYTEST_CURRENT_TEST is set by pytest itself for
     # every test, so this needs no coordination with any test suite's conftest.
+    # Compose-hostname rewrite still runs: it only touches already-set values.
     if os.environ.get("PYTEST_CURRENT_TEST"):
+        _rewrite_compose_litellm_hosts()
         return
 
     # Don't early-return just because a URL is exported: a user may have
@@ -101,11 +117,7 @@ def _ensure_env_loaded() -> None:
         if key in values and not os.environ.get(key):
             os.environ[key] = values[key]
 
-    # Docker Compose's internal service name — unreachable from the host.
-    for key in ("LITELLM_URL", "LITELLM_BASE_URL", "LITELLM_PROXY_URL"):
-        val = os.environ.get(key, "")
-        if "://litellm:" in val:
-            os.environ[key] = val.replace("://litellm:", "://127.0.0.1:")
+    _rewrite_compose_litellm_hosts()
 
 
 def _base_url() -> str:
@@ -116,6 +128,19 @@ def _base_url() -> str:
         or os.environ.get("LITELLM_PROXY_URL")
         or ""
     ).rstrip("/")
+
+
+def _post(
+    url: str,
+    *,
+    json: dict[str, Any],
+    headers: dict[str, str],
+    timeout: float,
+) -> httpx.Response:
+    """Post through the shared guarded sync transport."""
+    configure_outbound_policy(_base_url())
+    with sync_client(timeout=timeout) as client:
+        return client.post(url, json=json, headers=headers)
 
 
 def _api_key() -> str:
@@ -515,7 +540,7 @@ class LiteLLMCallable:
         for _attempt in range(4):  # 1 try + up to 3 429-retries
             self._throttle_if_near_limit()
 
-            resp = httpx.post(
+            resp = _post(
                 f"{_base_url()}{os.environ.get('LLM_CHAT_PATH', '/v1/chat/completions')}",
                 json=body,
                 headers={"Authorization": f"Bearer {_api_key()}"},

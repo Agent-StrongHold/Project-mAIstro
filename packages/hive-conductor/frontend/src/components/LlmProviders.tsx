@@ -1,19 +1,9 @@
 import { useEffect, useState } from "react";
+import type { LlmProvidersResponse } from "../api/entities";
+import { useAuthorization } from "../context/AuthorizationContext";
+import { apiGet, apiPost, apiPut } from "../lib/api";
+import { AuthorizationNotice } from "./Authorization";
 import { SecretField } from "./shared";
-
-interface ProviderRow {
-  name: string;
-  label: string;
-  models: string[];
-  test_model: string;
-  has_key: boolean;
-  activated: boolean;
-}
-
-interface ProvidersResponse {
-  vault_available: boolean;
-  providers: ProviderRow[];
-}
 
 // LLM provider keys are deployment-wide vault material (SPEC-072726-3439
 // Phase 4): stored via PUT /v1/providers/{name}/key (age vault, never .env),
@@ -21,14 +11,14 @@ interface ProvidersResponse {
 // models with LiteLLM and runs a one-token test completion, the install
 // journey's "first model call". Both calls need admin (config.write).
 export function LlmProviders() {
-  const [data, setData] = useState<ProvidersResponse | null>(null);
+  const [data, setData] = useState<LlmProvidersResponse | null>(null);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { can } = useAuthorization();
 
   const load = () =>
-    fetch("/v1/providers", { credentials: "same-origin" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+    apiGet<LlmProvidersResponse>("/v1/providers")
       .then(setData)
       .catch(() => setData(null));
 
@@ -42,19 +32,13 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/key`, {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: keys[name] || "" }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      await apiPut(`/v1/providers/${name}/key`, { api_key: keys[name] || "" });
       setKeys((k) => ({ ...k, [name]: "" }));
       setNotice({ kind: "ok", text: `${name}: key stored in the encrypted vault.` });
       await load();
-    } catch (e: any) {
-      setNotice({ kind: "err", text: `${name}: ${e.message || e}` });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setNotice({ kind: "err", text: `${name}: ${message}` });
     } finally {
       setBusy(null);
     }
@@ -64,25 +48,25 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/activate`, {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      const body = await apiPost<{ first_model_call?: { model?: string } }>(
+        `/v1/providers/${name}/activate`,
+      );
       const model = body.first_model_call?.model ?? "";
       setNotice({ kind: "ok", text: `${name}: activated — first model call succeeded on ${model}.` });
       await load();
-    } catch (e: any) {
-      setNotice({ kind: "err", text: `${name}: ${e.message || e}` });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      setNotice({ kind: "err", text: `${name}: ${message}` });
     } finally {
       setBusy(null);
     }
   }
 
   return (
-    <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+    <>
+      <AuthorizationNotice permission="config.write" label="LLM provider changes" />
+      <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
       <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4, marginBottom: 10 }}>
@@ -98,7 +82,7 @@ export function LlmProviders() {
         <div
           style={{
             fontFamily: "var(--mono)",
-            fontSize: 9,
+            fontSize: 12,
             marginBottom: 8,
             color: notice.kind === "ok" ? "var(--ok)" : "var(--danger)",
           }}
@@ -120,32 +104,33 @@ export function LlmProviders() {
               onChange={(next) => setKeys((k) => ({ ...k, [p.name]: next }))}
               stored={p.has_key}
               storedNote={`A key for ${p.label} is already stored. Entering a new one replaces it.`}
-              disabled={!data.vault_available || busy === p.name}
+              disabled={!can("config.write") || !data.vault_available || busy === p.name}
               className=""
               style={{ flex: 1, minWidth: 200 }}
             />
             <button
               className="btn"
               onClick={() => saveKey(p.name)}
-              disabled={!data.vault_available || !keys[p.name] || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              disabled={!can("config.write") || !data.vault_available || !keys[p.name] || busy === p.name}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               Save key
             </button>
             <button
               className="btn-primary"
               onClick={() => activate(p.name)}
-              disabled={!p.has_key || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              disabled={!can("config.write") || !p.has_key || busy === p.name}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}
             </button>
             {p.activated && (
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ok)" }}>● active</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ok)" }}>● active</span>
             )}
           </div>
         ))}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

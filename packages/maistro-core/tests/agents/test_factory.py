@@ -480,6 +480,79 @@ class TestCreateAgentsFilesystem:
         assert agents["alpha"]._agent_resolver("alpha") is agents["alpha"]
         assert agents["beta"]._agent_resolver("alpha") is agents["alpha"]
 
+    async def test_roster_allow_lists_reach_the_container_delegator(self, tmp_path: Path) -> None:
+        """The production roster must make the wired in-process path admissible."""
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
+
+        _write_agent_dir(
+            tmp_path,
+            "planner",
+            manifest_extra={"delegation": {"sub_agents": ["researcher"]}},
+        )
+        _write_agent_dir(tmp_path, "researcher")
+        delegator = A2ADelegator()
+
+        await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+
+        task_id = delegator.delegate_task(
+            "planner",
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(task_id) is not None
+
+        # Direct task/chat admissions use a reserved system principal rather
+        # than an empty ``from_agent``; the same roster bounds its targets.
+        direct_task_id = delegator.delegate_task(
+            DIRECT_SUBMISSION_AGENT,
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(direct_task_id) is not None
+
+    async def test_delegator_without_registration_surface_is_refused(self, tmp_path: Path) -> None:
+        """A configured delegator that cannot accept capabilities is refused loudly.
+
+        Reaching the factory with a delegator whose ``register_agent_capability``
+        is not callable is a composition fault, not an empty roster: the
+        roster's allow-lists would silently never project into the receipt
+        service, and every in-process delegation would be refused downstream.
+        """
+        _write_agent_dir(tmp_path, "planner")
+
+        class _OpaqueDelegator:
+            register_agent_capability = None  # present but not callable
+
+        with pytest.raises(ConfigError, match="cannot register agent capabilities"):
+            await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=_OpaqueDelegator()))
+
+    async def test_empty_roster_registers_no_direct_submission_principal(
+        self, tmp_path: Path
+    ) -> None:
+        """The reserved direct-submission principal is bounded by the loaded roster.
+
+        With no agents loaded there is nothing to bound the principal to, so it
+        must stay unregistered: a direct admission naming any target remains a
+        real refusal instead of an implicit allow-everything.
+        """
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
+
+        delegator = A2ADelegator()
+        agents = await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+        assert agents == {}
+
+        with pytest.raises(ValueError, match="no delegation capabilities"):
+            delegator.delegate_task(
+                DIRECT_SUBMISSION_AGENT,
+                "research X",
+                "planner",
+                delegation_mode=DelegationMode.ALLOW_LIST,
+            )
+
     async def test_persist_registry_invoked_when_engine_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -655,3 +728,80 @@ class TestTheBuiltinRow:
         identity alone would persist an empty soul."""
         row = factory_mod._builtin_agent_row(AgentIdentity(name="x"), "rendered", "rules")
         assert row["soul"] == "rendered"
+
+
+class TestGovernedLlmClientComposition:
+    def test_explicit_library_client_is_preserved_without_governed_composition(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+
+        llm = object()
+        assert _governed_llm_client(llm, None) is llm
+
+    def test_admitted_calls_compose_a_governed_client(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        calls = object()
+        client = _governed_llm_client(object(), calls)
+        assert isinstance(client, GovernedLLMClient)
+        assert client._calls is calls
+
+    def test_matching_governed_client_is_shared_without_reconstruction(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        calls = object()
+        client = GovernedLLMClient(calls)
+        assert _governed_llm_client(client, calls) is client
+
+    def test_conflicting_governed_authorities_refuse_composition(self) -> None:
+        from maistro.agents.factory import _governed_llm_client
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        with pytest.raises(ConfigError, match="different admitted model calls"):
+            _governed_llm_client(GovernedLLMClient(object()), object())
+
+
+class TestCreateAgentsGovernedPath:
+    async def test_configured_admitted_calls_wrap_every_agent(self, tmp_path: Path) -> None:
+        """An explicit admitted-call authority replaces the bare injected client."""
+        from maistro.capabilities.model_chat import GovernedLLMClient
+
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+        _write_agent_dir(tmp_path, "scribe")
+        calls = object()
+        kwargs = _create_agents_kwargs(tmp_path, llm=object(), admitted_calls=calls)
+
+        agents = await create_agents(**kwargs)
+
+        assert isinstance(agents["scribe"]._llm, GovernedLLMClient)
+        assert agents["scribe"]._llm._calls is calls
+
+
+class TestCreateAgentsAuditWiring:
+    """#847: the canonical audit trail reaches every constructed Agent."""
+
+    @pytest.fixture(autouse=True)
+    def _preamble(self, tmp_path: Path) -> None:
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+
+    async def test_audit_log_passed_to_every_agent(self, tmp_path: Path) -> None:
+        from maistro.security.sentinel.audit import InMemoryAuditLog
+
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        audit_log = InMemoryAuditLog()
+        kwargs = _create_agents_kwargs(tmp_path, audit_log=audit_log)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is audit_log for agent in agents.values())
+
+    async def test_audit_log_defaults_to_none(self, tmp_path: Path) -> None:
+        _write_agent_dir(tmp_path, "scribe", soul="Scribe soul")
+        kwargs = _create_agents_kwargs(tmp_path)
+
+        agents = await create_agents(**kwargs)
+
+        assert set(agents) == {"scribe"}
+        assert all(agent._audit_log is None for agent in agents.values())

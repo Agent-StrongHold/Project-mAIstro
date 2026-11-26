@@ -10,9 +10,12 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     # Tool Protocol
-    "fastmcp>=2.0",
+    "fastmcp>=3.2.0",
     # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
-    "opentelemetry-api>=1.30",
+    # Floor is the pip-audit gate's security floor: CVE-2026-126360 is fixed in
+    # 1.45.2 (2026-11 CI-repair round, #1995); opentelemetry-api ships in the
+    # runtime images, so the declared floor (not just the lock) must clear it.
+    "opentelemetry-api>=1.45.2",
     # Database
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",
@@ -39,12 +42,24 @@ dependencies = [
     # dev extra is what let the identity ImportError hide (see the wheel-imports
     # CI job).
     "maistro-canvas",
-    "temporalio>=1.27.0",
+    # 1.36.1 floor (CR1373 CI-repair round, 2026-11-16, merge-queue run
+    # 43821935433; hit on this branch too — local trivy 0.73.0 of the
+    # rebuilt maistro-rsi-runner image, 2026-11-18): the trivy leg of the
+    # container gate scans the Cargo.lock the temporalio wheel ships
+    # (site-packages/temporalio/bridge/Cargo.lock) and flags zip 8.6.0 there
+    # — CVE-2026-115905 (CRITICAL, fixed 9.0.5) and
+    # CVE-2026-115907/115908/115909 (HIGH). temporalio 1.36.1 bundles zip
+    # 9.5.1 (verified by unpacking the wheel), so the floor moves the lock
+    # past all four; every fix version satisfies the pre-existing >= 1.27
+    # floor, so this only ever affects which temporalio the lock resolves.
+    # This lane's independent evidence trail for the same finding:
+    # docs/testing/inventory-notes/cr2059-temporalio-zip-floor.md.
+    "temporalio>=1.36.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",
@@ -64,13 +79,43 @@ dev = [
     # `check-ac-state.py --run-tests` aborts on a collection error, which is
     # the loud failure the script is written to produce and still a gate that
     # cannot run. A tree this config collects is a dependency this config owns.
-    "pytest-bdd>=8.0.0,<9",
+    "pytest-bdd>=8.0.0,<10",
     "radon>=6.0",
     "vulture>=2.14",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
     "questionary>=2.0",
     "aiosqlite>=0.20",
+    # The reference extension (#951), installed editable so its own suite
+    # collects and runs from this environment (`uv run pytest
+    # extensions/reference-greeter/tests`). Workspace membership wires the
+    # checkout; this line is what puts it in the root env. The boundary the
+    # M9-A3 gates enforce is untouched: extension -> product imports stay
+    # forbidden (scripts/check-extension-imports.py), and the
+    # clean-environment proof is still the isolation fixture's
+    # (scripts/check-reference-extension.py), which builds the wheel into a
+    # venv holding none of this repository.
+    "reference-greeter",
+    # The reference gallery's four extension packages (#980), installed the
+    # same way as reference-greeter above: workspace membership + these lines
+    # put them in the root dev env so their suites collect. The boundary is
+    # unchanged — the gallery's own namespace policy plus the same two gates
+    # police what they may import, and the isolation fixture proves they
+    # build and test with nothing but their own wheels. Installation through
+    # the catalog/registry lifecycle (their actual distribution path) is
+    # proven by tests/test_reference_gallery.py, not by this editable wiring.
+    "gallery-weather-connector",
+    "gallery-unit-skill",
+    "gallery-model-adapter",
+    "gallery-renderer-pack",
+    # The extension host harness (#974), installed editable so its suite runs
+    # from this environment (`uv run pytest packages/maistro-ext-harness/tests`)
+    # and so its CLI tests can execute `python -m maistro_ext_harness` the way
+    # a third-party CI would. Stdlib-only runtime: the root dev env supplies
+    # pytest, nothing else. Like the reference extension, this is developer
+    # tooling — product code does not import it, and the namespace policy
+    # keeps extension imports pointed at the SDK root only.
+    "maistro-ext-harness",
     # A real in-process S3 server for the archive conformance suite
     # (ADR-082226-f436). Not a boto3 patch: the tests go over HTTP, because
     # #122 found six PostgreSQL defects that client-level mocking could not see.
@@ -78,6 +123,11 @@ dev = [
     "moto[s3,server]>=5.0",
     "boto3>=1.34",
     "hypothesis>=6.0",
+    # M8-A11 (#891) research: the Z3/SMT experiment for the schedule fire/skip
+    # decision runs entirely in the test tree. The solver must never appear in
+    # `packages/*/src` (research non-goal: no production runtime dependency);
+    # a source-scan guard in the experiment enforces that.
+    "z3-solver>=4.13",
     "cosmic-ray>=8.0.0",
     # THREE workflows pass `--timeout=` to pytest; only quality.yml installed
     # this ad-hoc. In mutation.yml the omission was silently catastrophic —
@@ -95,6 +145,23 @@ dev = [
     "google-re2>=1.1",
 ]
 browser = ["playwright>=1.49"]
+# The RSI runner image's fitness toolchain (Dockerfile.rsi-runner). Those
+# tools were `uv pip install`ed unlocked in that image — two runs a month
+# apart could disagree about a fitness score for reasons no commit
+# explains. Declaring them here puts their resolution in uv.lock, and the
+# image syncs them with --locked (#348). All six are load-bearing:
+# maistro_evolve.code_quality shells out to `python -m ruff|bandit|radon`,
+# `pylint`, `interrogate` and `vulture` (code_quality.py), and the coverage
+# gate drives pytest-cov — omitting one silently degrades the fitness score
+# rather than failing it.
+rsi-fitness = [
+    "coverage>=7.6",
+    "bandit>=1.8",
+    "radon>=6.0",
+    "interrogate>=1.7",
+    "vulture>=2.14",
+    "pylint>=3.3",
+]
 # NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
 # extras — several (semgrep) carry transitive pins that conflict with the app's
 # resolution. They are standalone CLI tools listed in requirements-dev-tools.txt;
@@ -114,11 +181,18 @@ s3 = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",
     "mypy>=1.14",
+    # The RSI fitness scorecard treats ruff/mypy/bandit as REQUIRED gates
+    # (#304): a runner missing one fails the candidate closed with a blocking
+    # not_run gate. The shipped runner image installs all three; the dev
+    # environment runs the same loop and suite, so bandit is declared here to
+    # match — without it every source-touching candidate would be vetoed in
+    # dev/CI for an environment reason, not a fitness reason.
+    "bandit>=1.7",
     # scripts/check-ac-state.py parses the acceptance-criteria Gherkin with the
     # real grammar, not a regex. It arrives transitively today via
     # hive-conductor's pytest-bdd, which is a different package's dependency
@@ -134,7 +208,7 @@ dev = [
     # `check-ac-state.py --run-tests` aborts on a collection error, which is
     # the loud failure the script is written to produce and still a gate that
     # cannot run. A tree this config collects is a dependency this config owns.
-    "pytest-bdd>=8.0.0,<9",
+    "pytest-bdd>=8.0.0,<10",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
     "questionary>=2.0",
@@ -146,9 +220,14 @@ dev = [
     "moto[s3,server]>=5.0",
     "boto3>=1.34",
     "hypothesis>=6.0",
+    "z3-solver>=4.13",  # same constraint as the optional-extra list: test tree only
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
     "copier>=9.17.2",
+    # M8-A10 (#890) research tool under study. NOT the unrelated legacy PyPI
+    # `crosshair` package (0.1.0.dev11, paramiko-era) — that name collision
+    # shadows crosshair-tool's own `crosshair` import package.
+    "crosshair-tool>=0.0.111",
 ]
 
 [project.scripts]
@@ -163,6 +242,103 @@ build-backend = "hatchling.build"
 # rather than search for a directory matching `maistro_workspace`.
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
+
+[tool.uv]
+# Supply-chain floor for the pip-audit gate (security.yml `Supply chain
+# (pip-audit)`). These are not production dependencies: each arrives
+# transitively through a dev tool, but the gate audits the frozen dev
+# environment (`uv pip freeze`), so a dev advisory fails it as shipped.
+# Constrain the floors in the manifest so the lock keeps them instead of
+# drifting back on the next resolve.
+constraint-dependencies = [
+    "aiohttp>=3.14.4",
+    # Same shape, two more dev-only transitive advisories (pip-audit gate,
+    # 2026-10-22, #891/#2238 round): gitpython arrives via cosmic-ray,
+    # graphql-core via moto[server]. CVE-2026-114145 is fixed in gitpython
+    # 3.2.1; CVE-2026-75507/75508 in graphql-core 3.3.0 (stable, 2026-09-27;
+    # the advisory text still names the 3.3.0rc1 fix line), and
+    # CVE-2026-119286 in 3.3.0 is fixed in 3.3.1 (pip-audit gate,
+    # 2026-11-16, #2110 CI-repair round). Test-infrastructure only; neither
+    # ships in the runtime images.
+    "gitpython>=3.2.1",
+    "graphql-core>=3.3.1",
+    # Same shape again (pip-audit gate, 2026-10-24, #1084 CI-repair round):
+    # fastmcp arrives via maistro-core's `[llm]` extra and setuptools via
+    # moto[server]. GHSA-7xgj-8392-5q4r / GHSA-vqqp-x5qm-5qp4 are fixed in
+    # fastmcp 4.1.2; GHSA-xmj3-9gf7-h52w in setuptools 84.1.0 (which still
+    # satisfies the >= 78.1.1 floor the shipped image pins). fastmcp ships in
+    # no runtime image (the `[llm]` extra is not part of any image install)
+    # and setuptools enters the images only as the Dockerfile's explicit pin,
+    # which tracks this floor.
+    "fastmcp>=4.1.2",
+    "setuptools>=84.1.0",
+    # Same shape again (pip-audit gate, 2026-10-27, CONNECT tip #2327):
+    # authlib arrives via fastmcp / browser-use; dnspython via email-validator
+    # (pydantic[email] → fastmcp). CVE-2026-96760 / 114614–114618 / 114620 are
+    # fixed in authlib 1.9.1; CVE-2026-114605 in dnspython 2.9.0 and
+    # CVE-2026-128089 in 2.9.2 (pip-audit gate, 2026-11-16, #2110 CI-repair
+    # round). Neither is a direct production pin — floors keep the frozen
+    # dev env above the advisories.
+    "authlib>=1.9.1",
+    "dnspython>=2.9.2",
+    # Same shape again (pip-audit gate, 2026-11-16, #2110 CI-repair round):
+    # joserfc arrives via authlib / fastmcp-slim / moto and ships in no
+    # runtime image (same extras reasoning as fastmcp above);
+    # CVE-2026-119284 is fixed in joserfc 1.7.6. opentelemetry-api is a
+    # direct runtime dependency (maistro-core telemetry) that DOES ship in
+    # the images; CVE-2026-126360 is fixed in 1.45.2, a patch release on the
+    # resolved 1.45.x line, so the floor tracks the advisory without moving
+    # the >= 1.30 compatibility floor in the manifests.
+    "joserfc>=1.7.6",
+    "opentelemetry-api>=1.45.2",
+    # Same shape again (Container scan + SBOM + cosign gate, PR #2389
+    # CI-repair round, run 41768658312 job 126372930414, 2026-11-04, plus
+    # develop's CR1373 round run 43821935433 against identical image
+    # contents): the maistro-engine / maistro-engine-research images carry
+    # these in the browser-use stack of the research venv (each a single
+    # consumer, none a direct production pin):
+    #
+    # - oauthlib 4.0.0 (via requests-oauthlib via google-auth-oauthlib via
+    #   browser-use) — CVE-2026-49272, authentication bypass, fixed in 4.0.1;
+    # - pyasn1 0.6.4 (via pyasn1-modules via google-auth via browser-use) —
+    #   CVE-2026-119194/195/196/197, all fixed in 0.6.5;
+    # - pypdf 6.21.2 (browser-use direct) — CVE-2026-119203..119209, fixed by
+    #   6.21.4 (119206 in 6.21.3, the rest in 6.21.4);
+    # - soupsieve 3.0.3 (via beautifulsoup4 via markdownify via browser-use) —
+    #   CVE-2026-126190, fixed in 4.0.0. PyPI never published a 4.0.0: its
+    #   4.0 release is PEP 440-equal to the trivy-named fix (4.0 == 4.0.0),
+    #   so the floor is written as the real release the DB names.
+    #
+    # Every fix version satisfies the upstream ranges already in the tree
+    # (browser-use: pypdf>=5.7.0; beautifulsoup4 4.15: soupsieve>=1.6.1;
+    # requests-oauthlib 2.0: oauthlib>=3.0.0; pyasn1-modules 0.4.2:
+    # pyasn1>=0.6.1,<0.7.0), so only the lock moves; floors keep it above
+    # the advisories on the next resolve. Nothing in packages/ or tests/
+    # imports any of the four, so the exposure is the shipped image only.
+    # (The #1995 branch landed the same four floors independently in
+    # 19d7c26e74; develop's CR1373 round supersedes it, adding the
+    # patchright/playwright floors for the grype node-binary leg below.)
+    "oauthlib>=4.0.1",
+    "pyasn1>=0.6.5",
+    "pypdf>=6.21.4",
+    "soupsieve>=4.0",
+    # Same gate, same round, the wheel-shipped binary half: the research
+    # image's grype leg (--only-fixed --fail-on high, fresh DB per run) also
+    # flags the Node binary that patchright/playwright wheels ship as their
+    # driver: node 24.21.0 carries CVE-2026-111497 (CRITICAL, KEV, fixed
+    # 24.22.1) and HIGH CVE-2026-105482/105483/106069. patchright 1.64.4
+    # bundles node 24.22.1 and playwright 1.65.2 bundles node 26.13.1 (both
+    # verified on the CR1373 round by unpacking the wheels and running the
+    # bundled driver); browser-use declares patchright>=1.52.5 /
+    # playwright>=1.52.0 uncapped, so the floors only move the lock.
+    # Follow-up (#2356, 2026-11-20): 24.22.1 itself gained seven HIGHs
+    # fixed in 24.22.3 / 26.13.1; no newer patchright wheel exists, so
+    # Dockerfile.research overlays node:26.13.1-bookworm-slim onto
+    # patchright/driver/node until upstream republishes (donor line moved
+    # from 24.22.3 to 26.13.1 by Dependabot #2431).
+    "patchright>=1.64.4",
+    "playwright>=1.65.2",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -187,6 +363,8 @@ src = [
     "packages/maistro-evolve/src",
     "packages/maistro-rsi/src",
     "packages/maistro-design/src",
+    "packages/maistro-ext-sdk/src",
+    "packages/maistro-ext-harness/src",
 ]
 
 [tool.ruff.lint]
@@ -201,6 +379,17 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
 # side effect of a floor-alignment PR. Tracked as follow-up, not silently
 # dropped.
 ignore = ["E501", "UP046", "UP047"]
+# Vulture owns these suppression codes; Ruff must preserve the inline review
+# markers without treating its external analyzer's codes as malformed.
+# V105 (unused method) backs the Pydantic-dispatched ClaimRule
+# _require_evidence_backing validator marker that PR #1663 landed in
+# maistro_design/consistency.py; the round-4 merge resolution dropped it
+# believing only the removed creative_brief.py used it. It also covers
+# #773's CreativeBrief contract API: retained, test-consumed now,
+# production consumers arrive with #774/#775. V103 (unused function) backs
+# the FastAPI route-handler markers in maistro_server/api/backlog.py (#98):
+# the decorator registers the handler, which name-level scanning cannot see.
+external = ["V102", "V103", "V105", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
@@ -212,9 +401,9 @@ max-complexity = 10
 
 [tool.pytest.ini_options]
 # --strict-markers (#391): an unregistered marker is a claim no gate can
-# read. `ac`, `contract`, and `scope` below are the registered set; anything
-# else a test carries is a typo or an undocumented axis, and both fail loudly
-# here rather than passing silently as inert decoration.
+# read. `ac`, `contract`, `scope`, and `timeout` below are the registered set;
+# anything else a test carries is a typo or an undocumented axis, and both
+# fail loudly here rather than passing silently as inert decoration.
 addopts = "--import-mode=importlib --strict-markers"
 testpaths = [
     "packages/maistro-core/tests",
@@ -226,6 +415,10 @@ testpaths = [
     "packages/maistro-evolve/tests",
     "packages/maistro-rsi/tests",
     "packages/maistro-design/tests",
+    # The public extension SDK (#949). Its suite is small and dependency-light
+    # by contract — the SDK imports no maistro module — so it rides the same
+    # default run.
+    "packages/maistro-ext-sdk/tests",
     # The Conductor app's own suite (#267). Absent until now, which meant
     # `scripts/check-ac-state.py::configured_test_roots()` -- which reads this
     # list -- never scanned it, so a `@pytest.mark.ac` marker in the product
@@ -246,6 +439,12 @@ markers = [
     "ac: Acceptance Criteria traceability (SPEC-NNN/AC-N)",
     "contract: ADR-032 contract axis (boundary | behavioral | cross-service)",
     "scope: test scope axis (unit | integration | e2e | property)",
+    # Registered even when pytest-timeout is absent: hive CI's system-python
+    # step installs backend/requirements.txt without the plugin, and
+    # --strict-markers would otherwise fail collection on @pytest.mark.timeout.
+    # With the plugin present (uv --extra dev / Coverage gate), the mark still
+    # sets the per-test ceiling.
+    "timeout: per-test wall-clock ceiling (pytest-timeout); inert without the plugin",
 ]
 pythonpath = [
     "packages/maistro-core/src",
@@ -256,6 +455,7 @@ pythonpath = [
     "packages/maistro-bootstrap/src",
     "packages/maistro-rsi/src",
     "packages/maistro-evolve/src",
+    "packages/maistro-ext-sdk/src",
     ".",
 ]
 
@@ -303,7 +503,7 @@ ignore_missing_imports = true
 # type-only dependency on a package the base install deliberately omits would
 # undo the point of making it optional.
 [[tool.mypy.overrides]]
-module = ["yaml", "asyncpg", "asyncpg.pool", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
+module = ["yaml", "asyncpg", "asyncpg.pool", "asyncpg.exceptions", "boto3", "botocore", "botocore.*", "PIL", "PIL.*", "pptx", "pptx.*"]
 ignore_missing_imports = true
 
 # bip-utils is a declared runtime dep, but publishes no py.typed marker and has no
@@ -323,6 +523,21 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
+
+# cosmic-ray ships no py.typed marker and exists only in the dev
+# toolchain (the mutation gate's dependency, PR #1994). The single module that
+# imports it (maistro.mutation_operator_provider, loaded by the
+# cosmic_ray.operator_providers entry point) is reached by no runtime import
+# graph; this override covers the missing stubs for that dev-only surface, and
+# the disallow_subclassing_any relief below is the only way to implement
+# cosmic-ray's untyped Operator base inside a strict scan.
+[[tool.mypy.overrides]]
+module = ["cosmic_ray", "cosmic_ray.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["maistro.mutation_operator_provider"]
+disallow_subclassing_any = false
 
 # aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note
 # above: this covers missing *stubs*, not a missing install. Deliberately not
@@ -355,7 +570,17 @@ ignore_missing_imports = true
 # together against ONE dependency set instead of leaving each package (and,
 # before F1, the conductor's requirements.txt) to resolve independently.
 [tool.uv.workspace]
-members = ["packages/*"]
+# packages/* is the product; extensions/* are third-party-shaped packages that
+# must never import it (#951). The reference extension joins the workspace only
+# so ONE lockfile resolves it alongside the product — membership is build
+# wiring, not a license to import product internals (the namespace policy and
+# its gates still apply, and the isolation fixture still proves the extension
+# builds and tests with nothing but its own wheel).
+members = [
+    "packages/*",
+    "extensions/reference-greeter",
+    "extensions/reference-gallery/packages/*",
+]
 
 # Workspace-root sources are inherited by every member, so a member depending on
 # e.g. maistro-core gets the local checkout rather than an index lookup for a
@@ -379,3 +604,22 @@ maistro-turing = { workspace = true }
 # Listed so any member (or a developer) that depends on it resolves to this
 # checkout. It is not published to PyPI — see packages/hive-conductor/pyproject.toml.
 hive-conductor = { workspace = true }
+# The reference extension (#951): a workspace member outside packages/, named
+# here because uv requires a source entry for every member a root dependency
+# names. Not a product package — the extension namespace policy
+# (extensions/namespace-policy.json) governs what it may import.
+reference-greeter = { workspace = true }
+# The reference gallery's extension packages (#980): workspace members
+# outside packages/, named here because uv requires a source entry for every
+# member a root dependency names. Not product packages — the gallery's own
+# namespace policy (extensions/reference-gallery/namespace-policy.json)
+# governs what they may import.
+gallery-weather-connector = { workspace = true }
+gallery-unit-skill = { workspace = true }
+gallery-model-adapter = { workspace = true }
+gallery-renderer-pack = { workspace = true }
+# The extension host harness (#974): a workspace member under packages/, named
+# here because the root dev extra installs it (same shape as reference-greeter
+# above). Developer tooling with a stdlib-only runtime — see
+# packages/maistro-ext-harness/README.md for the boundary it keeps.
+maistro-ext-harness = { workspace = true }

@@ -31,7 +31,6 @@ history:
 
 # ADR-022: Hardware Signing Devices — Ledger / Trezor / YubiKey / Mobile
 
-**Status:** Proposed
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed)
 

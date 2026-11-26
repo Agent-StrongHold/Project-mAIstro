@@ -1,0 +1,106 @@
+# Domain pack: product (M7-A4, #793) — thick catalog (M7-A9, #985)
+# One of three packs of the same loop — never a product identity. Canvas is
+# an execute backend binding here (visuals), alongside Builders.
+pack_id: product
+# Pack release version (M9-F3, #968): the identity Workspace activations
+# are recorded against; bump it when the manifest's defaults change.
+# 2.0.0: the thin #793 example catalog was replaced by the thick
+# job-to-be-done catalog (#985) — dimension ids changed, so this is a major
+# release, not a patch.
+version: 2.0.0
+name: Product Pack
+summary: >-
+  Positioning, audience, and an artifact plan explored before produce; copy,
+  decks, and posters produced through Builders and Canvas, then evaluated and
+  refined on the same canonical loop as every other pack.
+explore_focus:
+  - positioning
+  - audience
+  - artifact_plan
+execute_backends:
+  - builders
+  - canvas
+artifact_kinds:
+  - positioning_statement
+  - audience_profile
+  - artifact_plan
+  - ad_copy
+  - deck
+  - poster
+  - product_spec
+# The judged artifact: the product job-to-be-done spec (M7-A9, #985).
+# Visuals, if any, bind Canvas; the spec is the judged object.
+artifact_payload_kind: product_spec
+rubric_dimensions:
+  # Product job-to-be-done v1 (#985). Weights sum to exactly 1; the scale is
+  # 1–5 with the named low/high anchors below; the method defaults to
+  # model_judge — a dimension marked `human` or `deterministic` says so.
+  - dimension_id: job
+    name: Job clarity
+    description: The job the product is hired for is named, not implied.
+    weight: 0.22
+    low_anchor: Vague ambition
+    high_anchor: Named job
+  - dimension_id: metric
+    name: Success metric
+    description: Success is a falsifiable metric, not a vibe.
+    weight: 0.20
+    low_anchor: Vibes KPI
+    high_anchor: Falsifiable
+  - dimension_id: scope
+    name: Fenced non-goals
+    description: What the product will not do is fenced as hard as what it will.
+    weight: 0.18
+    low_anchor: Scope soup
+    high_anchor: Hard fence
+  - dimension_id: surface
+    name: Surface honesty
+    description: Every surface is shaped by the job, not by chrome habit.
+    weight: 0.16
+    low_anchor: Chrome for chrome
+    high_anchor: Job-shaped
+  - dimension_id: empty
+    name: Empty/error states
+    description: Empty and error states guide the next step instead of stalling.
+    weight: 0.12
+    low_anchor: Blank page
+    high_anchor: Guided
+  - dimension_id: authority
+    name: Authority trail
+    description: Every claim on the artifact is auditable to its source.
+    weight: 0.12
+    low_anchor: Anonymous
+    high_anchor: Auditable
+fence_points:
+  - explore.accept
+  - evaluate.accept
+graph:
+  name: product-loop
+  entry_node: explore.positioning
+  nodes:
+    - node_id: explore.positioning
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.audience
+      kind: pack.explore
+      phase: explore
+    - node_id: explore.artifact_plan
+      kind: pack.explore
+      phase: explore
+      fenced: true
+    - node_id: execute.produce
+      kind: pack.execute
+      phase: execute
+    - node_id: evaluate.rubric
+      kind: pack.evaluate
+      phase: evaluate
+      fenced: true
+    - node_id: refine.revise
+      kind: pack.refine
+      phase: refine
+  edges:
+    - [explore.positioning, explore.audience]
+    - [explore.audience, explore.artifact_plan]
+    - [explore.artifact_plan, execute.produce]
+    - [execute.produce, evaluate.rubric]
+    - [evaluate.rubric, refine.revise]

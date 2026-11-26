@@ -1,0 +1,4 @@
+{
+  "_comment": "Generated-test contracts for byte-identical test files (#396). scripts/check-test-duplicates.py fails on any content hash shared by more than one test file under a gated suite root — unless the whole group is listed here, file-for-file, as the output of a real generator. One entry per group: `id` (stable slug), `generator` (what produces the files), `files` (every file in the group, repo-relative; a contract covering a strict subset of a group approves nothing), and `justification` (why the duplication must exist rather than one authoritative copy). An entry with fewer than two files, or a group only partially covered, fails the gate like no contract at all.",
+  "contracts": []
+}

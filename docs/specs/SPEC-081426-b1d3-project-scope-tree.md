@@ -53,7 +53,6 @@ owners:
 
 # SPEC-081426-b1d3: Project Scope Tree
 
-- **Status:** Active
 - **Date:** 2026-08-14
 - **ADR:** `ADR-081426-b1d3`
 

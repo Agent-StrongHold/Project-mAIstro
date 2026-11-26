@@ -20,9 +20,16 @@ a query rather than a second kind of Run.
 arrive orders of magnitude more often than task submissions, so the shared
 store bound (`MAX_IN_MEMORY_RUNS`) is the wrong instrument: at chat volume it
 would evict *task* Runs to make room for chat ones. This admitter therefore
-keeps its own small window of the Runs it admitted and deletes the oldest
-terminal ones as it overflows, which holds on any store rather than only the
-one that happens to prune.
+keeps its own small window of the Runs it admitted and deletes the oldest ones
+as it overflows — terminal Runs, and stalled non-terminal ones with nothing
+left living in them. A Run still CREATED/QUEUED is mid-admission, which the
+admission path compensates itself; a Run the dispatching seam has marked is
+awaiting its dispatch; a Run holding an Attempt inside its lease is executing.
+Everything else — a stranded admission, a lapsed lease, a finished Attempt
+under a Run nobody closed — is a stall, and stalls are what the window
+forgets: the lease, not the Run's status, is what says a turn is alive, and
+it is the liveness signal the spine already trusts
+(`recover_abandoned_attempts` reclaims on exactly its expiry).
 
 The window is per-process and starts empty after a restart, so a durable store
 can still hold chat Runs that nothing will sweep. That gap is named in the ADR
@@ -35,19 +42,23 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from collections.abc import Container
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from maistro.runs.access import RunAuthorization
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
-from maistro.runs.model import TERMINAL_RUN_STATUSES
+from maistro.runs.lifecycle import lease_is_expired
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
-from maistro.runs.sources import CHAT_SOURCE
+from maistro.runs.retention_scope import WorkspaceRetentionScope
+from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
+from maistro.runs.store import RunIntegrityError
 from maistro.runs.task_kinds import resolve_direct_work
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
     from maistro.projects.scope_store import ProjectScopeStore
-    from maistro.runs.model import Run
     from maistro.runs.store import RunStore
 
 #: Provenance keys correlating the Run back to the conversation it belongs to.
@@ -90,6 +101,13 @@ TIMEOUT_FAILURE = "timeout"
 #: above, and for the same reason: the exception that interrupted admission is
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
+
+#: What a compensated Run records when admission reached RUNNING durably but
+#: nothing ever executed under it (#338). Distinct from `ADMISSION_INCOMPLETE`:
+#: admission itself finished here -- what never started is the physical
+#: Attempt, because the process died between `_admit_chat_turn` returning and
+#: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun.
+EXECUTION_NEVER_STARTED = "execution_never_started"
 
 
 def failure_category(exc: BaseException) -> str:
@@ -150,6 +168,7 @@ class ChatRunAdmitter:
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
         retention: RetentionPolicy | None = None,
         archive: ArchivePolicy | None = None,
+        share_window_with: ChatRunAdmitter | None = None,
     ) -> None:
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -169,20 +188,41 @@ class ChatRunAdmitter:
         # Insertion-ordered, so the oldest admitted Run is the first candidate
         # to forget. Holding ids rather than Runs keeps the window itself cheap
         # — the Run is read back from the store only when it is a candidate.
-        self._window: OrderedDict[str, None] = OrderedDict()
+        # A multi-Workspace composition can share this budget, never deletion
+        # authority: every entry carries the admitter whose Workspace owns it.
+        self._window: OrderedDict[str, ChatRunAdmitter] = OrderedDict()
+        # Runs the dispatching seam has admitted and will dispatch imminently.
+        # Between admission returning and the turn's Attempt existing, a Run
+        # shows RUNNING with nothing under it — indistinguishable, to a sweep,
+        # from a turn whose dispatch never comes. The seam says which is which:
+        # `route_request` marks its Run while the Run is still QUEUED and
+        # releases it when the turn closes, and the window shields a marked
+        # Run. A live turn is then bounded by how many turns can be in flight,
+        # not by the window; an admission nobody will dispatch is never
+        # marked, and is evictable like any other abandonment.
+        self._dispatch_pending: set[str] = set()
         # One sweep at a time. Two overlapping admissions would otherwise both
         # snapshot the window, both await deletion of the same terminal Run,
         # and the loser would find its key already gone — an error raised after
         # a new Run had already been created, so the caller got no run_id for a
         # Run that then sat CREATED forever.
         self._sweep_lock = asyncio.Lock()
+        if share_window_with is not None:
+            self._share_window(share_window_with)
         # The durable half of the same policy (#132). The window above is
         # per-process and starts empty after a restart, so on a durable store a
         # chat Run admitted by a process that has since exited is one nothing
         # would ever sweep. Giving the Run a deadline at admission puts the
         # answer on the row, where a later process can act on it.
         self._retention = retention if retention is not None else RetentionPolicy()
-        self._sweeper = RunRetentionSweeper(run_store, self._retention)
+        # The admitter's own Workspace is the sweep's whole deletion authority
+        # (#1175): this sweeper can never purge another Workspace's expired
+        # Runs, however shared the store underneath is.
+        self._sweeper = RunRetentionSweeper(
+            run_store,
+            self._retention,
+            scope=WorkspaceRetentionScope(workspace_id=self._workspace_id),
+        )
         # The cold half of the same clock (#273). Deliberately a second
         # sweeper rather than a branch inside the first: archiving and
         # purging select disjoint populations (ADR-082226-f436 decision
@@ -191,6 +231,14 @@ class ChatRunAdmitter:
         # Inert unless a deployment names a horizon, and inert on a store
         # that cannot archive.
         self._archive_sweeper = RunArchiveSweeper(run_store, archive)
+
+    def _share_window(self, other: ChatRunAdmitter) -> None:
+        """Join one process budget while retaining this admitter's scope."""
+        if other._runs is not self._runs or other._max_retained != self._max_retained:
+            raise ValueError("a shared chat window requires the same store and max_retained")
+        self._window = other._window
+        self._dispatch_pending = other._dispatch_pending
+        self._sweep_lock = other._sweep_lock
 
     @property
     def retention(self) -> RetentionPolicy:
@@ -204,8 +252,35 @@ class ChatRunAdmitter:
 
     @property
     def retained(self) -> int:
-        """How many admitted chat Runs this process is still tracking."""
+        """How many chat Runs the whole (possibly shared) window tracks."""
         return len(self._window)
+
+    def mark_dispatch_pending(self, run_id: str) -> None:
+        """Shield one admitted Run from the window until its dispatch settles.
+
+        For the dispatching seam (`Container.route_request`), which marks its
+        Run in the moment between the Run's QUEUED and RUNNING transitions —
+        before any sweep can observe it RUNNING with no Attempt under it — and
+        releases the mark when the turn closes. The mark must never outlive
+        the dispatch it describes: every release sits on the seam's own exits,
+        and a process death clears the set with the window that reads it.
+        """
+        self._dispatch_pending.add(run_id)
+
+    def release_dispatch_pending(self, run_id: str) -> None:
+        """Drop the dispatch shield; the Run stands on its lease and status."""
+        self._dispatch_pending.discard(run_id)
+
+    async def sweep(self) -> int:
+        """Re-apply the window after a Run becomes terminal.
+
+        Admission can only sweep Runs that are eligible when a new Run
+        arrives. The canonical chat execution seam terminalizes after
+        dispatch, so it calls this hook as well; otherwise a final burst that
+        ends with no following admission would leave completed Runs beyond
+        the policy window until the next turn.
+        """
+        return await self._sweep()
 
     async def admit(
         self,
@@ -216,6 +291,7 @@ class ChatRunAdmitter:
         intent_hint: str = "",
         known_task_types: Container[str] | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
     ) -> Run:
         """Admit one chat turn as a Run over the trivial one-node Graph.
 
@@ -229,8 +305,10 @@ class ChatRunAdmitter:
         contradicting what happened, which is worse than one that says the
         agent was not yet chosen.
 
-        Binding the *actually dispatched* agent onto the Run needs the Conduit
-        to report its selection, which is #142's convergence.
+        The Run deliberately keeps this admission-time fact as `deferred`. The
+        Conduit reports the agent it actually dispatches, and #223 records that
+        execution-time identity on the Attempt rather than rewriting this
+        provenance after admission (ADR-082526-7f02).
         """
         description = last_user_message(messages) or DEFAULT_TURN_NAME
         hint = intent_hint.strip()
@@ -261,11 +339,38 @@ class ChatRunAdmitter:
             parameters=parameters,
             description=description,
             actor_principal_id=actor_principal_id,
+            authorization=authorization,
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
-        self._window[run.run_id] = None
-        await self._sweep()
+        # Keep the just-created identity in hand: a second store read here
+        # could fail/cancel before the caller learns which Run to compensate.
+        await self.track(run)
+        return run
+
+    async def track(self, run: Run | str) -> int:
+        """Record a chat Run on this window and re-apply it.
+
+        ``admit`` creates the Run and then tracks it. A seam that has to
+        build its own Graph — Turing's durable chat turn — records the Run
+        here instead of keeping a second retention policy. The shields are
+        this admitter's: dispatch-pending, still CREATED/QUEUED, or an
+        Attempt inside its lease. A non-terminal status by itself is not one.
+
+        Internal composition may pass the canonical Run returned by admission
+        to avoid a fallible second read before exposing its identity. An ID is
+        resolved and validated here. Neither form grants deletion authority:
+        eviction always re-reads and validates the persisted Run. This is not
+        an API for accepting arbitrary serialized Run snapshots from users.
+        """
+        if isinstance(run, str):
+            stored = await self._runs.get_run(run)
+            if stored is None:
+                raise RunIntegrityError("cannot track a missing chat Run")
+            run = stored
+        self._validate_tracked_run(run)
+        self._window.setdefault(run.run_id, self)
+        forgotten = await self._sweep()
         # Opportunistic, and deliberately after the Run is safely created: the
         # sweep is bounded and rate-limited by the policy, it swallows its own
         # errors, and a turn is never refused because retention could not run.
@@ -277,16 +382,22 @@ class ChatRunAdmitter:
         # deadline, which makes it purge-eligible and therefore never
         # archive-eligible. Admission is the clock here, not the subject.
         await self._archive_sweeper.maybe_sweep()
-        return run
+        return forgotten
 
     async def _sweep(self) -> int:
-        """Forget the oldest terminal chat Runs above the retention window.
+        """Forget the oldest chat Runs above the retention window.
 
-        Returns how many were forgotten. A non-terminal Run at the front is
-        skipped, not deleted and not counted against the window's head: work in
-        flight keeps its identity however old it is, and a window full of live
-        Runs therefore grows rather than eating them — the same failure the
-        store's own bound chooses, and for the same reason.
+        Returns how many were forgotten. A non-terminal Run is forgotten like
+        any other once nothing under it is executing any more, and skipped
+        only while a turn could still be living in it: dispatch-pending (the
+        seam admitted it and has not settled its dispatch), still
+        CREATED/QUEUED (mid-admission, which the admission path compensates
+        itself), or holding an Attempt inside its lease. The stall shapes — a
+        stranded admission with no Attempt, a finished Attempt under a Run
+        nobody closed, a lapsed lease — all leave a Run that will never
+        terminalize on its own, and a window that shields every non-terminal
+        Run grows without limit exactly when the process is misbehaving,
+        which is when it must not.
         """
         forgotten = 0
         async with self._sweep_lock:
@@ -295,21 +406,84 @@ class ChatRunAdmitter:
                 # window as they go, so a saved count would sweep too far.
                 if len(self._window) <= self._max_retained:
                     break
-                run = await self._runs.get_run(run_id)
-                if run is None:
-                    # Already gone — another sweep, or the store's own bound.
-                    if self._window.pop(run_id, None) is not None:
-                        forgotten += 1
-                    continue
-                if run.status not in TERMINAL_RUN_STATUSES:
-                    continue
-                await self._runs.delete_run(run_id)
-                # `pop`, not `del`: the lock makes a concurrent sweep
-                # impossible, but a caller may also have deleted this Run
-                # directly, and a sweep must not fail over work it wanted done.
-                if self._window.pop(run_id, None) is not None:
+                owner = self._window[run_id]
+                if await owner._forget_if_eligible(run_id):
+                    self._window.pop(run_id, None)
                     forgotten += 1
         return forgotten
+
+    def _validate_tracked_run(self, run: Run) -> None:
+        """Refuse foreign Workspace or non-chat identities before deletion."""
+        if run.workspace_id != self._workspace_id:
+            raise ValueError("chat Run is outside the admitter's Workspace")
+        if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+            raise ValueError("only chat Runs can enter the chat retention window")
+
+    async def _forget_if_eligible(self, run_id: str) -> bool:
+        """Apply this Workspace's canonical shields and deletion authority."""
+        run = await self._runs.get_run(run_id)
+        if run is None:
+            return True  # Already gone, including the store's own bound.
+        self._validate_tracked_run(run)
+        terminal = run.status in TERMINAL_RUN_STATUSES
+        if not terminal and await self._a_turn_could_still_live_here(run_id, run):
+            return False
+        try:
+            # Only abandoned Runs need force; the store still refuses a parent
+            # with child Runs. A protected old Run must not strand newer ones.
+            await self._runs.delete_run(run_id, force=not terminal)
+        except RunIntegrityError:
+            return False
+        return True
+
+    async def _a_turn_could_still_live_here(self, run_id: str, run: Run) -> bool:
+        """Whether a non-terminal Run is shielded from the window.
+
+        Three shields, each answering "could a turn still be living in this
+        Run?" with a signal the spine already trusts, never with the status
+        byte alone — that is the test the pre-repair sweep used, and it is
+        what let stalled turns hold the window open forever.
+
+        - **Dispatch-pending**: the seam admitted this Run and its dispatch
+          has not settled yet. `route_request` marks between the Run's QUEUED
+          and RUNNING transitions, so a sweep never observes the RUNNING,
+          Attempt-less, unmarked moment.
+        - **Still CREATED/QUEUED**: mid-admission, or an admission its caller
+          has not finished. The admission path owns these states and
+          compensates its own — a failed admission cancels a CREATED/QUEUED
+          Run on the spot — so the window neither evicts them nor owes them
+          a bound.
+        - **Executing**: an open Attempt inside its lease. A *finished*
+          Attempt and a *lapsed* lease are stalls, not turns, and do not
+          shield — see `_turn_is_executing`.
+        """
+        if run_id in self._dispatch_pending:
+            return True
+        if run.status in (RunStatus.CREATED, RunStatus.QUEUED):
+            return True
+        return await self._turn_is_executing(run_id)
+
+    async def _turn_is_executing(self, run_id: str) -> bool:
+        """Whether anything under this Run is still executing inside its lease.
+
+        The chat executor leases every Attempt it creates and renews it while
+        the turn runs (#1170), so an open Attempt with an unexpired lease is
+        work in flight. A *finished* Attempt does not shield its Run — that is
+        a turn whose executor died between the Attempt completing and the Run
+        closing, which is a stall, not a turn. Neither does an expired lease,
+        by the same rule `recover_abandoned_attempts` reclaims on. An open
+        Attempt with no lease at all shields: a deployment that opted its chat
+        executor out of leases has no better signal, and the conservative
+        reading is the one that never deletes possibly-live work.
+        """
+        moment = datetime.now(UTC)
+        for node_run in await self._runs.list_node_runs(run_id):
+            for attempt in await self._runs.list_attempts(node_run.node_run_id):
+                if attempt.status not in TERMINAL_ATTEMPT_STATUSES and not lease_is_expired(
+                    attempt, moment
+                ):
+                    return True
+        return False
 
     async def _resolve_project_id(self) -> str:
         if self._project_id is not None:
@@ -320,6 +494,14 @@ class ChatRunAdmitter:
         self._project_id = root.project_id
         return self._project_id
 
+    async def admission_scope(self) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding admissions land in.
+
+        The authenticated boundary reads this to scope a ``RunAuthorization``
+        without reaching into private resolution state.
+        """
+        return self._workspace_id, await self._resolve_project_id()
+
 
 __all__ = [
     "ADMISSION_INCOMPLETE",
@@ -327,6 +509,7 @@ __all__ = [
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
+    "EXECUTION_NEVER_STARTED",
     "MAX_RECORDED_ANSWER_CHARS",
     "MAX_RETAINED_CHAT_RUNS",
     "REQUEST_ID_KEY",

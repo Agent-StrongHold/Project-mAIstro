@@ -14,6 +14,15 @@ PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "contract-markers"
 METRIC_DEFINITION_VERSION = "1"
 
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated implementation. The implementation's PyYAML front-matter parsing
+#: is an external dependency; its version is dependency metadata, deliberately
+#: not this scanner's implementation identity.
+ANALYZER_MANIFEST = (
+    "scripts/check-contract-markers-provenance.py",
+    "scripts/check_contract_markers_impl.py",
+)
+
 
 def _load(path: Path, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -30,6 +39,14 @@ def _load(path: Path, name: str) -> ModuleType:
         del sys.modules[name]
         raise
     return module
+
+
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
 
 
 def _categories(payload: object) -> dict[str, dict[str, object]]:
@@ -59,6 +76,7 @@ def main() -> int:
     candidate_new, candidate_stale, candidate_unexplained = checker.compare(findings, candidate)
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
         trusted_payload = trusted_ref.loads(
             default={"metric_definition_version": METRIC_DEFINITION_VERSION, "categories": {}}
@@ -92,6 +110,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="contract front matter + pytest marker AST",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{sum(len(entry.get('entries', [])) for entry in trusted.values())} reviewed gap(s)",
             new_value=f"{len(findings)} current gap(s)",

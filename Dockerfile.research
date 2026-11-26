@@ -1,7 +1,7 @@
 # maistro-engine RESEARCH worker image.
 #
 # The browser surface (browser-use + Playwright + Chromium) that used to live in
-# the main API image (Dockerfile) was split out here — it was "the single largest
+# the main API image (Dockerfile) was split out here — it is "the single largest
 # remaining CVE source", and Chromium needs a glibc + X-libs base, so it can't go
 # on the Wolfi/distroless API image. This is its deliberately-isolated home.
 #
@@ -9,51 +9,225 @@
 #   docker build -f Dockerfile.research -t maistro-engine-research .
 # maistro's browser client lazy-imports browser_use, so the main API image boots
 # fine without it and raises a clear error if the tool is invoked there.
+#
+# Dependency contract (#348): everything Python in this image comes from the
+# committed uv.lock. The builder exports the locked requirement set for
+# maistro-server plus core's observability and browser extras and installs it
+# with --require-hashes, so exact versions AND hashes are enforced:
+#   --locked  fails the build on lock-vs-pyproject drift;
+#   --require-hashes
+#             fails the build on an unresolvable locked artifact instead of
+#             silently installing whatever the index serves;
+#   --no-config
+#             the install consumes the export and nothing else. The root
+#             pyproject.toml carries a `constraint-dependencies` floor
+#             (aiohttp>=3.14.4 — the CVE-2026-111064 floor the pip-audit
+#             gate needs over the dev environment), and `uv pip install` run
+#             inside the project folds that floor into the install request.
+#             `--require-hashes` rejects an unpinned requirement, so the
+#             build would fail on a floor for a package this image does not
+#             ship aiohttp for. The floor still binds where it belongs: `uv
+#             lock` and `uv sync` read the manifest, and the lock is what
+#             this image installs;
+#   --no-dev
+#             dev tooling never ships;
+#   --no-emit-workspace
+#             third-party pins only; the workspace members are installed from
+#             the copied sources with --no-deps (a local wheel build, not a
+#             dependency resolution).
+# This replaces the previous `pip install ./packages/... "browser-use>=0.1.40"`
+# lines, which re-resolved at build time — the browser stack (200+ transitives)
+# was whichever snapshot PyPI served that day, while the scanners audited the
+# lock. browser-use, playwright and openai now resolve through core's `browser`
+# extra (its tool lazy-imports all three), so the shipped set is the locked set.
+#
+# The bip-utils extra is deliberately NOT selected here, exactly as before
+# #348: this image shipped core[llm,sandbox,observability] and nothing else.
+# That extra drags in pytoniq-core-fork, whose wheel installs a generic
+# top-level `examples` namespace package — the payload the shipped images
+# prune (#406). This image does not prune (it has no bip-utils stack to
+# prune), so selecting the extra here would ship that namespace unpruned.
+# The engine image is the one that selects it, and it prunes in the same layer
+# it asserts.
+
+# patchright 1.64.4 still ships node 24.22.1 as its Playwright-driver binary.
+# Grype 0.116.0 (`--only-fixed --fail-on high`, security.yml #2356 tip
+# 3e6a2c8 job 136030372016) flags seven HIGHs in that binary
+# (CVE-2026-126051/123865/123866/123874/123863/123872/123864; fixed in
+# 24.22.3 / 26.13.1). playwright 1.65.2 already ships the fixed 26.13.1
+# line; no newer patchright wheel is on PyPI as of 2026-11-20. Until
+# upstream republishes, overwrite only the patchright driver with the
+# digest-pinned Node 26.13.1 binary from the official glibc image (this
+# runtime is Debian slim, so the musl alpine build is the wrong ABI).
+# The donor line moved from 24.22.3 to 26.13.1 with the Dependabot bump
+# (#2431); both lines carry the same seven fixes, so only the donor
+# version annotation and the assertion below change.
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-driver-patch
 
 # ─── Build stage ───────────────────────────────────────
-# Tip: pin by digest for reproducibility, e.g. python:3.12-slim@sha256:<digest>,
-# and rebuild on a schedule so security patches are picked up.
-FROM python:3.12-slim AS builder
+# Digest-pinned (#349): python:3.12-slim resolved to this index digest on
+# 2026-10-24; refresh via Dependabot and update quality/image-pins.json.
+#
+# #2430 evaluated Dependabot's 3.12 -> 3.15 index bump and rejected it
+# (2026-11-21, the same wheel ceiling as the engine image's #2136
+# disposition, re-verified on this lock): the `uv export --locked …
+# --require-hashes` install below selects psycopg-binary 3.3.4, which
+# ships no cp315 wheel and no sdist at all, so the install fails closed
+# whenever the venv line is bumped to 3.15 — and while it is left at
+# --python 3.12 (as Dependabot's lone-FROM jump ships it), uv instead
+# downloads an un-pinned managed 3.12 into the build and the copied venv
+# dangles on the fresh 3.15 runtime stage, the same dead-runtime outcome
+# demonstrated first-hand for the engine image. coincurve 21.0.0 stops at
+# cp313 and cffi 2.0.0 at cp314, both with sdists needing a compiler this
+# stage does not install. A lone FROM jump would also desync the
+# interpreter line this file itself pins: the venv line below names
+# --python 3.12 and the runtime stage hard-codes the python3.12
+# site-packages cleanup path. The static guard
+# tests/test_root_image_interpreter_lines.py covers this file.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv is the installer tool image — pinned to the 0.12.21 release (the release
+# `:latest` resolved to on 2026-09-30, #349). A `:latest` tag could swap the
+# installer under every build; an immutable digest cannot. The same pinned uv
+# generates the committed uv.lock, and `uv export --locked` below is
+# version-sensitive (#348).
+COPY --from=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 /uv /usr/local/bin/uv
+# Transport patience, stated instead of rediscovered: CI evidence (run
+# 36835563311, job 110282105809) shows both buildx attempts of this image
+# dying on `files.pythonhosted.org` read timeouts under runner load. The
+# installs below are uv's now (#348), so the patience is uv's too.
+ENV UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120 \
+    UV_MAX_RETRIES=10
 
+# uv needs every workspace member's pyproject.toml to verify `--locked`;
+# only maistro-core and maistro-server are installed from them. The
+# reference extension is a workspace member too, and its pyproject.toml is
+# what the export needs to resolve the selection (without it the export
+# fails: "reference-greeter references a workspace in tool.uv.sources ...
+# but is not a workspace member"). It is never installed here.
 COPY pyproject.toml uv.lock README.md ./
-COPY packages/maistro-core packages/maistro-core
-COPY packages/maistro-server packages/maistro-server
+COPY packages/ packages/
+COPY extensions/ extensions/
 
-# Production API: core (with the extras the server uses) + server.
-# pip, not uv, for the reason recorded at the runtime-stage install below:
-# building a local path makes uv read the root workspace tables, and this
-# image copies two of the seven members.
-RUN pip install --no-cache-dir \
-    "./packages/maistro-core[llm,sandbox,observability]" \
-    "./packages/maistro-server"
+RUN uv export --locked --package maistro-server \
+      --extra observability --extra browser \
+      --no-dev --no-emit-workspace \
+      --format requirements-txt --output-file /tmp/lock-requirements.txt \
+ && uv venv --python 3.12 /app/venv \
+ && uv pip install --python /app/venv/bin/python \
+      --no-config --require-hashes --no-cache -r /tmp/lock-requirements.txt \
+ && uv pip install --python /app/venv/bin/python --no-deps --no-cache \
+      ./packages/maistro-core ./packages/maistro-server \
+ && uv pip check --python /app/venv/bin/python \
+ && /app/venv/bin/python -c "import importlib.metadata as m; assert m.version('browser-use') and m.version('playwright'); import maistro_server.main; print('builder smoke ok')"
 
+# ---- docker CLI build ----
+# Same policy as the root Dockerfile: the published docker:29-cli binary embeds
+# go1.26.8 stdlib (trivy HIGHs fixed in go1.26.9/1.27.2; CVE-2026-111943 HIGH
+# in stdlib 1.27.2, fixed in go1.26.10/1.27.3) and no released
+# docker:xx-cli tag ships a newer toolchain, so build the exact immutable
+# release tag ourselves on the patched toolchain. Tag resolves to 5457199; fail
+# if upstream ever disagrees. Builder moved to 1.27.3-alpine (#1152, and
+# independently re-resolved by #1095's trunk-CI repair): CVE-2026-111943
+# (crypto/x509 MITM via untrusted intermediates, HIGH, fixed in go1.26.10/1.27.3)
+# flags the 1.27.2 stdlib inside the built binary. That 1.27.3 builder aged out
+# in turn: CVE-2026-97054 (net/http MaxBytesReader connection handling, HIGH,
+# fixed in go1.26.11/1.27.4) flags the 1.27.3 stdlib inside the built binary
+# (#2375 Container scan gate, security.yml run 44477475371, 2026-11-19), so the
+# builder moved to 1.27.4-alpine, retiring both 1.27.3 indexes.
+#
+# 29.9.3 bump (CR1373 CI repair, 2026-11-16): v29.9.1 vendored go-jose/v4 4.1.5
+# (CVE-2026-116587 HIGH, fixed in 4.1.6) and golang.org/x/net 0.60.0
+# (CVE-2026-78661 HIGH, fixed in 0.62.0); trivy flagged both inside the built
+# usr/local/bin/docker. v29.9.3 vendors go-jose 4.1.7 upstream but still pins
+# x/net 0.60.0, so x/net is patched onto the pinned tag (same policy as the
+# root Dockerfile / agebuild's x/crypto) and `go mod vendor` re-syncs the tree.
+# Digest-pinned (#349); re-pinned 2026-11-19 (#2375 container-gate repair) to
+# golang:1.27.4-alpine for CVE-2026-97054 (stdlib MaxBytesReader HTTP/1 hang,
+# HIGH, fixed 1.26.11/1.27.4; index created 2026-11-10; verified live:
+# `go version` reads go1.27.4 linux/amd64 on Alpine 3.24.4).
+# #2120 note: the root image's earlier v29.9.1 repair pinned go-jose/v4 4.1.6
+# and klauspost/compress 1.20.2 onto the tag; v29.9.3 vendors both fix
+# versions upstream (go-jose 4.1.7, compress 1.20.2 — the compress floor also
+# closes GO-2026-6865 High, Grype cross-check run 43878205511), so only the
+# x/net patch below remains.
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS dockerclibuild
+ARG DOCKER_CLI_VERSION=29.9.3
+ARG DOCKER_CLI_COMMIT_SHORT=5457199
+# Same docker/cli pin as the root Dockerfile's identical stage (#2110
+# CI-repair round): v29.9.1 vendored go-jose v4.1.5, x/net v0.60.0 and
+# klauspost/compress v1.20.1 — CVE-2026-78661 (x/net, fixed v0.62.0) and
+# CVE-2026-116587 (go-jose, fixed v4.1.6) fail the trivy leg while
+# GO-2026-6865 (klauspost/compress, fixed v1.20.2) fails the grype leg.
+# v29.9.3 vendors go-jose v4.1.7 and klauspost/compress v1.20.2; no tag
+# ships x/net ≥ v0.62.0 yet, so the build upgrades that module in place
+# (with the same belt-and-braces compress pin as the root Dockerfile) and
+# re-vendors, then compiles.
+ARG X_NET_MODULE_UPGRADE=golang.org/x/net@v0.62.0
+RUN apk add --no-cache git && \
+    git clone --branch "v${DOCKER_CLI_VERSION}" --depth 1 https://github.com/docker/cli.git /src/docker-cli && \
+    cd /src/docker-cli && \
+    test "$(git rev-parse --short=7 HEAD)" = "${DOCKER_CLI_COMMIT_SHORT}" && \
+    cp vendor.mod go.mod && cp vendor.sum go.sum && \
+    go get "${X_NET_MODULE_UPGRADE}" github.com/klauspost/compress@v1.20.2 && go mod vendor && \
+    mkdir -p /out && \
+    # -mod=mod: the tag ships a vendor/ directory; the patched go.mod above
+    # supersedes it, so build from the module set, not the vendored tree.
+    CGO_ENABLED=0 go build -trimpath -mod=mod -tags grpcnotrace \
+      -ldflags="-s -w -X github.com/docker/cli/cli/version.Version=v${DOCKER_CLI_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_CLI_COMMIT_SHORT}" \
+      -o /out/docker ./cmd/docker
 
 # ─── Production stage ─────────────────────────────────
-FROM python:3.12-slim
-
-WORKDIR /app
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    # Browsers installed to a world-readable path so the non-root runtime user
-    # can find Chromium (default ~/.cache/ms-playwright is root-only).
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+# The security-patch layer lives in its own stage so CI can name it in
+# `--no-cache-filter` (#795): a plain `RUN apt-get upgrade` has a cache key
+# that never changes, so the GHA cache can replay a pre-advisory mirror state
+# forever — exactly how the 2026-10-22 gate run shipped maistro-engine with
+# libexpat1 2.5.0-1+deb12u4 after deb12u5 (CVE-2025-59375/CVE-2026-77214)
+# had published. security.yml builds this stage with
+# `--no-cache-filter production-apt`; release.yml builds cold and needs no
+# flag. Same base line as the builder — see the #2430 rejection note above:
+# 3.15 is unbuildable for this image's locked install set.
+#
+# 2026-11-23 (#1629 CI repair): `--no-cache-filter` alone cannot keep this
+# stage's freshness propagating — buildx keys are computed pre-execution
+# from the instruction string and the parent key chain, so the final
+# `FROM production-apt` vertex keeps replaying its last cached manifest no
+# matter how often apt re-executes. The rsi-runner-r2 scope demonstrated
+# the residual class that day: linux-libc-dev scanned at 6.12.117-1 while
+# the same run's apt fetched 6.12.118-1, and the #1152 pin-bump remedy had
+# no headroom (python:3.12-slim still resolved to sha256:5e2bdb1b…). This
+# stage's key is therefore mutated per run: both CI workflows pass
+# --build-arg OS_REFRESH=<run_id>-<attempt>, and the builder stage above
+# stays on the stable pinned base so the venv keeps its cross-run cache.
+# Local builds default to 0 and keep today's stable-key behaviour.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS production-apt
 
 # System layer. Hardening vs the previous image:
 #   - apt-get upgrade applies Debian security patches the base tag froze.
+#   - libbrotli1 is installed explicitly, not left to dependency resolution:
+#     CVE-2026-111497 (Out-of-Bounds Write in the Brotli decoder, HIGH) is
+#     fixed by trixie-security's 1.1.0-2+deb13u1, and naming the package here
+#     keeps that fix an install requirement of the security-patch stage even
+#     when brotli only arrives transitively (git's libcurl, the Chromium X
+#     stack below). The `--no-cache-filter production-apt` CI flag re-runs
+#     this stage on every candidate, so the mirror's current candidate —
+#     deb13u1 or newer — is what ships.
 #   - docker.io (the whole engine) replaced by a static docker CLI (see COPY below).
 #   - curl + wget removed; the HEALTHCHECK now uses stdlib Python.
 #   - autoremove/clean drop orphaned deps and caches.
 # The libnss3…fonts-liberation block is the Chromium runtime surface for the
 # RESEARCH browser tool. It is isolated to THIS image; the main API image is
 # Wolfi/browser-free.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# The no-op `:` word carries OS_REFRESH into the RUN's instruction so the
+# per-run value is part of the cache key without writing anything to the
+# layer.
+ARG OS_REFRESH=0
+RUN : "os-refresh=$OS_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     git \
+    libbrotli1 \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
@@ -62,55 +236,76 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/*
 
+FROM production-apt
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Browsers installed to a world-readable path so the non-root runtime user
+    # can find Chromium (default ~/.cache/ms-playwright is root-only).
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    # The lock-built venv is the interpreter of record (#348): every RUN below
+    # and the runtime entrypoint resolve python through it.
+    PATH="/app/venv/bin:$PATH"
+
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
-# heavyweight docker.io package and its containerd/runc dependency tree.
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+# heavyweight docker.io package and its containerd/runc dependency tree. Built
+# from the pinned upstream release tag on the patched Go toolchain (stage
+# above) because the published 29-cli binary embeds go1.26.8 stdlib (trivy HIGHs).
+COPY --from=dockerclibuild /out/docker /usr/local/bin/docker
+# The lock-built venv (third-party pins hash-verified, members non-editable).
+COPY --from=builder /app/venv /app/venv
 
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Overlay the fixed Node onto patchright's driver (see node-driver-patch).
+# Assert the path and version so a silent wheel layout change fails the build
+# instead of shipping the vulnerable binary again.
+COPY --from=node-driver-patch /usr/local/bin/node /tmp/node-26.13.1
+RUN python - <<'PY'
+from __future__ import annotations
 
-# Application sources (editable installs reference these paths)
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import patchright
+
+dst = Path(patchright.__file__).resolve().parent / "driver" / "node"
+src = Path("/tmp/node-26.13.1")
+if not dst.is_file():
+    raise SystemExit(f"patchright driver node missing at {dst}")
+shutil.copy2(src, dst)
+os.chmod(dst, 0o755)
+ver = subprocess.check_output([str(dst), "-v"], text=True).strip()
+if ver != "v26.13.1":
+    raise SystemExit(f"expected v26.13.1 after overlay, got {ver!r}")
+src.unlink()
+print(f"patched patchright driver node -> {ver} at {dst}")
+PY
+
+# Application sources — on-disk assets the app reads at runtime (agent YAML,
+# prompts, migrations) and the two packages' data files. The venv is
+# non-editable, so these are not on sys.path; they are still read from disk.
 COPY packages/maistro-core packages/maistro-core
 COPY packages/maistro-server packages/maistro-server
 COPY alembic/ alembic/
 COPY alembic.ini .
 COPY pyproject.toml uv.lock README.md ./
 
-# Install the workspace packages with pip, not uv, and non-editable.
-#
-# `uv pip install` on a local path builds that path's project, which makes uv
-# read the root `pyproject.toml` -- and this image copies only maistro-core and
-# maistro-server, while the root declares `[tool.uv.workspace] members =
-# ["packages/*"]` with `workspace = true` sources for five packages that are
-# not here. uv aborts:
-#
-#   Failed to parse entry: `maistro-bootstrap`
-#   `maistro-bootstrap` references a workspace in `tool.uv.sources`, but is
-#   not a workspace member
-#
-# So this image could not be built at all, and nothing noticed because nothing
-# built it -- which is the whole of #346 in one line. pip does not read
-# `[tool.uv.sources]`, which is why the main Dockerfile (identical partial
-# context) builds; matching it here is the smallest fix that does not drag five
-# unrelated packages into a browser image. Named packages are still fine on uv
-# -- nothing local is built -- so the Playwright step below is unchanged.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-RUN pip install --no-cache-dir \
-    "./packages/maistro-core[llm,sandbox,observability]" \
-    "./packages/maistro-server" \
-    "alembic>=1.14" \
-    "pydantic-ai-slim[openai]>=0.1" \
-    "openai>=1.40,<2" \
-    "httpx>=0.27.0"
+# Install the Chromium binary for the RESEARCH role's web tool. The playwright
+# package driving it is hash-pinned by the lock (builder stage); this step
+# downloads a browser binary, not a Python dependency, so no package
+# resolution happens here. Installed into PLAYWRIGHT_BROWSERS_PATH (set above)
+# so the non-root user can use it.
+RUN python -m playwright install chromium
 
-# Install browser-use + Playwright + Chromium for the RESEARCH role's web tool.
-# Installed into PLAYWRIGHT_BROWSERS_PATH (set above) so the non-root user can use it.
-RUN uv pip install --system \
-    "browser-use>=0.1.40" \
-    "playwright>=1.49.0" \
- && python -m playwright install chromium
-
+# Drop the same build tooling the other images drop: pip is not invoked at
+# runtime by anything in the shipped app, and its vendored dependency tree
+# (pip/_vendor/vendor.txt) is trivy surface. The uv binary stays — it ships in
+# the copied /usr/local/bin tool set this image is operated with.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+           /usr/local/bin/pip*
 # Drop root: run as an unprivileged system user and own the app + browser dirs.
 RUN useradd --system --no-create-home --uid 10001 app \
  && chown -R app:app /app /opt/playwright

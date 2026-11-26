@@ -38,13 +38,20 @@ Head `cc819de` (PR #256, based on `develop`), 25 checks, all green.
 | `registry.yml` | 1 | 0.2 |
 | `vulture-ratchet.yml` | 1 | 0.2 |
 | `cage-guard.yml` | 1 | 0.1 |
-| **total** | **25** | **36.3** |
+| **subtotal (head-attributed)** | **25** | **36.3** |
 
 | | job-minutes | checks |
 |---|---:|---:|
 | stacked PR, **before** #161 | 2.1 | 2 |
 | any PR, **after** #161 | 36.3 | 25 |
 | **marginal, per PR head** | **+34.2** | +23 |
+
+**Scope: these are head-attributed subtotals, not a total.** The 36.3 figure
+sums only the 25 jobs a PR head triggers. Default-branch `workflow_run`
+publishers (e.g. Gates Ran) are outside the head query; their costs are not
+zero and are not included here. See
+[ci-1357-cost-collection](../testing/inventory-notes/ci-1357-cost-collection.md)
+and the #1357 cost-accounting audit for full-fleet attribution.
 
 A PR based on `develop` cost 36.3 job-minutes before the change too — it always
 ran everything. The marginal cost falls entirely on stacked PRs, which is the
@@ -88,7 +95,7 @@ These were already named and machine-checked before this measurement;
 
 | check | scope | why |
 |---|---|---|
-| `Container scan + SBOM + cosign` | base `main` | job `if:` on `base_ref`; scans the image that is about to be released, which only a `main`-based PR is doing. Required on `main`, not on `develop`, so its `skipped` conclusion never has to be interpreted. |
+| `Container scan + SBOM + cosign` | base `main`/`develop` + pushes to `develop` | job `if:` on `base_ref`; scans every final image and frontend bundle on develop as well as the release candidate. It is required on `main`; develop runs provide the earlier license evidence. |
 | `Analyze (actions)` | base `main` | CodeQL, same release-gate reasoning |
 | `Analyze (javascript-typescript)` | base `main` | " |
 | `Analyze (python)` | base `main` | " |

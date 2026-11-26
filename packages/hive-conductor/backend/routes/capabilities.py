@@ -13,14 +13,22 @@ routes reach it via `get_engine().capabilities` rather than a route-local global
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from middleware.auth import principal_has_permission
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.request_principal import request_principal
 from starlette.concurrency import run_in_threadpool
 
+from maistro.capabilities.authority import (
+    ApprovalAuthority,
+    approval_signing_secret,
+    sign_approval_authority,
+)
 from routes.audit import log_audit
 
 logger = logging.getLogger("hive.capabilities")
@@ -41,7 +49,14 @@ async def _provider_view(reg: Any, slot: str, name: str) -> dict[str, Any]:
     except Exception as exc:  # health probe must never break the listing
         logger.debug("healthcheck failed for %s/%s: %s", slot, name, exc)
         healthy = False
-    return {"name": name, "trust_tier": provider.trust_tier, "healthy": healthy}
+    metadata = reg.provider_trust(slot, name) if hasattr(reg, "provider_trust") else None
+    trust_tier, provenance = metadata or ("t3", "unknown")
+    return {
+        "name": name,
+        "trust_tier": trust_tier,
+        "provenance": provenance,
+        "healthy": healthy,
+    }
 
 
 async def _slot_view(reg: Any, slot: str) -> dict[str, Any]:
@@ -265,18 +280,90 @@ class ResolveApprovalBody(BaseModel):
 
 
 @router.post("/approvals/{request_id}")
-def resolve_approval(request_id: str, body: ResolveApprovalBody) -> dict[str, Any]:
+def resolve_approval(
+    request_id: str,
+    body: ResolveApprovalBody,
+    request: Request,
+) -> dict[str, Any]:
     inbox = _approval_inbox()
     if inbox is None:
         raise HTTPException(status_code=503, detail="no approval inbox available")
-    resolved = inbox.resolve(request_id, approved=body.approved, actor=body.actor)
+    pending = next((item for item in inbox.pending() if item.request_id == request_id), None)
+    if pending is None:
+        raise HTTPException(status_code=404, detail=f"no pending approval '{request_id}'")
+
+    # HTTP callers cannot choose the audit actor. Direct provider tests may
+    # omit Request, but production resolution always uses the authenticated
+    # session principal that AuthMiddleware already verified. The canonical
+    # carrier is ``request.state.principal`` (P0.1 / AC-P1): the dict-shaped
+    # ``state.user`` this route used to read has had no writer since the
+    # middleware migrated, so the old read resolved to ``{}`` and refused
+    # every real HTTP approval with 401.
+    principal = request_principal(request) if request is not None else None
+    if principal is not None:
+        actor = principal.actor_id()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Authentication required")
+    else:
+        actor = body.actor
+
+    authority: ApprovalAuthority | None = None
+    if pending.action == "run_workflow":
+        # `config.write` protects the capability API, but it is not an
+        # approver grant. Workflow execution requires an admin or an explicitly
+        # elevated approval permission, so a config editor cannot self-approve.
+        authorized = bool(
+            actor
+            and principal is not None
+            and principal_has_permission(principal, "approvals.resolve")
+        )
+        if not authorized:
+            log_audit(
+                "approval_resolve_refused",
+                actor or "anonymous",
+                target=request_id,
+                detail={
+                    "action": pending.action,
+                    "requester": pending.requester,
+                    "principal": actor or "anonymous",
+                    "refusal_reason": "approver_not_authorized",
+                },
+                severity="warning",
+            )
+            raise HTTPException(
+                status_code=403, detail="Approver is not authorized for this action"
+            )
+        unsigned_authority = ApprovalAuthority(
+            kind="human",
+            principal=actor,
+            scope=pending.action,
+            evidence_id=pending.request_id,
+        )
+        authority = replace(
+            unsigned_authority,
+            signature=sign_approval_authority(unsigned_authority, approval_signing_secret()),
+        )
+
+    resolved = inbox.resolve(
+        request_id,
+        approved=body.approved,
+        actor=actor,
+        authority=authority,
+    )
     if not resolved:
         raise HTTPException(status_code=404, detail=f"no pending approval '{request_id}'")
     log_audit(
         "approval_resolve",
-        body.actor or "system",
+        actor or "system",
         target=request_id,
-        detail={"approved": body.approved},
+        detail={
+            "approved": body.approved,
+            "principal": actor or "unverified",
+            "action": pending.action,
+            "requester": pending.requester,
+            "authority_kind": authority.kind if authority else None,
+            "authority_scope": authority.scope if authority else None,
+        },
         severity="warning",
     )
     return {"resolved": True, "request_id": request_id, "approved": body.approved}

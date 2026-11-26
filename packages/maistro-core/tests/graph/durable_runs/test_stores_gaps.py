@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from maistro.graph.durable_runs.fair_scan import cursor_time
 from maistro.graph.durable_runs.stores import (
     InMemoryDurableRunStore,
     SqliteDurableRunStore,
@@ -11,7 +14,7 @@ from maistro.graph.durable_runs.stores import (
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, RunStatus
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 def _record_for(run_id: str, **overrides: object):  # type: ignore[no-untyped-def]
@@ -71,21 +74,27 @@ async def test_list_for_project_respects_limit_and_ordering() -> None:
 async def test_submit_hitl_answer_missing_run_raises_keyerror() -> None:
     store = InMemoryDurableRunStore()
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_status_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_node_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_create_collision_raises_valueerror(tmp_path) -> None:
@@ -135,27 +144,310 @@ async def test_sqlite_list_for_project_filters_and_limits(tmp_path) -> None:
 async def test_sqlite_submit_hitl_answer_missing_run_raises_keyerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_status_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_node_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_success_updates_record(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
-    updated = await store.submit_hitl_answer("r1", "ask", {"answer": "yes"})
+    updated = await store.submit_hitl_answer(
+        "r1", "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     assert updated.status is RunStatus.QUEUED
     assert updated.hitl_answers["ask"]["answer"] == "yes"
     assert updated.version == 2
+
+
+def _at(record, created_at):  # type: ignore[no-untyped-def]
+    """The same record, created at a chosen instant, so order is deterministic."""
+    return record.model_copy(
+        update={"run": record.run.model_copy(update={"created_at": created_at})}
+    )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_status_listing_pages_past_the_cursor() -> None:
+    """`after` is the keyset the #1109 pending-work walk advances.
+
+    Without it the route re-reads the same fixed prefix every page and the
+    human pause behind it is never reached, so the parameter has to actually
+    page rather than merely be accepted.
+    """
+    store = InMemoryDurableRunStore()
+    base = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    for index in range(3):
+        await store.create(
+            _at(_record_for(f"mem-{index}"), base + timedelta(minutes=index)),
+        )
+
+    first = await store.list_by_status(RunStatus.RUNNING, limit=1)
+    assert [record.run_id for record in first] == ["mem-0"]
+
+    cursor = (cursor_time(first[0].run.created_at), first[0].run_id)
+    rest = await store.list_by_status(RunStatus.RUNNING, limit=5, after=cursor)
+    assert [record.run_id for record in rest] == ["mem-1", "mem-2"]
+
+    last = (cursor_time(base + timedelta(minutes=2)), "mem-2")
+    assert await store.list_by_status(RunStatus.RUNNING, limit=5, after=last) == []
+
+
+@pytest.mark.asyncio
+async def test_sqlite_status_listing_pages_past_the_cursor(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The SQLite twin builds the same keyset predicate in SQL.
+
+    Its `(created_at, run_id) > (?, ?)` clause is a different implementation
+    of the same contract, so it gets the same walk rather than being trusted
+    to agree with the in-memory one.
+    """
+    store = SqliteDurableRunStore(tmp_path / "keyset.db")
+    base = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    for index in range(3):
+        await store.create(
+            _at(_record_for(f"lite-{index}"), base + timedelta(minutes=index)),
+        )
+
+    first = await store.list_by_status(RunStatus.RUNNING, limit=1)
+    assert [record.run_id for record in first] == ["lite-0"]
+
+    cursor = (cursor_time(first[0].run.created_at), first[0].run_id)
+    rest = await store.list_by_status(RunStatus.RUNNING, limit=5, after=cursor)
+    assert [record.run_id for record in rest] == ["lite-1", "lite-2"]
+
+    last = (cursor_time(base + timedelta(minutes=2)), "lite-2")
+    assert await store.list_by_status(RunStatus.RUNNING, limit=5, after=last) == []
+
+
+def _externally_parked(
+    run_id: str,
+    *,
+    status: RunStatus = RunStatus.WAITING,
+    pauses: dict[str, object] | None = None,
+    frontier: str = "work",
+    with_node_run: bool = True,
+):
+    """A parked Run whose frontier pause is the remote-delegation kind."""
+    node_runs = ()
+    if with_node_run:
+        node_run = NodeRun(run_id=run_id, node_id=frontier, ordinal=1)
+        if status is RunStatus.PAUSED:
+            node_run = transition_node_run(node_run, RunStatus.QUEUED)
+            node_run = transition_node_run(node_run, RunStatus.RUNNING)
+            node_run = transition_node_run(node_run, RunStatus.PAUSED)
+        else:
+            node_run = node_run.model_copy(update={"status": RunStatus.WAITING})
+        node_runs = (node_run,)
+    return durable_record(
+        {"id": "d1", "nodes": [{"id": frontier, "kind": "test.noop"}], "edges": []},
+        run_id=run_id,
+        status=status,
+        active_node_id=frontier,
+        metadata={"initial_inputs": {}, "hitl_answers": {}, "pauses": pauses or {}},
+        node_runs=node_runs,
+    )
+
+
+_DELEGATION_PAUSE: dict[str, object] = {
+    "work": {
+        "kind": "wait",
+        "metadata": {
+            "paused_reason": "awaiting_remote_delegation",
+            "peer_name": "hub",
+            "task_id": "t-1",
+        },
+    }
+}
+
+
+async def test_in_memory_submit_external_result_delivers_and_replays_identically() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+
+    first = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert first.run.status is RunStatus.QUEUED
+
+    replayed = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert replayed.version == first.version
+
+
+async def test_in_memory_submit_external_result_missing_run_raises_keyerror() -> None:
+    store = InMemoryDurableRunStore()
+    with pytest.raises(KeyError, match="no such run"):
+        await store.submit_external_result("missing", "work", {"status": "completed"})
+
+
+async def test_in_memory_submit_external_result_conflicting_replay_raises_valueerror() -> None:
+    """A different payload for a settled receipt is a protocol error, not an update."""
+    store = InMemoryDurableRunStore()
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+    await store.submit_external_result("r1", "work", {"status": "completed", "task_id": "t-1"})
+
+    with pytest.raises(ValueError, match="different result"):
+        await store.submit_external_result("r1", "work", {"status": "failed", "task_id": "t-1"})
+
+
+async def test_in_memory_submit_external_result_rejects_invalid_envelopes() -> None:
+    store = InMemoryDurableRunStore()
+
+    await store.create(_externally_parked("still-running", status=RunStatus.RUNNING))
+    with pytest.raises(ValueError, match="not parked"):
+        await store.submit_external_result("still-running", "work", {"status": "completed"})
+
+    await store.create(_externally_parked("foreign-frontier", pauses=_DELEGATION_PAUSE))
+    with pytest.raises(ValueError, match="waiting on frontier"):
+        await store.submit_external_result("foreign-frontier", "elsewhere", {"status": "x"})
+
+    await store.create(_externally_parked("pauseless", pauses={}))
+    with pytest.raises(ValueError, match="no durable pause"):
+        await store.submit_external_result("pauseless", "work", {"status": "x"})
+
+    await store.create(
+        _externally_parked(
+            "malformed-metadata",
+            pauses={"work": {"kind": "wait", "metadata": "not-a-mapping"}},
+        )
+    )
+    with pytest.raises(ValueError, match="malformed pause metadata"):
+        await store.submit_external_result("malformed-metadata", "work", {"status": "x"})
+
+    await store.create(
+        _externally_parked(
+            "human-paused",
+            pauses={
+                "work": {
+                    "kind": "wait",
+                    "metadata": {"paused_reason": "awaiting_human_answer"},
+                }
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="not externally woken"):
+        await store.submit_external_result("human-paused", "work", {"status": "x"})
+
+    await store.create(_externally_parked("no-node-run", pauses=_DELEGATION_PAUSE))
+    store._rows["no-node-run"] = durable_record(
+        {"id": "d1", "nodes": [{"id": "work", "kind": "test.noop"}], "edges": []},
+        run_id="no-node-run",
+        status=RunStatus.WAITING,
+        active_node_id="work",
+        metadata={"initial_inputs": {}, "hitl_answers": {}, "pauses": _DELEGATION_PAUSE},
+        node_runs=(),
+    )
+    with pytest.raises(ValueError, match="no parked NodeRun"):
+        await store.submit_external_result("no-node-run", "work", {"status": "x"})
+
+
+async def test_sqlite_submit_external_result_delivers_and_replays_identically(tmp_path) -> None:
+    store = SqliteDurableRunStore(tmp_path / "durable.db")
+    await store.create(_externally_parked("r1", pauses=_DELEGATION_PAUSE))
+
+    first = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert first.run.status is RunStatus.QUEUED
+
+    replayed = await store.submit_external_result(
+        "r1", "work", {"status": "completed", "task_id": "t-1"}
+    )
+    assert replayed.version == first.version
+
+    with pytest.raises(KeyError, match="no such run"):
+        await store.submit_external_result("missing", "work", {"status": "completed"})
+
+
+async def test_list_hitl_due_stops_at_the_limit_after_authorization_filtering() -> None:
+    store = InMemoryDurableRunStore()
+    deadline = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    for index in range(3):
+        await store.create(
+            _externally_parked(
+                f"due-{index}",
+                status=RunStatus.PAUSED,
+                pauses={
+                    "work": {
+                        "kind": "hitl",
+                        "metadata": {"question": "Ship it?"},
+                        "resume_at": deadline,
+                    }
+                },
+            )
+        )
+    await store.create(
+        _record_for("foreign", status=RunStatus.PAUSED, active_node_id="work", project_id="other")
+    )
+
+    due = await store.list_hitl_due(
+        authorization=hitl_authorization(),
+        now=datetime.now(UTC),
+        limit=2,
+    )
+    assert len(due) == 2
+
+
+async def test_earliest_wakeup_ignores_malformed_sibling_pauses() -> None:
+    """Projecting the next timer after one pause is answered must survive a
+    frontier holding corrupt sibling entries."""
+    from maistro.graph.durable_runs.stores import _earliest_wakeup
+
+    now = datetime.now(UTC)
+
+    def _frontier_with(pause: object) -> dict[str, object]:
+        return {"pauses": {"work": pause}}
+
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": now.isoformat()}),
+            ("work",),
+        )
+        == now
+    )
+    assert _earliest_wakeup(_frontier_with("not-a-mapping"), ("work",)) is None
+    assert _earliest_wakeup(_frontier_with({"kind": "wait"}), ("work",)) is None
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": 123}), ("work",)
+        )
+        is None
+    )
+    assert (
+        _earliest_wakeup(
+            _frontier_with({"kind": "wait", "metadata": {}, "resume_at": "definitely-not-a-date"}),
+            ("work",),
+        )
+        is None
+    )
+    assert (
+        _earliest_wakeup(
+            _frontier_with(
+                {"kind": "wait", "metadata": {}, "resume_at": datetime(2026, 1, 1).isoformat()}
+            ),
+            ("work",),
+        )
+        is None
+    )
+
+    assert _earliest_wakeup({"pauses": ["not-a-mapping"]}, ("work",)) is None
+    assert _earliest_wakeup({}, ("work",)) is None

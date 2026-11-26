@@ -24,7 +24,12 @@ from typing import Any, Protocol, runtime_checkable
 from maistro.agents.spec.agent_spec import AgentSpec
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked, HarnessRunner
 from maistro.capabilities.types import ProviderHealth
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import (
+    Warden,
+    WardenContext,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 
 @runtime_checkable
@@ -39,34 +44,16 @@ class ActionGate(Protocol):
     async def allow(self, action: dict[str, Any]) -> bool: ...
 
 
-class AllowAllGate:
-    """Default gate used when no Sentinel/policy is wired: permits every action."""
+class DenyAllGate:
+    """Fail-closed gate used when no outbound policy is available."""
 
     async def allow(self, action: dict[str, Any]) -> bool:
-        return True
+        return False
 
 
 def _message_text(message: dict[str, Any]) -> str:
-    """Serialize the WHOLE message for scanning, not just ``content``.
-
-    An OpenAI-style message can carry prompt-injection text or executable
-    arguments in ``tool_calls``, attachments, or any other structured field
-    while ``content`` stays empty — scanning content alone handed the foreign
-    harness the unscanned remainder (Codex, #262). JSON-serializing the full
-    dict puts every string the harness will see in front of Warden.
-    """
-    import json
-
-    content = message.get("content", "")
-    content_text = content if isinstance(content, str) else str(content)
-    extra_fields = {k: v for k, v in message.items() if k not in ("content", "role")}
-    if not extra_fields:
-        return content_text
-    try:
-        serialized = json.dumps(extra_fields, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        serialized = str(extra_fields)
-    return f"{content_text}\n{serialized}" if content_text else serialized
+    """Compatibility wrapper for the shared full-message scan serialization."""
+    return message_to_scan_text(message)
 
 
 class SafeHarnessRunner:
@@ -81,7 +68,9 @@ class SafeHarnessRunner:
     ) -> None:
         self._inner = inner
         self._warden = warden
-        self._gate: ActionGate = gate if gate is not None else AllowAllGate()
+        # A missing policy is a degraded, read-only harness, never an implicit
+        # permission grant. Production composition should still supply a gate.
+        self._gate: ActionGate = gate if gate is not None else DenyAllGate()
 
     # --- CapabilityProvider passthrough ---
     @property
@@ -116,7 +105,7 @@ class SafeHarnessRunner:
             if (
                 isinstance(event, dict)
                 and event.get("type") in ("action", "tool_call")
-                and not await self._gate.allow(event)
+                and not await self._allow_action(event)
             ):
                 continue
             yield event
@@ -126,18 +115,45 @@ class SafeHarnessRunner:
 
     # --- internals ---
     async def _scan_inbound(self, messages: list[dict[str, Any]]) -> None:
-        for message in messages:
-            verdict = await self._warden.scan(_message_text(message), "user_input")
+        # Scan each untrusted turn with the bounded ordered prefix. Trusted
+        # system/developer messages remain labels, never attacker-controlled
+        # text concatenated into the detector's analysis input.
+        contexts = context_from_messages(messages)
+        prior: list[WardenContext] = []
+        for context in contexts:
+            if context.provenance == "trusted":
+                prior.append(context)
+                continue
+            scan_kwargs = {"context": prior} if prior else {}
+            verdict = await self._warden.scan(
+                context.content,
+                "user_input",
+                **scan_kwargs,
+            )
             # Match the native agent path (agents/base.py): any UNCLEAN verdict is
             # refused, not just a hard `blocked` one — single-pattern injections
             # come back clean=False/blocked=False and must not reach the harness.
             if not verdict.clean:
                 raise HarnessInputBlocked(verdict.flags)
+            prior.append(context)
+
+    async def _allow_action(self, action: dict[str, Any]) -> bool:
+        try:
+            return await self._gate.allow(action)
+        except Exception:
+            # Policy dependencies are on the effect boundary. A broken policy
+            # must remove authority rather than turn the wrapper into allow-all.
+            import logging
+
+            logging.getLogger("maistro.capabilities.harness").warning(
+                "harness action policy failed; denying action", exc_info=True
+            )
+            return False
 
     async def _gate_list(self, items: list[Any]) -> list[Any]:
         allowed: list[Any] = []
         for item in items:
-            if isinstance(item, dict) and await self._gate.allow(item):
+            if isinstance(item, dict) and await self._allow_action(item):
                 allowed.append(item)
         return allowed
 

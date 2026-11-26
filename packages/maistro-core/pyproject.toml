@@ -7,14 +7,23 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-    "pydantic>=2.0,<3",
+    # Floor is 2.7.0, not 2.4.0: pydantic-settings>=2.7 (declared below)
+    # requires pydantic>=2.7.0, so `--resolution lowest-direct` never installs
+    # 2.4.x and the 2.4.0 floor was untestable as written -- the
+    # minimum-dependencies gate asserts every declared dependency resolves at
+    # its floor, so an unreachable floor must be raised, not masked (#1100).
+    "pydantic>=2.7.0,<3",
     "pydantic-settings>=2.7,<3",
     "structlog>=24.4,<27",
     "httpx>=0.28,<1",
     "sqlalchemy[asyncio]>=2.0,<3",
     "asyncpg>=0.30,<1",
     "pgvector>=0.3,<1",
-    "pyyaml>=6.0,<7",
+    # Floor is 6.0.1, not 6.0: 6.0 ships no CPython 3.12 wheels and its sdist
+    # fails to build under Cython >=3.1, so the declared floor was a version no
+    # clean install could resolve (#1100's minimum-dependencies release gate
+    # installs the floors, not the lockfile).
+    "pyyaml>=6.0.1,<7",
     # 50.x contains the security fix required by the supply-chain gate.
     "cryptography>=50.0.0,<51",
     "argon2-cffi>=23.1,<26",
@@ -25,7 +34,11 @@ dependencies = [
     "regex>=2024.5.15,<2027",
     # OIDC production verification must never depend on mcp/llm extras
     # happening to install PyJWT transitively.
-    "pyjwt[crypto]>=2.10,<3",
+    # Floor is 2.14, the first release fixing CVE-2026-102274. The lockfile
+    # alone was not enough: a downstream project installing the published
+    # wheel never reads uv.lock, so a floor of 2.13.0 left the vulnerable
+    # release resolvable for every consumer of this package.
+    "pyjwt[crypto]>=2.14,<3",
 ]
 
 [project.scripts]
@@ -34,7 +47,7 @@ maistro = "maistro.cli:main"
 [project.optional-dependencies]
 llm = [
     # Resolves at 3.x in the workspace lock; >=2.0 remains the true floor.
-    "fastmcp>=2.0,<4",
+    "fastmcp>=3.2.0,<5",
 ]
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.
@@ -59,6 +72,17 @@ bcrypt = [
 re2 = [
     "google-re2>=1.1",
 ]
+# The RESEARCH browser surface (#348): `tools/browser/client.py` lazy-imports
+# browser_use, falls back to the openai SDK directly, and drives Chromium
+# through playwright. Optional because the API image deliberately ships
+# browser-free (Dockerfile) — deployments that want the web tool install this
+# extra (Dockerfile.research selects it), and the resolution lives in uv.lock
+# so image builds cannot re-resolve it.
+browser = [
+    "browser-use>=0.1.40",
+    "playwright>=1.49",
+    "openai>=1.40,<4",
+]
 # The Archive tier (ADR-082226-f436) — cold records below durable memory, on any
 # S3-compatible store. Optional because the homelab deployment uses
 # `FilesystemArchiveStore`, which needs nothing, and because a deployment that
@@ -80,7 +104,9 @@ s3 = [
 # API directly (see observability/tracing.py); installing this extra + setting an OTLP
 # endpoint routes spans to any backend (Arize/Phoenix, Langfuse, Honeycomb, Jaeger).
 observability = [
-    "opentelemetry-api>=1.30,<2",
+    # Floor is the pip-audit gate's security floor (CVE-2026-126360, fixed in
+    # 1.45.2; #1995 CI-repair round, 2026-11).
+    "opentelemetry-api>=1.45.2,<2",
     "opentelemetry-sdk>=1.30,<2",
     "opentelemetry-exporter-otlp>=1.30,<2",
 ]
@@ -90,7 +116,8 @@ tui = [
 ]
 builders = [
     "textual>=0.61,<9",
-    "anthropic>=0.28,<1",
+    "anthropic>=0.28,<3",
+    "aiosqlite>=0.20,<1",
     "maistro-bootstrap[builders]",
 ]
 # Homelab/single-instance persistence backend (no Postgres server required).
@@ -100,15 +127,13 @@ sqlite = [
 # BIP39/BIP32 HD root of trust for maistro.identity (ADR-021): Ed25519 signing
 # plus secp256k1 derivation for the BTC/ETH coin types.
 #
-# An extra rather than a base dependency, reluctantly. bip-utils requires
-# coincurve, a secp256k1 C extension whose newest release (21.0.0) publishes
-# wheels only for cp39-cp313 and whose sdist build is broken against the cffi
-# that Python 3.14 resolves. The API image's base (cgr.dev/chainguard/python,
-# Wolfi) is 3.14-only, so a base dependency here makes that image unbuildable.
-# maistro.identity raises an ImportError naming this extra when it is missing —
-# loud and actionable, not a silent fallback.
+# An extra rather than a base dependency, because downstream engine consumers
+# may not need cryptographic identity. The shipped Conductor profile pins
+# CPython 3.13 and coincurve 21.0.0, whose cp312/cp313 wheels are tested by the
+# image smoke test. maistro.identity raises an ImportError naming this extra
+# when it is missing — loud and actionable, not a silent fallback.
 identity = [
-    "pynacl>=1.5,<2",
+    "pynacl>=1.6.2,<2",
     "bip-utils>=2.9,<3",
 ]
 # ASGI framework adapters — auth/middleware.py (FastAPI) and
@@ -117,7 +142,7 @@ identity = [
 # drag a web framework into a library consumer.
 asgi = [
     "fastapi>=0.115,<1",
-    "starlette>=0.40,<2",
+    "starlette>=1.3.1,<2",
 ]
 # The widest extra set, and what `wheel-imports` installs before importing every
 # module in the wheel. `s3` belongs here even though the Archive tier is opt-in:
@@ -136,12 +161,23 @@ all = [
     "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity,s3,bcrypt]",
 ]
 dev = [
-    "pytest>=8.3,<10",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
     "pytest-cov>=6.0,<8",
     "ruff>=0.9,<1",
     "mypy>=1.14,<3",
 ]
+
+# The in-repo cosmic-ray operator provider (PR #1994): loaded only by stevedore
+# inside the dev-only mutation toolchain (`cosmic_ray.plugins` reads this group
+# exactly as it reads cosmic-ray's own `core` provider). The module imports
+# cosmic-ray/parso behind a guarded import — the workspace dev environment is
+# the only place those ship, so the published-install contract (module resolves
+# everywhere, provider names name the missing toolchain) lives in the module's
+# docstring and is pinned by packages/maistro-core/tests/
+# test_mutation_operator_provider.py.
+[project.entry-points."cosmic_ray.operator_providers"]
+maistro = "maistro.mutation_operator_provider:MaistroMutationOperators"
 
 [build-system]
 requires = ["hatchling>=1.27"]

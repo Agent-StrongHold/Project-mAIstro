@@ -34,7 +34,13 @@ from maistro_canvas.canvas.compositor import (
     _render_text_layer,
     _transform_layer_image,
 )
-from maistro_canvas.types import CanvasRecord, LayerRecord, TextConfig, UnsupportedFormatError
+from maistro_canvas.types import (
+    CanvasRecord,
+    LayerRecord,
+    LayerScaleLimitError,
+    TextConfig,
+    UnsupportedFormatError,
+)
 
 RED = (255, 0, 0, 255)
 BLUE = (0, 0, 255, 255)
@@ -187,19 +193,21 @@ class TestTransformLayerImage:
         assert out.size == (20, 20)
         assert all(px[3] == 0 for px in out.getdata())
 
-    def test_a_non_positive_scale_does_not_divide_by_zero_or_raise(self):
-        """`scale` reaches this from a stored record, so zero is reachable."""
-        out = _transform_layer_image(
-            solid((10, 10), RED),
-            canvas_w=20,
-            canvas_h=20,
-            x=10,
-            y=10,
-            scale=0.0,
-            rotation=0.0,
-            opacity=1.0,
-        )
-        assert out.size == (20, 20)
+    def test_a_non_positive_scale_is_rejected_explicitly(self):
+        """#393: ``scale`` reaches this from a stored record, so zero is
+        reachable — and must be rejected with a typed error before the
+        resize allocation, not silently skipped."""
+        with pytest.raises(LayerScaleLimitError, match="greater than 0"):
+            _transform_layer_image(
+                solid((10, 10), RED),
+                canvas_w=20,
+                canvas_h=20,
+                x=10,
+                y=10,
+                scale=0.0,
+                rotation=0.0,
+                opacity=1.0,
+            )
 
 
 class TestAlphaCompositeFrame:

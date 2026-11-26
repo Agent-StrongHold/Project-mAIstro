@@ -27,11 +27,14 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from typing import Any
 
 import pytest
+
+from maistro.memory.exposure import MemoryExposureMode
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -68,7 +71,7 @@ def _isolated():
     _wipe(stores.optimizer_proposals)
     edit_lock.clear()
     prev_fb = get_outcome_store()
-    set_outcome_store(InMemoryOutcomeStore())
+    set_outcome_store(InMemoryOutcomeStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED))
     prev_m = _get_metrics_store()
     _set_metrics_store(NodeMetricsStore())
     yield
@@ -411,18 +414,29 @@ async def test_run_optimizer_default_does_not_apply() -> None:
     assert any(p["class"] == "auto_apply" for p in out["proposals"])
 
 
-async def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
+async def test_run_optimizer_apply_auto_reports_truthful_outcomes() -> None:
+    """apply_auto=True without a concrete target value commits nothing.
+
+    The optimizer cannot author a model swap target, so the proposal is
+    reported `unsupported` — never `applied` (#861 removed the fake path that
+    marked valueless proposals applied with audit entries and no mutation).
+    """
     from services.optimizer import run_optimizer
 
     _seed_metrics("d2", "n-target", count=10, failed=8, p95=100)
     out = await run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
-    # At least the model_swap auto-applies (no edit lock)
-    assert out["auto_applied"] >= 1
-    # Audit log has the auto-apply entry
+    # The model_swap proposal carries no target value → unsupported, not applied
+    assert out["auto_applied"] == 0
+    swap = next(p for p in out["proposals"] if p["kind"] == "model_swap")
+    assert swap["applied"] is False
+    assert swap["apply_outcome"] == "unsupported"
+    # No proposal claims an application it did not commit
+    assert all(not p["applied"] for p in out["proposals"])
     import stores
 
     apply_entries = [e for e in stores.audit_log.values() if e["action"] == "optimizer_auto_apply"]
     assert len(apply_entries) >= 1
+    assert all(e["detail"]["outcome"] != "applied" for e in apply_entries)
 
 
 async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
@@ -475,9 +489,13 @@ async def test_record_decision_accepts_proposal() -> None:
     _seed_metrics("d-dec", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-dec")
     pid = out["proposals"][0]["id"]
-    decision = record_decision(pid, "accepted", actor="alice")
+    decision = await record_decision(pid, "accepted", actor="alice")
     assert decision["decision"] == "accepted"
     assert decision["decided_by"] == "alice"
+    # The apply outcome is recorded and is truthful: the model-swap proposal
+    # names no target value, so nothing applied (#861).
+    assert decision["apply_outcome"] == "unsupported"
+    assert decision["applied"] is False
     # Audit log has the decision entry
     assert any(
         e["action"] == "optimizer_decision" and e["detail"]["proposal_id"] == pid
@@ -491,7 +509,7 @@ async def test_record_decision_rejects_proposal() -> None:
     _seed_metrics("d-rej", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-rej")
     pid = out["proposals"][0]["id"]
-    d = record_decision(pid, "rejected", actor="bob")
+    d = await record_decision(pid, "rejected", actor="bob")
     assert d["decision"] == "rejected"
 
 
@@ -499,14 +517,14 @@ def test_record_decision_invalid_raises_value_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(ValueError, match="decision must be one of"):
-        record_decision("any", "maybe", actor="u")
+        asyncio.run(record_decision("any", "maybe", actor="u"))
 
 
 def test_record_decision_unknown_id_raises_key_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(KeyError):
-        record_decision("missing-id", "accepted", actor="u")
+        asyncio.run(record_decision("missing-id", "accepted", actor="u"))
 
 
 # --- list_proposals ------------------------------------------------------
@@ -533,7 +551,7 @@ async def test_list_proposals_filter_by_decision() -> None:
     out = await run_optimizer("d")
     assert len(out["proposals"]) >= 2  # spec invariant for this test
     # Accept the first; leave the rest pending.
-    record_decision(out["proposals"][0]["id"], "accepted", actor="u")
+    await record_decision(out["proposals"][0]["id"], "accepted", actor="u")
     accepted = list_proposals(decision="accepted")
     assert len(accepted) == 1
     pending = list_proposals(decision="pending")
@@ -553,26 +571,105 @@ async def test_list_proposals_limit_clamped() -> None:
 # --- HTTP route tests ----------------------------------------------------
 
 
+def _optimizer_workspace(client: Any) -> str:
+    response = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Optimizer"}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _real_dag(client: Any, name: str) -> dict[str, Any]:
+    """A DAG descriptor that actually exists in the store.
+
+    The optimizer run gate (#2469) refuses a bare id with no descriptor: a
+    run against a target that does not exist must not mint proposals in the
+    caller's Workspace for it.
+    """
+    response = client.post("/v1/dags", json={"name": name, "description": "optimizer test"})
+    assert response.status_code == 201
+    return response.json()
+
+
 def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
-    _seed_metrics("d-http", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-http/run")
+    dag = _real_dag(admin_client, "Optimizer HTTP")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
     assert r.status_code == 200
     body = r.json()
-    assert body["dag_id"] == "d-http"
+    assert body["dag_id"] == dag["id"]
     assert body["proposals"]
     assert body["auto_applied"] == 0  # default apply_auto=False
 
 
 def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
-    _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-apply/run?apply_auto=true")
+    """apply_auto over HTTP is truthful: without a concrete target value the
+    model-swap proposal is `unsupported`, so nothing claims an application
+    and auto_applied stays 0 (#861 removed the fake apply path)."""
+    dag = _real_dag(admin_client, "Optimizer Apply")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(
+        f"/v1/optimizer/{dag['id']}/run?apply_auto=true&validate=false&workspace_id={workspace_id}"
+    )
     assert r.status_code == 200
-    assert r.json()["auto_applied"] >= 1
+    body = r.json()
+    assert body["auto_applied"] == 0
+    assert all(not p["applied"] for p in body["proposals"])
+
+
+def test_run_endpoint_requires_an_authorized_workspace(admin_client: Any) -> None:
+    """No workspace selection is a refusal (#766), matching the DAG-run route's
+    posture: the optimizer also drives DAG execution (baseline + hill-climb),
+    so it takes the same DagExecutionScope authorization."""
+    _seed_metrics("d-no-workspace", "n1", count=10, failed=8, p95=100)
+    r = admin_client.post("/v1/optimizer/d-no-workspace/run")
+    assert r.status_code == 403
+    assert "not authorized" in r.json()["detail"]
+
+
+def test_run_endpoint_validates_proposals_against_a_real_baseline(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """validate=True (the default) drives the full validation gate — a
+    workspace-scoped baseline run, per-proposal validation, and the
+    model/param hill-climb sweeps — not just the propose step. Exercises the
+    baseline execution in optimizer.py and the validation-gate execution seam
+    in validation_gate.py end to end, through a DAG that actually exists."""
+    import services.benchmark_eval as benchmark_eval
+    import services.graph_runner as graph_runner
+
+    async def fake_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "completed", "run_id": "r-validate", "node_results": {}}
+
+    async def fake_score(_result: Any, _task: Any) -> dict[str, Any]:
+        return {"total": 10}
+
+    monkeypatch.setattr(graph_runner, "execute_dag", fake_execute)
+    monkeypatch.setattr(benchmark_eval, "evaluate_dag_run", fake_score)
+
+    create = admin_client.post(
+        "/v1/dags", json={"name": "Optimizer Validate", "description": "test"}
+    )
+    assert create.status_code == 201
+    dag = create.json()
+    worker_node_id = dag["nodes"][1]["id"]
+    _seed_metrics(dag["id"], worker_node_id, count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+
+    r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["proposals"]
+    assert body["validated"] is True
+    assert body["baseline_score"] == 10
+    # Every surfaced proposal carries the validation gate's verdict fields.
+    assert all("variant_b_score" in p for p in body["proposals"])
 
 
 def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
-    """FastAPI's path can't be empty, but if a service-level ValueError
-    bubbles, the route translates it to 400."""
+    """A service-level ValueError bubbles and the route translates it to 400."""
 
     # Monkeypatch via the route's binding
     from routes import optimizer as routes_opt
@@ -584,39 +681,47 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
 
     routes_opt.run_optimizer = _raise
     try:
-        r = admin_client.post("/v1/optimizer/anything/run")
+        dag = _real_dag(admin_client, "Optimizer 400")
+        workspace_id = _optimizer_workspace(admin_client)
+        r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
         assert r.status_code == 400
     finally:
         routes_opt.run_optimizer = original
 
 
 async def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
-    _seed_metrics("d-list", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer List")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    await run_optimizer("d-list")
-    r = admin_client.get("/v1/optimizer/d-list/proposals")
+    workspace_id = _optimizer_workspace(admin_client)
+    await run_optimizer(dag["id"], workspace_id=workspace_id)
+    r = admin_client.get(f"/v1/optimizer/{dag['id']}/proposals")
     assert r.status_code == 200
     items = r.json()
     assert items
-    assert all(p["dag_id"] == "d-list" for p in items)
+    assert all(p["dag_id"] == dag["id"] for p in items)
 
 
 async def test_list_all_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-all", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer List All")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    await run_optimizer("d-all")
+    workspace_id = _optimizer_workspace(admin_client)
+    await run_optimizer(dag["id"], workspace_id=workspace_id)
     r = admin_client.get("/v1/optimizer/proposals?decision=pending")
     assert r.status_code == 200
     assert r.json()
 
 
 async def test_accept_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-acc", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer Accept")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = await run_optimizer("d-acc")
+    workspace_id = _optimizer_workspace(admin_client)
+    out = await run_optimizer(dag["id"], workspace_id=workspace_id)
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/accept")
     assert r.status_code == 200
@@ -624,10 +729,12 @@ async def test_accept_endpoint(admin_client: Any) -> None:
 
 
 async def test_reject_endpoint(admin_client: Any) -> None:
-    _seed_metrics("d-rejhttp", "n", count=10, failed=8, p95=100)
+    dag = _real_dag(admin_client, "Optimizer Reject")
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
     from services.optimizer import run_optimizer
 
-    out = await run_optimizer("d-rejhttp")
+    workspace_id = _optimizer_workspace(admin_client)
+    out = await run_optimizer(dag["id"], workspace_id=workspace_id)
     pid = out["proposals"][0]["id"]
     r = admin_client.post(f"/v1/optimizer/proposals/{pid}/reject")
     assert r.status_code == 200
@@ -644,17 +751,32 @@ def test_reject_endpoint_missing_id_returns_404(admin_client: Any) -> None:
     assert r.status_code == 404
 
 
+def _gated_proposal(admin_client: Any, name: str) -> str:
+    """A proposal id that survives the target gate: a real descriptor, a
+    Workspace the caller owns, and a server-recorded tenancy."""
+    from services.optimizer import run_optimizer
+
+    dag = _real_dag(admin_client, name)
+    _seed_metrics(dag["id"], dag["nodes"][1]["id"], count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+    out = asyncio.run(run_optimizer(dag["id"], workspace_id=workspace_id))
+    assert out["proposals"]
+    return out["proposals"][0]["id"]
+
+
 def test_accept_endpoint_invalid_decision_returns_400(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Force record_decision to raise ValueError — route → 400."""
+    """A decision that survives the target gate but fails at the service
+    boundary (ValueError) — route → 400."""
     import routes.optimizer as routes_opt
 
     def _raise(*a: Any, **kw: Any) -> Any:
         raise ValueError("oops")
 
     monkeypatch.setattr(routes_opt, "record_decision", _raise)
-    r = admin_client.post("/v1/optimizer/proposals/anything/accept")
+    pid = _gated_proposal(admin_client, "Optimizer Accept 400")
+    r = admin_client.post(f"/v1/optimizer/proposals/{pid}/accept")
     assert r.status_code == 400
 
 
@@ -668,7 +790,8 @@ def test_reject_endpoint_invalid_decision_returns_400(
         raise ValueError("oops")
 
     monkeypatch.setattr(routes_opt, "record_decision", _raise)
-    r = admin_client.post("/v1/optimizer/proposals/anything/reject")
+    pid = _gated_proposal(admin_client, "Optimizer Reject 400")
+    r = admin_client.post(f"/v1/optimizer/proposals/{pid}/reject")
     assert r.status_code == 400
 
 
@@ -841,3 +964,198 @@ async def test_only_zero_score_snapshots_are_skipped() -> None:
     _seed_metrics("d-clean", "n", count=10, failed=0, p95=100)
     out = await run_optimizer("d-clean")
     assert out["proposals"] == []
+
+
+# --- #861: mutated-snapshot refusal vocabulary (truthful apply outcomes) ---
+
+
+def _seed_mut_dag(dag_id: str = "d-mut") -> None:
+    """A minimal DAG record for direct _mutated_snapshot unit tests."""
+    import stores
+
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "entry_node": "n1",
+        "nodes": [
+            {"id": "n1", "model": "m-a", "prompt": "p"},
+            {"id": "n2", "model": "m-b", "prompt": "q"},
+        ],
+        "edges": [{"id": "e1", "from_node": "n1", "to_node": "n2", "weight": 1.0}],
+    }
+
+
+def _bound_proposal(kind: str, dag_id: str = "d-mut", **tp: Any) -> dict[str, Any]:
+    """A proposal bound to the current content of the seeded DAG."""
+    import stores
+    from services.optimizer_candidates import snapshot_hash
+
+    return {
+        "id": "p-1",
+        "dag_id": dag_id,
+        "kind": kind,
+        "source_dag_hash": snapshot_hash(stores.dags[dag_id]),
+        "topology_proposal": {"kind": kind, **tp},
+    }
+
+
+def test_collect_eval_verdicts_empty_dag_id_returns_empty() -> None:
+    """No dag_id means no verdicts can bind — the early empty return (#861)."""
+    from services.optimizer import _collect_eval_verdicts
+
+    _seed_eval_verdict("d-x", "run-x", 5)
+    assert _collect_eval_verdicts("") == []
+
+
+def test_mutated_snapshot_escalation_kind_is_never_applied() -> None:
+    """The backstop behind the escalation pre-checks: even a proposal that
+    reaches the builder with an authorization kind is refused unsupported —
+    tier changes are requests, never mutations (#861, #845/#60)."""
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("upgrade_execution_tier", target_node_id="n1", to_value="container")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "authorization request" in detail
+
+
+def test_mutated_snapshot_node_field_without_matching_node_is_unsupported() -> None:
+    """A node-field mutation naming a node the snapshot does not have is
+    `unsupported`, not a partial application."""
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("swap_model", target_node_id="nX", to_value="m-strong")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no node 'nX'" in detail
+
+
+def test_mutated_snapshot_edge_field_mutation_builds_candidate() -> None:
+    """An edge-field kind (weight/condition) builds a candidate on the deep
+    copy — the live DAG record is untouched by building."""
+    import stores
+    from services.optimizer import BUILT, _mutated_snapshot
+    from services.optimizer_candidates import snapshot_hash
+
+    _seed_mut_dag()
+    hash_before = snapshot_hash(stores.dags["d-mut"])
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("tune_edge_weight", target_node_id="n1", from_value="n2", to_value=0.2)
+    )
+    assert outcome == BUILT and detail == ""
+    assert candidate is not None
+    assert candidate["edges"][0]["weight"] == 0.2
+    # Building mutated only the copy.
+    assert snapshot_hash(stores.dags["d-mut"]) == hash_before
+
+
+def test_mutated_snapshot_edge_field_without_matching_edge_is_unsupported() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("set_edge_condition", target_node_id="n1", from_value="nX", to_value="ok")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no edge 'n1' -> 'nX'" in detail
+
+
+def test_mutated_snapshot_retry_count_requires_integer_value() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("retry_count_tune", target_node_id="n1", to_value="fast")
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no integer target value" in detail
+
+
+def test_mutated_snapshot_retry_count_without_matching_node_is_unsupported() -> None:
+    from services.optimizer import UNSUPPORTED, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("retry_count_tune", target_node_id="gone", to_value=3)
+    )
+    assert candidate is None
+    assert outcome == UNSUPPORTED
+    assert "no node 'gone'" in detail
+
+
+def test_mutated_snapshot_without_dag_record_is_stale() -> None:
+    """A proposal whose DAG no longer exists is `stale` — refused, never
+    re-targeted (#861)."""
+    from services.optimizer import STALE, _mutated_snapshot
+
+    _seed_mut_dag()
+    proposal = _bound_proposal("swap_model", target_node_id="n1", to_value="m-strong")
+    proposal["dag_id"] = "d-vanished"
+    candidate, outcome, detail = _mutated_snapshot(proposal)
+    assert candidate is None
+    assert outcome == STALE
+    assert "no DAG record" in detail
+
+
+def test_mutated_snapshot_structural_mutation_builds_candidate() -> None:
+    """Structural kinds dispatch through the whole-snapshot mutator and build
+    a candidate (add_node here)."""
+    from services.optimizer import BUILT, _mutated_snapshot
+
+    _seed_mut_dag()
+    candidate, outcome, detail = _mutated_snapshot(
+        _bound_proposal("add_node", target_node_id="n2", to_value="New Step")
+    )
+    assert outcome == BUILT and detail == ""
+    assert candidate is not None
+    assert candidate["nodes"][-1]["name"] == "New Step"
+    # The new node was wired to the target with an edge.
+    assert candidate["edges"][-1]["from_node"] == "n2"
+
+
+async def test_apply_auto_escalation_kind_is_a_pending_request(
+    _isolated: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An auto-apply proposal of an authorization kind is recorded as an
+    escalation REQUEST, not as a decision and never as an application —
+    `auto_applied` stays 0 and the audit holds the request for the delegated
+    authority (#861, #845/#60)."""
+    import services.optimizer as opt
+    import stores
+
+    _seed_mut_dag("d-esc")
+    _seed_metrics("d-esc", "n1", count=10, failed=8, p95=100)
+    monkeypatch.setattr(
+        opt,
+        "_propose_for_snapshot",
+        lambda snap: [
+            {
+                "class": opt.CLASS_AUTO_APPLY,
+                "kind": "upgrade_execution_tier",
+                "field_path": "nodes[n1].execution_tier",
+                "to_value": "container",
+                "rationale": "verdict asks for a stronger tier",
+            }
+        ],
+    )
+
+    out = await opt.run_optimizer("d-esc", apply_auto=True)
+    assert out["auto_applied"] == 0
+    (proposal,) = out["proposals"]
+    assert proposal["apply_outcome"] == "escalated"
+    assert proposal["applied"] is False
+    # A request is not a decision: it stays pending for the authority.
+    assert proposal["decision"] == opt.DECISION_PENDING
+    assert "tier_approved_by" not in repr(stores.dags["d-esc"])
+    requests = [
+        e for e in stores.audit_log.values() if e["action"] == "optimizer_escalation_request"
+    ]
+    assert len(requests) == 1
+    assert requests[0]["detail"]["requested_value"] == "container"

@@ -21,10 +21,20 @@ from types import MappingProxyType
 from maistro.security._types import PermissionTable
 from maistro.security.patterns import DANGEROUS_TOOL_NAMES
 
+# The Conductor's executable registry -- the tools its `dispatch_tool`
+# (packages/hive-conductor/backend/services/tool_executor.py, `TOOLS`) can
+# actually route. Grants for any other name return "Tool ... not available"
+# while the fail-closed table denies everything real, so a Hive deployment
+# must arm a preset aligned with THIS set, not `dangerous_tools_admin` (whose
+# exec/shell/apply_patch entries only an engine-side runtime can dispatch).
+# Guarded against drift by tests/security/test_sentinel_permission_table_armed.py.
+HIVE_CONDUCTOR_TOOLS = frozenset({"web_search", "browse_url", "clarify"})
+
 # "none" is handled by absence (an empty table), not by an explicit entry
 # here -- see build_permission_table's default.
 PERMISSION_PRESETS: dict[str, frozenset[str]] = {
     "dangerous_tools_admin": DANGEROUS_TOOL_NAMES,
+    "hive_conductor_tools": HIVE_CONDUCTOR_TOOLS,
 }
 
 #: Every accepted value of ``preset``. Membership is checked against this rather

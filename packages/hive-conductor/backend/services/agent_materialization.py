@@ -36,9 +36,12 @@ a persona declares (tools, checklist, theme) -- there's nothing to wait on.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
-from collections.abc import Iterator, Mapping
+import threading
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -49,7 +52,12 @@ from models.schemas import Agent
 
 from maistro.personas.expander import expand_persona
 from maistro.personas.schema import PersonaTemplate
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import (
+    WARDEN_POLICY_VERSION,
+    Warden,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 from .model_store import register_pop_hook
 
@@ -104,6 +112,10 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
     if isinstance(value, Mapping):
         for key, item in value.items():
             child = f"{path}.{key}" if path else str(key)
+            # Mapping keys are part of a JSON result too (Airtable field names
+            # are a common attacker-controlled example), so scan them before
+            # walking their values rather than treating them as paths only.
+            yield f"{child}<key>", str(key)
             yield from _text_leaves(item, path=child, depth=depth + 1)
         return
     if isinstance(value, list | tuple):
@@ -122,16 +134,105 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
-async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
+def _scan_provenance(
+    *, boundary: str, target: Mapping[str, Any] | None, scanned_values: int
+) -> dict[str, Any]:
+    """The self-describing fields every scan result carries (#288).
+
+    `scanner` names the detector and its policy version, `target` names what
+    was scanned, `scanned_at` is the completion timestamp, and `scanned_values`
+    is how many values the walk judged -- the evidence that distinguishes a
+    completed analysis from one that never ran.
+    """
+    return {
+        "scanner": {
+            "name": "warden",
+            "policy_version": WARDEN_POLICY_VERSION,
+            "boundary": boundary,
+        },
+        "target": dict(target) if target is not None else {"kind": "config", "id": None},
+        "scanned_at": datetime.now(UTC).isoformat(),
+        "scanned_values": scanned_values,
+    }
+
+
+def _looks_like_chat_messages(payload: object) -> bool:
+    if not isinstance(payload, list) or not payload:
+        return False
+    return all(isinstance(item, Mapping) and "role" in item for item in payload)
+
+
+async def scan_messages(
+    messages: Sequence[Mapping[str, object]],
+    *,
+    boundary: str = "user_input",
+    target: Mapping[str, Any] | None = None,
+) -> dict:
+    """Scan every forwarded message with bounded, ordered prior context.
+
+    A caller can supply assistant/tool history after its latest user turn, or
+    no user turn at all. Those messages still reach the model and must not be
+    omitted. Each current message is untrusted input; context provenance and
+    its bounded window remain the canonical Warden helper's responsibility.
+
+    The result carries the same self-describing provenance as `scan_config`
+    (#288), so a clean chat payload is never mistaken for an unexecuted scan.
+    """
+    # Keep the generic config walk's budgets before serializing chat metadata.
+    # Checking only the latest user turn or Warden's truncated context would
+    # silently exempt trailing/older text, nested content and oversized lists.
+    for scanned, (path, text) in enumerate(_text_leaves(messages), start=1):
+        if scanned > MAX_SCAN_NODES:
+            raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
+        if len(text) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
+    warden = _warden()
+    findings: list[str] = []
+    for index, message in enumerate(messages):
+        content = message_to_scan_text(message)
+        if len(content) > MAX_SCAN_TEXT:
+            raise ScanBudgetExceeded(f"messages[{index}] is longer than {MAX_SCAN_TEXT} characters")
+        context = context_from_messages(messages[:index])
+        verdict = await warden.scan(content, boundary, context=context)
+        if not verdict.clean:
+            findings.extend(f"messages[{index}]: {flag}" for flag in verdict.flags)
+    return {
+        "findings": findings,
+        "status": "clean" if not findings else "flagged",
+        **_scan_provenance(boundary=boundary, target=target, scanned_values=len(messages)),
+    }
+
+
+async def scan_config(
+    config: object,
+    *,
+    boundary: str = "user_input",
+    target: Mapping[str, Any] | None = None,
+) -> dict:
     """Scan every string in a configuration at a Warden boundary.
 
     The default boundary is the one inbound configurations cross; `tool_result`
     selects the detector's second boundary (#315) so tool outputs that will be
     re-fed to a model are judged by the same detector, not a second check.
+
+    OpenAI-shaped chat message lists scan every forwarded message with prior
+    conversation context instead of walking structural fields such as ``role``.
+
+    The result is self-describing (#288): `scanner` names the detector and its
+    policy version, `target` names what was scanned, `scanned_at` is the
+    completion timestamp, and `scanned_values` is how many strings the walk
+    judged -- the evidence that distinguishes a completed analysis from one
+    that never ran. `status` is only ever `clean` or `flagged`, and only on a
+    completed walk: a scanner that raises raises, and the routes translate
+    that into an explicit unknown state (503) rather than a clean bill.
     """
+    if _looks_like_chat_messages(config):
+        return await scan_messages(config, boundary=boundary, target=target)
     warden = _warden()
     findings: list[str] = []
+    scanned_values = 0
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
+        scanned_values = scanned
         if scanned > MAX_SCAN_NODES:
             raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
         if len(text) > MAX_SCAN_TEXT:
@@ -139,7 +240,89 @@ async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
         verdict = await warden.scan(text, boundary)
         if not verdict.clean:
             findings.extend(f"{path}: {flag}" for flag in verdict.flags)
-    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+    return {
+        "findings": findings,
+        "status": "clean" if not findings else "flagged",
+        **_scan_provenance(boundary=boundary, target=target, scanned_values=scanned_values),
+    }
+
+
+#: Hard wall-clock ceiling for one scan surfaced over HTTP (#288). Warden's
+#: reject phase already bounds each pattern at 0.5s (`_PATTERN_TIMEOUT_S`,
+#: fail-closed), but its heuristic fallback has no internal timeout -- so the
+#: scan routes bound the whole walk here, the same way the chat gate bounds
+#: its pre-turn scan (`chat_gate.SCAN_TIMEOUT_SECONDS`). A scan that outlives
+#: this budget is an *unknown* state: `TimeoutError` to the caller, which the
+#: routes translate into 503 -- never a truncated result, and never clean.
+SCAN_TIMEOUT_SECONDS = 10.0
+
+
+async def _run_scan_off_loop(
+    factory: Callable[[], Awaitable[dict]],
+) -> dict:
+    """Run one scan on a daemon thread so its deadline is enforceable.
+
+    Warden's `user_input` layers do normalization, regex, heuristics, and
+    semantic checks synchronously; awaiting that walk on the request loop
+    keeps the loop from running the `wait_for` timer, so a CPU-bound scan could
+    outlive `SCAN_TIMEOUT_SECONDS` and hang the endpoint (Codex P1 on #2235).
+    The worker gets its own loop and the request loop stays free to enforce the
+    deadline. On timeout the daemon thread is abandoned rather than joined --
+    the response is already the explicit unknown, and a hung scan must not keep
+    the process alive at shutdown.
+    """
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[dict] = loop.create_future()
+
+    def deliver(value: dict | None, error: BaseException | None) -> None:
+        # A delivery that arrives after the deadline finds the request already
+        # resolved: `set_result`/`set_exception` on a cancelled future raise
+        # `InvalidStateError`, and that is the whole point of the guard -- the
+        # response is already the explicit unknown, so a late delivery is a
+        # no-op rather than a crash.
+        with contextlib.suppress(asyncio.InvalidStateError):
+            if error is not None:
+                result.set_exception(error)
+            else:
+                assert value is not None
+                result.set_result(value)
+
+    def worker() -> None:
+        try:
+            value = asyncio.run(factory())
+        except BaseException as exc:  # re-raised on the request loop
+            with contextlib.suppress(RuntimeError):
+                # The request loop may have closed after the deadline; the
+                # response is already the explicit unknown, so a late deliver
+                # is a no-op rather than a crash.
+                loop.call_soon_threadsafe(deliver, None, exc)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(deliver, value, None)
+
+    threading.Thread(target=worker, name="warden-scan", daemon=True).start()
+    return await result
+
+
+async def scan_config_bounded(
+    config: object,
+    *,
+    boundary: str = "user_input",
+    target: Mapping[str, Any] | None = None,
+) -> dict:
+    """`scan_config` under a hard time budget (#288): no verdict or `TimeoutError`.
+
+    The HTTP scan routes use this so a detector that hangs cannot hang the
+    request: past `SCAN_TIMEOUT_SECONDS` the caller gets `TimeoutError` -- an
+    explicit unknown, the same state a raising detector produces. The walk runs
+    off the request event loop (`_run_scan_off_loop`) because Warden's CPU-bound
+    layers otherwise starve the `wait_for` timer; the constant is read at call
+    time so tests (and deployments) can tighten it.
+    """
+    return await asyncio.wait_for(
+        _run_scan_off_loop(lambda: scan_config(config, boundary=boundary, target=target)),
+        timeout=SCAN_TIMEOUT_SECONDS,
+    )
 
 
 # ─── Definition writes: the CRUD / Forge / chat-tool fronts ───────────────
@@ -155,11 +338,23 @@ def _provenance(source: str, scan: dict | None, when: datetime) -> dict[str, Any
     the scan itself otherwise."""
     entry: dict[str, Any] = {"source": source, "timestamp": when.isoformat()}
     if scan is not None:
+        # Carry the scan's OWN self-describing stamp forward (#288): the same
+        # fields the HTTP scan routes return -- scanner identity/policy, the
+        # target it walked, when the analysis completed, and how many values it
+        # judged -- so a stored row's validation history is as self-describing
+        # as the live result. A "clean" row can then always show the completed
+        # analysis behind it (SECURITY.md's stored-definition claim); the
+        # fallbacks keep a caller-supplied partial verdict honest rather than
+        # inventing a field it never computed.
+        scanner = scan.get("scanner", {"name": "warden", "policy_version": WARDEN_POLICY_VERSION})
         entry["scan"] = {
-            "boundary": "user_input",
+            "scanner": scanner,
+            "boundary": scanner.get("boundary", "user_input"),
             "status": scan.get("status", "flagged" if scan.get("findings") else "clean"),
             "findings": list(scan.get("findings", [])),
-            "scanned_at": when.isoformat(),
+            "target": scan.get("target", {"kind": "config", "id": None}),
+            "scanned_at": scan.get("scanned_at", when.isoformat()),
+            "scanned_values": scan.get("scanned_values", 0),
         }
     return entry
 
@@ -186,10 +381,32 @@ async def upsert_agent_definition(
     the provenance stamp either way, so a caller cannot forge one through
     `config`.
     """
+    stored = await _scanned_definition(agent, source=source, scan=scan)
+    stores.agents[stored.id] = stored
+    return stored
+
+
+async def insert_agent_definition_once(agent: Agent, *, source: str) -> Agent:
+    """Store a definition only while its id is free; return the row holding it.
+
+    The same scan-before-store gate as `upsert_agent_definition`, but a row
+    that already holds the id -- including one another process wrote after
+    this one loaded its roster -- is returned untouched rather than replaced.
+    """
+    stored = await _scanned_definition(agent, source=source, scan=None)
+    stores.agents.put_if_absent(stored.id, stored)
+    held: Agent = stores.agents[stored.id]
+    return held
+
+
+async def _scanned_definition(agent: Agent, *, source: str, scan: dict[str, Any] | None) -> Agent:
     t = datetime.now(UTC)
     if scan is None:
         try:
-            scan = await scan_config(agent.model_dump(mode="json"))
+            scan = await scan_config(
+                agent.model_dump(mode="json"),
+                target={"kind": "agent_definition", "id": agent.id},
+            )
         except ScanBudgetExceeded:
             raise
         except Exception as exc:
@@ -200,9 +417,7 @@ async def upsert_agent_definition(
     _reject_if_flagged(scan)
     config = dict(agent.config)
     config["provenance"] = _provenance(source, scan, t)
-    stored = agent.model_copy(update={"config": config})
-    stores.agents[stored.id] = stored
-    return stored
+    return agent.model_copy(update={"config": config})
 
 
 async def update_agent_definition(
@@ -237,6 +452,14 @@ def agent_id_for(workspace_id: str, spawn_agent: str) -> str:
     re-materialization: creating/updating the same workspace's agents again
     overwrites the same records rather than piling up duplicates."""
     return f"{workspace_id}.{spawn_agent}"
+
+
+def workspace_agent_id(workspace_id: str) -> str:
+    """The Workspace Agent's stable id; a pure function of the Workspace id.
+
+    Its own `workspace-agent:` namespace, so no other producer can mint it
+    (#1037)."""
+    return f"workspace-agent:{workspace_id}"
 
 
 def slugify_agent_name(text: str, *, limit: int = 32) -> str:
@@ -310,6 +533,9 @@ def delete_workspace_agents(workspace_id: str) -> None:
     """
     for agent in list(workspace_agents(workspace_id)):
         stores.agents.pop(agent.id, None)
+    # The Workspace Agent's id is known without a cache hit: another process
+    # may have materialized it after this one loaded its roster (#1037).
+    stores.agents.discard(workspace_agent_id(workspace_id))
 
 
 # ─── Canonical roster materialization (#840) ──────────────────────────────
@@ -476,7 +702,12 @@ def register_runtime_source(*, container: Any, llm: Any, preamble: str) -> None:
 
 
 def reset_runtime_source() -> None:
-    """Forget the registered runtime. Test isolation; boot never calls this."""
+    """Forget the registered runtime.
+
+    Test isolation, and since #1181 the engine-start unwind: a boot that
+    fails after the bridge registered the runtime must not leave the
+    materialization seam pointing at a container nothing published.
+    """
     global _runtime_source
     _runtime_source = None
 
@@ -511,35 +742,56 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
     """
     from maistro.agents.factory import _render_preamble, instantiate_agent
     from maistro.types.agent import AgentIdentity
+    from services.tool_binding import binding_prompt_fragment, binding_tools_override
 
     config = defn.config if isinstance(defn.config, dict) else {}
     name = defn.name
+    spawn = name.rsplit(".", 1)[-1]
+    # #2276: Workspace sticky bindings win at runtime construction — the same
+    # authority `agent_invocation` consults — so UI/API-saved bindings hit one
+    # dispatch path without rematerializing the durable row.
+    override = binding_tools_override(defn.workspace_id, spawn)
+    tools = tuple(override) if override is not None else tuple(defn.capabilities or ())
     identity = AgentIdentity(
         name=name,
         description=defn.description or "",
         soul_prompt_name=f"agent.{name}.soul",
         model=defn.model or "auto",
-        tools=tuple(defn.capabilities or ()),
+        tools=tools,
         reasoning_strategy=str(config.get("strategy") or "direct"),
     )
-    full_soul = _render_preamble(
-        source.preamble,
-        {
-            "name": name,
-            "description": identity.description,
-            "capabilities": ", ".join(identity.tools),
-        },
-    ) + str(config.get("soul") or identity.description)
+    fragment = binding_prompt_fragment(defn.workspace_id, spawn)
+    soul_body = str(config.get("soul") or identity.description)
+    if fragment:
+        soul_body = f"{soul_body}\n\n{fragment}"
+    full_soul = (
+        _render_preamble(
+            source.preamble,
+            {
+                "name": name,
+                "description": identity.description,
+                "capabilities": ", ".join(identity.tools),
+            },
+        )
+        + soul_body
+    )
     container = source.container
     await container.prompt_manager.upsert(
         identity.soul_prompt_name,
         full_soul,
         label="production",
     )
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    llm = source.llm
+    # Later-materialized Agents retain definition-Workspace restriction while
+    # sharing the bridge's one AdmittedModelCalls helper with the boot roster.
+    if isinstance(llm, GovernedLLMClient):
+        llm = GovernedLLMClient(llm._calls, workspace_id=defn.workspace_id)
     return instantiate_agent(
         identity,
         agent_resolver=container.agents.get,
-        llm=source.llm,
+        llm=llm,
         context_builder=container.context_builder,
         prompt_manager=container.prompt_manager,
         warden=container.warden,

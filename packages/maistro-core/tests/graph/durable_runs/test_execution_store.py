@@ -11,6 +11,7 @@ from maistro.runs import AttemptExecutionService, AttemptStatus, RunStatus
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
 async def _durable_running_node() -> tuple[InMemoryDurableRunStore, DurableRunRecord, str]:
@@ -24,6 +25,7 @@ async def _durable_running_node() -> tuple[InMemoryDurableRunStore, DurableRunRe
         workspace_id=graph.workspace_id,
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)
@@ -204,6 +206,61 @@ async def test_a_durable_lease_that_lapses_is_reclaimed() -> None:
     assert settled is not None
     assert settled.status is AttemptStatus.CANCELLED
     assert "graph-worker" in (settled.error or "")
+
+
+@pytest.mark.asyncio
+async def test_a_stale_park_replay_cannot_move_the_node_run() -> None:
+    """The recovery park is fenced by `expected_current_attempt_id` (#1621).
+
+    A replaying walker holds a genuine, persisted decision — the reclaim's
+    WAITING park for its own Attempt — but a newer Attempt owning the NodeRun
+    makes that decision stale, and parking over live retry work is exactly
+    the write this fence exists to refuse. The matching expectation lands.
+    """
+    from datetime import timedelta
+
+    from maistro.runs.store import RunIntegrityError
+
+    store, record, node_run_id = await _durable_running_node()
+    execution_store = DurableRunExecutionStore(store, run_id=record.run_id)
+    abandoned = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-stale", lease_ttl=timedelta(seconds=30)
+    )
+    lease = abandoned.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    await execution_store.transition_attempt(
+        abandoned.attempt_id, AttemptStatus.RUNNING, fencing_token=lease.fencing_token
+    )
+    (reclaimed,) = await execution_store.reclaim_expired_attempts(
+        now=lease.expires_at + timedelta(seconds=1)
+    )
+    retry = await execution_store.create_attempt(
+        node_run_id, lease_holder="worker-retry", lease_ttl=timedelta(seconds=30)
+    )
+    assert retry.ordinal > reclaimed.ordinal
+
+    with pytest.raises(RunIntegrityError, match="was superseded"):
+        await execution_store.transition_node_run(
+            node_run_id,
+            RunStatus.WAITING,
+            error=reclaimed.error,
+            expected_current_attempt_id=reclaimed.attempt_id,
+        )
+
+    persisted = await store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.node_runs[0].status is RunStatus.RUNNING
+
+    parked = await execution_store.transition_node_run(
+        node_run_id,
+        RunStatus.WAITING,
+        error=reclaimed.error,
+        expected_current_attempt_id=retry.attempt_id,
+    )
+    assert parked.status is RunStatus.WAITING
+    after = await store.get(record.run_id)
+    assert after is not None
+    assert after.node_runs[0].status is RunStatus.WAITING
 
 
 @pytest.mark.asyncio

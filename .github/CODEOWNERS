@@ -8,6 +8,8 @@
 
 # Repository governance and CI oracles
 /.github/ @BlakeMatthews-dev
+/formal/fixtures/ @BlakeMatthews-dev
+/formal/SECURITY-CONFORMANCE.md @BlakeMatthews-dev
 /quality/ @BlakeMatthews-dev
 /scripts/check-branch-protection.py @BlakeMatthews-dev
 /scripts/check-required-checks.py @BlakeMatthews-dev

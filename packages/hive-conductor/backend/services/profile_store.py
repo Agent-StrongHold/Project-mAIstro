@@ -17,11 +17,13 @@ old arrangement invisible, and it is also what makes a second replica serve a
 profile its owner has already changed — the gap #703 had to correct a claim
 about one family later. A profile read is one row; there is nothing to save.
 
-**Read-back before acknowledgement.** `PersistedStore.put_raw` enqueues a
-closure for `State`'s writer thread and returns, and `State._writer_loop`
-swallows what that closure raises. Acknowledging after `put_raw` acknowledges a
-write that may never have landed — exactly the trap ADR-082926-0b72 documents
-for settings. Every write here flushes, re-reads and compares.
+**Read-back before acknowledgement.** `PersistedStore.put_raw` and `delete`
+are acknowledged writes (#1179): they do not return until `State`'s writer
+thread has committed, and they raise the writer's failure instead of
+queueing it (#1238). Acknowledging a queued write acknowledges one that may
+never have landed — the trap ADR-082926-0b72 documents for settings. There
+is no per-store flush to remember; every write here is re-read and compared
+after `put_raw` returns.
 """
 
 from __future__ import annotations
@@ -127,16 +129,18 @@ class EphemeralProfileRecordStore:
 
 
 class PersistedProfileRecordStore:
-    """Record store over `PersistedStore`, draining the writer queue on write.
+    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
 
-    `flush` is the drain. Without it `read` races the writer thread and the
-    read-back check would pass or fail on timing.
+    ``put_raw``/``delete`` are the acknowledgement primitive: they do not
+    return until the State writer thread has committed, and they raise the
+    writer's failure instead of accepting the write into a queue (#1238).
+    There is no per-store ``flush`` to remember: a completed ``write`` or
+    ``remove`` is durable, so the read-back after it observes the committed
+    document rather than racing the writer thread.
     """
 
-    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
+    def __init__(self, persisted: Any) -> None:
         self._persisted = persisted
-        self._flush = flush
-        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -147,12 +151,12 @@ class PersistedProfileRecordStore:
         return str(document) if document is not None else None
 
     def write(self, user_id: str, document: str) -> None:
+        # Acknowledged writes (#1179): return only after the commit, raise the
+        # writer's failure — never a queue-accepted receipt.
         self._persisted.put_raw(STORE_NAME, user_id, document)
-        self._flush(timeout=self._timeout)
 
     def remove(self, user_id: str) -> None:
         self._persisted.delete(STORE_NAME, user_id)
-        self._flush(timeout=self._timeout)
 
     def user_ids(self) -> list[str]:
         return sorted(key for key, _ in self._persisted.list_all_raw(STORE_NAME))
@@ -281,8 +285,12 @@ def save(user_id: str, values: dict[str, Any]) -> ProfileRecord:
     """Persist `values` as `user_id`'s whole profile, returning what was read back.
 
     Raises `ProfilePersistenceError` when the store did not end up holding what
-    was sent.
+    was sent. Raises ``PreferenceValueError`` (from workspace_preferences) when
+    a known Workspace preference key carries a value outside its allow-list.
     """
+    from services.workspace_preferences import validate_preferences_document
+
+    values = validate_preferences_document(values)
     with _write_lock:
         stored = load(user_id)
         written = ProfileRecord(
@@ -298,8 +306,11 @@ def save(user_id: str, values: dict[str, Any]) -> ProfileRecord:
 
 def set_field(user_id: str, field: str, value: Any) -> ProfileRecord:
     """Set one profile field, leaving the rest of the record alone."""
+    from services.workspace_preferences import validate_preference_field
+
     if not field:
         raise ValueError("a profile field must be named")
+    value = validate_preference_field(field, value)
     with _write_lock:
         values = load(user_id).preferences
         values[field] = value

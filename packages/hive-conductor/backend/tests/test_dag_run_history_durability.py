@@ -287,6 +287,9 @@ class TestSubscribersAreNotHistory:
             # The canonical scope the run was admitted into (#1174).
             "workspace_id",
             "project_id",
+            # The run's total event counter, the resume cursor stream consumers
+            # detect gaps against (#1183).
+            "event_seq",
             "events",
         }
 
@@ -510,8 +513,16 @@ class TestABookkeepingFailureIsNotAnExecutionFailure:
         body = source[source.index("async def _tool_run_workflow") :]
         body = body[: body.index("async def _tool_analyze_dashboard")]
         assert "executed = True" in body
-        assert 'status = "completed" if executed else "failed"' in body
-        assert "finish_run(exec_id, status=status)" in body
+        # The graph's own outcome decides what the failure branch records:
+        # a returned result is recorded as the canonical outcome it is
+        # (#35/#1036 -- the same contract as the success path), and only an
+        # unknown outcome stamps the attempt-local display `failed`, before
+        # the operator warning explains the incomplete history.
+        decided = body.index("if executed:")
+        outcome = body.index("record_outcome(", decided)
+        failed = body.index('finish_run(exec_id, status="failed")', decided)
+        warned = body.index("dag_run_bookkeeping_failed", decided)
+        assert outcome < failed < warned
 
     @pytest.mark.ac("SPEC-083026-2601/AC-2")
     def test_the_flag_is_set_immediately_after_the_execution(self) -> None:
@@ -545,11 +556,20 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @staticmethod
     def _install(monkeypatch: Any, store: Any, *, events_fail: bool, exec_fails: bool) -> None:
+        import services.dag_execution_scope as scope_module
         import services.dag_run_store as run_store_module
         import services.graph_runner as graph_runner_module
         import stores
+        from services.dag_execution_scope import DagExecutionScope
 
         stores.dags["d-1"] = {"id": "d-1", "nodes": [], "edges": []}
+
+        async def _authorize(*_args: Any, **_kwargs: Any) -> DagExecutionScope:
+            return DagExecutionScope(
+                workspace_id="test-workspace", project_id="test-project", user_id="u-1"
+            )
+
+        monkeypatch.setattr(scope_module, "authorize_hive_dag_scope", _authorize)
         monkeypatch.setattr(run_store_module, "get_dag_run_store", lambda: store)
 
         async def _execute(dag_data: Any, **kwargs: Any) -> dict[str, Any]:

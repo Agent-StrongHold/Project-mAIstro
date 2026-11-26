@@ -7,7 +7,13 @@ import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.sessions.turns import reject_blank_turn_id
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -65,23 +71,23 @@ class SqliteSessionStore:
 
     async def ensure_schema(self) -> None:
         """Create the sessions table if it doesn't exist."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.execute(_TURNS_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
-        existing = {row[1] for row in await cursor.fetchall()}
-        for column in _TURN_PROVENANCE_COLUMNS:
-            if column not in existing:
-                await self._conn.execute(f"ALTER TABLE session_turns ADD COLUMN {column} TEXT")
-        # Without this, the TTL purge is a full table scan on every append —
-        # which is how a retention sweep turns into a reason to disable the
-        # retention sweep.
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_timestamp ON sessions (timestamp)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_session_turns_timestamp ON session_turns (timestamp)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_TURNS_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
+            existing = {row[1] for row in await cursor.fetchall()}
+            for column in _TURN_PROVENANCE_COLUMNS:
+                if column not in existing:
+                    await self._conn.execute(f"ALTER TABLE session_turns ADD COLUMN {column} TEXT")
+            # Without this, the TTL purge is a full table scan on every append —
+            # which is how a retention sweep turns into a reason to disable the
+            # retention sweep.
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_timestamp ON sessions (timestamp)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_turns_timestamp ON session_turns (timestamp)"
+            )
 
     async def get_history(
         self,
@@ -102,6 +108,29 @@ class SqliteSessionStore:
             (session_id, cutoff, max_msg),
         )
         rows = list(reversed(list(await cursor.fetchall())))
+        return [{"role": r[0], "content": r[1]} for r in rows]
+
+    async def transcript(
+        self,
+        session_id: str,
+        ttl_seconds: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Return every retained message, oldest first.
+
+        The full TTL-bounded transcript without the model-context
+        ``max_messages`` truncation ``get_history`` applies — the body
+        ADR-048 session search aggregates over.
+        """
+        ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
+        cutoff = time.time() - ttl
+
+        cursor = await self._conn.execute(
+            """SELECT role, content FROM sessions
+               WHERE session_id = ? AND timestamp > ?
+               ORDER BY seq""",
+            (session_id, cutoff),
+        )
+        rows = list(await cursor.fetchall())
         return [{"role": r[0], "content": r[1]} for r in rows]
 
     async def append_messages(
@@ -236,4 +265,24 @@ class SqliteSessionStore:
             (cutoff,),
         )
         await self._conn.commit()
+        await self._publish_table_health()
         return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    async def _publish_table_health(self) -> None:
+        """Publish the conversation tables' stored volume after a purge (#325).
+
+        `purge_expired` runs inline on every append, so a TTL silently set to
+        never-expire would look identical to a healthy one in delete counts.
+        The stored level of `sessions` and `session_turns` — and how far back
+        the retained conversation reaches — is what actually shows the TTL
+        being enforced. Throttled per store by the publisher, so the inline
+        driver costs at most one probe per interval.
+        """
+        if not retention_health_probe_due("sessions:sqlite"):
+            return
+        samples = []
+        for table in ("sessions", "session_turns"):
+            sample = await sqlite_table_sample(self._conn, table, "timestamp", oldest_unit="unix_s")
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("sessions:sqlite", "sqlite", samples, min_interval_s=0.0)

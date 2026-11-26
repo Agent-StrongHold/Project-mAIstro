@@ -20,13 +20,18 @@ from maistro_turing.bridge import (
 class FakeEpisodicStore:
     def __init__(self) -> None:
         self.stored: list[Any] = []
+        self.last_user_id: str | None = None
 
     async def store(self, memory: Any) -> str:
         self.stored.append(memory)
         return "mem-1"
 
-    async def retrieve(self, query: str, *, limit: int = 5) -> list[Any]:
+    async def retrieve(
+        self, query: str, *, user_id: str | None = None, limit: int = 5
+    ) -> list[Any]:
         from maistro.types.memory import EpisodicMemory, MemoryTier
+
+        self.last_user_id = user_id
 
         return [
             EpisodicMemory(
@@ -34,6 +39,7 @@ class FakeEpisodicStore:
                 tier=MemoryTier.OBSERVATION,
                 content=f"{query}-{i}",
                 weight=0.3,
+                user_id=user_id,
             )
             for i in range(min(limit, 2))
         ]
@@ -72,6 +78,19 @@ class FakeWarden:
 class RaisingWarden:
     async def scan(self, content: str, boundary: str = "") -> FakeWardenResult:
         raise RuntimeError("warden exploded")
+
+
+class ContextWarden:
+    """Warden double that records the #1158 analysis-context kwarg."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def scan(
+        self, content: str, boundary: str = "", *, context: Any = None
+    ) -> FakeWardenResult:
+        self.calls.append({"content": content, "boundary": boundary, "context": context})
+        return FakeWardenResult(True, False, [])
 
 
 class FakeLLMClient:
@@ -144,6 +163,43 @@ class TestTuringMemoryBridge:
         assert mem.weight == 0.4
         assert mem.context == {"k": "v"}
 
+    async def test_store_episode_clamps_out_of_range_weight_at_the_write_seam(self) -> None:
+        """The documented clamp_weight safeguard is ON the write path (#859).
+
+        An over-range proposal persists at its tier's upper bound, an
+        under-range one at its lower bound — clamped exactly once, here, not
+        wherever a caller happens to remember to clamp.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        await bridge.store_episode(content="hot take", tier="observation", weight=999.0)
+        assert store.stored[-1].weight == 0.5  # observation upper bound
+
+        await bridge.store_episode(content="cold take", tier="observation", weight=-3.0)
+        assert store.stored[-1].weight == 0.1  # observation lower bound
+
+        await bridge.store_episode(content="wisdom", tier="wisdom", weight=0.2)
+        assert store.stored[-1].weight == 0.9  # wisdom lower bound
+
+    async def test_store_episode_refuses_malformed_weights_and_tiers(self) -> None:
+        """Type/range constraints fail the write instead of laundering values."""
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        with pytest.raises(ValueError, match="finite"):
+            await bridge.store_episode(content="x", tier="observation", weight=float("nan"))
+        with pytest.raises(ValueError, match="finite"):
+            await bridge.store_episode(content="x", tier="observation", weight=float("inf"))
+        with pytest.raises(TypeError, match="real number"):
+            await bridge.store_episode(content="x", tier="observation", weight="0.4")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="real number"):
+            await bridge.store_episode(content="x", tier="observation", weight=True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="not-a-tier"):
+            await bridge.store_episode(content="x", tier="not-a-tier", weight=0.4)
+        # Nothing malformed reached the store.
+        assert store.stored == []
+
     async def test_retrieve_episodes_with_no_store_returns_empty_list(self) -> None:
         bridge = TuringMemoryBridge()
         result = await bridge.retrieve_episodes("query")
@@ -159,6 +215,49 @@ class TestTuringMemoryBridge:
         assert result[0]["tier"] == "observation"
         assert result[0]["weight"] == 0.3
         assert isinstance(result[0]["created_at"], str)
+        # Unscoped retrieval does not claim a scope filter.
+        assert store.last_user_id is None
+
+    async def test_store_episode_carries_principal_provenance(self) -> None:
+        """Scoped writes persist the caller's identity on the row (#859).
+
+        Blank-scope rows are indistinguishable across principals in a shared
+        episodic store, so the write seam must accept — and set — the
+        caller's canonical user/project provenance.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        await bridge.store_episode(
+            content="scoped capture",
+            tier="observation",
+            user_id="user-7",
+            project_id="proj-9",
+        )
+        mem = store.stored[-1]
+        assert mem.user_id == "user-7"
+        assert mem.project_id == "proj-9"
+
+        # The unscoped path keeps blank provenance rather than guessing one.
+        await bridge.store_episode(content="unscoped capture", tier="observation")
+        mem = store.stored[-1]
+        assert mem.user_id is None
+        assert mem.project_id == ""
+
+    async def test_retrieve_episodes_scopes_reads_to_the_calling_principal(self) -> None:
+        """Scoped reads pass the caller's identity to the store's filter (#859).
+
+        Retrieval without a scope filter would surface every principal's
+        episodes to everyone; the scope filter is how one Workspace's reads
+        stay inside its own cognitive history.
+        """
+        store = FakeEpisodicStore()
+        bridge = TuringMemoryBridge(episodic_store=store)
+
+        result = await bridge.retrieve_episodes("query", user_id="user-7")
+        assert len(result) == 2
+        assert store.last_user_id == "user-7"
+        assert all(item["content"].startswith("query") for item in result)
 
     async def test_store_learning_with_no_store_returns_zero(self) -> None:
         bridge = TuringMemoryBridge()
@@ -189,10 +288,9 @@ class TestTuringMemoryBridge:
 
 
 class TestTuringSecurityBridge:
-    async def test_scan_self_write_with_no_warden_allows(self) -> None:
-        bridge = TuringSecurityBridge()
-        result = await bridge.scan_self_write("content", kind="blog")
-        assert result == {"verdict": "allowed", "flags": []}
+    def test_missing_warden_is_rejected(self) -> None:
+        with pytest.raises(RuntimeError, match="canonical Warden is required"):
+            TuringSecurityBridge(None)
 
     async def test_scan_self_write_delegates_to_warden(self) -> None:
         warden = FakeWarden(verdict="blocked", flags=["pii"])
@@ -201,15 +299,38 @@ class TestTuringSecurityBridge:
         assert result == {"verdict": "blocked", "flags": ["pii"]}
         assert warden.scan_calls == [("content", "user_input")]
 
-    async def test_scan_self_write_swallows_warden_exception(self) -> None:
+    async def test_scan_self_write_fails_closed_when_warden_raises(self) -> None:
         bridge = TuringSecurityBridge(warden=RaisingWarden())
         result = await bridge.scan_self_write("content", kind="blog")
-        assert result == {"verdict": "allowed", "flags": []}
+        assert result == {"verdict": "blocked", "flags": ["warden_unavailable"]}
 
-    async def test_scan_tool_result_with_no_warden_allows(self) -> None:
-        bridge = TuringSecurityBridge()
-        result = await bridge.scan_tool_result("content", tool_name="grep")
+    async def test_scan_user_input_delegates_to_warden(self) -> None:
+        warden = FakeWarden(verdict="allowed")
+        bridge = TuringSecurityBridge(warden=warden)
+        result = await bridge.scan_user_input("content")
         assert result == {"verdict": "allowed", "flags": []}
+        assert warden.scan_calls == [("content", "user_input")]
+
+    async def test_scan_user_input_forwards_context_to_warden(self) -> None:
+        """The #1158 seam: a caller-supplied bounded ordered context reaches
+        the canonical Warden unchanged, and an absent context stays absent so
+        pre-#1158 warden seams keep working."""
+        from maistro.security.warden.detector import WardenContext
+
+        warden = ContextWarden()
+        bridge = TuringSecurityBridge(warden=warden)
+        context = [
+            WardenContext(
+                content="prior turn", provenance="untrusted", boundary="conversation:user"
+            )
+        ]
+
+        result = await bridge.scan_user_input("current", context=context)
+
+        assert result == {"verdict": "allowed", "flags": []}
+        assert warden.calls == [
+            {"content": "current", "boundary": "user_input", "context": context}
+        ]
 
     async def test_scan_tool_result_delegates_to_warden(self) -> None:
         warden = FakeWarden(verdict="allowed", flags=[])
@@ -227,10 +348,37 @@ class TestTuringSecurityBridge:
         result = await bridge.scan_tool_result("content", tool_name="grep")
         assert result == {"verdict": "blocked", "flags": ["injection"]}
 
-    async def test_scan_tool_result_swallows_warden_exception(self) -> None:
+    async def test_scan_tool_result_fails_closed_when_warden_raises(self) -> None:
         bridge = TuringSecurityBridge(warden=RaisingWarden())
         result = await bridge.scan_tool_result("content", tool_name="grep")
+        assert result == {"verdict": "blocked", "flags": ["warden_unavailable"]}
+
+    async def test_unauditable_verdict_is_blocked_not_allowed(self) -> None:
+        """An audit hook failure must not turn a scanned verdict into an allow."""
+
+        async def failing_hook(_result: Any, _content: str, _boundary: str) -> None:
+            raise RuntimeError("audit sink down")
+
+        bridge = TuringSecurityBridge(warden=FakeWarden(verdict="allowed"), audit_hook=failing_hook)
+
+        result = await bridge.scan_user_input("content")
+
+        assert result == {"verdict": "blocked", "flags": ["security_audit_unavailable"]}
+
+    async def test_audited_verdict_returns_the_warden_result(self) -> None:
+        seen: list[tuple[Any, str, str]] = []
+
+        async def hook(result: Any, content: str, boundary: str) -> None:
+            seen.append((result, content, boundary))
+
+        bridge = TuringSecurityBridge(warden=FakeWarden(verdict="allowed"), audit_hook=hook)
+
+        result = await bridge.scan_user_input("content")
+
         assert result == {"verdict": "allowed", "flags": []}
+        assert len(seen) == 1
+        assert seen[0][1] == "content"
+        assert seen[0][2] == "user_input"
 
 
 # ------------------------------------------------------- TuringProviderBridge

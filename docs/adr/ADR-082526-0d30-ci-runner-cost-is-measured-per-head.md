@@ -59,7 +59,13 @@ Measure one PR head, and read both sides off it.
 The change altered **which PRs trigger a workflow**, not what any workflow does.
 The old trigger set is therefore a strict subset of the new one, and both costs
 are present in a single head's job list: the "before" cost of a stacked PR is
-the subset that carried no base filter, and the "after" cost is the whole set.
+the subset that carried no base filter, and the "after" cost is the whole set
+*on that head* — a head-attributed subtotal, not a fleet total. Publisher
+workflows that run only on the default branch (`workflow_run` consumers such as
+Gates Ran) are outside the head query; their costs are neither zero nor counted
+here. Full candidate-attribution and fleet-cost accounting remain open under
+the #1357 audit — see
+[ci-1357-cost-collection](../testing/inventory-notes/ci-1357-cost-collection.md).
 No time window, no PR-volume confound, and the two figures come from the same
 run so nothing drifts between them.
 

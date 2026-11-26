@@ -17,13 +17,66 @@ from typing import Any
 import pytest
 
 from maistro.graph.nodes.base import NodeContext
+from maistro.security.sentinel.authz_types import Tier
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 
+def _compat_ctx(*, run: str = "run-compat", node: str = "n1") -> NodeContext:
+    """Minimal canonical identity for the compat tool-node surface.
+
+    #57 retired the no-identity branch: a tool effect executes only beneath a
+    canonical Invocation, so these tests supply the identity the production
+    path always provides.
+    """
+    return NodeContext(
+        run_id=run,
+        dag_id="dag-1",
+        node_id=node,
+        node_run_id=f"{run}-nr",
+        attempt_id=f"{run}-a",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+
 # --- tool-node dispatch --------------------------------------------------------
+
+
+async def test_a_tool_node_without_canonical_identity_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retired direct-effect bypass: no NodeContext, no execution (#57).
+
+    Before #57 this branch ran the raw tool with no Invocation at all; it must
+    now fail the node rather than execute an un-governed external effect.
+    """
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    called = False
+
+    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    results: dict[str, dict[str, Any]] = {}
+
+    await adapter._run_tool_node(
+        {"id": "n1", "role": "worker", "tool": "web_search"},
+        "n1",
+        {},
+        results,
+        "task",
+    )
+
+    assert called is False
+    assert results["n1"]["success"] is False
+    assert "requires NodeContext" in results["n1"]["response"]
 
 
 async def test_an_unknown_tool_fails_the_node_without_raising(
@@ -42,6 +95,7 @@ async def test_an_unknown_tool_fails_the_node_without_raising(
         {},
         results,
         "task",
+        ctx=_compat_ctx(),
     )
 
     assert results["n1"]["success"] is False
@@ -56,7 +110,9 @@ async def test_web_search_iterates_over_a_parent_json_field(
 
     seen: list[tuple[str, int]] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append((query, max_results))
         return {"query": query}
 
@@ -71,6 +127,7 @@ async def test_web_search_iterates_over_a_parent_json_field(
         {"n1": {"src"}},
         results,
         "task",
+        ctx=_compat_ctx(run="run-iterate"),
     )
 
     assert [query for query, _ in seen] == ["alpha", "beta"]
@@ -88,7 +145,9 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
 
     seen: list[str] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append(query)
         return {"query": query}
 
@@ -101,6 +160,7 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
         {"n1": {"src"}},
         results,
         "the task text",
+        ctx=_compat_ctx(run="run-malformed"),
     )
 
     assert seen == ["the task text"]
@@ -115,7 +175,9 @@ async def test_web_search_templated_queries_from_the_task_input(
 
     seen: list[str] = []
 
-    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
         seen.append(query)
         return {"query": query}
 
@@ -131,6 +193,7 @@ async def test_web_search_templated_queries_from_the_task_input(
         {},
         {},
         "read the label",
+        ctx=_compat_ctx(run="run-templated"),
     )
 
     assert seen == ["site:docs read the label"]
@@ -142,7 +205,9 @@ async def test_clarify_renders_each_question_with_its_answer(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    async def fake_clarify(questions: list[str], context: dict[str, Any]) -> dict[str, str]:
+    async def fake_clarify(
+        questions: list[str], context: dict[str, Any], *, model_call: Any = None
+    ) -> dict[str, str]:
         return {str(index + 1): f"answer {index + 1}" for index in range(len(questions))}
 
     monkeypatch.setattr(tools, "clarify", fake_clarify)
@@ -154,6 +219,7 @@ async def test_clarify_renders_each_question_with_its_answer(
         {},
         results,
         "task",
+        ctx=_compat_ctx(run="run-clarify"),
     )
 
     assert results["n1"]["success"] is True
@@ -179,31 +245,422 @@ async def test_browse_url_returns_the_extractor_payload_as_json(
         {},
         results,
         "task",
+        ctx=_compat_ctx(run="run-browse"),
     )
 
     assert results["n1"]["success"] is True
     assert '"facts"' in results["n1"]["response"]
 
 
-async def test_a_generic_tool_result_is_json_encoded(
+@pytest.mark.parametrize(
+    ("tool_name", "tool_config", "parents"),
+    [
+        ("browse_url", {"url": {"unexpected": "object"}}, {}),
+        ("browse_url", {"url": "https://example.com", "task": 1}, {}),
+        ("clarify", {"questions": ["valid?", 1]}, {}),
+        ("web_search", {"max_results": "five"}, {}),
+        (
+            "web_search",
+            {"iterate_over": "src.topics"},
+            {"src": {"response": '{"topics": ["valid", {"wrong": "type"}]}', "success": True}},
+        ),
+    ],
+)
+async def test_legacy_tools_validate_materialized_arguments_before_any_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    tool_config: dict[str, Any],
+    parents: dict[str, dict[str, Any]],
+) -> None:
+    """Legacy config/parent data cannot evade the shared host tool schema."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+
+    calls: list[tuple[Any, ...]] = []
+
+    async def backend(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(args)
+        return {"unexpected": "dispatch"}
+
+    monkeypatch.setattr(tools, tool_name, backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results = dict(parents)
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": tool_name, "tool_config": tool_config},
+        "n1",
+        {"n1": set(parents)},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "must be a" in results["n1"]["response"]
+    invocations = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id=f"legacy-tool:ws-1:proj-1:n1:{tool_name}",
+        effect_key=f"legacy-tool:{tool_name}",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "failed"
+
+
+async def test_legacy_backend_argument_error_retains_unknown_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider error is not proof that its external effect was unapplied."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+    from maistro.tools.contracts import ToolArgumentError
+
+    calls: list[str] = []
+
+    async def backend(url: str, task: str) -> dict[str, Any]:
+        calls.append(url)
+        raise ToolArgumentError("provider error after possible external effect")
+
+    monkeypatch.setattr(tools, "browse_url", backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "browse_url", "tool_config": {"url": "https://example.com"}},
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == ["https://example.com"]
+    assert results["n1"]["success"] is False
+    invocations = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id="legacy-tool:ws-1:proj-1:n1:browse_url",
+        effect_key="legacy-tool:browse_url",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "unknown"
+    assert invocations[0].error == "provider error after possible external effect"
+
+
+async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_effect_context,
+    )
+
+    calls: list[str] = []
+
+    async def fake_search(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
+        assert callable(model_call)
+        calls.append(query)
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    # Explicit M1 baseline selection, exactly as default_effect_context() and
+    # the Container composition root do; since #846 an unnamed context fails
+    # closed instead of installing any policy implicitly (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding_id = "legacy-tool:ws-1:proj-1:n1:web_search"
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="n1",
+        node_run_id="nr-1",
+        attempt_id="a-1",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "web_search", "tool_config": {"queries_from_input": True}},
+        "n1",
+        {},
+        results,
+        "the task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == ["the task"]
+    assert results["n1"]["success"] is True
+    invocations = await effects.invocation_store.list_effect(
+        run_id="run-1",
+        node_run_id="nr-1",
+        binding_id=binding_id,
+        effect_key="legacy-tool:web_search",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "completed"
+    assert invocations[0].binding.capability == "legacy_tool:web_search"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_config"),
+    [
+        ("web_search", {}),
+        ("browse_url", {"url": "https://example.com"}),
+        ("clarify", {"questions": ["why?"]}),
+    ],
+)
+async def test_legacy_tools_record_the_shared_host_registry_tier(
+    monkeypatch: pytest.MonkeyPatch, tool_name: str, tool_config: dict[str, Any]
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+
+    calls: list[tuple[Any, ...]] = []
+
+    async def backend(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(args)
+        return {"1": "answer"}
+
+    monkeypatch.setattr(tools, tool_name, backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {
+            "id": "n1",
+            "tool": tool_name,
+            "_tool_reversibility": "irreversible",
+            "tool_config": {**tool_config, "_tool_reversibility": "irreversible"},
+        },
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert results["n1"]["success"] is True
+    assert len(calls) == 1
+    rows = await effects.invocation_store.list_effect(
+        run_id=ctx.run_id,
+        node_run_id=ctx.node_run_id,
+        binding_id=f"legacy-tool:ws-1:proj-1:n1:{tool_name}",
+        effect_key=f"legacy-tool:{tool_name}",
+    )
+    assert len(rows) == 1
+    assert rows[0].request["_tool_name"] == tool_name
+    assert rows[0].request["_tool_reversibility"] == "internal"
+    assert rows[0].status.value == "completed"
+
+
+async def test_legacy_registry_reclassification_reaches_canonical_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only-looking name and caller strings cannot downgrade host policy."""
+    import services.governed_tools as governed
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+    from maistro.tools.contracts import ToolRegistration, ToolReversibility
+
+    registry = governed.hive_tool_contracts()
+    registry.register(
+        registry.require("web_search"),
+        ToolRegistration(name="web_search", reversibility=ToolReversibility.IRREVERSIBLE),
+    )
+    monkeypatch.setattr(governed, "_REGISTRY", registry)
+    calls: list[str] = []
+
+    async def backend(query: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(query)
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", backend)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    ctx = _compat_ctx()
+    results: dict[str, dict[str, Any]] = {}
+    await adapter._run_tool_node(
+        {
+            "id": "n1",
+            "tool": "web_search",
+            "_tool_reversibility": "internal",
+            "tool_config": {"_tool_reversibility": "internal"},
+        },
+        "n1",
+        {},
+        results,
+        "task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+    events = await effects.event_store.list_stream("workspace:ws-1")
+    assert len(events) == 1
+    assert events[0].payload["decision"] == "require_approval"
+    assert events[0].payload["rule"] == "tool.reversibility"
+    assert events[0].payload["effect_key"] == "legacy-tool:web_search"
+
+
+@pytest.fixture
+def registered_mutating_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicitly registered test tool cannot bypass the legacy effect floor."""
+    import services.governed_tools as governed
+
+    from maistro.tools.contracts import ToolContract, ToolRegistration, ToolReversibility
+
+    registry = governed.hive_tool_contracts()
+    registry.register(
+        ToolContract(
+            name="jira_write",
+            schema={"type": "object"},
+            capability=governed.HIVE_TOOL_CAPABILITY,
+            provider_name="hive.jira_write",
+        ),
+        ToolRegistration(name="jira_write", reversibility=ToolReversibility.INTERNAL),
+    )
+    monkeypatch.setattr(governed, "_REGISTRY", registry)
+
+
+async def test_legacy_mutation_is_refused_by_independent_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    registered_mutating_tool: None,
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_effect_context,
+    )
+
+    calls: list[str] = []
+
+    async def fake_write(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
+    # Explicit M1 baseline selection, exactly as default_effect_context() and
+    # the Container composition root do; since #846 an unnamed context fails
+    # closed instead of installing any policy implicitly (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="n1",
+        node_run_id="nr-1",
+        attempt_id="a-1",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "jira_write"},
+        "n1",
+        {},
+        results,
+        "mutate Jira",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+    events = await effects.event_store.list_stream("workspace:ws-1")
+    event = events[0]
+    assert event.payload["decision"] == "require_approval"
+    assert event.payload["effect_key"] == "legacy-tool:jira_write"
+
+
+async def test_standalone_canonical_node_cannot_bypass_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    registered_mutating_tool: None,
+) -> None:
+    """A canonical NodeContext is governed even without a Container wiring."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    calls: list[str] = []
+
+    async def fake_write(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-standalone",
+        dag_id="dag-standalone",
+        node_id="n1",
+        node_run_id="nr-standalone",
+        attempt_id="a-standalone",
+        workspace_id="ws-standalone",
+        project_id="proj-standalone",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "jira_write"},
+        "n1",
+        {},
+        results,
+        "mutate Jira",
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+
+
+async def test_a_raw_tool_without_a_host_schema_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    calls: list[str] = []
+
     async def fake_tool(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
         return {"did": task_desc}
 
     monkeypatch.setattr(tools, "TOOLS", {"custom": fake_tool})
     results: dict[str, dict[str, Any]] = {}
 
-    await adapter._run_tool_node({"id": "n1", "tool": "custom"}, "n1", {}, results, "the task")
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "custom"},
+        "n1",
+        {},
+        results,
+        "the task",
+        ctx=_compat_ctx(run="run-generic"),
+    )
 
-    assert results["n1"] == {
-        "role": "worker",
-        "response": '{"did": "the task"}',
-        "success": True,
-    }
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "no host-owned schema" in results["n1"]["response"]
 
 
 async def test_a_failing_tool_becomes_a_failed_node_result(
@@ -212,16 +669,23 @@ async def test_a_failing_tool_becomes_a_failed_node_result(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    async def boom(task_desc: str) -> dict[str, Any]:
+    async def boom(url: str, task: str) -> dict[str, Any]:
         raise RuntimeError("tool exploded")
 
-    monkeypatch.setattr(tools, "TOOLS", {"custom": boom})
+    monkeypatch.setattr(tools, "browse_url", boom)
     results: dict[str, dict[str, Any]] = {}
 
-    await adapter._run_tool_node({"id": "n1", "tool": "custom"}, "n1", {}, results, "task")
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "browse_url", "tool_config": {"url": "https://example.com"}},
+        "n1",
+        {},
+        results,
+        "task",
+        ctx=_compat_ctx(run="run-failing"),
+    )
 
     assert results["n1"]["success"] is False
-    assert "Tool error" in results["n1"]["response"]
+    assert "tool exploded" in results["n1"]["response"]
 
 
 async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
@@ -235,20 +699,23 @@ async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
     def _unexpected_builder(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("llm builder must not be consulted for a tool node")
 
-    async def fake_tool(task_desc: str) -> str:
-        return f"tool:{task_desc}"
+    async def fake_tool(
+        query: str, *, max_results: int = 5, model_call: Any = None
+    ) -> dict[str, Any]:
+        return {"query": query}
 
-    monkeypatch.setattr(tools, "TOOLS", {"custom": fake_tool})
+    monkeypatch.setattr(tools, "web_search", fake_tool)
     results: dict[str, dict[str, Any]] = {}
 
     await adapter._run_llm_node(
-        {"id": "n1", "tool": "custom"},
+        {"id": "n1", "tool": "web_search"},
         "n1",
         {},
         results,
         "task",
         on_response=None,
         llm_builder=_unexpected_builder,
+        ctx=_compat_ctx(run="run-llm-dispatch"),
     )
 
     assert results["n1"]["success"] is True
@@ -263,14 +730,14 @@ def test_an_untrusted_node_without_admin_approval_is_blocked() -> None:
     assert adapter._classify_node_execution({"config": {"untrusted": True}}, "n1") == "blocked"
 
 
-def test_an_approved_untrusted_node_goes_to_the_sandbox() -> None:
+def test_request_metadata_cannot_approve_an_untrusted_node() -> None:
     import services.legacy_dag_node as adapter
 
     assert (
         adapter._classify_node_execution(
             {"config": {"untrusted": True, "tier_approved_by": "admin"}}, "n1"
         )
-        == "sandbox"
+        == "blocked"
     )
 
 
@@ -306,13 +773,30 @@ def test_a_declared_but_benign_shape_still_sandboxes() -> None:
     )
 
 
-def test_safe_and_light_tiers_run_inline() -> None:
+def test_request_tiers_do_not_select_inline_execution() -> None:
     import services.legacy_dag_node as adapter
 
-    assert adapter._classify_node_execution({"config": {"execution_tier": "safe"}}, "n1") == "async"
     assert (
-        adapter._classify_node_execution({"config": {"execution_tier": "light"}}, "n1") == "async"
+        adapter._classify_node_execution({"config": {"execution_tier": "safe"}}, "n1") == "sandbox"
     )
+    assert (
+        adapter._classify_node_execution({"config": {"execution_tier": "light"}}, "n1") == "sandbox"
+    )
+
+
+def test_host_mode_is_authoritative_over_request_tier() -> None:
+    import services.legacy_dag_node as adapter
+
+    node = {"config": {"execution_tier": "heavy"}}
+    assert adapter._classify_node_execution(node, "n1", host_mode="async") == "async"
+    assert adapter._classify_node_execution(node, "n1", host_mode="sandbox") == "sandbox"
+
+
+def test_request_approval_string_cannot_clear_host_block() -> None:
+    import services.legacy_dag_node as adapter
+
+    node = {"config": {"untrusted": True, "tier_approved_by": "admin"}}
+    assert adapter._classify_node_execution(node, "n1", host_mode="async") == "blocked"
 
 
 # --- compatibility helpers retained for tests ----------------------------------
@@ -394,8 +878,61 @@ def _adapter_node(raw_node: dict[str, Any], **kwargs: Any):
 async def test_an_unapproved_untrusted_adapter_node_refuses_to_execute() -> None:
     node = _adapter_node({"id": "n1", "config": {"untrusted": True}})
 
-    with pytest.raises(PermissionError, match="untrusted node requires admin approval"):
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
         await node._execute(node.input_schema(), _ctx())
+
+
+async def test_a_wired_host_sentinel_runs_a_benign_node_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for #845: the container-composed Sentinel must keep the
+    shipped runner able to execute a benign node, not deny every node."""
+    import services.legacy_dag_node as adapter
+
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=build_permission_table(
+            preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+        ),
+        tier_policy={},
+    )
+
+    async def fake_llm_node(raw_node, node_id, inbound, scratch, task_desc, **kwargs):
+        scratch[node_id] = {"role": "worker", "response": "ran inline", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node({"id": "n1", "config": {}}, sentinel=sentinel, principal_roles=("user",))
+    ctx = NodeContext(run_id="run-1", dag_id="dag-1", node_id="n1", user_id="u-1")
+
+    out = await node._execute(node.input_schema(), ctx)
+
+    assert out.response == "ran inline"
+
+
+async def test_a_wired_host_sentinel_still_blocks_an_untrusted_node() -> None:
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    sentinel = Sentinel(
+        warden=Warden(),
+        permission_table=build_permission_table(
+            preset="none", permissions={"graph.node.execute": ["admin", "user"]}
+        ),
+        tier_policy={},
+    )
+    node = _adapter_node(
+        {"id": "n1", "config": {"untrusted": True}}, sentinel=sentinel, principal_roles=("user",)
+    )
+    ctx = NodeContext(run_id="run-1", dag_id="dag-1", node_id="n1", user_id="u-1")
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), ctx)
 
 
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
@@ -446,3 +983,196 @@ async def test_a_failed_isolated_node_fails_the_adapter_node(
 
     with pytest.raises(RuntimeError, match="subprocess refused"):
         await node._execute(node.input_schema(), _ctx())
+
+
+# --- the Sentinel-gated production shape -----------------------------------------
+
+
+def _production_sentinel(
+    permissions: dict[str, list[str]],
+    *,
+    tier_policy: dict[tuple[str, str], Any] | None = None,
+) -> Any:
+    """A Sentinel wired exactly like the Container composition root.
+
+    Same fail-closed table builder, same live CapabilityPermissionSource over
+    the default capability registry, same delegation authority -- so these
+    tests exercise the authorization shape production DAG nodes actually face,
+    not a permissive test double.
+    """
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.permission_policy import build_permission_table
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    table = build_permission_table(preset="none", permissions=permissions)
+    return Sentinel(
+        warden=Warden(),
+        permission_table=table,
+        permission_source=CapabilityPermissionSource(
+            base=table,
+            capabilities=default_capability_registry(),
+        ),
+        tier_policy=tier_policy or {},
+        delegation_authority=InMemoryDelegationAuthority(),
+    )
+
+
+async def test_an_unstated_permission_grant_blocks_every_gated_node() -> None:
+    """The code's default permission table is deny-by-default (#1165): even a
+    role-bearing principal cannot run a node until the deployment states the
+    grant (the shipped Conductor profiles state it in MAISTRO_PERMISSIONS; see
+    tests/security/test_sentinel_permission_table_armed.py)."""
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({}),
+        principal_roles=("admin",),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_a_stated_permission_grant_runs_an_ordinary_node_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployment's permission grant IS the host policy record that makes
+    execution reachable. A node whose own declared capabilities cannot reach
+    the world is reversible, so the host tier resolves to the inline floor --
+    the caller's `execution_tier` label is not consulted either way."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    async def fake_llm_node(
+        raw_node: dict, node_id: str, inbound: dict, scratch: dict, task: str, **_: Any
+    ) -> None:
+        captured["node"] = raw_node["id"]
+        scratch[node_id] = {"success": True, "response": "inline output", "role": "worker"}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "inline output"
+
+
+async def test_a_node_that_reaches_the_world_runs_at_the_sandbox_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host's reading of the node's own declared capabilities raises the
+    floor: a node that can run shell commands, write files, or use
+    credentials is irreversible, so it runs in the isolated subprocess."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+        captured["node"] = raw_node["id"]
+        return {"role": "worker", "response": "isolated output", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {"capabilities": ["shell"]}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "isolated output"
+
+
+async def test_an_elevating_host_tier_record_raises_a_node_to_the_sandbox_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host tier record that elevates the action raises the floor for a node
+    the host would otherwise run inline; the record, not the caller, decides."""
+    import services.legacy_dag_node as adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+        captured["node"] = raw_node["id"]
+        return {"role": "worker", "response": "isolated output", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel(
+            {"graph.node.execute": ["admin"]},
+            tier_policy={("graph.node.execute", "admin"): Tier.SELF_ELEVATION},
+        ),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert captured["node"] == "n1"
+    assert output.response == "isolated output"
+
+
+async def test_a_configured_grant_cannot_authorize_a_roleless_principal() -> None:
+    """The permission gate is a role intersection: the host-resolved roles
+    must actually reach the principal, or a configured grant stays dead and
+    every node blocks -- the unsatisfiable-gate defect this wiring repairs."""
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel({"graph.node.execute": ["admin"]}),
+        principal_roles=(),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_an_untrusted_node_needs_more_than_an_execute_grant() -> None:
+    """Untrusted nodes stay behind the explicit tier-record floor: a plain
+    graph.node.execute grant (and even an untrusted permission grant without a
+    tier record) does not lift them."""
+    node = _adapter_node(
+        {"id": "n1", "config": {"untrusted": True}},
+        sentinel=_production_sentinel(
+            {"graph.node.untrusted": ["admin"], "graph.node.execute": ["admin"]}
+        ),
+        principal_roles=("admin",),
+    )
+
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
+        await node._execute(node.input_schema(), _ctx())
+
+
+async def test_an_explicit_host_tier_record_promotes_a_trusted_node_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit OPEN/ROLE_AUTO host tier record selects inline (async)
+    execution -- request metadata never can."""
+    import services.legacy_dag_node as adapter
+
+    async def fake_llm_node(
+        raw_node: dict, node_id: str, inbound: dict, scratch: dict, task: str, **_: Any
+    ) -> None:
+        scratch[node_id] = {"success": True, "response": "inline output", "role": "worker"}
+
+    monkeypatch.setattr(adapter, "_run_llm_node", fake_llm_node)
+
+    node = _adapter_node(
+        {"id": "n1", "config": {}},
+        sentinel=_production_sentinel(
+            {"graph.node.execute": ["admin"]},
+            tier_policy={("graph.node.execute", "admin"): Tier.ROLE_AUTO},
+        ),
+        principal_roles=("admin",),
+    )
+    output = await node._execute(node.input_schema(), _ctx())
+
+    assert output.response == "inline output"

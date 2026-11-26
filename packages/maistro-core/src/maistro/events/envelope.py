@@ -17,6 +17,13 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from maistro.observability.correlation import current_execution_context
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
+from maistro.security.redact import redact_structure
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -155,10 +162,27 @@ class EventEnvelope:
 
     def __post_init__(self) -> None:
         _validate_envelope_structure(self)
+        # Bounds first, scrub second, bounds again. The first order is
+        # load-bearing twice over: rejecting resource abuse must not require
+        # first running the redactor over an unbounded payload, and
+        # `redact_structure` recurses, so it may only see a structure whose
+        # depth ceiling has already been enforced.
         _check_field_bounds("payload", self.payload)
         _check_field_bounds("provenance", self.provenance)
-        object.__setattr__(self, "payload", copy.deepcopy(self.payload))
-        object.__setattr__(self, "provenance", copy.deepcopy(self.provenance))
+        # `redact_structure` rebuilds every container it walks, so it is also
+        # the deep copy this constructor owes its caller. That holds because the
+        # bounds check above rejects anything `json` cannot encode, leaving only
+        # immutable leaves (str/int/float/bool/None) to share.
+        object.__setattr__(self, "payload", redact_structure(self.payload))
+        object.__setattr__(self, "provenance", redact_structure(self.provenance))
+        # And bounds again after the scrub: redaction can *grow* a field (an
+        # empty value under a secret name becomes `[REDACTED]`; a short token
+        # becomes a longer label), so a payload that passed the first check
+        # near the ceiling can come out of the scrub above it. The pre-scrub
+        # check bounds how much work the redactor is handed; this one is what
+        # makes the advertised ceiling hold for what a backend actually sees.
+        _check_field_bounds("payload", self.payload)
+        _check_field_bounds("provenance", self.provenance)
 
     @property
     def stream_id(self) -> str:
@@ -371,6 +395,10 @@ CREATE INDEX IF NOT EXISTS idx_canonical_event_stream
     ON canonical_event_log (stream_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_canonical_event_run
     ON canonical_event_log (run_id, sequence);
+CREATE TABLE IF NOT EXISTS canonical_event_stream_watermarks (
+    stream_id TEXT PRIMARY KEY,
+    last_sequence INTEGER NOT NULL
+);
 """
 
 
@@ -386,8 +414,62 @@ class SqliteEventStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_workspace_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Remove old canonical events in bounded, scope-aware batches."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[object] = [before]
+        if legal_hold_workspace_ids:
+            marks = ",".join("?" for _ in legal_hold_workspace_ids)
+            hold_sql = f" AND workspace_id NOT IN ({marks})"  # values remain bound
+            params.extend(legal_hold_workspace_ids)
+        params.append(limit)
+        # Serialized with append_with_disposition on the store lock: both drive
+        # BEGIN IMMEDIATE on the same connection, so an unguarded purge racing
+        # a live append would raise "cannot start a transaction within a
+        # transaction" instead of waiting its turn.
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "DELETE FROM canonical_event_log WHERE event_id IN ("  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                    "SELECT event_id FROM canonical_event_log WHERE timestamp < ?"
+                    + hold_sql
+                    + " ORDER BY timestamp, event_id LIMIT ?)",
+                    params,
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish the canonical event log's stored volume after a purge (#325).
+
+        Run retention preserves the event log on purpose, and this store's own
+        bounded purge is what bounds it instead — so the table's level is the
+        one signal that says that bound is actually being driven. Throttled
+        per store by the publisher.
+        """
+        if not retention_health_probe_due("events:sqlite"):
+            return
+        sample = await sqlite_table_sample(
+            self._conn, "canonical_event_log", "timestamp", oldest_unit="unix_s"
+        )
+        if sample is not None:
+            publish_retention_table_health("events:sqlite", "sqlite", [sample], min_interval_s=0.0)
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
@@ -415,10 +497,23 @@ class SqliteEventStore:
                         inserted=False,
                     )
 
+                # Allocation consults the durable per-stream high-water mark as
+                # well as the surviving rows: retention deletes event rows, and
+                # MAX(sequence) over what is left would rewind the stream — a
+                # reader resuming from `after_sequence=N` would silently miss
+                # every new event until reused numbers passed N. The mark is a
+                # table of its own, not a surviving row, precisely because the
+                # purge may remove every row of the stream (and may remove the
+                # highest sequence first: timestamps need not follow append
+                # order). Same transaction, same `BEGIN IMMEDIATE` write
+                # authority, so allocation stays serialized.
                 cursor = await self._conn.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 "
-                    "FROM canonical_event_log WHERE stream_id = ?",
-                    (event.stream_id,),
+                    "SELECT MAX("
+                    "COALESCE((SELECT MAX(sequence) FROM canonical_event_log "
+                    "WHERE stream_id = ?), 0), "
+                    "COALESCE((SELECT last_sequence FROM canonical_event_stream_watermarks "
+                    "WHERE stream_id = ?), 0)) + 1",
+                    (event.stream_id, event.stream_id),
                 )
                 row = await cursor.fetchone()
                 sequence = int(row[0]) if row is not None else 1
@@ -456,6 +551,18 @@ class SqliteEventStore:
                         json.dumps(persisted.payload),
                         json.dumps(persisted.provenance),
                     ),
+                )
+                # Advance the mark in the same transaction as the insert: a
+                # commit that moved a stream's sequence without the mark would
+                # hand the next append a number the cursor model has already
+                # delivered. The two-argument scalar MAX keeps the mark
+                # monotonic even if a mark row somehow ran ahead.
+                await self._conn.execute(
+                    "INSERT INTO canonical_event_stream_watermarks "
+                    "(stream_id, last_sequence) VALUES (?, ?) "
+                    "ON CONFLICT(stream_id) DO UPDATE SET "
+                    "last_sequence = MAX(last_sequence, excluded.last_sequence)",
+                    (persisted.stream_id, persisted.sequence),
                 )
                 await self._conn.commit()
                 return EventAppendResult(persisted, inserted=True)

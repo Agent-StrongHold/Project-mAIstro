@@ -24,12 +24,15 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
+from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     StaleLeaseRenewal,
     UnearnedRunCompletion,
 )
 from maistro.runs.model import (
+    DURABLE_GRAPH_FORK_PROVENANCE,
+    POST_TERMINAL_CHILD_PROVENANCE,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
@@ -45,8 +48,12 @@ from maistro.runs.reconciliation import (
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
+    SCHEDULE_FIRE_ID_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_MANUAL,
+    SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import (
@@ -58,6 +65,7 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
 )
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.testing.postgres import postgres_dsn
 
 
@@ -72,7 +80,29 @@ def _graph(workspace: str, project_id: str, *, node_ids: tuple[str, ...] = ("nod
 
 async def _run(spine: Any) -> Any:
     store, workspace, project_id = spine
-    return await store.create_run(_graph(workspace, project_id))
+    return await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+
+
+async def test_recent_run_discovery_is_scoped_bounded_and_detached(spine: Any) -> None:
+    store, workspace, _ = spine
+    first = await _run(spine)
+    second = await _run(spine)
+    await store.transition_run(first.run_id, RunStatus.QUEUED)
+    assert [run.run_id for run in await store.list_recent_runs(workspace, limit=1)] == [
+        second.run_id
+    ]
+    page = await store.list_recent_runs(workspace, limit=1, offset=1)
+    assert [run.run_id for run in page] == [first.run_id]
+    assert page[0].status is RunStatus.QUEUED
+    assert await store.list_recent_runs(workspace, offset=2) == []
+    assert await store.list_recent_runs("missing-workspace") == []
+    page[0].provenance["not-persisted"] = True
+    assert (await store.get_run(first.run_id)).provenance == {}
+    for kwargs in ({"limit": 0}, {"offset": -1}):
+        with pytest.raises(ValueError):
+            await store.list_recent_runs(workspace, **kwargs)
 
 
 async def _node_run(spine: Any) -> Any:
@@ -153,7 +183,7 @@ async def test_the_graph_snapshot_survives_the_round_trip(spine: Any) -> None:
     store, workspace, project_id = spine
     graph = _graph(workspace, project_id, node_ids=("node-1", "node-2"))
 
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     reloaded = await store.get_run(run.run_id)
 
     assert reloaded is not None
@@ -177,6 +207,95 @@ async def test_provenance_and_actor_survive(spine: Any) -> None:
     assert reloaded.provenance == {"admission_source": "task_queue", "task_id": "t-1"}
 
 
+async def test_a_task_receipt_finds_its_run_and_only_that_run(spine: Any) -> None:
+    """The #1176 discovery lookup, conformed across backends: the Run whose
+    provenance names the receipt is findable — the handle a retry resolves an
+    ambiguous admission through — and a receipt no Run names is None, the
+    answer that makes a takeover provably duplicate-free."""
+    store, workspace, project_id = spine
+    named = await store.create_run(
+        _graph(workspace, project_id),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"admission_source": "task_queue", "task_id": "receipt-1"},
+    )
+    # A neighbor the scan passes over without matching.
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+
+    assert found is not None
+    assert found.run_id == named.run_id
+    assert found.provenance == {"admission_source": "task_queue", "task_id": "receipt-1"}
+    assert await store.find_run_by_task_receipt("no-such-receipt") is None
+
+
+async def test_the_postgres_receipt_lookup_uses_the_task_provenance_path() -> None:
+    """The publish coverage worker has no PostgreSQL, so assert its actual SQL.
+
+    The three-store conformance test above exercises this through a live
+    PostgreSQL pool when available. This boundary double keeps the same
+    task-receipt discovery query verified in the no-database coverage job:
+    returning the matched canonical Run, then no Run for an absent receipt.
+    """
+    from maistro.runs.model import GraphSnapshot, Run
+    from maistro.runs.pg_store import PgRunStore
+
+    graph = _graph("workspace", "project")
+    expected = Run(
+        workspace_id="workspace",
+        project_id="project",
+        graph=GraphSnapshot.from_graph(graph),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"task_id": "receipt-1"},
+    )
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+            self.rows: list[dict[str, object] | None] = [
+                {
+                    "run_id": expected.run_id,
+                    "payload": expected.model_dump(mode="json"),
+                    "archive_key": None,
+                },
+                None,
+            ]
+
+        async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
+            self.calls.append((sql, params))
+            return self.rows.pop(0)
+
+    class _Acquire:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        async def __aenter__(self) -> _Connection:
+            return self._connection
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _Pool:
+        def __init__(self, connection: _Connection) -> None:
+            self._connection = connection
+
+        def acquire(self) -> _Acquire:
+            return _Acquire(self._connection)
+
+    connection = _Connection()
+    store = PgRunStore(_Pool(connection), project_store=InMemoryProjectScopeStore())  # type: ignore[arg-type]
+
+    found = await store.find_run_by_task_receipt("receipt-1")
+    absent = await store.find_run_by_task_receipt("no-such-receipt")
+
+    assert found is not None and found.run_id == expected.run_id
+    assert absent is None
+    assert [params for _sql, params in connection.calls] == [("receipt-1",), ("no-such-receipt",)]
+    assert all("payload->'provenance'->>'task_id' = $1" in sql for sql, _params in connection.calls)
+
+
 async def test_an_unknown_run_is_none_not_an_error(spine: Any) -> None:
     store, _workspace, _project_id = spine
 
@@ -192,7 +311,9 @@ async def test_a_graph_in_an_unknown_project_is_refused(spine: Any) -> None:
     store, workspace, _project_id = spine
 
     with pytest.raises(RunIntegrityError, match="does not exist"):
-        await store.create_run(_graph(workspace, "no-such-project"))
+        await store.create_run(
+            _graph(workspace, "no-such-project"), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+        )
 
 
 async def test_a_node_id_outside_the_snapshot_is_refused(spine: Any) -> None:
@@ -210,6 +331,129 @@ async def test_a_node_run_under_a_terminal_run_is_refused(spine: Any) -> None:
 
     with pytest.raises(RunIntegrityError, match="terminal Run"):
         await store.create_node_run(run.run_id, node_id="node-1")
+
+
+async def test_effect_claim_refuses_an_unanchored_parent_node_reference(spine: Any) -> None:
+    """All store implementations validate effect-claim parent correlation before insert."""
+    store, workspace, project_id = spine
+
+    with pytest.raises(RunIntegrityError, match="parent_node_run_id requires parent_run_id"):
+        await store.claim_run_by_effect(
+            _graph(workspace, project_id),
+            effect_key="effect-with-unanchored-parent",
+            parent_node_run_id="node-run-without-parent",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+    retry = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="effect-with-unanchored-parent",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    assert retry.claimed is True
+
+
+async def test_effect_claim_recovery_returns_the_same_run_without_readmission(
+    spine: Any,
+) -> None:
+    """A retried admission is the same logical effect, not a second Run.
+
+    The second claimant — the same process after a crash, a peer process, or
+    a replay — gets the winner's Run back with ``claimed=False``. History is
+    never rewritten and no duplicate Run is minted (#42): the store's answer,
+    on every backend, is the one canonical Run for the effect key.
+    """
+    store, workspace, project_id = spine
+
+    first = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="agent.delegate_remote:recover-me",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"admission_source": "a2a_delegation"},
+    )
+    second = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="agent.delegate_remote:recover-me",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={"admission_source": "a2a_delegation"},
+    )
+
+    assert first.claimed is True
+    assert second.claimed is False
+    assert second.run.run_id == first.run.run_id
+    reloaded = await store.get_run(first.run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance.get("effect_key") == "agent.delegate_remote:recover-me"
+
+
+async def test_effect_claim_anchors_parent_lineage(spine: Any) -> None:
+    """An effect claim may anchor itself to the delegating Run and NodeRun."""
+    store, workspace, project_id = spine
+    parent_run = await _run(spine)
+    parent_node_run = await store.create_node_run(parent_run.run_id, node_id="node-1")
+
+    claim = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="delegation:anchored",
+        parent_run_id=parent_run.run_id,
+        parent_node_run_id=parent_node_run.node_run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert claim.claimed is True
+    assert claim.run.parent_run_id == parent_run.run_id
+    assert claim.run.parent_node_run_id == parent_node_run.node_run_id
+
+
+async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
+    spine: Any,
+) -> None:
+    """Parent evidence must correlate: a NodeRun from an unrelated Run is a
+    corrupted lineage, refused before insert on every backend."""
+    store, workspace, project_id = spine
+    other_run = await _run(spine)
+    foreign_node_run = await store.create_node_run(other_run.run_id, node_id="node-1")
+    parent_run = await _run(spine)
+
+    with pytest.raises(RunIntegrityError, match="does not belong to parent_run_id"):
+        await store.claim_run_by_effect(
+            _graph(workspace, project_id),
+            effect_key="delegation:mismatched-parent",
+            parent_run_id=parent_run.run_id,
+            parent_node_run_id=foreign_node_run.node_run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+
+async def test_effect_claim_refuses_an_empty_effect_key(spine: Any) -> None:
+    """An empty effect key claims nothing and must be refused up front."""
+    store, workspace, project_id = spine
+
+    with pytest.raises(ValueError, match="effect_key must be non-empty"):
+        await store.claim_run_by_effect(_graph(workspace, project_id), effect_key="")
+
+
+async def test_a_durable_store_resolves_a_claimed_effect_key(spine: Any) -> None:
+    """The durable stores' read half: `find_run_by_effect` resolves the Run
+    that holds an effect claim, and None means unclaimed. The in-memory store
+    does not expose the read, so only the durable backends conformance here."""
+    store, workspace, project_id = spine
+    if not hasattr(store, "find_run_by_effect"):
+        pytest.skip("find_run_by_effect is a durable-store read")
+
+    unclaimed = await store.find_run_by_effect("no-such-effect")
+    assert unclaimed is None
+
+    claim = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="durable:findable",
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    assert claim.claimed is True
+
+    found = await store.find_run_by_effect("durable:findable")
+    assert found is not None
+    assert found.run_id == claim.run.run_id
 
 
 async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_run(
@@ -300,7 +544,9 @@ async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
 
     with pytest.raises(RunIntegrityError, match="Workspace"):
         await store.create_run(
-            _graph("some-other-workspace", project_id), parent_run_id=parent.run_id
+            _graph("some-other-workspace", project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -308,7 +554,11 @@ async def test_a_parent_node_run_requires_a_parent_run(spine: Any) -> None:
     store, workspace, project_id = spine
 
     with pytest.raises(RunIntegrityError, match="requires parent_run_id"):
-        await store.create_run(_graph(workspace, project_id), parent_node_run_id="nr-1")
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_node_run_id="nr-1",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
 
 
 # ── lifecycle ─────────────────────────────────────────────────────
@@ -390,13 +640,100 @@ async def test_transitioning_an_unknown_attempt_raises(spine: Any) -> None:
         await store.transition_attempt("no-such-attempt", AttemptStatus.RUNNING)
 
 
+async def test_an_unknown_attempt_is_not_found_even_for_a_completed_target(
+    spine: Any,
+) -> None:
+    """An unknown attempt is not-found for every target, COMPLETED included (#1335).
+
+    The pg store's terminal-Run guard resolves the attempt's spine before it
+    looks at any parent status, so the COMPLETED target asks its first question
+    about an attempt that does not exist -- and must still answer not-found,
+    not fail some later way. On memory and sqlite the attempt lookup raises
+    before the guard; on postgres the guard's spine query is what raises.
+    """
+    store, _workspace, _project_id = spine
+
+    with pytest.raises(AttemptNotFound):
+        await store.transition_attempt("no-such-attempt", AttemptStatus.COMPLETED, result={})
+
+
+@pytest.mark.parametrize("terminal", [RunStatus.CANCELLED, RunStatus.FAILED, RunStatus.TIMED_OUT])
+async def test_a_completed_attempt_is_refused_under_a_terminal_run(
+    spine: Any, terminal: Any
+) -> None:
+    """No COMPLETED Attempt may be recorded under a terminal Run (#1335).
+
+    The executor's Run fence reads the Run, then writes the Attempt -- two
+    awaits a cancellation can walk between. The Attempt-level transition
+    table cannot see the parent Run, so each store re-checks it inside the
+    same write lock / transaction that writes the Attempt and refuses here:
+    the stale success of a provider that lost the race never reaches the
+    durable record at all, instead of landing as a COMPLETED row the
+    reconcile path then has to detect.
+
+    Only COMPLETED is refused. The same Attempt's CANCELLED edge must stay
+    open under the terminal Run -- that is how a run-level cancel and crash
+    reclamation settle the Attempts they find -- so the test pins both sides
+    of the rule on the same record.
+    """
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await store.transition_run(node_run.run_id, terminal)
+
+    with pytest.raises(InvalidLifecycleTransition, match="terminal Run"):
+        await store.transition_attempt(
+            attempt.attempt_id, AttemptStatus.COMPLETED, result={"stale": True}
+        )
+
+    # The refusal is a refusal, not a write that followed the raise: the
+    # Attempt is exactly where it was, still owing its disposition.
+    persisted = await store.get_attempt(attempt.attempt_id)
+    assert persisted is not None
+    assert persisted.status is AttemptStatus.RUNNING
+    assert persisted.result is None
+
+    # The cancelled side of the rule stays open on the same record: the
+    # run-level cancel path settles open Attempts after the Run landed, and
+    # a CANCELLED Attempt under a terminal Run is the honest record.
+    cancelled = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.CANCELLED, error="settled by the Run"
+    )
+    assert cancelled.status is AttemptStatus.CANCELLED
+
+
+async def test_a_completed_attempt_still_writes_under_a_live_run(spine: Any) -> None:
+    """The #1335 guard refuses stale success, not success (#1335)."""
+    store, _workspace, _project_id = spine
+    node_run = await _node_run(spine)
+    await store.transition_run(node_run.run_id, RunStatus.QUEUED)
+    await store.transition_run(node_run.run_id, RunStatus.RUNNING)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    attempt = await store.create_attempt(node_run.node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
+    )
+
+    assert terminal.status is AttemptStatus.COMPLETED
+    assert terminal.result == {"answer": "ok"}
+
+
 # ── ordinals ──────────────────────────────────────────────────────
 
 
 async def test_node_run_ordinals_are_dense_and_ordered(spine: Any) -> None:
     store, workspace, project_id = spine
     run = await store.create_run(
-        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3"))
+        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     for node_id in ("node-1", "node-2", "node-3"):
@@ -532,7 +869,8 @@ async def test_concurrent_node_runs_get_distinct_ordinals(spine: Any) -> None:
     """`MAX(ordinal) + 1` read by two writers returns the same number twice."""
     store, workspace, project_id = spine
     run = await store.create_run(
-        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3", "node-4"))
+        _graph(workspace, project_id, node_ids=("node-1", "node-2", "node-3", "node-4")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     results = await asyncio.gather(
@@ -620,7 +958,9 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     Run changing meaning solely because a recovery caller listed it by status.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     evidence = {"nan": float("nan"), "positive": float("inf"), "nested": [-float("inf")]}
@@ -642,6 +982,32 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     assert math.isnan(listed[0].result["nan"])
     assert listed[0].result["positive"] == float("inf")
     assert listed[0].result["nested"][0] == float("-inf")
+
+
+async def test_status_listing_can_filter_by_durable_admission_source(spine: Any) -> None:
+    """A consumer must spend its bounded page on owned Runs on every backend."""
+    store, workspace, project_id = spine
+    foreign = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "foreign-consumer"},
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    owned = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "owned-consumer"},
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    listed = await store.list_by_status(
+        RunStatus.QUEUED,
+        limit=1,
+        admission_source="owned-consumer",
+    )
+
+    assert [run.run_id for run in listed] == [owned.run_id]
+    assert foreign.run_id not in {run.run_id for run in listed}
 
 
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
@@ -698,7 +1064,11 @@ async def test_a_run_can_be_created_already_queued(spine: Any) -> None:
     for it."""
     store, workspace, project_id = spine
 
-    run = await store.create_run(_graph(workspace, project_id), initial_status=RunStatus.QUEUED)
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert run.status is RunStatus.QUEUED
     reloaded = await store.get_run(run.run_id)
@@ -709,7 +1079,9 @@ async def test_a_run_can_be_created_already_queued(spine: Any) -> None:
 async def test_the_default_creation_state_is_unchanged(spine: Any) -> None:
     store, workspace, project_id = spine
 
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     assert run.status is RunStatus.CREATED
 
@@ -726,7 +1098,11 @@ async def test_a_run_cannot_be_created_in_a_state_it_never_reached(
     store, workspace, project_id = spine
 
     with pytest.raises(RunIntegrityError):
-        await store.create_run(_graph(workspace, project_id), initial_status=status)
+        await store.create_run(
+            _graph(workspace, project_id),
+            initial_status=status,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
 
 
 # ── a Project cannot be deleted out from under its Runs ────────────
@@ -741,7 +1117,9 @@ async def test_a_project_with_runs_cannot_be_deleted(spine: Any) -> None:
     register = getattr(projects, "set_run_owner", None)
     if register is not None:
         register(store.has_runs_in_project)
-    await store.create_run(_graph(workspace, project_id))
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
 
     with pytest.raises(ProjectNotEmpty):
         await projects.delete(project_id)
@@ -804,9 +1182,16 @@ async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) ->
     — PostgreSQL would refuse it with a foreign key and the others must agree."""
     store, workspace, project_id = spine
     parent = await _run(spine)
-    await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    child = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     for force in (False, True):
@@ -840,7 +1225,9 @@ async def test_a_project_reports_whether_it_owns_runs(spine: Any) -> None:
     store, workspace, project_id = spine
 
     assert await store.has_runs_in_project(project_id) is False
-    await store.create_run(_graph(workspace, project_id))
+    await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     assert await store.has_runs_in_project(project_id) is True
 
 
@@ -859,12 +1246,17 @@ async def test_a_child_run_cannot_implicitly_cross_projects(spine: Any) -> None:
     parent = await _run(spine)
 
     with pytest.raises(RunIntegrityError, match="cross Project"):
-        await store.create_run(_graph(workspace, sibling.project_id), parent_run_id=parent.run_id)
+        await store.create_run(
+            _graph(workspace, sibling.project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
 
     allowed = await store.create_run(
         _graph(workspace, sibling.project_id),
         parent_run_id=parent.run_id,
         allow_cross_project=True,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
     assert allowed.project_id == sibling.project_id
 
@@ -881,6 +1273,7 @@ async def test_a_parent_node_run_must_belong_to_the_parent_run(spine: Any) -> No
             _graph(workspace, project_id),
             parent_run_id=parent.run_id,
             parent_node_run_id=foreign_node_run.node_run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
@@ -960,7 +1353,10 @@ async def test_the_settled_node_run_says_which_run_ended_it(spine: Any) -> None:
 
 async def test_every_open_node_run_is_settled_not_just_the_first(spine: Any) -> None:
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     first = await store.create_node_run(run.run_id, node_id="node-1")
     second = await store.create_node_run(run.run_id, node_id="node-2")
     await store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -1088,35 +1484,139 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    first = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     with pytest.raises(DuplicateOccurrence) as caught:
-        await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance=_occurrence(),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
 
     assert caught.value.schedule_id == "sched-1"
     assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+    resolved = await store.get_run_for_occurrence(
+        caught.value.schedule_id, caught.value.scheduled_for
+    )
+    assert resolved is not None
+    assert resolved.run_id == first.run_id
+
+
+async def test_get_runs_for_occurrences_is_the_batched_twin_of_the_single_lookup(
+    spine: Any,
+) -> None:
+    """One query resolves many occurrences, keyed by `scheduled_for` (#1533).
+
+    Schedule recovery used to resolve each occurrence with its own round trip;
+    this is the batched replacement, checked against the same claims
+    `get_run_for_occurrence` would resolve one at a time — plus a
+    `scheduled_for` that was never claimed, to prove a miss is simply absent
+    from the result rather than raising, and an empty request, which must
+    short-circuit to `{}` rather than query at all.
+    """
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(when="2026-08-24T12:00:00+00:00"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(when="2026-08-24T13:00:00+00:00"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    third = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(when="2026-08-24T14:00:00+00:00"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    resolved = await store.get_runs_for_occurrences(
+        "sched-1",
+        [
+            "2026-08-24T12:00:00+00:00",
+            "2026-08-24T13:00:00+00:00",
+            "2026-08-24T14:00:00+00:00",
+            "2026-08-24T15:00:00+00:00",  # never claimed
+        ],
+    )
+
+    assert set(resolved) == {
+        "2026-08-24T12:00:00+00:00",
+        "2026-08-24T13:00:00+00:00",
+        "2026-08-24T14:00:00+00:00",
+    }
+    assert resolved["2026-08-24T12:00:00+00:00"].run_id == first.run_id
+    assert resolved["2026-08-24T13:00:00+00:00"].run_id == second.run_id
+    assert resolved["2026-08-24T14:00:00+00:00"].run_id == third.run_id
+
+    assert await store.get_runs_for_occurrences("sched-1", []) == {}
+
+
+async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
+    """A replica race has one winner, and every loser can resolve that winner."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(
+                _graph(workspace, project_id),
+                provenance=_occurrence(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    duplicates = [result for result in results if isinstance(result, DuplicateOccurrence)]
+    unexpected = [
+        result
+        for result in results
+        if isinstance(result, BaseException) and not isinstance(result, DuplicateOccurrence)
+    ]
+    assert unexpected == []
+    assert len(winners) == 1
+    assert len(duplicates) == 7
+    resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+    assert resolved is not None
+    assert resolved.run_id == winners[0].run_id
 
 
 async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:
     """They are the same occurrence. That one was noticed later than the other
     is why `catchup` exists — it is not a reason to run the work twice."""
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     with pytest.raises(DuplicateOccurrence):
         await store.create_run(
             _graph(workspace, project_id),
             provenance={**_occurrence(), SCHEDULE_CATCHUP_KEY: True},
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
         )
 
 
 async def test_a_different_occurrence_of_the_same_schedule_is_admitted(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     other = await store.create_run(
         _graph(workspace, project_id),
         provenance=_occurrence(when="2026-08-24T13:00:00+00:00"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert other.run_id
@@ -1124,10 +1624,16 @@ async def test_a_different_occurrence_of_the_same_schedule_is_admitted(spine: An
 
 async def test_the_same_time_on_a_different_schedule_is_admitted(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     other = await store.create_run(
-        _graph(workspace, project_id), provenance=_occurrence(schedule_id="sched-2")
+        _graph(workspace, project_id),
+        provenance=_occurrence(schedule_id="sched-2"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
 
     assert other.run_id
@@ -1140,7 +1646,13 @@ async def test_runs_that_claim_no_occurrence_do_not_collide(spine: Any) -> None:
     provenance = {ADMISSION_SOURCE: "task_queue", "task_id": "t-1"}
 
     run_ids = {
-        (await store.create_run(_graph(workspace, project_id), provenance=dict(provenance))).run_id
+        (
+            await store.create_run(
+                _graph(workspace, project_id),
+                provenance=dict(provenance),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+        ).run_id
         for _ in range(3)
     }
 
@@ -1153,10 +1665,154 @@ async def test_half_an_occurrence_key_claims_nothing(spine: Any) -> None:
     store, workspace, project_id = spine
     partial = {ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_ID_KEY: "sched-1"}
 
-    first = await store.create_run(_graph(workspace, project_id), provenance=partial)
-    second = await store.create_run(_graph(workspace, project_id), provenance=dict(partial))
+    first = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=partial,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=dict(partial),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert first.run_id != second.run_id
+
+
+# ── a manual fire is its own occurrence (#1120) ───────────────────
+#
+# `(schedule_id, scheduled_for)` names a *nominal* occurrence. A manual fire
+# has no cron time: stamping `datetime.now()` per request gave every retry of
+# the same logical request a fresh identity, so a double submit became two
+# Runs. A manual fire instead carries `schedule_fire_id`, an opaque token the
+# caller keeps stable across retries, and claims
+# `(schedule_id, "manual:" + fire_id)` — disjoint from, and never consuming,
+# the nominal identity space.
+
+
+def _manual_fire(
+    schedule_id: str = "sched-1",
+    fire_id: str = "retry-token-1",
+    when: str = "2026-08-24T12:00:01+00:00",
+) -> dict:
+    return {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        SCHEDULE_ID_KEY: schedule_id,
+        SCHEDULE_FIRE_ID_KEY: fire_id,
+        SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_MANUAL,
+        SCHEDULED_FOR_KEY: when,
+    }
+
+
+async def test_a_retried_manual_fire_is_one_occurrence(spine: Any) -> None:
+    """The retry carries the same token but a later wall clock. The instant is
+    observability, not identity — exactly the property that makes a double
+    submit one logical firing instead of two."""
+    store, workspace, project_id = spine
+    await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_manual_fire(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    with pytest.raises(DuplicateOccurrence) as caught:
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance=_manual_fire(when="2026-08-24T12:04:00+00:00"),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+    assert caught.value.schedule_id == "sched-1"
+
+
+async def test_a_manual_token_never_consumes_a_nominal_occurrence(spine: Any) -> None:
+    """The two identity spaces are disjoint by the `manual:` prefix. Without
+    it, a hand fire whose caller pasted a cron instant as its token would
+    silently consume — and thereby suppress — the nominal occurrence still owed
+    at that instant."""
+    store, workspace, project_id = spine
+    when = "2026-08-24T12:00:00+00:00"
+    nominal = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(when=when),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    manual = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_manual_fire(fire_id=when, when=when),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert nominal.run_id != manual.run_id
+
+
+async def test_a_loser_of_a_manual_race_finds_the_winner(spine: Any) -> None:
+    """`create_run` refuses the duplicate but does not name the Run that won,
+    and the loser of a manual-fire race owes its caller the same receipt the
+    winner produced. `find_occurrence_run` is that read half — over the same
+    claim the unique index enforces, so it works across processes and
+    restarts, not just within one caller's memory."""
+    store, workspace, project_id = spine
+    winner = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_manual_fire(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    with pytest.raises(DuplicateOccurrence):
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance=_manual_fire(),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+    found = await store.find_occurrence_run(_manual_fire())
+    assert found is not None
+    assert found.run_id == winner.run_id
+
+
+async def test_an_unclaimed_manual_fire_has_no_run_to_reconcile(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    assert await store.find_occurrence_run(_manual_fire()) is None
+
+
+async def test_provenance_without_an_occurrence_names_no_run(spine: Any) -> None:
+    """`find_occurrence_run` is also asked for provenance that carries no
+    occurrence claim at all — a caller resolving whatever it was handed, not
+    a fire. The read answers "nothing to reconcile" rather than searching
+    the scope, on every backend.
+    """
+    store, workspace, project_id = spine
+    await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_manual_fire(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert await store.find_occurrence_run({}) is None
+    assert await store.find_occurrence_run(None) is None
+
+
+async def test_occurrence_lookup_matches_the_nominal_token_too(spine: Any) -> None:
+    """The same read half must resolve nominal claims — a retried *recurring*
+    admission that lost the race resolves its receipt the same way."""
+    store, workspace, project_id = spine
+    provenance = {
+        **_occurrence(),
+        SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_RECURRING,
+    }
+    winner = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=provenance,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    found = await store.find_occurrence_run(provenance)
+
+    assert found is not None
+    assert found.run_id == winner.run_id
 
 
 async def test_only_one_of_many_concurrent_tickers_admits_an_occurrence(spine: Any) -> None:
@@ -1171,7 +1827,11 @@ async def test_only_one_of_many_concurrent_tickers_admits_an_occurrence(spine: A
 
     results = await asyncio.gather(
         *(
-            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            store.create_run(
+                _graph(workspace, project_id),
+                provenance=_occurrence(),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
             for _ in range(8)
         ),
         return_exceptions=True,
@@ -1197,7 +1857,11 @@ async def test_a_failed_occurrences_run_is_still_retryable(spine: Any) -> None:
     constraint that blocked it would be a worse bug than the one being fixed.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
@@ -1222,10 +1886,146 @@ async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
     destroyed, and a claim outliving its Run would assert something no longer
     true."""
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.delete_run(run.run_id, force=True)
 
-    readmitted = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    readmitted = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_occurrence(),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert readmitted.run_id != run.run_id
+
+
+# ── one Run per Canvas job admission (#1055 review, migration 039) ──
+#
+# `CanvasCanonicalExecution.admit` computes a deterministic `canvas_job_id`
+# from `(org_id, operation_id)` before it ever reaches `create_run`, so two
+# workers racing the same Canvas `Idempotency-Key` submit that *same* id.
+# Same shape as the occurrence claim above, and the delegation_key claim
+# (migration 037): the unique index is the claim, not an application
+# check-then-insert, and the loser resolves the winner by reading rather than
+# retrying. Unlike the occurrence claim, a conflict here is not wrapped in a
+# named exception (mirroring delegation_key, not occurrence) -- callers
+# resolve it with a broad `except Exception` and a re-read, which is exactly
+# what `CanvasCanonicalExecution.admit` does.
+
+
+def _canvas_job(job_id: str, *, operation_id: str | None = None) -> dict[str, Any]:
+    provenance: dict[str, Any] = {
+        ADMISSION_SOURCE: "canvas_generation",
+        "canvas_job_id": job_id,
+    }
+    if operation_id is not None:
+        provenance["canvas_operation_id"] = operation_id
+    return provenance
+
+
+async def test_a_second_run_for_one_canvas_job_is_refused(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-1", operation_id="op-1"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    with pytest.raises(Exception):  # noqa: B017 - backend-specific (see module note)
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance=_canvas_job("job-1", operation_id="op-1"),
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+    survivor = await store.get_run(first.run_id)
+    assert survivor is not None
+
+
+async def test_concurrent_canvas_job_claims_converge_on_one_run(spine: Any) -> None:
+    """Eight admitters race the same Canvas idempotency key. Seven must lose.
+
+    The core proof behind PR #1531 review finding 2: under PostgreSQL these
+    run genuinely at once, and "exactly one run_id per Canvas job" must not
+    depend on how many workers happen to be deployed.
+    """
+    store, workspace, project_id = spine
+
+    results = await asyncio.gather(
+        *(
+            store.create_run(
+                _graph(workspace, project_id),
+                provenance=_canvas_job("job-race", operation_id="op-race"),
+                actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            )
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    losers = [result for result in results if isinstance(result, BaseException)]
+    assert len(winners) == 1
+    assert len(losers) == 7
+
+
+async def test_a_different_canvas_job_id_is_admitted(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-a"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-b"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert first.run_id != second.run_id
+
+
+async def test_a_non_canvas_run_sharing_the_same_job_id_string_does_not_collide(
+    spine: Any,
+) -> None:
+    """`canvas_job_id` is not an exclusively Canvas-owned field name at this
+    layer. A Run from an unrelated source that happens to carry the same
+    string in its own provenance -- accidentally, or as an impersonation
+    attempt -- must not be able to block a real Canvas admission from
+    claiming it."""
+    store, workspace, project_id = spine
+    impostor = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "task_queue", "canvas_job_id": "job-shared"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    canvas_run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-shared"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert canvas_run.run_id != impostor.run_id
+
+
+async def test_deleting_a_run_releases_its_canvas_job_claim(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-released"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.delete_run(run.run_id, force=True)
+
+    readmitted = await store.create_run(
+        _graph(workspace, project_id),
+        provenance=_canvas_job("job-released"),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
 
     assert readmitted.run_id != run.run_id
 
@@ -1248,6 +2048,36 @@ async def _terminal_attempt(spine: Any, node_run: Any, status: AttemptStatus) ->
     )
 
 
+async def _stamp_cancellation_cause(store: Any, attempt: Any, cause: CancellationCause) -> Any:
+    """Persist a typed cause until P3c stamps REQUESTED on the generic transition.
+
+    P4b refuses unknown CANCELLED; reclaim already stamps RECOVERED. Tests that
+    need REQUESTED (or RECOVERED without going through reclaim) write the cause
+    through each backend's authoritative payload update.
+    """
+    from maistro.runs.evidence_json import json_of
+
+    typed = attempt.model_copy(update={"cancellation_cause": cause})
+    if hasattr(store, "_attempts"):
+        store._attempts[typed.attempt_id] = typed
+        return typed
+    if hasattr(store, "_write_lock"):
+        async with store._write_lock:
+            await store._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                typed.attempt_id,
+                typed.status.value,
+                json_of(typed),
+            )
+        return typed
+    if hasattr(store, "_pool"):
+        async with store._pool.acquire() as conn, conn.transaction():
+            await store._write(conn, "canonical_attempts", "attempt_id", typed.attempt_id, typed)
+        return typed
+    raise TypeError(f"cannot stamp cancellation_cause on {type(store).__name__}")
+
+
 async def test_a_requested_cancellation_terminalizes_its_node_run(spine: Any) -> None:
     """The retry decision has been made, and it was *don't*. Parked would mean
     "awaiting a decision" — which is what made a cancelled turn and an outage
@@ -1255,6 +2085,7 @@ async def test_a_requested_cancellation_terminalizes_its_node_run(spine: Any) ->
     store, _workspace, _project_id = spine
     run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.REQUESTED
@@ -1273,6 +2104,7 @@ async def test_a_recovered_cancellation_still_parks_its_node_run(spine: Any) -> 
     store, _workspace, _project_id = spine
     run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.RECOVERED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.RECOVERED
@@ -1284,14 +2116,15 @@ async def test_a_recovered_cancellation_still_parks_its_node_run(spine: Any) -> 
     assert reloaded is not None and reloaded.status is RunStatus.WAITING
 
 
-async def test_recovery_is_the_default_so_a_caller_that_forgets_loses_nothing(
+async def test_typed_recovered_parks_without_a_caller_cause(
     spine: Any,
 ) -> None:
-    """The two mistakes are not symmetric: defaulting to parked leaves a less
-    informative record, defaulting to terminal destroys resumable work."""
+    """Persisted RECOVERED is enough — the caller no longer supplies the meaning
+    (#232 P4b). Unknown CANCELLED refuses; see test_reconciler_recovered_provenance."""
     store, _workspace, _project_id = spine
     _run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.RECOVERED)
 
     await AttemptLifecycleReconciler(store).reconcile(attempt)
 
@@ -1333,6 +2166,8 @@ async def test_the_three_outcomes_do_not_collapse_into_one(spine: Any) -> None:
     ):
         _run, node_run = await _running_run_with_node(spine)
         attempt = await _terminal_attempt(spine, node_run, status)
+        if status is AttemptStatus.CANCELLED:
+            attempt = await _stamp_cancellation_cause(store, attempt, cause)
         await reconciler.reconcile(attempt, cancellation=cause)
         settled = await store.get_node_run(node_run.node_run_id)
         assert settled is not None
@@ -1346,7 +2181,10 @@ async def test_a_cancelled_node_does_not_cancel_a_run_with_live_siblings(spine: 
     """One cancelled branch does not decide for the others — the same rule
     `_park_run_if_inactive` already applied to parking."""
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     cancelled_node = await store.create_node_run(run.run_id, node_id="node-1")
     sibling = await store.create_node_run(run.run_id, node_id="node-2")
     await store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -1355,6 +2193,7 @@ async def test_a_cancelled_node_does_not_cancel_a_run_with_live_siblings(spine: 
         await store.transition_node_run(node_run_id, RunStatus.QUEUED)
         await store.transition_node_run(node_run_id, RunStatus.RUNNING)
     attempt = await _terminal_attempt(spine, cancelled_node, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
 
     await AttemptLifecycleReconciler(store).reconcile(
         attempt, cancellation=CancellationCause.REQUESTED
@@ -1375,6 +2214,7 @@ async def test_a_cancellation_arriving_after_the_node_finished_changes_nothing(
     store, _workspace, _project_id = spine
     _run, node_run = await _running_run_with_node(spine)
     attempt = await _terminal_attempt(spine, node_run, AttemptStatus.CANCELLED)
+    attempt = await _stamp_cancellation_cause(store, attempt, CancellationCause.REQUESTED)
     await store.transition_node_run(
         node_run.node_run_id, RunStatus.FAILED, error="the node itself failed"
     )
@@ -1412,7 +2252,10 @@ async def test_a_failure_does_not_park_a_run_with_live_siblings(spine: Any) -> N
     """The parking half of the same rule the cancellation half follows: one
     branch ending does not decide for the others."""
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     failing = await store.create_node_run(run.run_id, node_id="node-1")
     sibling = await store.create_node_run(run.run_id, node_id="node-2")
     await store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -1603,7 +2446,10 @@ async def test_forged_evidence_refused_first_in_memory(memory_spine: Any) -> Non
 async def _two_node_running_run(spine: Any) -> Any:
     """A RUNNING Run over a two-node Graph, both NodeRuns RUNNING."""
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id, node_ids=("node-1", "node-2")))
+    run = await store.create_run(
+        _graph(workspace, project_id, node_ids=("node-1", "node-2")),
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     nodes = []
@@ -1701,6 +2547,244 @@ async def test_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
     await _assert_a_retried_node_does_not_condemn_its_run(spine)
 
 
+async def _assert_completion_over_a_paused_human_node_refused(spine: Any) -> None:
+    """A human wait is the NodeRun (PAUSED), and the parent cannot finish over it.
+
+    Completing the Run used to cascade that NodeRun to CANCELLED in the same
+    write, so the parent looked finished while the person was still owed an
+    answer. Failure stays legal — it is not a success claim — but the refused
+    completion must leave both rows where they were.
+    """
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    paused = await store.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+    assert paused.status is RunStatus.PAUSED
+    assert paused.finished_at is None
+
+    with pytest.raises(UnearnedRunCompletion) as caught:
+        await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    assert caught.value.node_id == "node-1"
+    assert caught.value.status is RunStatus.PAUSED
+    parent = await store.get_run(run.run_id)
+    assert parent is not None
+    assert parent.status is RunStatus.RUNNING
+    assert parent.finished_at is None
+    still = await store.get_node_run(node_run.node_run_id)
+    assert still is not None
+    assert still.status is RunStatus.PAUSED
+
+    failed = await store.transition_run(run.run_id, RunStatus.FAILED, error="stopped")
+    assert failed.status is RunStatus.FAILED
+    # Re-seed: failure cascades the open human node, which is the external
+    # disposition. The success path is the one that must wait for the node.
+    run, node_run = await _running_run_with_node(spine)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    await _complete_node_run(store, node_run.node_run_id, result={"answer": "yes"})
+
+    settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"answer": "yes"})
+
+    assert settled.status is RunStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    "non_success_terminal",
+    [RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMED_OUT],
+)
+async def test_a_parent_cannot_complete_while_a_child_run_is_open(
+    spine: Any, non_success_terminal: RunStatus
+) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    child = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+
+    with pytest.raises(RunIntegrityError, match=r"child Run.*non-terminal"):
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    unchanged = await store.get_run(parent.run_id)
+    assert unchanged is not None and unchanged.status is RunStatus.RUNNING
+
+    # Non-success outcomes remain truthful even while delegated work is open.
+    non_success_parent = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
+    await store.transition_run(non_success_parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(non_success_parent.run_id, RunStatus.RUNNING)
+    await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=non_success_parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    assert (
+        await store.transition_run(non_success_parent.run_id, non_success_terminal)
+    ).status is non_success_terminal
+
+    await store.transition_run(child.run_id, RunStatus.QUEUED)
+    await store.transition_run(child.run_id, RunStatus.RUNNING)
+    await store.transition_run(child.run_id, RunStatus.COMPLETED)
+    assert (
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+    ).status is RunStatus.COMPLETED
+
+
+async def test_a_terminal_parent_rejects_late_child_admission(spine: Any) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+
+
+async def test_a_durable_fork_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The one child a terminal parent accepts is the durable Graph fork (#1621).
+
+    `refuse_child_under_terminal_parent` refuses every late child except the
+    one whose provenance carries the fork fact naming the very parent it is
+    filed under: time travel (ADR-062) branches a historical Run into a child
+    instead of reopening it, and the fork files that child after the source
+    Run has terminalized. Pinned at the store layer on every backend so a
+    develop sync that drops the exemption fails here, not three layers up in
+    a fork test — the exemption was lost exactly that way once already.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    forked = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            DURABLE_GRAPH_FORK_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "source_event_sequence": "1",
+                "reason": "restart from the beginning",
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert forked.parent_run_id == parent.run_id
+    assert forked.status is RunStatus.QUEUED
+
+
+async def test_a_fork_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The exemption is the fork fact's parent identity, not its presence.
+
+    A fork fact naming a different Run does not make this child THAT parent's
+    fork: accepting it would let any caller mint a fork-shaped provenance and
+    file arbitrary children under a terminal Run. The carve-out stays as
+    narrow as the fact that justifies it.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                DURABLE_GRAPH_FORK_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "source_event_sequence": "1",
+                    "reason": "restart from the beginning",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+
+
+async def test_a_post_terminal_child_is_accepted_under_a_terminal_parent(spine: Any) -> None:
+    """The second child a terminal parent accepts: the post-terminal child (#1621).
+
+    Shipped flows hang children under terminal parents by design: a
+    control-plane operation minted after its requesting Run terminalized (a
+    benchmark judge beneath a COMPLETED Run), and retry lineage beneath a
+    FAILED Run. The store accepts such a child when its own provenance
+    carries the identity-bound ``POST_TERMINAL_CHILD_PROVENANCE`` fact
+    naming that parent — the same carve-out shape as the durable Graph fork.
+    Pinned at the store layer on every backend beside the fork pin it
+    mirrors.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    late = await store.create_run(
+        _graph(workspace, project_id),
+        parent_run_id=parent.run_id,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        provenance={
+            POST_TERMINAL_CHILD_PROVENANCE: {
+                "parent_run_id": parent.run_id,
+                "reason": ("control-plane operation minted after its requesting Run terminalized"),
+            }
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    assert late.parent_run_id == parent.run_id
+    assert late.status is RunStatus.QUEUED
+
+
+async def test_a_post_terminal_fact_naming_another_parent_is_refused_under_a_terminal_parent(
+    spine: Any,
+) -> None:
+    """The carve-out is the post-terminal fact's parent identity, not its presence.
+
+    Same rule as the fork fact: a fact naming a different Run does not make
+    this child THAT parent's late child, so the admission is refused like
+    any unmarked one. Without this pin the fact degenerates into a magic
+    word that files arbitrary children under terminal Runs.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    with pytest.raises(RunIntegrityError, match="terminal Run"):
+        await store.create_run(
+            _graph(workspace, project_id),
+            parent_run_id=parent.run_id,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+            provenance={
+                POST_TERMINAL_CHILD_PROVENANCE: {
+                    "parent_run_id": "another-run-entirely",
+                    "reason": "names a different Run",
+                }
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+
+
+async def test_a_parent_cannot_complete_while_a_human_node_run_is_paused(spine: Any) -> None:
+    await _assert_completion_over_a_paused_human_node_refused(spine)
+
+
 @pytest.mark.ac("ADR-082426-19ed/AC-1")
 async def test_completion_over_a_failed_node_refused_in_memory(memory_spine: Any) -> None:
     await _assert_completion_over_a_failed_node_refused(memory_spine)
@@ -1793,12 +2877,22 @@ async def _assert_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
 
     assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
     assert reclaimed[0].status is AttemptStatus.CANCELLED
+    assert reclaimed[0].cancellation_cause is CancellationCause.RECOVERED, (
+        "the sweep is #2354's authorized RECOVERED writer: an expired lease "
+        "reclaimed without the durable cause is indistinguishable from a crash "
+        "that never got recorded"
+    )
+    assert reclaimed[0].finished_at is not None
     assert "worker-A" in (reclaimed[0].error or ""), (
         "a reclaimed Attempt must name the holder that went quiet, or it is "
         "indistinguishable from one a user cancelled"
     )
     settled = await store.get_attempt(attempt.attempt_id)
     assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert settled.cancellation_cause is CancellationCause.RECOVERED, (
+        "the settled Attempt object must carry the persisted cause, not just "
+        "the sweep's return value"
+    )
     assert node_run.node_run_id  # the NodeRun is reconciled by the reconciler, not the sweep
 
 
@@ -1859,6 +2953,21 @@ async def test_renewal_pushes_the_expiry_out(spine: Any) -> None:
     await _assert_renewal_pushes_the_expiry_out(spine)
 
 
+async def test_recovery_classification_uses_cause_not_matching_error_text(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+    _node_run, active = await _leased_attempt(spine, holder="worker-A", ttl=timedelta(seconds=30))
+    assert active.execution_lease is not None and active.execution_lease.expires_at is not None
+    reclaimed = await store.reclaim_expired_attempts(
+        now=active.execution_lease.expires_at + timedelta(seconds=1)
+    )
+    persisted = reclaimed[0].model_copy(update={"cancellation_cause": None})
+
+    from maistro.runs.lifecycle import is_reclaimed_attempt
+
+    assert persisted.error == reclaimed[0].error
+    assert not is_reclaimed_attempt(persisted)
+
+
 async def test_a_lapsed_lease_is_reclaimed(spine: Any) -> None:
     await _assert_a_lapsed_lease_is_reclaimed(spine)
 
@@ -1917,7 +3026,9 @@ async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
     the two that are systems of record.
     """
     store, workspace, project_id = spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.FAILED)
@@ -1925,3 +3036,70 @@ async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
     mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
     assert [item.run_id for item in mine] == [run.run_id]
     assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []
+
+
+# ── delegation reservation and receipt (#1090 review round) ──────────
+
+
+async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> None:
+    """The receipt-side identity the remote node leans on, on every backend.
+
+    `find_delegation_run` is how a retry adopts a concurrent replica's
+    reservation instead of minting a second child; `attach_delegation_receipt`
+    is how the transport's answer becomes durable evidence. Both must behave
+    identically where the run actually lives — memory in tests, SQLite or
+    PostgreSQL in production — including the refusal to overwrite an existing
+    receipt with a different task: two receipts for one logical hand-off is
+    the same "second lifecycle" the delegation node exists to prevent.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-round-trip"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    found = await store.find_delegation_run("key-round-trip")
+    assert found is not None
+    assert found.run_id == run.run_id
+    assert await store.find_delegation_run("key-unknown") is None
+
+    attached = await store.attach_delegation_receipt(
+        run.run_id, "task-1", target_agent="researcher"
+    )
+    assert attached.provenance["a2a_task_id"] == "task-1"
+    assert attached.provenance["target_agent"] == "researcher"
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["a2a_task_id"] == "task-1"
+
+    # Re-attaching the same task is idempotent; a different task is a conflict.
+    again = await store.attach_delegation_receipt(run.run_id, "task-1")
+    assert again.provenance["a2a_task_id"] == "task-1"
+    with pytest.raises(RunIntegrityError):
+        await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True

@@ -1,22 +1,26 @@
-"""self_repair end-to-end with the real infra_action + approval inbox (SPEC-188).
+"""self_repair end-to-end with durable waiting-human approval (#2405 / SPEC-188).
 
-Proves the loop composes with SPEC-187's actual gate: a destructive remediation
-is parked pending approval and only hits the host once approved.
+Proves approval-gated remediation parks a durable Run rather than awaiting an
+in-process InboxApproval Event, and only hits the host after approved=True.
 """
 
 from __future__ import annotations
 
-import asyncio
+from typing import Any
 
 import httpx
 
+from maistro.capabilities.approval_store import InMemoryApprovalStore
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.durable_hitl_approval import admit_self_repair_approval
+from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
-from maistro.capabilities.providers.approval_inbox import InboxApproval
 from maistro.capabilities.providers.host_health import HostHealthAction
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
-from maistro.capabilities.slots.infra import InfraHealth, ResourceHealth
-from maistro.capabilities.slots.self_repair import RepairDecision
+from maistro.capabilities.slots.infra import InfraAction, InfraHealth, ResourceHealth
+from maistro.capabilities.slots.self_repair import RepairDecision, RepairProposal
 from maistro.capabilities.types import ProviderHealth
+from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus, pending_hitl_node_ids
 
 
 class _Monitor:
@@ -41,9 +45,17 @@ class _Monitor:
         )
 
 
-async def test_remediation_blocks_until_approved_then_hits_host() -> None:
-    # Under approve_all even a reversible restart is gated; it parks pending
-    # approval and only hits the host once resolved.
+def _binding() -> Binding:
+    return Binding(
+        binding_id="builtin:self-repair:infra-action",
+        workspace_id="ws-sr",
+        project_id="project-sr",
+        node_id="self-repair",
+        capability="infra_action",
+    )
+
+
+async def test_remediation_parks_durable_run_until_approved() -> None:
     sent: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -51,28 +63,51 @@ async def test_remediation_blocks_until_approved_then_hits_host() -> None:
         return httpx.Response(200, json={"status": "ok", "detail": "restarted"})
 
     http = HttpxAsyncHttp("http://h:8150", transport=httpx.MockTransport(handler))
-    inbox = InboxApproval()
-    action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
+    action = HostHealthAction(http, autonomy="approve_all")
+    store = InMemoryDurableRunStore()
+    effects = new_effect_context(approval_store=InMemoryApprovalStore())
+    await effects.bindings.put(_binding())
+
+    async def resolve_provider(_candidate: Binding) -> InfraAction:
+        return action
+
+    async def admit(proposal: RepairProposal, effect_key: str) -> str:
+        binding = _binding()
+        record = await admit_self_repair_approval(
+            store=store,
+            effect_context=effects,
+            binding=binding,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            action=proposal.action or "",
+            params=proposal.params,
+            effect_key=effect_key,
+            resolve_provider=resolve_provider,
+        )
+        return record.run.run_id
+
+    async def must_not_auto(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("gated path must not auto-invoke")
+
+    repair = RuleBasedRepair(
+        infra_monitor=_Monitor(),
+        effect_invoker=must_not_auto,
+        approval_admittor=admit,
+        autonomy="approve_all",
+    )
 
     cycle = await repair.run_once()
     (r,) = cycle.results
     assert r.decision is RepairDecision.PENDING_APPROVAL
-    await asyncio.sleep(0)  # let the dispatch task reach approval.request()
-
-    # Parked: nothing sent to the host yet, one pending approval.
     assert sent == []
-    pending = inbox.pending()
-    assert len(pending) == 1
-    assert pending[0].action == "restart_container"
-
-    # Approve through the inbox → the host action now fires.
-    assert inbox.resolve(pending[0].request_id, approved=True, actor="tester") is True
-    await asyncio.gather(*list(repair._tasks))
-    assert sent == ["/action/restart_container"]
+    run_id = repair._pending_approval_runs["docker:litellm"]
+    parked = await store.get(run_id)
+    assert parked is not None
+    assert parked.run.status is RunStatus.PAUSED
+    assert pending_hitl_node_ids(parked)
 
 
-async def test_denied_remediation_never_hits_host() -> None:
+async def test_denied_style_gate_never_hits_host_without_approved_flag() -> None:
     sent: list[str] = []
     http = HttpxAsyncHttp(
         "http://h:8150",
@@ -80,13 +115,8 @@ async def test_denied_remediation_never_hits_host() -> None:
             lambda r: (sent.append(r.url.path), httpx.Response(200, json={}))[1]
         ),
     )
-    inbox = InboxApproval()
-    action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
-
-    await repair.run_once()
-    await asyncio.sleep(0)
-    pending = inbox.pending()
-    inbox.resolve(pending[0].request_id, approved=False)
-    await asyncio.gather(*list(repair._tasks))
+    action = HostHealthAction(http, autonomy="approve_all")
+    # Direct act without approved= must refuse, matching the durable-gate contract.
+    result = await action.act("restart_container", {"name": "x"})
+    assert result.blocked_pending_approval is True
     assert sent == []

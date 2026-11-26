@@ -14,6 +14,10 @@ from services.chat_gate import (
     REFUSAL_TEXT,
     gate_untrusted,
 )
+from services.chat_runs import admit_turn, execute_turn
+from services.request_principal import optional_actor_id
+
+from maistro.capabilities.model_chat import model_execution_context
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,9 @@ class VoiceIntentResponse(BaseModel):
     understood: bool
     intent: Literal["conversation", "unknown"]
     reply: str
+    #: The canonical Run the answered turn executed under (#1037). Absent on a
+    #: Warden refusal, which never reached admission.
+    run_id: str | None = None
 
 
 @router.post("/intent", response_model=VoiceIntentResponse)
@@ -74,8 +81,7 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
     own model-default chain. A second execution path is how the containment
     rule ends up meaning something different on the route nobody looks at.
     """
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id", ""))
+    user_id = optional_actor_id(request)
 
     context_parts = [body.text]
     if body.room:
@@ -111,8 +117,20 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
     req = conversation_only(
         ChatCompletionRequest(messages=[{"role": "user", "content": utterance}])
     )
+    turn = await admit_turn(request, req.messages)
+    run = turn.run
 
-    result = await build_llm_port().complete(req)
+    async def call_model() -> dict:
+        llm = build_llm_port()
+        # Same join as /chat/complete: the governed Invocation carries the
+        # actor admission authenticated (#1084), read from the persisted Run
+        # rather than any request-supplied text. Binding scope stays the
+        # deployment's configured model Binding (#1824 owns Workspace-scoped
+        # credential provisioning).
+        with model_execution_context(actor_id=run.actor_principal_id or ""):
+            return await llm.complete(req)
+
+    result = await execute_turn(turn, req.messages, call_model)
 
     reply = ""
     for choice in result.get("choices", []):
@@ -127,4 +145,6 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
         intent,
     )
 
-    return VoiceIntentResponse(understood=bool(reply), intent=intent, reply=reply)
+    return VoiceIntentResponse(
+        understood=bool(reply), intent=intent, reply=reply, run_id=turn.run.run_id
+    )

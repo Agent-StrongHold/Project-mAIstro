@@ -21,5 +21,5 @@ if [[ ! -x "$UVICORN" ]]; then
 fi
 
 echo "PM POC: MAISTRO_POC_MODE=$MAISTRO_POC_MODE HIVE_POC_MODE=$HIVE_POC_MODE"
-echo "Hive API: http://127.0.0.1:8101  (health: /health)"
-exec "$UVICORN" main:app --host 127.0.0.1 --port 8101 --reload
+echo "Hive API: http://127.0.0.1:8101  (health: /health)"  # DevSkim: ignore DS162092 until 2027-12-31
+exec "$UVICORN" main:app --host 127.0.0.1 --port 8101 --reload  # DevSkim: ignore DS162092 until 2027-12-31

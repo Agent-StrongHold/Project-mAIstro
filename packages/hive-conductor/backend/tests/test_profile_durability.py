@@ -44,11 +44,14 @@ class FakeRecords:
     Documents are held as the strings they were written as, because that is
     what the real store holds. A double that kept the dict would let a record
     carrying something unserialisable pass here and fail in production.
+
+    `put_raw`/`delete` stand in for the acknowledged writes (#1179): a double
+    that returns has committed, which is exactly what makes the doubles below
+    able to express a refused write without any flush plumbing.
     """
 
     def __init__(self) -> None:
         self.documents: dict[tuple[str, str], str] = {}
-        self.flushes = 0
 
     def put_raw(self, store_name: str, key: str, json_str: str) -> None:
         self.documents[(store_name, key)] = json_str
@@ -62,16 +65,14 @@ class FakeRecords:
     def list_all_raw(self, store_name: str) -> list[tuple[str, str]]:
         return [(key, doc) for (name, key), doc in self.documents.items() if name == store_name]
 
-    def flush(self, timeout: float = 10.0) -> None:
-        self.flushes += 1
-
 
 class ForgetfulRecords(FakeRecords):
     """Accepts every write and keeps none.
 
-    This is the only way to exercise the acknowledgement rule from the outside.
-    `State._writer_loop` swallows what its closures raise, so a real failed
-    write looks exactly like this from the caller's side: accepted, then absent.
+    This is the only way to exercise the acknowledgement rule from the outside
+    with a double: a real failed commit raises to the caller since #1238, so
+    this double models a store whose acknowledgement lies — the read-back is
+    what catches it.
     """
 
     def put_raw(self, store_name: str, key: str, json_str: str) -> None:
@@ -79,7 +80,7 @@ class ForgetfulRecords(FakeRecords):
 
 
 class RefusingRecords(FakeRecords):
-    """Raises on write, the way `State.submit` does when the writer is closed."""
+    """Raises on write, the way an acknowledged write reports a failed commit."""
 
     def put_raw(self, store_name: str, key: str, json_str: str) -> None:
         raise RuntimeError("state writer is closed")
@@ -101,7 +102,7 @@ def _fresh_store():
 
 
 def _persisted(records: FakeRecords) -> PersistedProfileRecordStore:
-    return PersistedProfileRecordStore(records, records.flush)
+    return PersistedProfileRecordStore(records)
 
 
 class TestAProfileOutlivesTheProcessThatWroteIt:
@@ -120,9 +121,9 @@ class TestAProfileOutlivesTheProcessThatWroteIt:
     def test_a_real_sqlite_state_round_trips_a_profile(self, tmp_path) -> None:
         """The same claim against the real writer thread, not a double.
 
-        The doubles above cannot show that `flush` actually drains before the
-        read-back, which is the whole reason `PersistedProfileRecordStore` calls
-        it. This one can.
+        The doubles cannot show that a completed `put_raw` is committed. This
+        one can: the acknowledged write returns only after the State writer's
+        commit (#1179), so the read-back and a fresh reader both observe it.
         """
         from maistro.state import PersistedStore, State
 
@@ -130,7 +131,7 @@ class TestAProfileOutlivesTheProcessThatWroteIt:
         try:
             persisted = PersistedStore(state)
             persisted.initialize()
-            profile_store.configure(PersistedProfileRecordStore(persisted, state.flush))
+            profile_store.configure(PersistedProfileRecordStore(persisted))
             profile_store.save("u-1", {"name": "Blake"})
             assert profile_store.preferences("u-1") == {"name": "Blake"}
             assert persisted.get_raw(STORE_NAME, "u-1") is not None
@@ -216,13 +217,34 @@ class TestAWriteThatDidNotLandIsNotAcknowledged:
             profile_store.save("u-1", {"name": "Blake"})
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-2")
-    def test_a_write_flushes_before_it_reads_back(self) -> None:
-        """Without the drain, the read-back races the writer thread and the
-        check passes or fails on timing."""
-        records = FakeRecords()
-        profile_store.configure(_persisted(records))
-        profile_store.save("u-1", {"name": "Blake"})
-        assert records.flushes == 1
+    def test_a_write_is_committed_when_put_raw_returns(self, tmp_path) -> None:
+        """The acknowledgement is the commit, not a queue entry (#1179).
+
+        There is no flush between `put_raw` and the read-back: none is needed,
+        because the acknowledged write only returns after the State writer has
+        committed. A fresh reader connection proves the row is on disk, not
+        merely visible through a shared connection.
+        """
+        from maistro.state import PersistedStore, State
+
+        state = State(db_path=str(tmp_path / "ack.db"))
+        try:
+            persisted = PersistedStore(state)
+            persisted.initialize()
+            profile_store.configure(PersistedProfileRecordStore(persisted))
+            profile_store.save("u-1", {"name": "Blake"})
+
+            reader = state.open_reader()
+            try:
+                row = reader.execute(
+                    "SELECT value FROM kv_store WHERE store_name = ? AND key = ?",
+                    (STORE_NAME, "u-1"),
+                ).fetchone()
+            finally:
+                reader.close()
+            assert row is not None and "Blake" in row[0]
+        finally:
+            state.close()
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-2")
     def test_a_delete_that_left_the_record_raises(self) -> None:

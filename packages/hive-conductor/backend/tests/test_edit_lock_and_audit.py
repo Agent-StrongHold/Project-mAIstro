@@ -305,7 +305,10 @@ def test_put_dag_marks_edited_fields_as_locked(admin_client: Any) -> None:
     from services.edit_lock import is_locked
 
     dag_id = _seed_dag(admin_client)
-    admin_client.put(f"/v1/dags/{dag_id}", json={"max_cycles": 99, "status": "active"})
+    # An in-envelope value: out-of-policy max_cycles writes are refused at
+    # edit time now that the field is enforced (#1184), and this test is about
+    # edit locking, not the envelope.
+    admin_client.put(f"/v1/dags/{dag_id}", json={"max_cycles": 7, "status": "active"})
     assert is_locked(dag_id, "max_cycles") is True
     assert is_locked(dag_id, "status") is True
     assert is_locked(dag_id, "description") is False  # untouched

@@ -33,19 +33,24 @@ the larger Attempt evidence shape.
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
 
+from maistro.observability.correlation import bind_execution_context
+from maistro.runs.consumer_claim import ConsumerClaimLost, ConsumerClaimStore
+from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     AcceptedNodeOutcome,
     AttemptResult,
     NodeRun,
+    Run,
     RunStatus,
 )
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro.tasks.admission import REQUEST_ID_KEY
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.types import ConductorOutput
@@ -54,6 +59,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: `executor_id` recorded on every Attempt the task runner drives.
 TASK_EXECUTOR_ID = "task_runner"
+
+#: Lease TTL for a task's first physical dispatch (#1114). A consumer claim
+#: requires one: RUNNING must be written together with the leased Attempt that
+#: makes it true, or a worker death between the two writes strands a Run no
+#: recovery can reach. Thirty seconds, the schedule consumer's own window
+#: (`DEFAULT_SCHEDULE_LEASE_TTL`): renewed by heartbeat while the task runs,
+#: and collectable by `Container.recover_abandoned_attempts` when it is not.
+DEFAULT_TASK_LEASE_TTL = timedelta(seconds=30)
 
 
 class TaskExecutionFailed(Exception):
@@ -116,12 +129,36 @@ class TaskAttemptExecutor:
             # NodeRun with no Attempt under it, an execution record that is
             # incomplete rather than absent.
             raise ValueError("timeout_s must be > 0")
+        resolved_runtime = runtime or PythonExecutionRuntime()
         self._runs = run_store
         self._service = RunExecutionService(
             store=run_store,
-            runtime=runtime or PythonExecutionRuntime(),
+            runtime=resolved_runtime,
             lease_ttl=lease_ttl,
         )
+        # The atomic dispatch claim (#1114, #544). On a claiming store the
+        # Run's QUEUED->RUNNING write is made by `claim_consumer_run` in the
+        # same transaction as the NodeRun and leased Attempt that make it
+        # true; a worker death before that commit leaves the Run QUEUED for
+        # `TaskQueue.recover`, and one after it leaves leased physical evidence
+        # for the Attempt sweep. There is no third state, so there is no window
+        # for a stranded RUNNING Run. A store without the capability keeps the
+        # `execute_node` path exactly as it was.
+        self._claims = (
+            cast(ConsumerClaimStore, run_store)
+            if callable(getattr(run_store, "claim_consumer_run", None))
+            else None
+        )
+        self._claimed_runs = (
+            AttemptExecutionService(
+                store=run_store,
+                runtime=resolved_runtime,
+                lease_ttl=DEFAULT_TASK_LEASE_TTL,
+            )
+            if self._claims is not None
+            else None
+        )
+        self._runtime_id = type(resolved_runtime).__name__
         # Explicitly None by default, for the same reason `timeout_s` is. A TTL
         # is a promise this process will keep renewing, and a deployment that
         # has no sweeper running would be making a promise nobody collects on:
@@ -150,7 +187,7 @@ class TaskAttemptExecutor:
         evidence is accepted explicitly so the canonical Run derives from the
         NodeRun while keeping the task's product result shape.
         """
-        node_id = await self._node_id(run_id)
+        run, node_id = await self._run_and_node_id(run_id)
         existing = await self._node_run_for(run_id, node_id)
         captured: list[ConductorOutput] = []
 
@@ -162,32 +199,85 @@ class TaskAttemptExecutor:
             return attempt_result(output)
 
         context = {"run_id": run_id, "node_id": node_id}
-        if existing is None:
-            node_run, attempt = await self._service.execute_node(
-                run_id,
-                node_id,
-                request,
-                context,
-                executor=_run,
-                executor_id=TASK_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-                reconcile_logical=False,
+        # The worker runs this after the admitting request has ended, in its
+        # own context; the Run's persisted provenance is the only thing that
+        # carries that request's id across the boundary, so it is bound back
+        # here along with the Run's scope (#1063).
+        with bind_execution_context(
+            request_id=str(run.provenance.get(REQUEST_ID_KEY, "")),
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+        ):
+            deadline_at = (
+                datetime.now(UTC) + timedelta(seconds=self._timeout_s)
+                if self._timeout_s is not None
+                else None
             )
-        else:
-            # A second execution of the same task is a second Attempt under the
-            # same logical NodeRun, not a second NodeRun. Creating another
-            # NodeRun would say the Run grew a node, which is false: the Graph
-            # has one, and it was tried twice.
-            attempt = await self._service.retry_node(
-                existing.node_run_id,
-                request,
-                context,
-                executor=_run,
-                executor_id=TASK_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-                reconcile_logical=False,
-            )
-            node_run = existing
+            if existing is None and self._claims is not None:
+                assert self._claimed_runs is not None
+                # First dispatch on a claiming store: the QUEUED->RUNNING
+                # transition, the NodeRun and the leased Attempt land in one
+                # transaction (#544). `TaskRunAdmitter.record_transition`
+                # deliberately leaves the Run QUEUED through the receipt's
+                # phase moves so this claim is the only dispatch write —
+                # see this module's sister note in tasks/admission.py (#1114).
+                # A losing dispatcher sees ConsumerClaimLost before any work
+                # runs, which is the duplicate-delivery fence the task
+                # transition fence used to approximate.
+                claim = await self._claims.claim_consumer_run(
+                    run_id,
+                    node_id=node_id,
+                    runtime_id=self._runtime_id,
+                    executor_id=TASK_EXECUTOR_ID,
+                    lease_ttl=DEFAULT_TASK_LEASE_TTL,
+                    deadline_at=deadline_at,
+                )
+                attempt = await self._claimed_runs.execute_claimed(
+                    claim.attempt,
+                    request,
+                    context,
+                    executor=_run,
+                    timeout_s=self._timeout_s,
+                    reconcile_logical=False,
+                )
+                node_run = claim.node_run
+            elif existing is None:
+                node_run, attempt = await self._service.execute_node(
+                    run_id,
+                    node_id,
+                    request,
+                    context,
+                    executor=_run,
+                    executor_id=TASK_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                    reconcile_logical=False,
+                )
+            else:
+                # A second execution of the same task is a second Attempt under
+                # the same logical NodeRun, not a second NodeRun. Creating
+                # another NodeRun would say the Run grew a node, which is
+                # false: the Graph has one, and it was tried twice.
+                attempts = await self._runs.list_attempts(existing.node_run_id)
+                if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
+                    # Physical ownership is decided by the Attempt, not by who
+                    # holds a receipt (#1114): a NodeRun with a live Attempt is
+                    # owned by the worker that claimed it, and a duplicate
+                    # delivery racing the claim must not stack a second
+                    # concurrent Attempt on top of it.
+                    raise ConsumerClaimLost(
+                        f"NodeRun {existing.node_run_id!r} already has an active Attempt; "
+                        "another dispatcher owns this work"
+                    )
+                attempt = await self._service.retry_node(
+                    existing.node_run_id,
+                    request,
+                    context,
+                    executor=_run,
+                    executor_id=TASK_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                    reconcile_logical=False,
+                )
+                node_run = existing
         if not captured:  # pragma: no cover - unreachable: _run always fills it
             raise RunIntegrityError("task Attempt completed without capturing its output")
         output = captured[0]
@@ -210,7 +300,7 @@ class TaskAttemptExecutor:
         is what `TaskQueue.cancel` and the runner's refusal already do. This is
         the other half, for work that is already running somewhere.
         """
-        node_id = await self._node_id(run_id)
+        _, node_id = await self._run_and_node_id(run_id)
         node_run = await self._node_run_for(run_id, node_id)
         if node_run is None:
             return False
@@ -224,7 +314,7 @@ class TaskAttemptExecutor:
         await self._service.cancel_run(run_id)
         return True
 
-    async def _node_id(self, run_id: str) -> str:
+    async def _run_and_node_id(self, run_id: str) -> tuple[Run, str]:
         run = await self._runs.get_run(run_id)
         if run is None:
             raise RunIntegrityError(f"Run {run_id!r} does not exist")
@@ -233,7 +323,7 @@ class TaskAttemptExecutor:
             raise RunIntegrityError(
                 f"task Run {run_id!r} has {len(nodes)} Graph nodes; direct work admits exactly one"
             )
-        return nodes[0].node_id
+        return run, nodes[0].node_id
 
     async def _node_run_for(self, run_id: str, node_id: str) -> NodeRun | None:
         node_runs = [nr for nr in await self._runs.list_node_runs(run_id) if nr.node_id == node_id]
@@ -241,6 +331,7 @@ class TaskAttemptExecutor:
 
 
 __all__ = [
+    "DEFAULT_TASK_LEASE_TTL",
     "TASK_EXECUTOR_ID",
     "TaskAttemptExecutor",
     "TaskExecutionFailed",

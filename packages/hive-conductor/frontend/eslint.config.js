@@ -5,7 +5,9 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // types.gen.ts is openapi-typescript output; CI fails if it differs from a
+  // fresh generation, so hand edits (lint fixes included) cannot land.
+  { ignores: ["dist", "src/api/types.gen.ts"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

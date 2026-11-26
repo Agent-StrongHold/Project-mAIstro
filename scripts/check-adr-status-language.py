@@ -10,11 +10,15 @@ not moved to `Deferred` or `Superseded`." Different readers received different
 authority answers, and no check could see it because nothing read the body's
 status claims at all.
 
-This gate reads the structured status markers a body can carry and requires
-each to agree with the front matter:
+This gate retires duplicated body status lines and requires the remaining
+structured status claims to agree with front matter:
 
-1. `**Status:** X` lines — 60 ADRs carry one; it is a status declaration, not
-   prose, so it must equal the front-matter status.
+1. `**Status:** X` lines — **retired entirely** (ADR-092126-a28a). Any such
+   line in a body is a finding, in either the bare or the list-item spelling,
+   whatever value it carries. This category used to check *agreement* with
+   front matter; the 94 documents that carried a line are now cleared, and a
+   line that agrees today is one that drifts tomorrow, so absence is what is
+   enforced. The fix is always the same: delete the line.
 2. `**Superseded by [ID](...)`` banners — when present on a Superseded
    document, every ID it names must be in the front matter's `superseded-by`
    (and the canonical spelling is the one to fix, because front matter feeds
@@ -32,10 +36,18 @@ Run:  python scripts/check-adr-status-language.py
 Bank: python scripts/check-adr-status-language.py --update
 
 The baseline is per-identity for the legacy `**Status:**` lines written before
-front matter was canonical (28 of them at #387's filing, all "body says an
-older status"): a new one fails, and a fixed one must shrink the ledger in the
-same change. Category-2 and category-3 contradictions are *not* baselined —
-they were zero at filing, so any occurrence is new.
+front matter was canonical: a new one fails, and a fixed one must shrink the
+ledger in the same change. Category-2 and category-3 contradictions are *not*
+baselined — they were zero at filing, so any occurrence is new.
+
+**The ledger is empty and category 1 keeps it that way.** #387 banked 28
+legacy lines it could see; the 19 list-form spec lines it could not see were
+corrected when the category learned that spelling, the 28 were corrected
+after, and ADR-092126-a28a then removed the remaining 94 lines outright. The
+ratchet has nothing left to tolerate, and any finding this gate reports is
+new by construction. Refilling the ledger is an expansion, which the
+provenance adapter requires a landed grant for (#534) — delete the line
+instead.
 """
 
 from __future__ import annotations
@@ -54,10 +66,28 @@ from maistro_registry.validator import validate_file  # noqa: E402
 
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
 LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
+METRIC_DEFINITION_VERSION = "2"
 
-#: `**Status:** Accepted` — the body status line many ADRs carry. Trailing
-#: markup or dates are tolerated; the first word is the claim.
-_BODY_STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*\*{0,2}([A-Za-z]+)\b", re.M)
+#: A body status line, bare or in an unordered/ordered Markdown list.
+#: Ordered markers use one to nine ASCII digits and a dot or closing paren.
+#: All spellings are retired (ADR-092126-a28a), so the *value* is never
+#: parsed — only quoted back in the diagnostic. That is the simplification
+#: retirement buys: while this category compared body against front matter it
+#: needed the status vocabulary, multi-word values (`AC Defined` read as `AC`)
+#: and case folding, and each of those was a defect in turn.
+#
+#: Fenced code blocks (``` ... ``` or ~~~ ... ~~~) are excluded from matching,
+#: so documentation examples containing `**Status:**` inside fences are not flagged.
+#: Blockquote prefixes (`> ` or `>**Status:**`) are supported — they render as
+#: body text and should be treated as declarations.
+#: Four-space indentation exempts unmarked code blocks (including indented
+#: code blocks detected from Markdown structure); a list marker at any
+#: indentation is a declaration, including markers nested inside a list.
+_BODY_STATUS_RE = re.compile(
+    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$"
+    r"|^[ \t]+(?:[-*+]|[0-9]{1,9}[.)])[ \t]+\*\*Status:\*\*.*$",
+    re.M,
+)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the
@@ -105,10 +135,10 @@ def _display(path: Path) -> str:
 
 
 def audit(*, roots: tuple[Path, ...] | None = None) -> list[StatusProblem]:
-    """Every structured status marker that contradicts its front matter."""
+    """Every retired body status line or claim contradicting front matter."""
     problems: list[StatusProblem] = []
     for root in roots or DOC_ROOTS:
-        for path in sorted(root.glob("*.md")):
+        for path in sorted(root.rglob("*.md")):
             if path.name == "ADR-INDEX.md":
                 continue
             problems.extend(_audit_file(path))
@@ -120,19 +150,19 @@ def _audit_file(path: Path) -> list[StatusProblem]:
     front_matter = result.front_matter
     if front_matter is None:
         return []  # missing front matter is the registry lint's failure, not ours
-    body = _body_without_front_matter(path)
+    body = _outside_fenced_blocks(_body_without_front_matter(path))
     problems: list[StatusProblem] = []
 
     for match in _BODY_STATUS_RE.finditer(body):
-        claimed = match[1].capitalize()
-        if claimed != front_matter.status.value:
-            problems.append(
-                StatusProblem(
-                    path,
-                    "body-status-line",
-                    f"body says '{claimed}', front matter says '{front_matter.status.value}'",
-                )
+        problems.append(
+            StatusProblem(
+                path,
+                "body-status-line",
+                f"body carries {match[0].strip()!r}; body status lines are retired "
+                f"(ADR-092126-a28a) — front matter ({front_matter.status.value}) is the "
+                f"only status. Delete the line.",
             )
+        )
 
     superseded_by = {ref.removeprefix(_REF_PREFIX) for ref in front_matter.superseded_by}
     for match in _BANNER_RE.finditer(body):
@@ -174,6 +204,45 @@ def _body_without_front_matter(path: Path) -> str:
     return text[end + 4 :] if end != -1 else text
 
 
+def _outside_fenced_blocks(text: str) -> str:
+    """Return text with code-block lines (fenced and indented) blanked.
+
+    Fenced (``` / ~~~) and four-space-indented Markdown code blocks are
+    excluded from matching, so examples containing ``**Status:**`` inside them
+    are not flagged.  Markdown structure is used to tell an indented code
+    block from a list item nested at the same column, which a fixed
+    indentation cutoff cannot do.  Blockquote lines are retained.
+    """
+    lines = text.splitlines()
+    blanked: set[int] = set()
+    try:
+        from markdown_it import MarkdownIt
+
+        for token in MarkdownIt().parse(text):
+            if token.type in ("fence", "code_block") and token.map:
+                for index in range(token.map[0], token.map[1]):
+                    if 0 <= index < len(lines):
+                        blanked.add(index)
+    except Exception:  # pragma: no cover - defensive fallback
+        in_fence = False
+        fence_char: str | None = None
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+                in_fence = True
+                fence_char = stripped[:3]
+                blanked.add(index)
+                continue
+            if in_fence:
+                if fence_char and stripped.startswith(fence_char):
+                    in_fence = False
+                    fence_char = None
+                    blanked.add(index)
+                else:
+                    blanked.add(index)
+    return "\n".join(" " if index in blanked else line for index, line in enumerate(lines))
+
+
 def _load_baseline() -> frozenset[str]:
     if not LEDGER.exists():
         return frozenset()
@@ -183,11 +252,14 @@ def _load_baseline() -> frozenset[str]:
 
 def _write_baseline(problems: list[StatusProblem]) -> None:
     payload = {
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "_comment": (
             "Legacy body '**Status:**' lines written before front matter was canonical (#379). "
-            "Body status language is checked per-identity (#387): a new contradiction fails, "
-            "and a fixed one must shrink this ledger in the same change. Banner and "
-            "status-assertion contradictions are never baselined."
+            "Metric v2 checks absence per identity: every body status line is a finding "
+            "regardless of agreement with front matter. A new finding fails, and a fixed "
+            "one must shrink this ledger in the same change. Banner and status-assertion "
+            "contradictions are never baselined. Expanding this ledger requires prior "
+            "trusted-base authorization; delete the retired body status line instead."
         ),
         "known": sorted({p.identity for p in problems}),
         "details": {p.identity: p.detail for p in sorted(problems, key=lambda p: p.identity)},
@@ -216,13 +288,13 @@ def main(argv: list[str] | None = None) -> int:
     stale = sorted(known - found)
 
     if new:
-        print(f"FAIL: {len(new)} new body/front-matter status contradiction(s)\n")
+        print(f"FAIL: {len(new)} new body-status-language finding(s)\n")
         for identity in new:
             problem = next(p for p in problems if p.identity == identity)
             print(f"  {problem.render()}")
         print(
-            "\nFront matter is canonical (#379). Make the body agree with it, or bank a "
-            "reviewed legacy exception with --update if this predates that rule."
+            "\nFront matter is canonical (#379). Delete retired body status lines "
+            "(ADR-092126-a28a); align replacement banners and status assertions with front matter."
         )
         return 1
 

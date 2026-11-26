@@ -9,70 +9,76 @@ The `+0` delta is intentional: this change adds browser-only `*.spec.ts`
 journeys, which pytest never collects, so the suite's pytest node count (the
 `test_pm_workflow_api.py` API tests) does not move.
 
-The keyboard journey inventory for the Conductor primary surfaces now lives in
+The keyboard journey inventory for the Conductor primary surfaces lives in
 `packages/hive-conductor/tests/e2e/keyboard.spec.ts`. That path is the one the
 `hive-conductor-e2e-ui` CI job actually executes: `tests/Dockerfile.playwright`
 copies `tests/e2e/` into the image and runs
 `npx playwright test --config=tests/e2e/playwright.config.ts`, so every spec
 in that directory is collected.
 
-The previous `frontend/e2e/keyboard.spec.ts` was run by **no** workflow — the
-frontend package's Playwright command is not referenced by any CI job — so its
-five journeys were dead code that had never been executed. It has been removed
-and its journeys ported to the CI-collected location. Because the dead spec had
-never run, several of its assertions encoded behaviour the implementation did
-not actually have; porting them surfaced and fixed real defects rather than
-transcribing passing tests:
+## Rebase onto the Workspace-cutover frontend
 
-- **Chat model menu did not return focus.** The dead spec asserted that
-  selecting an option left focus on the model button. The implementation closed
-  the menu and dropped focus to `<body>`, so the next Tab restarted at the top of
-  the page. `Chat.tsx` now moves focus onto the selected option when the menu
-  opens, restores focus to the trigger on selection, and closes on Escape.
-- **Setup journey could not advance.** The dead spec focused the wizard's "next"
-  button without first filling the required conductor name, so it focused a
-  disabled button and pressed Enter on nothing. The ported journey fills the
-  name first.
-- **Credentials "save" was asserted reachable while disabled.** The per-provider
-  save button is disabled until a value is entered, so it is correctly absent
-  from the tab order; the journey now asserts the always-reachable reveal toggle
-  and token input.
-- **The /agents journey assumed a seeded roster.** The ported suite's
-  `/agents` leg expected the per-agent `Open … details` button, but a cold
-  hive has zero agents, so the control never rendered and the journey failed
-  the moment it ran against a real backend. The journey now seeds one agent
-  through an isolated admin API request context (the PM principal only holds
-  `dags.write`), then walks the tab order — asserting a real row control
-  instead of skipping it the way a fresh install silently would.
+The keyboard work was rebased onto the merged Workspace switchover (#1495) and
+the page retirements that followed it (#2273 Agents/MCP/Skills/Topology,
+#2274 Dashboard, #1049 MessageBoard). Journeys that targeted deleted pages now
+walk their successors; coverage that lives in a sibling spec is not duplicated:
 
-## What the ported suite covers
+- skip-link leg: `/dashboard` → `/home` (the legacy URL now redirects there).
+- the `/agents` and `/mcp` tab-order legs → `/capabilities` (the one capability
+  surface); the agent-seeding block left with the Agents builder module, whose
+  redirect contract `agents-rsi-keyboard.spec.ts` pins.
+- the schedule view-tab leg dropped: `schedules-mcp-keyboard.spec.ts` covers
+  the tabs/switch contract with a deterministic API mock and an axe scan.
+- the `/cli/canvas` leg → covered by `design-studio-keyboard.spec.ts` (the
+  implementation-era path now only redirects to `/design-studio`).
+- the `/rsi` leg walks an admin session in its own context, because #373 gates
+  `/rsi` behind `PermissionBoundary("rsi.execute")` (same arrangement as
+  `agents-rsi-keyboard.spec.ts`).
+- Chat's model-menu journey pins the workspace-scoped page (#1822): the
+  context persists an active workspace id so the model selector mounts, and
+  `/v1/models` is served a deterministic catalog so the journey does not
+  depend on gateway discovery.
+
+The click-only ratchet (`frontend/scripts/check-keyboard-controls.mjs`,
+chained into `npm run lint`) survives the cutover and now also fails on the
+new surfaces' click-only elements — which is exactly what happened, and why
+`Backlog.tsx` (board/list tabs, entry titles, dependency badges),
+`Setup.tsx` (wizard steps, hardware presets), and `Schedules.tsx` were
+resolved onto keyboard-operable controls rather than left as merge-blocking
+debt.
+
+## What the suite covers
 
 - `skip link is the first tab stop and moves focus to the main landmark` —
-  walks from `<body>` and proves the skip link is reachable and that Enter
-  moves focus into `main#main-content`.
+  walks from `<body>` on `/home` and proves the skip link is reachable and
+  that Enter moves focus into `main#main-content`.
 - `chat model menu is operable without a pointer and returns focus` — opens,
-  selects, and closes the model menu by keyboard alone.
-- `schedule view tabs are native keyboard controls` — switches schedule/history
-  views and toggles the enable switch when a schedule exists.
-- `primary page controls are reachable in the real tab order` — records `focusin`
-  across a full Tab walk and asserts representative controls on `/agents`,
-  `/mcp`, `/credentials`, `/rsi`, and `/cli/canvas` are reachable. This is the
+  selects, and closes the model menu by keyboard alone; selecting and Escape
+  both land focus back on the trigger.
+- `primary page controls are reachable in the real tab order` — records
+  `focusin` across a full Tab walk and asserts representative controls on
+  `/capabilities`, `/credentials`, and `/rsi` are reachable. This is the
   stronger half: `.focus()` proves a control is focusable, the Tab walk proves
-  it is *reachable*.
-- `setup step navigation and hardware choices are buttons` — fills the required
-  name, advances the wizard, and selects a hardware preset.
+  it is *reachable*. Data-dependent controls (capability-slot Enable/Disable)
+  are asserted only when their data is present.
+- `setup step navigation and hardware choices are buttons` — fills the
+  required name, acknowledges the gateway-unverified gate when it renders,
+  advances the wizard, and selects a hardware preset.
 
-The Design Studio parent-surface journey remains in
-`tests/e2e/design-studio-keyboard.spec.ts` and is unchanged.
+Sibling specs own the rest of the #370 surface: `agents-rsi-keyboard.spec.ts`
+(RSI Stop + deleted-page redirects), `schedules-mcp-keyboard.spec.ts`
+(schedule tabs/switch/presets + axe), `design-studio-keyboard.spec.ts`
+(editor walks), `rich-tooltip-keyboard.spec.ts`, `modal-a11y.spec.ts`,
+`workspace-a11y.spec.ts`, `toggle-switch-name.spec.ts`.
 
 ## Executed evidence
 
-All five journeys pass (5/5, ~10s) against the branch's own frontend build
-served by a live hive backend, walked with a real Chromium — including the
-full Tab-order leg over `/agents`, `/mcp`, `/credentials`, `/rsi`, and
-`/cli/canvas`. The click-only ratchet (`npm run check:keyboard`) passes on the
-tree and was proven to fail CI-shaped when a click-only `<div onClick>` is
-planted in `src/`.
+All 16 keyboard journeys across the five keyboard specs pass (16/16, ~17s)
+against a live hive backend built from this tree, walked with a real Chromium.
+The full browser suite — 233 specs — passes 233/233 on a fresh hive. The
+click-only ratchet passes on the tree and fails CI-shaped when a click-only
+`<div onClick>` is planted in `src/` (observed on the pre-resolution merge,
+which reported the exact Backlog/Schedules/Setup violations listed above).
 
 ## Reviewed exceptions
 
@@ -83,3 +89,7 @@ planted in `src/`.
   not connected; its visible status text explains that no submission occurs.
 - The per-provider credentials save button is disabled until a value is entered,
   so it is intentionally not in the tab order.
+- Two `<main>` landmarks exist on `/dags` (the shell's `main#main-content` and
+  the page's own `<main>`), inherited from develop's page markup; retiring the
+  page-level `<main>` is page-surface work tracked with the Workspace cutover,
+  not this issue's control-reachability scope.

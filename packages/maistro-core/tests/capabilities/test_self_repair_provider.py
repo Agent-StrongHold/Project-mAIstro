@@ -67,20 +67,38 @@ def _unhealthy_container(name: str = "litellm") -> InfraHealth:
     )
 
 
-async def _drain(provider: RuleBasedRepair) -> None:
-    if provider._tasks:  # test drains background dispatch tasks
-        await asyncio.gather(*list(provider._tasks))
+def _effect_invoker(action: _FakeAction):
+    async def invoke(action_name: str, params: dict, _effect_key: str) -> ActionResult:
+        return await action.act(action_name, params)
+
+    return invoke
+
+
+def _approval_admittor(run_id: str = "run-test-1"):
+    """Durable HITL stand-in: parks without awaiting an in-process Event."""
+
+    async def admit(_proposal: object, _effect_key: str) -> str:
+        return run_id
+
+    return admit
+
+
+def _approval_run_status(statuses: dict[str, str]):
+    async def status_of(run_id: str) -> str | None:
+        return statuses.get(run_id)
+
+    return status_of
 
 
 def test_provider_satisfies_protocols() -> None:
-    p = RuleBasedRepair(infra_monitor=_FakeMonitor(None), infra_action=_FakeAction())
+    p = RuleBasedRepair(infra_monitor=_FakeMonitor(None))
     assert isinstance(p, SelfRepair)
     assert isinstance(p, CapabilityProvider)
     assert p.slot == "self_repair"
 
 
 async def test_no_monitor_returns_empty_cycle() -> None:
-    p = RuleBasedRepair(infra_monitor=None, infra_action=_FakeAction())
+    p = RuleBasedRepair(infra_monitor=None)
     result = await p.run_once()
     assert result.results == []
 
@@ -90,8 +108,24 @@ async def test_healthy_snapshot_acts_on_nothing() -> None:
     mon = _FakeMonitor(
         _health(docker=ResourceHealth("ok", {"containers": [{"name": "x", "state": "healthy"}]}))
     )
-    result = await RuleBasedRepair(infra_monitor=mon, infra_action=action).run_once()
+    result = await RuleBasedRepair(
+        infra_monitor=mon,
+        effect_invoker=_effect_invoker(action),
+    ).run_once()
     assert result.results == []
+    assert action.calls == []
+
+
+async def test_missing_invocation_boundary_suppresses_action() -> None:
+    action = _FakeAction()
+    result = await RuleBasedRepair(
+        infra_monitor=_FakeMonitor(_unhealthy_container()),
+        autonomy="auto_safe",
+    ).run_once()
+
+    (repair,) = result.results
+    assert repair.decision is RepairDecision.SUPPRESSED
+    assert repair.detail == "no governed infra_action"
     assert action.calls == []
 
 
@@ -99,7 +133,7 @@ async def test_auto_safe_reversible_is_acted_inline() -> None:
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action=action,
+        effect_invoker=_effect_invoker(action),
         autonomy="auto_safe",
     )
     result = await p.run_once()
@@ -109,26 +143,28 @@ async def test_auto_safe_reversible_is_acted_inline() -> None:
 
 
 async def test_reversible_needs_approval_under_approve_all_not_blocking() -> None:
-    # Under approve_all, even a reversible fix routes through approval; run_once
-    # must dispatch it as a tracked task and return without blocking.
+    # Under approve_all, even a reversible fix parks on a durable wait; run_once
+    # must return PENDING_APPROVAL without invoking the host effect.
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action=action,
+        effect_invoker=_effect_invoker(action),
+        approval_admittor=_approval_admittor("run-approve-1"),
         autonomy="approve_all",
     )
     result = await p.run_once()
     (r,) = result.results
     assert r.decision is RepairDecision.PENDING_APPROVAL
-    await _drain(p)
-    assert action.calls == [("restart_container", {"name": "litellm"})]
+    assert "run_id=run-approve-1" in r.detail
+    assert action.calls == []
+    assert p._pending_approval_runs["docker:litellm"] == "run-approve-1"
 
 
 async def test_detect_only_dispatches_nothing() -> None:
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action=action,
+        effect_invoker=_effect_invoker(action),
         autonomy="detect_only",
     )
     result = await p.run_once()
@@ -144,7 +180,8 @@ async def test_storage_is_propose_only() -> None:
         storage=ResourceHealth("degraded", {"pools": [{"name": "dbpool", "healthy": False}]})
     )
     result = await RuleBasedRepair(
-        infra_monitor=_FakeMonitor(health), infra_action=action
+        infra_monitor=_FakeMonitor(health),
+        effect_invoker=_effect_invoker(action),
     ).run_once()
     (r,) = result.results
     assert r.decision is RepairDecision.PROPOSE_ONLY
@@ -155,7 +192,8 @@ async def test_undiagnosed_is_recorded_not_acted() -> None:
     action = _FakeAction()
     health = _health(docker=ResourceHealth("down", {"mystery": 1}))
     result = await RuleBasedRepair(
-        infra_monitor=_FakeMonitor(health), infra_action=action
+        infra_monitor=_FakeMonitor(health),
+        effect_invoker=_effect_invoker(action),
     ).run_once()
     (r,) = result.results
     assert r.decision is RepairDecision.UNDIAGNOSED
@@ -178,12 +216,11 @@ async def test_per_cycle_action_cap() -> None:
     )
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(health),
-        infra_action=action,
+        effect_invoker=_effect_invoker(action),
         autonomy="auto_safe",
         max_actions_per_cycle=2,
     )
     result = await p.run_once()
-    await _drain(p)
     acted = [r for r in result.results if r.decision is RepairDecision.ACTED]
     suppressed = [r for r in result.results if r.decision is RepairDecision.SUPPRESSED]
     assert len(acted) == 2
@@ -193,27 +230,31 @@ async def test_per_cycle_action_cap() -> None:
 
 
 async def test_in_flight_guard_across_cycles() -> None:
-    # A resource still pending approval is not re-dispatched next cycle.
-    block = asyncio.Event()
-    action = _FakeAction(block=block)  # restart parks until released (approval-gated)
+    # A resource still pending durable approval is not re-dispatched next cycle.
+    action = _FakeAction()
+    statuses = {"run-pending-1": "paused"}
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action=action,
+        effect_invoker=_effect_invoker(action),
+        approval_admittor=_approval_admittor("run-pending-1"),
+        approval_run_status=_approval_run_status(statuses),
         autonomy="approve_all",
     )
-    await p.run_once()  # dispatches restart_container as a parked pending task (in_flight)
-    await asyncio.sleep(0)  # let the task start (and block)
+    await p.run_once()  # parks durable wait (in_flight)
     result2 = await p.run_once()  # same resource still in flight
     (r,) = result2.results
     assert r.decision is RepairDecision.SUPPRESSED
     assert r.detail == "in_flight"
-    block.set()  # release so the task can finish and clear in-flight
-    await _drain(p)
+    assert action.calls == []
+    # Settling the Run clears in_flight on the next reconcile (tested elsewhere).
+    statuses["run-pending-1"] = "cancelled"
 
 
 async def test_last_cycle_is_exposed_for_the_api() -> None:
+    action = _FakeAction()
     p = RuleBasedRepair(
-        infra_monitor=_FakeMonitor(_unhealthy_container()), infra_action=_FakeAction()
+        infra_monitor=_FakeMonitor(_unhealthy_container()),
+        effect_invoker=_effect_invoker(action),
     )
     assert p.last_cycle is None
     await p.run_once()

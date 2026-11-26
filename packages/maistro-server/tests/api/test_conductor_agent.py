@@ -47,6 +47,27 @@ class TestWhatReachesTheConductor:
         assert run_task.await_args is not None
         assert run_task.await_args.args[0].description == "second"
 
+    async def test_no_fixed_identity_stand_in_reaches_run_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The handle supplies no generated/fixed execution identity (#1084).
+
+        The turn runs inside its Attempt's correlation scope, so the conductor
+        derives the persisted Run/NodeRun/Attempt itself; a turn-scoped tuple
+        with fixed node/attempt strings would override the canonical ids the
+        spine already bound.
+        """
+        run_task = AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True))
+        monkeypatch.setattr("maistro_server.conductor_agent.run_task", run_task)
+
+        await ConductorAgent().handle(
+            _messages(("user", "plan this")),
+            turn_id="turn-123",
+        )
+
+        assert run_task.await_args is not None
+        assert run_task.await_args.kwargs.get("invocation_identity") is None
+
     async def test_the_classifiers_tier_reaches_the_task(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -61,6 +82,32 @@ class TestWhatReachesTheConductor:
 
         assert run_task.await_args is not None
         assert run_task.await_args.args[0].tier == 3
+
+    async def test_the_wired_router_reaches_run_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#1203: the container's router is the fallback seam. When a
+        provider-scoped circuit is open, `run_task` falls forward through the
+        router's declared fallback chain instead of failing the turn."""
+        run_task = AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True))
+        monkeypatch.setattr("maistro_server.conductor_agent.run_task", run_task)
+        router = AsyncMock()
+
+        await ConductorAgent(router=router).handle(_messages(("user", "hi")))  # type: ignore[arg-type]
+
+        assert run_task.await_args is not None
+        assert run_task.await_args.kwargs.get("router") is router
+
+    async def test_no_router_wired_still_hands_none_to_run_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The explicit default: without a router the blocked domain fails
+        fast with CircuitOpenError — the pre-#1203 behavior is unchanged."""
+        run_task = AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True))
+        monkeypatch.setattr("maistro_server.conductor_agent.run_task", run_task)
+
+        await ConductorAgent().handle(_messages(("user", "hi")))
+
+        assert run_task.await_args is not None
+        assert run_task.await_args.kwargs.get("router") is None
 
     async def test_a_turn_with_no_user_message_answers_rather_than_calling(
         self, monkeypatch: pytest.MonkeyPatch

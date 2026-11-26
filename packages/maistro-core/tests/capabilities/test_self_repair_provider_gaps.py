@@ -6,8 +6,6 @@ _dispatch_async's action-exception branch."""
 
 from __future__ import annotations
 
-import asyncio
-
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
 from maistro.capabilities.slots.infra import ActionResult, InfraHealth, ResourceHealth
 from maistro.capabilities.types import ProviderHealth
@@ -58,42 +56,49 @@ class _RaisingAction:
         raise RuntimeError("action exploded")
 
 
+def _raising_invoker(action: _RaisingAction):
+    async def invoke(action_name: str, params: dict, _effect_key: str) -> ActionResult:
+        return await action.act(action_name, params)
+
+    return invoke
+
+
 class TestProviderMetadata:
     def test_name_is_rule_based_repair(self) -> None:
-        p = RuleBasedRepair(infra_monitor=None, infra_action=None)
+        p = RuleBasedRepair(infra_monitor=None)
         assert p.name == "rule_based_repair"
 
     def test_trust_tier_is_t0(self) -> None:
-        p = RuleBasedRepair(infra_monitor=None, infra_action=None)
+        p = RuleBasedRepair(infra_monitor=None)
         assert p.trust_tier == "t0"
 
     def test_requires_is_empty(self) -> None:
-        p = RuleBasedRepair(infra_monitor=None, infra_action=None)
+        p = RuleBasedRepair(infra_monitor=None)
         assert p.requires() == ()
 
 
 class TestHealthcheck:
     async def test_no_monitor_is_unhealthy(self) -> None:
-        p = RuleBasedRepair(infra_monitor=None, infra_action=None)
+        p = RuleBasedRepair(infra_monitor=None)
         health = await p.healthcheck()
         assert health.healthy is False
         assert "no infra_monitor" in (health.detail or "")
 
     async def test_with_monitor_is_healthy(self) -> None:
-        p = RuleBasedRepair(infra_monitor=_FakeMonitor(), infra_action=None)
+        p = RuleBasedRepair(infra_monitor=_FakeMonitor())
         health = await p.healthcheck()
         assert health.healthy is True
 
 
 class TestGovernorState:
     def test_exposes_governor_state_summary(self) -> None:
-        p = RuleBasedRepair(infra_monitor=None, infra_action=None)
+        p = RuleBasedRepair(infra_monitor=None)
         assert p.governor_state() == p._governor.state_summary()
 
 
 class TestMonitorSnapshotFailure:
     async def test_snapshot_exception_yields_empty_cycle(self) -> None:
-        p = RuleBasedRepair(infra_monitor=_FakeMonitor(raises=True), infra_action=None)
+        p = RuleBasedRepair(infra_monitor=_FakeMonitor(raises=True))
         result = await p.run_once()
         assert result.results == []
         assert p.last_cycle is result
@@ -101,9 +106,10 @@ class TestMonitorSnapshotFailure:
 
 class TestAutoRunFailure:
     async def test_action_exception_yields_failed_result(self) -> None:
+        action = _RaisingAction()
         p = RuleBasedRepair(
             infra_monitor=_FakeMonitor(),
-            infra_action=_RaisingAction(),
+            effect_invoker=_raising_invoker(action),
             autonomy="auto_safe",
         )
         result = await p.run_once()
@@ -112,13 +118,47 @@ class TestAutoRunFailure:
 
 
 class TestDispatchAsyncFailure:
-    async def test_dispatch_async_exception_is_logged_and_swallowed(self) -> None:
+    async def test_durable_admittor_exception_is_logged_as_failed(self) -> None:
+        """Admission errors must not raise out of run_once (#2405)."""
+
+        async def boom(_proposal: object, _effect_key: str) -> str:
+            raise RuntimeError("admit exploded")
+
+        async def must_not_invoke(*_a: object, **_k: object) -> ActionResult:
+            raise AssertionError("gated path must not auto-invoke")
+
         p = RuleBasedRepair(
             infra_monitor=_FakeMonitor(),
-            infra_action=_RaisingAction(),
+            effect_invoker=must_not_invoke,
+            approval_admittor=boom,
             autonomy="approve_all",
         )
         result = await p.run_once()
         (r,) = result.results
-        assert r.decision.value == "pending_approval"
-        await asyncio.gather(*list(p._tasks))  # drain — must not raise
+        assert r.decision.value == "failed"
+        assert "admit exploded" in r.detail
+
+
+class TestGovernedInvokerBoundary:
+    async def test_missing_governed_invoker_fails_the_effect_closed(self) -> None:
+        """The effect boundary itself refuses when no governed invoker is held (#846).
+
+        ``run_once`` suppresses earlier in ``_handle``; this drives the boundary
+        seam directly so an actor that somehow reaches it still cannot act.
+        """
+        from maistro.capabilities.slots.self_repair import RepairProposal
+
+        p = RuleBasedRepair(infra_monitor=_FakeMonitor())
+        assert p._effect_invoker is None
+
+        proposal = RepairProposal(
+            resource="docker:litellm",
+            symptom="unhealthy",
+            action="restart_container",
+            params={"name": "litellm"},
+            tier="reversible",
+        )
+        result = await p._invoke_action(proposal)
+
+        assert result.ok is False
+        assert result.detail == "no governed infra_action"

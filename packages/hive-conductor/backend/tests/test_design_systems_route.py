@@ -81,6 +81,20 @@ class TestTheList:
         assert default["color_count"] > 0
         assert default["trust_tier"] == "t1"
 
+    def test_a_first_party_system_advertises_its_persona_contract(self, client):
+        """The persona editor learns templates, schemes and the customizable /
+        fixed token sets from this route, not from a file it cannot read
+        (ADR-091626-ba4f). A vendored brand system advertises none."""
+        body = client.get(PATH).json()
+        by_slug = {s["slug"]: s for s in body["systems"]}
+        personas = by_slug["workspace"]["personas"]
+        assert personas["default"] == "greenhouse"
+        assert set(personas["templates"]) >= {"greenhouse", "slate", "studio"}
+        assert set(personas["schemes"]) == {"light", "dark"}
+        assert "--accent" in personas["customizable"]
+        assert "--actor-human" in personas["fixed"]
+        assert by_slug["default"]["personas"] is None
+
     def test_the_catalog_block_reports_the_optional_tier(self, client):
         body = client.get(PATH).json()
         assert body["catalog"]["available"] is True

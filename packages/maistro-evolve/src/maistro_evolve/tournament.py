@@ -43,6 +43,12 @@ class GenomeBattle:
         score_a: Score achieved by the first genome.
         score_b: Score achieved by the second genome.
         timestamp: Time when the battle was recorded.
+        node_run_id: The logical canonical NodeRun this battle was published
+            under, or "" for a caller that does not carry canonical identity
+            (e.g. a direct/library call). This is the idempotency key
+            ``record_battle`` checks before mutating ratings again (#1064) —
+            not merely provenance.
+        attempt_id: The canonical Attempt that committed this battle, or "".
     """
 
     id: int = 0
@@ -53,12 +59,22 @@ class GenomeBattle:
     score_a: float = 0.0
     score_b: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 class EloTournament:
     def __init__(self, k_factor: float = _K_FACTOR) -> None:
         self._ratings: dict[tuple[str, str], GenomeRating] = {}
         self._battles: list[GenomeBattle] = []
+        # Index of every battle published under a canonical (node_run_id,
+        # benchmark) identity, maintained alongside ``_battles`` (#1064).
+        # ``record_battle`` calls ``find_published_battle`` for every
+        # canonical battle it records, so a linear scan of ``_battles`` here
+        # made a long-running tournament's per-battle idempotency check cost
+        # O(n) -- 1 + 2 + ... + N history comparisons as the battle list
+        # grows, degrading quadratically even when no replay ever occurs.
+        self._published_battles: dict[tuple[str, str], GenomeBattle] = {}
         self._next_id: int = 1
         self._k_factor = k_factor
 
@@ -68,6 +84,19 @@ class EloTournament:
             self._ratings[key] = GenomeRating(genome_id=genome_id, benchmark=benchmark)
         return self._ratings[key]
 
+    def find_published_battle(self, node_run_id: str, benchmark: str) -> GenomeBattle | None:
+        """Return the battle already published under this logical NodeRun, if any.
+
+        Mirrors the evaluation node's recovery pattern (#1064): a canonical
+        NodeRun/Attempt identity is the idempotency key, not the pair or the
+        benchmark alone, so a genuine later rematch of the same pair on the
+        same benchmark (a different logical NodeRun) is never suppressed.
+        O(1) via ``_published_battles`` rather than scanning ``_battles``.
+        """
+        if not node_run_id:
+            return None
+        return self._published_battles.get((node_run_id, benchmark))
+
     def record_battle(
         self,
         benchmark: str,
@@ -75,7 +104,22 @@ class EloTournament:
         genome_b_id: str,
         score_a: float,
         score_b: float,
+        *,
+        node_run_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> GenomeBattle:
+        # Process-loss recovery creates a fresh Attempt beneath the same
+        # NodeRun. If the prior process committed this benchmark's battle but
+        # died before its Attempt could be terminalized, the persisted battle
+        # is the idempotency evidence: return it unchanged instead of
+        # re-applying wins/losses/Elo a second time (#1064). A caller that
+        # passes no node_run_id (library/direct use) always records fresh,
+        # exactly as before this fix.
+        if node_run_id:
+            published = self.find_published_battle(node_run_id, benchmark)
+            if published is not None:
+                return published
+
         if score_a > score_b:
             winner_id = genome_a_id
         elif score_b > score_a:
@@ -91,9 +135,13 @@ class EloTournament:
             winner_id=winner_id,
             score_a=score_a,
             score_b=score_b,
+            node_run_id=node_run_id or "",
+            attempt_id=attempt_id or "",
         )
         self._next_id += 1
         self._battles.append(battle)
+        if node_run_id:
+            self._published_battles[(node_run_id, benchmark)] = battle
 
         ra = self._get_rating(genome_a_id, benchmark)
         rb = self._get_rating(genome_b_id, benchmark)
@@ -127,6 +175,16 @@ class EloTournament:
         if not ratings:
             return _DEFAULT_ELO
         return sum(r.elo for r in ratings) / len(ratings)
+
+    def get_total_battles(self, genome_id: str) -> int:
+        """Total battles a genome has fought, across every benchmark.
+
+        Battle evidence for fitness's Elo term (#853): the term only fires when
+        this is > 0, so a genome that never battled (whose ``get_avg_elo`` is
+        the 1200 default) cannot collect head-to-head credit for mere
+        existence.
+        """
+        return sum(r.total_battles for r in self._ratings.values() if r.genome_id == genome_id)
 
     def get_leaderboard(self, benchmark: str | None = None) -> list[dict[str, Any]]:
         """Ranked entries, aggregating battle counts across the matched ratings.
@@ -219,6 +277,12 @@ class EloTournament:
                 "score_a": b.score_a,
                 "score_b": b.score_b,
                 "timestamp": b.timestamp,
+                # Canonical publication evidence (#1064): the NodeRun/Attempt
+                # this battle was recorded under, so the public API can
+                # actually confirm provenance instead of only carrying it
+                # internally on ``GenomeBattle``.
+                "node_run_id": b.node_run_id,
+                "attempt_id": b.attempt_id,
             }
             for b in filtered[-limit:]
         ]
@@ -228,4 +292,141 @@ class EloTournament:
             "total_battles": len(self._battles),
             "total_genomes_rated": len({r.genome_id for r in self._ratings.values()}),
             "benchmarks_tracked": len({r.benchmark for r in self._ratings.values()}),
+        }
+
+    # --- Durable reconstruction (#1064) -------------------------------------
+    #
+    # A genuinely new process (or a second replica) must be able to rebuild
+    # the exact tournament this process held -- ratings, full battle history
+    # including each battle's canonical NodeRun/Attempt publication identity,
+    # and the next battle id -- from a durable snapshot. ``export_snapshot``
+    # is the versioned serialization; ``restore_snapshot`` rebuilds this
+    # instance in place (the caller owns the instance, mirroring how
+    # ``PopulationStore`` is restored). Battle ids, Elo values and
+    # win/loss/draw counters are carried exactly; Python's json float repr
+    # round-trips doubles, so a restore is semantically identical to the
+    # exported tournament.
+
+    def export_snapshot(self) -> dict[str, Any]:
+        """Versioned serialization of the full tournament state (#1064).
+
+        Carries everything ``restore_snapshot`` needs to rebuild the identical
+        tournament: k-factor, next battle id, every rating, and every battle
+        with its canonical publication identity. Rating and battle order is
+        deterministic (sorted) so two exports of the same state are equal.
+        """
+        return {
+            "version": 1,
+            "k_factor": self._k_factor,
+            "next_id": self._next_id,
+            "ratings": [
+                {
+                    "genome_id": r.genome_id,
+                    "benchmark": r.benchmark,
+                    "elo": r.elo,
+                    "wins": r.wins,
+                    "losses": r.losses,
+                    "draws": r.draws,
+                }
+                for r in sorted(self._ratings.values(), key=lambda r: (r.genome_id, r.benchmark))
+            ],
+            "battles": [
+                {
+                    "id": b.id,
+                    "benchmark": b.benchmark,
+                    "genome_a_id": b.genome_a_id,
+                    "genome_b_id": b.genome_b_id,
+                    "winner_id": b.winner_id,
+                    "score_a": b.score_a,
+                    "score_b": b.score_b,
+                    "timestamp": b.timestamp,
+                    "node_run_id": b.node_run_id,
+                    "attempt_id": b.attempt_id,
+                }
+                for b in sorted(self._battles, key=lambda b: b.id)
+            ],
+        }
+
+    def restore_snapshot(self, data: dict[str, Any]) -> None:
+        """Rebuild this tournament in place from ``export_snapshot`` state (#1064).
+
+        Replaces ratings, battles, the ``(node_run_id, benchmark)``
+        publication index, the next battle id and the k-factor, so a
+        recovered process holds the exact domain references the exporting
+        process held. Raises ``ValueError`` on an unknown snapshot version
+        rather than silently half-restoring.
+        """
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise ValueError("tournament snapshot version must be 1")
+        ratings: dict[tuple[str, str], GenomeRating] = {}
+        for item in data.get("ratings", []):
+            rating = GenomeRating(
+                genome_id=str(item["genome_id"]),
+                benchmark=str(item["benchmark"]),
+                elo=float(item["elo"]),
+                wins=int(item["wins"]),
+                losses=int(item["losses"]),
+                draws=int(item["draws"]),
+            )
+            ratings[(rating.genome_id, rating.benchmark)] = rating
+        battles: list[GenomeBattle] = []
+        published: dict[tuple[str, str], GenomeBattle] = {}
+        for item in data.get("battles", []):
+            battle = GenomeBattle(
+                id=int(item["id"]),
+                benchmark=str(item["benchmark"]),
+                genome_a_id=str(item["genome_a_id"]),
+                genome_b_id=str(item["genome_b_id"]),
+                winner_id=str(item["winner_id"]),
+                score_a=float(item["score_a"]),
+                score_b=float(item["score_b"]),
+                timestamp=float(item["timestamp"]),
+                node_run_id=str(item.get("node_run_id") or ""),
+                attempt_id=str(item.get("attempt_id") or ""),
+            )
+            battles.append(battle)
+            if battle.node_run_id:
+                published[(battle.node_run_id, battle.benchmark)] = battle
+        self._ratings = ratings
+        self._battles = battles
+        self._published_battles = published
+        self._next_id = int(data["next_id"])
+        self._k_factor = float(data["k_factor"])
+
+    def signature(self) -> dict[str, Any]:
+        """A comparable digest of the tournament's semantic state (#1064).
+
+        Tests for crash/restart equivalence compare this between an
+        uninterrupted execution and a killed-then-resumed one: battle count,
+        every rating triple (elo/wins/losses/draws) and every battle's
+        winner/outcome identity. Wall-clock timestamps are deliberately
+        excluded: replaying a journaled battle carries its original
+        timestamp, but nothing in the recovery contract depends on them.
+        """
+        return {
+            "total_battles": len(self._battles),
+            "next_id": self._next_id,
+            "ratings": {
+                f"{r.genome_id}|{r.benchmark}": {
+                    "elo": r.elo,
+                    "wins": r.wins,
+                    "losses": r.losses,
+                    "draws": r.draws,
+                }
+                for r in sorted(self._ratings.values(), key=lambda r: (r.genome_id, r.benchmark))
+            },
+            "battles": [
+                {
+                    "id": b.id,
+                    "benchmark": b.benchmark,
+                    "genome_a_id": b.genome_a_id,
+                    "genome_b_id": b.genome_b_id,
+                    "winner_id": b.winner_id,
+                    "score_a": b.score_a,
+                    "score_b": b.score_b,
+                    "node_run_id": b.node_run_id,
+                    "attempt_id": b.attempt_id,
+                }
+                for b in sorted(self._battles, key=lambda b: b.id)
+            ],
         }

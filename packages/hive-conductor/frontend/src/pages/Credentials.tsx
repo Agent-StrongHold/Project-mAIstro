@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPut } from "../lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
 import { LlmProviders } from "../components/LlmProviders";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :6); line shifted by the #2283 authorization import lines above.
 type ConfigField = {
   name: string;
   label: string;
@@ -10,6 +13,7 @@ type ConfigField = {
   required: boolean;
 };
 
+// frontend-typed-client: allow pre-existing banked local type (was :13); line shifted by the #2283 authorization import lines above.
 type CredentialRow = {
   id: string;
   label: string;
@@ -17,10 +21,22 @@ type CredentialRow = {
   help_url: string;
   placeholder: string;
   configured: boolean;
+  enabled: boolean;
   updated_at?: string | null;
   config_fields?: ConfigField[];
   config_values?: Record<string, string>;
 };
+
+/**
+ * Non-secret configuration saved before the first key. `configured` names the
+ * vault secret only, but the backend deletes a generic-gateway draft's config
+ * too (`DELETE` removes secret and metadata), so a config-only draft must stay
+ * deletable — otherwise a saved-but-keyless endpoint can only be removed by
+ * hand.
+ */
+function hasDraftConfig(row: CredentialRow): boolean {
+  return row.id === "openai_compatible" && Object.keys(row.config_values ?? {}).length > 0;
+}
 
 export default function Credentials() {
   const [rows, setRows] = useState<CredentialRow[]>([]);
@@ -34,6 +50,8 @@ export default function Credentials() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const authorization = useAuthorization();
+  const credentialPermission = authorization.surfacePermission("credentials") ?? "credentials.write";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,6 +112,46 @@ export default function Credentials() {
     }
   }
 
+  async function testGateway(providerId: string) {
+    const config = configDrafts[providerId] ?? {};
+    const secret = drafts[providerId]?.trim();
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await apiPost<{
+        models: string[];
+        model_count: number;
+      }>(`/v1/credentials/${providerId}/test`, {
+        config,
+        ...(secret ? { secret } : {}),
+      });
+      setMessage(`${providerId}: connectivity verified; discovered ${result.model_count} model${result.model_count === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connectivity test failed");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function setEnabled(providerId: string, enabled: boolean) {
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      await apiPut(`/v1/credentials/${providerId}/config`, {
+        config: configDrafts[providerId] ?? {},
+        enabled,
+      });
+      setMessage(`${providerId}: ${enabled ? "enabled" : "disabled"}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change provider state");
+    } finally {
+      setSaving(null);
+    }
+  }
+
   async function remove(providerId: string) {
     setSaving(providerId);
     setError(null);
@@ -114,29 +172,31 @@ export default function Credentials() {
         subtitle="Encrypted at rest in this container — used by Hive agents and MCP at runtime. Never sent back to the browser."
       />
 
+      <AuthorizationNotice permission={credentialPermission} label="Credential changes" />
+
       <LlmProviders />
 
       <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
           CONTAINER RUNTIME
         </div>
         <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4 }}>
           Configure <strong>Jira</strong>, <strong>Confluence</strong>, and <strong>Atlassian Rovo MCP</strong> tokens here
           for headless agent and MCP calls in this sandbox. Launch may also inject{" "}
-          <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>ATLASSIAN_API_TOKEN</code> /{" "}
-          <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>ATLASSIAN_SITE_URL</code> at deploy time.
+          <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>ATLASSIAN_API_TOKEN</code> /{" "}
+          <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>ATLASSIAN_SITE_URL</code> at deploy time.
           Cursor OAuth is optional for local template development only.
         </div>
       </div>
 
       {error && (
         <div className="card" style={{ borderLeft: "3px solid var(--danger)", marginBottom: 12 }}>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)" }}>{error}</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)" }}>{error}</div>
         </div>
       )}
       {message && (
         <div className="card" style={{ borderLeft: "3px solid var(--ok)", marginBottom: 12 }}>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ok)" }}>{message}</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ok)" }}>{message}</div>
         </div>
       )}
 
@@ -149,7 +209,7 @@ export default function Credentials() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                 <div>
                   <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600 }}>{row.label}</div>
-                  <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>
+                  <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                     {row.description}
                   </div>
                 </div>
@@ -158,10 +218,10 @@ export default function Credentials() {
                   style={{
                     background: row.configured ? "var(--ok)" : "var(--rule)",
                     color: row.configured ? "var(--paper)" : "var(--pencil)",
-                    fontSize: 8,
+                    fontSize: 12,
                   }}
                 >
-                  {row.configured ? "configured" : "missing"}
+                  {row.configured ? (row.enabled ? "configured" : "disabled") : "missing"}
                 </span>
               </div>
 
@@ -171,7 +231,7 @@ export default function Credentials() {
                 rel="noopener noreferrer"
                 style={{
                   fontFamily: "var(--mono)",
-                  fontSize: 9,
+                  fontSize: 12,
                   color: "var(--accent)",
                   marginTop: 8,
                   display: "inline-block",
@@ -198,21 +258,35 @@ export default function Credentials() {
                 <button
                   type="button"
                   className="btn btn-accent"
-                  disabled={saving === row.id || !drafts[row.id]?.trim()}
+                  disabled={!authorization.can(credentialPermission) || saving === row.id || !drafts[row.id]?.trim()}
                   onClick={() => void save(row.id)}
-                  style={{ fontSize: 9 }}
+                  style={{ fontSize: 12 }}
                 >
                   {saving === row.id ? "saving…" : "save"}
                 </button>
-                {row.configured && (
+                {row.id === "openai_compatible" && row.configured && (
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
-                    onClick={() => void remove(row.id)}
+                    /* The toggle issues the same credentials.write PUT as
+                       save/delete (#373): without the authority it must sit
+                       disabled beside them, not look actionable and 403. */
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
+                    onClick={() => void setEnabled(row.id, !row.enabled)}
                     style={{ fontSize: 9 }}
                   >
-                    remove
+                    {row.enabled ? "disable" : "enable"}
+                  </button>
+                )}
+                {(row.configured || hasDraftConfig(row)) && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
+                    onClick={() => void remove(row.id)}
+                    style={{ fontSize: 12 }}
+                  >
+                    delete
                   </button>
                 )}
               </div>
@@ -228,7 +302,7 @@ export default function Credentials() {
                   <div
                     style={{
                       fontFamily: "var(--mono)",
-                      fontSize: 8,
+                      fontSize: 12,
                       color: "var(--pencil)",
                       marginBottom: 6,
                     }}
@@ -253,7 +327,7 @@ export default function Credentials() {
                         htmlFor={`${row.id}-${f.name}`}
                         style={{
                           fontFamily: "var(--hand)",
-                          fontSize: 11,
+                          fontSize: 12,
                           minWidth: 110,
                           color: "var(--ink)",
                         }}
@@ -290,12 +364,27 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void saveConfig(row.id)}
-                    style={{ fontSize: 9, marginTop: 4 }}
+                    style={{ fontSize: 12, marginTop: 4 }}
                   >
                     {saving === row.id ? "saving…" : "save config"}
                   </button>
+                  {row.id === "openai_compatible" && (
+                    <button
+                      type="button"
+                      className="btn btn-accent"
+                      /* POST /v1/credentials/{id}/test is a credentials.write
+                         op (#373): the probe button is gated like every other
+                         write control on the page, or an unauthorized user
+                         gets a primary-looking button that can only 403. */
+                      disabled={!authorization.can(credentialPermission) || saving === row.id}
+                      onClick={() => void testGateway(row.id)}
+                      style={{ fontSize: 9, marginTop: 4, marginLeft: 6 }}
+                    >
+                      test & discover models
+                    </button>
+                  )}
                 </div>
               )}
             </article>

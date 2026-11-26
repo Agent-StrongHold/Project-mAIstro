@@ -10,7 +10,10 @@ import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import (
     EffectNotApplied,
     InMemoryInvocationStore,
@@ -308,7 +311,7 @@ async def test_provider_reconciliation_settles_applied_without_dispatch() -> Non
 
 @pytest.mark.asyncio
 async def test_reconciliation_is_exposed_by_the_governed_context() -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     binding = _binding()
 
     async def ambiguous(_provider: Any, _request: Any) -> None:
@@ -763,7 +766,7 @@ async def test_pre_scope_rows_can_still_be_reconciled(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_governed_reconciliation_announces_the_terminal_state() -> None:
     """Consumers that saw `unknown` learn the row settled (#1118 review)."""
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     binding = _binding()
 
     async def ambiguous(_provider: Any, _request: Any) -> None:

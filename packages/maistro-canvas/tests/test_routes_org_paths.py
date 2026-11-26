@@ -21,7 +21,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro_canvas.canvas.routes import make_canvas_router
+from maistro_canvas.canvas.routes import _make_canvas_router
 from maistro_canvas.types import (
     CanvasRecord,
     CompositeResult,
@@ -31,7 +31,7 @@ from maistro_canvas.types import (
 )
 
 TEST_TOKEN = "test-canvas-token"
-ORG = "default"  # CurrentUser().org_id default for the standalone deployment
+ORG = "default"  # Principal org_id default for the standalone deployment
 
 
 class _OrgStore:
@@ -141,10 +141,12 @@ class _OrgExecutor:
     def __init__(self, store: _OrgStore) -> None:
         self._store = store
         self.cancel_raises = False
+        self.last_actor_principal_id: str | None = None
 
     async def start_job(
         self, *, canvas_id: str, layer_id: str, org_id: str = "", **kw: Any
     ) -> GenerationJobRecord:
+        self.last_actor_principal_id = kw.get("actor_principal_id")
         job = GenerationJobRecord(
             id=f"job-{len(self._store._jobs) + 1}",
             layer_id=layer_id,
@@ -197,7 +199,7 @@ class _Harness:
     def app(self) -> FastAPI:
         app = FastAPI()
         app.include_router(
-            make_canvas_router(
+            _make_canvas_router(
                 store=self.store,  # type: ignore[arg-type]
                 executor=self.executor,  # type: ignore[arg-type]
                 compositor=self.compositor,  # type: ignore[arg-type]
@@ -232,6 +234,19 @@ def harness(
         headers={"Authorization": f"Bearer {TEST_TOKEN}"},
     ) as c:
         yield c, h
+
+
+async def test_generation_route_preserves_authenticated_actor(
+    harness: tuple[TestClient, _Harness],
+) -> None:
+    client, h = harness
+    canvas = await h.seed_canvas()
+    layer = await h.seed_layer(canvas)
+
+    response = client.post(f"/api/canvas/{canvas.id}/layers/{layer.id}/generate", json={})
+
+    assert response.status_code == 202, response.text
+    assert h.executor.last_actor_principal_id == "default"
 
 
 async def test_get_canvas_returns_layers(harness: tuple[TestClient, _Harness]) -> None:
@@ -390,3 +405,54 @@ async def test_export_of_archived_canvas_is_404(harness: tuple[TestClient, _Harn
     await h.store.update_canvas(canvas, org_id=canvas.org_id)
     r = client.get(f"/api/canvas/{canvas.id}/export")
     assert r.status_code == 404, r.text
+
+
+async def _seed_foreign_org_canvas_visible_to_default(
+    h: _Harness,
+) -> CanvasRecord:
+    """Return a canvas whose stored org differs from the default principal.
+
+    A conforming store never surfaces a foreign-org row under the caller's
+    scope; the route still re-checks ``canvas.org_id`` after the fetch. This
+    helper forces that second predicate by making ``get_canvas`` hand back
+    the foreign row when queried under the default org.
+    """
+    foreign = await h.seed_canvas(org="other-org")
+    real_get = h.store.get_canvas
+
+    async def leak_foreign(canvas_id: str, *, org_id: str = "") -> CanvasRecord | None:
+        if canvas_id == foreign.id and org_id == ORG:
+            return foreign
+        return await real_get(canvas_id, org_id=org_id)
+
+    h.store.get_canvas = leak_foreign  # type: ignore[method-assign]
+    return foreign
+
+
+async def test_delete_rejects_foreign_org_canvas_even_if_store_leaks(
+    harness: tuple[TestClient, _Harness],
+) -> None:
+    client, h = harness
+    foreign = await _seed_foreign_org_canvas_visible_to_default(h)
+    r = client.delete(f"/api/canvas/{foreign.id}")
+    assert r.status_code == 404, r.text
+    assert h.store._canvases[foreign.id].archived_at is None
+
+
+async def test_latest_composite_rejects_foreign_org_canvas_even_if_store_leaks(
+    harness: tuple[TestClient, _Harness],
+) -> None:
+    client, h = harness
+    foreign = await _seed_foreign_org_canvas_visible_to_default(h)
+    r = client.get(f"/api/canvas/{foreign.id}/composite/latest")
+    assert r.status_code == 404, r.text
+
+
+async def test_export_rejects_foreign_org_canvas_even_if_store_leaks(
+    harness: tuple[TestClient, _Harness],
+) -> None:
+    client, h = harness
+    foreign = await _seed_foreign_org_canvas_visible_to_default(h)
+    r = client.get(f"/api/canvas/{foreign.id}/export")
+    assert r.status_code == 404, r.text
+    assert h.compositor.calls == 0

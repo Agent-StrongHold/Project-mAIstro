@@ -178,6 +178,6 @@ def test_scope_filter_isolation_property(scope, agent_id, user_id, team_id, org_
         agent_id=agent_id if scope == MemoryScope.AGENT else None,
         user_id=user_id if scope == MemoryScope.USER else None,
         team_id=team_id if scope == MemoryScope.TEAM else None,
-        org_id=org_id if scope in (MemoryScope.ORGANIZATION, MemoryScope.TEAM) else None,
+        org_id=org_id if scope in (MemoryScope.ORGANIZATION, MemoryScope.TEAM, MemoryScope.GLOBAL) else None,
     )
     assert matches_scope(mem, filters)

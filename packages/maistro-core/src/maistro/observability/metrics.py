@@ -14,6 +14,14 @@ not turn that responsibility into unbounded process-memory growth, the
 registry additionally caps the number of distinct label sets a metric may
 hold (#818 AC-3): past the cap, new label sets are dropped and counted in
 ``metrics_series_overflow_total`` instead of stored.
+
+The same failure shape exists one level up: a caller minting metric *names*
+from unbounded input would otherwise grow the registry family by family. The
+registry therefore also caps how many distinct caller-requested metric
+families it will hold; past that cap, registrations of brand-new names return
+a dropping sink (same interface, writes are no-ops) and the refusal is
+counted in ``metrics_registry_overflow_total``. Both caps are memory
+backstops, not quotas — legitimate instrumentation stays far below them.
 """
 
 from __future__ import annotations
@@ -23,9 +31,11 @@ import re
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
 from itertools import pairwise
-from typing import Any, TypedDict
+from typing import Any, Literal, Protocol, TypedDict, TypeVar
 
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -46,6 +56,15 @@ DEFAULT_MAX_SERIES_PER_METRIC = 10_000
 _OVERFLOW_METRIC_NAME = "metrics_series_overflow_total"
 _OVERFLOW_METRIC_HELP = (
     "Samples dropped because their metric reached its series-cardinality cap (#818)"
+)
+
+#: Family-cap signal counter, created lazily on the first refused metric
+#: registration. Unlabeled by construction: a caller-controlled label here
+#: would reintroduce exactly the unbounded growth the family cap exists to
+#: stop.
+_REGISTRY_OVERFLOW_METRIC_NAME = "metrics_registry_overflow_total"
+_REGISTRY_OVERFLOW_METRIC_HELP = (
+    "Metric-family registrations refused because the registry reached its family cap"
 )
 
 _LabelSet = tuple[tuple[str, str], ...]
@@ -102,8 +121,8 @@ def _validate_metric_name(name: str) -> None:
         raise ValueError(f"invalid Prometheus metric name {name!r}; the '__' prefix is reserved")
     if name == _UPTIME_METRIC_NAME:
         raise ValueError(f"{_UPTIME_METRIC_NAME!r} is reserved for registry uptime")
-    if name == _OVERFLOW_METRIC_NAME:
-        raise ValueError(f"{_OVERFLOW_METRIC_NAME!r} is reserved for registry overflow accounting")
+    if name in (_OVERFLOW_METRIC_NAME, _REGISTRY_OVERFLOW_METRIC_NAME):
+        raise ValueError(f"{name!r} is reserved for registry overflow accounting")
 
 
 def _label_key(
@@ -212,6 +231,16 @@ class _Gauge:
                 return
             self._values[key] -= amount
 
+    def remove(self, **labels: str) -> None:
+        """Drop a labeled series entirely, so a condition that no longer holds
+        stops reporting instead of reporting its last value forever. A gauge
+        whose subject disappeared (a table drained to empty, a measurement a
+        backend cannot take) must publish nothing — a stale value is a
+        fabricated health signal (#325 retention health)."""
+        key = _label_key(labels)
+        with self._lock:
+            self._values.pop(key, None)
+
     def collect(self) -> list[_ValueSample]:
         with self._lock:
             return [
@@ -287,6 +316,16 @@ class _Histogram:
             return results
 
 
+#: Default cap on distinct metric families a registry will hold. The
+#: predefined application metrics number in the dozens; this backstop fires
+#: only for a caller minting metric names from unbounded input (ids, paths,
+#: tenants) — the same failure shape as the per-metric series cap, one level
+#: up. Backstop accounting counters (the two overflow metrics) are exempt.
+DEFAULT_MAX_METRICS_PER_REGISTRY = 1_000
+
+_MetricT = TypeVar("_MetricT", _Counter, _Gauge, _Histogram)
+
+
 class MetricsRegistry:
     """Central registry for JSON collection and Prometheus text exposition.
 
@@ -295,9 +334,21 @@ class MetricsRegistry:
     new sets are dropped and counted in ``metrics_series_overflow_total``
     rather than stored, so a caller with unbounded label values cannot grow
     process memory without bound.
+
+    The backstop also covers unbounded metric *families*: past
+    ``max_metrics_per_registry`` distinct caller-requested names, registering
+    a brand-new metric returns a dropping sink (same interface, writes are
+    no-ops) and the refusal is counted in the unlabeled
+    ``metrics_registry_overflow_total``. The two overflow counters are exempt
+    from the family cap, so registry memory is bounded at
+    ``max_metrics_per_registry`` families plus fixed-size accounting.
     """
 
-    def __init__(self, max_series_per_metric: int | None = None) -> None:
+    def __init__(
+        self,
+        max_series_per_metric: int | None = None,
+        max_metrics_per_registry: int | None = None,
+    ) -> None:
         # None keeps the optional configuration API while retaining the safe
         # default; there is no public uncapped mode because this is a backstop.
         cap = (
@@ -307,18 +358,32 @@ class MetricsRegistry:
         )
         if cap is not None and cap < 1:
             raise ValueError("max_series_per_metric must be at least 1 when set")
+        family_cap = (
+            DEFAULT_MAX_METRICS_PER_REGISTRY
+            if max_metrics_per_registry is None
+            else max_metrics_per_registry
+        )
+        if family_cap < 1:
+            raise ValueError("max_metrics_per_registry must be at least 1 when set")
         self._metrics: dict[str, _Counter | _Gauge | _Histogram] = {}
         self._lock = threading.Lock()
         self._start_time = time.monotonic()
         self._series_cap = _SeriesCap(cap, self._record_overflow)
+        self._family_cap = family_cap
+        # Caller-requested families actually stored; the exempt overflow
+        # counters are not counted against the family cap.
+        self._caller_families = 0
 
     def _record_overflow(self, metric_name: str) -> None:
         """Count one dropped sample; never raises into the guarded metric.
 
         Called with the reporting metric's lock held, so it must not touch that
-        metric again — only the lazily created, deliberately uncapped overflow
-        counter (its label space is registry metric names, already finite, and
-        wiring its own overflow to itself would recurse).
+        metric again — only the lazily created overflow counter. That counter
+        is itself series-capped (with no recursion wiring): dynamic metric
+        names are exactly the unbounded input this module defends against, so
+        its ``metric`` label space must not inherit them without bound. Once
+        the overflow counter is at its cap, records for further new metric
+        names are dropped — resolution loss, never unbounded memory.
         """
         try:
             with self._lock:
@@ -327,7 +392,7 @@ class MetricsRegistry:
                     overflow = _Counter(
                         _OVERFLOW_METRIC_NAME,
                         _OVERFLOW_METRIC_HELP,
-                        series_cap=_SeriesCap(None, None),
+                        series_cap=_SeriesCap(self._series_cap.max_series, None),
                     )
                     self._metrics[_OVERFLOW_METRIC_NAME] = overflow
                 elif not isinstance(overflow, _Counter):
@@ -336,13 +401,33 @@ class MetricsRegistry:
         except Exception:
             pass  # a backstop that breaks the metric it guards guards nothing
 
+    def _refuse_family(self, sink: _MetricT) -> _MetricT:
+        """Handle a brand-new metric past the family cap: count the refusal
+        (lazily creating the exempt, unlabeled accounting counter) and return
+        a dropping sink so the caller keeps a working instrument. Callers must
+        hold the registry lock; ``sink`` is deliberately not stored.
+        """
+        overflow = self._metrics.get(_REGISTRY_OVERFLOW_METRIC_NAME)
+        if overflow is None:
+            overflow = _Counter(_REGISTRY_OVERFLOW_METRIC_NAME, _REGISTRY_OVERFLOW_METRIC_HELP)
+            self._metrics[_REGISTRY_OVERFLOW_METRIC_NAME] = overflow
+        if isinstance(overflow, _Counter):
+            # Unlabeled and single-series by construction, so this cannot grow.
+            overflow.inc()
+        return sink
+
     def counter(self, name: str, help_text: str = "") -> _Counter:
         _validate_metric_name(name)
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Counter(name, help_text, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Counter(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Counter):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric
@@ -352,8 +437,13 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Gauge(name, help_text, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Gauge(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Gauge):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric
@@ -365,8 +455,13 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Histogram(name, help_text, buckets, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Histogram(name, help_text, buckets, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Histogram):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric
@@ -483,6 +578,11 @@ maistro_security_block_total = registry.counter(
     "maistro_security_block_total",
     "Requests blocked at a security gate (ADR-037; labels: gate, reason)",
 )
+maistro_security_advisory_degraded_total = registry.counter(
+    "maistro_security_advisory_degraded_total",
+    "Advisory security layer unavailable, gate proceeded under its documented "
+    "degraded policy (#1191; labels: gate) — an availability alarm, not a block",
+)
 maistro_circuit_state = registry.gauge(
     "maistro_circuit_state",
     "Circuit state per dependency (ADR-037; 0=closed, 1=half-open, 2=open)",
@@ -505,3 +605,337 @@ oldest_non_terminal_run_age_seconds = registry.gauge(
     "maistro_oldest_non_terminal_run_age_seconds",
     "Age of the oldest non-terminal Run, as of the last recovery tick",
 )
+
+# --- Retention (#1175) --------------------------------------------------------
+# Emitted by `RunRetentionSweeper` after each completed sweep. The label is
+# the sweep's authorization mode, never a Workspace id: Workspaces are
+# caller-created, and metric label values are bounded (#818). What was
+# deleted per class of dependent evidence rides on the sweep's `PurgeOutcome`,
+# whose per-sweep shape carries the scope id and the
+# dependent counts a counter label could not hold bounded.
+retention_purged_total = registry.counter(
+    "maistro_retention_purged_total",
+    "Runs deleted by retention sweeps, by authorization mode (workspace|global) (#1175)",
+)
+retention_backlog_remaining = registry.gauge(
+    "maistro_retention_backlog_remaining",
+    "Retention scopes whose last completed sweep hit its batch limit before the "
+    "scope drained; by authorization mode (#1175)",
+)
+retention_backlog_age_seconds = registry.gauge(
+    "maistro_retention_backlog_age_seconds",
+    "Age in seconds of the oldest scope still counted by "
+    "maistro_retention_backlog_remaining, by authorization mode; 0 when no scope "
+    "is backlogged (#1175)",
+)
+retention_sweep_last_success_timestamp = registry.gauge(
+    "maistro_retention_sweep_last_success_timestamp",
+    "Unix timestamp of the last retention sweep that completed and committed, "
+    "by authorization mode; a failed sweep never advances it",
+)
+retention_sweep_failures_total = registry.counter(
+    "maistro_retention_sweep_failures_total",
+    "Retention sweeps that failed before committing anything, by authorization mode",
+)
+retention_table_rows = registry.gauge(
+    "maistro_retention_table_rows",
+    "Rows currently stored in a governed durable table, as of the last health "
+    "probe that table's purge drove (#325; labels: table, backend) — a level, "
+    "so a table that grows despite its policy is visible before its backlog age",
+)
+retention_table_bytes = registry.gauge(
+    "maistro_retention_table_bytes",
+    "Approximate stored size of a governed durable table (#325; labels: table, "
+    "backend). PostgreSQL reports pg_total_relation_size; SQLite reports the "
+    "dbstat page sum, and the series is simply absent where the runtime SQLite "
+    "has no dbstat — no per-table byte count exists there without it",
+)
+retention_oldest_record_timestamp = registry.gauge(
+    "maistro_retention_oldest_record_timestamp",
+    "Unix timestamp of the oldest record still retained in a governed durable "
+    "table, as of the last health probe (#325; labels: table, backend); absent "
+    "while the table is empty — how far back the kept history actually reaches",
+)
+
+# --- Retention stored-volume health (#325) -----------------------------------
+# The purge counters above are rates, and a rate cannot show the failure that
+# matters most: a table whose purge never runs deletes nothing, publishes no
+# purged count, and looks exactly as healthy as a table at steady state. What
+# exposes that is a level — rows, bytes, and how far back the oldest retained
+# record reaches, per governed table. Every driven purge is the probe's
+# driver: after a purge commits, the store samples its own governed tables
+# and publishes here. There is no scheduler in this repository to hang a
+# scanner on (see `maistro.runs.retention`), and the purges are the one code
+# path that already holds each store's connection on a cadence. The throttle
+# is what makes that affordable, and honesty about what a backend cannot
+# measure is what makes it trustworthy: an empty table publishes no
+# oldest-record series, and SQLite without the dbstat runtime publishes no
+# per-table bytes — an absent series, never a fabricated number.
+
+
+#: How old a record's stored time representation may be parsed from. ISO-8601
+#: text orders the same way the datetimes do, which is why `MIN()` over a
+#: payload timestamp needs no materialization (the same trick the recovery
+#: tick's `non_terminal_run_stats` uses).
+OldestUnit = Literal["iso", "unix_s", "unix_us", "datetime"]
+
+#: The durable tables whose stored-volume probes this engine publishes, and
+#: therefore the bounded `table` label set (#818). A subset of the
+#: `deletion_path` rows of `quality/durable-table-retention.json` (the CI
+#: inventory gate checks those against migrations): only the stores whose
+#: purges publish this probe appear here, not every table with a driven
+#: delete elsewhere in the tree.
+_KNOWN_TABLES: frozenset[str] = frozenset(
+    {
+        "audit_log",
+        "canonical_attempts",
+        "canonical_event_log",
+        "canonical_node_runs",
+        "canonical_run_eval_scores",
+        "canonical_runs",
+        "event_log",
+        "graph_continuations",
+        "security_rate_limits",
+        "security_violations",
+        "session_turns",
+        "sessions",
+        "task_idempotency",
+        "usage_event_aggregates",
+        "usage_events",
+    }
+)
+
+#: Default minimum spacing between two probes of one store. Well under the
+#: run-spine sweep interval (300s), so a swept store can publish every sweep,
+#: while the inline purges (sessions on append, claims on admission) cost one
+#: probe a minute at most.
+DEFAULT_PROBE_INTERVAL_S = 60.0
+
+#: Per store key — one process-wide entry per store that probes, not per scope
+#: or per caller, by the same reasoning as `_BACKLOGGED_SCOPES` in
+#: `maistro.runs.retention`: per-caller throttles do not compose.
+_LAST_PROBE: dict[str, float] = {}
+_PROBE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class RetentionTableSample:
+    """One governed table's stored volume, as observed by its purge's probe."""
+
+    #: The inventory's table name — a bounded label, checked against
+    #: `_KNOWN_TABLES` before anything is published.
+    table: str
+    rows: int
+    #: `None` where the backend cannot measure it (SQLite without dbstat).
+    total_bytes: int | None = None
+    #: Unix timestamp of the oldest retained record; `None` for an empty
+    #: table (an absent series, not a fabricated zero) or where the stored
+    #: time could not be parsed.
+    oldest_timestamp: float | None = None
+
+
+def oldest_timestamp(value: Any, unit: OldestUnit) -> float | None:
+    """Convert a stored record time to a Unix timestamp, or `None`.
+
+    Parse failures degrade to `None` rather than raising: a probe that cannot
+    understand one stored format must not fail the purge that drove it, and an
+    absent oldest-record series is the honest report of "unparseable".
+    """
+    if value is None:
+        return None
+    try:
+        if unit == "iso":
+            return datetime.fromisoformat(str(value)).timestamp()
+        if unit == "unix_s":
+            return float(value)
+        if unit == "unix_us":
+            return float(value) / 1_000_000
+        if unit == "datetime":
+            assert isinstance(value, datetime)  # nosec B101 - narrowing the typed union
+            return value.timestamp()
+    except (TypeError, ValueError):
+        return None
+    raise ValueError(f"unknown oldest-record unit: {unit}")  # pragma: no cover - caller bug
+
+
+def retention_health_probe_due(
+    key: str, *, min_interval_s: float = DEFAULT_PROBE_INTERVAL_S
+) -> bool:
+    """Whether (and stamp that) this store's probe may run now.
+
+    Drivers consult this BEFORE sampling — the table scans are the cost being
+    amortized, so gating only the gauge writes would throttle nothing. A
+    `True` return has already stamped the ledger; the caller samples and then
+    publishes with `min_interval_s=0` so the write is not re-throttled.
+    """
+    now = time.monotonic()
+    with _PROBE_LOCK:
+        last = _LAST_PROBE.get(key)
+        if last is not None and (now - last) < min_interval_s:
+            return False
+        _LAST_PROBE[key] = now
+        return True
+
+
+def publish_retention_table_health(
+    key: str,
+    backend: str,
+    samples: Sequence[RetentionTableSample],
+    *,
+    min_interval_s: float = DEFAULT_PROBE_INTERVAL_S,
+) -> bool:
+    """Publish one store's table samples, at most once per interval per key.
+
+    Returns whether the samples were published; a throttled call publishes
+    nothing and reports `False`. Stores that gate their sampling with
+    :func:`retention_health_probe_due` pass `min_interval_s=0` here — the
+    throttle has already been applied where it matters, before the samples
+    were queried.
+    """
+    if not retention_health_probe_due(key, min_interval_s=min_interval_s):
+        return False
+    for sample in samples:
+        if sample.table not in _KNOWN_TABLES:
+            raise ValueError(
+                f"retention health probe: {sample.table!r} is not a governed "
+                "durable table; metric labels are bounded (#818)"
+            )
+        retention_table_rows.set(float(sample.rows), table=sample.table, backend=backend)
+        if sample.total_bytes is not None:
+            retention_table_bytes.set(
+                float(sample.total_bytes), table=sample.table, backend=backend
+            )
+        else:
+            # A measurement this probe could not take must not leave the
+            # previous value standing in for it.
+            retention_table_bytes.remove(table=sample.table, backend=backend)
+        if sample.oldest_timestamp is not None:
+            retention_oldest_record_timestamp.set(
+                sample.oldest_timestamp, table=sample.table, backend=backend
+            )
+        else:
+            # An empty table holds no oldest record; a stale timestamp would
+            # claim history that is no longer there.
+            retention_oldest_record_timestamp.remove(table=sample.table, backend=backend)
+    return True
+
+
+class PostgresFetchRow(Protocol):
+    """The one asyncpg method the probe needs (`Connection.fetchrow`)."""
+
+    def __call__(self, query: str, *args: object) -> Awaitable[Any]: ...
+
+
+async def postgres_table_sample(
+    fetchrow: PostgresFetchRow,
+    table: str,
+    oldest_expr: str,
+    *,
+    oldest_unit: OldestUnit,
+) -> RetentionTableSample | None:
+    """Sample one PostgreSQL table: rows, `pg_total_relation_size`, oldest record.
+
+    Both interpolated identifiers are literals from this module and its
+    callers' constants — the table name is checked against the whitelist
+    first, and `oldest_expr` is a source-code constant per table (a payload
+    `json_extract` or a plain column), never caller input. A table the
+    deployment has not provisioned (an optional module's table) yields `None`
+    rather than a zeroed sample, so nothing pretends an absent table is an
+    empty one.
+    """
+    if table not in _KNOWN_TABLES:
+        raise ValueError(f"retention health probe: unknown table {table!r}")
+    exists = await fetchrow("SELECT to_regclass($1) IS NOT NULL AS ok", table)
+    if exists is None or not exists["ok"]:
+        # `exists` is a nonempty record even when the table is absent
+        # (`ok=False`), so its truthiness says nothing; consult the field.
+        return None
+    row = await fetchrow(
+        f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",  # nosec B608
+    )
+    if row is None:  # pragma: no cover - COUNT always yields a row
+        return None
+    bytes_row = await fetchrow("SELECT pg_total_relation_size($1::regclass) AS b", table)
+    return RetentionTableSample(
+        table=table,
+        rows=int(row["n"]),
+        total_bytes=int(bytes_row["b"]) if bytes_row is not None else None,
+        oldest_timestamp=oldest_timestamp(row["oldest"], oldest_unit),
+    )
+
+
+async def sqlite_table_sample(
+    conn: Any,
+    table: str,
+    oldest_expr: str,
+    *,
+    oldest_unit: OldestUnit,
+) -> RetentionTableSample | None:
+    """Sample one SQLite table: rows, oldest record, and dbstat bytes if offered.
+
+    `conn` is an `aiosqlite.Connection`, typed loosely here so this module
+    does not import the driver for one annotation. A table that does not
+    exist (an optional module's table sharing the database file) yields
+    `None`; so does a runtime without dbstat, which is why the bytes series
+    is documented as conditionally present on SQLite.
+    """
+    if table not in _KNOWN_TABLES:
+        raise ValueError(f"retention health probe: unknown table {table!r}")
+    try:
+        async with conn.execute(
+            f"SELECT COUNT(*) AS n, MIN({oldest_expr}) AS oldest FROM {table}",  # nosec B608
+        ) as cursor:
+            row = await cursor.fetchone()
+    except Exception as exc:
+        if "no such table" in str(exc):
+            return None
+        raise
+    if row is None:  # pragma: no cover - COUNT always yields a row
+        return None
+    sample = RetentionTableSample(
+        table=table,
+        rows=int(row[0]),
+        total_bytes=None,
+        oldest_timestamp=oldest_timestamp(row[1], oldest_unit),
+    )
+    bytes_sum = await sqlite_table_bytes(conn, table)
+    if bytes_sum is not None:
+        sample = replace(sample, total_bytes=bytes_sum)
+    return sample
+
+
+async def sqlite_table_bytes(conn: Any, table: str) -> int | None:
+    """Per-table stored bytes via the dbstat virtual table, or `None`.
+
+    dbstat ships in many but not all SQLite builds; a runtime without it gets
+    no bytes series rather than a database-file-size stand-in that would
+    overstate every table by the whole rest of the database.
+    """
+    if table not in _KNOWN_TABLES:
+        raise ValueError(f"retention health probe: unknown table {table!r}")
+    try:
+        async with conn.execute(
+            "SELECT SUM(pgsize) FROM dbstat WHERE name = ?", (table,)
+        ) as cursor:
+            row = await cursor.fetchone()
+    except Exception as exc:
+        if "no such table" in str(exc):
+            return None
+        raise
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+__all__ = [
+    "DEFAULT_PROBE_INTERVAL_S",
+    "OldestUnit",
+    "PostgresFetchRow",
+    "RetentionTableSample",
+    "oldest_timestamp",
+    "postgres_table_sample",
+    "publish_retention_table_health",
+    "retention_health_probe_due",
+    "sqlite_table_bytes",
+    "sqlite_table_sample",
+]

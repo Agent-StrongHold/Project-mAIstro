@@ -13,7 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-DagShapeStatus = Literal["approved", "needs_revision", "blocked"]
+DagShapeStatus = Literal["approved", "approved_degraded", "needs_revision", "blocked"]
+
+# Disposition of the advisory proportionality critic, kept distinct from the
+# verdict itself: `deny` is a judgment, `unavailable` is the absence of one.
+ProportionalityDisposition = Literal["allow", "deny", "unavailable"]
 
 
 @dataclass(frozen=True)
@@ -49,16 +53,25 @@ class DagShapeVerdict:
       steered synthesizer isn't fixed by asking it to try again.
     - ``needs_revision``: safety is clean but budget or proportionality
       didn't clear. ``revision`` carries the specific fix.
-    - ``approved``: all three axes cleared.
+    - ``approved``: all three axes cleared, including an affirmative
+      proportionality judgment (or the explicit no-judge-configured rule).
+    - ``approved_degraded``: the hard gates (Warden/Sentinel) cleared, but
+      the advisory proportionality judge could not be consulted, so the
+      shape proceeds under the documented degraded policy (#1191). This is
+      deliberately a DIFFERENT status from ``approved``: a caller checking
+      ``status == "approved"`` cannot mistake a failed judge for an
+      affirmative proportionality decision. ``can_execute`` is still True —
+      the critic is advisory and must not become an availability dependency.
     """
 
     status: DagShapeStatus
     safety_flags: tuple[str, ...] = field(default_factory=tuple)
     within_budget: bool = True
     proportionality_reason: str = ""
+    proportionality_disposition: ProportionalityDisposition = "allow"
     revision: ShapeRevision | None = None
     confidence: float | None = None
 
     @property
     def can_execute(self) -> bool:
-        return self.status == "approved"
+        return self.status in ("approved", "approved_degraded")

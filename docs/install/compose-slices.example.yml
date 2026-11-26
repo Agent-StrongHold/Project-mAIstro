@@ -5,6 +5,10 @@
 #
 # To adopt profiles without breaking defaults, duplicate services into a
 # docker-compose.override.yml locally or add `profiles:` per service in a fork.
+# ./install.sh includes a repo-root docker-compose.override.yml automatically
+# (it invokes compose with explicit -f files, so the override is added
+# explicitly); activate its profiles on an installer run with
+# MAISTRO_COMPOSE_PROFILES="data engine".
 #
 # Suggested profile names (align with maistro-install / resolver-matrix.md):
 #   data            — postgres only (migrations, local DB)

@@ -16,7 +16,7 @@ from maistro_rsi.harvest import (
     PromotedPatch,
     branch_slug,
     group_by_file,
-    load_manifest,
+    manifest_records,
     pr_body,
     pr_title,
 )
@@ -75,7 +75,11 @@ def test_pr_title_and_body_name_the_file_and_count() -> None:
     assert "add docstring" in body and "pkg/x.py" in body
 
 
-def test_load_manifest_roundtrip(tmp_path) -> None:
+def test_manifest_records_roundtrip(tmp_path) -> None:
+    # Mirrors the production read path in maistro_rsi.__main__._harvest: the
+    # manifest is read and parsed once (Warden-scanned in production) and the
+    # admitted value is projected through manifest_records; the module
+    # deliberately exposes no re-reading load_manifest helper (TOCTOU).
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(
@@ -86,7 +90,8 @@ def test_load_manifest_roundtrip(tmp_path) -> None:
         ),
         encoding="utf-8",
     )
-    patches = load_manifest(manifest)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    patches = manifest_records(value)
     assert patches == [
         PromotedPatch("0001.patch", "a.py", "s1"),
         PromotedPatch("0002.patch", "b.py", "s2"),

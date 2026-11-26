@@ -36,6 +36,9 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.runs.model import AttemptStatus, RunStatus
+from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
+from maistro.runs.store import DuplicateOccurrence
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
 COLD = NOW - timedelta(days=200)
@@ -66,7 +69,11 @@ async def _finished_run(
     produces is one the sweep would really find.
     """
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id), retention_expires_at=expires_at)
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        retention_expires_at=expires_at,
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     return await store.transition_run(run.run_id, status, at=at)
@@ -114,7 +121,9 @@ async def test_live_work_is_not_archived(archive_spine: Any) -> None:
     """A Run still running keeps its payload where it can be read without a
     network round trip, for the same reason retention never purges live work."""
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
 
@@ -166,6 +175,58 @@ async def test_the_batch_limit_bounds_one_sweep(archive_spine: Any) -> None:
 
 
 # ── what survives the move ────────────────────────────────────────
+
+
+async def test_a_scheduled_run_is_never_archived_and_the_claim_survives_a_sweep(
+    archive_spine: Any,
+) -> None:
+    """An occurrence claim lives in the payload, so moving the payload would
+    release it (#1269).
+
+    `(schedule_id, scheduled_for)` is an expression index over
+    `payload -> 'provenance'` — deliberately no columns of its own. On
+    PostgreSQL, archiving sets that payload to NULL: the row drops out of the
+    claim index, `get_run_for_occurrence` could no longer name the winner,
+    and a stale ticker re-enumerating the firing could admit it a second
+    time. So a Run carrying a claim is not archivable no matter how cold it
+    is; the tier still moves the task and chat Runs beside it.
+    """
+    store, archive, workspace, project_id = archive_spine
+    scheduled_for = NOW.isoformat()
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={
+            SCHEDULE_ID_KEY: "sched-arch",
+            SCHEDULED_FOR_KEY: scheduled_for,
+        },
+        actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+    )
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    run = await store.transition_run(run.run_id, RunStatus.COMPLETED, at=COLD)
+    plain = await _finished_run(archive_spine, at=COLD)
+
+    assert await store.archive_cold_runs(now=NOW, archive_after=NINETY_DAYS) == 1
+
+    # Exactly the non-claiming Run moved.
+    keys = await _keys(archive, project_id)
+    assert len(keys) == 1
+    assert await store.get_run(run.run_id) == run
+    # The winner of the occurrence is still resolvable through the index.
+    winner = await store.get_run_for_occurrence("sched-arch", scheduled_for)
+    assert winner is not None
+    assert winner.run_id == run.run_id
+    # The occurrence is still owned: a stale ticker's re-admission is refused.
+    with pytest.raises(DuplicateOccurrence):
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance={
+                SCHEDULE_ID_KEY: "sched-arch",
+                SCHEDULED_FOR_KEY: scheduled_for,
+            },
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+    assert plain.run_id
 
 
 async def test_a_read_after_archiving_still_returns_the_run(archive_spine: Any) -> None:
@@ -223,7 +284,9 @@ async def test_the_attempt_evidence_moves_and_still_reads_back(
     tries than it did.
     """
     store, archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     node_run = await store.create_node_run(run.run_id, node_id="node-1")
     attempt = await store.create_attempt(node_run.node_run_id, lease_holder="worker-a")
     token = attempt.execution_lease.fencing_token
@@ -254,7 +317,9 @@ async def test_non_finite_evidence_survives_the_move(archive_spine: Any) -> None
     so it gets the same encoder or it reintroduces the bug on a longer delay.
     """
     store, _archive, workspace, project_id = archive_spine
-    run = await store.create_run(_graph(workspace, project_id))
+    run = await store.create_run(
+        _graph(workspace, project_id), actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+    )
     await store.transition_run(run.run_id, RunStatus.QUEUED)
     await store.transition_run(run.run_id, RunStatus.RUNNING)
     await store.transition_run(run.run_id, RunStatus.COMPLETED, at=COLD, result={"score": math.nan})

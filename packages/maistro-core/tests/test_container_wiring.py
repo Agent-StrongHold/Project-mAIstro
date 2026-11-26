@@ -9,10 +9,13 @@ connected, and reachable on the container.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
+from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
 PERSONA_YAML = Path(__file__).parent / "personas" / "fixtures" / "plant_wellness_local_seller.yaml"
@@ -52,17 +55,152 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "spawn_harness_node",
         "capability_effects",
         "usage_log",
+        "code_registry",
+        "code_invoker",
     ):
         assert getattr(container, attr) is not None, f"container.{attr} is not wired"
 
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert container.stores_memory_backed is True
+    assert type(container.elevation_store).__name__ == "SqliteElevationStore"
+    assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+    container.usage_log.record("provider:model", input_tokens=7, now=1000.0)
+    await container.flush_usage_log()
+    restored = await container.usage_log_persistence.restore()
+    from maistro.quota.rate_profile import LimitUnit
+
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
+
+
+async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
+    """`None` persistence is the explicit ephemeral profile (#72).
+
+    Callers own the response boundary and call `flush_usage_log()`
+    unconditionally, so an ephemeral container absorbs the call instead of
+    making every boundary probe `usage_log_persistence` first — the same
+    contract `aclose()` already relies on at shutdown.
+    """
+    container = await _container()
+
+    assert container.usage_log_persistence is None
+    container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
+    await container.flush_usage_log()  # must not raise
+    assert container.usage_log.events_for("provider:model") != ()
+
+
+async def test_fresh_container_provisions_the_configured_workspace_and_its_owner() -> None:
+    """#1152 review: the Run boundary must never outlive its membership rows.
+
+    A fresh standalone deployment admits Runs into `config.workspace_id`
+    through the default admitter path, and the Run read boundary answers on
+    Workspace membership. Startup therefore provisions the configured
+    Workspace and its owner (the unauthenticated `dev` principal) before the
+    boundary is installed — otherwise the very first admitted run_id would
+    404 for the only principal the server can name.
+    """
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    container = await _container()
+    workspace = await container.workspace_store.get(container.task_admitter.default_workspace_id)
+    assert workspace is not None, "startup did not provision the configured Workspace"
+    membership = await container.workspace_store.get_membership(
+        workspace.workspace_id, user_id=DEFAULT_WORKSPACE_OWNER
+    )
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_provisioning_is_idempotent_across_a_restart() -> None:
+    """A restart (or a replica) finds the row and skips the write: one
+    Workspace, one OWNER membership, no duplicate-root failure."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.model import WorkspaceRole
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+    from maistro.workspaces.wiring import DEFAULT_WORKSPACE_OWNER
+
+    store = InMemoryWorkspaceStore()
+    await _provision_configured_workspace(store, "default")
+    await _provision_configured_workspace(store, "default")
+
+    workspace = await store.get("default")
+    assert workspace is not None
+    membership = await store.get_membership("default", user_id=DEFAULT_WORKSPACE_OWNER)
+    assert membership is not None and membership.role is WorkspaceRole.OWNER
+
+
+async def test_a_lost_create_race_keeps_provisioning_idempotent() -> None:
+    """The replica that lost the concurrent first start must not fail boot:
+    its create() loses to the winner's unique constraint, but the row the
+    winner wrote is exactly the one the loser was trying to make, so the
+    re-check swallows the refusal."""
+    from maistro.container import _provision_configured_workspace
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+
+    class LostCreateRaceStore(InMemoryWorkspaceStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_attempts = 0
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.create_attempts += 1
+            await super().create(**kwargs)  # the concurrent winner's row lands
+            raise RuntimeError("duplicate key value violates unique constraint")
+
+    store = LostCreateRaceStore()
+    await _provision_configured_workspace(store, "default")
+    assert store.create_attempts == 1
+    assert (await store.get("default")) is not None
+
+
+async def test_provisioning_fails_loudly_when_the_row_never_lands() -> None:
+    """A create() that raises with no visible row afterwards is a real fault,
+    not a lost race — the helper must propagate it, not boot half-wired."""
+    from maistro.container import _provision_configured_workspace
+
+    class BrokenStore:
+        async def get(self, workspace_id: str, *, principal_id: str | None = None) -> None:
+            return None
+
+        async def create(self, **kwargs: object) -> None:
+            raise RuntimeError("write refused")
+
+    with pytest.raises(RuntimeError, match="write refused"):
+        await _provision_configured_workspace(BrokenStore(), "default")  # type: ignore[arg-type]
+
+
+async def test_context_assembly_uses_the_canonical_scope_store() -> None:
+    container = await _container(database_url="sqlite://")
+
+    assert container.project_store is container.project_scope_store
+    root = await container.project_scope_store.create_root("context-wiring")
+    assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
+async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
+    """The graphs are process-local caches over the durable log (#301).
+
+    Shutdown releases what the container took — the live projections — and
+    the observation log they were hydrated from stays exactly where it is.
+    """
+    container = await _container(database_url="sqlite://")
+    manager = container.working_log
+    assert manager is not None
+    await manager.observe("ws-shutdown", cycle=1, text="durable across shutdown")
+    await manager.projection("ws-shutdown")
+    assert manager.hot("ws-shutdown") is not None
+    # The entry is in the log, not only in the graph.
+    assert len(await manager.store.list_entries("ws-shutdown")) == 1
+
+    await container.aclose()
+
+    assert manager.hot("ws-shutdown") is None
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -90,6 +228,7 @@ async def test_bus_events_are_bridged_into_the_durable_log() -> None:
 
 
 async def test_process_durable_events_delivers_to_matching_trigger() -> None:
+    from maistro.events.invocations import ReplaySafety
     from maistro.events.trigger_store import TriggerDefinition
 
     container = await _container()
@@ -100,7 +239,14 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
 
     container.handler_caller = _caller
     await container.trigger_store.add(
-        TriggerDefinition(trigger_id="t1", name="on-agent", event_pattern="agent.*")
+        TriggerDefinition(
+            trigger_id="t1",
+            name="on-agent",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
     )
     await container.durable_event_log.append("agent.created")
     cursor = await container.process_durable_events()
@@ -111,6 +257,362 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert [t.trigger_id for t in triggers] == ["t1"]
     await container.set_durable_trigger_enabled("t1", False)
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
+
+
+async def test_durable_bridge_failure_is_explicit() -> None:
+    from maistro.events.bus import Event, EventSubscriberFailure
+
+    container = await _container()
+
+    async def fail_append(**_kwargs: object) -> None:
+        raise OSError("event store unavailable")
+
+    container.durable_event_log.append = fail_append  # type: ignore[method-assign]
+    with pytest.raises(EventSubscriberFailure, match="event store unavailable"):
+        await container.event_bus.emit(Event(event_type="agent.created"))
+    assert container.event_bus.get_history() == []
+
+
+def _record_ids_caller(sink: list[int]):
+    async def _caller(trigger: object, event: Any) -> None:
+        sink.append(event.id)
+
+    return _caller
+
+
+async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
+    """#1163: a restart used to replay `durable_event_log` from zero every
+    time, because the cursor lived only as a plain `int` on the `Container`.
+    A fresh `Container` sharing the same durable SQLite database must instead
+    resume from the position the first container's tick durably committed.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+    delivered_first: list[int] = []
+
+    container1 = await _container(database_url=db_url)
+    try:
+        container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        cursor1 = await container1.process_durable_events()
+        assert cursor1 == 2
+        assert delivered_first == [1, 2]
+        # Simulate the old process being gone: its lease is renewed to an
+        # already-expired one rather than left at the normal 300s, standing
+        # in for however long a real restart takes to notice and wait out.
+        await container1.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID,
+            holder=container1._durable_events_holder,
+            lease_seconds=-1.0,
+        )
+    finally:
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    delivered_second: list[int] = []
+    container2 = await _container(database_url=db_url)
+    try:
+        # "Restart": a fresh Container/process (a different holder id), same
+        # underlying database, no tick performed yet. The durable position
+        # must already read back as 2, not 0 -- proving it is the store, not
+        # an in-process default, that answers the claim.
+        lease = await container2.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=container2._durable_events_holder
+        )
+        assert lease is not None
+        assert lease.position == 2
+
+        container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
+        await container2.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+        await container2.durable_event_log.append("agent.created")  # id 3
+        cursor2 = await container2.process_durable_events()
+
+        # Only the new event is redelivered -- restart did not replay ids 1-2.
+        assert cursor2 == 3
+        assert delivered_second == [3]
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
+
+
+async def test_a_held_tick_lease_stops_a_second_replica_from_reticking() -> None:
+    """#1163: of several replicas that might tick the bridge at once, only
+    the lease holder should re-scan/redispatch this round -- ticking under a
+    live lease held by someone else must not repeat that work."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    other_replica_lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder="other-replica"
+    )
+    assert other_replica_lease is not None
+
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 0
+
+
+async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> None:
+    """#1163: `process_durable_events` must not write to the cursor store at
+    all when nothing new settled this round (`new_cursor == lease.position`)
+    -- only a real advance is worth a write."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    cursor = await container.process_durable_events()
+    assert cursor == container.durable_event_cursor == 0
+
+    # A second claim (a different holder, after this container's own lease
+    # would need to have been renewed/expired) proves the store's own
+    # position is still untouched, not just the in-process cache.
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    assert lease.position == 0
+
+
+class TestReplayAcknowledgementOnTheLog:
+    """#836: `process_durable_events` must also acknowledge the settled
+    position on the durable log itself (`EventLogStore.acknowledge_replay`).
+    The `event_replay_cursors` table ships beside `event_log` on every
+    backend and revision 065 manages it in PostgreSQL; a bridge tick that
+    never wrote it left the log's replay acknowledgement dead in production
+    and the table permanently empty.
+    """
+
+    async def test_a_settled_tick_acknowledges_the_log_and_an_empty_tick_does_not(self) -> None:
+        container = await _container()
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+        # Nothing settled yet: neither cursor store is written.
+        assert await container.process_durable_events() == 0
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 0
+
+        await container.durable_event_log.append("agent.created")
+        cursor = await container.process_durable_events()
+
+        # The settled position is acknowledged on the log, under the same
+        # consumer identity the cursor store uses.
+        assert cursor > 0
+        assert (
+            await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == cursor
+        )
+
+    async def test_the_acknowledgement_holds_below_a_hole_and_agrees_with_the_cursor_store(
+        self,
+    ) -> None:
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.trigger_store import TriggerDefinition
+
+        container = await _container()
+        delivered: list[int] = []
+        container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+        await container.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        log = _HidingLog(container.durable_event_log, hidden={2})
+        container.durable_event_log = log  # type: ignore[assignment]
+        for _ in range(3):
+            await log.append("agent.created")
+
+        cursor = await container.process_durable_events()
+
+        # The log acknowledgement stops at the same gap-safe position the
+        # cursor store persists: id 2 is not settled, so neither store may
+        # claim past it.
+        assert cursor == 1
+        assert await _durable_position(container) == 1
+        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
+
+        log.hidden.clear()
+        cursor = await container.process_durable_events()
+
+        assert cursor == 3
+        assert await log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+
+
+class _HidingLog:
+    """A durable log whose reads skip chosen ids -- PostgreSQL between a
+    `BIGSERIAL` allocation and that append's commit."""
+
+    def __init__(self, inner: Any, hidden: set[int]) -> None:
+        self._inner = inner
+        self.hidden = hidden
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def query(self, **kwargs: Any) -> Any:
+        return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]
+
+
+async def _durable_position(container: Container) -> int:
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    return lease.position
+
+
+async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() -> None:
+    """#1163 review: PostgreSQL allocates `BIGSERIAL` ids before commit, so id 3
+    can be readable while id 2 is still in an open transaction. Persisting 3
+    would exclude 2 from every later ``id > cursor`` read, restart included.
+    The durable position must stop at 1 until 2 appears, while the work on 3
+    itself is not delayed."""
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+    )
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3]
+    assert cursor == container.durable_event_cursor == 1
+    assert await _durable_position(container) == 1
+
+    # The append commits: id 2 becomes readable. The next tick resumes from
+    # below it, delivers it, dedupes 3 (already settled), and only now persists 3.
+    log.hidden.clear()
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3, 2]
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+
+
+async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
+    """An id that never commits (the append rolled back) must not pin the
+    resume point forever: once the hole has been seen for longer than
+    `durable_event_hole_grace_s`, the position moves past it."""
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+    )
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    assert await container.process_durable_events() == 1
+    assert await _durable_position(container) == 1
+
+    # Still within grace on the next tick: the position holds, and 3 is
+    # redelivered idempotently (deduped by the invocation store, so no call).
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # The grace lapses with the hole still open.
+    container.durable_event_hole_grace_s = 0.0
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+    assert delivered == [1, 3]
+
+
+async def test_the_log_replay_acknowledgement_survives_a_restart(tmp_path: Path) -> None:
+    """#836: the log's replay acknowledgement is written to the shared store,
+    not to the ticking process. A fresh `Container` over the same database
+    must read the previous container's settled position straight off the log
+    before it has ticked anything itself.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.trigger_store import TriggerDefinition
+
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+
+    container1 = await _container(database_url=db_url)
+    try:
+        container1.handler_caller = _record_ids_caller([])  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        assert await container1.process_durable_events() == 2
+    finally:
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    container2 = await _container(database_url=db_url)
+    try:
+        # Fresh process: the in-process mirror is still zero, but the log
+        # itself answers with the settled position.
+        assert container2.durable_event_cursor == 0
+        assert await container2.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 2
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
+
+
+async def test_each_hole_gets_its_own_grace() -> None:
+    """Two open appends: the first lapsing must not let the position jump
+    past a second hole that was only just noticed."""
+    container = await _container()
+    container.durable_event_hole_grace_s = 10.0
+
+    # First tick: only hole 2 is visible below the cursor.
+    assert container._gap_safe_position(3, (2,), now=100.0) == 1
+    # Later tick: 2 is still open (past grace) and a fresh hole at 5 appeared.
+    assert container._gap_safe_position(6, (2, 5), now=111.0) == 4
+    # Later still: 5 also lapses; the position moves to the cursor.
+    assert container._gap_safe_position(6, (2, 5), now=122.0) == 6
+    # A hole that fills is forgotten, so a re-opened id restarts its grace.
+    assert container._gap_safe_position(6, (), now=123.0) == 6
+    assert container._gap_safe_position(6, (2,), now=124.0) == 1
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
@@ -197,9 +699,52 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
 
     from maistro.identity.lifecycle import TokenRevokedError
 
+    assert container.token_store is not None
     await container.token_store.revoke(token)
     with pytest.raises(TokenRevokedError):
         await container.verify_capability_token(token)
+
+
+class _BlockBipUtils:
+    """Meta-path finder that makes `bip_utils` absent, as on the Python 3.14 Hive image."""
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname.split(".")[0] == "bip_utils":
+            raise ModuleNotFoundError("No module named 'bip_utils'", name="bip_utils")
+        return None
+
+
+async def test_container_starts_without_the_identity_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#37: the Hive image cannot install the extra, and still needs a Container.
+
+    The stores stay unwired, and asking for an identity still raises the
+    ImportError that names the extra instead of failing somewhere quieter.
+    """
+    import sys
+
+    for name in list(sys.modules):
+        if name.split(".")[0] == "bip_utils" or name.startswith("maistro.identity"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockBipUtils(), *sys.meta_path])
+
+    container = await _container()
+
+    assert container.identity_store is None
+    assert container.token_store is None
+    assert container.secret_store is None
+    assert container.workspace_store is not None
+    with pytest.raises(ImportError, match=r"maistro-core\[identity\]"):
+        await container.create_agent_identity("agent-a")
+
+
+async def test_identity_calls_on_a_container_without_stores_fail_loudly() -> None:
+    container = await _container()
+    container.token_store = None
+
+    with pytest.raises(RuntimeError, match="identity lifecycle stores are not wired"):
+        await container.issue_capability_token("agent-a", "agent-b", "read")
 
 
 # --- A2A broker (ADR-058): retired from the Container (#225) -------------------
@@ -286,6 +831,106 @@ async def test_skill_payload_verification_via_container() -> None:
     )
     allowed, reasons = container.verify_skill_payload("bound-skill", payload)
     assert allowed is True and reasons == ()
+
+
+# --- Code registry execution (ADR-069, #59) -------------------------------------
+
+
+async def test_invoke_code_refuses_unresolved_ref() -> None:
+    from maistro.code_registry.types import CodeRefUnresolved
+    from maistro.security.sentinel.authz_types import Principal
+
+    container = await _container()
+    principal = Principal(id="test", kind="human")
+
+    with pytest.raises(CodeRefUnresolved):
+        await container.invoke_code("nonexistent@1.0.0", {"x": 1}, principal)
+
+
+async def test_invoke_code_refuses_without_sandbox() -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    # Register a signed entry
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256="abc123",
+        signature=private_key.sign(b"test_compensator@1.0.0:compensator:abc123"),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    # No sandbox configured -> refused
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "refused"
+    assert "no sandbox runtime configured" in result.reason
+
+
+async def test_invoke_code_sandbox_failure_keeps_unknown_isolation() -> None:
+    """A sandbox that raises after starting must NOT be labelled ``refused``.
+
+    ``refused`` asserts nothing ran; a post-start failure (timeout kill,
+    result-collection error) may have partially executed, so the honest label
+    is ``unknown`` (ADR-069 failure table).
+    """
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from maistro.code_registry.execution import CodeInvoker, CodeSandbox
+    from maistro.code_registry.types import CodeEntry, CodeKind
+    from maistro.code_registry.verify import Ed25519Verifier
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    class _ExplodingSandbox:
+        """Sandbox that accepts the invocation, then dies mid-run (timeout-like)."""
+
+        async def execute(self, entry: CodeEntry, payload: dict) -> CodeSandbox:
+            raise TimeoutError("microVM over budget: killed")
+
+    container = await _container(
+        security=SecurityConfig(permissions={"code.invoke.compensator": ["admin"]})
+    )
+    principal = Principal(id="test", kind="human", roles=("admin",))
+
+    private_key = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(private_key.public_key().public_bytes_raw())
+    entry = CodeEntry(
+        name="test_compensator",
+        version="1.0.0",
+        kind=CodeKind.COMPENSATOR,
+        code_sha256=hashlib.sha256(b"body").hexdigest(),
+        signature=private_key.sign(
+            b"test_compensator@1.0.0:compensator:" + hashlib.sha256(b"body").hexdigest().encode()
+        ),
+    )
+    container.code_registry.register(entry, verifier=verifier)
+
+    container.code_invoker = CodeInvoker(  # type: ignore[assignment]
+        container.code_registry,
+        sentinel=container.code_invoker._sentinel,
+        warden_scan=container.code_invoker._warden_scan,
+        sandbox=_ExplodingSandbox(),
+    )
+
+    result = await container.invoke_code("test_compensator@1.0.0", {"x": 1}, principal)
+    assert result.ok is False
+    assert result.isolation == "unknown"
+    assert "over budget" in result.reason
 
 
 # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) ------------------------
@@ -388,8 +1033,18 @@ def test_build_node_resolver_resolves_spawn_harness_with_injected_adapters() -> 
     from maistro.container import build_node_resolver
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
 
-    fake_adapter = object()
-    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})  # type: ignore[arg-type]
+    # The node shape-validates its adapter map at construction (#1613), so the
+    # identity sentinel must satisfy the HarnessAdapter protocol — unchanged
+    # by the wrapping, which is exactly what the equality asserts.
+    class _StubHarnessAdapter:
+        async def dispatch(self, request: object) -> object: ...
+
+        async def poll(self, handle: object) -> object: ...
+
+        async def cancel(self, handle: object) -> None: ...
+
+    fake_adapter = _StubHarnessAdapter()
+    resolver = build_node_resolver(harness_adapters={"rsi_cycle": fake_adapter})
 
     dag = {"nodes": [{"id": "n1", "kind": "agent.spawn_harness"}]}
     node = resolver("n1", dag)
@@ -545,7 +1200,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -593,7 +1248,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -629,6 +1284,61 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
     assert open_runs_sample["value"] >= 1
 
 
+async def test_parent_only_recovery_progress_consumes_budget() -> None:
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-budget")).project_id
+    graph = Graph(
+        workspace_id="recovery-budget",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id,
+        lease_holder="worker-budget",
+        lease_ttl=timedelta(seconds=30),
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after_lapse = lease.expires_at + timedelta(seconds=1)
+    assert await store.reclaim_expired_attempts(now=after_lapse)
+
+    # The crash point between the heal's two durable writes: the NodeRun is
+    # already parked but the Run is still RUNNING. The sweep's only observable
+    # progress is the parent Run moving to WAITING — no NodeRun disposition,
+    # no accepted outcome — and that parent-only progress must still charge
+    # the repair budget instead of returning 0 over a state change it made.
+    parked_node = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.WAITING,
+        error=attempt.error,
+        expected_current_attempt_id=attempt.attempt_id,
+    )
+    assert parked_node.status is RunStatus.WAITING
+    assert (await store.get_run(run.run_id)).status is RunStatus.RUNNING
+
+    assert await container.recover_abandoned_attempts(now=after_lapse, limit=1) == 1
+    settled_node = await store.get_node_run(node_run.node_run_id)
+    settled_run = await store.get_run(run.run_id)
+    assert settled_node is not None and settled_node.status is RunStatus.WAITING
+    assert settled_run is not None and settled_run.status is RunStatus.WAITING
+
+    # The heal is complete: replaying the same unchanged facts charges nothing.
+    assert await container.recover_abandoned_attempts(now=after_lapse, limit=1) == 0
+
+
 async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -655,7 +1365,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
         name="g",
         nodes=[Node(node_id="n1", node_type="agent")],
     )
-    run = await store.create_run(graph)
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
     for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_run(run.run_id, status)
     node_run = await store.create_node_run(run.run_id, node_id="n1")
@@ -677,6 +1387,294 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
     stuck = await store.get_node_run(node_run.node_run_id)
     assert stuck is not None and stuck.status is RunStatus.QUEUED
     assert "could not be reconciled" in caplog.text
+
+
+async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() -> None:
+    """A crash between the sweep's two halves is repaired by the next tick (#1621).
+
+    The reclaim commits first — the Attempt settles ``CANCELLED`` with the
+    recovery marker — and the RECOVERED park is a second, separate write. A
+    process that died between them stranded CANCELLED Attempt / RUNNING
+    NodeRun / RUNNING Run forever: the reclaim never returns a settled
+    Attempt again, and the terminal replay only scanned COMPLETED Attempts.
+    The replay now includes reclaimed Attempts, so the next tick lands the
+    same park the interrupted tick would have — the healing the tick's own
+    contract promises.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-heal")).project_id
+    graph = Graph(
+        workspace_id="recovery-heal",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-D", lease_ttl=timedelta(seconds=30)
+    )
+    lease = attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+    after_lapse = lease.expires_at + timedelta(seconds=1)
+
+    # The tick dies at the exact seam: the reclaim commits, then the process
+    # is gone before the park. The exception propagates out of the tick — the
+    # server cadence logs it and retries; what it retries on is asserted next.
+    original = store.reclaim_expired_attempts
+
+    async def reclaim_then_die(**kwargs: Any) -> list[Any]:
+        reclaimed = await original(**kwargs)
+        assert reclaimed, "the lease has lapsed; the reclaim must settle it"
+        raise RuntimeError("process died between the two halves")
+
+    store.reclaim_expired_attempts = reclaim_then_die  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="between the two halves"):
+            await container.recover_abandoned_attempts(now=after_lapse)
+    finally:
+        store.reclaim_expired_attempts = original  # type: ignore[method-assign]
+
+    # The crash's signature: the physical record settled, the logical records
+    # still claim the work is in flight.
+    settled = await store.get_attempt(attempt.attempt_id)
+    assert settled is not None and settled.status is AttemptStatus.CANCELLED
+    assert "worker-D" in (settled.error or "")
+    stranded_node = await store.get_node_run(node_run.node_run_id)
+    assert stranded_node is not None and stranded_node.status is RunStatus.RUNNING
+    stranded_run = await store.get_run(run.run_id)
+    assert stranded_run is not None and stranded_run.status is RunStatus.RUNNING
+
+    # The next tick heals it. Parking is not a settlement (#1850): the count
+    # stays 0 exactly as the interrupted-reclaim characterization pins, while
+    # the logical records land the park the dead tick never wrote.
+    healed = await container.recover_abandoned_attempts(now=after_lapse)
+    assert healed == 0
+    parked_node = await store.get_node_run(node_run.node_run_id)
+    assert parked_node is not None and parked_node.status is RunStatus.WAITING
+    parked_run = await store.get_run(run.run_id)
+    assert parked_run is not None and parked_run.status is RunStatus.WAITING
+
+    # Idempotent: nothing is left to replay.
+    assert await container.recover_abandoned_attempts(now=after_lapse) == 0
+
+
+async def test_replay_selection_answers_none_for_a_purged_node_run() -> None:
+    """A NodeRun deleted between the listing and the selection is not a crash.
+
+    `_reconcile_run_terminal_attempts` lists a Run's NodeRuns, then selects the
+    replayable Attempt per NodeRun; a retention purge can delete a listed
+    NodeRun in between. The selector must answer None — nothing to replay —
+    so the tick moves on instead of dying on a row it can no longer read
+    (#1621). The caller's `continue` on None is what makes the sweep survive
+    the race; raising here would abort the whole tick mid-page.
+    """
+    from datetime import UTC, datetime
+
+    container = await _container()
+    selected = await container._replayable_terminal_attempt(
+        "node-run-purged-before-selection",
+        moment=datetime.now(UTC),
+        allow_stranded_recovered=False,
+    )
+    assert selected is None
+
+
+async def test_the_replay_does_not_park_a_requested_cancellation() -> None:
+    """`is_reclaimed_attempt` keeps the replay inside recovery's lane (#1621).
+
+    CANCELLED is also what a person's cancellation records, and that
+    disposition belongs to the path that took it: replaying it as a RECOVERED
+    park would rewrite a record the request produced. Only the sweep's own
+    error marker qualifies a CANCELLED Attempt for the terminal replay.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-asked")).project_id
+    graph = Graph(
+        workspace_id="recovery-asked",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    attempt = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-E", lease_ttl=timedelta(seconds=30)
+    )
+    await store.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        fencing_token=attempt.execution_lease.fencing_token if attempt.execution_lease else None,
+        error="cancelled at the caller's request",
+    )
+    from maistro.runs.lifecycle import is_reclaimed_attempt, reclaimed_attempt_error
+
+    forged_without_lease = attempt.model_copy(
+        update={
+            "status": AttemptStatus.CANCELLED,
+            "error": reclaimed_attempt_error("worker-E"),
+            "execution_lease": None,
+        }
+    )
+    assert not is_reclaimed_attempt(forged_without_lease)
+    after_lapse = (
+        attempt.execution_lease.expires_at + timedelta(seconds=1)
+        if attempt.execution_lease and attempt.execution_lease.expires_at
+        else None
+    )
+    assert after_lapse is not None
+
+    swept = await container.recover_abandoned_attempts(now=after_lapse)
+
+    assert swept == 0
+    left_node = await store.get_node_run(node_run.node_run_id)
+    assert left_node is not None and left_node.status is RunStatus.RUNNING
+    left_run = await store.get_run(run.run_id)
+    assert left_run is not None and left_run.status is RunStatus.RUNNING
+
+
+async def test_the_replay_does_not_park_under_a_live_retry() -> None:
+    """A reclaimed Attempt never overwrites a live retry's NodeRun (#1621).
+
+    The newest Attempt after a reclaim is often the retry it triggered: a
+    worker that noticed the park and claimed the node again. That Attempt's
+    unexpired lease is exactly what ``has_live_execution_lease`` guards with —
+    the replay must leave the node to its live holder, reclaimed predecessor
+    or not.
+    """
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-retry")).project_id
+    graph = Graph(
+        workspace_id="recovery-retry",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+
+    # First holder dies: its lease lapses and the sweep reclaims it, parking
+    # the logical records exactly as shipped.
+    first = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-F1", lease_ttl=timedelta(seconds=30)
+    )
+    assert first.execution_lease is not None and first.execution_lease.expires_at is not None
+    lapsed = first.execution_lease.expires_at + timedelta(seconds=1)
+    assert await container.recover_abandoned_attempts(now=lapsed) >= 1
+    parked = await store.get_node_run(node_run.node_run_id)
+    assert parked is not None and parked.status is RunStatus.WAITING
+
+    # A retry claims the node again with a live lease before the next tick.
+    retry = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-F2", lease_ttl=timedelta(seconds=30)
+    )
+    assert retry.execution_lease is not None and retry.execution_lease.expires_at is not None
+    while_retry_live = retry.execution_lease.expires_at - timedelta(seconds=1)
+
+    swept = await container.recover_abandoned_attempts(now=while_retry_live)
+
+    assert swept == 0
+    held = await store.get_node_run(node_run.node_run_id)
+    assert held is not None and held.status is RunStatus.WAITING
+
+
+async def test_replay_does_not_park_over_a_retry_committed_after_selection() -> None:
+    """A retry appearing after recovery's snapshot supersedes its stale decision."""
+    from datetime import timedelta
+
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+
+    container = await _container()
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-race")).project_id
+    graph = Graph(
+        workspace_id="recovery-race",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await store.create_run(graph, actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_run(run.run_id, status)
+    node_run = await store.create_node_run(run.run_id, node_id="n1")
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        await store.transition_node_run(node_run.node_run_id, status)
+    abandoned = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-race-old", lease_ttl=timedelta(seconds=30)
+    )
+    assert (
+        abandoned.execution_lease is not None and abandoned.execution_lease.expires_at is not None
+    )
+    after_lapse = abandoned.execution_lease.expires_at + timedelta(seconds=1)
+
+    original_reclaim = store.reclaim_expired_attempts
+
+    async def reclaim_then_die(**kwargs: Any) -> list[Any]:
+        reclaimed = await original_reclaim(**kwargs)
+        assert reclaimed
+        raise RuntimeError("interrupted after reclaim")
+
+    store.reclaim_expired_attempts = reclaim_then_die  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="after reclaim"):
+            await container.recover_abandoned_attempts(now=after_lapse)
+    finally:
+        store.reclaim_expired_attempts = original_reclaim  # type: ignore[method-assign]
+
+    # A retry commits after the interrupted reclaim, superseding the reclaimed
+    # Attempt. Recovery must observe the newer Attempt and leave the NodeRun and
+    # its Run RUNNING instead of parking over the stale disposition.
+    retry = await store.create_attempt(
+        node_run.node_run_id, lease_holder="worker-race-new", lease_ttl=timedelta(hours=1)
+    )
+    await store.transition_attempt(
+        retry.attempt_id,
+        AttemptStatus.RUNNING,
+        fencing_token=(
+            retry.execution_lease.fencing_token if retry.execution_lease is not None else None
+        ),
+    )
+
+    await container.recover_abandoned_attempts(now=after_lapse)
+
+    attempts = await store.list_attempts(node_run.node_run_id)
+    assert retry.attempt_id == attempts[-1].attempt_id
+    assert attempts[-1].status is AttemptStatus.RUNNING
+    current_node = await store.get_node_run(node_run.node_run_id)
+    assert current_node is not None and current_node.status is RunStatus.RUNNING
+    current_run = await store.get_run(run.run_id)
+    assert current_run is not None and current_run.status is RunStatus.RUNNING
 
 
 # --- #231: the schedule admitter is wired, not left for callers to build ----
@@ -734,3 +1732,149 @@ async def test_wiring_declines_to_build_an_admitter_with_no_template_store() -> 
         )
         is not None
     )
+
+
+# --- Audit log backend selection (ADR-073, #122) ----------------------------
+
+
+class _AuditFakeTransaction:
+    """Stand-in for ``asyncpg.Connection.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class _AuditFakeConnection:
+    """Minimal asyncpg double: records executed SQL so a wiring test can prove
+    `ensure_schema` ran against the selected backend."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def transaction(self) -> _AuditFakeTransaction:
+        return _AuditFakeTransaction()
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.statements.append(query)
+        return "ALTER TABLE"
+
+
+class _AuditFakeAcquireCtx:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _AuditFakeConnection:
+        return self._conn
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class _AuditFakePool:
+    def __init__(self, conn: _AuditFakeConnection) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _AuditFakeAcquireCtx:
+        return _AuditFakeAcquireCtx(self._conn)
+
+
+async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> None:
+    """PostgreSQL is the canonical durable system of record, so it wins when
+    both relational backends are configured — and wiring must run the
+    pre-proof-column schema upgrade, or a database created before signed audit
+    records cannot hold proofs at all (ADR-073)."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    conn = _AuditFakeConnection()
+    sqlite_conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=_AuditFakePool(conn), db_pool=sqlite_conn)
+
+        assert type(audit) is PgAuditLog
+        creates = [s for s in conn.statements if "CREATE TABLE IF NOT EXISTS audit_log" in s]
+        assert len(creates) == 1
+        assert conn.statements[2:6] == [
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
+        ]
+        assert conn.statements[6] == (
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+        )
+        # The page indexes `get_page` needs: wiring is the only thing that can
+        # create them on a database the migration chain never touched.
+        assert conn.statements[7:] == [
+            f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
+            for name, fields in AUDIT_PAGE_INDEXES.items()
+        ]
+    finally:
+        await sqlite_conn.close()
+
+
+async def test_audit_log_wiring_falls_back_to_sqlite_and_upgrades_its_schema() -> None:
+    """Choosing the SQLite backend must not leave the audit log as the one
+    relational store that silently resets on restart (#122): the sqlite branch
+    wires the durable SQLite store and runs its schema upgrade too."""
+    import aiosqlite
+
+    from maistro.container import _wire_audit_log
+    from maistro.persistence.sqlite_audit import SqliteAuditLog
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = await _wire_audit_log(pg_pool=None, db_pool=conn)
+
+        assert type(audit) is SqliteAuditLog
+        cursor = await conn.execute("PRAGMA table_info(audit_log)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        assert {"signature", "signing_key_id", "proof_type"} <= set(columns)
+    finally:
+        await conn.close()
+
+
+async def test_audit_log_wiring_without_relational_backend_returns_signed_memory_log() -> None:
+    """The ephemeral profile still signs every retained decision before it is
+    stored (ADR-073): the in-memory fallback carries a signer even where the
+    deployment never configured one, so records are verifiable in-process."""
+    from maistro.container import _wire_audit_log
+    from maistro.security._types import AuditEntry
+    from maistro.security.sentinel.audit import InMemoryAuditLog
+
+    audit = await _wire_audit_log(pg_pool=None, db_pool=None)
+
+    assert type(audit) is InMemoryAuditLog
+    assert audit.signer is not None
+    await audit.log(AuditEntry(boundary="tool_call", user_id="u1"))
+    [stored] = await audit.get_entries()
+    assert stored.signature
+    assert audit.verify(stored)
+
+
+async def test_sqlite_backend_wires_the_durable_backlog_store(tmp_path: Path) -> None:
+    """#98: a `sqlite:` deployment keeps its BacklogItems across restarts, on
+    the same connection -- and so in the same transaction -- as the Projects
+    they are filed in."""
+    from maistro.workspaces.backlog.sqlite_store import SqliteBacklogItemStore
+
+    container = await _container(database_url=f"sqlite:///{tmp_path / 'backlog.db'}")
+    try:
+        assert isinstance(container.backlog_store, SqliteBacklogItemStore)
+        assert container.backlog_store._project_store is container.project_scope_store
+    finally:
+        if container.db_pool is not None:
+            await container.db_pool.close()
+
+
+async def test_memory_backend_wires_the_in_memory_backlog_reference() -> None:
+    from maistro.workspaces.backlog import InMemoryBacklogItemStore
+
+    container = await _container()
+
+    assert isinstance(container.backlog_store, InMemoryBacklogItemStore)

@@ -36,11 +36,18 @@ happen to agree today:
 6. `VERSION <= target`. Shipping a version *above* the release you are still
    writing notes for means the notes are for a release that already happened
    under a different number.
-7. Every **dated** heading is `<= VERSION`. You cannot have released a version
-   higher than the one the packages carry.
-8. The highest `vX.Y.Z` tag in the repository is `<= VERSION` and has a dated
-   heading of its own. Tags are the only record of what was actually published;
-   without reading them the other seven checks describe intent, not fact.
+7. Every **dated** heading on `VERSION`'s own `X.Y` line is `<= VERSION`, and
+   every dated heading carries the `vX.Y.Z` tag that published it. A dated
+   heading on a *newer* line than VERSION is not drift: it is the supported
+   older-line-hotfix posture (`VERSION=0.9.1` while `v1.0.0` is already
+   published — the state `release.yml`'s moving-tag logic exists for).
+8. The highest `vX.Y.Z` tag **on `VERSION`'s own line** is `<= VERSION`, and
+   every final tag (except the one whose own run is asking — its commit
+   precedes the tag) has a dated heading of its own. Tags are the only record
+   of what was actually published; without reading them the other seven checks
+   describe intent, not fact. Lines run in parallel, so the globally highest
+   tag may legitimately sit above VERSION on a newer line; what may never
+   happen is a publication on VERSION's own line above the tree.
 9. `README.md` carries a release-status block naming all three numbers as
    **labelled fields**, and each matches its source: `Released` the tags,
    `Version in the tree` the `VERSION` file, `Next release target` the pending
@@ -87,10 +94,11 @@ The policy this gate now enforces, stated where PR authors write entries:
 - Every entry sits under a recognized category and links the issue or PR it
   belongs to (`(#1234)`); a change with no tracked issue carries the explicit
   exclusion `(no linked issue: <reason>)` instead.
-- Placeholders (TODO/TBD/none/...) are *worse* than an empty section: they
-  defeat a presence check while committing nothing. Placeholder-only
-  content fails; a genuinely empty section passes an ordinary run — a tree
-  may simply not have accumulated user-visible changes yet.
+- Placeholders (the ``_PLACEHOLDER_RE`` class: todo/tbd/none/...) are *worse*
+  than an empty section: they defeat a presence check while committing
+  nothing. Placeholder-only content fails; a genuinely empty section passes
+  an ordinary run — a tree may simply not have accumulated user-visible
+  changes yet.
 - Release readiness is the one place emptiness cannot stand: at tag time
   (`--releasing vX.Y.Z`) the section being published must contain meaningful
   content, because `release_notes.py` publishes exactly that section and
@@ -139,8 +147,21 @@ UNRELEASED_CATEGORIES: frozenset[str] = frozenset(
 _ISSUE_LINK_RE = re.compile(r"\(#\d+")
 
 #: The explicit exclusion for an entry with no tracked issue. An annotation,
-#: not a pattern: the reason is part of the text.
-_NO_ISSUE_RE = re.compile(r"\(no linked issue: ", re.I)
+#: not a pattern: the reason is part of the text. The annotation must be a
+#: complete, balanced `(...)` whose reason holds at least one character that
+#: is neither whitespace nor a delimiter — so a bare `)` cannot pose as the
+#: reason and `(no linked issue: )` is rejected, not silently exempted
+#: (#1102). One nesting level is allowed so reasons can name tools like
+#: `(pip-audit)`; deeper parens fall back to the rejection, which is the
+#: safe direction.
+_NO_ISSUE_RE = re.compile(
+    r"\(no linked issue:"  # the annotation opener
+    r"(?:[^()]|\([^()]*\))*?"  # balanced reason: flat prose or one nested pair
+    r"[^()\s]"  # ≥1 char that is neither whitespace nor a delimiter
+    r"(?:[^()]|\([^()]*\))*?"  # rest of the reason
+    r"\)",  # complete, balanced close
+    re.I,
+)
 
 #: Words that read as content to a presence check and mean nothing. An
 #: Unreleased section made only of these is *worse* than an empty one: it
@@ -159,8 +180,9 @@ def _entry_text(entry_line: str) -> str:
     """An entry bullet's own text: the marker stripped, whitespace trimmed.
 
     Placeholder matching is `fullmatch` on purpose — a *line-shaped* token,
-    not a mention — and `- TODO` must therefore be compared as `TODO`, not
-    fail the match because of the list marker every real entry carries.
+    not a mention — and a bullet whose body is only a placeholder word must
+    therefore be compared after the list marker is stripped, not fail the
+    match because of the marker every real entry carries.
     """
     return _ENTRY_RE.sub("", entry_line, count=1).strip()
 
@@ -298,6 +320,8 @@ def _entries(body: str) -> list[tuple[int, str, str]]:
     for index, line in enumerate(body.splitlines()):
         heading = re.match(r"^###\s+(.+?)\s*$", line)
         if heading is not None:
+            if current is not None:
+                out.append((current[0], current[1], " ".join(current[2])))
             category = heading[1]
             current = None
             continue
@@ -319,10 +343,11 @@ def _entries(body: str) -> list[tuple[int, str, str]]:
 def _placeholder_only(body: str) -> bool:
     """Whether every content line of a section body is a placeholder token.
 
-    `TODO` under `### Added` is the canonical way to defeat a presence check:
-    the heading exists, the category exists, and the entry says nothing.
-    Category headings are structure, not content, so they are ignored — a
-    body of headings plus TODO is placeholder-only in every way that matters.
+    A lone placeholder word under `### Added` is the canonical way to defeat
+    a presence check: the heading exists, the category exists, and the entry
+    says nothing. Category headings are structure, not content, so they are
+    ignored — a body of headings plus placeholder words is placeholder-only
+    in every way that matters.
     """
     lines = [
         line.strip() for line in body.splitlines() if line.strip() and not re.match(r"^###\s", line)
@@ -332,6 +357,45 @@ def _placeholder_only(body: str) -> bool:
         for line in lines
     ]
     return bool(lines) and all(_PLACEHOLDER_RE.fullmatch(line) is not None for line in lines)
+
+
+def _drop_trailing_link_defs(body: str) -> str:
+    """Trim the Keep-a-Changelog link-reference block off the tail.
+
+    Mirrors `release_notes.py`'s normalization of the same name: the final
+    section is followed by `[1.0.0]: https://...` definitions with no further
+    `##` heading to stop at, so `section_body` sweeps them into the extracted
+    body — and `release_notes.build` discards them before publishing. Readiness
+    must judge the body that would actually be published, so it drops them too;
+    otherwise `### Added` plus trailing definitions looks like meaningful
+    content and the heading-only rejection never fires (#1102).
+    """
+    lines = body.split("\n")
+    link_def = re.compile(r"^\[[^\]]+\]:\s")
+    while lines and (not lines[-1].strip() or link_def.match(lines[-1])):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _body_has_meaningful_content(body: str) -> bool:
+    """Return True if the body has at least one non-placeholder, non-category-heading line.
+
+    Category heading lines are ignored, as they are structure, not content.
+    Entry lines have their marker stripped before the placeholder check.
+    """
+    lines = [
+        line.strip() for line in body.splitlines() if line.strip() and not re.match(r"^###\s", line)
+    ]
+    if not lines:
+        return False  # only category headings and/or empty lines
+    for line in lines:
+        # If it's an entry line, remove the marker
+        if _ENTRY_RE.match(line):
+            line = _ENTRY_RE.sub("", line, count=1).strip()
+        # Now check if the line is a placeholder
+        if not _PLACEHOLDER_RE.fullmatch(line):
+            return True  # found a non-placeholder line
+    return False  # all lines are placeholders
 
 
 def unreleased_problems(changelog: str) -> list[str]:
@@ -350,7 +414,8 @@ def unreleased_problems(changelog: str) -> list[str]:
         return []
     if _placeholder_only(body):
         return [
-            "CHANGELOG.md's '## [Unreleased]' section is placeholder-only (TODO/TBD/none/...). "
+            "CHANGELOG.md's '## [Unreleased]' section is placeholder-only "
+            "(todo/tbd/none/...). "  # DevSkim: ignore DS176209 until 2027-12-31 — error text names rejected placeholders
             "A placeholder defeats the content check while committing nothing: write the "
             "real entry or remove the placeholder."
         ]
@@ -402,14 +467,31 @@ def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
     body = section_body(changelog, heading_re)
     if body is None:
         return []  # the heading's existence is release_guard's check
-    if body.strip() and not _placeholder_only(body):
-        return []
-    return [
-        f"CHANGELOG.md's '## [{version}]' section is {'placeholder-only' if body.strip() else 'empty'} "
-        f"and tag {releasing} is being cut against it. release_notes.py publishes exactly "
-        "this section; an empty or placeholder-only Unreleased cannot satisfy release "
-        "readiness (#385)."
-    ]
+    body = _drop_trailing_link_defs(body)
+    if not body.strip():
+        return [
+            f"CHANGELOG.md's '## [{version}]' section is empty and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; an empty section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    if _placeholder_only(body):
+        return [
+            f"CHANGELOG.md's '## [{version}]' section is placeholder-only and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; a placeholder-only section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    if not _body_has_meaningful_content(body):
+        # Empty and placeholder-only bodies returned above, so the only way a
+        # nonempty body gets here is bare category headings: structure with no
+        # entry under any of them (#1102). The trailing link definitions
+        # `release_notes.py` strips before publishing are already gone, so
+        # what is left is exactly what would be published: headings alone.
+        return [
+            f"CHANGELOG.md's '## [{version}]' section contains only category headings and tag {releasing} is being cut against it. "
+            f"release_notes.py publishes exactly this section; a heading-only section cannot satisfy release "
+            f"readiness (#385)."
+        ]
+    return []
 
 
 def list_release_tags() -> list[str]:
@@ -486,9 +568,11 @@ def check(*, releasing: str | None = None) -> list[str]:
         return problems
     target_raw, dated = resolved
 
-    released = latest_release(list_release_tags(), releasing=releasing)
-    problems.extend(_tag_problems(raw_version, version, dated, released))
-    problems.extend(_readme_problems(raw_version, target_raw, released))
+    tags = list_release_tags()
+    problems.extend(_tag_problems(raw_version, version, dated, tags, releasing=releasing))
+    problems.extend(
+        _readme_problems(raw_version, target_raw, latest_release(tags, releasing=releasing))
+    )
     if releasing is not None:
         problems.extend(_release_readiness_problems(CHANGELOG.read_text(), releasing))
     return problems
@@ -553,11 +637,16 @@ def _changelog_problems(
 
     for released, when in dated:
         released_version = parse_version(released)
-        if released_version is not None and released_version > version:
+        if (
+            released_version is not None
+            and released_version > version
+            and released_version[:2] == version[:2]
+        ):
             problems.append(
                 f"CHANGELOG.md records [{released}] as released ({when}), which is above "
-                f"VERSION ({raw_version}). A released version cannot exceed the one the "
-                "packages carry."
+                f"VERSION ({raw_version}) on the same release line. A released version "
+                "cannot exceed the one the packages carry; a newer published line "
+                "alongside an older-line hotfix is fine."
             )
 
     return problems, (target_raw, dated)
@@ -567,28 +656,62 @@ def _tag_problems(
     raw_version: str,
     version: tuple[int, int, int],
     dated: list[tuple[str, str]],
-    released: str | None,
+    tags: list[str],
+    *,
+    releasing: str | None = None,
 ) -> list[str]:
     """What the repository's tags contradict.
 
     Tags are the only record of what was actually *published*; the checks above
     describe intent. Without this, `## [1.0.0] - TBD` and a pushed `v1.0.0` are
     indistinguishable from the files alone.
+
+    Release lines run in parallel — the supported older-line hotfix cuts
+    `v0.9.1` after `v1.0.0` exists, so the globally highest tag may sit above
+    VERSION on a newer line. What is checked is per-line: on VERSION's own
+    `X.Y` line nothing published is above the tree, dated headings and final
+    tags describe the same set, and the tag whose own run is asking is exempt
+    from the dated-heading demand (its commit necessarily precedes the tag).
     """
-    if released is None:
-        return []
     problems: list[str] = []
-    released_version = parse_version(released)
-    if released_version is not None and released_version > version:
+    dated_versions = {v for v, _ in dated}
+    final: list[tuple[tuple[int, int, int], str]] = []
+    for tag in tags:
+        match = _RELEASE_TAG_RE.match(tag)
+        if match is None:
+            continue
+        parsed = parse_version(match["version"])
+        if parsed is not None:
+            final.append((parsed, match["version"]))
+    tagged = {name for _, name in final}
+
+    for released, when in dated:
+        if released in tagged:
+            continue
         problems.append(
-            f"tag v{released} exists but VERSION is {raw_version}. A published release "
-            "cannot be above the version the packages carry."
+            f"CHANGELOG.md records [{released}] as released ({when}), but no "
+            f"v{released} tag exists. A dated heading claims a publication the "
+            "repository cannot show."
         )
-    if released not in {v for v, _ in dated}:
+
+    own_line = [parsed for parsed, _ in final if parsed[:2] == version[:2]]
+    if own_line and max(own_line) > version:
+        highest = ".".join(str(part) for part in max(own_line))
         problems.append(
-            f"tag v{released} exists but CHANGELOG.md has no dated '## [{released}]' "
-            "heading. A published release has to have notes, and they have to be dated."
+            f"tag v{highest} exists on VERSION's own release line but VERSION is "
+            f"{raw_version}. A published release cannot be above the version the "
+            "packages carry."
         )
+
+    for _, name in final:
+        if f"v{name}" == releasing:
+            continue
+        if name not in dated_versions:
+            problems.append(
+                f"tag v{name} exists but CHANGELOG.md has no dated '## [{name}]' "
+                "heading. A published release has to have notes, and they have to "
+                "be dated."
+            )
     return problems
 
 

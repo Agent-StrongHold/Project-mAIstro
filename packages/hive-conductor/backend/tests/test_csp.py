@@ -49,6 +49,7 @@ class TestTheHeaderReachesEveryResponse:
         assert ENFORCED in _client().get(path).headers
 
     def test_an_authenticated_response_carries_it(self, authed_client: Any) -> None:
+        # Missing workspace_id is a 422; CSP must still decorate the response.
         assert ENFORCED in authed_client.get("/v1/chat/sessions").headers
 
     def test_a_refusal_carries_it_too(self) -> None:
@@ -195,9 +196,13 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
         )
         manifest = json.loads((_FRONTEND / "package.json").read_text(encoding="utf-8"))
 
+        stacks += "".join(
+            path.read_text(encoding="utf-8") for path in (_FRONTEND / "src").rglob("*.tsx")
+        )
         for family, package in (
-            ("Inter Variable", "@fontsource-variable/inter"),
+            ("Bricolage Grotesque Variable", "@fontsource-variable/bricolage-grotesque"),
             ("JetBrains Mono Variable", "@fontsource-variable/jetbrains-mono"),
+            ("Inter Variable", "@fontsource-variable/inter"),
         ):
             assert family in stacks, f"no stack asks for {family}"
             assert package in manifest["dependencies"], f"{family} has no shipped source"

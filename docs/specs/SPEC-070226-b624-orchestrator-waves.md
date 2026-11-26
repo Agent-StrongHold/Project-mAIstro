@@ -3,14 +3,12 @@ id: SPEC-070226-b624
 title: "General task planner & orchestration: SuperPlanner waves as Repertoire ensemble"
 repo: maistro-engine
 kind: spec
-status: In Progress
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
   - maistro-engine#ADR-070
-  - maistro-engine#ADR-071
-  - maistro-engine#SPEC-184
 implements:
   - maistro-engine#ADR-071
 related:
@@ -18,6 +16,8 @@ related:
   - maistro-engine#ADR-056
   - maistro-engine#ADR-066
   - maistro-engine#SPEC-070226-b624
+  - maistro-engine#ADR-071
+  - maistro-engine#SPEC-184
 supersedes: []
 blocks: []
 blocked-by: []
@@ -34,16 +34,22 @@ history:
     date: 2026-07-02
   - status: In Progress
     date: 2026-07-29
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-b624: General task planner & orchestration — SuperPlanner waves as Repertoire ensemble
 
 ## Context
 
-ADR-071 specifies SuperPlanner as a general-purpose task planner that orchestrates agent waves
+ADR-071 proposes SuperPlanner as a general-purpose task planner that orchestrates agent waves
 (parallel branches of execution) using the Repertoire pattern (ADR-070). A wave is a set of
 concurrent, mutually-isolated sub-agents attempting the same task in parallel; only the best
-result (per a comparator) is retained, and the rest are discarded.
+result (per a comparator) is retained, and the rest are discarded. ADR-071 remains Proposed and
+is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-038, ADR-062, ADR-070).
 
 SuperPlanner exists as a skeleton; this SPEC completes its implementation: wave provisioning,
 parallel execution with isolation, result aggregation, and integration with the graph executor

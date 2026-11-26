@@ -212,6 +212,15 @@ class TestItRefusesToGuess:
         assert "no frontend sources" in capsys.readouterr().out
 
 
+class TestGeneratedApiTypes:
+    """OpenAPI output carries route paths in JSDoc; it is not a call surface."""
+
+    def test_types_gen_is_excluded_from_the_scan(self, check):
+        gen = ROOT / "packages" / "hive-conductor" / "frontend" / "src" / "api" / "types.gen.ts"
+        assert gen.is_file(), "S1.3 commits the generated types file"
+        assert gen not in check.frontend_files()
+
+
 class TestTheRepository:
     """Against the real app and the real frontend. If these fail, a control in
     the shipped UI reaches a route nobody registered."""

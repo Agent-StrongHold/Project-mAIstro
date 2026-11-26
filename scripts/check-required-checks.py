@@ -46,6 +46,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import TypeGuard
 
 import yaml
 
@@ -56,6 +57,24 @@ PROTECTION = REPO_ROOT / ".github" / "branch-protection.json"
 MERGE_QUEUE = REPO_ROOT / ".github" / "merge-queue.json"
 BEGIN = "<!-- checks:table -->"
 END = "<!-- /checks:table -->"
+
+# Reviewed batching posture for the develop merge queue: a single merge-group
+# verification cycle may carry up to `_MAX_ENTRIES_PER_GROUP` compatible
+# candidates, and a group may wait only a reviewed number of minutes. Any
+# other value fails closed — widening the queue further means editing this
+# gate in the same reviewed change that edits `.github/merge-queue.json`.
+_MAX_ENTRIES_PER_GROUP = 3
+_REVIEWED_GROUP_WAITS_MINUTES = (0, 2, 3, 5)
+# Batching is only safe because every grouped candidate is judged on its own
+# entry: ALLGREEN merges a group only when each member's checks passed.
+# HEADGREEN would land every member on the strength of the head entry alone,
+# so the strategy is part of the reviewed posture, not a free knob.
+_GROUPING_STRATEGY = "ALLGREEN"
+
+
+def _json_int(value: object) -> TypeGuard[int]:
+    """True for a JSON integer; JSON booleans are not integers here."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 class ContractError(RuntimeError):
@@ -225,6 +244,98 @@ def base_coupled(rows: list[tuple[str, str, str]]) -> set[tuple[str, str]]:
     return {(wf, check) for wf, check, scope in rows if "base" in scope}
 
 
+def paths_filters() -> dict[str, list[str]]:
+    """Check name -> the workflow-level ``paths:`` filter guarding its producer.
+
+    GitHub evaluates a trigger's ``paths:`` filter before any job of the
+    workflow exists, so a pull request outside the filter produces no check
+    run at all -- not even ``skipped`` (#2059 repair). ``check-gates-ran.py``
+    uses this map to prove, from its measured changed-file envelope, that a
+    required check is absent *by producer design* rather than still arriving.
+
+    The globs are returned raw and uninterpreted: this script owns the
+    workflow-trigger contract, while the evaluator owns the match semantics
+    and fails closed on any glob it cannot model. Job-level conditions are
+    deliberately out of scope here -- a job ``if:`` still creates a check run
+    (conclusion ``skipped``), which the evaluator already reconciles through
+    its path-scoped skip rule.
+
+    Raises ContractError when a ``paths:`` filter is not a non-empty list of
+    strings (a filter the contract cannot express) or when two workflows map
+    one check name to different filter lists -- the same collision class
+    ``_refuse_duplicates`` refuses for names themselves.
+    """
+    filters: dict[str, list[str]] = {}
+    for path in _workflow_files():
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        pull_request = _pull_request_trigger(doc)
+        if pull_request is None:
+            continue
+        globs = pull_request.get("paths") if isinstance(pull_request, dict) else None
+        if globs is None:
+            continue
+        if not isinstance(globs, list) or not globs:
+            raise ContractError(f"{path.name}: `paths:` must be a non-empty list of globs")
+        if not all(isinstance(glob, str) and glob for glob in globs):
+            raise ContractError(f"{path.name}: `paths:` must be a non-empty list of globs")
+        for job_id, job in (doc.get("jobs") or {}).items():
+            job = job or {}
+            try:
+                names = _check_names(job_id, job)
+            except ContractError as exc:
+                raise ContractError(f"{path.name}: {exc}") from exc
+            for name in names:
+                seen = filters.get(name)
+                if seen is not None and seen != globs:
+                    raise ContractError(
+                        f"two workflows map the check name {name!r} to different "
+                        f"`paths:` filters: {seen!r} and {globs!r}"
+                    )
+                filters.setdefault(name, list(globs))
+    return filters
+
+
+def _develop_queue_policy_gaps(policy: dict) -> list[str]:
+    """The checked-in develop queue policy must match the reviewed batching posture."""
+    gaps: list[str] = []
+    if policy.get("merge_method") != "SQUASH":
+        gaps.append("develop merge queue must use merge_method=SQUASH")
+
+    max_entries = policy.get("max_entries_to_merge")
+    if not _json_int(max_entries) or not (1 <= max_entries <= _MAX_ENTRIES_PER_GROUP):
+        gaps.append(
+            "develop merge queue must merge between 1 and "
+            f"{_MAX_ENTRIES_PER_GROUP} PRs per group (max_entries_to_merge={max_entries!r})"
+        )
+
+    min_entries = policy.get("min_entries_to_merge")
+    if (
+        not _json_int(min_entries)
+        or min_entries < 1
+        or (_json_int(max_entries) and min_entries > max_entries)
+    ):
+        gaps.append(
+            "develop merge queue min_entries_to_merge must be a positive integer "
+            f"no greater than max_entries_to_merge (min_entries_to_merge={min_entries!r})"
+        )
+
+    wait_minutes = policy.get("min_entries_to_merge_wait_minutes")
+    if not _json_int(wait_minutes) or wait_minutes not in _REVIEWED_GROUP_WAITS_MINUTES:
+        reviewed = ", ".join(str(minutes) for minutes in _REVIEWED_GROUP_WAITS_MINUTES)
+        gaps.append(
+            "develop merge queue min_entries_to_merge_wait_minutes must be a reviewed "
+            f"value in minutes ({reviewed}); got {wait_minutes!r}"
+        )
+
+    grouping = policy.get("grouping_strategy")
+    if grouping != _GROUPING_STRATEGY:
+        gaps.append(
+            f"develop merge queue must use grouping_strategy={_GROUPING_STRATEGY} "
+            f"(every grouped candidate must pass its own checks); got {grouping!r}"
+        )
+    return gaps
+
+
 def merge_group_gaps(rows: list[tuple[str, str, str]]) -> list[str]:
     """Any checked-in queue contract or required producer that cannot queue-gate."""
     gaps: list[str] = []
@@ -235,13 +346,18 @@ def merge_group_gaps(rows: list[tuple[str, str, str]]) -> list[str]:
         gaps.append(f"{MERGE_QUEUE.relative_to(REPO_ROOT)} does not exist")
         return gaps
 
-    protection = json.loads(PROTECTION.read_text(encoding="utf-8"))
-    queue = json.loads(MERGE_QUEUE.read_text(encoding="utf-8"))
+    try:
+        protection = json.loads(PROTECTION.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        gaps.append(f"{PROTECTION.relative_to(REPO_ROOT)} is not readable JSON: {exc}")
+        return gaps
+    try:
+        queue = json.loads(MERGE_QUEUE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        gaps.append(f"{MERGE_QUEUE.relative_to(REPO_ROOT)} is not readable JSON: {exc}")
+        return gaps
     policy = (queue.get("branches") or {}).get("develop") or {}
-    if policy.get("merge_method") != "SQUASH":
-        gaps.append("develop merge queue must use merge_method=SQUASH")
-    if policy.get("max_entries_to_merge") != 1:
-        gaps.append("develop merge queue must initially merge one PR per group")
+    gaps.extend(_develop_queue_policy_gaps(policy))
 
     required = set(protection["branches"]["develop"]["required_status_checks"]["contexts"])
     producer = {check: workflow for workflow, check, _scope_value in rows}

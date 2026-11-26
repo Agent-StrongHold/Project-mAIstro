@@ -1,31 +1,97 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ApiError, apiGet, apiPost, fallbackMessage } from "../lib/api";
+import { randomId } from "../lib/ids";
+import type { ChatApiMessage, ChatSessionDetail, ChatSessionSummary } from "../lib/chatSessions";
+import {
+  fetchModelsCatalog,
+  openChatStream,
+  sessionPath,
+  sessionsListPath,
+} from "../lib/chatSessions";
+import type {
+  BriefField,
+  BriefView,
+  Message,
+  Role,
+  Session,
+  ToolStep,
+} from "../lib/chatUi";
+import { useWorkspaces } from "../context/WorkspaceContext";
 
-type Role = "user" | "assistant";
-type StepStatus = "running" | "done" | "error";
+const SOURCE_LABEL: Record<BriefField["source"], string> = {
+  user: "you",
+  verbatim: "as said",
+  record: "from record",
+  assumed: "assumed",
+  open: "open",
+};
 
-interface ToolStep {
-  id: string;
-  tool: string;
-  args?: Record<string, unknown>;
-  status: StepStatus;
-  summary?: string;
-}
-
-interface Message {
-  id: string;
-  role: Role;
-  content: string;
-  reasoning?: string; // assistant only — streamed thinking / reasoning tokens
-  steps?: ToolStep[]; // assistant only — the live tool/status timeline
-  status?: string; // assistant only — transient status line while streaming
-  timestamp: Date;
-}
-
-interface Session {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: Date;
+function BriefSoFar({ brief }: { brief: BriefView }) {
+  const commit = brief.commit;
+  if (commit && (commit.status === "committed" || commit.status === "already_committed")) {
+    return (
+      <aside className="brief-panel card" aria-label="Committed brief">
+        <div className="brief-panel-head">
+          <span>Committed</span>
+          <span className="brief-panel-meta">
+            {commit.status === "already_committed" ? "same commit — no duplicate" : "durable"}
+          </span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Goal</span>
+          <span className="brief-row-value">{commit.goal_id}</span>
+          <span className="brief-tag">r{commit.goal_revision}</span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Brief</span>
+          <span className="brief-row-value">{commit.brief_id}</span>
+          <span className="brief-tag">v{commit.brief_version}</span>
+        </div>
+        <a className="brief-panel-meta" href="/goals">
+          Open on the Goals board →
+        </a>
+      </aside>
+    );
+  }
+  if (brief.draft) {
+    const retrying = commit && (commit.status === "failed" || commit.status === "unavailable");
+    return (
+      <aside className="brief-panel card" aria-label="Brief draft">
+        <div className="brief-panel-head">
+          <span>Draft ready</span>
+          <span className="brief-panel-meta">
+            {retrying ? `commit ${commit.status} — say "commit it" to retry` : "nothing written yet"}
+          </span>
+        </div>
+        {Object.entries(brief.draft.fields).map(([key, value]) => (
+          <div key={key} className={`brief-row${brief.draft?.assumed.includes(key) ? " brief-row--assumed" : ""}`}>
+            <span className="brief-row-label">{key}</span>
+            <span className="brief-row-value">{value}</span>
+            <span className="brief-tag">{brief.draft?.assumed.includes(key) ? "assumed" : "known"}</span>
+          </div>
+        ))}
+      </aside>
+    );
+  }
+  if (!brief.summary) return null;
+  return (
+    <aside className="brief-panel card" aria-label="Brief so far" aria-live="polite">
+      <div className="brief-panel-head">
+        <span>Brief so far</span>
+        <span className="brief-panel-meta">
+          {brief.summary.known} of {brief.summary.needed} needed · nothing written yet
+        </span>
+      </div>
+      {brief.summary.fields.map((f) => (
+        <div key={f.key} className={`brief-row brief-row--${f.source}`}>
+          <span className="brief-row-label">{f.label}</span>
+          <span className="brief-row-value">{f.value ?? "not yet"}</span>
+          <span className="brief-tag">{SOURCE_LABEL[f.source]}</span>
+        </div>
+      ))}
+    </aside>
+  );
 }
 
 const SUGGESTED_PROMPTS_HEADING = "Chat, then turn it into an agent, a DAG, or a recurring workflow";
@@ -40,16 +106,13 @@ const HISTORY_LIMIT = 20;
 
 function generateId() {
   // Ids name messages and sessions that later requests refer back to, so
-  // they come from the CSPRNG rather than Math.random.
-  return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  // they come from the CSPRNG rather than Math.random -- via `randomId`,
+  // which works over plain HTTP too (see lib/ids.ts).
+  return randomId();
 }
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function createSession(title = "New Chat"): Session {
-  return { id: generateId(), title, messages: [], createdAt: new Date() };
 }
 
 function compactArgs(args?: Record<string, unknown>): string {
@@ -176,25 +239,76 @@ function ToolSteps({ steps }: { steps: ToolStep[] }) {
   );
 }
 
+function apiMessagesToUi(messages: ChatApiMessage[]): Message[] {
+  return messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      id: m.id,
+      role: m.role as Role,
+      content: m.content,
+      timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+    }));
+}
+
+function detailToSession(detail: ChatSessionDetail): Session {
+  return {
+    id: detail.id,
+    title: detail.title,
+    messages: apiMessagesToUi(detail.messages),
+    createdAt: new Date(detail.created_at),
+  };
+}
+
 export default function ChatPage() {
+  // #1822: sessions and transcripts are Workspace-scoped durable rows. The
+  // drawer hydrates from `/v1/chat/sessions`; stream carries `session_id` so
+  // execute_turn can append into maistro.sessions. Stale stream callbacks are
+  // aborted on Workspace/session switch.
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pendingDeepLinkRef = useRef<string | null>(searchParams.get("session"));
   const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
   const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
   const MODELS = models;
-  const [sessions, setSessions] = useState<Session[]>([createSession()]);
-  const [activeId, setActiveId] = useState(sessions[0].id);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeId, setActiveId] = useState<string>("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [model, setModel] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  /** Bumped by Retry to re-run Workspace session hydrate (#1822 AC-7). */
+  const [sessionReloadToken, setSessionReloadToken] = useState(0);
+  const [modelOpen, setModelOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const listEndRef = useRef<HTMLDivElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const streamEpochRef = useRef(0);
+  // #1822 AC-4: blocks double-click before React re-renders `streaming`.
+  const sendInFlightRef = useRef(false);
+  // Monotonic generation for session open/create requests, bumped on every
+  // Workspace switch and before each drawer-triggered open/create, so a late
+  // response can never commit another Workspace's transcript or selection.
+  const sessionReqRef = useRef(0);
 
   useEffect(() => {
-    fetch("/v1/settings/models")
+    const linked = searchParams.get("session");
+    if (linked) pendingDeepLinkRef.current = linked;
+  }, [searchParams]);
+
+  useEffect(() => {
+    fetchModelsCatalog()
       .then((res) => res.json())
       .then((data) => {
         const arr = Array.isArray(data) ? data : data.models || data.data || [];
-        const list = arr.map((m: any) => (typeof m === "string" ? m : m.id || m.name || "")).filter(Boolean);
+        const list = arr
+          .map((m: { id?: string; name?: string } | string) =>
+            typeof m === "string" ? m : m.id || m.name || "",
+          )
+          .filter(Boolean);
         if (list.length > 0) {
           setModels(list);
           setModel(list[0]);
@@ -202,11 +316,8 @@ export default function ChatPage() {
       })
       .catch(() => {});
   }, []);
-  const [modelOpen, setModelOpen] = useState(false);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   const modelDropdownRef = useRef<HTMLUListElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const listEndRef = useRef<HTMLDivElement>(null);
 
   // A menu that closes without returning focus strands the keyboard user on
   // <body>, so the next Tab restarts at the top of the page instead of where
@@ -228,7 +339,9 @@ export default function ChatPage() {
     option?.focus();
   }, [modelOpen]);
 
-  const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? createSession();
+  const activeSession =
+    sessions.find((s) => s.id === activeId) ??
+    ({ id: "", title: "Chat", messages: [], createdAt: new Date() } satisfies Session);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -247,10 +360,139 @@ export default function ChatPage() {
     setSessions((prev) => prev.map((s) => (s.id === id ? updater(s) : s)));
   }, []);
 
+  const openSession = useCallback(async (sessionId: string) => {
+    const req = sessionReqRef.current;
+    const detail = await apiGet<ChatSessionDetail>(sessionPath(sessionId));
+    // Superseded by a Workspace switch or a newer open/create: drop the
+    // response before it can touch React state.
+    if (sessionReqRef.current !== req) return null;
+    const session = detailToSession(detail);
+    setSessions((prev) => {
+      const rest = prev.filter((s) => s.id !== session.id);
+      return [session, ...rest];
+    });
+    setActiveId(session.id);
+    return session;
+  }, []);
+
+  const createServerSession = useCallback(
+    async (title = "New Chat") => {
+      if (!activeWorkspaceId) throw new Error("No Workspace selected");
+      const req = sessionReqRef.current;
+      const detail = await apiPost<ChatSessionDetail>("/v1/chat/sessions", {
+        title,
+        workspace_id: activeWorkspaceId,
+      });
+      if (sessionReqRef.current !== req) return null;
+      const session = detailToSession(detail);
+      setSessions((prev) => [session, ...prev.filter((s) => s.id !== session.id)]);
+      setActiveId(session.id);
+      return session;
+    },
+    [activeWorkspaceId],
+  );
+
+  useEffect(() => {
+    if (!workspacesReady) return;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    streamEpochRef.current += 1;
+    // Invalidate any in-flight session open/create from the previous Workspace.
+    sessionReqRef.current += 1;
+    const sessionGeneration = sessionReqRef.current;
+    setStreaming(false);
+    setInput("");
+    setLoadError(null);
+    // #1822 AC-3: drop the prior Workspace transcript immediately so a switch
+    // never paints Workspace A's messages while B is hydrating.
+    setSessions([]);
+    setActiveId("");
+
+    if (!activeWorkspaceId) {
+      setLoadingSessions(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingSessions(true);
+    const tick = setTimeout(() => {
+      void (async () => {
+        try {
+          const list = await apiGet<ChatSessionSummary[]>(sessionsListPath(activeWorkspaceId));
+          if (cancelled || sessionReqRef.current !== sessionGeneration) return;
+          if (list.length === 0) {
+            const created = await createServerSession();
+            if (cancelled || sessionReqRef.current !== sessionGeneration || !created) return;
+            setSessions([created]);
+            setActiveId(created.id);
+            pendingDeepLinkRef.current = null;
+          } else {
+            const linked = pendingDeepLinkRef.current;
+            pendingDeepLinkRef.current = null;
+            const preferred =
+              linked && list.some((s) => s.id === linked) ? linked : list[0].id;
+            const opened = await openSession(preferred);
+            if (cancelled || sessionReqRef.current !== sessionGeneration || !opened) return;
+            // Keep other summaries in the drawer without full histories yet.
+            const others: Session[] = list
+              .filter((s) => s.id !== opened.id)
+              .map((s) => ({
+                id: s.id,
+                title: s.title,
+                messages: [],
+                createdAt: new Date(s.updated_at),
+              }));
+            setSessions([opened, ...others]);
+            if (linked && searchParams.get("session")) {
+              const next = new URLSearchParams(searchParams);
+              next.delete("session");
+              setSearchParams(next, { replace: true });
+            }
+          }
+          setLoadError(null);
+        } catch (e) {
+          if (cancelled || sessionReqRef.current !== sessionGeneration) return;
+          setSessions([]);
+          setActiveId("");
+          setLoadError(e instanceof ApiError ? e.message : "Couldn't load chat sessions.");
+        } finally {
+          if (!cancelled) setLoadingSessions(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(tick);
+    };
+    // searchParams / setSearchParams are read only to consume ?session= once;
+    // listing them would re-hydrate when the param is cleared.
+  }, [
+    activeWorkspaceId,
+    workspacesReady,
+    createServerSession,
+    openSession,
+    sessionReloadToken,
+  ]);
+
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming) return;
+      if (
+        !text.trim() ||
+        streaming ||
+        sendInFlightRef.current ||
+        !activeWorkspaceId ||
+        !activeId
+      ) {
+        return;
+      }
+      sendInFlightRef.current = true;
       const sessionId = activeId;
+      const turnId = generateId();
+      const epoch = streamEpochRef.current;
+      streamAbortRef.current?.abort();
+      const abort = new AbortController();
+      streamAbortRef.current = abort;
+
       const userMsg: Message = { id: generateId(), role: "user", content: text.trim(), timestamp: new Date() };
       const assistantId = generateId();
       const assistantMsg: Message = {
@@ -262,7 +504,6 @@ export default function ChatPage() {
         timestamp: new Date(),
       };
 
-      // Build bounded history (prior turns + this one) — the backend is otherwise stateless per request.
       const prior = (sessions.find((s) => s.id === sessionId)?.messages ?? [])
         .filter((m) => m.content)
         .map((m) => ({ role: m.role, content: m.content }));
@@ -278,20 +519,28 @@ export default function ChatPage() {
       setStreaming(true);
       setTimeout(() => textareaRef.current?.focus(), 0);
 
-      const patchAssistant = (fn: (m: Message) => Message) =>
+      const patchAssistant = (fn: (m: Message) => Message) => {
+        if (streamEpochRef.current !== epoch) return;
         updateSession(sessionId, (s) => ({
           ...s,
           messages: s.messages.map((m) => (m.id === assistantId ? fn(m) : m)),
         }));
+      };
 
       try {
-        const res = await fetch("/v1/chat/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ model, messages: outbound }),
-        });
-        if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+        const res = await openChatStream(
+          {
+            model,
+            messages: outbound,
+            workspace_id: activeWorkspaceId,
+            session_id: sessionId,
+            // Client turn key for #1822 AC-4; backend may use it as SessionStore
+            // idempotence when present (extra=allow on ChatCompletionRequest).
+            turn_id: turnId,
+          },
+          abort.signal,
+        );
+        if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -316,7 +565,15 @@ export default function ChatPage() {
             } catch {
               continue;
             }
-            if (evt.type === "status") {
+            if (evt.type === "brief") {
+              // Same epoch gate as patchAssistant (#1822): a late brief after
+              // Workspace/session switch must not paint onto the new selection.
+              if (streamEpochRef.current !== epoch) continue;
+              // The interview's state after this turn: open (summary + question),
+              // drafted (the draft, nothing written), or gone (dropped).
+              const view: BriefView | null = evt.interview || evt.draft ? evt : null;
+              updateSession(sessionId, (s) => ({ ...s, brief: view }));
+            } else if (evt.type === "status") {
               patchAssistant((m) => ({ ...m, status: evt.message }));
             } else if (evt.type === "delta") {
               if (evt.content) {
@@ -360,40 +617,96 @@ export default function ChatPage() {
         if (!gotContent) {
           patchAssistant((m) => ({ ...m, content: m.content || "(no response)", status: undefined }));
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
+        if (abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          // #1822: mark the optimistic bubble interrupted on the origin session
+          // even after the epoch bump (switch/unmount). Reopening the session
+          // replaces from GET truth; late frames stay epoch-gated out.
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    status: undefined,
+                    steps: (m.steps ?? []).map((st) =>
+                      st.status === "running" ? { ...st, status: "error" } : st,
+                    ),
+                    content: m.content || "",
+                    interrupted: true,
+                  }
+                : m,
+            ),
+          }));
+          return;
+        }
+        const message = e instanceof Error ? e.message : "stream failed";
         patchAssistant((m) => ({
           ...m,
           status: undefined,
           steps: (m.steps ?? []).map((st) => (st.status === "running" ? { ...st, status: "error" } : st)),
-          content: `Error: ${e.message}`,
+          content: `Error: ${message}`,
         }));
       } finally {
-        setStreaming(false);
-        setTimeout(() => textareaRef.current?.focus(), 0);
+        sendInFlightRef.current = false;
+        if (streamEpochRef.current === epoch) {
+          setStreaming(false);
+          setTimeout(() => textareaRef.current?.focus(), 0);
+        }
       }
     },
-    [activeId, streaming, model, sessions, updateSession],
+    [activeId, streaming, model, sessions, updateSession, activeWorkspaceId],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage(input);
+      void sendMessage(input);
     }
   };
 
+  const abortActiveStream = () => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    streamEpochRef.current += 1;
+    setStreaming(false);
+  };
+
   const newSession = () => {
-    const s = createSession();
-    setSessions((prev) => [s, ...prev]);
-    setActiveId(s.id);
-    setDrawerOpen(false);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    if (!activeWorkspaceId || loadingSessions) return;
+    abortActiveStream();
+    // Invalidate any in-flight open/create before creating a new session.
+    sessionReqRef.current += 1;
+    void (async () => {
+      try {
+        await createServerSession();
+        setLoadError(null);
+        setDrawerOpen(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      } catch (e) {
+        setLoadError(e instanceof ApiError ? e.message : "Couldn't create a chat session.");
+      }
+    })();
   };
 
   const switchSession = (id: string) => {
-    setActiveId(id);
-    setDrawerOpen(false);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    if (id === activeId) {
+      setDrawerOpen(false);
+      return;
+    }
+    abortActiveStream();
+    // Invalidate any in-flight open/create before requesting this session.
+    sessionReqRef.current += 1;
+    void (async () => {
+      try {
+        await openSession(id);
+        setLoadError(null);
+        setDrawerOpen(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      } catch (e) {
+        setLoadError(e instanceof ApiError ? e.message : "Couldn't open that chat session.");
+      }
+    })();
   };
 
   useEffect(() => {
@@ -404,7 +717,26 @@ export default function ChatPage() {
     return () => media.removeEventListener("change", update);
   }, []);
 
-  const isEmpty = activeSession.messages.length === 0;
+  const canCompose = Boolean(activeWorkspaceId && activeId && !loadingSessions && !loadError);
+  const isEmpty = canCompose && activeSession.messages.length === 0;
+
+  if (workspacesReady && !activeWorkspaceId) {
+    return (
+      <div className="chat-layout">
+        <main className="chat-main">
+          {/* Keep aria-label so navigation-coverage e2e can probe Chat. */}
+          <div role="log" aria-live="polite" aria-label="Chat messages" className="message-list">
+            <div className="empty-state" role="status">
+              <p className="empty-title">Select a Workspace</p>
+              <p className="empty-subtitle">
+                Chat sessions are Workspace-scoped. Pick or create a Workspace in the tab bar first.
+              </p>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="chat-layout">
@@ -417,7 +749,12 @@ export default function ChatPage() {
       >
         <div className="drawer-header">
           <span className="drawer-title">Sessions</span>
-          <button className="btn-icon" onClick={newSession} aria-label="New chat">
+          <button
+            className="btn-icon"
+            onClick={newSession}
+            aria-label="New chat"
+            disabled={!activeWorkspaceId || loadingSessions}
+          >
             ＋
           </button>
         </div>
@@ -505,7 +842,27 @@ export default function ChatPage() {
           </div>
         </header>
         <main className="chat-main">
+          {activeSession.brief && <BriefSoFar brief={activeSession.brief} />}
           <div role="log" aria-live="polite" aria-label="Chat messages" className="message-list">
+            {loadingSessions && (
+              <div className="empty-state" role="status">
+                <p className="empty-title">Loading sessions…</p>
+              </div>
+            )}
+            {!loadingSessions && loadError && (
+              <div className="empty-state" role="alert">
+                <p className="empty-title">Chat unavailable</p>
+                <p className="empty-subtitle">{loadError}</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="chat-retry-load"
+                  onClick={() => setSessionReloadToken((n) => n + 1)}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
             {isEmpty && (
               <div className="empty-state">
                 <p className="empty-title">What can I help you with?</p>
@@ -515,7 +872,7 @@ export default function ChatPage() {
                     <button
                       key={p}
                       className="card prompt-btn"
-                      onClick={() => sendMessage(p)}
+                      onClick={() => void sendMessage(p)}
                       aria-label={`Suggested prompt: ${p}`}
                     >
                       {p}
@@ -524,7 +881,9 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            {activeSession.messages.map((msg) => (
+            {!loadingSessions &&
+              !loadError &&
+              activeSession.messages.map((msg) => (
               <div key={msg.id} className={`message message--${msg.role}`}>
                 {msg.role === "assistant" && msg.reasoning && (
                   <details className="chat-reasoning">
@@ -539,6 +898,15 @@ export default function ChatPage() {
                     <span className="dot" />
                     <span className="dot" />
                     {msg.status}
+                  </div>
+                )}
+                {msg.interrupted && !msg.status && (
+                  <div
+                    className="chat-status"
+                    aria-label="Interrupted"
+                    data-testid="chat-interrupted"
+                  >
+                    Interrupted — reopen the session for persisted truth
                   </div>
                 )}
                 {msg.content && (
@@ -561,12 +929,12 @@ export default function ChatPage() {
               placeholder="Message… (Enter to send, Shift+Enter for newline)"
               aria-label="Message input"
               rows={2}
-              disabled={streaming}
+              disabled={streaming || !canCompose}
             />
             <button
               className="btn-primary send-btn"
-              onClick={() => sendMessage(input)}
-              disabled={!input.trim() || streaming}
+              onClick={() => void sendMessage(input)}
+              disabled={!input.trim() || streaming || !canCompose}
               aria-label="Send message"
             >
               Send

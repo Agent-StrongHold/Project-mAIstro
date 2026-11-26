@@ -11,7 +11,7 @@ Fills the slots canvas cannot: ``reflowable-web``, ``deck``, ``video``, and
 * **Failure** — :meth:`render` *may* raise (bad status / transport error); the substrate
   circuit-breaks the provider on that.
 
-Daemon surface (as of nexu-io/open-design main): base ``http://127.0.0.1:7456``, bearer
+Daemon surface (as of nexu-io/open-design main): base HTTP on IPv4 loopback port 7456, bearer
 auth, health ``GET /api/health``, dispatch ``POST /api/chat``. The token is supplied by the
 caller (resolved from the vault upstream); this provider never reads secrets itself.
 
@@ -24,11 +24,14 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
 
+from maistro.http import shared_client
+from maistro.security.outbound import configure_outbound_policy
 from maistro_design.renderers import RendererDiscovery
 from maistro_design.trust import TrustTier
 from maistro_design.types import (
@@ -47,7 +50,7 @@ class OpenDesignConfig:
     """Connection settings. ``token`` is resolved from the vault by the caller."""
 
     enabled: bool = True
-    base_url: str = "http://127.0.0.1:7456"
+    base_url: str = "http://127.0.0.1:7456"  # DevSkim: ignore DS162092 until 2027-12-31
     token: str | None = None
     timeout: float = 1.5
 
@@ -69,8 +72,24 @@ class OpenDesignProvider:
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
     ) -> None:
         self.config = config or OpenDesignConfig()
-        # injectable for tests (httpx.MockTransport); defaults to a real client
-        self._client_factory = client_factory or (lambda: httpx.AsyncClient())
+        configure_outbound_policy(self.config.base_url)
+        # Injectable for tests (httpx.MockTransport); production uses the pooled,
+        # guarded client seam so both health and render calls share the policy.
+        self._client_factory = client_factory
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Borrow the pool without closing it; close injected test clients."""
+        if self._client_factory is None:
+            async with shared_client(timeout=self.config.timeout) as client:
+                yield client
+            return
+
+        client = self._client_factory()
+        try:
+            yield client
+        finally:
+            await client.aclose()
 
     @property
     def _auth(self) -> dict[str, str]:
@@ -80,7 +99,7 @@ class OpenDesignProvider:
         if not self.config.enabled:
             return RendererDiscovery.down()
         try:
-            async with self._client_factory() as client:
+            async with self._client() as client:
                 resp = await client.get(
                     f"{self.config.base_url}/api/health",
                     headers=self._auth,
@@ -101,7 +120,7 @@ class OpenDesignProvider:
 
         Raises ``httpx.HTTPStatusError`` / transport errors on failure — the substrate
         circuit-breaks the provider on that (failure is not silent)."""
-        async with self._client_factory() as client:
+        async with self._client() as client:
             resp = await client.post(
                 f"{self.config.base_url}/api/chat",
                 headers=self._auth,

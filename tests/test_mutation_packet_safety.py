@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import unittest.mock as mock
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -236,3 +237,80 @@ class TestTheGuardsAreWiredIntoTheRun:
         assert checkpoint["viable_mutants"] == 2
         assert checkpoint["verified_commit"] == "c0ffee"
         assert checkpoint["complete"] is True
+
+
+class TestTheNoUploadMode:
+    """`--uploader none` is the documented local/scheduled mode: without an
+    artifact context there is nothing to upload to, and "skipping silently"
+    must mean skipping the upload, not the checkpoint."""
+
+    def test_none_uploads_nothing_but_still_checkpoints(self, packet, packet_run, tmp_path):
+        scripts = str(ROOT / "scripts")
+        assert scripts in sys.path  # the fixture guarantees importability
+        recorder = _Recorder(packet_run.source)
+        with mock.patch.object(packet, "run", recorder):
+            checkpoint = packet.execute_source(
+                "target.py",
+                "test_target.py",
+                ENVIRONMENT,
+                commit="c0ffee",
+                run_id="1",
+                run_attempt="1",
+                uploader="none",
+            )
+        assert checkpoint["verified_commit"] == "c0ffee"
+        assert not any(command[0] == "node" for command in recorder.commands)
+
+
+class TestPacketContinuationMain:
+    """`main` partitions targets into reused and pending from prior
+    checkpoints, resets the telemetry surfaces, and appends one telemetry row
+    and one session per executed source."""
+
+    def test_a_run_partitions_targets_and_appends_telemetry(self, packet, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "target.py").write_text("def f(a, b):\n    return a | b\n", encoding="utf-8")
+        (tmp_path / "test_target.py").write_text(
+            "def test_f():\n    assert True\n", encoding="utf-8"
+        )
+        targets = tmp_path / "targets.tsv"
+        targets.write_text("target.py\ttest_target.py\n", encoding="utf-8")
+        checkpoints = tmp_path / "checkpoints"
+        checkpoints.mkdir()
+        environment = tmp_path / "environment.json"
+        environment.write_text(json.dumps(ENVIRONMENT), encoding="utf-8")
+
+        def fake_execute(source, tests, env, **kwargs):
+            identifier = packet.safe_id(source)
+            Path(f"{identifier}.rows.jsonl").write_text('{"row": 1}\n', encoding="utf-8")
+            return {"source": source, "killed_mutants": 1}
+
+        monkeypatch.setattr(packet, "execute_source", fake_execute)
+        rc = packet.main(
+            [
+                str(targets),
+                "--checkpoints",
+                str(checkpoints),
+                "--environment",
+                str(environment),
+                "--commit",
+                "c0ffee",
+                "--run-id",
+                "1",
+                "--run-attempt",
+                "1",
+                "--uploader",
+                "none",
+            ]
+        )
+        assert rc == 0
+        assert "target.py" in (tmp_path / "mutation-targets-pending.tsv").read_text(
+            encoding="utf-8"
+        )
+        reused = (tmp_path / "mutation-reused.jsonl").read_text(encoding="utf-8")
+        assert reused == ""
+        telemetry = (tmp_path / "mutation-telemetry.jsonl").read_text(encoding="utf-8")
+        assert json.loads(telemetry.splitlines()[-1])["source"] == "target.py"
+        sessions = (tmp_path / "mutation-sessions.tsv").read_text(encoding="utf-8")
+        assert f"session-{packet.safe_id('target.py')}.sqlite" in sessions
+        assert '{"row": 1}' in (tmp_path / "mutation-rows.jsonl").read_text(encoding="utf-8")

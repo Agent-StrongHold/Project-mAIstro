@@ -1,6 +1,7 @@
 import { type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../App";
+import { apiPost } from "../lib/api";
 
 const ADMIN_GATED: string[] = [
   "Change server-wide Settings (PUT /v1/settings)",
@@ -30,7 +31,7 @@ const bannerStyle: CSSProperties = {
 
 const badgeStyle = (role: string): CSSProperties => ({
   fontFamily: "var(--mono)",
-  fontSize: 10,
+  fontSize: 12,
   fontWeight: 700,
   padding: "3px 8px",
   borderRadius: 3,
@@ -41,14 +42,14 @@ const badgeStyle = (role: string): CSSProperties => ({
 
 const btnStyle: CSSProperties = {
   fontFamily: "var(--mono)",
-  fontSize: 10,
+  fontSize: 12,
   padding: "5px 12px",
   whiteSpace: "nowrap",
 };
 
 async function logout() {
   try {
-    await fetch("/v1/auth/logout", { method: "POST", credentials: "same-origin" });
+    await apiPost("/v1/auth/logout");
   } catch {
     // ignore — even if the call fails, redirecting still gives the user
     // a fresh login.
@@ -82,14 +83,14 @@ export function AccountBanner() {
           <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>
             Signed in as {user.username}
           </div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 2, maxWidth: 540 }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2, maxWidth: 540 }}>
             {helperText}
           </div>
           <details style={{ marginTop: 4 }}>
-            <summary style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", cursor: "pointer" }}>
+            <summary style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", cursor: "pointer" }}>
               {gatedLabel}
             </summary>
-            <ul style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4, paddingLeft: 18 }}>
+            <ul style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4, paddingLeft: 18 }}>
               {gated.map((g) => (
                 <li key={g}>{g}</li>
               ))}

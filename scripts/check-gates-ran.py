@@ -12,8 +12,26 @@ where a green tick would go.
 For merge-group candidates, specialized service checks may now be legitimately
 out of scope. Their execution evidence is represented by one unconditional
 ``integration-scope`` aggregate, which itself verifies that every classifier-
-selected specialized job completed successfully. Pull requests and protected
-pushes retain the existing per-check execution-evidence contract.
+selected specialized job completed successfully. Pull-request candidates are
+path-scoped by the same classifier (#1351): the producers (ci.yml job
+conditions, integration-scope) skip exactly the legs a measured changed-file
+envelope proves unreachable, so this evaluator may excuse a skipped specialized
+check only on that same measured evidence. Protected pushes retain the
+per-check execution-evidence contract without path scoping.
+
+A workflow-level ``paths:`` filter is a third producer-scoping mechanism, and
+it also leaves no check run behind at all: GitHub evaluates the filter before
+any job exists, so a pull request outside the filter produces no run, not even
+``skipped``. Such absence is still *pending*, never excused: the #2434
+incident replay pins that a head whose every completed producer is green but
+whose paths-filtered row is absent must stay pending until the producer's
+trigger scope covers the PR and the row lands -- the repair is trigger
+coverage, not evaluator leniency (the same doctrine the ``mutation.yml``
+trigger rows cite for every surface class they add). Producers that cannot
+run on a merge-group candidate at all (a ``pull_request``-only job under a
+workflow with no ``merge_group`` trigger) are named in
+``MERGE_GROUP_PR_ONLY_CHECKS`` instead and are never requested as evidence
+for a synthetic queue SHA.
 """
 
 from __future__ import annotations
@@ -33,6 +51,13 @@ REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
 PENDING_EXIT = 2
 INTEGRATION_SCOPE_CHECK = "integration-scope"
+# GitHub's pulls.listFiles endpoint exposes at most this many files per pull
+# request, even when fully paginated (#1350). The workflow's changed-files
+# collector records a response at the cap as `truncated`; a truncated envelope
+# is a partial measurement and must never excuse a skipped check. The same
+# literal lives in .github/workflows/gates-ran.yml — keep them together
+# (tests/test_gates_ran_publisher_contract.py pins the pair).
+LIST_FILES_CAP = 3000
 # These checks are covered by the aggregate merge-group legs rather than by
 # independent jobs on the synthetic queue SHA.
 MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
@@ -54,10 +79,24 @@ MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
 # second set of path globs.  Keeping the filtering generic means a future
 # non-specialized required check gets the same skip handling without changing
 # the evaluator's verdict rules.
-# This job validates pull-request base policy from pull_request-only payload
-# fields. It intentionally cannot run on merge_group and must not be requested
-# as evidence for a synthetic queue SHA.
-MERGE_GROUP_PR_ONLY_CHECKS = frozenset({"pr-base"})
+# Checks whose producer cannot run on a merge-group candidate, so they must
+# not be requested as evidence for a synthetic queue SHA:
+#
+# - ``pr-base`` validates pull-request base policy from pull_request-only
+#   payload fields.
+# - ``Mutation gate (changed critical lines)`` is a `pull_request`-only job
+#   (`if: github.event_name == 'pull_request'`) under a workflow whose
+#   triggers carry no ``merge_group`` key, so GitHub never attaches the name
+#   to a queue SHA. Its PR-event enforcement still covers the diff before
+#   the queue, and the nightly mutation run measures the full critical set
+#   independently. Same class as ``pr-base``, arrived later (#2270) without
+#   being added here.
+MERGE_GROUP_PR_ONLY_CHECKS = frozenset(
+    {
+        "pr-base",
+        "Mutation gate (changed critical lines)",
+    }
+)
 
 PATH_SCOPED_CHECKS = {
     "postgres (pg17)": "postgres",
@@ -72,18 +111,24 @@ PATH_SCOPED_CHECKS = {
 }
 
 
-def required_check_names(
-    *,
-    base_branch: str | None = None,
-    event_name: str | None = None,
-) -> list[str]:
-    """Return the required execution-evidence set for one candidate."""
+def _load_required_checks_module() -> Any:
+    """Load the workflow-contract module this evaluator judges against."""
     spec = importlib.util.spec_from_file_location("check_required_checks", REQUIRED_CHECKS_SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
         raise RuntimeError(f"cannot load {REQUIRED_CHECKS_SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def required_check_names(
+    *,
+    base_branch: str | None = None,
+    event_name: str | None = None,
+) -> list[str]:
+    """Return the required execution-evidence set for one candidate."""
+    module = _load_required_checks_module()
     rows = module.collect()
 
     names = {name for _workflow, name, _scope in rows}
@@ -125,14 +170,21 @@ def _supersedes(candidate: dict[str, Any], incumbent: dict[str, Any]) -> bool:
     certifies that the enforcement it names ran to a verdict, so it must never
     shadow a sibling run for the same name that did -- regardless of which one
     the API happens to return later. Only when both runs agree on having
-    executed (or both failed to) does list order -- the later entry being the
-    newer attempt -- decide, preserving judging-by-latest-attempt for an
-    ordinary rerun sequence.
+    executed (or both failed to) does the greater check-run ID decide. This
+    matches integration-scope's attempt ordering, independent of API/page order.
+    Do not compare workflow run IDs or run_attempt (not check-run fields), nor
+    timestamps: queued checks may have no start time, and old jobs can start or
+    finish after their replacements. Legacy caller payloads without numeric
+    check-run IDs retain their ordered-list contract.
     """
     candidate_executed = candidate.get("conclusion") not in NON_EXECUTED
     incumbent_executed = incumbent.get("conclusion") not in NON_EXECUTED
     if candidate_executed != incumbent_executed:
         return candidate_executed
+    candidate_id = candidate.get("id")
+    incumbent_id = incumbent.get("id")
+    if type(candidate_id) is int and type(incumbent_id) is int:
+        return candidate_id > incumbent_id
     return True
 
 
@@ -154,8 +206,12 @@ def evaluate(
             latest[name] = run
 
     # A measured out-of-scope check may be explicitly skipped.  Absence is
-    # still pending (we cannot prove why it is absent), and any conclusion
-    # other than skipped remains evidence that must be judged normally.
+    # still pending for these (we cannot prove why it is absent), and any
+    # conclusion other than skipped remains evidence that must be judged
+    # normally.  A workflow-level `paths:` filter is different in the other
+    # direction: outside the filter the producer leaves no check run at all,
+    # so such absence is pending too -- the envelope cannot excuse it (#2434
+    # replay); the repair is trigger coverage.
     if scope is not None:
         required = [
             name
@@ -169,25 +225,37 @@ def evaluate(
 
     verdict = Verdict()
     for name in required:
-        candidate = latest.get(name)
-        if candidate is None:
-            verdict.absent.append(name)
-            continue
-        if candidate.get("conclusion") in NON_EXECUTED:
-            if (
-                not scope_measured
-                and name in PATH_SCOPED_CHECKS
-                and candidate.get("conclusion") == "skipped"
-            ):
-                verdict.unfinished.append(name)
-            else:
-                verdict.not_executed.append(name)
-            continue
-        if candidate.get("status") != "completed":
-            (verdict.unfinished if require_complete else verdict.ran).append(name)
-            continue
-        verdict.ran.append(name)
+        bucket = _classify_check(
+            name,
+            latest.get(name),
+            require_complete=require_complete,
+            scope_measured=scope_measured,
+        )
+        getattr(verdict, bucket).append(name)
     return verdict
+
+
+def _classify_check(
+    name: str,
+    candidate: dict[str, Any] | None,
+    *,
+    require_complete: bool,
+    scope_measured: bool,
+) -> str:
+    """Return the verdict bucket a single required check belongs in."""
+    if candidate is None:
+        # Absent stays pending even when the measured envelope proves the
+        # producer's `paths:` filter cannot fire: absence is not non-execution,
+        # and the repair is trigger coverage, not evaluator leniency (#2434).
+        return "absent"
+    conclusion = candidate.get("conclusion")
+    if conclusion in NON_EXECUTED:
+        if not scope_measured and name in PATH_SCOPED_CHECKS and conclusion == "skipped":
+            return "unfinished"
+        return "not_executed"
+    if candidate.get("status") != "completed":
+        return "unfinished" if require_complete else "ran"
+    return "ran"
 
 
 def _read_json(path: Path) -> Any:
@@ -232,6 +300,15 @@ def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
     measured = payload.get("measured")
     if type(measured) is not bool or not measured:
         return None, False
+    if payload.get("truncated"):
+        # A truncated envelope is a *partial* measurement: the paths beyond
+        # the cap are unmeasured and may carry every specialized leg, so
+        # scope is ambiguous. Raising reaches the CLI as a pending reason via
+        # _scope_for_args' ValueError path, never as a scope that could
+        # excuse a skipped check.
+        raise ValueError(
+            f"changed-file set was truncated at GitHub's {LIST_FILES_CAP}-file listFiles cap"
+        )
     changed_files = payload.get("files")
     if not isinstance(changed_files, list) or not all(
         isinstance(item, str) for item in changed_files
@@ -258,6 +335,33 @@ def _scope_for_args(
     except (OSError, TypeError, ValueError, json.JSONDecodeError, ImportError, RuntimeError) as exc:
         print(f"PENDING: path-scoped execution scope is ambiguous ({exc})")
         return None, False
+
+
+def _render_verdict(verdict: Verdict, required: list[str]) -> int:
+    """Print the verdict and return its process exit code."""
+    if verdict.ok:
+        print(f"ok: all {len(required)} required check(s) ran on this head")
+        return 0
+
+    heading = (
+        "PENDING: execution evidence is still arriving"
+        if verdict.pending
+        else "FAIL: the gate set did not reach this commit"
+    )
+    print(f"{heading}\n")
+    if verdict.absent:
+        print(f"  not present yet ({len(verdict.absent)}):")
+        for name in verdict.absent:
+            print(f"    {name}")
+    if verdict.not_executed:
+        print(f"\n  present but did not execute to a verdict ({len(verdict.not_executed)}):")
+        for name in verdict.not_executed:
+            print(f"    {name}")
+    if verdict.unfinished:
+        print(f"\n  started but not finished ({len(verdict.unfinished)}):")
+        for name in verdict.unfinished:
+            print(f"    {name}")
+    return PENDING_EXIT if verdict.pending else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -298,29 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         scope=scope,
         scope_measured=scope_measured,
     )
-    if verdict.ok:
-        print(f"ok: all {len(required)} required check(s) ran on this head")
-        return 0
-
-    heading = (
-        "PENDING: execution evidence is still arriving"
-        if verdict.pending
-        else "FAIL: the gate set did not reach this commit"
-    )
-    print(f"{heading}\n")
-    if verdict.absent:
-        print(f"  not present yet ({len(verdict.absent)}):")
-        for name in verdict.absent:
-            print(f"    {name}")
-    if verdict.not_executed:
-        print(f"\n  present but did not execute to a verdict ({len(verdict.not_executed)}):")
-        for name in verdict.not_executed:
-            print(f"    {name}")
-    if verdict.unfinished:
-        print(f"\n  started but not finished ({len(verdict.unfinished)}):")
-        for name in verdict.unfinished:
-            print(f"    {name}")
-    return PENDING_EXIT if verdict.pending else 1
+    return _render_verdict(verdict, required)
 
 
 if __name__ == "__main__":

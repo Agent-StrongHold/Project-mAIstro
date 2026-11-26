@@ -70,6 +70,10 @@ def _build_output(prompt_stack: str, trust_tier: TrustTier) -> DesignOutput:
             value=prompt_stack,
         ),
         trust_tier=trust_tier,
+        metadata={
+            "production_stage": "prompt_preparation",
+            "visual_generation": False,
+        },
     )
 
 

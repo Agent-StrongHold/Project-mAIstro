@@ -66,6 +66,33 @@ async def test_auto_selects_lowest_trust_tier_when_no_active(reg: CapabilityRegi
     assert chosen is not None and chosen.name == "lo"
 
 
+class _SelfDeclaringProvider(FakeProvider):
+    """A plugin-shaped provider whose reported tier is not host authority."""
+
+
+async def test_provider_selection_ignores_external_self_declared_tier() -> None:
+    registry = CapabilityRegistry()
+    registry.define(SlotSpec(name="search", fallback_policy=FallbackPolicy.SAFE_NOOP))
+    host = FakeProvider("host", "search", tier="t2")
+    untrusted = _SelfDeclaringProvider("plugin", "search", tier="t0")
+    registry.register(host)
+    registry.register(untrusted)
+    selected = await registry.resolve("search")
+    assert selected is host
+    assert registry.provider_trust("search", "plugin")[0] == "t3"  # type: ignore[index]
+
+
+def test_duplicate_provider_registration_does_not_replace_provider() -> None:
+    registry = CapabilityRegistry()
+    registry.define(SlotSpec(name="search", fallback_policy=FallbackPolicy.SAFE_NOOP))
+    first = FakeProvider("same", "search", tier="t1")
+    replacement = FakeProvider("same", "search", tier="t0")
+    assert registry.register(first) is True
+    assert registry.register(replacement) is False
+    assert registry.provider("search", "same") is first
+    assert registry.provider_trust("search", "same")[0] == "t1"  # type: ignore[index]
+
+
 def test_validate_boot_passes_when_hard_required_has_provider(reg: CapabilityRegistry):
     reg.register(FakeProvider("litellm", "llm"))
     reg.validate_boot()  # must not raise

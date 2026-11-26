@@ -31,7 +31,6 @@ history:
 
 # ADR-021: Conductor Seed — BIP39/BIP32 HD root of trust
 
-**Status:** Proposed
 **Date:** 2026-05-07
 **Depends on:** nothing — this is the HD root of trust, generated standalone.
 

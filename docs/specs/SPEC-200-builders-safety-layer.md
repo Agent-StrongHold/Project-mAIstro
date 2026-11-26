@@ -9,12 +9,12 @@ accepted: 2026-06-03
 implemented: 2026-06-03
 substrate:
   - maistro-engine#ADR-038
-  - maistro-engine#SPEC-190
 implements: []
 related:
   - maistro-engine#SPEC-201
   - maistro-engine#ADR-095
   - maistro-engine#ADR-049
+  - maistro-engine#SPEC-190
 contracts:
   - boundary
   - behavioral
@@ -34,7 +34,6 @@ history:
 
 # SPEC-200 — Builders Safety Layer: Execution Contexts + Ephemeral Workspace
 
-> **Status:** Implemented — the builders safety layer shipped to `develop` in #107
 > (`maistro-bootstrap/src/maistro_bootstrap/builders/`). This document is the spec of record.
 
 ---

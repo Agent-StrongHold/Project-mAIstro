@@ -24,6 +24,20 @@ You don't need to know any of this to use it. Just open Chat and type what you w
 The hexagonal grid shows all your agents as a honeycomb — each hex is one agent. Click one to see details.`,
   },
   {
+    id: "cli",
+    title: "CLI",
+    content: `The CLI page is a **limited operational console** — not a shell and not a demo panel (#292). Every command it offers is registered on the backend and executed there (POST /v1/cli/exec); the page only renders what the backend returns.
+
+Supported commands:
+- **hctl status** — system status, including what is degraded and why
+- **hctl agents** — the agent roster
+- **hctl health** — the full health-check JSON
+- **hctl sessions** — the CLI sessions this page's history lives in
+- **help** — the supported command list
+
+Anything else is refused with an explicit "unsupported command" error — the page never fakes an answer. Every execution (including refused ones) is written to the Audit Log, and your command history is stored server-side, so reloading the page or reconnecting restores the real state. Commands are read-only inspection: they use the same authenticated session as every other page and can change nothing.`,
+  },
+  {
     id: "chat",
     title: "Chat",
     content: `Chat is how you talk to the AI. Just type what you want in plain English:
@@ -45,7 +59,7 @@ The AI understands context — it remembers your conversation and can use tools 
     content: `Agents are the AI workers in your hive. Each agent has a specific role:
 
 - **Queen** (Conductor): The boss. Routes your requests to the right worker.
-- **Worker**: General-purpose agents that handle tasks like research, coding, or home automation.
+- **Worker**: General-purpose agents that handle tasks like research or coding.
 - **Scout**: Research agents that find information.
 - **Drone**: Monitoring agents that watch things and report back.
 - **Guard**: Security agents that scan for threats and enforce safety rules.
@@ -65,9 +79,9 @@ You can create new agents, edit their behavior, or forge new ones with the step-
     content: `A Mission is a multi-step task that you assign to one or more agents. Unlike a simple chat request, a mission can run for minutes or hours.
 
 For example:
-- "Monitor the crypto market and alert me if Bitcoin drops below $40k"
 - "Research competitors and create a summary report"
-- "Audit all smart home devices for security issues"
+- "Summarize this week's open pull requests"
+- "Draft a weekly status update from the Attention queue"
 
 Missions have statuses: Pending → Running → Completed (or Failed). You can pause, resume, and track progress with a progress bar.
 
@@ -93,9 +107,9 @@ The DAG Builder lets you visually create these workflows by connecting nodes (st
     title: "Skills",
     content: `Skills are reusable capabilities that agents can use. Think of them as plugins or tools:
 
-- A "Home Automation" skill lets agents control your smart home
 - A "Web Browser" skill lets agents browse websites
 - A "Calculator" skill lets agents do math
+- MCP-backed tools (Capabilities) extend what agents can call
 
 Skills can be enabled or disabled. Disabled skills won't be used by any agent. Each skill shows its success rate, average response time, and how many times it's been used.
 
@@ -107,9 +121,9 @@ You generally don't need to manage skills manually — they come pre-configured.
     content: `MCP (Model Context Protocol) is how Hive Conductor connects to external tools and services. Each MCP server provides a set of tools that agents can use.
 
 For example:
-- A "Home Assistant" MCP server provides tools like "turn on light" and "set thermostat"
 - A "Browser" MCP server provides tools like "visit webpage" and "click button"
 - A "Calendar" MCP server might provide tools like "create event"
+- Any MCP server you register under Capabilities exposes its tools to agents
 
 Each server shows its connection status, the tools it provides, and when it was last checked. If a server shows "disconnected," its tools won't be available until the connection is restored.
 
@@ -150,16 +164,11 @@ Messages have priority levels (info, warning, critical). Critical messages are h
   {
     id: "quotas",
     title: "Quotas",
-    content: `Quotas show how much you're using each AI provider (OpenAI, Google, Mistral, etc.) this billing cycle.
+    content: `Quotas & Stats shows real AI usage measured by the LiteLLM gateway (per provider over the last 30 days, and per registered model).
 
-Each provider has:
-- **Used**: How many tokens (words) you've used
-- **Remaining**: How many are left
-- **Usage %**: How close you are to your limit
+The gateway does not expose hard token quotas, so there are no "remaining" or "usage %" bars: a provider card shows measured tokens used, and says so when the gateway does not report a request count. Outcome success/failure stats are currently unmeasured and the panel says so rather than showing zeros.
 
-If a provider runs out, the system automatically falls back to another provider. The "Models" tab shows usage per model, and the "Billing" tab shows cost estimates.
-
-You generally don't need to worry about this — the system manages it automatically. But if you're curious about costs or want to optimize, check here.`,
+If the gateway is unreachable, the panel shows a source error instead of an empty page. Usage numbers you see here are measured, or explicitly marked unavailable — never placeholders.`,
   },
   {
     id: "audit",
@@ -205,17 +214,9 @@ You can start, stop, restart, and view logs for each container from here.
   {
     id: "evolution",
     title: "Evolution",
-    content: `Evolution is an advanced feature that automatically improves your agents over time using genetic algorithms.
+    content: `Evolution (automatic agent improvement via genetic algorithms) is **not shipped in v1.0**.
 
-It works like biological evolution:
-1. Create a "population" of agent configurations
-2. Test them against benchmarks (fitness evaluation)
-3. The best-performing ones "reproduce" to create new configurations
-4. Repeat over many generations
-
-Over time, the agents get better at their jobs without manual tuning.
-
-**This is experimental.** You don't need to use it for the platform to work. It's for power users who want to optimize agent performance.`,
+The product surface is hidden for this release (#2275). It is planned to return in **v1.2** when durable population and Run inspection over canonical Evolve Runs land (#51). There is no in-product Evolution page or nav entry in the default v1.0 build.`,
   },
   {
     id: "browser-tool",
@@ -234,17 +235,9 @@ When the AI uses the browser, you'll see a \`browser_task\` tool call in the cha
   {
     id: "home-automation",
     title: "Home Automation",
-    content: `Hive Conductor connects to Home Assistant, which controls your smart home devices. You can control devices through Chat:
+    content: `Home Automation is **not shipped in Workspaces v1.0** (#2320). The hand-wired Home Assistant / CoinSwarm / ntfy bridges under maistro.integrations are retired for this release.
 
-- "Turn off the living room lights"
-- "Set the thermostat to 72 degrees"
-- "Lock the front door"
-
-**Approvals**: For sensitive actions (like unlocking doors or disarming security), the AI will ask for your approval before proceeding. You'll see an "Approval Required" banner on the Dashboard where you can approve or deny.
-
-**Announcements**: The AI can make announcements through your home speakers.
-
-**Supported devices**: Any device connected to Home Assistant — lights, thermostats, locks, fans, sensors, cameras, etc.`,
+External tools that *are* shipped go through the Capabilities MCP surface (the hive MCP server registry), not those bridges. Do not expect Chat to turn lights on or talk to a Home Assistant instance out of the box.`,
   },
   {
     id: "strategies",
@@ -280,7 +273,7 @@ export default function Docs() {
       <div className="page-header">
         <div>
           <h1 style={{ fontFamily: "var(--hand)", fontSize: 28, fontWeight: 700 }}>Documentation</h1>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginTop: 4 }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
             Everything you need to know about Hive Conductor
           </div>
         </div>
@@ -309,7 +302,7 @@ export default function Docs() {
               {isOpen && (
                 <div style={{
                   padding: "0 4px 14px",
-                  fontFamily: "var(--mono)", fontSize: 11,
+                  fontFamily: "var(--mono)", fontSize: 12,
                   lineHeight: 1.7, color: "var(--ink)",
                   whiteSpace: "pre-wrap",
                 }}>

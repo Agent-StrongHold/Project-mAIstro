@@ -22,34 +22,73 @@ protocol -- it's a periodic snapshot layer that sits *beside* the live
     # on restart:
     log = await persist.restore()
 
-`snapshot` only ever appends events newer than the last one it persisted per
-scope (a timestamp watermark, not an event count -- `InMemoryUsageLog` prunes
-its own deque as it goes, which would silently invalidate a count-based
-watermark the moment old events fall off the front). `restore` rehydrates by
-calling `InMemoryUsageLog.record` for each row in timestamp order, which
-reproduces `sum_between`'s (start, end] boundary semantics exactly rather than
-re-deriving them: that logic lives entirely in `sum_between` itself, so
-replaying the same events with the same timestamps into a fresh log gives
-identical query results.
+Each `UsageEvent` carries a generated identity. SQLite enforces that identity
+with a unique index, and `snapshot` uses conflict-ignore inserts. This makes a
+retry after an ambiguous commit safe even when the in-memory process has not
+recorded that the commit completed. A per-instance lock also keeps selection,
+insert, commit, and any local bookkeeping one operation for ordinary concurrent
+callers; the database identity remains the authority when multiple persistence
+instances share a database.
+
+`restore` rehydrates by calling `InMemoryUsageLog.record` for each row in
+(timestamp, event-id) order, which reproduces `sum_between`'s (start, end]
+boundary semantics exactly rather than re-deriving them.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+from maistro.observability.metrics import (
+    OldestUnit,
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
 
+#: Added after the original schema shipped; each is nullable so an upgrade
+#: needs no backfill and a legacy row stays honestly empty.
+_PROVENANCE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("invocation_id", "TEXT"),
+    ("provider", "TEXT"),
+    ("billing_cycle", "TEXT"),
+    ("usage_reported", "INTEGER"),
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
+    event_id TEXT NOT NULL UNIQUE,
     scope_key TEXT NOT NULL,
     timestamp REAL NOT NULL,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     images INTEGER NOT NULL DEFAULT 0,
-    cost_usd REAL NOT NULL DEFAULT 0.0
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    -- Provenance from the canonical Invocation recorder. Nullable on purpose:
+    -- legacy callback recording has no identity to record and must not invent
+    -- one, which is exactly what `UsageEvent` says about these fields.
+    invocation_id TEXT,
+    provider TEXT,
+    billing_cycle TEXT,
+    usage_reported INTEGER
+)
+"""
+
+_AGGREGATES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS usage_event_aggregates (
+    scope_key TEXT NOT NULL,
+    bucket_start REAL NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    images INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (scope_key, bucket_start)
 )
 """
 
@@ -57,6 +96,42 @@ _INDEX = """
 CREATE INDEX IF NOT EXISTS idx_usage_events_scope_ts
     ON usage_events (scope_key, timestamp)
 """
+
+_RETIRED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS usage_retired_events (
+    event_id TEXT NOT NULL UNIQUE,
+    scope_key TEXT NOT NULL,
+    timestamp REAL NOT NULL
+)
+"""
+
+_RETIRED_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_usage_retired_events_ts
+    ON usage_retired_events (timestamp)
+"""
+
+#: How long a retired event's identity tombstone is kept, measured from the
+#: event's own timestamp relative to a sweep's `before` horizon. The
+#: tombstone's only job is to suppress a stale in-memory copy replaying an
+#: event whose durable row was aggregated away, and such a copy survives
+#: only in a process that has neither recorded that scope again (which
+#: prunes it after one `InMemoryUsageLog` retention window) nor restarted
+#: (which rehydrates from durable rows only). Thirty days is orders of
+#: magnitude beyond any realistic flush lag, so past the window a replay of
+#: an already-counted event is an accepted, bounded over-count of one stale
+#: event -- never the silent under-count a timestamp watermark produced.
+_TOMBSTONE_WINDOW_S = 30 * 86_400.0
+
+#: Most raw rows one `purge_expired` call may aggregate and delete.
+DEFAULT_PURGE_BATCH = 1_000
+
+#: The accounting tables this store's aggregate-then-delete sweep governs,
+#: with each table's oldest-record expression (both store Unix seconds in a
+#: REAL column), for the post-purge health probe (#325).
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("usage_events", "timestamp", "unix_s"),
+    ("usage_event_aggregates", "bucket_start", "unix_s"),
+)
 
 
 class SqliteUsageLog:
@@ -68,57 +143,248 @@ class SqliteUsageLog:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
-        # Per-scope high-water mark: the timestamp of the last event this
-        # instance has already written. A VALUE watermark, not an index/count
-        # one, because InMemoryUsageLog prunes its own deque over time --
-        # a count-based watermark would silently point at the wrong element
-        # (or re-persist already-written events) the moment pruning shifts
-        # what's at any given index.
-        self._last_persisted_ts: dict[str, float] = {}
+        self._operation_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create the usage_events table + its (scope_key, timestamp) index."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.execute(_INDEX)
-        await self._conn.commit()
+        """Create the usage_events table and its indexes.
+
+        The event-id column is added and backfilled for databases created by
+        the timestamp-only schema. Existing rows receive identities derived
+        from their stable SQLite rowids; new rows always come from
+        `UsageEvent.event_id`. The upgrade runs through the shared
+        `serialized_schema_upgrade` discipline (per-connection asyncio lock +
+        ``BEGIN IMMEDIATE``) so concurrent store initializations sharing one
+        database cannot interleave; this instance's operation lock keeps the
+        migration exclusive of `snapshot`/`restore` on the same connection.
+        """
+        async with self._operation_lock, serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_AGGREGATES_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
+            columns = await cursor.fetchall()
+            if not any(row[1] == "event_id" for row in columns):
+                await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
+            # Additive, nullable, no backfill: rows written before these
+            # columns existed genuinely have no provenance, and a default
+            # would be an invented one.
+            present = {row[1] for row in columns}
+            for column, sql_type in _PROVENANCE_COLUMNS:
+                if column not in present:
+                    await self._conn.execute(
+                        f"ALTER TABLE usage_events ADD COLUMN {column} {sql_type}"
+                    )
+            await self._conn.execute(
+                "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
+            )
+            await self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_event_id "
+                "ON usage_events (event_id)"
+            )
+            await self._conn.execute(_INDEX)
+            await self._conn.execute(_RETIRED_SCHEMA)
+            await self._conn.execute(_RETIRED_INDEX)
+            # Superseded within this change: the per-scope timestamp watermark
+            # could not tell a replayed retired event from a distinct new one
+            # sharing its timestamp, so retirement is tracked per identity.
+            # The table only ever held derivable flush-gating state from this
+            # branch's own builds, so dropping it loses nothing.
+            await self._conn.execute("DROP TABLE IF EXISTS usage_purge_watermarks")
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
-        """Persist events recorded since the last `snapshot` call.
+        """Persist the currently retained events, idempotently.
 
-        Best-effort and additive: call this periodically (every N recorded
-        events, or every T seconds) rather than synchronously on every
-        `record()` -- the in-memory log stays the sole source of truth for
-        live reads; this only makes it survive a restart.
+        The live log remains the source of truth for reads. Replaying retained
+        events on each flush is intentional: the unique event identity makes
+        this safe and avoids a process-local watermark whose update could be
+        lost after a successful commit.
 
-        Note: two events for the same scope sharing the exact same
-        `timestamp` value can't both be distinguished by a value watermark --
-        the second would be skipped as "already persisted." Real timestamps
-        (`time.time()`) make this practically negligible; it only matters for
-        tests that pass an explicit, repeated `now=`.
+        Events whose identities `purge_expired` has retired are skipped.
+        `record` prunes only the scope it touches, so an idle scope can retain
+        events older than any purge horizon indefinitely; after
+        `purge_expired` has aggregated and deleted such an event's durable
+        row, replaying the stale in-memory copy would resurrect the row and
+        the next sweep would aggregate it a second time.
+
+        Retirement is tracked per `event_id`, not per timestamp: two replicas
+        sharing this database can each hold a distinct event for one scope at
+        the same timestamp, and a purge of the first says nothing about the
+        second -- a scope timestamp does not establish that every event at or
+        below it has been accounted for. Only the tombstoned identity is
+        suppressed; a distinct late event is flushed like any other.
         """
-        rows: list[tuple[str, float, int, int, int, float]] = []
-        new_watermarks: dict[str, float] = {}
-        for scope_key in log.scope_keys():
-            watermark = self._last_persisted_ts.get(scope_key, float("-inf"))
-            new_events = [e for e in log.events_for(scope_key) if e.timestamp > watermark]
-            if not new_events:
-                continue
-            rows.extend(
-                (scope_key, e.timestamp, e.input_tokens, e.output_tokens, e.images, e.cost_usd)
-                for e in new_events
+        async with self._operation_lock:
+            # A tombstone can only suppress a replay of an event the log still
+            # holds, and a tombstone carries its event's timestamp -- so only
+            # tombstones at least as new as the oldest retained event can
+            # match. The timestamp index keeps that fetch bounded by the live
+            # window rather than the whole tombstone table.
+            oldest = min(
+                (
+                    event.timestamp
+                    for scope_key in log.scope_keys()
+                    for event in log.events_for(scope_key)
+                ),
+                default=None,
             )
-            new_watermarks[scope_key] = new_events[-1].timestamp
+            if oldest is None:
+                return
+            cursor = await self._conn.execute(
+                "SELECT event_id FROM usage_retired_events WHERE timestamp >= ?",
+                (oldest,),
+            )
+            retired = {row[0] for row in await cursor.fetchall()}
+            rows = [
+                (
+                    event.event_id,
+                    scope_key,
+                    event.timestamp,
+                    event.input_tokens,
+                    event.output_tokens,
+                    event.images,
+                    event.cost_usd,
+                    event.invocation_id,
+                    event.provider,
+                    event.billing_cycle,
+                    None if event.usage_reported is None else int(event.usage_reported),
+                )
+                for scope_key in log.scope_keys()
+                for event in log.events_for(scope_key)
+                if event.event_id not in retired
+            ]
+            if not rows:
+                return
+            await self._conn.executemany(
+                "INSERT INTO usage_events "
+                "(event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd, "
+                " invocation_id, provider, billing_cycle, usage_reported) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (event_id) DO NOTHING",
+                rows,
+            )
+            await self._conn.commit()
 
-        if not rows:
-            return
-        await self._conn.executemany(
-            "INSERT INTO usage_events "
-            "(scope_key, timestamp, input_tokens, output_tokens, images, cost_usd) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            rows,
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = DEFAULT_PURGE_BATCH,
+        legal_hold_scopes: tuple[str, ...] = (),
+    ) -> int:
+        """Aggregate and delete an idempotent bounded batch of raw events.
+
+        Raw `usage_events` rows are reconciliation evidence with a bounded
+        lifetime; the aggregates are the long-lived accounting totals (#325).
+        Deleting raw rows therefore must not lose the spend they recorded:
+        aggregates are upserted in the same transaction as the deletion, so a
+        crash before commit removes neither and a retry adds the same bucket
+        exactly once, and the batch's event identities are tombstoned so a
+        stale in-memory copy cannot resurrect them either. The horizon is the caller's policy — the in-memory
+        enforcement window is shorter than any horizon a retention driver
+        should pass, so a cutoff cannot change a current quota decision —
+        and ``legal_hold_scopes`` is deliberately an explicit input rather
+        than a hidden process-local flag, so every replica applies the same
+        hold decision.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if not legal_hold_scopes:
+            hold_sql = ""
+            hold_params: tuple[object, ...] = ()
+        else:
+            marks = ",".join("?" for _ in legal_hold_scopes)
+            hold_sql = f" AND scope_key NOT IN ({marks})"  # nosec B608 - values bound, identifiers are literal ?
+            hold_params = tuple(legal_hold_scopes)
+        # The aggregate must cover exactly the batch being deleted -- not
+        # every expired row.  Otherwise the rows that survive a bounded
+        # delete are aggregated again by the next sweep and the aggregates
+        # double-count them.  ``ORDER BY timestamp, rowid`` makes the batch
+        # deterministic, so the two statements below select the same rows.
+        batch_sql = (
+            "SELECT rowid FROM usage_events WHERE timestamp < ?"
+            + hold_sql
+            + " ORDER BY timestamp, rowid LIMIT ?"
         )
-        await self._conn.commit()
-        self._last_persisted_ts.update(new_watermarks)
+        async with self._operation_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                aggregate_sql = (
+                    """INSERT INTO usage_event_aggregates
+                       (scope_key, bucket_start, input_tokens, output_tokens, images, cost_usd)
+                       SELECT scope_key, CAST(timestamp / 86400 AS INTEGER) * 86400 AS bucket_start,
+                              SUM(input_tokens), SUM(output_tokens), SUM(images), SUM(cost_usd)
+                       FROM usage_events
+                       WHERE rowid IN ("""
+                    + batch_sql
+                    + ")"
+                    + """ GROUP BY scope_key, bucket_start
+                       ON CONFLICT(scope_key, bucket_start) DO UPDATE SET
+                         input_tokens = usage_event_aggregates.input_tokens + excluded.input_tokens,
+                         output_tokens = usage_event_aggregates.output_tokens + excluded.output_tokens,
+                         images = usage_event_aggregates.images + excluded.images,
+                         cost_usd = usage_event_aggregates.cost_usd + excluded.cost_usd"""
+                )
+                await self._conn.execute(aggregate_sql, (before, *hold_params, limit))
+                # Tombstone each retired event's identity, in the same
+                # transaction as the deletion: `snapshot` consults these to
+                # recognize retired events whose in-memory copies may still
+                # linger and must not be reinserted (they would be aggregated
+                # a second time by the next sweep). Per identity, not per
+                # timestamp: a distinct event that another replica flushes
+                # late -- even at the same timestamp -- must still be
+                # persisted. Tombstones are kept well beyond any plausible
+                # stale-copy replay lag -- see `_TOMBSTONE_WINDOW_S` -- and
+                # are forgotten past that window.
+                # Assigned to a name before `execute` (like `batch_sql` and
+                # `delete_sql` above): bandit B608 flags a SQL-looking string
+                # that is a *direct* argument to `execute`, but not one built
+                # into an intermediate variable whose values are all bound.
+                retired_sql = (
+                    "SELECT event_id, scope_key, timestamp FROM usage_events "
+                    "WHERE rowid IN (" + batch_sql + ")"
+                )
+                retired = await self._conn.execute(
+                    retired_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.executemany(
+                    "INSERT INTO usage_retired_events (event_id, scope_key, timestamp) "
+                    "VALUES (?, ?, ?) ON CONFLICT (event_id) DO NOTHING",
+                    await retired.fetchall(),
+                )
+                await self._conn.execute(
+                    "DELETE FROM usage_retired_events WHERE timestamp < ?",
+                    (before - _TOMBSTONE_WINDOW_S,),
+                )
+                delete_sql = "DELETE FROM usage_events WHERE rowid IN (" + batch_sql + ")"
+                cursor = await self._conn.execute(
+                    delete_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the accounting tables (#325).
+
+        Raw `usage_events` is the table whose "accidental permanent raw usage
+        history" this store exists to prevent: its stored level is the one
+        signal that shows the aggregate-then-delete sweep keeping pace with
+        ingest, and the aggregates' oldest bucket is how far back the
+        long-lived accounting half reaches. Throttled per store by the
+        publisher, so a caller sweeping per cycle costs one probe a minute.
+        """
+        if not retention_health_probe_due("usage:sqlite"):
+            return
+        samples = []
+        for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+            sample = await sqlite_table_sample(self._conn, table, oldest_expr, oldest_unit=unit)
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("usage:sqlite", "sqlite", samples, min_interval_s=0.0)
 
     async def restore(self, *, max_retention_s: float = 86_400.0) -> InMemoryUsageLog:
         """Rehydrate a fresh `InMemoryUsageLog` from persisted events.
@@ -129,20 +395,37 @@ class SqliteUsageLog:
         continuously-running one, and `sum_between`'s boundary semantics are
         reproduced exactly rather than re-derived.
 
-        Also seeds `self._last_persisted_ts` from the rows just read: without
-        this, this same instance's next `snapshot()` call would treat every
-        restored event as unpersisted (its watermark starts at `-inf`) and
-        re-insert all of it -- duplicate rows, inflated usage, understated
-        quota headroom after every restart.
+        Event identities are restored along with their usage values, so a
+        later snapshot of the restored log remains idempotent as well -- and
+        so is the canonical Invocation provenance the recorder attaches. It
+        was being dropped: `snapshot` wrote seven columns and `restore` read
+        the same seven, so every SQLite restart silently discarded the
+        invocation identity, the provider, the billing cycle and the
+        reported/unreported distinction, defeating the durable audit value
+        those fields exist for (Codex, #1362).
         """
         log = InMemoryUsageLog(max_retention_s=max_retention_s)
-        cursor = await self._conn.execute(
-            "SELECT scope_key, timestamp, input_tokens, output_tokens, images, cost_usd "
-            "FROM usage_events ORDER BY timestamp ASC"
-        )
-        rows = await cursor.fetchall()
-        seeded_watermarks: dict[str, float] = {}
-        for scope_key, timestamp, input_tokens, output_tokens, images, cost_usd in rows:
+        async with self._operation_lock:
+            cursor = await self._conn.execute(
+                "SELECT event_id, scope_key, timestamp, input_tokens, output_tokens, images, "
+                "cost_usd, invocation_id, provider, billing_cycle, usage_reported "
+                "FROM usage_events ORDER BY timestamp ASC, event_id ASC"
+            )
+            rows = await cursor.fetchall()
+        for row in rows:
+            (
+                event_id,
+                scope_key,
+                timestamp,
+                input_tokens,
+                output_tokens,
+                images,
+                cost_usd,
+                invocation_id,
+                provider,
+                billing_cycle,
+                usage_reported,
+            ) = row
             log.record(
                 scope_key,
                 input_tokens=input_tokens,
@@ -150,11 +433,12 @@ class SqliteUsageLog:
                 images=images,
                 cost_usd=cost_usd,
                 now=timestamp,
+                event_id=event_id,
+                invocation_id=invocation_id,
+                provider=provider,
+                billing_cycle=billing_cycle,
+                usage_reported=None if usage_reported is None else bool(usage_reported),
             )
-            # Rows are timestamp-ascending, so the last write per scope_key
-            # naturally ends up holding the max timestamp for that scope.
-            seeded_watermarks[scope_key] = timestamp
-        self._last_persisted_ts.update(seeded_watermarks)
         return log
 
 

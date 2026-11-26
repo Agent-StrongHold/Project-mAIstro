@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import runpy
 import shutil
 import subprocess
@@ -19,6 +20,10 @@ import sys
 from pathlib import Path
 
 import pytest
+
+#: ADR-092126-a28a declares a behavioral contract — a body status line is a
+#: finding whatever it says — and names this suite as its evidence.
+pytestmark = [pytest.mark.contract("behavioral")]
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "check-adr-status-language.py"
@@ -38,14 +43,20 @@ def _gate():
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A copy of the real corpus, with the baseline pointed at a copy too.
 
-    A copy rather than a synthetic corpus: the check under test is agreement
-    between *real* front matter and real body text, and 60 ADRs carry a body
-    status line the synthetic case would never reproduce.
+    Still a copy rather than a synthetic corpus, though the reason has moved.
+    It used to be that 63 ADRs carried a body status line a synthetic case
+    would never reproduce; ADR-092126-a28a removed all of them. What the real
+    corpus now provides is the *absence* — these tests assert that no document
+    carries one, and that a document the gate skips cannot be silently chosen
+    to carry the one they introduce. Categories 2 and 3 still read ADR-046's
+    real banner and real prose.
     """
     module = _gate()
     adr_dir = tmp_path / "docs" / "adr"
     shutil.copytree(ROOT / "docs" / "adr", adr_dir)
-    monkeypatch.setattr(module, "DOC_ROOTS", (adr_dir,))
+    spec_dir = tmp_path / "docs" / "specs"
+    shutil.copytree(ROOT / "docs" / "specs", spec_dir)
+    monkeypatch.setattr(module, "DOC_ROOTS", (adr_dir, spec_dir))
     monkeypatch.setattr(module, "ROOT", tmp_path)
     # The ledger's identities are repo-relative (docs/adr/...), so the sandbox
     # reproduces the real layout under tmp_path rather than flattening it.
@@ -78,21 +89,178 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 # --- category 1: body status lines -------------------------------------------
 
 
-def test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox) -> None:
-    path = next(p for p in sandbox.DOC_ROOTS[0].glob("*.md") if not p.name.startswith("ADR-INDEX"))
-    text = path.read_text()
-    front_matter_status = _front_matter_status(path)
-    other = "Proposed" if front_matter_status != "Proposed" else "Accepted"
-    patched, count = _replace_first_status_line(text, other)
-    assert count == 1 or "**Status:**" not in text
-    if count == 0:
-        # No body line to mutate; append one under the title instead.
-        patched = text + f"\n**Status:** {other}\n"
+@pytest.mark.ac("ADR-092126-a28a/AC-1")
+def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
+    """The retirement itself, asserted against the real corpus.
+
+    ADR-092126-a28a removed the line from all 94 documents that had one. This
+    is the test that fails if any comes back — including via a merge that
+    reinstates an old revision, which no per-document test would notice.
+    """
+    offenders = [
+        str(path.relative_to(sandbox.ROOT))
+        for root in sandbox.DOC_ROOTS
+        for path in sorted(root.rglob("*.md"))
+        if _BODY_STATUS_LINE_RE.search(path.read_text())
+    ]
+
+    assert offenders == []
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-2")
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+@pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
+@pytest.mark.parametrize(
+    "bullet",
+    ["", "- ", "* ", "+ ", "1. ", "2) "],
+    ids=["bare", "dash", "star", "plus", "ordered-dot", "ordered-paren"],
+)
+@pytest.mark.parametrize("indent", [0, 1, 2, 3])
+def test_a_body_status_line_fails_even_when_it_agrees(sandbox, root_index, bullet, indent) -> None:
+    """Absence, not agreement — the rule that makes the retirement durable.
+
+    This is the case the old agreement check let through, and the one that
+    restarts the drift: a line that copies front matter correctly today is a
+    second place to edit tomorrow. #387's whole history is that copy going
+    stale.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[root_index])
+    path.write_text(
+        _with_status_line(
+            path.read_text(), _front_matter_status(path), bullet=bullet, indent=indent
+        )
+    )
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.parametrize("bullet", ["", "- ", "1. ", "2) "])
+def test_four_space_code_is_not_a_body_status_declaration(sandbox, bullet) -> None:
+    """Four initial spaces make a code block rather than a body declaration."""
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), "Accepted", bullet=bullet, indent=4))
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-1")
+@pytest.mark.ac("ADR-092126-a28a/AC-2")
+@pytest.mark.parametrize("root_index", [0, 1], ids=["adr", "spec"])
+def test_a_nested_document_cannot_hide_a_body_status_line(sandbox, root_index) -> None:
+    """Registry-supported nested documents obey the same retirement rule."""
+    root = sandbox.DOC_ROOTS[root_index]
+    path = _an_adr(root)
+    nested = root / "nested"
+    nested.mkdir()
+    moved = path.rename(nested / path.name)
+    moved.write_text(_with_status_line(moved.read_text(), _front_matter_status(moved)))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == moved and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_disagreeing_body_status_line_still_fails(sandbox) -> None:
+    """The original #387 shape keeps failing under the retirement rule."""
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
+    path.write_text(_with_status_line(path.read_text(), other))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
+    """`- **Status:** X` is the same declaration as the bare `**Status:** X`.
+
+    The gate matched only the bare spelling for a year, so the 3 ADRs and 20
+    specs writing the list-item form were exempt from this category outright —
+    the *form* of the line, not its content, decided whether it could be seen.
+    Retirement has to cover both spellings or it just relocates the habit.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    patched = _with_status_line(path.read_text(), "Accepted", bullet="- ")
+    assert "\n- **Status:**" in patched, "the mutation must write the list form"
     path.write_text(patched)
 
     problems = sandbox.audit()
 
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_status_line_dressed_up_with_trailing_prose_is_still_caught(sandbox) -> None:
+    """Decoration is not an exemption.
+
+    This started as a question about *parsing*: under the agreement check,
+    `**Status:** Accepted — ratified 2026-01-01` read as claiming the whole
+    string, so it failed against a front matter saying `Accepted`. That was
+    incidental to the regex rather than stated intent, and worth pinning.
+
+    Retirement changes what is at stake. There is no claim to parse any more,
+    so the question is no longer "what does this line say" but "is a qualified
+    line still a line" — the evasion route that would otherwise let the
+    duplication back in wearing a hat. It is, and this is the test that says
+    so.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    status = _front_matter_status(path)
+    path.write_text(_with_status_line(path.read_text(), f"{status} — ratified 2026-01-01"))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_an_empty_status_line_is_still_a_retired_line(sandbox) -> None:
+    """`**Status:**` with no value is reported too.
+
+    Under the old agreement check this was deliberately skipped — an empty
+    line claimed no status to disagree with, and comparing `None` would have
+    raised. Retirement removes that subtlety along with the branch: the line
+    is the finding, so there is no value to parse and nothing to skip.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), ""))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+def _an_adr(root: Path) -> Path:
+    """A deterministic ADR that the gate actually audits.
+
+    Sorted, not `Path.glob` order, which is `os.scandir` order and varies by
+    filesystem — the defect that made two of these tests pass in CI and fail
+    everywhere else.
+
+    "That the gate audits" is the other half, and it is not pedantry. Sorted
+    order puts `ADR-000-template.md` first, and the template's front matter
+    does not parse, so `_audit_file` returns early and a status line written
+    there is never seen. That is the same trap in a new costume: CI's old
+    iteration order happened to yield the template too, which is exactly why
+    the original tests passed while proving nothing. Selecting through the
+    validator the gate itself uses means a document it skips cannot be chosen
+    silently.
+    """
+    from maistro_registry.validator import validate_file  # the gate puts this on sys.path
+
+    chosen = next(
+        p
+        for p in sorted(root.glob("*.md"))
+        if not p.name.startswith("ADR-INDEX") and validate_file(p).front_matter is not None
+    )
+    assert not _BODY_STATUS_LINE_RE.search(chosen.read_text()), (
+        f"{chosen.name} already carries a body status line; these tests must introduce the only one"
+    )
+    return chosen
 
 
 def _front_matter_status(path: Path) -> str:
@@ -102,31 +270,44 @@ def _front_matter_status(path: Path) -> str:
     raise AssertionError(f"no status line in {path}")
 
 
-def _replace_first_status_line(text: str, value: str) -> tuple[str, int]:
+#: A body status declaration in either spelling: bare, or as a Markdown list
+#: item. Multiline so it can be searched against a whole document.
+_BODY_STATUS_LINE_RE = re.compile(
+    r"^(?:(?: {0,3}> ?)* ?){0,3}(?:(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?\*\*Status:\*\*.*$"
+    r"|^[ \t]+(?:[-*+]|[0-9]{1,9}[.)])[ \t]+\*\*Status:\*\*.*$",
+    re.M,
+)
+
+
+def _with_status_line(text: str, value: str, *, bullet: str = "", indent: int = 0) -> str:
+    """Put a body status line under the document's title.
+
+    Written below the `# ` heading rather than appended, which is where the 83
+    retired lines lived — a gate that only noticed one at the end of a file
+    would miss every real occurrence.
+    """
     lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if line.startswith("**Status:**"):
-            replaced = f"**Status:** {value}"
-            if line.endswith("  "):
-                replaced += "  "
-            lines[index] = replaced
-            return "\n".join(lines) + "\n", 1
-    return text, 0
+    index = next(i for i, line in enumerate(lines) if line.startswith("# "))
+    lines.insert(index + 1, f"{' ' * indent}{bullet}**Status:** {value}")
+    return "\n".join(lines) + "\n"
 
 
-def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -> None:
-    """A fixed contradiction must shrink the ledger in the same change."""
-    ledgered = next(
-        line.strip().strip('"')
-        for line in sandbox.LEDGER.read_text().splitlines()
-        if " :: body-status-line" in line
-    )
-    filename = ledgered.split(" ::")[0].split("/")[-1]
-    path = sandbox.DOC_ROOTS[0] / filename
-    status = _front_matter_status(path)
-    patched, count = _replace_first_status_line(path.read_text(), status)
-    assert count == 1, f"{filename} has no body status line to fix"
-    path.write_text(patched)
+def test_fixing_a_banked_body_status_line_requires_pruning(sandbox, capsys) -> None:
+    """A fixed finding must shrink the ledger in the same change.
+
+    Introduced and banked here rather than borrowed from the committed ledger.
+    It used to read whichever identity the real ledger happened to carry, which
+    made the test a hostage of the corpus's legacy debt: draining that ledger
+    to zero left the `next(...)` with nothing to find, and the ratchet's
+    central rule untested exactly when the corpus was finally clean.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    original = path.read_text()
+    path.write_text(_with_status_line(original, _front_matter_status(path)))
+    assert sandbox.main(["--update"]) == 0, "the finding is banked first"
+    capsys.readouterr()
+
+    path.write_text(original)
 
     assert sandbox.main([]) == 1
     assert "no longer found" in capsys.readouterr().out
@@ -135,6 +316,7 @@ def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -
 # --- category 2: replacement banners -----------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
     text = path.read_text().replace(
@@ -155,6 +337,7 @@ def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
 # --- category 3: status-asserting prose --------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> None:
     """The ADR-046 defect, verbatim shape, on any Superseded document."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -173,6 +356,7 @@ def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> No
     )
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_wrapped_status_stays_prose_still_matches(sandbox) -> None:
     """The phrase that hides across a line break in flowing prose."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -204,19 +388,23 @@ def test_dated_past_status_statements_are_history_not_assertions(sandbox) -> Non
 # --- the baseline ratchet -----------------------------------------------------
 
 
-def test_a_new_body_status_line_contradiction_is_not_absorbed_by_the_baseline(
-    sandbox, capsys
-) -> None:
-    """Per-identity: the 28 legacy entries cannot pay for a 29th."""
-    test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox)
+def test_a_reintroduced_body_status_line_is_not_absorbed_by_the_baseline(sandbox, capsys) -> None:
+    """The ledger is empty, so a reintroduced line has nothing to hide behind.
+
+    Per-identity was what stopped the 28 legacy entries paying for a 29th.
+    With the ledger drained it is simpler still: every finding is new, and the
+    run that reports one exits non-zero.
+    """
+    test_a_body_status_line_fails_even_when_it_agrees(sandbox, 0, "", 0)
 
     assert sandbox.main([]) == 1
-    assert "new body/front-matter status contradiction" in capsys.readouterr().out
+    assert "new body-status-language finding" in capsys.readouterr().out
 
 
 # --- category 2, the other half: a banner with nothing behind it -------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_on_a_document_with_no_superseded_by_fails(sandbox) -> None:
     """The banner claims a replacement the front matter never records.
 
@@ -266,10 +454,18 @@ def test_a_missing_ledger_means_no_known_exceptions(sandbox) -> None:
 
 def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None:
     """`--update` is how a reviewed legacy exception is banked: it writes
-    exactly what the audit found, and the next ordinary run passes."""
+    exactly what the audit found, and the next ordinary run passes.
+
+    The state to bank is introduced here. Asserting that the *corpus* carries
+    findings made a clean corpus fail this test, which inverts what the suite
+    is for — the gate's banking behavior is the subject, not how much legacy
+    debt happens to be outstanding.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path)))
     sandbox.LEDGER.unlink()
     found = {p.identity for p in sandbox.audit()}
-    assert found, "the sandbox corpus carries the legacy contradictions"
+    assert found, "the introduced finding is what --update must bank"
 
     assert sandbox.main(["--update"]) == 0
     out = capsys.readouterr().out
@@ -277,9 +473,36 @@ def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None
     assert f"{len(found)} known contradiction" in out
 
     payload = json.loads(sandbox.LEDGER.read_text())
+    assert payload["metric_definition_version"] == sandbox.METRIC_DEFINITION_VERSION == "2"
     assert set(payload["known"]) == found
 
     assert sandbox.main([]) == 0
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("123456789. ", True),
+        ("1234567890. ", False),
+        ("a. ", False),
+        ("-1. ", False),
+        ("1.x ", False),
+    ],
+)
+def test_ordered_marker_grammar_is_bounded(marker: str, expected: bool) -> None:
+    text = f"{marker}**Status:** Accepted"
+    assert bool(_gate()._BODY_STATUS_RE.search(text)) is expected
+
+
+def test_generated_ledger_describes_absence_metric(sandbox) -> None:
+    assert sandbox.main(["--update"]) == 0
+    payload = json.loads(sandbox.LEDGER.read_text())
+    assert payload["metric_definition_version"] == "2"
+    assert "absence" in payload["_comment"]
+    assert "regardless of agreement" in payload["_comment"]
+    assert "whole corpus now agrees" not in payload["_comment"]
+    assert payload["known"] == []
+    assert payload["details"] == {}
 
 
 def test_the_main_guard_exits_zero_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,3 +528,34 @@ def test_the_script_runs_as_a_script() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- code-block and blockquote handling (P2 findings 4301014681, 4301014687) ---
+
+
+def test_a_status_line_inside_a_fenced_code_block_is_not_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n```\n**Status:** Accepted\n```\n")
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_status_line_inside_an_indented_code_block_is_not_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n    **Status:** Accepted\n")
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_blockquoted_status_line_is_still_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n> **Status:** Accepted\n")
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_a_nested_list_status_line_is_still_a_finding(sandbox) -> None:
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(path.read_text() + "\n- Metadata:\n    - **Status:** Accepted\n")
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())

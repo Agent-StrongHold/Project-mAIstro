@@ -43,7 +43,6 @@ owners:
 
 # SPEC-083126-5e62: Generated quality evidence is not the judge after trusted-base migration
 
-- **Status:** Active
 - **Decision:** ADR-083126-5e62
 - **Implementation:** landed in #800 ahead of this spec
 

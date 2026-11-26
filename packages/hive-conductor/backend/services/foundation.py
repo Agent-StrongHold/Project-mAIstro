@@ -56,14 +56,28 @@ class Foundation:
         self.reactor_available = False
 
     async def start(self, settings: Settings) -> None:
-        data_dir = Path(settings.conductor_data_dir).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Before the vault, state, privilege, or reactor touch a single file:
+        # refuse a data directory that cannot hold this deployment's durable
+        # state (unwritable, or — inside a container — sitting on the
+        # container's own root filesystem, i.e. silently ephemeral across
+        # recreate). #331. A refusal here propagates out of the lifespan,
+        # which stops the process (uvicorn refuses to serve after a failed
+        # startup): the alternative to refusing is a Conductor that
+        # provisions accounts and accepts vault entries into storage it is
+        # about to throw away.
+        from services.data_dir_guard import DataDirRefused, verify_durable_data_dir
+
+        try:
+            data_dir = verify_durable_data_dir(Path(settings.conductor_data_dir))
+        except DataDirRefused as exc:
+            logger.error("%s", exc)
+            raise
 
         self._init_vault(settings, data_dir)
         self._init_credentials(data_dir)
         self._init_state(settings, data_dir)
         self._init_privilege(settings, data_dir)
-        await self._init_reactor(settings, data_dir)
+        await self._init_reactor()
 
     def _init_vault(self, settings: Settings, data_dir: Path) -> None:
         vault_path = settings.conductor_vault_path or str(data_dir / "secrets.age")
@@ -117,7 +131,12 @@ class Foundation:
 
             stores.configure_persistence(persisted)
             stores.initialize_stores()
-            configure_settings(PersistedSettingsRecordStore(persisted, state.flush))
+            # Settings, profiles, and registration policy ride the same
+            # acknowledgement rule as every other store (#333, #1179): their
+            # put_raw/delete do not return until the State writer commits and
+            # raise its failure, so no caller is told a write is durable
+            # because it entered the writer queue.
+            configure_settings(PersistedSettingsRecordStore(persisted))
 
             # After `initialize_stores()`, which is what fills `stores.dag_runs`
             # from SQLite. Building the run store before that would rehydrate
@@ -127,20 +146,31 @@ class Foundation:
 
             configure_dag_run_store(stores.dag_runs)
 
+            # Metrics are a query projection of the canonical Run spine. They
+            # share this state database for restart and replica reads; they do
+            # not become a second execution authority. The durable JsonStore is
+            # owned by the service module, not `stores.py`: new durable state is
+            # not a row in the cutover retirement ledger, which only grows by
+            # declaring stores.py surfaces (#1046).
+            from services.node_metrics_store import configure_store as configure_metrics_store
+            from services.node_metrics_store import node_metrics
+
+            configure_metrics_store(node_metrics)
+
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles
 
-            configure_profiles(PersistedProfileRecordStore(persisted, state.flush))
+            configure_profiles(PersistedProfileRecordStore(persisted))
             _warn_if_postgrest_profiles_are_being_left_behind()
 
             # The registration policy record rides the same acknowledgement
-            # rule as settings and profiles (#313): a write is durable only
-            # after the writer queue drains, or an admin's "open" could be
+            # rule as settings and profiles (#313, #1179): the write returns
+            # only after the State commit, or an admin's "open" could be
             # acknowledged and then lost.
             from services.registration_policy import PersistedRegistrationRecordStore
             from services.registration_policy import configure as configure_registration_policy
 
-            configure_registration_policy(PersistedRegistrationRecordStore(persisted, state.flush))
+            configure_registration_policy(PersistedRegistrationRecordStore(persisted))
 
             state.flush()
             self.state = state
@@ -177,14 +207,11 @@ class Foundation:
         except Exception as exc:
             logger.warning("Privilege unavailable (%s)", exc)
 
-    async def _init_reactor(self, settings: Settings, data_dir: Path) -> None:
+    async def _init_reactor(self) -> None:
         try:
             from maistro.reactor import Reactor
 
-            state_db = str(data_dir / "state.db") if self.state_available else None
-            self.reactor = Reactor(
-                state_db_path=state_db,
-            )
+            self.reactor = Reactor(state=self.state if self.state_available else None)
             await self.reactor.start()
             self.reactor_available = True
             logger.info("Reactor started")

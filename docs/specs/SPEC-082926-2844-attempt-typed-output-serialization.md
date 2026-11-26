@@ -42,7 +42,6 @@ owners:
 
 # SPEC-082926-2844: Attempt typed output serialization
 
-- **Status:** Active
 - **Decision:** ADR-081226-a66b
 - **Closes:** #566
 

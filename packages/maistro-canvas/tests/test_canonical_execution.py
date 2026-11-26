@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import dataclasses
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
+from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
-from maistro_canvas.canvas.canonical_execution import CanvasCanonicalExecution
+from maistro_canvas.canvas.canonical_execution import (
+    CanvasCanonicalExecution,
+    canonical_run_id,
+    correlate_run,
+)
+from maistro_canvas.types import GenerationJobRecord, JobStatus
 
 pytestmark = pytest.mark.asyncio
 
@@ -62,8 +71,10 @@ async def _seed_active_attempt(
         node_run.node_run_id,
         executor_id="dead-canvas-worker",
         lease_holder="dead-canvas-worker",
+        lease_ttl=timedelta(seconds=30),
     )
     assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is not None
     await runs.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.RUNNING,
@@ -83,7 +94,8 @@ async def test_scope_binding_requires_explicit_non_empty_authorized_scope() -> N
         CanvasCanonicalExecution(runs, workspace_id="workspace-1", project_id=" ")
 
 
-async def test_admission_rolls_back_run_when_queue_transition_fails() -> None:
+async def test_admission_is_queued_in_the_single_canonical_write() -> None:
+    """There is no post-admission queue transition left to crash between."""
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = _QueueTransitionFailingRunStore(project_store=projects)
@@ -93,17 +105,18 @@ async def test_admission_rolls_back_run_when_queue_transition_fails() -> None:
         project_id=root.project_id,
     )
 
-    with pytest.raises(RuntimeError, match="queue transition failed"):
-        await adapter.admit(
-            job_id="job-admission-rollback",
-            canvas_id="canvas-1",
-            layer_id="layer-1",
-            action="generate",
-            actor_principal_id="user-1",
-        )
+    run_id = await adapter.admit(
+        job_id="job-admission-rollback",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
 
-    assert len(runs.deleted_runs) == 1
-    assert await runs.get_run(runs.deleted_runs[0]) is None
+    admitted = await runs.get_run(run_id)
+    assert admitted is not None
+    assert admitted.status is RunStatus.QUEUED
+    assert runs.deleted_runs == []
 
 
 async def test_admission_creates_one_scoped_run_with_stage_graph() -> None:
@@ -155,6 +168,32 @@ async def test_successful_stage_is_one_completed_node_run_and_attempt() -> None:
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
+
+
+async def test_a_yielded_stage_is_an_integrity_error_not_a_silent_success() -> None:
+    """A stage whose operation paused (ExecutionYielded) returns a YIELDED
+    Attempt with no captured result. Canvas has no pause semantics, so the
+    stage must refuse truthfully rather than project an empty receipt — the
+    degenerate branch the projection guard exists for."""
+    from maistro.runs.execution import ExecutionYielded
+
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-yield",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+
+    async def pauses() -> list[str]:
+        raise ExecutionYielded(awaits_human=True)
+
+    with pytest.raises(RunIntegrityError, match="without a completed Attempt"):
+        await adapter.execute_stage(run_id, "generate", pauses)
+
+    attempts = await runs.list_attempts((await runs.list_node_runs(run_id))[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.YIELDED]
 
 
 async def test_failed_stage_retry_keeps_both_attempts_under_same_node_run() -> None:
@@ -228,6 +267,7 @@ async def test_reclaimed_worker_attempt_is_fenced_before_retry() -> None:
         AttemptStatus.COMPLETED,
     ]
     assert attempts[0].attempt_id == abandoned.attempt_id
+    assert attempts[0].cancellation_cause is CancellationCause.RECOVERED
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
@@ -517,6 +557,920 @@ async def test_abandoned_attempt_integrity_requires_persisted_attempt_and_lease(
             error="worker disappeared",
             cancellation=CancellationCause.RECOVERED,
         )
+
+    with pytest.raises(RunIntegrityError, match="no execution lease"):
+        await adapter._reclaim_recovered_attempt(unleased)
+
+
+async def test_race_or_require_terminal_resolves_or_refuses() -> None:
+    adapter, runs, _project_id = await _adapter()
+
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal("missing-attempt")
+
+    run_id = await adapter.admit(
+        job_id="job-race-terminal",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-race-terminal:generate"
+    )
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal(attempt.attempt_id)
+
+    assert attempt.execution_lease is not None
+    cancelled = await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer won",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._race_or_require_terminal(cancelled.attempt_id)
+    assert raced.attempt_id == cancelled.attempt_id
+    assert raced.status is AttemptStatus.CANCELLED
+    assert node_run.node_run_id == cancelled.node_run_id
+
+
+async def test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-reclaim-race",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-reclaim-race:generate"
+    )
+    lease = attempt.execution_lease
+    assert lease is not None
+
+    async def boom(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        raise RuntimeError("reclaim raced")
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", boom)
+    # Peer already terminalized before our reclaim raised; argument keeps the
+    # pre-race lease so the reclaim path is entered, then falls back.
+    assert attempt.execution_lease is not None
+    await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled first",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._reclaim_recovered_attempt(attempt)
+    assert raced.status is AttemptStatus.CANCELLED
+    assert raced.attempt_id == attempt.attempt_id
+
+    # Fresh attempt: reclaim returns None (still live / no write) while a peer
+    # settles concurrently — fall through to the race reader.
+    run_id_2 = await adapter.admit(
+        job_id="job-reclaim-none",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run_2, attempt_2 = await _seed_active_attempt(
+        runs, run_id_2, "canvas:job-reclaim-none:generate"
+    )
+
+    async def no_write(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        return None
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", no_write)
+    assert attempt_2.execution_lease is not None
+    await runs.transition_attempt(
+        attempt_2.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled",
+        fencing_token=attempt_2.execution_lease.fencing_token,
+    )
+    again = await adapter._reclaim_recovered_attempt(attempt_2)
+    assert again.status is AttemptStatus.CANCELLED
+    assert again.attempt_id == attempt_2.attempt_id
+
+
+class _ReceiptStore:
+    """Minimal Canvas receipt store double for admission recovery proofs.
+
+    Satisfies exactly the contract ``_reconcile_admission`` needs from the
+    Canvas package: read, insert, and update receipts scoped by org.
+    """
+
+    def __init__(self) -> None:
+        self.jobs: dict[tuple[str, str], GenerationJobRecord] = {}
+        self.fail_next_create = False
+        #: Keys whose first read reports missing, modelling the window in
+        #: which another worker's insert has not yet become visible.
+        self.missing_on_first_read: set[tuple[str, str]] = set()
+        self.updates: list[GenerationJobRecord] = []
+
+    async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
+        key = (job_id, org_id)
+        if key in self.missing_on_first_read:
+            self.missing_on_first_read.discard(key)
+            return None
+        return self.jobs.get(key)
+
+    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+        if self.fail_next_create:
+            self.fail_next_create = False
+            raise RuntimeError("receipt insert lost the race")
+        self.jobs[(job.id, org_id)] = job
+        return job
+
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_status: str | None = None,
+        expected_attempts: int | None = None,
+    ) -> GenerationJobRecord:
+        current = self.jobs.get((job.id, org_id))
+        # An aliased row *is* the caller's object, so there is no concurrent
+        # writer to fence against; a detached one is compared like the SQL.
+        if current is not None and current is not job:
+            from maistro_canvas.types import JobLeaseLostError
+
+            if (expected_status is not None and current.status != expected_status) or (
+                expected_attempts is not None and current.attempts != expected_attempts
+            ):
+                raise JobLeaseLostError(f"job {job.id!r} fenced write refused")
+        self.jobs[(job.id, org_id)] = job
+        self.updates.append(job)
+        return job
+
+
+def _generation_receipt() -> dict[str, Any]:
+    return {
+        "action": "generate",
+        "model_id": "draft-model",
+        "prompt": "a safe landscape",
+        "params": {},
+        "org_id": "org-1",
+    }
+
+
+async def _admit_with_receipt(
+    adapter: CanvasCanonicalExecution,
+    job_id: str,
+    *,
+    receipt: dict[str, Any] | None = None,
+    operation_id: str | None = None,
+) -> str:
+    return await adapter.admit(
+        job_id=job_id,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id=operation_id,
+        receipt=receipt if receipt is not None else _generation_receipt(),
+    )
+
+
+def _correlated_job(job_id: str, run_id: str, **overrides: Any) -> GenerationJobRecord:
+    params: dict[str, Any] = {}
+    correlate_run(params, run_id)
+    return GenerationJobRecord(
+        id=job_id,
+        layer_id="layer-1",
+        canvas_id="canvas-1",
+        model_id="draft-model",
+        prompt="a safe landscape",
+        params=params,
+        org_id="org-1",
+        **overrides,
+    )
+
+
+def _service_run_graph(project_id: str, node_id: str, node_type: str) -> Graph:
+    return Graph(
+        graph_id=f"graph:{node_id}",
+        workspace_id="workspace-1",
+        project_id=project_id,
+        name="recovery",
+        nodes=[Node(node_id=node_id, node_type=node_type)],
+        edges=[],
+    )
+
+
+async def _non_canvas_run(
+    adapter: CanvasCanonicalExecution, project_id: str, job_claim: str
+) -> str:
+    """A task-queue Run whose provenance falsely claims a canvas job id."""
+    run = await adapter._service.create_run(
+        _service_run_graph(project_id, f"other:{job_claim}:generate", "other.generate"),
+        actor_principal_id="user-1",
+        provenance={
+            ADMISSION_SOURCE: "task_queue",
+            "canvas_job_id": job_claim,
+        },
+        initial_status=RunStatus.QUEUED,
+    )
+    return run.run_id
+
+
+async def _receiptless_canvas_run(
+    adapter: CanvasCanonicalExecution,
+    project_id: str,
+    job_id: str,
+    *,
+    receipt: dict[str, Any] | None = None,
+) -> str:
+    """A canvas-source Run that carries a job claim and org, with no receipt
+    unless one is handed in (for races where the receipt outlived the job)."""
+    provenance: dict[str, Any] = {
+        ADMISSION_SOURCE: "canvas_generation",
+        "canvas_job_id": job_id,
+        "canvas_org_id": "org-1",
+    }
+    if receipt is not None:
+        provenance["canvas_receipt"] = receipt
+    run = await adapter._service.create_run(
+        _service_run_graph(project_id, f"canvas:{job_id}:generate", "canvas.generate"),
+        actor_principal_id="user-1",
+        provenance=provenance,
+        initial_status=RunStatus.QUEUED,
+    )
+    return run.run_id
+
+
+async def test_admission_retry_with_different_receipt_inputs_is_an_integrity_error() -> None:
+    adapter, _runs, _project = await _adapter()
+    await _admit_with_receipt(adapter, "job-receipt-change")
+
+    changed = {**_generation_receipt(), "prompt": "a different landscape"}
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await _admit_with_receipt(adapter, "job-receipt-change", receipt=changed)
+
+
+async def test_admission_matches_operation_identity_across_job_ids() -> None:
+    adapter, runs, _project = await _adapter()
+    first = await _admit_with_receipt(adapter, "job-first-attempt", operation_id="operation-1")
+
+    # The durable operation identity, not the ephemeral receipt id, names the
+    # admission: a retry presenting the same operation under a different
+    # receipt id rejoins the original Run instead of admitting a second one.
+    rejoined = await adapter.admit(
+        job_id="job-retried-elsewhere",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id="operation-1",
+    )
+
+    assert rejoined == first
+    assert await runs.get_run(first) is not None
+
+
+async def test_admission_ignores_non_canvas_runs_claiming_the_same_job() -> None:
+    adapter, runs, project = await _adapter()
+    impostor = await _non_canvas_run(adapter, project, "job-usurped")
+
+    admitted = await _admit_with_receipt(adapter, "job-usurped")
+
+    assert admitted != impostor
+    canvas_run = await runs.get_run(admitted)
+    assert canvas_run is not None
+    assert canvas_run.provenance[ADMISSION_SOURCE] == "canvas_generation"
+
+
+async def test_reconcile_admissions_rejects_non_positive_limit() -> None:
+    adapter, _runs, _project = await _adapter()
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        await adapter.reconcile_admissions(_ReceiptStore(), limit=0)
+
+
+async def test_reconcile_skips_non_canvas_admissions() -> None:
+    adapter, _runs, project = await _adapter()
+    await _non_canvas_run(adapter, project, "job-other-source")
+    store = _ReceiptStore()
+
+    assert await adapter.reconcile_admissions(store) == []
+    assert store.jobs == {}
+
+
+async def test_reconcile_ignores_canvas_run_without_recovery_payload() -> None:
+    adapter, _runs, _project = await _adapter()
+    # A receiptless admission (crash before the receipt was persisted, with no
+    # idempotency key) carries a job id but no org to read the receipt with.
+    await adapter.admit(
+        job_id="job-legacy",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    store = _ReceiptStore()
+
+    assert await adapter.reconcile_admissions(store) == []
+    assert store.jobs == {}
+
+
+async def test_reconcile_ignores_missing_job_without_recoverable_receipt() -> None:
+    adapter, _runs, project = await _adapter()
+    await _receiptless_canvas_run(adapter, project, "job-gone")
+    store = _ReceiptStore()
+
+    assert await adapter.reconcile_admissions(store) == []
+    assert store.jobs == {}
+
+
+async def test_reconcile_recreates_failed_receipt_from_canonical_provenance() -> None:
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-failed-recreate")
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.FAILED, error="provider exploded")
+    store = _ReceiptStore()
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert len(repaired) == 1
+    recreated = repaired[0]
+    assert recreated.status == JobStatus.FAILED
+    assert recreated.error_message == "provider exploded"
+    assert canonical_run_id(recreated.params) == run_id
+    assert store.updates == []
+
+
+async def test_reconcile_recreates_cancelled_receipt_from_canonical_provenance() -> None:
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-cancelled-recreate")
+    await runs.transition_run(run_id, RunStatus.CANCELLED)
+    store = _ReceiptStore()
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert len(repaired) == 1
+    assert repaired[0].status == JobStatus.CANCELLED
+
+
+async def test_reconcile_missing_receipt_after_completion_projects_failed() -> None:
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-vanished-receipt")
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.COMPLETED)
+    store = _ReceiptStore()
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert len(repaired) == 1
+    recreated = repaired[0]
+    assert recreated.status == JobStatus.FAILED
+    assert recreated.error_message == ("Canvas receipt was missing after canonical completion")
+    assert canonical_run_id(recreated.params) == run_id
+
+
+async def test_reconcile_lost_insert_race_reattaches_to_winning_receipt() -> None:
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-race-winner")
+    store = _ReceiptStore()
+    winner = _correlated_job("job-race-winner", run_id)
+    store.jobs[("job-race-winner", "org-1")] = winner
+    store.missing_on_first_read.add(("job-race-winner", "org-1"))
+    store.fail_next_create = True
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [winner]
+    assert winner.status == JobStatus.PENDING
+    assert store.updates == []
+
+
+async def test_reconcile_lost_insert_race_without_winner_reraises() -> None:
+    adapter, _runs, project = await _adapter()
+    # The receipt survived in provenance but the job insert never became
+    # durable: the recreate insert raises and the re-read finds no winner.
+    await _receiptless_canvas_run(adapter, project, "job-race-lost", receipt=_generation_receipt())
+    store = _ReceiptStore()
+    store.fail_next_create = True
+
+    with pytest.raises(RuntimeError, match="receipt insert lost the race"):
+        await adapter.reconcile_admissions(store)
+
+
+async def test_reconcile_rejects_receipt_correlated_to_different_run() -> None:
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-usurped-receipt")
+    store = _ReceiptStore()
+    store.jobs[("job-usurped-receipt", "org-1")] = _correlated_job(
+        "job-usurped-receipt", "run-claimed-by-other"
+    )
+    assert await runs.get_run(run_id) is not None
+
+    with pytest.raises(RunIntegrityError, match="correlates"):
+        await adapter.reconcile_admissions(store)
+
+
+async def test_recovery_projects_completed_evidence_to_done_and_stamps_terminal_fields() -> None:
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-completed-evidence")
+    store = _ReceiptStore()
+    job = _correlated_job("job-completed-evidence", run_id)
+    job.leased_by = "worker-1"
+    job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
+    store.jobs[("job-completed-evidence", "org-1")] = job
+
+    await adapter.execute_stage(run_id, "generate", lambda: _result(["image://one"]))
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://one"]
+    assert job.completed_at is not None
+    assert job.leased_by is None
+    assert job.lease_expires_at is None
+    assert store.updates == [job]
+
+
+async def test_recovery_completed_run_without_attempt_evidence_projects_failed() -> None:
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-no-evidence")
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.COMPLETED)
+    store = _ReceiptStore()
+    store.jobs[("job-no-evidence", "org-1")] = _correlated_job("job-no-evidence", run_id)
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired[0].status == JobStatus.FAILED
+    assert repaired[0].error_message == (
+        "Canonical completion has no completed Canvas Attempt evidence"
+    )
+    assert repaired[0].completed_at is not None
+
+
+async def test_recovery_requires_completed_attempt_with_string_path_results() -> None:
+    async def scalar_result() -> Any:
+        return "not-a-path-list"
+
+    async def non_string_members() -> list[Any]:
+        return [123]
+
+    for name, stage_operation in (
+        ("job-attempt-failed", None),
+        ("job-scalar-result", scalar_result),
+        ("job-non-string-paths", non_string_members),
+    ):
+        adapter, runs, _project = await _adapter()
+        run_id = await _admit_with_receipt(adapter, name)
+        store = _ReceiptStore()
+        store.jobs[(name, "org-1")] = _correlated_job(name, run_id)
+        if stage_operation is None:
+            with pytest.raises(RuntimeError, match="stage exploded"):
+                await adapter.execute_stage(run_id, "generate", _failing_stage)
+            # The failed Attempt leaves the Run WAITING; a later recovery pass
+            # observes the Run after it has been completed by its supervisor.
+            run = await runs.get_run(run_id)
+            assert run is not None
+            if run.status is RunStatus.WAITING:
+                await runs.transition_run(run_id, RunStatus.RUNNING)
+            await runs.transition_run(run_id, RunStatus.COMPLETED)
+        else:
+            await adapter.execute_stage(run_id, "generate", stage_operation)
+        repaired = await adapter.reconcile_admissions(store)
+        assert len(repaired) == 1, name
+        assert repaired[0].status == JobStatus.FAILED, name
+        assert repaired[0].error_message == (
+            "Canonical completion has no completed Canvas Attempt evidence"
+        ), name
+
+
+async def test_recovery_returns_running_job_with_queued_run_to_pending() -> None:
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-lease-orphan")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-lease-orphan",
+        run_id,
+        status=JobStatus.RUNNING,
+        leased_by="lost-worker",
+    )
+    store.jobs[("job-lease-orphan", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.PENDING
+    # A non-terminal requeue keeps the receipt claimable by a live worker; the
+    # lease fields are only cleared when the canonical side reaches a terminal.
+    assert job.leased_by == "lost-worker"
+    assert job.completed_at is None
+
+
+async def test_recovery_leaves_a_live_leased_running_receipt_alone() -> None:
+    """A worker's live RUNNING lease survives even a momentarily-QUEUED Run.
+
+    With multiple runners, one can hold a valid RUNNING lease on its receipt
+    while the canonical Run is still QUEUED -- the narrow window just before
+    `_execute_stage` advances it. Reconciliation must not flip that receipt
+    back to PENDING: `claim_next_pending` selects by status and would
+    immediately re-claim it, dispatching the provider a second time. Compare
+    against `test_recovery_returns_running_job_with_queued_run_to_pending`,
+    whose job carries no `lease_expires_at` and is correctly requeued --
+    only a *live*, unexpired lease is protected.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-live-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-live-lease",
+        run_id,
+        status=JobStatus.RUNNING,
+        leased_by="live-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+    )
+    store.jobs[("job-live-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by == "live-worker"
+    assert store.updates == []
+
+
+async def test_recovery_leaves_a_string_status_live_leased_receipt_alone() -> None:
+    """The live-lease guard must fire for driver-hydrated plain-string status.
+
+    ``PgCanvasStore._coerce_job`` used to hand back the status column as a
+    plain ``str``; identity comparison against ``JobStatus.RUNNING`` then
+    failed silently, the guard never fired, and a second worker's reconcile
+    requeued a live 300s lease back to PENDING -- observed live in the #93
+    two-worker race, where the same physical job was claimed twice under a
+    live lease (attempts=2, provider dispatched twice). This pins the exact
+    production shape: a receipt whose ``status`` is the string ``'running'``.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-string-live-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-string-live-lease",
+        run_id,
+        status="running",  # exactly what the PostgreSQL driver returns
+        leased_by="live-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+    )
+    store.jobs[("job-string-live-lease", "org-1")] = job
+    assert not isinstance(job.status, JobStatus)  # a plain string, as hydrated
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by == "live-worker"
+    assert store.updates == []
+
+
+async def test_recovery_requeues_a_string_status_receipt_whose_lease_expired() -> None:
+    """Equality (not identity) must not protect an *expired* string lease.
+
+    The companion fix could have over-corrected into "never touch a RUNNING
+    receipt"; an expired lease under a plain-string status is still a lost
+    worker and must be requeued.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-string-expired-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-string-expired-lease",
+        run_id,
+        status="running",
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-string-expired-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.PENDING
+
+
+def test_receipt_status_hydration_coerces_driver_strings_and_passes_legacy_through() -> None:
+    """``_coerce_job_status`` must both hydrate and tolerate legacy values.
+
+    The #93 two-worker race was caused by the PostgreSQL store hydrating the
+    status column as a plain ``str`` while every guard compared by identity.
+    ``_coerce_job_status`` is the fix's hinge, so both of its branches are
+    pinned directly (the read path only reaches them through a live driver,
+    which the no-services coverage producer never sees):
+
+    - a driver-shaped plain string hydrates to the ``JobStatus`` member the
+      in-memory stores produce, so identity-agnostic comparisons hold;
+    - a value written by an older generation (not a ``JobStatus`` member)
+      passes through as a plain string instead of crashing a read path.
+    """
+    from maistro_canvas.canvas.store import _coerce_job, _coerce_job_status
+
+    assert _coerce_job_status("running") is JobStatus.RUNNING
+    assert _coerce_job_status(JobStatus.DONE) is JobStatus.DONE
+
+    legacy = "queued-by-an-older-generation"
+    hydrated = _coerce_job_status(legacy)
+    assert hydrated == legacy
+    assert not isinstance(hydrated, JobStatus)
+
+    receipt = _coerce_job(
+        {
+            "id": "job-hydrated",
+            "layer_id": "l1",
+            "canvas_id": "c1",
+            "status": "running",  # exactly what the driver returns
+        }
+    )
+    assert isinstance(receipt.status, JobStatus)
+    assert receipt.status is JobStatus.RUNNING
+
+
+async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None:
+    """An *expired* lease is not live: recovery may still requeue it.
+
+    Only the lease reaper decides a worker is lost in the ordinary case; this
+    proves the fix is a liveness check, not a blanket "never touch RUNNING".
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-expired-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-expired-lease",
+        run_id,
+        status=JobStatus.RUNNING,
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-expired-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.PENDING
+
+
+async def test_recovery_does_not_requeue_an_expired_lease_past_its_retry_budget() -> None:
+    """A worker that keeps dying between claim and its first stage leaves an
+    expired RUNNING receipt over a still-QUEUED Run. At the retry ceiling,
+    recovery must not requeue it -- the next claim would exceed
+    ``max_attempts`` -- but hand it to the lease reaper's exhausted path."""
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted-orphan")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted-orphan",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=3,
+        max_attempts=3,
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-exhausted-orphan", "org-1")] = job
+
+    await adapter.reconcile_admissions(store)
+
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by is None
+    assert job.lease_expires_at is not None
+    assert job.lease_expires_at <= datetime.now(UTC)
+    assert job.completed_at is None
+
+
+async def test_recovery_stamps_an_expired_lease_on_an_unleased_exhausted_orphan() -> None:
+    """With no lease stamp the reaper (``lease_expires_at IS NOT NULL``) would
+    never see the row; recovery gives it an already-expired one."""
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted-unstamped")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted-unstamped",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=2,
+        max_attempts=2,
+    )
+    store.jobs[("job-exhausted-unstamped", "org-1")] = job
+
+    await adapter.reconcile_admissions(store)
+
+    assert job.status == JobStatus.RUNNING
+    assert job.lease_expires_at is not None
+    assert store.updates == [job]
+
+
+async def test_recovery_write_does_not_clobber_a_receipt_reclaimed_after_its_read() -> None:
+    """Codex #1560: recovery projects from a detached read. If the receipt is
+    reaped and re-claimed (attempt 2) before recovery writes its stale copy
+    back as pending with attempt 1, the write must be refused -- otherwise the
+    live claim is clobbered and the attempt counter repeats."""
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-raced")
+    stale = _correlated_job(
+        "job-raced",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=1,
+        leased_by="canvas-worker-1",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    live = dataclasses.replace(
+        stale,
+        attempts=2,
+        leased_by="canvas-worker-1",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+    )
+
+    class _ReclaimedAfterRead(_ReceiptStore):
+        async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
+            current = self.jobs.get((job_id, org_id))
+            if current is live and not getattr(self, "served_stale", False):
+                self.served_stale = True
+                return dataclasses.replace(stale)
+            return current
+
+    store = _ReclaimedAfterRead()
+    store.jobs[("job-raced", "org-1")] = live
+
+    await adapter.reconcile_admissions(store)
+
+    current = store.jobs[("job-raced", "org-1")]
+    assert current is live
+    assert (current.status, current.attempts) == (JobStatus.RUNNING, 2)
+
+
+async def test_reconcile_admissions_pages_past_the_first_batch_of_healthy_canvas_runs() -> None:
+    """A missing receipt behind a full first page must still be reached.
+
+    Before the fix, one bounded `list_by_status(status, limit=N)` call read
+    only the oldest `N` rows of a status and never paged further: a status
+    with more than `N` already-healthy Canvas admissions ahead of a broken
+    one left the broken one permanently unreconciled on every future tick.
+    """
+    adapter, _runs, _project = await _adapter()
+    store = _ReceiptStore()
+    for i in range(3):
+        healthy_run_id = await _admit_with_receipt(adapter, f"job-healthy-{i}")
+        store.jobs[(f"job-healthy-{i}", "org-1")] = _correlated_job(
+            f"job-healthy-{i}", healthy_run_id
+        )
+    # Admitted after (and so ordered after) all three healthy rows above, and
+    # its receipt was never persisted -- the same crash shape every other
+    # reconciliation test in this module exercises.
+    await _admit_with_receipt(adapter, "job-starved")
+
+    repaired = await adapter.reconcile_admissions(store, limit=2)
+
+    assert "job-starved" in {job.id for job in repaired}
+
+
+async def test_reconcile_admissions_ignores_a_matching_job_id_in_another_status() -> None:
+    """The `admission_source` filter is pushed into the query, not merely
+    applied after it -- a page must never be crowded out by non-Canvas rows
+    sharing the same status."""
+    adapter, _runs, project = await _adapter()
+    for i in range(3):
+        await _non_canvas_run(adapter, project, f"job-other-{i}")
+    await _admit_with_receipt(adapter, "job-real")
+    store = _ReceiptStore()
+
+    repaired = await adapter.reconcile_admissions(store, limit=2)
+
+    assert {job.id for job in repaired} == {"job-real"}
+
+
+async def test_concurrent_admission_race_adopts_the_winner_instead_of_orphaning_a_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two admitters racing the same idempotency key end up with one Run.
+
+    Simulates the race by admitting the winner first, then forcing a second
+    admit's *own* pre-admission lookup to miss it -- exactly what a second
+    worker's concurrent scan would do before either insert lands. What
+    prevents a second, orphaned Run is the durable `canvas_job_id` claim
+    (migration 039 / `InMemoryRunStore`'s mirror of it) refusing the second
+    insert, not the scan: the loser's `create_run` raises, and `admit`
+    re-reads to adopt the winner instead of leaving its own Run behind.
+    """
+    adapter, runs, _project = await _adapter()
+    winner_run_id = await _admit_with_receipt(adapter, "job-race", operation_id="op-race")
+
+    original_find_admitted = adapter._find_admitted
+    calls = 0
+
+    async def racy_find_admitted(*, job_id: str, operation_id: str | None) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # The racing worker's own lookup, which ran before the winner's
+            # insert was visible to it.
+            return None
+        return await original_find_admitted(job_id=job_id, operation_id=operation_id)
+
+    monkeypatch.setattr(adapter, "_find_admitted", racy_find_admitted)
+
+    loser_run_id = await adapter.admit(
+        job_id="job-race",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id="op-race",
+        receipt=_generation_receipt(),
+    )
+
+    assert loser_run_id == winner_run_id
+    assert calls == 2
+    all_canvas_runs = [
+        run
+        for status in RunStatus
+        for run in await runs.list_by_status(
+            status, limit=100, admission_source="canvas_generation"
+        )
+    ]
+    assert len(all_canvas_runs) == 1
+
+
+async def test_concurrent_admission_race_with_different_inputs_still_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine race does not launder a conflicting retry.
+
+    The recovery path taken when the durable claim refuses a concurrent
+    insert must apply the same receipt-fingerprint comparison as the
+    ordinary pre-admission lookup, not skip it.
+    """
+    adapter, _runs, _project = await _adapter()
+    await _admit_with_receipt(adapter, "job-race-conflict", operation_id="op-race-conflict")
+
+    original_find_admitted = adapter._find_admitted
+    calls = 0
+
+    async def racy_find_admitted(*, job_id: str, operation_id: str | None) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return await original_find_admitted(job_id=job_id, operation_id=operation_id)
+
+    monkeypatch.setattr(adapter, "_find_admitted", racy_find_admitted)
+    changed_receipt = {**_generation_receipt(), "prompt": "a different landscape"}
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await adapter.admit(
+            job_id="job-race-conflict",
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action="generate",
+            actor_principal_id="user-1",
+            operation_id="op-race-conflict",
+            receipt=changed_receipt,
+        )
+
+
+async def test_admission_fingerprint_rejects_a_different_resource_under_the_same_key() -> None:
+    """The persisted admission fingerprint must name its own resource.
+
+    If admission crashed before the Canvas job was inserted and the same
+    org/key is retried for a *different* canvas or layer with otherwise
+    identical generation inputs, the deterministic job id still finds the
+    original Run -- so the fingerprint compared against the retry must
+    include `canvas_id`/`layer_id`, or two different resources correlate to
+    one Run whose graph and provenance still name the first.
+    """
+    adapter, _runs, _project = await _adapter()
+    await adapter.admit(
+        job_id="job-cross-resource",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id="op-cross-resource",
+        receipt={**_generation_receipt(), "canvas_id": "canvas-1", "layer_id": "layer-1"},
+    )
+
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await adapter.admit(
+            job_id="job-cross-resource",
+            canvas_id="canvas-2",
+            layer_id="layer-2",
+            action="generate",
+            actor_principal_id="user-1",
+            operation_id="op-cross-resource",
+            receipt={**_generation_receipt(), "canvas_id": "canvas-2", "layer_id": "layer-2"},
+        )
+
+
+async def _failing_stage() -> list[str]:
+    raise RuntimeError("stage exploded")
 
 
 async def _result(value: list[str]) -> list[str]:

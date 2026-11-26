@@ -1,10 +1,15 @@
-"""Migration 004 and `pg_stores._SCHEMA` must describe the same three tables.
+"""Migrations 004 + 036 + 065 + 066 and `pg_stores._SCHEMA` must describe the same tables.
 
-`PgEventLog`/`PgTriggerStore`/`PgInvocationStore` create their tables two ways.
-Alembic revision 004 is what a real deployment applies; `ensure_event_schema()`
-is what tests and single-process dev runs call. The DDL is written out twice on
-purpose — a migration has to keep creating what it created on the day it ran,
-so it cannot import live application code — and duplicated DDL drifts.
+`PgEventLog`/`PgTriggerStore`/`PgInvocationStore`/`PgConsumerCursorStore`
+create their tables two ways. Alembic revisions 004 (the first three), 036
+(`consumer_cursors`, #1163), 065 (`event_replay_cursors`, #836, the merged
+identity develop shipped) and 066 (the
+delivery-receipt columns, #1060, likewise the merged identity) are
+what a real deployment applies;
+`ensure_event_schema()` is what tests and single-process dev runs call. The
+DDL is written out twice on purpose — a migration has to keep creating what it
+created on the day it ran, so it cannot import live application code — and
+duplicated DDL drifts.
 
 Drift here is not cosmetic. The composite primary key on `handler_invocations`
 *is* the idempotency guarantee (#135): if the migration ever grew a surrogate
@@ -28,10 +33,30 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
-#: The three tables revision 004 creates. Spelled out rather than derived from
-#: the catalogue: a test that asks "are the tables that exist equal?" passes
-#: vacuously when neither side creates anything.
-EVENT_TABLES = ("event_log", "handler_invocations", "trigger_definitions")
+#: The tables the event revisions create: three by 004, `consumer_cursors` by
+#: 036, `event_replay_cursors` by 065, delivery-receipt columns by 066.
+#: Spelled out rather than derived from the catalogue: a test that asks
+#: "are the tables that exist equal?" passes vacuously when neither side
+#: creates anything.
+EVENT_TABLES = (
+    "consumer_cursors",
+    "event_log",
+    "event_replay_cursors",
+    "handler_invocations",
+    "trigger_definitions",
+)
+
+#: Each event revision rendered on its own: `alembic upgrade a:b --sql` renders
+#: the revisions strictly between the two, so rendering ``003:036`` would drag
+#: every unrelated table from 005 to 035 into the comparison. 065 (#836)
+#: creates `event_replay_cursors`; 066 (#1060) carries the delivery-receipt
+#: columns both sides must agree on.
+EVENT_REVISION_RANGES = (
+    "003:004",
+    "035_outcome_scope_thumb_index:036_consumer_cursors",
+    "064:065",
+    "065:066",
+)
 
 
 def _require_postgres() -> str:
@@ -53,12 +78,14 @@ def _require_postgres() -> str:
 
 
 def _migration_ddl() -> str:
-    """Render revision 004 with `alembic --sql`, which does not connect.
+    """Render revisions 004, 036, 065 and 066 with `alembic --sql`, which does not connect.
 
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
-    below only have to parse — nothing dials them. Rendering the real migration
-    rather than re-typing its DDL is the point: a change to
-    `alembic/versions/004_durable_events.py` reaches this test.
+    below only have to parse — nothing dials them. Rendering the real migrations
+    rather than re-typing their DDL is the point: a change to
+    `alembic/versions/004_durable_events.py`, `036_consumer_cursors.py`,
+    `065_event_replay_cursors.py` or `066_durable_delivery_receipts.py`
+    reaches this test.
     """
     env = {
         **os.environ,
@@ -68,16 +95,19 @@ def _migration_ddl() -> str:
         "DB_USER": "offline",
         "DB_PASSWORD": "offline",
     }
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "003:004", "--sql"],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=True,
-    )
-    return result.stdout
+    rendered = []
+    for revision_range in EVENT_REVISION_RANGES:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", revision_range, "--sql"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
+        )
+        rendered.append(result.stdout)
+    return "\n".join(rendered)
 
 
 def _executable_statements(ddl: str) -> list[str]:
@@ -99,7 +129,7 @@ def _executable_statements(ddl: str) -> list[str]:
             continue
         statements.append(statement)
     if not statements:  # pragma: no cover - a silent empty render would pass everything
-        msg = "alembic rendered no DDL for revision 004; the comparison would be vacuous"
+        msg = "alembic rendered no DDL for the event revisions; the comparison would be vacuous"
         raise AssertionError(msg)
     return statements
 
@@ -188,7 +218,7 @@ async def built_schemas():
 
 
 class TestMigrationMatchesEnsureSchema:
-    def test_the_migration_creates_all_three_tables(self, built_schemas):
+    def test_the_migrations_create_all_five_tables(self, built_schemas):
         """Guards the comparison itself: equal-and-empty is not agreement."""
         migration, _ = built_schemas
         created = {table for table, *_ in migration["columns"]}

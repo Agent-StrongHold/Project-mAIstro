@@ -2,7 +2,9 @@
 
 Replaces the heartbeat system with a high-throughput event loop. Events
 are screened by the Bouncer, dispatched to registered handlers, and all
-state mutations route through ``state_submit()``.
+state mutations route through ``state_submit()`` onto the owning
+``maistro.state.State`` singleton writer (#1178): the reactor never opens a
+writer of its own.
 """
 
 from __future__ import annotations
@@ -13,8 +15,13 @@ import logging
 import os
 import sqlite3
 import time
+import warnings
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+from maistro.state import State
+
+_REACTOR_LOG_MIGRATION = "CREATE TABLE IF NOT EXISTS reactor_log (event_name TEXT)"
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +35,7 @@ class Reactor:
         grace_period_seconds: float = 5.0,
         max_queue_depth: int = 10000,
         state_db_path: str | None = None,
+        state: State | None = None,
     ) -> None:
         self._handlers: dict[str, Callable[[Any], Awaitable[None]]] = {}
         self._bouncer: Callable[[Any], Awaitable[bool]] | None = None
@@ -41,14 +49,45 @@ class Reactor:
         self._alerts: list[str] = []
         self._cpu_samples: list[float] = []
         self._last_cpu_sample: tuple[float, float] = (0.0, 0.0)
-        self._state_db_path = state_db_path
-        self._state_conn: sqlite3.Connection | None = None
+        self._state = state
+        self._owned_state_path = self._deprecated_state_path(state, state_db_path)
         self._intervals: dict[str, asyncio.Task[None]] = {}
         self._tick_count = 0
+
+    @staticmethod
+    def _deprecated_state_path(state: State | None, state_db_path: str | None) -> str | None:
+        if state_db_path is None:
+            return None
+        if state is not None:
+            raise ValueError(
+                "Reactor takes either state= or the deprecated state_db_path=, not both: "
+                "two State writers on one database is the split #1178 removed"
+            )
+        warnings.warn(
+            "Reactor(state_db_path=...) is deprecated; pass the owning State via state=",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return state_db_path
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def persistence_backend(self) -> State | None:
+        """The store this Reactor's state writes land in (#1178).
+
+        Every state mutation the Reactor makes routes through the canonical
+        `maistro.state.State` — one writer on the configured state database —
+        so a non-None backend means "the Reactor's events are persisted in the
+        Conductor's own state database, by that one writer". `None` means the
+        Reactor has no persistence authority at all: `state_submit` drops the
+        write instead of writing it somewhere else, which is exactly what a
+        health report has to say out loud rather than let a reader assume a
+        durable store is behind it.
+        """
+        return self._state
 
     def register_source(self, name: str, handler: Callable[[Any], Awaitable[None]]) -> None:
         self._handlers[name] = handler
@@ -59,12 +98,18 @@ class Reactor:
     async def start(self) -> None:
         if self._running:
             return
+        if self._owned_state_path is not None:
+            # A closed State cannot reopen its writer, so each start owns a fresh one.
+            self._state = State(db_path=self._owned_state_path)
+        backend = self.persistence_backend
+        if backend is not None:
+            try:
+                backend.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
+            except Exception:
+                self._release_owned_state()
+                raise
         self._event_queue = asyncio.Queue(maxsize=self._max_queue_depth)
         self._running = True
-        if self._state_db_path:
-            self._state_conn = sqlite3.connect(self._state_db_path)
-            self._state_conn.execute("CREATE TABLE IF NOT EXISTS reactor_log (event_name TEXT)")
-            self._state_conn.commit()
         self._last_cpu_sample = time.monotonic(), os.times().user
         self._loop_task = asyncio.create_task(self._loop())
 
@@ -75,9 +120,12 @@ class Reactor:
         await self._cancel_intervals()
         await self._drain_in_flight()
         await self._cancel_loop()
-        if self._state_conn:
-            self._state_conn.close()
-            self._state_conn = None
+        self._release_owned_state()
+
+    def _release_owned_state(self) -> None:
+        if self._owned_state_path is not None and self._state is not None:
+            self._state.close()
+            self._state = None
 
     async def _cancel_intervals(self) -> None:
         for task in self._intervals.values():
@@ -142,14 +190,19 @@ class Reactor:
         return min(cpu_elapsed / wall_elapsed, 1.0)
 
     def state_submit(self, fn: Callable[[sqlite3.Connection], None]) -> None:
-        if self._state_conn:
-            fn(self._state_conn)
-            self._state_conn.commit()
+        backend = self.persistence_backend
+        if backend is not None:
+            backend.submit(fn)
 
     def state_query(self, sql: str) -> list[tuple[Any, ...]]:
-        if self._state_conn:
-            return self._state_conn.execute(sql).fetchall()
-        return []
+        backend = self.persistence_backend
+        if backend is None:
+            return []
+        reader = backend.open_reader()
+        try:
+            return reader.execute(sql).fetchall()
+        finally:
+            reader.close()
 
     def alerts(self) -> list[str]:
         return list(self._alerts)

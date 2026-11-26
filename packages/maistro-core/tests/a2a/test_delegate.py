@@ -109,6 +109,27 @@ def test_get_task_status_unknown_task_returns_none() -> None:
     assert delegator.get_task_status("nonexistent") is None
 
 
+def test_terminal_task_completion_notifies_the_injected_canonical_waker() -> None:
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    seen = []
+    delegator.set_completion_handler(seen.append)
+
+    task_id = delegator.delegate_task(
+        "planner",
+        "x",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"parent_run_id": "parent", "parent_node_id": "delegate"},
+    )
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    assert len(seen) == 1
+    assert seen[0].id == task_id
+    assert seen[0].metadata == {"parent_run_id": "parent", "parent_node_id": "delegate"}
+
+
 def test_update_task_status_running_to_completed_sets_completed_at() -> None:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["coder"])
@@ -239,3 +260,107 @@ class TestA2ANoSelfTransitions:
     @pytest.mark.parametrize("status", list(TaskStatus))
     def test_no_status_can_self_transition(self, status: TaskStatus) -> None:
         assert can_transition(status, status) is False
+
+
+def test_delegate_task_dedupes_only_on_a_matching_delegation_key() -> None:
+    """The receipt-side idempotency key returns the existing task for a
+    retried admission, and only that: a second admission under a different
+    key must mint a second task, which exercises the loop's no-match exit
+    rather than only its early return."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    first = delegator.delegate_task(
+        "planner",
+        "first",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"delegation_key": "key-a"},
+    )
+    second = delegator.delegate_task(
+        "planner",
+        "second",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"delegation_key": "key-b"},
+    )
+    assert second != first
+    retried = delegator.delegate_task(
+        "planner",
+        "first",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"delegation_key": "key-a"},
+    )
+    assert retried == first
+
+
+def test_delegate_task_dedupes_on_the_legacy_effect_key() -> None:
+    """Callers that address the transport by replay effect_key get the same
+    receipt-side dedupe: one task per logical effect, and a different effect
+    key must still mint a second task."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    first = delegator.delegate_task(
+        "planner",
+        "first",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-1"},
+    )
+    retried = delegator.delegate_task(
+        "planner",
+        "a retry of the same logical hand-off",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-1"},
+    )
+    assert retried == first
+
+    other = delegator.delegate_task(
+        "planner",
+        "second",
+        "coder",
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"effect_key": "agent.delegate_remote:effect-2"},
+    )
+    assert other != first
+
+
+def test_a_terminal_status_without_a_handler_is_still_recorded() -> None:
+    """Receipts stay durable when no canonical waker is (yet) installed."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    task_id = delegator.delegate_task(
+        "planner", "do x", "coder", delegation_mode=DelegationMode.ALLOW_LIST
+    )
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    task = delegator.get_task_status(task_id)
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
+
+
+def test_a_failing_completion_handler_cannot_corrupt_the_receipt() -> None:
+    """The canonical wakeup is scheduled from the receipt update; a handler
+    that raises must not roll the terminal status back."""
+    delegator = A2ADelegator()
+    delegator.register_agent_capability("planner", ["coder"])
+    task_id = delegator.delegate_task(
+        "planner", "do x", "coder", delegation_mode=DelegationMode.ALLOW_LIST
+    )
+    seen: list[str] = []
+
+    def _broken_handler(task: object) -> None:
+        seen.append(getattr(task, "id", ""))
+        raise RuntimeError("canonical store unavailable")
+
+    delegator.set_completion_handler(_broken_handler)
+    delegator.update_task_status(task_id, TaskStatus.RUNNING)
+    delegator.update_task_status(task_id, TaskStatus.COMPLETED, result="done")
+
+    assert seen == [task_id]
+    task = delegator.get_task_status(task_id)
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
+    assert task.result == "done"

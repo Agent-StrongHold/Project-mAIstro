@@ -35,12 +35,41 @@ would wait for a context that can never report where merge enforcement looks.
 Publishing the aggregate verdict onto the triggering candidate SHA keeps the
 judge protected while putting the result exactly where GitHub evaluates it.
 
-`gates-ran` is stricter than GitHub's raw required-check semantics. On ordinary
-PRs it still requires real execution evidence from every specialized CI leg. On
-a `develop` merge group, those specialized contexts are replaced in the
-execution-evidence set by the unconditional `integration-scope` aggregate,
-which verifies every classifier-selected specialized leg succeeded. Main
+`gates-ran` is stricter than GitHub's raw required-check semantics. Pull-request
+and develop-merge-group candidates are path-scoped by one policy (#1351):
+`scripts/ci_merge_group_scope.py` classifies the measured changed files, ci.yml
+runs each specialized job only when its leg is selected (the postgres matrix is
+the documented exception — GitHub evaluates job-level `if` before expanding the
+matrix, so a skipped matrix cannot report its concrete names), and
+`integration-scope` waits only for the selected legs. `gates-ran` judges the
+candidate with the same classifier and the same measured file set, so a
+specialized check reported `skipped` is acceptable exactly when the producers
+scoped it off, and a skip in scope still blocks. On a `develop` merge group,
+the specialized contexts are additionally replaced in the execution-evidence
+set by the unconditional `integration-scope` aggregate, which verifies every
+classifier-selected specialized leg succeeded. Protected pushes and main
 promotions retain their existing full specialized and release-tier check set.
+
+A workflow-level `paths:` filter on a trigger is a third producer-scoping
+mechanism, and it leaves no check run behind at all: GitHub evaluates
+the filter before any job of the workflow exists, so a pull request outside
+the filter — say a docs-only PR against the mutation workflow's
+`packages/**/*.py` — produces no run, not even `skipped`, and a required
+check that is merely absent stays pending forever. That pending is the
+contract, not a gap to excuse away: the #2434 incident replay pins that a
+head whose every completed producer is green but whose paths-filtered row
+is absent stays PENDING until the producer's trigger scope covers the PR
+and the row lands — the repair is trigger coverage, not evaluator leniency
+(the same doctrine each `mutation.yml` trigger row cites for the surface
+class it adds). `check-required-checks.paths_filters()` remains as the
+reviewed record of which producers carry a workflow-level filter; a real
+run under any other trigger is still judged normally. On a merge group such
+a producer cannot run at all unless it also declares `merge_group`, so PR-only
+producers of this kind — the mutation gate's `pr-gate` job is
+`if: github.event_name == 'pull_request'` — are additionally named in
+`MERGE_GROUP_PR_ONLY_CHECKS` and never requested as evidence for a synthetic
+queue SHA; their PR-event enforcement still covers the diff before the queue,
+and the nightly mutation run measures the full critical set independently.
 
 For merge groups, the initial trusted resolver is intentionally **develop-only**.
 It accepts GitHub queue refs under `gh-readonly-queue/develop/` and refuses any
@@ -60,8 +89,14 @@ merge_group:
 
 `scripts/check-required-checks.py` enforces this from the checked-in
 `.github/branch-protection.json` required set. It also reads
-`.github/merge-queue.json` and pins the initial queue to `SQUASH` with one PR per
-merge group. A future required check cannot silently become PR-only while the
+`.github/merge-queue.json` and pins the queue to `SQUASH` and `ALLGREEN`
+grouping (every grouped candidate must pass its own checks; `HEADGREEN` would
+land a whole group on the head entry alone), with batching of at most three
+PRs per merge group, a positive minimum group no larger than the maximum, and
+a group wait limited to reviewed values (0, 2, 3, or 5 minutes).
+Anything else — including non-integer or unreviewed values — fails closed, so
+widening the queue further means editing this gate in the same reviewed change
+that edits the queue file. A future required check cannot silently become PR-only while the
 queue waits forever for an `Expected` context.
 
 Synthetic aggregate contexts such as `gates-ran` are covered by their trusted
@@ -85,8 +120,12 @@ wait forever for an `Expected` result.
 
 | Workflow | Check name | Runs on |
 |---|---|---|
+| CI | `Compliance registry` | every PR |
+| CI | `cross-product-parity` | every PR |
 | CI | `docker-build` | every PR |
+| CI | `docker-rebuild-compare` | every PR |
 | CI | `durable-events` | every PR |
+| CI | `hive-conductor-compose-durability` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
 | CI | `hive-conductor-e2e-ui` | every PR |
 | CI | `lint-and-type-check` | every PR |
@@ -94,37 +133,82 @@ wait forever for an `Expected` result.
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
 | CI | `pr-base` | every PR |
+| CI | `sandbox-conformance` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |
 | CI | `wheel-imports` | every PR |
 | CI | `workflow-lint` | every PR |
 | Cage Guard — Auto-reject PRs touching cage/ or eval/ | `block` | every PR |
-| CodeQL Advanced | `Analyze (actions)` | base `main` |
-| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
-| CodeQL Advanced | `Analyze (python)` | base `main` |
+| CodeQL Advanced | `Analyze (actions)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (javascript-typescript)` | base `main`, `develop` |
+| CodeQL Advanced | `Analyze (python)` | base `main`, `develop` |
 | DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
+| mutation | `Mutation gate (changed critical lines)` | paths |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
+| quality | `Quality / Acceptance state` | every PR |
+| quality | `Quality / Agent store writes` | every PR |
+| quality | `Quality / Architecture fitness` | every PR |
+| quality | `Quality / BFCL provenance` | every PR |
+| quality | `Quality / Backlog consistency` | every PR |
+| quality | `Quality / Contract markers` | every PR |
+| quality | `Quality / Convergence matrix` | every PR |
+| quality | `Quality / Credential authority` | every PR |
+| quality | `Quality / Docstring coverage` | every PR |
+| quality | `Quality / Documentation links` | every PR |
+| quality | `Quality / Enumeration coverage` | every PR |
+| quality | `Quality / Execution lifecycles` | every PR |
+| quality | `Quality / Foreign-harness egress` | every PR |
+| quality | `Quality / Frontend typed client` | every PR |
+| quality | `Quality / Hypothesis` | every PR |
+| quality | `Quality / IFEval provenance` | every PR |
+| quality | `Quality / Image inventory` | every PR |
+| quality | `Quality / Image pins` | every PR |
+| quality | `Quality / Installed proof CLI` | every PR |
+| quality | `Quality / Model egress` | every PR |
+| quality | `Quality / Mypy strict` | every PR |
+| quality | `Quality / Principal identity` | every PR |
+| quality | `Quality / Pyright` | every PR |
+| quality | `Quality / Radon` | every PR |
+| quality | `Quality / Reachability` | every PR |
+| quality | `Quality / Reachability dispositions` | every PR |
+| quality | `Quality / Release consistency` | every PR |
+| quality | `Quality / Route permissions` | every PR |
+| quality | `Quality / Ruff` | every PR |
+| quality | `Quality / Security inventory` | every PR |
+| quality | `Quality / Selected model-call CLI` | every PR |
+| quality | `Quality / Version consistency` | every PR |
+| quality | `Quality / Vulture` | every PR |
+| quality | `Quality / Wiring reads` | every PR |
+| quality | `Quality / Workflow inventory` | every PR |
+| quality | `Quality / Workspace retirement` | every PR |
+| quality | `Quality / Xenon` | every PR |
 | quality | `Quality gate (Pillars 1–4, 7, 8)` | every PR |
 | quality | `coverage (MinIO)` | every PR |
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
+| security | `JS supply chain (npm audit + GuardDog + policy gate)` | every PR |
 | security | `SAST (bandit + semgrep + gitleaks)` | every PR |
+| security | `SAST / Bandit` | every PR |
+| security | `SAST / Gitleaks` | every PR |
+| security | `SAST / Semgrep` | every PR |
 | security | `Supply chain (pip-audit)` | every PR |
 
 <!-- /checks:table -->
 
 ## Deliberate base-coupled checks
 
-`Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
-`Container scan + SBOM + cosign` are required on `main` only. They do not report
-as real executed checks on a `develop`-based PR or develop merge group.
+`Analyze (actions)`, `Analyze (javascript-typescript)`, and `Analyze (python)` are
+required on `main` only. `Container scan + SBOM + cosign` also runs for
+`develop`-based PRs and develop merge groups (and on pushes to `develop`) so
+license and final-filesystem evidence exists before release promotion; branch
+protection still requires the check on `main`.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner

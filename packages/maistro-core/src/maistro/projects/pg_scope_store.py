@@ -14,10 +14,20 @@ than a backstop: two callers can both see no root, and only one can insert one.
 Payloads are JSONB and come back as dicts, because the pool registers a JSON
 codec (`maistro.persistence._register_json_codecs`). That is why this reads
 `model_validate` where the SQLite store reads `model_validate_json`.
+
+This store also satisfies `TransactionalProjectScopeStore` (#1121):
+`transaction()` acquires a connection from the pool and opens a transaction on
+it, and `create_root_in` / `purge_workspace_in` issue their statements on a
+connection the caller holds. `PgWorkspaceStore` writes the Workspace row, the
+owner membership and the Root Project on one such connection, so a crash
+between them can no longer leave half a Workspace behind. `create_root` and
+`purge_workspace` are those methods inside a `transaction()` of their own.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +40,9 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+
+if TYPE_CHECKING:
+    from maistro.workspaces.store import WorkspaceStore
 from maistro.runs.evidence_json import json_of, model_of
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -46,9 +59,98 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._workspace_store: WorkspaceStore | None = None
+
+    def bind_workspace_store(self, workspace_store: WorkspaceStore) -> None:
+        self._workspace_store = workspace_store
+
+    async def _require_project_view(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import is_blank_principal, require_project_view
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_view(project, workspace_store, principal_id)
+
+    async def _require_project_administer(self, project: Project, principal_id: str) -> None:
+        from maistro.workspaces.store_boundary import (
+            is_blank_principal,
+            require_project_administer,
+        )
+
+        workspace_store = self._workspace_store
+        if workspace_store is None:
+            raise ProjectScopeDenied("Project not found")
+        if is_blank_principal(principal_id):
+            raise ProjectScopeDenied("Project not found")
+        await require_project_administer(project, workspace_store, principal_id)
+
+    async def _resolve_for_authorization(
+        self, project_id: str, principal_id: str | None
+    ) -> Project:
+        """Resolve the Project, collapsing not-found into the scoped denial.
+
+        The store boundary must not be an existence oracle: with an acting
+        principal, an unknown Project and one in a foreign Workspace are
+        indistinguishable, so both surface as the same `ProjectScopeDenied`.
+        """
+        try:
+            return await self._require(project_id)
+        except ProjectNotFound:
+            if principal_id is None:
+                raise
+            raise ProjectScopeDenied("Project not found") from None
+
+    async def _authorize_view(self, project_id: str, principal_id: str | None) -> Project:
+        project = await self._resolve_for_authorization(project_id, principal_id)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
+
+    async def _authorize_administer(self, project_id: str, principal_id: str | None) -> Project:
+        project = await self._resolve_for_authorization(project_id, principal_id)
+        if principal_id is not None:
+            await self._require_project_administer(project, principal_id)
+        return project
+
+    async def _authorize_membership_write(
+        self, membership: ProjectMembership, principal_id: str | None, *, replacement: bool
+    ) -> Project:
+        project = await self._authorize_view(membership.project_id, principal_id)
+        if principal_id is not None and self._workspace_store is not None:
+            from maistro.projects.authorization import authorize_membership_write
+
+            await authorize_membership_write(
+                self,
+                project=project,
+                workspace_store=self._workspace_store,
+                membership=membership,
+                principal_id=principal_id,
+                replacement=replacement,
+            )
+        return project
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Any]:
+        """One pooled connection with a transaction open on it.
+
+        The handle `TransactionalProjectScopeStore` names: a Workspace store on
+        the same pool writes its own rows on the yielded connection and passes
+        it to `create_root_in` / `purge_workspace_in`, so both stores' rows
+        commit or roll back as one (#1121).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            yield conn
 
     async def purge_workspace(self, workspace_id: str) -> None:
-        """Tear down every Project row this Workspace owns.
+        """Tear down every Project row this Workspace owns, in a transaction of its own."""
+        async with self.transaction() as conn:
+            await self.purge_workspace_in(conn, workspace_id)
+
+    async def purge_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """Tear down every Project row this Workspace owns, on the caller's connection.
 
         Children before parents, because both schemas declare
         `ON DELETE RESTRICT` on the self-referencing parent link and on the
@@ -62,41 +164,46 @@ class PgProjectScopeStore:
         fail it, and a loop whose termination depends on an invariant enforced
         somewhere else should say so out loud when the invariant breaks.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "DELETE FROM canonical_project_resources WHERE workspace_id = $1",
+        await conn.execute(
+            "DELETE FROM canonical_project_resources WHERE workspace_id = $1",
+            workspace_id,
+        )
+        await conn.execute(
+            "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
+            workspace_id,
+        )
+        for _ in range(_MAX_PURGE_PASSES):
+            status = await conn.execute(
+                """DELETE FROM canonical_projects
+                    WHERE workspace_id = $1
+                      AND project_id NOT IN (
+                          SELECT parent_project_id
+                            FROM canonical_projects
+                           WHERE workspace_id = $1
+                             AND parent_project_id IS NOT NULL)""",
                 workspace_id,
             )
-            await conn.execute(
-                "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
-                workspace_id,
-            )
-            for _ in range(_MAX_PURGE_PASSES):
-                status = await conn.execute(
-                    """DELETE FROM canonical_projects
-                        WHERE workspace_id = $1
-                          AND project_id NOT IN (
-                              SELECT parent_project_id
-                                FROM canonical_projects
-                               WHERE workspace_id = $1
-                                 AND parent_project_id IS NOT NULL)""",
-                    workspace_id,
-                )
-                if status.endswith(" 0"):
-                    return
-            msg = (
-                f"Project tree for workspace {workspace_id} did not drain in "
-                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
-            )
-            raise ProjectIntegrityError(msg)
+            if status.endswith(" 0"):
+                return
+        msg = (
+            f"Project tree for workspace {workspace_id} did not drain in "
+            f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+        )
+        raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
-        """Create or return the Workspace's durable Root Project.
+        """Create or return the Workspace's durable Root Project, in a transaction of its own."""
+        async with self.transaction() as conn:
+            return await self.create_root_in(conn, workspace_id)
+
+    async def create_root_in(self, conn: Any, workspace_id: str) -> Project:
+        """Create or return the Workspace's durable Root Project on the caller's connection.
 
         `ON CONFLICT DO NOTHING` against the partial unique index, then read
-        back. Checking first and inserting second would let two concurrent
-        callers both find no root and both try to create one — the loser gets a
-        unique violation rather than the root that now exists.
+        back on the same connection. Checking first and inserting second would
+        let two concurrent callers both find no root and both try to create
+        one — the loser gets a unique violation rather than the root that now
+        exists.
         """
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
@@ -106,22 +213,30 @@ class PgProjectScopeStore:
             parent_project_id=None,
             is_root=True,
         )
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO canonical_projects
-                   (project_id, workspace_id, parent_project_id, is_root, payload)
-                   VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
-                   ON CONFLICT DO NOTHING""",
-                root.project_id,
-                root.workspace_id,
-                json_of(root),
-            )
-        return await self.root_for_workspace(workspace_id)
+        await conn.execute(
+            """INSERT INTO canonical_projects
+               (project_id, workspace_id, parent_project_id, is_root, payload)
+               VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
+               ON CONFLICT DO NOTHING""",
+            root.project_id,
+            root.workspace_id,
+            json_of(root),
+        )
+        # Read back inside the transaction: a read on another pooled
+        # connection would not see an uncommitted insert.
+        written = await self._root_or_none(workspace_id, conn=conn)
+        if written is None:
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        return written
 
-    async def root_for_workspace(self, workspace_id: str) -> Project:
+    async def root_for_workspace(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> Project:
         root = await self._root_or_none(workspace_id)
         if root is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        if principal_id is not None:
+            await self._authorize_view(root.project_id, principal_id)
         return root
 
     async def create(
@@ -132,8 +247,9 @@ class PgProjectScopeStore:
         name: str,
         defaults: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        principal_id: str | None = None,
     ) -> Project:
-        parent = await self._require(parent_project_id)
+        parent = await self._authorize_administer(parent_project_id, principal_id)
         if parent.workspace_id != workspace_id:
             raise ProjectIntegrityError("Project parent must belong to the same Workspace")
         project = Project(
@@ -155,13 +271,19 @@ class PgProjectScopeStore:
             )
         return project
 
-    async def get(self, project_id: str) -> Project | None:
+    async def get(self, project_id: str, *, principal_id: str | None = None) -> Project | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE project_id = $1", project_id
         )
-        return model_of(Project, payload) if payload is not None else None
+        if payload is None:
+            return None
+        project = model_of(Project, payload)
+        if principal_id is not None:
+            await self._require_project_view(project, principal_id)
+        return project
 
-    async def lineage(self, project_id: str) -> list[Project]:
+    async def lineage(self, project_id: str, *, principal_id: str | None = None) -> list[Project]:
+        await self._authorize_view(project_id, principal_id)
         return await self._lineage(project_id)
 
     async def _lineage(self, project_id: str, *, conn: Any = None) -> list[Project]:
@@ -192,8 +314,10 @@ class PgProjectScopeStore:
         lineage.reverse()
         return lineage
 
-    async def list_children(self, project_id: str) -> list[Project]:
-        await self._require(project_id)
+    async def list_children(
+        self, project_id: str, *, principal_id: str | None = None
+    ) -> list[Project]:
+        await self._authorize_view(project_id, principal_id)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT payload FROM canonical_projects WHERE parent_project_id = $1",
@@ -207,8 +331,14 @@ class PgProjectScopeStore:
         children.sort(key=lambda item: (item.created_at, item.project_id))
         return children
 
-    async def move_project(self, project_id: str, *, parent_project_id: str) -> Project:
-        project = await self._require(project_id)
+    async def move_project(
+        self,
+        project_id: str,
+        *,
+        parent_project_id: str,
+        principal_id: str | None = None,
+    ) -> Project:
+        project = await self._authorize_administer(project_id, principal_id)
         if project.is_root:
             raise ProjectIntegrityError("Root Project cannot be moved")
         parent = await self._require(parent_project_id)
@@ -247,8 +377,9 @@ class PgProjectScopeStore:
         project_id: str,
         *,
         defaults: dict[str, Any],
+        principal_id: str | None = None,
     ) -> Project:
-        project = await self._require(project_id)
+        project = await self._authorize_administer(project_id, principal_id)
         updated = project.model_copy(
             deep=True,
             update={"defaults": dict(defaults), "updated_at": datetime.now(UTC)},
@@ -256,8 +387,8 @@ class PgProjectScopeStore:
         await self._update_project(updated)
         return updated
 
-    async def delete(self, project_id: str) -> None:
-        project = await self._require(project_id)
+    async def delete(self, project_id: str, *, principal_id: str | None = None) -> None:
+        project = await self._authorize_administer(project_id, principal_id)
         if project.is_root:
             raise ProjectIntegrityError("Root Project cannot be deleted")
         checks = (
@@ -301,16 +432,24 @@ class PgProjectScopeStore:
             resolved.update(project.defaults)
         return resolved
 
-    async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
+    async def set_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
         """Create or update the one canonical membership per (project, principal).
 
         Keyed on `(project_id, principal_id)`, carrying the prior row's
         `membership_id` and `created_at` forward on an update rather than
         minting a second, independent grant (#1148) -- the existing row is
         read under `FOR UPDATE` so the decision of what to preserve is
-        atomic with the write.
+        atomic with the write. A supplied ``principal_id`` is the acting
+        principal whose membership-write authority is enforced (#1150); this
+        replacement upsert requires ADMINISTER, while `merge_membership`
+        takes the delegable-add path.
         """
-        project = await self._require(membership.project_id)
+        project = await self._authorize_membership_write(membership, principal_id, replacement=True)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
@@ -352,9 +491,76 @@ class PgProjectScopeStore:
             )
         return model_of(ProjectMembership, row["payload"])
 
-    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+    async def merge_membership(
+        self,
+        membership: ProjectMembership,
+        *,
+        principal_id: str | None = None,
+    ) -> ProjectMembership:
+        """Merge a delegated re-grant into the canonical row atomically.
+
+        The existing row is read under `FOR UPDATE` inside the same
+        transaction that writes the merge, so a concurrent owner
+        `remove_membership` blocks until this commits (or finds no row left
+        to preserve if it commits first) -- an upsert fed by a separately
+        read row could resurrect a revoked principal with stale grants
+        (#1148). As in `set_membership`, the row is read back from the
+        `RETURNING` clause rather than trusting a pre-computed value. A
+        supplied ``principal_id`` is the acting principal whose
+        membership-write authority is enforced (#1150).
+        """
+        project = await self._authorize_membership_write(
+            membership, principal_id, replacement=False
+        )
+        if project.workspace_id != membership.workspace_id:
+            raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await self._membership_or_none(
+                membership.project_id, membership.principal_id, conn=conn
+            )
+            if existing is None:
+                updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
+            else:
+                updated = membership.model_copy(
+                    update={
+                        "membership_id": existing.membership_id,
+                        "created_at": existing.created_at,
+                        "role": existing.role,
+                        "grants": existing.grants | membership.grants,
+                        "denies": existing.denies,
+                        "delegable_grants": (
+                            existing.delegable_grants | membership.delegable_grants
+                        ),
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            row = await conn.fetchrow(
+                """INSERT INTO canonical_project_memberships
+                   (project_id, principal_id, workspace_id, membership_id, payload)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)
+                   ON CONFLICT (project_id, principal_id) DO UPDATE SET
+                     workspace_id = EXCLUDED.workspace_id,
+                     membership_id = EXCLUDED.membership_id,
+                     payload = EXCLUDED.payload
+                   RETURNING payload""",
+                updated.project_id,
+                updated.principal_id,
+                updated.workspace_id,
+                updated.membership_id,
+                json_of(updated),
+            )
+        return model_of(ProjectMembership, row["payload"])
+
+    async def remove_membership(
+        self,
+        project_id: str,
+        *,
+        principal_id: str,
+        acting_principal_id: str | None = None,
+    ) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._authorize_administer(project_id, acting_principal_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """DELETE FROM canonical_project_memberships
@@ -368,8 +574,9 @@ class PgProjectScopeStore:
         project_id: str,
         *,
         principal_id: str | None = None,
+        acting_principal_id: str | None = None,
     ) -> list[ProjectMembership]:
-        await self._require(project_id)
+        await self._authorize_view(project_id, acting_principal_id)
         sql = "SELECT payload FROM canonical_project_memberships WHERE project_id = $1"
         params: tuple[str, ...] = (project_id,)
         if principal_id is not None:
@@ -381,8 +588,10 @@ class PgProjectScopeStore:
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
 
-    async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
-        project = await self._require(resource.project_id)
+    async def put_resource(
+        self, resource: ProjectScopedResource, *, principal_id: str | None = None
+    ) -> ProjectScopedResource:
+        project = await self._authorize_administer(resource.project_id, principal_id)
         if project.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource Workspace does not match Project")
         # The Workspace guard is in the conflict clause, not only in a check
@@ -420,8 +629,9 @@ class PgProjectScopeStore:
         project_id: str,
         *,
         resource_type: str | None = None,
+        principal_id: str | None = None,
     ) -> list[ProjectScopedResource]:
-        lineage = await self.lineage(project_id)
+        lineage = await self.lineage(project_id, principal_id=principal_id)
         project_ids = {project.project_id for project in lineage}
         workspace_id = lineage[-1].workspace_id
         async with self._pool.acquire() as conn:
@@ -464,10 +674,11 @@ class PgProjectScopeStore:
         async with self._pool.acquire() as acquired:
             await acquired.execute(sql, *params)
 
-    async def _root_or_none(self, workspace_id: str) -> Project | None:
+    async def _root_or_none(self, workspace_id: str, *, conn: Any = None) -> Project | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE workspace_id = $1 AND is_root",
             workspace_id,
+            conn=conn,
         )
         return model_of(Project, payload) if payload is not None else None
 

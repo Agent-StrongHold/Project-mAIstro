@@ -71,7 +71,6 @@ history:
 
 # ADR-064: Comprehensive Secret Redaction
 
-**Status:** Accepted
 **Date:** 2026-05-20
 **Tranche:** T3
 **Depends on:** IMP-050
@@ -320,7 +319,8 @@ maistro/security/
 
 ## Source references
 
-- `docs/analysis/COMPETITIVE-IMPROVEMENTS.md` — IMP-050 definition, lines 1236–1256
+- Historical competitive-improvements inventory (removed `docs/analysis/COMPETITIVE-IMPROVEMENTS.md`;
+  IMP-050 absorbed into this ADR)
 - `maistro/security/patterns.py` — existing pattern data (style reference)
 - Hermes secret redaction module — pattern-based approach
 - OpenClaw secret scrubber — pattern-based approach

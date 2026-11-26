@@ -34,7 +34,6 @@ owners:
 
 # ADR-081226-7248: Event and Checkpoint Model
 
-- **Status:** Accepted
 - **Date:** 2026-08-12
 - **Deciders:** MAIstro maintainers
 - **Technical Area:** Events, durable history, checkpoints, recovery
@@ -156,4 +155,4 @@ A path complies when durable product events use the canonical envelope/Workspace
 
 - `ADR-081226-a66b`
 - `ADR-081226-69ee`
-- `docs/analysis/ARCHITECTURE-CONVERGENCE-MATRIX.md`
+- [`docs/architecture/CONVERGENCE-MATRIX.md`](../architecture/CONVERGENCE-MATRIX.md)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from maistro.capabilities.authority import ApprovalAuthority
 from maistro.capabilities.protocols import CapabilityProvider
 
 
@@ -24,6 +25,7 @@ class ApprovalDecision:
     request_id: str
     approved: bool
     actor: str = ""
+    authority: ApprovalAuthority | None = None
 
 
 @runtime_checkable
@@ -31,3 +33,18 @@ class Approval(CapabilityProvider, Protocol):
     async def request(self, req: ApprovalRequest) -> ApprovalDecision:
         """Create a pending approval and return the decision once resolved."""
         ...
+
+
+if TYPE_CHECKING:
+
+    def _vulture_approval_slot_usage() -> None:
+        """Keep the approval slot protocol visible to production-only scans.
+
+        Shipped consumers resolve ``Approval`` outside the ``packages/*/src``
+        Vulture surface (Conductor HITL / self-repair wiring). This
+        non-executing reference records the reviewed downstream consumer
+        without banking the protocol as dead code.
+        """
+        _ = (Approval, ApprovalRequest, ApprovalDecision)
+
+    _ = _vulture_approval_slot_usage

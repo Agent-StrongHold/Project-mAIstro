@@ -3,8 +3,8 @@
 Faithful recreation of the Stronghold Epic-15 builder pipeline on maistro:
 stage ordering, skipping, and post-completion hooks are declared on
 :class:`~maistro.builders.graph.PipelineNode`;
-:class:`~maistro.builders.graph_executor.GraphPipelineExecutor` drives
-execution. New since Epic-15: the review stage is a verifiable gate that
+:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`
+drives execution. New since Epic-15: the review stage is a verifiable gate that
 routes back to implement (bounded verify-and-revise) instead of relying
 solely on a downstream cleanup stage.
 
@@ -26,18 +26,27 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from maistro.graph.durable_runs.protocol import DurableRunStore
+    from maistro.runs.store import RunStore
 
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     PipelineDispatcher,
 )
+from maistro.builders.logger import BuildersLogger
 from maistro.builders.runtime import BuildersRuntime
+from maistro.builders.spec_coverage import check_spec_coverage
+from maistro.builders.spec_templates import SpecTemplateStore
+from maistro.builders.verifier import InvariantVerifier
 
 logger = logging.getLogger("maistro.builders.pipeline")
+_BUILDERS_LOGGER = BuildersLogger()
 
 _SPEC_SUMMARY_LIMIT = 2000
 _CLEAN_SIGNALS = ("no violations", "lgtm", "approved", "all checks pass", "clean")
@@ -160,6 +169,9 @@ class PipelineRun:
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Identity of the canonical Run that owns lifecycle evidence for this
+    # compatibility receipt. Builders domain state remains local to this run.
+    canonical_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,6 +184,7 @@ class PipelineRun:
             "skipped_stages": list(self.skipped_stages),
             "revisions": dict(self.revisions),
             "gate_exhausted": list(self.gate_exhausted),
+            "canonical_run_id": self.canonical_run_id,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -241,12 +254,29 @@ async def _decompose_on_complete(run: PipelineRun, output: str) -> None:
         return
     if run.context.get("_spec") is not None:
         return
-    spec = _emit_spec(run.issue_number, run.title, output)
+    # Prefer a verified template for this issue class when Quartermaster
+    # tagged one (#2317 / SpecTemplateStore CONNECT).
+    templates = run.context.get("_spec_templates")
+    issue_class = str(run.context.get("issue_class") or "")
+    spec = None
+    if isinstance(templates, SpecTemplateStore) and issue_class:
+        spec = templates.adapt(
+            issue_class,
+            issue_number=run.issue_number,
+            title=run.title,
+        )
+    if spec is None:
+        spec = _emit_spec(run.issue_number, run.title, output)
     await spec_store.save(spec)
     run.context["_spec"] = spec
     run.context["spec"] = spec.to_dict()
     run.context["verifications"] = []
     run.context["spec_summary"] = build_spec_summary(spec)
+    _BUILDERS_LOGGER.log_builder_action(
+        "quartermaster",
+        "decompose_spec",
+        f"issue {run.issue_number}: {run.title}",
+    )
 
 
 async def _scaffold_on_complete(run: PipelineRun, output: str) -> None:
@@ -269,23 +299,41 @@ async def _review_on_complete(run: PipelineRun, output: str) -> None:
     *implemented* code. A no-op (empty findings) when no ``code_index`` is
     configured or no ``workspace_path`` was given — this is what keeps the
     hard-fail gate backward-compatible with callers who opt out.
+
+    Always folds :func:`check_spec_coverage` findings into the same bag so
+    uncovered invariants gate review the same way structural violations do
+    (#2317). When no optional ``spec_verifier`` wrap is configured, records a
+    one-shot :class:`InvariantVerifier` snapshot under
+    ``spec_coverage_verification`` without mutating the wrap's
+    ``verifications`` list.
     """
+    findings: list[Any] = []
     code_index = run.context.get("_code_index")
     workspace_path = run.context.get("workspace_path", "")
-    if code_index is None or not workspace_path:
-        run.context["structural_findings"] = []
-        return
+    if code_index is not None and workspace_path:
+        from maistro.codebase.violations import check_structural_violations
 
-    from maistro.codebase.violations import check_structural_violations
+        report = await code_index.build(workspace_path)
+        run.context["_code_structure_report"] = report
+        findings.extend(check_structural_violations(report))
 
-    report = await code_index.build(workspace_path)
-    run.context["_code_structure_report"] = report
-    findings = check_structural_violations(report)
+    spec = run.context.get("_spec")
+    findings.extend(check_spec_coverage(spec))
     run.context["structural_findings"] = findings
     if findings:
         run.context["structural_findings_summary"] = "\n".join(
             f"- [{f.category}] {f.description}: {f.suggestion}" for f in findings
         )
+
+    if spec is not None and run.context.get("_spec_verifier") is None:
+        verification = await InvariantVerifier().verify(spec, "review", {})
+        run.context["spec_coverage_verification"] = verification.to_dict()
+
+    _BUILDERS_LOGGER.log_builder_action(
+        "auditor",
+        "review_complete",
+        f"issue {run.issue_number}: {len(findings)} finding(s)",
+    )
 
 
 # ── Default pipeline nodes ───────────────────────────────────────────────────
@@ -452,7 +500,7 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Executes the full issue-to-merge pipeline via GraphPipelineExecutor.
+    """Executes the full issue-to-merge pipeline on the canonical run spine.
 
     Usage:
         pipeline = BuilderPipeline(dispatcher)
@@ -471,14 +519,56 @@ class BuilderPipeline:
         spec_store: Any | None = None,
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
+        spec_templates: SpecTemplateStore | None = None,
+        builders_logger: BuildersLogger | None = None,
         nodes: list[PipelineNode] | None = None,
+        run_store: RunStore | None = None,
+        durable_store: DurableRunStore | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        actor_principal_id: str | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._spec_store = spec_store
         self._spec_verifier = spec_verifier
         self._code_index = code_index
+        self._spec_templates = spec_templates if spec_templates is not None else SpecTemplateStore()
+        self._builders_logger = builders_logger if builders_logger is not None else _BUILDERS_LOGGER
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
         self._runs: dict[str, PipelineRun] = {}
+        # Canonical wiring is held, not pre-built: the executor is constructed
+        # per execute() from these fields, so an injected store set is never
+        # paired with a stale default-store executor.
+        self._run_store = run_store
+        self._durable_store = durable_store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        self._actor_principal_id = actor_principal_id
+
+    async def _load_spec_context(
+        self,
+        run: PipelineRun,
+        issue_number: int,
+        title: str,
+        skip_decompose: bool,
+    ) -> Any:
+        """Load or emit the Builders spec and populate run context."""
+        spec = None
+        if self._spec_store is not None:
+            spec = await self._spec_store.get(issue_number)
+            if spec is not None:
+                run.context["_spec"] = spec
+                run.context["spec"] = spec.to_dict()
+                run.context["verifications"] = []
+
+        if self._spec_store is not None and spec is None and skip_decompose:
+            spec = _emit_spec(issue_number, title, "")
+            await self._spec_store.save(spec)
+            run.context["_spec"] = spec
+            run.context["spec"] = spec.to_dict()
+            run.context["verifications"] = []
+
+        return spec
 
     async def execute(
         self,
@@ -519,36 +609,38 @@ class BuilderPipeline:
                 "_spec_verifier": self._spec_verifier,
                 "workspace_path": workspace_path,
                 "_code_index": self._code_index,
+                "_spec_templates": self._spec_templates,
+                "_builders_logger": self._builders_logger,
             }
         )
+        self._builders_logger.log_builder_action(
+            "pipeline",
+            "execute_start",
+            f"issue {issue_number}: {title} ({repo})",
+        )
 
-        # Load spec if store is available
-        spec = None
-        if self._spec_store is not None:
-            spec = await self._spec_store.get(issue_number)
-            if spec is not None:
-                run.context["_spec"] = spec
-                run.context["spec"] = spec.to_dict()
-                run.context["verifications"] = []
-
-        # Emit spec immediately when decompose will be skipped (atomic issue)
-        if self._spec_store is not None and spec is None and skip_decompose:
-            spec = _emit_spec(issue_number, title, "")
-            await self._spec_store.save(spec)
-            run.context["_spec"] = spec
-            run.context["spec"] = spec.to_dict()
-            run.context["verifications"] = []
-
+        spec = await self._load_spec_context(run, issue_number, title, skip_decompose)
         run.context["spec_summary"] = build_spec_summary(spec) if spec is not None else ""
 
         # Wrap each node's on_complete with spec verification if configured
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        executor = GraphPipelineExecutor(self._dispatcher)
+        errors = graph.validate()
+        if errors:
+            # Preserve the legacy invalid-graph receipt without admitting a
+            # canonical Run for work that must never start.
+            run.status = f"invalid graph: {'; '.join(errors)}"
+            return run
+        executor = CanonicalGraphPipelineExecutor(
+            self._dispatcher,
+            run_store=self._run_store,
+            durable_store=self._durable_store,
+            workspace_id=self._workspace_id,
+            project_id=self._project_id,
+            actor_principal_id=self._actor_principal_id,
+        )
 
         await executor.execute(graph, run)
-
-        self._reconcile_stages(run)
         return run
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:
@@ -582,22 +674,6 @@ class BuilderPipeline:
 
             result.append(replace(node, on_complete=_hook))
         return result
-
-    def _reconcile_stages(self, run: PipelineRun) -> None:
-        """Update PipelineStage statuses from executor results."""
-        failed_name = ""
-        if run.status.startswith("failed at "):
-            failed_name = run.status[len("failed at ") :]
-
-        for stage in run.stages:
-            if stage.name == failed_name:
-                stage.status = StageStatus.FAILED
-                stage.error = run.failed_stage_error
-            elif stage.name in run.context:
-                stage.status = StageStatus.COMPLETED
-            elif stage.name in run.skipped_stages:
-                stage.status = StageStatus.SKIPPED
-            # else: PENDING (default)
 
     def get_run(self, run_id: str) -> PipelineRun | None:
         return self._runs.get(run_id)

@@ -30,7 +30,6 @@ history:
 
 # ADR-088: maistro-evolve — experimental genome optimiser
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Records the intended shape** of the maistro-evolve package while stating plainly that it is
 EXPERIMENTAL — no stability contract yet, and this ADR will be revised once it settles.
@@ -76,6 +75,36 @@ revised once maistro-evolve stabilises**, at which point a stability contract ca
 - [ ] The package is identified as the Compose / Refine engine of the Repertoire pattern (ADR-070)
       and as the driver of release-channel auto-advancement in universal versioning (ADR-075).
 - [ ] The ADR commits to being revised once the package stabilises.
+
+## Operational contract: canonical Evolve cycle recovery (#1064)
+
+The experimental package remains Evolve's owner of population and tournament
+semantics; this does not create a second execution lifecycle. For a cycle run
+through Hive Conductor, the canonical Graph/Run/NodeRun/Attempt records remain
+the sole execution authority. Evolve's domain state is a reconstructible
+projection associated with those records, not an alternate scheduler or run
+store.
+
+The Conductor-owned durable domain store persists versioned Evolve snapshots
+(population genomes, cycle markers, tournament ratings and battle history,
+frozen membership, and the battle-journal position) and publication evidence.
+The package owns the serialization contract through
+`maistro_evolve.durable_snapshot.export_domain_state` and
+`restore_domain_state`; replicas restore the snapshot and replay only journal
+entries after its recorded position. Battle and finalize publications are
+identified by canonical Run/NodeRun identity. Finalization persists its
+committed domain snapshot before its committed marker; a missing or faulted
+marker is not success. If an interrupted mutation cannot safely be retried
+from the restored pre-cycle snapshot, recovery fails closed with an explicit
+reconciliation disposition rather than silently replaying or claiming success.
+
+Admission snapshots provide the compensation base for incomplete cycles.
+Recovery reconstructs node implementations from durable Run facts through the
+shipped resolver, and uses the canonical execution lease/fence and the
+service's cycle lock to prevent overlapping publication. A fresh cycle has a
+new canonical identity and therefore does not inherit an earlier cycle's
+publication keys. These rules describe the Conductor integration; they do not
+turn the experimental package API into a general stability guarantee.
 
 ## Consequences
 

@@ -162,7 +162,7 @@ class TestTheLedgerIsChargedPerTurn:
             with bind_execution_context(run_id=run_id):
                 await _turn(agent, "sess-1")
 
-        keys = [call["request_id"] for call in ledger.calls]
+        keys = [call["charge_key"] for call in ledger.calls]
         assert keys == ["run-1", "run-2"]
 
     @pytest.mark.ac("SPEC-083026-56ee/AC-5")
@@ -171,7 +171,7 @@ class TestTheLedgerIsChargedPerTurn:
         with bind_execution_context(run_id="run-1", attempt_id="a-1"):
             await _turn(_agent(_OutcomeStore(), ledger), "sess-1")
 
-        assert ledger.calls[0]["request_id"] == "run-1"
+        assert ledger.calls[0]["charge_key"] == "run-1"
 
     @pytest.mark.ac("SPEC-083026-56ee/AC-5")
     async def test_the_session_is_never_the_key(self) -> None:
@@ -179,15 +179,18 @@ class TestTheLedgerIsChargedPerTurn:
         with bind_execution_context(run_id="run-1"):
             await _turn(_agent(_OutcomeStore(), ledger), "sess-1")
 
-        assert ledger.calls[0]["request_id"] != "sess-1"
+        assert ledger.calls[0]["charge_key"] != "sess-1"
 
-    @pytest.mark.ac("SPEC-083026-56ee/AC-5")
-    async def test_a_turn_with_no_run_falls_back_to_the_request(self) -> None:
-        """A container with no chat admitter binds no Run. The request id is
-        the next-narrowest thing that is still per-turn; the session, which is
-        what was passed before, is not per-turn at all."""
+    @pytest.mark.ac("SPEC-100826-c0e1/AC-4")
+    async def test_a_turn_with_no_run_charges_under_no_key_and_keeps_the_audit_id(self) -> None:
+        """A container with no chat admitter binds no Run. The request id may
+        be a client-supplied `X-Request-ID` (ADR-100826-c0e1), so it is handed
+        to the ledger as audit correlation only: the charge carries no idempotency
+        key at all rather than one the client chose, and a conforming ledger
+        records an unkeyed charge unconditionally."""
         ledger = _Ledger()
         with bind_execution_context(request_id="req-9"):
             await _turn(_agent(_OutcomeStore(), ledger), "sess-1")
 
+        assert ledger.calls[0]["charge_key"] is None
         assert ledger.calls[0]["request_id"] == "req-9"
