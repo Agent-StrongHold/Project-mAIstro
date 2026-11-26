@@ -190,6 +190,32 @@ class TestMatchingRules:
         with pytest.raises(UnmatchedCellsError, match="harness_kind"):
             build_lift_report(by_position)
 
+    def test_a_cell_in_the_wrong_row_is_refused(self) -> None:
+        """A mapping that puts frontier cells in the weak row (and vice versa)
+        would silently swap lift and transfer, so the declared role must
+        match the position's row (the list form is immune: it keys cells by
+        their declared role in the first place)."""
+        cells = _matched()
+        by_position = {
+            "w_base": cells[2],
+            "w_evo": cells[3],
+            "f_base": cells[0],
+            "f_evo": cells[1],
+        }
+        with pytest.raises(UnmatchedCellsError, match="model_role"):
+            build_lift_report(by_position)
+
+    def test_a_single_mismatched_role_in_a_mapping_is_refused(self) -> None:
+        cells = _matched()
+        by_position = {
+            "w_base": cells[0],
+            "w_evo": cells[1],
+            "f_base": cells[2],
+            "f_evo": cells[3].model_copy(update={"model_role": "weak"}),
+        }
+        with pytest.raises(UnmatchedCellsError, match="'f_evo' declares model_role 'weak'"):
+            build_lift_report(by_position)
+
     def test_the_wrong_number_of_cells_is_refused(self) -> None:
         with pytest.raises(UnmatchedCellsError, match="exactly 4 cells"):
             build_lift_report(_matched()[:3])

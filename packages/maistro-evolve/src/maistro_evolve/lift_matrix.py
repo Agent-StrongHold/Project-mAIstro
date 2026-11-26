@@ -152,6 +152,15 @@ def _by_position(cells: list[MatrixCell] | dict[str, MatrixCell]) -> dict[str, M
                 f"missing cell for position {missing[0]!r} — a lift matrix "
                 "needs exactly 4 cells (w_base, w_evo, f_base, f_evo)"
             )
+        for pos in _POSITIONS:
+            cell = cells[pos]
+            role = _POSITION_ROLE[pos[0]]
+            if cell.model_role != role:
+                raise UnmatchedCellsError(
+                    f"cell at {pos!r} declares model_role {cell.model_role!r}; "
+                    f"that position is the {role} row — a mismatched mapping "
+                    "would silently swap lift and transfer"
+                )
         return {pos: cells[pos] for pos in _POSITIONS}
     keyed: dict[tuple[str, str], MatrixCell] = {}
     for cell in cells:
