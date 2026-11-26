@@ -443,3 +443,56 @@ kind since round 1, with one criterion materially hardened in-lane.
 Progress: `{checked: 8, done: 1 (RC-tree drift guard), skipped: 0, errors: 0,
 next: develop sync for lane branch → operator-designated immutable RC →
 #860 exact-RC ≥4 h soak → first release-workflow run → external verification}`.
+
+## Re-verification addendum — 2026-11-26 round 7 (job `fa9871ce55e4`) — battery re-proven, blockers unchanged
+
+The immediately preceding attempt (job `43b97501ac53`) never started: the
+provider rejected the configured model ("No API key found for moonshotai",
+`agent_exit: 1`, `worker_error`), so it produced **zero** work — tree clean at
+`3c4e0b4f9f`, nothing to salvage. This job's `manifest.json` again carries
+`checks: []` and **no `check-*.log` files exist in the job directory**, so the
+full battery was re-executed here at head `3c4e0b4f9f` (branch `auto-89`, tree
+clean before this note). GitHub evidence is from the frozen
+`dispatch-context.json` (captured 2026-11-26T16:08:16Z, `complete_for_scope:
+true`, 35 sources); zero live API calls, zero GitHub mutations.
+
+### Fresh deterministic checks (all re-run at `3c4e0b4f9f`)
+
+| Check | Command | Result |
+|---|---|---|
+| Release guard suite | `uv run pytest tests/test_release_guard.py -q` | **35 passed** (1.01s) — includes the 11 RC-tree promotion cases and the workflow-wiring test asserting `--verify-rc-tree`, `fetch-depth: 0`, no `continue-on-error`, and `guard` in `wheels`/`images` needs |
+| Suite inventory | `uv run python scripts/check-suite-inventory.py` (**CI's exact invocation**, `.github/workflows/ci.yml:719`, no args) | exit 0 — "ok: 21 suite(s) match the recorded inventory"; 34,136 collected node IDs, 0 duplicate identities, 0 byte-identical files |
+| Release consistency | `uv run python scripts/check-release-consistency.py` | exit 0 — "ok: released none, shipping 0.9.0, working toward 1.0.0" |
+| Lint | `uv run ruff check .` | exit 0 — "All checks passed!" |
+| Format | `uv run ruff format --check .` | exit 0 — "3484 files already formatted" |
+| Tags | `git tag -l 'v*'` | **0 tags** repo-wide (no rcN candidate, no final) |
+| Tree | `git status --short` | clean (only this note added this round) |
+
+### Program movement since round 6 (none unblocking)
+
+- Child soak lane **#860 still open**; PR **#1672 open and unmerged** at
+  `edbc2f4e43f3` (`mergeable_state: "blocked"`). Frozen check-runs on that
+  head regressed/stalled vs round 6: now **75 success / 3 failure** ("Quality
+  gate (Pillars 1–4, 7, 8)", "test failure", "Quality / Documentation links")
+  / 3 skipped, and the `gates-ran` commit status is **pending** on all 4
+  contexts. The exact-RC ≥4 h soak has still never run.
+- Issue #89 carries no tracked sub-issues (`sub_issues: []`); #860 is linked
+  only in the body, so its completion is not mechanically gated on the issue.
+- Dependencies per round-6 record: #88 closed; #84/#86/#87 open.
+
+### Verdict (round 7)
+
+No in-lane engineering gap was found: the RC-tree promotion guard and its
+tests pass every gate at the lane head, and nothing in this round's evidence
+warrants a repair to committed code. All remaining acceptance criteria still
+require release **operations** this lane is prohibited from performing: RC tag
+designation, the #860 exact-RC sustained soak (its own PR is failing CI and
+unmerged), the first real `release.yml` run with `release` environment
+approval, and external package/image/signature/install verification. Tally
+vs the issue's eight criteria is unchanged from round 6: 2 PARTIAL
+(RC-tree guard; new-RC-on-change enforcement), 6 UNVERIFIED/FAIL/BLOCKED.
+**Verdict: BLOCKED**, unchanged in kind since round 1.
+
+Progress: `{checked: 8, done: 0 (no new repairable gap), skipped: 0, errors:
+0, next: #860 CI repair + merge → operator-designated immutable RC/config →
+exact-RC ≥4 h soak → exercised release pipeline → external verification}`.
