@@ -250,8 +250,8 @@ class SqliteBacklogItemStore:
     ) -> BacklogItem:
         require_claimant(principal_id, agent_id)
         require_lease(lease_seconds)
-        now = claim_now(at)
         async with self._write() as conn:
+            now = claim_now(at)  # sampled under the write lock: lease math must see post-wait time
             current = await self._require(item_id)
             refuse_held_claim(current, now)
             require_claim_policy(
@@ -275,15 +275,16 @@ class SqliteBacklogItemStore:
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         lease_seconds: float,
         at: datetime | None = None,
     ) -> BacklogItem:
         require_lease(lease_seconds)
-        now = claim_now(at)
         async with self._write() as conn:
+            now = claim_now(at)  # sampled under the write lock: renewal cannot accept an expired claim
             current = await self._require(item_id)
-            require_claim_holder(current, fence_token, now)
+            require_claim_holder(current, fence_token, now, principal_id=principal_id)
             updated = plan_renew(current, now=now, lease_seconds=lease_seconds)
             await self._compare_and_set(conn, updated, current.version)
         return updated
@@ -292,13 +293,14 @@ class SqliteBacklogItemStore:
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         at: datetime | None = None,
     ) -> BacklogItem:
-        now = claim_now(at)
         async with self._write() as conn:
+            now = claim_now(at)  # sampled under the write lock, matching claim/renew
             current = await self._require(item_id)
-            require_claim_holder(current, fence_token, now)
+            require_claim_holder(current, fence_token, now, principal_id=principal_id)
             updated = plan_release(current, now=now)
             await self._compare_and_set(conn, updated, current.version)
         return updated

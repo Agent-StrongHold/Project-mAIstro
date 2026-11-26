@@ -322,12 +322,18 @@ def _scope_violation(scope: Sequence[str], item: BacklogItem) -> str | None:
     A declared token must sit inside the allowed scope (when one is declared)
     and outside the protected scope, with path semantics: a protected
     ``deploy/`` covers ``deploy/prod.yml`` and an allowed ``packages/`` covers
-    ``packages/maistro-core/src/x.py`` (the #103 campaign-area rule).
+    ``packages/maistro-core/src/x.py`` (the #103 campaign-area rule). Tokens
+    carrying ``.`` or ``..`` segments are refused before any boundary
+    comparison: `PurePosixPath` keeps them verbatim, so an un-normalized
+    ``packages/../deploy/prod.yml`` would pass both checks below while the
+    path actually resolves into the protected tree.
     """
     for token in scope:
         stripped = token.strip()
         if not stripped:
             continue
+        if any(part in (".", "..") for part in stripped.split("/")):
+            return f"{stripped!r} contains '.' or '..' path segments"
         if any(_covers(boundary, stripped) for boundary in item.protected_scope):
             return f"{stripped!r} is inside the item's protected scope"
         if item.allowed_scope and not any(
@@ -338,7 +344,12 @@ def _scope_violation(scope: Sequence[str], item: BacklogItem) -> str | None:
 
 
 def _covers(boundary: str, token: str) -> bool:
-    """`token` equals `boundary` or lives underneath it, segment-aware."""
+    """`token` equals `boundary` or lives underneath it, segment-aware.
+
+    Callers must refuse ``.``/``..`` segments first (`_scope_violation` does):
+    `PurePosixPath` preserves them, so this comparison alone would treat
+    ``packages/../deploy/x`` as inside ``packages/``.
+    """
     base = PurePosixPath(boundary.strip().strip("/"))
     path = PurePosixPath(token.strip().strip("/"))
     return path == base or base in path.parents

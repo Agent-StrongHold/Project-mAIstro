@@ -431,7 +431,10 @@ async def renew_backlog_item_claim(  # noqa: V103
     try:
         with _store_errors():
             return await store.renew_claim(
-                item_id, fence_token=body.fence_token, lease_seconds=body.lease_seconds
+                item_id,
+                principal_id=user_id(auth),
+                fence_token=body.fence_token,
+                lease_seconds=body.lease_seconds,
             )
     except _Conflict as conflict:
         return _conflict_response(conflict)
@@ -454,7 +457,9 @@ async def release_backlog_item_claim(  # noqa: V103
     await _require_item(store, workspace_id, item_id)
     try:
         with _store_errors():
-            return await store.release_claim(item_id, fence_token=body.fence_token)
+            return await store.release_claim(
+                item_id, principal_id=user_id(auth), fence_token=body.fence_token
+            )
     except _Conflict as conflict:
         return _conflict_response(conflict)
 

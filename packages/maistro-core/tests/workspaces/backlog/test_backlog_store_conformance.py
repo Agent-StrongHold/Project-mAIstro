@@ -649,6 +649,37 @@ async def test_renew_extends_the_lease_without_moving_the_generation(backend) ->
         )
 
 
+async def test_renew_and_release_refuse_a_non_holder_at_the_live_fence(backend) -> None:
+    """The fence is readable by every contributor, so it alone proves nothing:
+    renew/release must also match the authenticated principal to the holder."""
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+    item = await store.create(_item("ws-a", project_id))
+    claimed = await store.claim(item.item_id, principal_id="holder", at=_at())
+    live_fence = claimed.fence_token
+
+    with pytest.raises(BacklogClaimRefused) as renew:
+        await store.renew_claim(
+            item.item_id,
+            principal_id="impostor",
+            fence_token=live_fence,
+            lease_seconds=100,
+        )
+    assert "not the claim holder" in renew.value.reason
+    with pytest.raises(BacklogClaimRefused) as release:
+        await store.release_claim(item.item_id, principal_id="impostor", fence_token=live_fence)
+    assert "not the claim holder" in release.value.reason
+    assert await store.get(item.item_id) == claimed
+
+    # The real holder still renews and releases at the same fence.
+    renewed = await store.renew_claim(
+        item.item_id, principal_id="holder", fence_token=live_fence, lease_seconds=100
+    )
+    assert renewed.fence_token == live_fence
+    released = await store.release_claim(item.item_id, principal_id="holder", fence_token=live_fence)
+    assert released.claimant_principal_id is None
+
+
 async def test_release_clears_the_claim_and_the_fence_never_repeats(backend) -> None:
     store = await backend.store()
     project_id = await _workspace(backend, store, "ws-a")
@@ -777,6 +808,14 @@ async def test_declared_scope_is_checked_against_allowed_and_protected(backend) 
     with pytest.raises(BacklogClaimRefused) as outside:
         await store.claim(item.item_id, principal_id="worker", scope=("frontend/app.ts",))
     assert "allowed scope" in outside.value.reason
+    # '..' survives PurePosixPath untouched, so boundary comparison alone
+    # would call packages/../deploy/prod.yml allowed-scope-inside and
+    # protected-scope-outside; traversal segments are refused outright.
+    with pytest.raises(BacklogClaimRefused) as traversal:
+        await store.claim(
+            item.item_id, principal_id="worker", scope=("packages/../deploy/prod.yml",)
+        )
+    assert "'..' path segments" in traversal.value.reason
     assert await store.active_claim(item.item_id) is None
 
     inside = await store.claim(
@@ -864,6 +903,19 @@ async def test_retiring_a_claimed_item_releases_the_claim_in_the_same_write(back
     again = await store.claim(item.item_id, agent_id="agent-2")
     assert again.version == reopened.version + 1
     assert again.claimant_agent_id == "agent-2"
+    # The fence advanced on retirement, so the pre-retirement receipt must
+    # not renew, release, or edit the item's next claim.
+    with pytest.raises(BacklogStaleFence):
+        await store.renew_claim(item.item_id, fence_token=claimed.fence_token, lease_seconds=100)
+    with pytest.raises(BacklogStaleFence):
+        await store.release_claim(item.item_id, fence_token=claimed.fence_token)
+    with pytest.raises(BacklogStaleFence):
+        await store.update(
+            item.item_id,
+            expected_version=again.version,
+            changes={"status": "implemented"},
+            fence_token=claimed.fence_token,
+        )
 
 
 async def test_claim_needs_a_claimant_and_a_positive_lease(backend) -> None:

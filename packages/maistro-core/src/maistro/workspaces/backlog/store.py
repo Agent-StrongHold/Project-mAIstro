@@ -129,20 +129,22 @@ class BacklogItemStore(Protocol):
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         lease_seconds: float,
         at: datetime | None = None,
     ) -> BacklogItem:
         """Extend the live claim's lease; the fence stays the same generation.
 
-        Only the current holder (presenting the live fence) may renew; an
-        expired claim is gone and re-claiming is the way back."""
+        Only the current holder (matching `principal_id` at the live fence)
+        may renew; an expired claim is gone and re-claiming is the way back."""
         ...
 
     async def release_claim(
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -322,25 +324,40 @@ def require_current_fence(item: BacklogItem, fence_token: int | None, *, now: da
         raise BacklogStaleFence(fence_token, item)
 
 
-def require_claim_holder(item: BacklogItem, fence_token: int, now: datetime) -> None:
+def require_claim_holder(
+    item: BacklogItem, fence_token: int, now: datetime, principal_id: str | None = None
+) -> None:
     """`renew_claim`/`release_claim` gate: a live claim held at this fence.
 
-    An expired claim is already gone -- re-claiming is the way back, so the
-    refusal says so rather than pretending to renew or release."""
+    When `principal_id` is supplied it must match the claim's holder -- the
+    fence alone is not proof of ownership because it is readable by any
+    contributor via `active_claim`. An expired claim is already gone --
+    re-claiming is the way back, so the refusal says so rather than pretending
+    to renew or release."""
     if active_claim_of(item, now) is None:
         raise BacklogClaimRefused(item.item_id, "no active claim to hold")
     if fence_token != item.fence_token:
         raise BacklogStaleFence(fence_token, item)
+    if principal_id is not None and principal_id != item.claimant_principal_id:
+        raise BacklogClaimRefused(item.item_id, "caller is not the claim holder")
 
 
 def release_if_retired(updated: BacklogItem) -> BacklogItem:
     """An item leaving the claimable status pool gives up any claim record in
-    the same write: retired/finished work holds no lease (#100)."""
+    the same write: retired/finished work holds no lease (#100). The fence
+    advances rather than clearing, mirroring `plan_release`, so a receipt
+    from the retired claim can never match the next claim's generation."""
     if updated.status in CLAIMABLE_STATUSES:
         return updated
-    if not any(getattr(updated, name) is not None for name in CLAIM_FIELDS):
+    held = CLAIM_FIELDS - {"fence_token"}
+    if not any(getattr(updated, name) is not None for name in held):
         return updated
-    return updated.model_copy(update=dict.fromkeys(CLAIM_FIELDS))
+    return updated.model_copy(
+        update={
+            **dict.fromkeys(held),
+            "fence_token": (updated.fence_token or 0) + 1,
+        }
+    )
 
 
 class InMemoryBacklogItemStore:
@@ -420,8 +437,8 @@ class InMemoryBacklogItemStore:
     ) -> BacklogItem:
         require_claimant(principal_id, agent_id)
         require_lease(lease_seconds)
-        now = claim_now(at)
         async with self._lock:
+            now = claim_now(at)  # sampled under the lock: lease math must see post-wait time
             current = self._require(item_id)
             refuse_held_claim(current, now)
             require_claim_policy(
@@ -445,15 +462,16 @@ class InMemoryBacklogItemStore:
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         lease_seconds: float,
         at: datetime | None = None,
     ) -> BacklogItem:
         require_lease(lease_seconds)
-        now = claim_now(at)
         async with self._lock:
+            now = claim_now(at)  # sampled under the lock: renewal cannot accept an expired claim
             current = self._require(item_id)
-            require_claim_holder(current, fence_token, now)
+            require_claim_holder(current, fence_token, now, principal_id=principal_id)
             updated = plan_renew(current, now=now, lease_seconds=lease_seconds)
             self._items[item_id] = updated
         return updated.model_copy(deep=True)
@@ -462,13 +480,14 @@ class InMemoryBacklogItemStore:
         self,
         item_id: str,
         *,
+        principal_id: str | None = None,
         fence_token: int,
         at: datetime | None = None,
     ) -> BacklogItem:
-        now = claim_now(at)
         async with self._lock:
+            now = claim_now(at)  # sampled under the lock, matching claim/renew
             current = self._require(item_id)
-            require_claim_holder(current, fence_token, now)
+            require_claim_holder(current, fence_token, now, principal_id=principal_id)
             updated = plan_release(current, now=now)
             self._items[item_id] = updated
         return updated.model_copy(deep=True)
