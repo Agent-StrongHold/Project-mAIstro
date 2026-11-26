@@ -230,3 +230,19 @@ d2425d3e2e3fac1a0b808ef0b7f02d90b4d72185:docs/testing/inventory-notes/1690-cross
 fb322ab221607c0ea6fb0be541f4087c9f1839e8:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:462
 fb322ab221607c0ea6fb0be541f4087c9f1839e8:packages/maistro-evolve/tests/test_attribution.py:generic-api-key:476
 fb322ab221607c0ea6fb0be541f4087c9f1839e8:tests/migrations/test_task_admission_generation_upgrade.py:generic-api-key:46
+
+# ---- #69: Sentinel signer parameter annotations ----
+# Commit 5fac53cdb introduced the Sentinel decision signer. Two of its
+# constructor/rotation signatures take a parameter whose name ends in the
+# segment the generic-api-key rule keys on, annotated with the Ed25519
+# private-key *type* from the cryptography package. The rule matches the
+# field-name prefix without regard to whether what follows is a value or a
+# type annotation (the exact shape recorded above for the local-CA design
+# spec), and there is no literal here to split at source — the parameter
+# accepts an object the caller already holds, and no key bytes appear in
+# the file (the signer generates or derives its material at runtime; the
+# durable record columns keep public verification material only). Scope is
+# the introducing commit, path, rule and line; later edits to the file
+# remain fully scanned.
+5fac53cdb3f5667bc40ab49a59193a3ee2c63936:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:111
+5fac53cdb3f5667bc40ab49a59193a3ee2c63936:packages/maistro-core/src/maistro/security/sentinel/integrity.py:generic-api-key:150
