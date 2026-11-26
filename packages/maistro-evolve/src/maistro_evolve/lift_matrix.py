@@ -138,30 +138,28 @@ _POSITION_KIND = {"base": "baseline", "evo": "evolved"}
 _POSITIONS = ("w_base", "w_evo", "f_base", "f_evo")
 
 
-def _by_position(cells: list[MatrixCell] | dict[str, MatrixCell]) -> dict[str, MatrixCell]:
-    """Address the four cells by their table position.
-
-    Accepts either a 4-item list or a mapping keyed by ``"<role>_<kind>"`` —
-    the table cell names (``w_base``, ``w_evo``, ``f_base``, ``f_evo``) — so
-    callers can address cells individually (AC-1) without positional puzzles.
-    """
-    if isinstance(cells, dict):
-        missing = [pos for pos in _POSITIONS if pos not in cells]
-        if missing:
+def _by_position_from_mapping(cells: dict[str, MatrixCell]) -> dict[str, MatrixCell]:
+    """Resolve the four table positions from a position-keyed mapping."""
+    missing = [pos for pos in _POSITIONS if pos not in cells]
+    if missing:
+        raise UnmatchedCellsError(
+            f"missing cell for position {missing[0]!r} — a lift matrix "
+            "needs exactly 4 cells (w_base, w_evo, f_base, f_evo)"
+        )
+    for pos in _POSITIONS:
+        cell = cells[pos]
+        role = _POSITION_ROLE[pos[0]]
+        if cell.model_role != role:
             raise UnmatchedCellsError(
-                f"missing cell for position {missing[0]!r} — a lift matrix "
-                "needs exactly 4 cells (w_base, w_evo, f_base, f_evo)"
+                f"cell at {pos!r} declares model_role {cell.model_role!r}; "
+                f"that position is the {role} row — a mismatched mapping "
+                "would silently swap lift and transfer"
             )
-        for pos in _POSITIONS:
-            cell = cells[pos]
-            role = _POSITION_ROLE[pos[0]]
-            if cell.model_role != role:
-                raise UnmatchedCellsError(
-                    f"cell at {pos!r} declares model_role {cell.model_role!r}; "
-                    f"that position is the {role} row — a mismatched mapping "
-                    "would silently swap lift and transfer"
-                )
-        return {pos: cells[pos] for pos in _POSITIONS}
+    return {pos: cells[pos] for pos in _POSITIONS}
+
+
+def _by_position_from_list(cells: list[MatrixCell]) -> dict[str, MatrixCell]:
+    """Resolve the four table positions from an unordered 4-cell list."""
     keyed: dict[tuple[str, str], MatrixCell] = {}
     for cell in cells:
         key = _cell_key(cell)
@@ -180,6 +178,18 @@ def _by_position(cells: list[MatrixCell] | dict[str, MatrixCell]) -> dict[str, M
             )
         by_position[pos] = found
     return by_position
+
+
+def _by_position(cells: list[MatrixCell] | dict[str, MatrixCell]) -> dict[str, MatrixCell]:
+    """Address the four cells by their table position.
+
+    Accepts either a 4-item list or a mapping keyed by ``"<role>_<kind>"`` —
+    the table cell names (``w_base``, ``w_evo``, ``f_base``, ``f_evo``) — so
+    callers can address cells individually (AC-1) without positional puzzles.
+    """
+    if isinstance(cells, dict):
+        return _by_position_from_mapping(cells)
+    return _by_position_from_list(cells)
 
 
 def _check_one_denominator(by_position: dict[str, MatrixCell]) -> None:

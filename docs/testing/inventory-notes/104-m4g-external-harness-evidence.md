@@ -389,3 +389,64 @@ shape (`g-...-eval-N` ordinals restart per `EvolutionCycle` instance, so two
 fresh instances at the same cycle count can still choose the same
 directory), the not-yet-vendored ARC-AGI-3 corpus, and the absence of real
 external-harness matched comparisons on the live path.
+
+## Gate-repair round: radon + xenon + coverage-unit (2026-11-26, this lane)
+
+CI at the head (`a89e68e331f0`) failed three surfaces; no test was added,
+removed, or moved in this round — the `inventory-delta` above is unchanged.
+
+1. **Quality / Radon** — "new (unbaselined) findings: 2". Both were blocks
+   this PR itself introduced, and both were above the C ceiling:
+   `lift_matrix.py::_by_position` (C 12) and
+   `evidence_manifest.py::_verify_lift` (C 12). Repaired by the Boy Scout
+   Rule, no ledger amendment (nothing was banked, so nothing needed a grant
+   or a row):
+   - `_by_position` split into `_by_position_from_mapping` (B 7) and
+     `_by_position_from_list` (A 5) behind a two-line dispatch (A 2);
+     every error message is byte-identical to the pre-split strings.
+   - `_verify_lift` split into `_gap_closure_errors` (B 7) and
+     `_lift_row_errors` (A 3) under a loop wrapper (A 4); same
+     behavior — the three gap_closure rules still fire only when
+     `gap_closure is not None` — and identical messages.
+2. **Quality / Xenon** — 126 block violations vs `XENON_BASELINE: 124`:
+   the same two blocks. After the split, xenon reports exactly 124 block
+   identities (baseline holds), zero module-rank violations, zero
+   project-average violations.
+3. **coverage (no services)** — job cancelled, not failed: the five legs
+   were all green (core 17824 passed in 15:16, canvas 610 in 36s, evolve
+   1211 in 19s, rsi 1793 in 2:47) when the job hit its
+   `timeout-minutes: 20` wall mid-bootstrap-leg. Develop's own passing run
+   at `f3681088` (job 140133082644) needed 18:19 of the same cap with a
+   13:46 core leg; the branch's run had a 15:16 core leg over an identical
+   17824 tests with no core code changed — one runner-variance minute
+   cancelled it. Repair: `coverage-unit.timeout-minutes` 20 → 30 in
+   `quality.yml` with the reason recorded in-file. This is a
+   runner-capacity parameter, not a floor: every leg still runs, the
+   artifact still uploads, and the coverage gate still judges the same
+   data. The aiosqlite `Event loop is closed` lines in that job's log are
+   `PytestUnhandledThreadExceptionWarning`s from the worker thread's
+   teardown (`test_working_memory.py[sqlite]`) — develop's passing logs
+   print the same warning class 44 times; they are not failures.
+
+### Validation executed for this round (2026-11-26, `uv run`)
+
+- `uv run python scripts/check-radon-baseline.py` (CI's invocation) →
+  current C/D/E/F blocks **124**, baseline entries **124**, new findings
+  **0**, regressed **0**, improved **0**, stale **0**;
+- xenon with CI's exact arguments (`--max-absolute B --max-modules B
+  --max-average A -i third_party` over the ten shipped src trees) →
+  **124 block violations** (≤ baseline 124), 0 module, 0 average;
+- `tests/test_complexity_gate_scope.py` → passed (the pin tying
+  `XENON_BASELINE` to the ledger length holds);
+- coverage of the refactored files from the evolve suite (branch mode):
+  `lift_matrix.py` **100%**, `evidence_manifest.py` 99% (the two missed
+  lines are pre-existing, in untouched `_verify_checksums` /
+  `_verify_metering` regions);
+- `pytest packages/maistro-evolve/tests -q --timeout=30` → **1211 passed,
+  12 skipped**; `formal/models/test_rsi_*_conformance.py` → 10 passed;
+- `uv run ruff check .` / `uv run ruff format --check .` → clean;
+- `scripts/check-suite-inventory.py --suite packages/maistro-evolve/tests`
+  → ok, **1223** collected nodes match the recorded inventory;
+- `scripts/check-workflow-inventory.py` (33 workflows dispositioned) and
+  `scripts/check-workflow-write-safety.py` → ok after the
+  `quality.yml` edit; `quality.yml` still parses as YAML.

@@ -447,33 +447,45 @@ def _verify_results(results: Any) -> list[str]:
     return [error for row in results for error in _result_row_errors(row)]
 
 
+def _gap_closure_errors(row: dict[str, Any], name: str) -> list[str]:
+    """A numeric gap_closure needs its baseline and a positive gap to close."""
+    errors: list[str] = []
+    gap_closure = row.get("gap_closure")
+    if not row.get("baseline_version"):
+        errors.append(f"lift {name!r}: numeric gap_closure without baseline_version (AC-10)")
+    if not isinstance(gap_closure, (int, float)) or isinstance(gap_closure, bool):
+        errors.append(f"lift {name!r}: gap_closure must be a number or null")
+    gap = row.get("gap")
+    if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap <= 0:
+        errors.append(
+            f"lift {name!r}: numeric gap_closure with nonpositive gap "
+            f"{gap} — nothing to close, gap_closure must be null (AC-10)"
+        )
+    return errors
+
+
+def _lift_row_errors(row: dict[str, Any], name: str) -> list[str]:
+    """One lift row's publishability errors (SPEC-281 §4, AC-10)."""
+    errors: list[str] = []
+    if row.get("gap_closure") is not None:
+        errors.extend(_gap_closure_errors(row, name))
+    if "transfer" not in row:
+        errors.append(f"lift {name!r}: no transfer — inversion is undetectable without it")
+    return errors
+
+
 def _verify_lift(lift: Any) -> list[str]:
     """AC-10: a numeric gap_closure is meaningless without its baseline, and
     meaningless again when the measured gap is nonpositive (nothing to close)."""
-    errors: list[str] = []
     if not isinstance(lift, list):
         return ["lift section is not a list"]
+    errors: list[str] = []
     for row in lift:
         if not isinstance(row, dict):
             errors.append("lift row is not an object")
             continue
         name = row.get("benchmark", "<unnamed>")
-        gap_closure = row.get("gap_closure")
-        if gap_closure is not None:
-            if not row.get("baseline_version"):
-                errors.append(
-                    f"lift {name!r}: numeric gap_closure without baseline_version (AC-10)"
-                )
-            if not isinstance(gap_closure, (int, float)) or isinstance(gap_closure, bool):
-                errors.append(f"lift {name!r}: gap_closure must be a number or null")
-            gap = row.get("gap")
-            if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap <= 0:
-                errors.append(
-                    f"lift {name!r}: numeric gap_closure with nonpositive gap "
-                    f"{gap} — nothing to close, gap_closure must be null (AC-10)"
-                )
-        if "transfer" not in row:
-            errors.append(f"lift {name!r}: no transfer — inversion is undetectable without it")
+        errors.extend(_lift_row_errors(row, name))
     return errors
 
 
