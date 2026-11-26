@@ -1,5 +1,14 @@
 """Canvas compositor — assembles layer images into a single PIL image.
 
+TRANSITIONAL COMPATIBILITY WINDOW (ADR-045, #2311): this PIL pipeline
+composites the legacy LayerRecord model. The ADR-039/044 AssetInstance
+render path is ``asset_compositor`` (``plan_render`` + ``render_page``);
+new compositing work belongs there only and cannot regress onto this
+module. ADR-044 Phase 2 owes this pipeline a ``RenderPlan`` acceptance seam
+with golden-image parity at the bridge; until that and the Phase 3 backfill
+land (then ADR-046), deletion would strand persisted Canvas state, which
+ADR-045 forbids.
+
 All PIL operations are CPU-bound and run via asyncio.to_thread so the
 event loop stays unblocked.  The compositor is stateless: given the
 same inputs it always produces byte-identical output (determinism

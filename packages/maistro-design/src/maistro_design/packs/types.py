@@ -46,13 +46,29 @@ in-repo YAML registry is this lane's answer to it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from maistro.ontology.rubric import ScoringMethod
+
 PackPhaseName = Literal["explore", "execute", "evaluate", "refine"]
+
+#: The named-anchor scale every pack catalog dimension is scored on (M7-A9,
+#: #985): 1-5, with the dimension's `low_anchor` naming what a 1 means and
+#: `high_anchor` naming what a 5 means. A fixed scale is the contract — a
+#: manifest inventing its own range would make cross-pack judgments
+#: incomparable — so there is no per-dimension scale field to misconfigure.
+CATALOG_SCALE_MIN = 1
+CATALOG_SCALE_MAX = 5
+
+#: Weights are proportions of one whole judgment: they must sum to exactly 1.
+#: Compared with a tight absolute tolerance because these are authored
+#: decimals (0.22 + 0.20 + …), not computed floats.
+_WEIGHT_SUM_TOLERANCE = 1e-9
 
 if TYPE_CHECKING:
     # Import at type-check time only: `rubric` imports this module's contract
@@ -96,6 +112,14 @@ class RubricDimension(BaseModel):
     only when the pack's catalog is instantiated onto a Goal (see
     `rubric.GoalRubricCatalog`), and the pack never carries the resulting
     identity.
+
+    Thickness (M7-A9, #985): each dimension carries the weight it contributes
+    to the pack's weighted-sum judgment (the manifest's weights must sum to
+    1 — validated at `DomainPack`), the named 1-5 scale anchors a judge scores
+    between, and the scoring method. The method *defaults* to `model_judge`
+    (`maistro.ontology.rubric.ScoringMethod` — the canonical vocabulary, so a
+    pack cannot invent a fourth method); a manifest marks a dimension `human`
+    or `deterministic` explicitly when it is one.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -103,6 +127,10 @@ class RubricDimension(BaseModel):
     dimension_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
+    weight: float = Field(gt=0.0, le=1.0)
+    low_anchor: str = Field(min_length=1, description="What a scale-1 score means")
+    high_anchor: str = Field(min_length=1, description="What a scale-5 score means")
+    method: ScoringMethod = ScoringMethod.MODEL_JUDGE
 
 
 class PackId(StrEnum):
@@ -238,6 +266,57 @@ class PackSummary(BaseModel):
 _SEMVER_RE = "^\\d+\\.\\d+\\.\\d+$"
 
 
+def _validate_artifact_surface(pack: DomainPack) -> None:
+    """The declared artifact kinds are a closed, self-owned surface.
+
+    The pack's one judged payload kind (`artifact_payload_kind`, M7-A9 #985)
+    must be one of the pack's own `artifact_kinds`: a pack can never name
+    another pack's payload kind as its own.
+    """
+    if len(set(pack.artifact_kinds)) != len(pack.artifact_kinds):
+        raise ValueError("artifact_kinds must be unique within a pack")
+    if pack.artifact_payload_kind not in pack.artifact_kinds:
+        raise ValueError(
+            f"artifact_payload_kind {pack.artifact_payload_kind!r} must be one of the "
+            "pack's declared artifact_kinds"
+        )
+
+
+def _validate_rubric_catalog(pack: DomainPack) -> None:
+    """Dimension ids are unique and the shipped weights sum to one judgment."""
+    dimension_ids = [dimension.dimension_id for dimension in pack.rubric_dimensions]
+    if len(set(dimension_ids)) != len(dimension_ids):
+        raise ValueError("rubric dimension_ids must be unique within a pack")
+    # The default catalog is one whole judgment (M7-A9, #985): the shipped
+    # weights must sum to exactly 1. A Workspace configuration may narrow
+    # the dimension set later, but the pack's own defaults cannot ship a
+    # partial judgment.
+    weight_sum = math.fsum(dimension.weight for dimension in pack.rubric_dimensions)
+    if not math.isclose(weight_sum, 1.0, rel_tol=0.0, abs_tol=_WEIGHT_SUM_TOLERANCE):
+        raise ValueError(
+            f"rubric dimension weights must sum to 1 (got {weight_sum!r} across "
+            f"{len(pack.rubric_dimensions)} dimensions)"
+        )
+
+
+def _validate_fence_coverage(pack: DomainPack) -> None:
+    """Declared fence points must cover every gated node in the shape."""
+    # (A backend name is a binding name, never a pack identity — AC-5. That
+    # invariant needs no validator branch here: `PackId` and
+    # `ExecuteBackend` are two closed enums with disjoint members, so a
+    # colliding manifest fails enum validation before this validator runs.
+    # The disjointness itself is pinned at the enum level by test.)
+    declared = {point.value for point in pack.fence_points}
+    for phase in pack.graph.nodes:
+        if not phase.fenced:
+            continue
+        gate = _fence_gate_for(phase.phase)
+        if gate not in declared:
+            raise ValueError(
+                f"fenced node {phase.node_id!r} requires fence point {gate!r} in fence_points"
+            )
+
+
 class DomainPack(BaseModel):
     """One domain pack manifest (#793 pack contract, minimum).
 
@@ -262,32 +341,26 @@ class DomainPack(BaseModel):
     explore_focus: tuple[str, ...] = Field(min_length=1)
     execute_backends: tuple[ExecuteBackend, ...] = Field(min_length=1)
     artifact_kinds: tuple[str, ...] = Field(min_length=1)
+    #: The one declared artifact kind whose payload schema the pack ships
+    #: (M7-A9, #985: `product_spec` → `artifacts.ProductSpec`, `game_loop` →
+    #: `artifacts.GameLoop`, `book_pages` → `artifacts.BookPages`). This is
+    #: the pack's *judged* artifact — the payload a thesis/refine emission
+    #: must satisfy — and it must be one of the pack's own `artifact_kinds`:
+    #: a pack can never name another pack's payload kind as its own.
+    artifact_payload_kind: str = Field(min_length=1)
     rubric_dimensions: tuple[RubricDimension, ...] = Field(min_length=1)
     fence_points: tuple[FencePoint, ...] = ()
     graph: PackGraphShape
 
     @model_validator(mode="after")
     def _validate_pack(self) -> DomainPack:
-        if len(set(self.artifact_kinds)) != len(self.artifact_kinds):
-            raise ValueError("artifact_kinds must be unique within a pack")
-        dimension_ids = [dimension.dimension_id for dimension in self.rubric_dimensions]
-        if len(set(dimension_ids)) != len(dimension_ids):
-            raise ValueError("rubric dimension_ids must be unique within a pack")
-        # (A backend name is a binding name, never a pack identity — AC-5. That
-        # invariant needs no validator branch here: `PackId` and
-        # `ExecuteBackend` are two closed enums with disjoint members, so a
-        # colliding manifest fails enum validation before this validator runs.
-        # The disjointness itself is pinned at the enum level by test.)
-        # Declared fence points must cover every gated node in the shape.
-        declared = {point.value for point in self.fence_points}
-        for phase in self.graph.nodes:
-            if not phase.fenced:
-                continue
-            gate = _fence_gate_for(phase.phase)
-            if gate not in declared:
-                raise ValueError(
-                    f"fenced node {phase.node_id!r} requires fence point {gate!r} in fence_points"
-                )
+        # One model_validator over the module-level checks so the whitelisted
+        # framework-consumed name stays the pack contract's single vulture
+        # surface (packs/__init__._VULTURE_WHITELIST), while each check stays
+        # under the complexity ceiling on its own (radon/xenon ratchets).
+        _validate_artifact_surface(self)
+        _validate_rubric_catalog(self)
+        _validate_fence_coverage(self)
         return self
 
     def instantiate_rubric_catalog(

@@ -111,6 +111,34 @@ class _Scene:
         self.store = store
         self.goal_store = goal_store
 
+    async def _admission_provenance(
+        self,
+        *,
+        parent_run_id: str | None,
+        provenance: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Merge admission provenance with the #1621 post-terminal fact.
+
+        Late child admission under a terminal Run is refused (#1621) unless
+        the child's own provenance carries the identity-bound fact naming
+        that very parent. A retry of a terminal attempt does — its lineage
+        fact (`retry_of`) names the parent — so the scene carries the
+        post-terminal fact the admission guard reads, exactly as a
+        production retry path must.
+        """
+        from maistro.runs.model import POST_TERMINAL_CHILD_PROVENANCE, TERMINAL_RUN_STATUSES
+
+        merged = dict(provenance or {})
+        if parent_run_id is None:
+            return merged
+        parent_run = await self.store.get_run(parent_run_id)
+        if parent_run is not None and parent_run.status in TERMINAL_RUN_STATUSES:
+            merged[POST_TERMINAL_CHILD_PROVENANCE] = {
+                "parent_run_id": parent_run_id,
+                "reason": "retry lineage beneath a terminal Run",
+            }
+        return merged
+
     async def add_goal_run(
         self,
         *,
@@ -173,6 +201,9 @@ class _Scene:
                     expected_revision=goal.current_revision,
                 )
             provenance = dict(provenance_extra or {})
+        provenance = await self._admission_provenance(
+            parent_run_id=parent_run_id, provenance=provenance
+        )
         run = await self.store.create_run(
             graph,
             provenance=provenance,
@@ -343,10 +374,15 @@ async def test_run_detail_reads_events_from_canonical_store(
     )
     import services.dag_run_inspection as inspection_mod
 
+    # The projection double models a reconnect that finds no row. The
+    # inspection path refreshes the shared projection before every read
+    # (#337, SPEC-083026-2601/AC-1), so the double carries the
+    # store's reload seam too -- a reload that finds nothing, and a get_run
+    # that answers None, is exactly 'projection unavailable'.
     monkeypatch.setattr(
         inspection_mod,
         "get_dag_run_store",
-        lambda: SimpleNamespace(get_run=lambda _run_id: None),
+        lambda: SimpleNamespace(reload=lambda: None, get_run=lambda _run_id: None),
     )
     reconnected = await visible_run_detail(_USER_ID, canonical_run_id)
     assert reconnected is not None

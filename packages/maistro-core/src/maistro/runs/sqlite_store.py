@@ -10,6 +10,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
+from maistro.observability.metrics import (
+    OldestUnit,
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.access import RunAuthorization, admission_identity_fields
 from maistro.runs.concurrency import (
@@ -20,8 +26,10 @@ from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     check_completion_is_earned,
+    compensate_unlaunched_attempt,
     lease_is_expired,
     reclaim_attempt,
+    recover_orphaned_attempt,
     refuse_completion_under_terminal_run,
     renew_attempt_lease,
     renewed_lease,
@@ -35,6 +43,7 @@ from maistro.runs.model import (
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
+    CancellationCause,
     ExecutionLease,
     GraphSnapshot,
     NodeRun,
@@ -42,11 +51,15 @@ from maistro.runs.model import (
     RunEvalScore,
     RunStatus,
 )
+from maistro.runs.recovered_disposition import (
+    materialize_recovered_disposition_plan,
+    plan_recovered_attempt_disposition,
+)
 from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, TASK_QUEUE_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -219,6 +232,20 @@ _PURGE_DEPENDENT_SQL = {
     ),
 }
 
+#: The spine tables this store's purge governs, with each table's oldest-record
+#: expression and unit, for the post-purge health probe (#325). The Run,
+#: NodeRun and Attempt models serialize `created_at` inside the payload, the
+#: eval scores carry a real `scored_at` column, and the graph continuation
+#: denormalizes `created_at` (migration 021) — ISO-8601 text in every case, so
+#: `MIN` orders the same way the datetimes do.
+_TABLE_HEALTH_TABLES: tuple[tuple[str, str, OldestUnit], ...] = (
+    ("canonical_runs", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_node_runs", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_attempts", "json_extract(payload, '$.created_at')", "iso"),
+    ("canonical_run_eval_scores", "scored_at", "iso"),
+    ("graph_continuations", "created_at", "iso"),
+)
+
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -374,14 +401,18 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_active_root_principal
     WHERE {_ACTIVE_ROOT_PREDICATE};
 """
 
-#: Active root Runs in one Workspace and for one principal (#1182). The
-#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
+#: Active root Runs in one Workspace, for one principal, and system-wide
+#: (#1182). The principal ceiling spans Workspaces, so its count has no
+#: Workspace predicate; the system ceiling spans both, so its count has no
+#: predicate at all beyond the active-root one.
 _ACTIVE_ROOT_COUNTS_SQL = f"""SELECT
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE} AND workspace_id = ?),
     (SELECT COUNT(*) FROM canonical_runs
       WHERE {_ACTIVE_ROOT_PREDICATE}
-        AND json_extract(payload, '$.actor_principal_id') = ?)"""  # nosec B608
+        AND json_extract(payload, '$.actor_principal_id') = ?),
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE {_ACTIVE_ROOT_PREDICATE})"""  # nosec B608
 
 
 _PAYLOAD_TABLES = frozenset(
@@ -487,6 +518,7 @@ class SqliteRunStore:
                     workspace_id=graph.workspace_id,
                     project_id=graph.project_id,
                     allow_cross_project=allow_cross_project,
+                    child_provenance=provenance,
                 )
                 if parent_node_run_id is not None:
                     parent_node_run = await self._require_node_run(parent_node_run_id)
@@ -582,6 +614,7 @@ class SqliteRunStore:
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
                 principal_active=int(row[1]) - 1 if principal is not None else None,
+                system_active=int(row[2]) - 1,
             )
         except BaseException:
             # A refusal, or a count that could not be read: either way the row
@@ -808,6 +841,24 @@ class SqliteRunStore:
             """SELECT payload FROM canonical_runs
                WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
             (delegation_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_run_by_task_id(
+        self,
+        task_id: str,
+        *,
+        admission_source: str | None = TASK_QUEUE_SOURCE,
+    ) -> Run | None:
+        # The SQLite expression twin of the PostgreSQL provenance query, the
+        # same way `find_run_by_effect` is spelled twice.
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.task_id') = ?
+                 AND (? IS NULL
+                      OR json_extract(payload, '$.provenance.admission_source') = ?)
+               LIMIT 1""",
+            (task_id, admission_source, admission_source),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
@@ -1105,6 +1156,23 @@ class SqliteRunStore:
             continuations += max(cursor.rowcount, 0)
         return continuations
 
+    async def _publish_table_health(self) -> None:
+        """Publish stored-volume gauges for the spine this store owns (#325).
+
+        Rows, bytes and the oldest retained record, per run_purge table —
+        the level that shows a policy leaking before its backlog age does.
+        Throttled per store by the publisher, so a per-admission sweep costs
+        at most one probe per interval no matter how chatty the Workspaces.
+        """
+        if not retention_health_probe_due("runs:sqlite"):
+            return
+        samples = []
+        for table, oldest_expr, unit in _TABLE_HEALTH_TABLES:
+            sample = await sqlite_table_sample(self._conn, table, oldest_expr, oldest_unit=unit)
+            if sample is not None:
+                samples.append(sample)
+        publish_retention_table_health("runs:sqlite", "sqlite", samples, min_interval_s=0.0)
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -1126,34 +1194,42 @@ class SqliteRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
+        outcome: PurgeOutcome | None = None
         async with self._write_lock:
             doomed = await self._collect_purge_doomed(scope, cutoff, limit)
             if not doomed:
-                return PurgeOutcome(scope=scope)
-            purged = doomed[:limit]
-            # One json array parameter per statement: the id lists never
-            # travel as interpolated SQL (see the statement constants above).
-            run_id_param = json.dumps([run_id for run_id, _run in purged])
-            node_runs, attempts = await self._count_purge_spine(run_id_param)
-            # Dependent evidence beyond the spine, in the same transaction:
-            # owned resumable state deleted, retained provenance counted.
-            continuations = await self._purge_dependent_tables(run_id_param)
-            # Eval evidence is spine-attached (FK on run_id), so it dies with
-            # the Run tree, in the same transaction and before the rows it
-            # names (M7-A3).
-            await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
-            await self._conn.commit()
-            return PurgeOutcome(
-                scope=scope,
-                runs=len(purged),
-                node_runs=node_runs,
-                attempts=attempts,
-                continuations=continuations,
-                backlog_remaining=len(doomed) > limit,
-            )
+                outcome = PurgeOutcome(scope=scope)
+            else:
+                purged = doomed[:limit]
+                # One json array parameter per statement: the id lists never
+                # travel as interpolated SQL (see the statement constants above).
+                run_id_param = json.dumps([run_id for run_id, _run in purged])
+                node_runs, attempts = await self._count_purge_spine(run_id_param)
+                # Dependent evidence beyond the spine, in the same transaction:
+                # owned resumable state deleted, retained provenance counted.
+                continuations = await self._purge_dependent_tables(run_id_param)
+                # Eval evidence is spine-attached (FK on run_id), so it dies with
+                # the Run tree, in the same transaction and before the rows it
+                # names (M7-A3).
+                await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
+                await self._conn.commit()
+                outcome = PurgeOutcome(
+                    scope=scope,
+                    runs=len(purged),
+                    node_runs=node_runs,
+                    attempts=attempts,
+                    continuations=continuations,
+                    backlog_remaining=len(doomed) > limit,
+                )
+        # Outside the write lock: the probe is read-only housekeeping and must
+        # not extend the lock hold a transition may be waiting on. A quiet
+        # table publishes too — zero deletions is exactly when the stored
+        # level is the only health signal there is.
+        await self._publish_table_health()
+        return outcome
 
     async def cancel_unstarted_chat_run(self, expected: Run, *, error: str) -> bool:
         async with self._write_lock:
@@ -1196,6 +1272,18 @@ class SqliteRunStore:
             await self._run_boundary().require_run(run_id, principal_id=principal_id)
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
+            if target is RunStatus.COMPLETED:
+                children = await self._fetchone(
+                    "SELECT COUNT(*) FROM canonical_runs "
+                    "WHERE parent_run_id = ? AND status NOT IN "
+                    f"({_placeholders(len(_TERMINAL_STATUS_VALUES))})",
+                    (run_id, *_TERMINAL_STATUS_VALUES),
+                )
+                if children is not None and int(children[0]):
+                    raise RunIntegrityError(
+                        f"Run cannot complete while {int(children[0])} "
+                        "child Run(s) are non-terminal"
+                    )
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
             settled: list[NodeRun] = []
@@ -1238,7 +1326,13 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
 
-    async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
+    async def create_node_run(
+        self,
+        run_id: str,
+        *,
+        node_id: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> NodeRun:
         async with self._write_lock:
             run, snapshot = await self._require_run_snapshot(run_id)
             if run.status in TERMINAL_RUN_STATUSES:
@@ -1253,7 +1347,12 @@ class SqliteRunStore:
                 (run_id,),
             )
             ordinal = int(row[0]) + 1 if row is not None else 1
-            node_run = NodeRun(run_id=run_id, node_id=node_id, ordinal=ordinal)
+            node_run = NodeRun(
+                run_id=run_id,
+                node_id=node_id,
+                ordinal=ordinal,
+                provenance=dict(provenance or {}),
+            )
             # Validate the same nonterminal parent at the physical insert,
             # even if a sibling commit releases an intervening transaction.
             cursor = await self._conn.execute(
@@ -1312,6 +1411,23 @@ class SqliteRunStore:
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
 
+    async def record_node_run_provenance(
+        self, node_run_id: str, *, patch: dict[str, Any]
+    ) -> NodeRun:
+        """Merge ``patch`` into a NodeRun's provenance (top-level keys)."""
+        async with self._write_lock:
+            node_run = await self._require_node_run(node_run_id)
+            await self._refuse_under_terminal_run(node_run)
+            updated = node_run.model_copy(update={"provenance": {**node_run.provenance, **patch}})
+            await self._update_payload(
+                "canonical_node_runs",
+                "node_run_id",
+                node_run_id,
+                updated.status.value,
+                json_of(updated),
+            )
+            return updated
+
     async def transition_node_run(
         self,
         node_run_id: str,
@@ -1321,10 +1437,27 @@ class SqliteRunStore:
         result: object | None = None,
         error: str | None = None,
         accepted_outcome: AcceptedNodeOutcome | None = None,
+        expected_current_attempt_id: str | None = None,
     ) -> NodeRun:
         async with self._write_lock:
             node_run = await self._require_node_run(node_run_id)
             await self._refuse_under_terminal_run(node_run)
+            if expected_current_attempt_id is not None:
+                cursor = await self._conn.execute(
+                    """SELECT attempt_id FROM canonical_attempts
+                       WHERE node_run_id = ? ORDER BY ordinal DESC LIMIT 1""",
+                    (node_run_id,),
+                )
+                row = await cursor.fetchone()
+                current_attempt_id = row[0] if row is not None else None
+                if (
+                    current_attempt_id is not None
+                    and current_attempt_id != expected_current_attempt_id
+                ):
+                    raise RunIntegrityError(
+                        f"Attempt {expected_current_attempt_id!r} was superseded by "
+                        f"{current_attempt_id!r}"
+                    )
             if accepted_outcome is not None:
                 if accepted_outcome.node_run_id != node_run_id:
                     raise RunIntegrityError("accepted outcome belongs to a different NodeRun")
@@ -1469,6 +1602,11 @@ class SqliteRunStore:
         today, and not something to make load-bearing. The candidate set is
         already narrowed to non-terminal Attempts by the status predicate,
         which is the part that matters for cost.
+
+        Selection outside the write lock is only a candidate list. Each row is
+        re-read and re-validated inside ``_write_lock`` so a renewal (or other
+        terminalizer) that won between nominating and writing is skipped —
+        batch returns only newly written rows (#2358 / #232 P2b+P2c).
         """
         moment = now if now is not None else datetime.now(UTC)
         cursor = await self._conn.execute(
@@ -1482,17 +1620,163 @@ class SqliteRunStore:
         )
         reclaimed: list[Attempt] = []
         async with self._write_lock:
-            for attempt in doomed[:limit]:
-                settled = reclaim_attempt(attempt, at=moment)
+            for nominee in doomed[:limit]:
+                current = await self.get_attempt(nominee.attempt_id)
+                if current is None or not lease_is_expired(current, moment):
+                    continue
+                settled = reclaim_attempt(current, at=moment)
                 await self._update_payload(
                     "canonical_attempts",
                     "attempt_id",
-                    attempt.attempt_id,
+                    nominee.attempt_id,
                     settled.status.value,
                     json_of(settled),
                 )
                 reclaimed.append(settled)
         return reclaimed
+
+    async def reclaim_expired_attempt(
+        self,
+        attempt_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> Attempt | None:
+        """Settle one Attempt by id when its finite lease has lapsed."""
+        moment = now if now is not None else datetime.now(UTC)
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            if not lease_is_expired(attempt, moment):
+                return None
+            settled = reclaim_attempt(attempt, at=moment)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle the executor's own CREATED prelaunch failure."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            self._validate_fence(attempt, fencing_token)
+            settled = compensate_unlaunched_attempt(attempt, at=at, result=result, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
+
+    async def apply_recovered_attempt_disposition(
+        self,
+        attempt_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[NodeRun, Run]:
+        """Park NodeRun/Run for one already-persisted RECOVERED Attempt (#232 P4a)."""
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                attempt = await self._require_attempt(attempt_id)
+                node_run = await self._require_node_run(attempt.node_run_id)
+                run = await self._require_run(node_run.run_id)
+                cursor = await self._conn.execute(
+                    """SELECT payload FROM canonical_node_runs
+                       WHERE run_id = ? ORDER BY node_run_id""",
+                    (run.run_id,),
+                )
+                all_node_runs = [model_of_json(NodeRun, row[0]) for row in await cursor.fetchall()]
+                attempts_by_node_run: dict[str, list[Attempt]] = {}
+                for nr in all_node_runs:
+                    attempt_cursor = await self._conn.execute(
+                        """SELECT payload FROM canonical_attempts
+                           WHERE node_run_id = ? ORDER BY ordinal""",
+                        (nr.node_run_id,),
+                    )
+                    attempts_by_node_run[nr.node_run_id] = [
+                        model_of_json(Attempt, row[0]) for row in await attempt_cursor.fetchall()
+                    ]
+                plan = plan_recovered_attempt_disposition(
+                    attempt=attempt,
+                    run=run,
+                    node_run=node_run,
+                    all_node_runs=all_node_runs,
+                    attempts_by_node_run=attempts_by_node_run,
+                )
+                settled_node, settled_run = materialize_recovered_disposition_plan(
+                    plan, run=run, node_run=node_run, attempt=attempt, at=at
+                )
+                if plan.park_node_run:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        settled_node.node_run_id,
+                        settled_node.status.value,
+                        json_of(settled_node),
+                    )
+                if plan.park_run:
+                    self._stage_payload(
+                        "canonical_runs",
+                        "run_id",
+                        settled_run.run_id,
+                        settled_run.status.value,
+                        json_of(settled_run),
+                    )
+                pending, self._pending = self._pending, []
+                for (table, identity_column), identity, status, payload in pending:
+                    await self._conn.execute(
+                        f"UPDATE {table} SET status = ?, payload = ? WHERE {identity_column} = ?",  # nosec B608
+                        (status, payload, identity),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                # CancelledError inherits BaseException, not Exception: leaving
+                # BEGIN IMMEDIATE open after the write lock releases poisons
+                # the shared connection for every later writer (#2424 Codex).
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
+            return settled_node, settled_run
+
+    async def recover_orphaned_attempt(
+        self,
+        attempt_id: str,
+        *,
+        owning_run_id: str,
+        at: datetime | None = None,
+        error: str | None = None,
+    ) -> Attempt:
+        """Settle a leaseless active Attempt under explicit owning-record resume."""
+        async with self._write_lock:
+            attempt = await self._require_attempt(attempt_id)
+            node_run = await self._require_node_run(attempt.node_run_id)
+            if node_run.run_id != owning_run_id:
+                raise RunIntegrityError(
+                    f"Attempt {attempt_id!r} belongs to Run {node_run.run_id!r}, "
+                    f"not owning_run_id={owning_run_id!r}"
+                )
+            settled = recover_orphaned_attempt(attempt, at=at, error=error)
+            await self._update_payload(
+                "canonical_attempts",
+                "attempt_id",
+                attempt_id,
+                settled.status.value,
+                json_of(settled),
+            )
+            return settled
 
     async def get_attempt(
         self, attempt_id: str, *, principal_id: str | None = None
@@ -1527,6 +1811,7 @@ class SqliteRunStore:
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
     ) -> Attempt:
         async with self._write_lock:
             attempt = await self._require_attempt(attempt_id)
@@ -1538,6 +1823,7 @@ class SqliteRunStore:
                 result=result,
                 error=error,
                 metrics=metrics,
+                cancellation_cause=cancellation_cause,
             )
             if target is AttemptStatus.COMPLETED:
                 # Same lock `transition_run` holds, so a cancellation either

@@ -20,7 +20,10 @@ one vocabulary and one audit story:
   a claim is required for writes while an active claim exists, and the
   claimant must be the writer. With no live claim, the workspace's normal
   edit rules apply (editors may edit);
-- ``release`` — end the lease; expiry is checked, never implied.
+- ``release`` — end the lease; expiry is checked, never implied;
+- ``close`` — the terminal transition, attributed to the actor and checked
+  against the claim exactly like ``write``, so a stale snapshot cannot close
+  work another actor now holds.
 
 Authorization is delegated to a single ``authorize`` callable the embedder
 supplies; the surface fails closed when it returns nothing.
@@ -47,13 +50,13 @@ Role = Literal["viewer", "editor", "owner"]
 Authorize = Callable[[str, str, str], Awaitable[Role | None]]
 """Decide the actor's role for ``(actor, workspace_id, action)``.
 
-``action`` is one of ``"read"``, ``"claim"``, ``"write"``. Returning ``None``
+``action`` is one of ``"read"``, ``"claim"``, ``"write"``, ``"close"``. Returning ``None``
 means no relationship: the surface answers with not-found semantics (no
 existence oracle) rather than a distinct denial.
 """
 
 #: Actions that require more than read access.
-_WRITE_ACTIONS: Final = frozenset({"claim", "write"})
+_WRITE_ACTIONS: Final = frozenset({"claim", "write", "close"})
 
 
 class AgentSurfaceError(RuntimeError):
@@ -225,6 +228,51 @@ class AgentBacklogSurface:
                 f"claim {claim_id} is not {actor!r}'s active claim on {item_id}"
             )
         await self._store.release_claim(item_id, claim_id=claim_id, actor=actor)
+
+    async def close(
+        self,
+        item_id: str,
+        *,
+        actor: str,
+        expected_version: int,
+        outcome: str,
+        closure_summary: str,
+        evidence_refs: tuple[str, ...],
+        claim_id: str | None = None,
+        at: datetime | None = None,
+    ) -> BacklogItem:
+        """An authorized terminal transition attributed to the actor.
+
+        Closing is claim-scoped exactly like writing: the actor needs write
+        rights on the item's workspace, and while an active claim exists it
+        must be the actor's own (``claim_id`` matching when given). Claims do
+        not move the item version, so ``expected_version`` alone cannot stop
+        a stale claimant from closing work another actor now holds — this
+        check can.
+        """
+        item = await self._require_item(item_id)
+        await self._require(actor, item.workspace_id, "close")
+        active = await self._store.active_claim(item_id, at=at)
+        if (
+            active is not None
+            and active.is_active(at=at or datetime.now(UTC))
+            and (
+                active.claimed_by != actor or (claim_id is not None and active.claim_id != claim_id)
+            )
+        ):
+            raise AgentSurfaceError(
+                f"{item_id} is claimed by {active.claimed_by!r} "
+                f"(claim {active.claim_id}); acquire the claim to close it"
+            )
+        return await self._store.close_item(
+            item_id,
+            expected_version=expected_version,
+            actor=actor,
+            outcome=outcome,
+            closure_summary=closure_summary,
+            evidence_refs=evidence_refs,
+            at=at,
+        )
 
     async def _require_item(self, item_id: str) -> BacklogItem:
         item = await self._store.get_item(item_id)

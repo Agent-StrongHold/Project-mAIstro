@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from maistro.capabilities.approval_store import (
     ApprovalStatus,
@@ -16,6 +17,7 @@ from maistro.capabilities.approval_store import (
     redact_approval_value,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.expected_effect import ExpectedEffectEvidence
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
@@ -27,9 +29,42 @@ from maistro.capabilities.invocation import (
     ReconciliationDisposition,
     UsageExtractor,
 )
+from maistro.capabilities.providers.extension_attribution import (
+    InvalidAttribution,
+    attribution_from_payload,
+)
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.policy.types import Decision, PolicyVerdict
+
+logger = logging.getLogger(__name__)
+
+
+def _extension_provenance(binding: Binding | ResolvedBinding) -> dict[str, Any]:
+    """The declared extension attribution on this binding, as Event provenance.
+
+    M9-I1 (#976): a wiring that carries an extension package identity (an
+    adapter Binding bootstrapped from a declaring spec) rides into the terminal
+    audit event under ``provenance["extension"]`` — beside the canonical
+    caller/Workspace/Run/NodeRun/Attempt/Invocation fields, never inside the
+    correlation namespace. The fragment is decoded fail-soft: telemetry
+    enrichment must never break the effect ledger, so a missing or malformed
+    payload omits the fragment (with a warning) instead of failing the event.
+    """
+
+    raw = binding.config.get("extension_attribution")
+    if raw is None:
+        return {}
+    try:
+        return attribution_from_payload(raw).provenance_payload()
+    except InvalidAttribution as exc:
+        logger.warning(
+            "binding %s carries a malformed extension attribution; "
+            "omitting it from event provenance: %s",
+            binding.binding_id,
+            exc,
+        )
+        return {}
 
 
 @dataclass(frozen=True)
@@ -78,12 +113,12 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    The composition root installs this service for governed model effects and
-    for the rest of the canonical effect consumers, the retained PM polling
-    graph nodes among them, so policy decisions and terminal Invocation events
-    cover live provider calls rather than only direct test consumers. Policy
-    events and approvals remain governed side effects; neither path may bypass
-    the Invocation service or its effect identity.
+    The container composes this wrapper for canonical effect consumers; the
+    model egress composition uses the default M1 policy path in production.
+    Policy events and approvals remain governed side effects; neither path may
+    bypass the Invocation service or its effect identity. Stronger policy and
+    durable approval stores can be supplied by later compositions without
+    introducing a second execution authority.
     """
 
     def __init__(
@@ -140,6 +175,26 @@ class GovernedInvocationExecutionService:
         """Expose stale-effect discovery through the governed composition root."""
 
         return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def record_expected_effect_observation(
+        self, invocation_id: str, observed_post_state: Any
+    ) -> Invocation:
+        """Persist tool prediction observations without exposing the store."""
+
+        return await self._invocations.record_expected_effect_observation(
+            invocation_id, observed_post_state
+        )
+
+    @staticmethod
+    def expected_effect_mismatch_event(invocation: Invocation, *, tool_name: str) -> EventEnvelope:
+        """Build mismatch evidence through the canonical Invocation authority."""
+
+        return cast(
+            EventEnvelope,
+            InvocationExecutionService.expected_effect_mismatch_event(
+                invocation, tool_name=tool_name
+            ),
+        )
 
     async def reconcile(
         self,
@@ -202,7 +257,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=invocation.binding,
             causation_id=(
                 f"capability-reconciliation-{invocation.invocation_id}-"
                 f"{len(invocation.reconciliation_history)}"
@@ -222,6 +276,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        expected_effect: ExpectedEffectEvidence | None = None,
         actor_id: str = "",
     ) -> Invocation:
         context = InvocationPolicyContext(
@@ -284,6 +339,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                expected_effect=expected_effect,
                 actor_id=actor_id,
             )
         except asyncio.CancelledError:
@@ -307,7 +363,6 @@ class GovernedInvocationExecutionService:
 
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=policy_event.event_id,
         )
         return invocation
@@ -610,7 +665,6 @@ class GovernedInvocationExecutionService:
             return
         await self._append_terminal_event(
             invocation,
-            binding=binding,
             causation_id=causation_id,
         )
 
@@ -618,10 +672,16 @@ class GovernedInvocationExecutionService:
         self,
         invocation: Invocation,
         *,
-        binding: Binding | ResolvedBinding,
         causation_id: str,
     ) -> None:
-        """Append one idempotent terminal audit fact for a persisted Invocation."""
+        """Append one idempotent terminal audit fact for a persisted Invocation.
+
+        Provenance reads the Invocation's own resolved snapshot, not the
+        caller's Binding: a programmatically registered declaring adapter
+        (#976) then leaves the same extension attribution evidence as a
+        bootstrapped one, because the snapshot captured the identity of the
+        adapter that actually resolved.
+        """
 
         await self._events.append(
             EventEnvelope(
@@ -629,8 +689,8 @@ class GovernedInvocationExecutionService:
                     f"capability-invocation-{invocation.invocation_id}-{invocation.status.value}"
                 ),
                 type=f"capability.invocation.{invocation.status.value}",
-                workspace_id=binding.workspace_id,
-                project_id=binding.project_id,
+                workspace_id=invocation.binding.workspace_id,
+                project_id=invocation.binding.project_id,
                 run_id=invocation.run_id,
                 node_run_id=invocation.node_run_id,
                 attempt_id=invocation.attempt_id,
@@ -638,6 +698,7 @@ class GovernedInvocationExecutionService:
                 correlation_id=invocation.run_id,
                 causation_id=causation_id,
                 source="maistro.capabilities",
+                provenance=_extension_provenance(invocation.binding),
                 payload={
                     "binding_id": invocation.binding.binding_id,
                     "capability": invocation.binding.capability,

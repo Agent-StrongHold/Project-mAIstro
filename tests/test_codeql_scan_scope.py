@@ -86,14 +86,15 @@ def _shipped_sources() -> list[str]:
 def test_the_config_is_wired_into_the_workflow() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
     assert "./.github/codeql/codeql-config.yml" in workflow
-    # Manual verification must not widen the automatic event surface, add an
-    # arbitrary checkout input, or weaken the existing analysis permissions.
+    # develop is the Security-tab integration branch; push/PR must include it
+    # so tip fixes do not rot behind a stale weekly analysis. Do not add an
+    # arbitrary checkout input or weaken the existing analysis permissions.
     parsed = yaml.safe_load(workflow)
     triggers = parsed.get("on", parsed.get(True))  # PyYAML's YAML 1.1 treats on as True.
     assert triggers == {
         "workflow_dispatch": None,
-        "push": {"branches": ["main"]},
-        "pull_request": {"branches": ["main"]},
+        "push": {"branches": ["main", "develop"]},
+        "pull_request": {"branches": ["main", "develop"]},
         "schedule": [{"cron": "34 19 * * 4"}],
     }
     job = parsed["jobs"]["analyze"]
