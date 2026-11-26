@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +80
+  tests/: +125
 ---
 
 # #86 M3-A4 clean-install/deployment-profile proof — verification round
@@ -308,3 +308,51 @@ re-listed above.
   exceeding the 60s readiness budget inside `test_sigterm_shutdown.py`; the
   same server boots, serves, and drains cleanly when given the time (live
   evidence above). CI hardware is unaffected.
+
+## Coverage-gate repair round (CI run 45847296829, job 140018816174)
+
+The merge-queue evaluation at head `85d4c66bc945` failed exactly one job:
+`Coverage gate (publish-set floor + diff coverage)`. Its diff-coverage step
+scored `scripts/prove-installed-workspace.py` at **83.7% of 1045 changed
+lines (floor 90%)**; the `Event loop is closed` lines in the same log are
+`PytestUnhandledThreadExceptionWarning`s from `test_tasks_run_identity.py`,
+emitted as annotations inside a step whose own pytest run passed (6402
+passed/140 skipped) — they are not the failure. `tests/: +45` above is this
+round's increment (80 -> 125): the same file, so no new suite.
+
+The repair adds the missing evidence rather than touching the gate: 45 cases
+in `tests/release/test_installed_workspace_contract.py` driving the harness's
+own module and CLI — the shipped schema subset's rejection paths
+(`validate_manifest` on every unsupported shape, `load_contract` on
+unreadable/malformed/non-object schema files), the cross-field rules not yet
+reached (headless login.mode, duplicate workspaces), stop-before gating on the
+RESTART/ISOLATE/FAIL_CLOSED families, install effective-config model and
+model_tier mismatches, restart correlation scope mismatches, restart
+provider-call-count reporting, the canonical login subcheck name, install-log
+truncation, step timeout/missing-binary recording, `check_expect_json`
+expectation shapes, `verify_bundle`'s structural rejections (index shape, file
+map, results trust, scenario/subcheck shapes, evidence references, junit
+cases), and the CLI `--validate-manifest`/`--verify`/argument-contract
+surfaces including the closeout behaviour when bundle self-verification fails.
+One genuinely dead helper found by the measurement — `_check_type`, zero
+callers — was removed from the harness instead of being pinned by a test.
+The suite's fixture builder and every prior assertion are unchanged.
+
+Executed validation of this round (starting head `85d4c66bc945`):
+
+- `uv run pytest tests/release/test_installed_workspace_contract.py -q` —
+  **125 passed** (was 80).
+- Local reproduction of the failing gate with CI's own tooling:
+  `uv run coverage run --branch --source=scripts -m pytest
+  tests/release/test_installed_workspace_contract.py -q` then
+  `uv run coverage xml` then `uv run python scripts/check-diff-coverage.py
+  coverage.xml --base 7ba29c1cd0e45` reproduced **83.7% / 1045 changed lines,
+  FAIL** before the repair and **`ok: every measured file this change touches
+  is at or above 90% lines / 80% branch arcs`** after it — measured at
+  **98.7% lines (1026/1040) and 95.6% branch arcs (461/482)**. The local
+  measurement is a strict subset of CI's root-suite producer (nothing outside
+  `tests/release/` imports the harness), so CI's number can only be higher.
+- `uv run python scripts/check-suite-inventory.py --suite tests/` — reported
+  the expected +45 drift before this note recorded it; passes after (6565
+  collected node IDs).
+- `uv run ruff check .` and `uv run ruff format --check .` — passed.

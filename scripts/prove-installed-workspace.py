@@ -249,21 +249,6 @@ def _type_name(instance: Any) -> str:
     return type(instance).__name__
 
 
-def _check_type(instance: Any, expected: str, where: str) -> None:
-    actual = _type_name(instance)
-    ok = {
-        "object": actual == "object",
-        "array": actual == "array",
-        "string": actual == "string",
-        "boolean": actual == "boolean",
-        "null": actual == "null",
-        "integer": actual == "integer",
-        "number": actual in ("integer", "number"),
-    }[expected]
-    if not ok:
-        raise SchemaError(f"{where}: expected {expected}, got {actual} ({instance!r:.80})")
-
-
 def _resolve_ref(schema: dict[str, Any], defs: dict[str, Any], where: str) -> dict[str, Any]:
     ref = schema["$ref"]
     if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
