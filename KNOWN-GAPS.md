@@ -344,19 +344,26 @@ designated production consumer for selection/claims that admits canonical
 Runs; do not add a background scheduler outside the canonical Run admission
 path.
 
-### Adaptive-Workspace user-model memory is specified but not reachable
+### Adaptive-Workspace user-model memory ships wired for owner control; the autonomous producer is deferred
 
 `maistro.memory.user_model` (#1047) ships the owner-only, audited fact
-ground: `promote_evidence`, revisions, corrections, tombstones, and the
-`UserModelStore` protocol, with 30 passing tests. None of it has a production
-call path — nothing in the conductor process or maistro-server constructs a
-`UserModelStore`, and the Dreaming/consolidation producer that would feed it
-does not exist yet either. Same shape as the security controls above:
-correct policy, no wiring, declared rather than counted as shipped.
+ground — `promote_evidence`, revisions, corrections, tombstones, and the
+`UserModelStore` protocol — and it is wired: maistro-server constructs a
+`PostgresUserModelStore` + `UserModelService` at startup
+(`main.py::_configure_user_model`) and mounts the owner-scoped
+`/user-model` HTTP control plane (recall/correct/forget/history/private
+marking) with a 503-offline fallback when unconfigured. Relevance-gated
+same-user retrieval (`RecallQuery` conditions) is deterministically tested,
+including the cross-Workspace case where a fact surfaces in another
+Workspace only when Persona/Goal context makes it relevant, while
+workspace-private facts that were never promoted stay invisible. What
+remains deferred: no production caller invokes `promote_evidence` — the
+Dreaming/consolidation cadence that would feed it eligible evidence
+(#1046) is not built yet — and no Agent-runtime path calls
+`recall_for_task`; retrieval today is owner-invoked over HTTP.
 
-Tracking: wire the user model when the Dreaming/consolidation cadence
-(#1046) produces eligible evidence and a same-user retrieval gate exists;
-do not invent a producer for it sooner.
+Tracking: wire the Dreaming/consolidation producer (#1046) and the
+Workspace Agent's recall seam; do not invent a producer for it sooner.
 
 ### Entra JIT provisioning gates admission only
 

@@ -37,6 +37,14 @@ repairs. This round implements the bounded set and declares the rest:
 3. **#1047 user-model unreachability is now declared** (same file): modules
    and tests exist, no producer or wiring does — the specified-but-not-reached
    pattern, tracked under #1046 rather than counted as shipped.
+   Correction (2026-11-26, Round 4): that declaration went stale the same way
+   the #82 one did — maistro-server now constructs `PostgresUserModelStore` +
+   `UserModelService` at startup and mounts the owner-scoped `/user-model`
+   control plane, so the "nothing constructs a UserModelStore" claim is false.
+   KNOWN-GAPS.md now records the shipped-with-limits truth (owner control
+   plane + relevance-gated same-user retrieval ship; the Dreaming→
+   `promote_evidence` producer and Agent-runtime recall consumer stay
+   deferred to #1046); see `docs/implementation/issue-7-handoff.md` Round 4.
 
 ## Tests added
 
