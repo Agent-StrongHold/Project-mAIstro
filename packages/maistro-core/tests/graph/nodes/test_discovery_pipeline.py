@@ -236,6 +236,43 @@ async def test_fetch_parses_rss_atom_and_json_feeds(
     assert result["category"] == "camera-deals"
 
 
+async def test_a_feed_carrying_entity_declarations_is_refused_not_expanded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared source is still remote content: entities never expand.
+
+    stdlib ElementTree expands internal entities, so a hostile feed could
+    hand the scout a billion-laughs document. Parsing goes through
+    defusedxml, which refuses entity/DTD declarations outright; the refusal
+    is loud (the same "unparseable" classification as a broken feed), and
+    no entry is produced from a payload the parser refused.
+    """
+    effects = await _effects_with_source()
+    body = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE rss [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;">]>'
+        "<rss><channel><item><title>&lol2;</title>"
+        "<link>https://feeds.example.com/x</link></item></channel></rss>"
+    )
+    transport = _Transport(text=body, content_type="application/rss+xml")
+    _with_transport(monkeypatch, transport)
+    with pytest.raises(RuntimeError, match="unparseable RSS"):
+        await invoke_discovery_source(
+            effects,
+            binding=await effects.bindings.get("dsrc-1"),  # type: ignore[arg-type]
+            run_id="run-1",
+            node_run_id="nr-1",
+            attempt_id="attempt-1",
+            effect_key=f"discovery.source.fetch:{_SOURCE_URL}:20",
+            request=DiscoverySourceRequest(url=_SOURCE_URL, max_entries=20),
+            timeout_s=5.0,
+            actor_id="user-1",
+        )
+    # The GET happened (declared origin, policy-allowed); the payload was
+    # refused afterwards — nothing expanded, nothing surfaced.
+    assert transport.urls == [_SOURCE_URL]
+
+
 async def test_one_fetch_is_one_recorded_invocation_per_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

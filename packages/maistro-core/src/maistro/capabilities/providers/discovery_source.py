@@ -25,12 +25,14 @@ what keeps #1049 escalation evidence honest downstream.
 from __future__ import annotations
 
 import json
-import xml.etree.ElementTree as ET  # nosec: B405 - parses source-controlled feeds
+import xml.etree.ElementTree as ET  # nosec: B405 - namespace/type helpers only; parsing is defused
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
@@ -248,8 +250,11 @@ def _children(element: ET.Element, name: str) -> list[ET.Element]:
 
 def _parse_rss(source_url: str, body: str, max_entries: int) -> list[dict[str, str]]:
     try:
-        root = ET.fromstring(body)
-    except ET.ParseError as exc:
+        root = SafeET.fromstring(body)
+    except (ET.ParseError, DefusedXmlException) as exc:
+        # A defused refusal (entity/DTD declarations, remote references) is
+        # the parser doing its job on remote content — refused loudly, never
+        # expanded, and classified exactly like an unparseable feed.
         raise RuntimeError(f"source returned unparseable RSS: {exc}") from exc
     out: list[dict[str, str]] = []
     for item in _children(root, "item"):
@@ -286,8 +291,8 @@ def _direct_text(element: ET.Element, *paths: str) -> str:
 
 def _parse_atom(source_url: str, body: str, max_entries: int) -> list[dict[str, str]]:
     try:
-        root = ET.fromstring(body)
-    except ET.ParseError as exc:
+        root = SafeET.fromstring(body)
+    except (ET.ParseError, DefusedXmlException) as exc:
         raise RuntimeError(f"source returned unparseable Atom: {exc}") from exc
     out: list[dict[str, str]] = []
     for item in _children(root, "entry"):
