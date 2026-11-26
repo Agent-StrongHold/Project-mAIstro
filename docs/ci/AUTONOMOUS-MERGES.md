@@ -135,8 +135,13 @@ policy refuses to let the implementation author make that decision alone.
 `autonomous-merge-admissibility` is intentionally not generated into
 `REQUIRED-CHECKS.md`: that generator currently walks `pull_request` workflows,
 while this gate uses `pull_request_target` so the candidate cannot replace the
-judge. Configure the check as required in GitHub branch protection/rulesets for
-branches where autonomous merging is permitted.
+judge. It is likewise **not** named in `.github/branch-protection.json`'s
+required sets: the owner decided (#564, 2026-10-26) that it stays advisory
+pending #562, because requiring it froze every ledger-banking agent-authored
+PR. As of the 2026-11-26 ruleset read-back (see BRANCH-PROTECTION.md) the live
+`main` ruleset still carried the requirement while no workflow produces the
+check anymore; removing it there is an explicit GitHub settings-surface change
+for the policy owner, not an edit to this repository's files.
 
 Like `gates-ran`, the workflow first becomes live **after** the change adding it
 is on the default branch, because `pull_request_target` loads the base-branch

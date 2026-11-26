@@ -1,0 +1,38 @@
+name: Branch-protection drift
+
+# Declared vs live merge-boundary drift detection (#564, AC-4).
+#
+# Drift appears when someone changes GitHub's ruleset settings, not when a PR
+# edits this repository — so a per-PR gate cannot see it happen, and the classic
+# `--verify` comparison cannot run it (that endpoint needs admin scope, and
+# since #162 it does not even carry the required contexts). The Rulesets API is
+# readable with an ordinary repository-read token, which is what makes this
+# schedule possible: it compares the checked-in `.github/branch-protection.json`
+# (plus the `.github/merge-queue.json` posture) against the live rulesets and
+# goes red on divergence. A red run here is the reconcile signal; the last
+# measured read-back lives in docs/ci/BRANCH-PROTECTION.md.
+#
+# Schedule-only on purpose: with no `pull_request` trigger the workflow produces
+# no PR check name, so the required-check contract
+# (scripts/check-required-checks.py) is untouched — this job detects, it does
+# not gate.
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-declared-vs-live:
+    name: verify declared vs live rulesets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare declared protection with the live rulesets
+        run: python3 scripts/check-branch-protection.py --verify-rulesets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

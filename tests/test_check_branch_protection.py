@@ -14,6 +14,7 @@ import importlib.util
 import json
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -205,9 +206,11 @@ class TestTheShippedRuleset:
                 lower_contexts -= {"integration-scope"}
             assert lower_contexts < main, lower
 
-    def test_the_apply_payload_carries_no_comment_keys(self, gate, capsys):
+    def test_the_apply_payload_carries_no_comment_keys(self, gate, capsys, monkeypatch):
         """`$comment` keys are for the reader; GitHub's API rejects unknown
         fields, so the printed call must not contain them."""
+        monkeypatch.setenv("GH_TOKEN", "t")
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=_live_matching_rulesets(gate)))
         assert gate.main(["--apply", "develop"]) == 0
         out = capsys.readouterr().out
         assert "$comment" not in out
@@ -509,3 +512,487 @@ class TestGeneratedTables:
         out = capsys.readouterr().out
         assert "does not hang together" in out
         assert "--update-doc" in out
+
+
+# ---------------------------------------------------------------------------
+# The Rulesets surface (#564)
+#
+# The required contexts live in repository Rulesets since #162, and the classic
+# protection endpoint neither carries them nor is readable without admin scope.
+# Everything below drives the Ruleset-based verify mode and the --apply freeze
+# guard through a fake `_get` whose URL router mirrors the four endpoints the
+# script touches: the repo (default branch), rulesets, open pulls, and per-head
+# check-runs/statuses.
+# ---------------------------------------------------------------------------
+
+REPO_API = "https://api.github.com/repos/Agent-StrongHold/Project-mAIstro"
+
+
+def _live_ruleset(
+    rs_id: int,
+    contexts: list[str],
+    *,
+    include: tuple[str, ...] = ("~DEFAULT_BRANCH",),
+    strict: bool | None = True,
+    queue: dict | None = None,
+    enforcement: str = "active",
+) -> dict:
+    """A ruleset payload shaped like the live API returns it (2026-11-26 read)."""
+    parameters: dict = {
+        "required_status_checks": [{"integration_id": 15368, "context": c} for c in contexts]
+    }
+    if strict is not None:
+        parameters["strict_required_status_checks_policy"] = strict
+    rules: list[dict] = [{"type": "required_status_checks", "parameters": parameters}]
+    if queue is not None:
+        rules.append({"type": "merge_queue", "parameters": queue})
+    return {
+        "id": rs_id,
+        "name": f"ruleset-{rs_id}",
+        "enforcement": enforcement,
+        "conditions": {"ref_name": {"include": list(include), "exclude": []}},
+        "rules": rules,
+    }
+
+
+def _live_matching_rulesets(gate, *, develop_contexts=None, main_contexts=None) -> list[dict]:
+    """Live rulesets whose required sets mirror the shipped file, so a test
+    removes or adds one context to manufacture exactly one drift line. The
+    develop ruleset also carries the reviewed queue posture from
+    `.github/merge-queue.json`, which the verify mode compares."""
+    ruleset = gate.load_ruleset()
+    develop = (
+        gate.declared_required(ruleset["branches"]["develop"])
+        if develop_contexts is None
+        else develop_contexts
+    )
+    main = (
+        gate.declared_required(ruleset["branches"]["main"])
+        if main_contexts is None
+        else main_contexts
+    )
+    queue = (gate.load_merge_queue().get("branches") or {}).get("develop")
+    return [
+        _live_ruleset(21421373, develop, include=("~DEFAULT_BRANCH",), queue=queue),
+        _live_ruleset(21701487, main, include=("refs/heads/main",)),
+    ]
+
+
+def _api_router(
+    *,
+    default_branch: str = "develop",
+    rulesets: list[dict] | None = None,
+    pulls: list[dict] | None = None,
+    reports: dict[str, dict] | None = None,
+):
+    """A `_get` replacement for the four endpoints the live modes read."""
+    reports = reports or {}
+
+    def fake_get(url: str, token: str):
+        assert token == "t"
+        if url == f"{REPO_API}":
+            return {"default_branch": default_branch}
+        if url.startswith(f"{REPO_API}/rulesets?"):
+            return [{"id": rs["id"]} for rs in (rulesets or [])]
+        if url.startswith(f"{REPO_API}/rulesets/"):
+            rs_id = int(url.rsplit("/", 1)[1])
+            return next(rs for rs in (rulesets or []) if rs["id"] == rs_id)
+        if url.startswith(f"{REPO_API}/pulls?"):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            base = (query.get("base") or [None])[0]
+            return [pr for pr in (pulls or []) if pr.get("base") == base]
+        if "/check-runs?" in url:
+            sha = url.split("/commits/")[1].split("/")[0]
+            return {"check_runs": reports.get(sha, {}).get("check_runs", [])}
+        if url.endswith("/status"):
+            sha = url.split("/commits/")[1].split("/")[0]
+            return {"statuses": reports.get(sha, {}).get("statuses", [])}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    return fake_get
+
+
+def _open_pr(number: int, sha: str, base: str = "develop") -> dict:
+    return {"number": number, "base": base, "head": {"sha": sha}}
+
+
+class TestRulesetSurfaceReading:
+    """Parsing the Rulesets API shapes the 2026-11-26 read-back produced."""
+
+    def test_ref_match_covers_the_three_spellings(self, gate):
+        assert gate._refs_match(["~ALL"], "main", "develop")
+        assert gate._refs_match(["~DEFAULT_BRANCH"], "develop", "develop")
+        assert not gate._refs_match(["~DEFAULT_BRANCH"], "main", "develop")
+        assert gate._refs_match(["refs/heads/main"], "main", "develop")
+        assert not gate._refs_match(["refs/heads/main"], "develop", "develop")
+
+    def test_exclude_outranks_include(self, gate):
+        ruleset = {
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/main"]}},
+        }
+        assert gate._governs(ruleset, "develop", "develop")
+        assert not gate._governs(ruleset, "main", "develop")
+
+    def test_a_disabled_ruleset_governs_nothing(self, gate):
+        ruleset = _live_ruleset(1, ["test"], enforcement="disabled")
+        assert not gate._governs(ruleset, "develop", "develop")
+
+    def test_an_evaluate_mode_ruleset_governs_nothing(self, gate):
+        """`evaluate` shapes but enforces nothing, so it must not contribute
+        required contexts to verification or the apply freeze guard."""
+        ruleset = _live_ruleset(1, ["test"], enforcement="evaluate")
+        assert not gate._governs(ruleset, "develop", "develop")
+
+    def test_a_ruleset_without_enforcement_governs_nothing(self, gate):
+        ruleset = _live_ruleset(1, ["test"])
+        del ruleset["enforcement"]
+        assert not gate._governs(ruleset, "develop", "develop")
+
+    def test_contexts_and_strict_are_read_from_the_rule(self, gate):
+        ruleset = _live_ruleset(1, ["test", "block"], strict=False)
+        contexts, strict = gate.required_contexts_from_ruleset(ruleset)
+        assert contexts == ["block", "test"]
+        assert strict is False
+
+    def test_overlapping_strictness_reads_most_restrictive(self, gate):
+        """Overlapping rulesets layer as "the most restrictive version of the
+        rule applies" (GitHub docs), so strict=False arriving after strict=True
+        must not downgrade the effective live read."""
+        strict_on = _live_ruleset(1, ["test"], strict=True)
+        strict_off = _live_ruleset(2, ["block"], strict=False)
+        assert gate._ruleset_requirement([strict_on, strict_off])[1] is True
+        assert gate._ruleset_requirement([strict_off, strict_on])[1] is True
+
+    def test_a_ruleset_without_the_rule_reads_empty_not_crash(self, gate):
+        ruleset = {"id": 1, "rules": [{"type": "creation"}]}
+        assert gate.required_contexts_from_ruleset(ruleset) == ([], None)
+        assert gate.queue_params_from_ruleset(ruleset) is None
+
+    def test_declared_required_includes_ruleset_only_checks(self, gate):
+        """`gates-ran` is required by declaration but unreachable through the
+        classic `contexts` vocabulary; a comparison that dropped it would
+        silently bless its removal from the live ruleset."""
+        declared = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        assert "gates-ran" in declared
+
+
+class TestVerifyRulesets:
+    """`--verify-rulesets`: declared/live drift as a measured fact (#564 AC-1/AC-4)."""
+
+    def test_a_matching_live_ruleset_passes(self, gate, capsys, monkeypatch):
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=_live_matching_rulesets(gate)))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 0
+        out = capsys.readouterr().out
+        assert "OK: develop" in out and "OK: main" in out
+
+    def test_drift_is_named_in_both_directions(self, gate, capsys, monkeypatch):
+        live = _live_matching_rulesets(gate)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live[0] = _live_ruleset(
+            21421373, [c for c in develop if c != "test"] + ["some-live-only-check"]
+        )
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
+        out = capsys.readouterr().out
+        assert "'test' is required by this file but not by any live ruleset" in out
+        assert "'some-live-only-check' is required by a live ruleset but not in this file" in out
+
+    def test_a_declared_branch_with_no_governing_ruleset_fails(self, gate, capsys, monkeypatch):
+        live = [r for r in _live_matching_rulesets(gate) if r["id"] == 21701487]
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
+        assert "develop: no active ruleset targets it" in capsys.readouterr().out
+
+    def test_strict_freshness_drift_is_named(self, gate, capsys, monkeypatch):
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(
+            21421373,
+            gate.declared_required(gate.load_ruleset()["branches"]["develop"]),
+            strict=False,
+        )
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
+        assert "strict_required_status_checks_policy is False live" in capsys.readouterr().out
+
+    def test_strictness_over_overlapping_rulesets_is_most_restrictive(
+        self, gate, capsys, monkeypatch
+    ):
+        """A strict ruleset plus a non-strict one still enforces freshness, so
+        the compare must read the combined True regardless of API order."""
+        live = _live_matching_rulesets(gate)
+        live.append(_live_ruleset(99000001, [], strict=False))
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 0
+        assert "strict_required_status_checks_policy" not in capsys.readouterr().out
+
+    def test_queue_drift_is_named_against_the_reviewed_posture(self, gate, capsys, monkeypatch):
+        """`.github/merge-queue.json` is the reviewed posture; the live rule is
+        what GitHub enforces today. The 2026-11-26 read-back measured live
+        HEADGREEN against a reviewed ALLGREEN — that divergence must stay loud."""
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(
+            21421373,
+            gate.declared_required(gate.load_ruleset()["branches"]["develop"]),
+            queue={
+                "merge_method": "SQUASH",
+                "grouping_strategy": "HEADGREEN",
+                "max_entries_to_build": 10,
+                "min_entries_to_merge": 1,
+                "max_entries_to_merge": 15,
+                "min_entries_to_merge_wait_minutes": 5,
+                "check_response_timeout_minutes": 90,
+            },
+        )
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
+        out = capsys.readouterr().out
+        assert "grouping_strategy is 'HEADGREEN' live, want 'ALLGREEN'" in out
+        assert "max_entries_to_merge is 15 live, want 3" in out
+
+    def test_declared_queue_with_no_live_queue_fails(self, gate, capsys, monkeypatch):
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = [
+            _live_ruleset(21421373, develop, queue=None),
+            _live_ruleset(
+                21701487,
+                gate.declared_required(gate.load_ruleset()["branches"]["main"]),
+                include=("refs/heads/main",),
+            ),
+        ]
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=live))
+        assert gate.verify_rulesets(gate.load_ruleset(), "t") == 1
+        assert "declares a queue posture" in capsys.readouterr().out
+
+    def test_main_exposes_the_mode_through_the_cli(self, gate, capsys, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "t")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=_live_matching_rulesets(gate)))
+        assert gate.main(["--verify-rulesets"]) == 0
+
+    def test_without_a_token_the_mode_skips_like_verify(self, gate, capsys, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        assert gate.main(["--verify-rulesets"]) == 0
+        assert "SKIP" in capsys.readouterr().out
+
+
+class TestApplyFreezeGuard:
+    """`--apply` must refuse the accidental repository-wide freeze (#564 AC-3)."""
+
+    def _with_token(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "t")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def test_without_a_token_apply_refuses_unconditionally(self, gate, capsys, monkeypatch):
+        """A tokenless apply cannot evaluate the guard, and an apply whose
+        freeze impact is unknown is exactly the accident this prevents."""
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        assert gate.main(["--apply", "develop"]) == 1
+        out = capsys.readouterr().out
+        assert "refuses to run without" in out
+        assert "gh api" not in out, "no payload may be printed blind"
+
+    def test_an_unknown_branch_still_refuses(self, gate, capsys, monkeypatch):
+        self._with_token(monkeypatch)
+        assert gate.main(["--apply", "staging"]) == 1
+        assert "no rule for branch" in capsys.readouterr().err
+
+    def test_a_newly_required_failing_check_refuses_and_names_the_pr(
+        self, gate, capsys, monkeypatch
+    ):
+        """The #564 trap: the declared set gains a context an open PR currently
+        fails. Applying would flip that PR from mergeable to blocked, silently."""
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "test"])
+        reports = {
+            "sha-42": {
+                "check_runs": [{"name": "test", "status": "completed", "conclusion": "failure"}]
+            }
+        }
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(rulesets=live, pulls=[_open_pr(42, "sha-42")], reports=reports),
+        )
+        assert gate.main(["--apply", "develop"]) == 1
+        out = capsys.readouterr().out
+        assert "PR #42" in out and "'test' reports 'failure'" in out
+        assert "gh api" not in out, "the refusal must not leak the payload"
+        assert "--allow-freeze" in out
+
+    def test_a_never_reported_newly_required_check_refuses_too(self, gate, capsys, monkeypatch):
+        """Required does not re-run CI on existing heads: a PR whose head never
+        saw the context waits on `Expected` forever — the same freeze."""
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "sandbox-conformance"])
+        monkeypatch.setattr(
+            gate, "_get", _api_router(rulesets=live, pulls=[_open_pr(7, "sha-7")], reports={})
+        )
+        assert gate.main(["--apply", "develop"]) == 1
+        out = capsys.readouterr().out
+        assert "PR #7" in out and "`Expected`" in out
+
+    def test_an_already_required_red_check_does_not_block_the_apply(
+        self, gate, capsys, monkeypatch
+    ):
+        """The guard keys on *newly* required, not on any red check: a context
+        the live ruleset already requires on a red PR is today's state, not a
+        freeze this apply creates."""
+        self._with_token(monkeypatch)
+        live = _live_matching_rulesets(gate)
+        reports = {
+            "sha-42": {
+                "check_runs": [{"name": "test", "status": "completed", "conclusion": "failure"}]
+            }
+        }
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(rulesets=live, pulls=[_open_pr(42, "sha-42")], reports=reports),
+        )
+        assert gate.main(["--apply", "develop"]) == 0
+        assert "gh api" in capsys.readouterr().out
+
+    def test_a_main_targeting_pr_does_not_block_an_apply_to_develop(
+        self, gate, capsys, monkeypatch
+    ):
+        """The freeze guard must scope to PRs targeting the applied branch:
+        `integration-scope` is required on `develop` but advisory on `main`, so
+        a promotion PR lacking it is unaffected by `--apply develop` and must
+        not force `--allow-freeze` (the API's `base` filter)."""
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "test"])
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(
+                rulesets=live,
+                pulls=[_open_pr(99, "sha-99", base="main")],
+                reports={
+                    "sha-99": {
+                        "check_runs": [
+                            {"name": "test", "status": "completed", "conclusion": "failure"}
+                        ]
+                    }
+                },
+            ),
+        )
+        assert gate.main(["--apply", "develop"]) == 0
+        out = capsys.readouterr().out
+        assert "PR #99" not in out
+        assert "gh api" in out
+
+    def test_a_pending_head_counts_as_frozen(self, gate, capsys, monkeypatch):
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "gates-ran"])
+        reports = {
+            "sha-9": {
+                "check_runs": [{"name": "gates-ran", "status": "in_progress", "conclusion": None}]
+            }
+        }
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(rulesets=live, pulls=[_open_pr(9, "sha-9")], reports=reports),
+        )
+        assert gate.main(["--apply", "develop"]) == 1
+        assert "'gates-ran' is still 'in_progress' on it" in capsys.readouterr().out
+
+    def test_allow_freeze_prints_the_payload_and_says_so(self, gate, capsys, monkeypatch):
+        """The override must stay visible in the output: a frozen queue that
+        nobody can attribute to an explicit override is the #564 failure mode
+        with extra steps."""
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "test"])
+        reports = {
+            "sha-42": {
+                "check_runs": [{"name": "test", "status": "completed", "conclusion": "failure"}]
+            }
+        }
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(rulesets=live, pulls=[_open_pr(42, "sha-42")], reports=reports),
+        )
+        assert gate.main(["--apply", "develop", "--allow-freeze"]) == 0
+        out = capsys.readouterr().out
+        assert "--allow-freeze override recorded" in out
+        assert "PR #42" in out, "the override must re-state who it freezes"
+        assert "gh api" in out
+
+    def test_a_frozen_branch_with_no_new_contexts_applies_cleanly(self, gate, capsys, monkeypatch):
+        self._with_token(monkeypatch)
+        monkeypatch.setattr(gate, "_get", _api_router(rulesets=_live_matching_rulesets(gate)))
+        assert gate.main(["--apply", "main"]) == 0
+        assert "gh api" in capsys.readouterr().out
+
+    def test_success_outranks_an_earlier_failure_for_the_same_name(self, gate):
+        """A re-run's green must not inherit an earlier red of the same check."""
+        report = {"test": "failure"}
+        assert gate._classify("test", report) == "reports 'failure'"
+        report["test"] = "success"
+        assert gate._classify("test", report) is None
+
+    def test_head_report_walks_every_check_run_page(self, gate, monkeypatch):
+        """A green newly required check beyond the first 100 check runs is a
+        satisfied context: classification must see page 2, or the apply would
+        freeze a healthy PR on a false never-reported."""
+        page_one = [
+            {"name": f"filler-{i}", "status": "completed", "conclusion": "neutral"}
+            for i in range(100)
+        ]
+        page_two = [
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "tail", "status": "completed", "conclusion": "failure"},
+        ]
+        seen_urls: list[str] = []
+
+        def fake_get(url: str, token: str):
+            assert token == "t"
+            if "/check-runs?" in url:
+                seen_urls.append(url)
+                return {"check_runs": page_one if url.endswith("page=1") else page_two}
+            if url.endswith("/status"):
+                return {"statuses": []}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        monkeypatch.setattr(gate, "_get", fake_get)
+        report = gate._head_report("t", "sha-big")
+        assert any(u.endswith("page=1") for u in seen_urls) and any(
+            u.endswith("page=2") for u in seen_urls
+        )
+        assert report["test"] == "success"
+        assert report["tail"] == "failure"
+        assert gate._classify("test", report) is None
+
+    def test_a_short_final_page_stops_the_walk(self, gate, monkeypatch):
+        """Pagination ends at the first short page, not on a blind page 2."""
+        page_one = [
+            {"name": f"filler-{i}", "status": "completed", "conclusion": "neutral"}
+            for i in range(99)
+        ]
+        seen_urls: list[str] = []
+
+        def fake_get(url: str, token: str):
+            if "/check-runs?" in url:
+                seen_urls.append(url)
+                return {"check_runs": page_one}
+            if url.endswith("/status"):
+                return {"statuses": []}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        monkeypatch.setattr(gate, "_get", fake_get)
+        gate._head_report("t", "sha-small")
+        assert len([u for u in seen_urls if "/check-runs?" in u]) == 1
