@@ -33,6 +33,28 @@ export interface BriefField {
   source: "user" | "verbatim" | "record" | "assumed" | "open";
 }
 
+export interface BriefWrittenItem {
+  kind: "goal" | "creative_brief";
+  goal_id?: string;
+  revision?: number | null;
+  brief_id?: string;
+  lineage_id?: string | null;
+  version?: number | null;
+}
+
+/** The durable commit result (#1823): present on commit turns, truthfully
+ * naming what was written (or why the commit could not be). */
+export interface BriefCommit {
+  status: "committed" | "already_committed" | "unavailable" | "failed";
+  recovered?: boolean;
+  goal_id?: string;
+  goal_revision?: number;
+  brief_id?: string;
+  lineage_id?: string;
+  brief_version?: number;
+  reason?: string;
+}
+
 export interface BriefView {
   event: string;
   summary: {
@@ -49,6 +71,8 @@ export interface BriefView {
     can_assume: boolean;
   } | null;
   draft?: { fields: Record<string, string>; assumed: string[]; notes: string[] };
+  written?: BriefWrittenItem[];
+  commit?: BriefCommit;
 }
 
 export interface Session {
