@@ -430,8 +430,11 @@ class TestPathsFilters:
     #: #2120 added the image-pin registry, #2371 the grant ledger and the
     #: testing-inventory notes, #2432 gate scripts, #2345 dev-tool
     #: requirements and repair notes, #2450 lock/manifest metadata and the
-    #: Trivy suppression registry, #2442 npm dependency metadata (manifest
-    #: plus lockfile at any packages/ depth) -- each a PR surface class that
+    #: Trivy suppression registry, #2442 npm dependency metadata at any
+    #: packages/ depth (its react bump lives in
+    #: packages/hive-conductor/tests/e2e), #2485 the same npm metadata for
+    #: package frontends (its @eslint/js bump lives in
+    #: packages/hive-conductor/frontend) -- each a PR surface class that
     #: otherwise never triggered the producer and left its required row
     #: permanently absent (rationale in mutation.yml itself).
     SHIPPED: ClassVar[dict[str, list[str]]] = {
