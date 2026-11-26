@@ -353,3 +353,93 @@ not the blocker.
 Progress: `{checked: 8, done: 0, skipped: 0, errors: 0, next: program-level RC
 designation and cross-lane sequencing; then #860 exact-RC ≥4h soak; then first
 release-workflow run → rc→final promotion}`.
+
+## Re-verification addendum — 2026-11-26 round 6 (job `e50016d67efb`) — in-lane RC-tree guard landed and validated
+
+Round 6 started from head `6ff2cd32a8df9f33a2b02821825e1e7e0d5c906f` (branch
+`auto-89`, tree clean), i.e. round 5's repaired tree plus one in-lane commit:
+`fix(release): reject final source drift from latest RC (#89)`. The intervening
+attempt (`8f98fc5ca`) produced exactly that commit before dying on a provider
+usage-limit error, and this job's `manifest.json` again carried `checks: []` —
+**no `check-*.log` files exist in the job directory** — so every check below
+was re-executed in this worktree. All GitHub evidence came from the frozen
+`dispatch-context.json` (captured 2026-11-26T15:19Z, `complete_for_scope:
+true`); zero live API calls, zero GitHub mutations.
+
+### The in-lane repair (commit `6ff2cd32a8`, now at lane head)
+
+Acceptance criterion 6 ("final tag/tree is byte-equivalent to the soaked RC
+tree") previously had **no enforcement surface**: nothing compared a final tag
+to the RC that was soaked. The commit adds exactly that surface without
+claiming it proves more than it does:
+
+- `scripts/release_guard.py` gains `--verify-rc-tree`: for a final `vX.Y.Z`
+  tag it selects the numerically **latest** `vX.Y.Z-rcN` (highest N, never an
+  older candidate whose tree happens to match), requires the candidate to be
+  an annotated tag, requires the checkout to equal the final tag's tree, and
+  compares git **trees** (contents, paths, modes, submodule IDs) so a
+  promotion merge may change the commit ID but not the soaked source. Fails
+  closed on missing candidates, lightweight candidates, missing refs, and git
+  errors; no metadata exception.
+- `.github/workflows/release.yml` guard step now always passes
+  `--verify-rc-tree` (full `fetch-depth: 0` checkout, no `continue-on-error`),
+  so no final build/publish can skip it.
+- `tests/test_release_guard.py` adds 11 cases on real temporary git repos
+  (35 total in the file).
+- `docs/testing/inventory-notes/issue-89-rc-tree-guard.md` records the delta
+  (`tests/: +11`) and an honest criterion-by-criterion handoff.
+
+### Fresh deterministic checks (all re-run at `6ff2cd32a8`)
+
+| Check | Command | Result |
+|---|---|---|
+| Release guard suite | `uv run pytest tests/test_release_guard.py -q` | **35 passed** (0.95s) — 24 pre-existing + 11 new |
+| Negative control (new tests bind to the fix) | new test file copied onto base `e0b427fefa` in a disposable scratch checkout at `/tmp/wt-neg89` | **11 failed, 24 passed** — every new test fails against the pre-fix tree (argparse rejects `--verify-rc-tree`; workflow lacks the flag); scratch removed after measurement |
+| Lint | `uv run ruff check .` | exit 0 — "All checks passed!" |
+| Format | `uv run ruff format --check .` | exit 0 — "3484 files already formatted" |
+| Release consistency | `uv run python scripts/check-release-consistency.py` | exit 0 — "ok: released none, shipping 0.9.0, working toward 1.0.0" |
+| Promotion surface | `uv run python scripts/check-promotion-surface.py` | exit 0 — "promotion surface: ok" |
+| Suite inventory | `uv run python scripts/check-suite-inventory.py --suite tests/` | exit 0 — "ok: 1 suite(s) match the recorded inventory" |
+| Tags | `git tag -l 'v*'` | **0 tags** repo-wide (no rcN, no final) |
+| Soak dirs | `ls scripts/soak docs/testing/soak` | **both absent** at this head |
+
+### Dependency/program movement since round 5 (mixed, none unblocking)
+
+- **#88 closed** (2026-10-25): backup/restore acceptance is the first
+  dependency of #89 to reach satisfied.
+- **#84's verification exercise merged into develop** (`14cf1c935e`, PR
+  #2514 — get.sh checksum verification, publish-metadata tests, verification
+  doc) although the #84 issue itself remains open; it did **not** touch
+  `release.yml`, `release_guard.py`, or `test_release_guard.py`.
+- `origin/develop` advanced **189 commits** past the lane base `4de7e906d9`
+  (now `7ba29c1cd`, this job's declared base). Of the files this lane's fix
+  touches, only `release.yml` also changed on develop (DevSkim suppressions
+  and action version pins in different hunks) — no content conflict on the
+  guard surface, but the lane branch is not yet based on the current develop
+  head and will need a sync before integration. The round's prior block was a
+  provider error, not a sync conflict, so no merge was performed this round.
+- **Child soak lane #860 / PR #1672**: still open and unmerged (head
+  `edbc2f4e43f3`, no longer draft, `mergeable: true`). Last lane activity
+  2026-11-17 ended **blocked**; frozen check-runs on that head: 44 success,
+  1 **failure** (Quality / Documentation links), 31 pending, 3 skipped;
+  `gates-ran` status pending. The exact-RC ≥4 h soak has still never run.
+- #86 (clean-machine install) and #87 (real-model execution) remain open.
+
+### Verdict (round 6)
+
+The source-integrity criterion now has a tested, mandatory, production-wired
+enforcement surface, and every gate passes at the lane head. But that surface
+is **necessary, not sufficient**: as `issue-89-rc-tree-guard.md` itself
+records, equal git trees do not prove artifact byte identity across rebuilds,
+do not constitute soak evidence, and the promotion actions (RC tag cut,
+`release.yml` first run, `release` environment approval, final tag) remain
+GitHub mutations this lane is prohibited from performing. No RC exists; the
+≥4 h exact-RC soak is still blocked in the child lane; soak directories remain
+absent from every shipping tree. Round-6 tally vs the issue's eight criteria:
+1 PARTIAL (upgraded from UNVERIFIED — RC-tree guard), 1 PARTIAL (new-RC-on-change
+enforcement), 6 UNVERIFIED/FAIL/BLOCKED. **Verdict: BLOCKED**, unchanged in
+kind since round 1, with one criterion materially hardened in-lane.
+
+Progress: `{checked: 8, done: 1 (RC-tree drift guard), skipped: 0, errors: 0,
+next: develop sync for lane branch → operator-designated immutable RC →
+#860 exact-RC ≥4 h soak → first release-workflow run → external verification}`.
