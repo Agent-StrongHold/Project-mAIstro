@@ -244,10 +244,13 @@ GUARDDOG_EXCEPTIONS: dict[tuple[str, str], Exception] = {
         reason=(
             "A test runner's job is reading the source tree it tests; the "
             "sensitive-file heuristic fires on test-file traversal. Dev-only "
-            "dependency, never shipped."
+            "dependency, never shipped. 5.1.1 re-reviewed (patch release): "
+            "the rule fires on the same five benign literals as 5.1.0 — the "
+            "'.env' serve deny-list (VITE_DEFAULT_FS_DENY) and process.env define "
+            "normalization — not on new behavior."
         ),
         expires="2027-11-04",
-        versions=("5.0.5", "5.1.0"),
+        versions=("5.0.5", "5.1.0", "5.1.1"),
     ),
     ("vite", "threat-filesystem-read"): Exception(
         reason=(
