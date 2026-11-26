@@ -11,9 +11,8 @@
 #
 # Job order is deliberate:
 #
-#   guard ──> wheels ──> pypi     (environment: release)
-#         └──────────┴─> images   (environment: release)
-#                        └──────> github-release
+#   guard ──> wheels ──> images ──> pypi   (both environment: release)
+#         └──────────┴─────────┴─────────> github-release
 #
 # Everything expensive AND everything falsifiable happens before the gate, so
 # the approval prompt only ever appears for a release that already built and
@@ -425,7 +424,10 @@ jobs:
   # ---------------------------------------------------------------------------
   pypi:
     name: Publish to ${{ needs.guard.outputs.prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
-    needs: [guard, wheels, m1-closeout]
+    # Final publication is irreversible: images must first validate the exact
+    # RC's soak evidence (including finding routing). Running these jobs in
+    # parallel would let PyPI publish even when that promotion gate fails.
+    needs: [guard, wheels, m1-closeout, images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:

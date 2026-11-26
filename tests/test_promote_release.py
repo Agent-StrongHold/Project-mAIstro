@@ -817,6 +817,27 @@ def test_finalize_evidence_rejects_malformed_digests(promote_mod, tmp_path):
 # --- the shipping workflow must actually wire this path --------------------------
 
 
+def test_pypi_waits_for_the_soak_gate_before_irreversible_publication():
+    """A passing wheels job must not race a failing images/soak job to PyPI."""
+    import yaml
+
+    jobs = yaml.safe_load((REPO / ".github/workflows/release.yml").read_text())["jobs"]
+    pypi = jobs["pypi"]
+    assert "images" in pypi["needs"], (
+        "PyPI can publish before images rejects missing/failed soak evidence"
+    )
+    # GitHub's default success() dependency gate must not be bypassed.
+    assert "if" not in pypi
+    assert not jobs["images"].get("continue-on-error", False)
+    steps = jobs["images"]["steps"]
+    gate = next(s for s in steps if "adopt-digests" in s.get("run", ""))
+    assert gate["if"] == "needs.guard.outputs.prerelease == 'false'"
+    assert not gate.get("continue-on-error", False)
+    publish = next(s for s in pypi["steps"] if "gh-action-pypi-publish" in s.get("uses", ""))
+    assert "if" not in publish
+    assert pypi["environment"]["name"] == "release"
+
+
 def test_shipping_workflow_promotes_rc_artifacts_on_finals():
     import yaml
 
