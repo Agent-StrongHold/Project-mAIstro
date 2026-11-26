@@ -17,8 +17,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import maistro_rsi.local_loop as local_loop
+from maistro_evolve.improvement import ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
+from maistro_rsi.promotion_review import MECHANICAL_COMPOSITE_FLOOR
 from maistro_rsi.protocols import MicroVmSandbox
 
 
@@ -980,6 +982,577 @@ async def test_hostile_builder_system_prompt_is_refused_before_the_model(tmp_pat
         await apply_fn(None, str(tmp_path))
 
     assert invoked == []
+
+
+# ---------------------------------------------------------------------------
+# Promotion gate (#302): quarantine + signed approval BEFORE the --ff-only
+# ---------------------------------------------------------------------------
+
+
+def _head(cwd: Path | str) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(cwd), capture_output=True, text=True
+    )
+    return proc.stdout.strip()
+
+
+def _git_diff(work_root: str, rev_range: str) -> str:
+    baseline = Path(work_root) / "baseline"
+    proc = subprocess.run(
+        ["git", "diff", rev_range], cwd=str(baseline), capture_output=True, text=True
+    )
+    return proc.stdout
+
+
+class RecordingReview:
+    """An AdversarialReview that records what it was asked to judge."""
+
+    def __init__(self, approve: bool = True) -> None:
+        self.approve = approve
+        self.judged: list[list[str]] = []
+
+    async def review(self, diff: str, touched_paths: list[str]) -> bool:
+        self.judged.append(list(touched_paths))
+        return self.approve
+
+
+def test_green_ordinary_change_still_promotes_with_gate(tmp_path: Path) -> None:
+    """The gate is not a blanket ban: an ordinary (non-sensitive) clean diff
+    still crosses the canonical boundary and promotes exactly as before."""
+    repo = _make_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    judged: list[list[str]] = []
+
+    class SpyWarden:
+        async def scan(self, content: str, boundary: str = "default"):
+            judged.append([boundary])
+            from maistro.security._types import WardenVerdict
+
+            return WardenVerdict(clean=True)
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        warden=SpyWarden(),
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 1
+    # The quarantine boundary actually executed for this promotion's diff.
+    assert judged  # warden.scan ran
+    from maistro_rsi.trace_notes import read_trace_note
+
+    note = read_trace_note(Path(config.work_root) / "baseline", result.cycles[0].sha)
+    assert note is not None
+    assert note.gate is not None
+    assert note.gate["quarantine_cleared"] is True
+    assert note.gate["requires_approval"] is False
+
+
+def test_sensitive_candidate_cannot_promote_without_signed_approval(tmp_path: Path) -> None:
+    """#302 adversarial: a candidate that edits the containment surface (a
+    sensitive path — Warden's detector, reached via ``maistro/security/``)
+    and passes the test command is still refused — no reviewer, no approval,
+    no promotion. The --ff-only never runs."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        # Touch the containment surface AND keep the suite green. The path is
+        # sensitive (maistro/security/) but NOT evaluator-oracle surface
+        # (#109), so the refusal exercised here is the promotion gate's —
+        # not the earlier oracle-integrity veto.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched quarantine policy\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "quarantine gate refused" in cycle.note
+    # The baseline branch never moved.
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
+
+
+def test_candidate_touching_the_loop_itself_is_vetoed_before_scoring(
+    tmp_path: Path,
+) -> None:
+    """Layered defense (#109 x #302): a candidate that edits the promotion
+    machinery itself — ``maistro_rsi/local_loop.py`` — is evaluator-oracle
+    surface, so the #109 integrity veto refuses it BEFORE scoring ever runs;
+    it never even reaches the promotion gate. Either way, the baseline never
+    moves: the --ff-only is unreachable for a candidate that rewrites the
+    machinery that would apply it."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        target = ws / "maistro_rsi" / "local_loop.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched promotion machinery\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and not cycle.promoted
+    assert "evaluator oracle mutated" in cycle.note
+    # The baseline branch never moved.
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
+
+
+def test_sensitive_candidate_with_review_but_unbound_approval_stays_put(tmp_path: Path) -> None:
+    """An approval that does not bind to THIS candidate/diff/scope is not
+    authority: denial leaves the baseline unchanged."""
+    repo = _make_repo(tmp_path / "src")
+
+    def edit_gate(ws: Path) -> None:
+        # Sensitive (maistro/security/) but not evaluator-oracle surface, so
+        # the binding failure under test is the approval gate's, not the
+        # #109 pre-scoring veto.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# candidate-touched\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        adversarial_review=RecordingReview(approve=True),
+        approval_provider=lambda *a: {  # validly signed, but for another change
+            "candidate_sha": "b" * 40,
+            "diff_sha256": "c" * 64,
+            "scope": "/other#main",
+            "approver": "someone",
+            "policy_version": "rsi-sensitive-paths-v1",
+            "expires_at": "2999-01-01T00:00:00+00:00",
+            "signature": "0" * 64,
+        },
+        approval_signing_secret="gate-test-secret",
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 0
+    assert not result.cycles[0].promoted
+    assert _head(Path(config.work_root) / "baseline") == head_before
+
+
+def test_sensitive_candidate_promotes_only_with_review_and_valid_approval(tmp_path: Path) -> None:
+    """The full authorized path: reviewer approves AND an approval service
+    returns a record signed and bound to the ACTUAL candidate/diff/scope —
+    then, and only then, the fast-forward runs, and the promotion's durable
+    trace note carries the approval provenance for independent audit."""
+    import hashlib
+    from dataclasses import asdict, replace
+
+    from maistro_rsi.promotion_gate import (
+        SignedPromotionApproval,
+        sign_promotion_approval,
+    )
+    from maistro_rsi.sensitive_paths import SENSITIVE_PATH_POLICY_VERSION
+    from maistro_rsi.trace_notes import read_trace_note
+
+    repo = _make_repo(tmp_path / "src")
+    secret = "gate-test-secret"
+    review = RecordingReview(approve=True)
+
+    def edit_gate(ws: Path) -> None:
+        # Sensitive (maistro/security/) but not evaluator-oracle surface, so
+        # the full authorized promotion under test crosses the promotion gate.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# reviewed-and-approved edit\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    def approval_service(candidate_sha: str, diff: str, scope: str) -> dict[str, object] | None:
+        """Stands in for the external capability that existed BEFORE the run
+        (e.g. the Conductor review endpoint): it signs against the live
+        binding values it is handed and nothing else."""
+        approval = SignedPromotionApproval(
+            candidate_sha=candidate_sha,
+            diff_sha256=diff,
+            scope=scope,
+            approver="security-operator",
+            policy_version=SENSITIVE_PATH_POLICY_VERSION,
+            expires_at="2999-01-01T00:00:00+00:00",
+        )
+        return dict(asdict(replace(approval, signature=sign_promotion_approval(approval, secret))))
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        adversarial_review=review,
+        approval_provider=approval_service,
+        approval_signing_secret=secret,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 1
+    assert review.judged  # the reviewer was consulted on the sensitive diff
+    baseline = Path(config.work_root) / "baseline"
+    assert (baseline / "value.txt").read_text() == "1\n"
+    note = read_trace_note(baseline, result.cycles[0].sha)
+    assert note is not None and note.gate is not None
+    gate = note.gate
+    assert gate["requires_approval"] is True
+    assert gate["quarantine_cleared"] is True
+    approval = gate["approval"]
+    assert approval["approver"] == "security-operator"
+    # The recorded approval binds to the promoted commit and its diff digest.
+    assert approval["candidate_sha"] == result.cycles[0].sha
+    diff_text = _git_diff(
+        str(config.work_root), f"{config.baseline_branch}~1..{config.baseline_branch}"
+    )
+    assert approval["diff_sha256"] == hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+
+
+def test_candidate_cannot_self_score_through_an_oracle_rewrite(tmp_path: Path) -> None:
+    """#302 adversarial + #109: a candidate that rewrites the oracle it is
+    scored against (the fitness evaluator and the tests that pin it) cannot
+    use the self-modified score to promote. Post-merge the defense is
+    layered: the #109 evaluator-oracle integrity veto refuses the candidate
+    BEFORE its modified oracle is even executed, and the sensitive-path
+    promotion gate remains the backstop for sensitive paths that are not
+    oracle surface (see test_sensitive_candidate_cannot_promote_without_signed_approval).
+    Either layer alone leaves the baseline unmoved."""
+    repo = _make_repo(tmp_path / "src")
+
+    def rewrite_oracle(ws: Path) -> None:
+        # The candidate weakens the evaluator that scores it…
+        evaluator = ws / "maistro_rsi" / "candidate_fitness.py"
+        evaluator.parent.mkdir(parents=True, exist_ok=True)
+        evaluator.write_text(
+            "def evaluate_candidate(*a, **k):\n    class S:\n        accepted = True\n"
+            "        composite = 1.0\n    return S()\n",
+            encoding="utf-8",
+        )
+        # …and touches a test path to shrink the oracle — all still "green".
+        oracle_test = ws / "maistro-rsi" / "tests" / "test_oracle.py"
+        oracle_test.parent.mkdir(parents=True, exist_ok=True)
+        oracle_test.write_text("", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(rewrite_oracle)).run()
+
+    assert result.promotions == 0
+    assert not result.cycles[0].promoted
+    # The #109 veto fires first: the self-modified oracle is never executed,
+    # so the candidate cannot manufacture acceptance evidence at all.
+    assert "evaluator oracle mutated" in result.cycles[0].note
+    assert not result.cycles[0].tests_passed
+    assert _head(Path(config.work_root) / "baseline") == head_before
+
+
+class _ExplodingWarden:
+    """A quarantine scanner that crashes instead of returning a verdict."""
+
+    async def scan(self, content: str, boundary: str = "default"):
+        raise RuntimeError("warden exploded")
+
+
+def test_a_crashed_quarantine_gate_refuses_the_promotion(tmp_path: Path) -> None:
+    """#302 fail-closed: a quarantine boundary that CRASHES is a refusal, not
+    a pass. The crash happens inside the gate — before the fast-forward — so
+    the baseline never moves. 'Unavailable reviewer' in the acceptance
+    criteria covers the scanner itself, not just the approval service."""
+    repo = _make_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        warden=_ExplodingWarden(),
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "quarantine gate failed" in cycle.note
+    assert "RuntimeError" in cycle.note
+    # The baseline branch never moved.
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
+
+
+def test_gate_evidence_naming_an_unlanded_commit_refuses_the_promotion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The baseline is the authority on what landed (#302): when the evidence
+    the gate cleared names a commit the fast-forward did not land, the cycle
+    reports not-promoted instead of claiming a promotion the durable record
+    cannot support. Simulated by tampering the cleared sha the way any
+    evidence/record mismatch would present — the last-line check after the
+    merge must catch it."""
+    repo = _make_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    original = LocalRsiLoop._run_promotion_gate
+
+    def mismatched_gate(loop_self: LocalRsiLoop, promote_branch: str):
+        evidence, note = original(loop_self, promote_branch)
+        if evidence is not None:
+            # Name the PRE-merge baseline head: a real commit that exists, but
+            # one the --ff-only is about to move PAST — exactly the shape of
+            # an evidence/record mismatch (the record names a commit the
+            # baseline does not carry as its tip).
+            proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(loop_self._baseline),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            evidence = {**evidence, "candidate_sha": proc.stdout.strip()}
+        return evidence, note
+
+    monkeypatch.setattr(LocalRsiLoop, "_run_promotion_gate", mismatched_gate)
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "promotion did not land on the baseline" in cycle.note
+
+
+def _loop_with_baseline(tmp_path: Path, report_dir: Path) -> tuple[LocalRsiLoop, str]:
+    """A loop whose throwaway baseline clone exists, so judgment unit calls
+    can read real commits out of it; returns the loop and the baseline's HEAD
+    sha as a stand-in candidate."""
+    repo = _make_repo(tmp_path / "src")
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        report_dir=str(report_dir),
+    )
+    loop = LocalRsiLoop(config, apply_patch=_make_apply(lambda ws: None))
+    baseline = Path(config.work_root) / "baseline"
+    _make_repo(baseline)  # the same shape run() builds, without running
+    return loop, _head(baseline)
+
+
+def test_decisive_mechanical_candidate_is_kept_without_a_judge(tmp_path: Path) -> None:
+    """#110 mechanical path: a quarantine-clean candidate with decisive
+    evidence (composite at/above the decisiveness floor), no sensitive
+    surface and no governance override needs no RLPHD judgment — it is kept
+    with no review record and no learned state written."""
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    loop, candidate_sha = _loop_with_baseline(tmp_path, report_dir)
+
+    keep, note, review = loop._judge_unpromoted_candidate(
+        index=1,
+        target="value.txt",
+        kind=ImprovementKind.REFACTOR,
+        composite=MECHANICAL_COMPOSITE_FLOOR,
+        judge_score=None,
+        candidate_sha=candidate_sha,
+        promote_branch="candidate",
+        touched_paths=["value.txt"],
+    )
+
+    assert keep is True
+    assert note == ""
+    assert review is None
+    # No judgment machinery ran: no review records, no model state.
+    assert not (report_dir / "kept").exists()
+    assert not (report_dir / "flagged").exists()
+    assert not (report_dir / "rlphd_state.json").exists()
+
+
+def test_evidence_below_the_decisiveness_floor_cold_starts_parked(
+    tmp_path: Path,
+) -> None:
+    """The same surface as the mechanical proof, composite just below the
+    floor: the promotion escalates to judgment, and a cold-start model
+    (p=0.5 < theta=0.7) parks the candidate — flagged for a human, never
+    auto-kept. The floor is exclusive: equality stays mechanical."""
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    loop, candidate_sha = _loop_with_baseline(tmp_path, report_dir)
+
+    keep, note, review = loop._judge_unpromoted_candidate(
+        index=1,
+        target="value.txt",
+        kind=ImprovementKind.REFACTOR,
+        composite=MECHANICAL_COMPOSITE_FLOOR - 0.01,
+        judge_score=None,
+        candidate_sha=candidate_sha,
+        promote_branch="candidate",
+        touched_paths=["value.txt"],
+    )
+
+    assert keep is False
+    assert "parked for human review" in note
+    assert review is None
+    flagged = report_dir / "flagged"
+    assert (flagged / f"{candidate_sha[:12]}.patch").exists()
+    meta = (flagged / f"{candidate_sha[:12]}.json").read_text(encoding="utf-8")
+    assert candidate_sha in meta
+
+
+def test_judgment_promotion_autokept_above_theta_persists_its_review_record(
+    tmp_path: Path,
+) -> None:
+    """The authorized judgment promotion with a model that predicts keep
+    (p >= theta): the promotion lands, AND its review record (.patch + .json
+    under kept/) is persisted only AFTER the merge — so the kept list never
+    names a promotion the baseline does not carry (#302 ordering)."""
+    import json as _json
+    from dataclasses import asdict, replace
+
+    from maistro_rsi.promotion_gate import (
+        SignedPromotionApproval,
+        sign_promotion_approval,
+    )
+    from maistro_rsi.sensitive_paths import SENSITIVE_PATH_POLICY_VERSION
+
+    repo = _make_repo(tmp_path / "src")
+    secret = "gate-test-secret"
+    review = RecordingReview(approve=True)
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    # A trained reviewer state that predicts keep for any evidence: bias
+    # weight 10.0 puts sigmoid far above COLD_START_THETA (0.7).
+    (report_dir / "rlphd_state.json").write_text(
+        _json.dumps(
+            {"models": {"rsi_promotion": {"feature_weights": {"bias": 10.0}}}, "thetas": {}}
+        ),
+        encoding="utf-8",
+    )
+
+    def edit_gate(ws: Path) -> None:
+        # Sensitive (maistro/security/) but not evaluator-oracle surface, so
+        # the candidate crosses the promotion gate into the judgment path.
+        target = ws / "maistro" / "security" / "warden" / "detector.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# reviewed-and-approved edit\n", encoding="utf-8")
+        (ws / "value.txt").write_text("1\n", encoding="utf-8")
+
+    def approval_service(candidate_sha: str, diff: str, scope: str) -> dict[str, object] | None:
+        approval = SignedPromotionApproval(
+            candidate_sha=candidate_sha,
+            diff_sha256=diff,
+            scope=scope,
+            approver="security-operator",
+            policy_version=SENSITIVE_PATH_POLICY_VERSION,
+            expires_at="2999-01-01T00:00:00+00:00",
+        )
+        return dict(asdict(replace(approval, signature=sign_promotion_approval(approval, secret))))
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        adversarial_review=review,
+        approval_provider=approval_service,
+        approval_signing_secret=secret,
+        report_dir=str(report_dir),
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(edit_gate)).run()
+
+    assert result.promotions == 1
+    sha = result.cycles[0].sha
+    kept = report_dir / "kept"
+    assert (kept / f"{sha[:12]}.patch").exists()
+    record = _json.loads((kept / f"{sha[:12]}.json").read_text(encoding="utf-8"))
+    assert record["sha"] == sha
+    assert record["action_class"] == "rsi_promotion"
+    assert record["predicted_p"] >= record["theta"]
+    assert record["review_path"] == "judgment"
+    assert record["sensitive_paths"]
+    # Nothing was flagged: the model kept this candidate on its own.
+    assert not (report_dir / "flagged").exists()
+
+
+def test_unavailable_judgment_machinery_parks_the_candidate(tmp_path: Path, monkeypatch) -> None:
+    """#302 fail-closed: when the review machinery itself is unavailable, the
+    candidate is parked and the baseline is unchanged — a broken judge must
+    never read as a passing one."""
+    repo = _make_repo(tmp_path / "src")
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> dict[str, float | None]:
+        raise RuntimeError("review state store unavailable")
+
+    monkeypatch.setattr("maistro_rsi.promotion_review.extract_features", boom)
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        report_dir=str(report_dir),
+    )
+    head_before = _head(repo)
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "promotion review unavailable (RuntimeError)" in cycle.note
+    assert "parked" in cycle.note
+    assert _head(Path(config.work_root) / "baseline") == head_before
+    assert (Path(config.work_root) / "baseline" / "value.txt").read_text() == "0\n"
 
 
 def test_default_campaign_ids_are_unique_per_loop(tmp_path: Path) -> None:

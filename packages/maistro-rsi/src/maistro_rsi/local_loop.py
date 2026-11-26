@@ -1053,6 +1053,21 @@ class LocalRsiConfig:
     # disable (e.g. a test exercising unrelated checkpoint mechanics that
     # never anticipated a revert).
     promotion_review: bool = True
+    # Promotion containment gate (#302): every promotion crosses ONE canonical
+    # quarantine boundary (Warden + the sensitive-path classifier) before the
+    # baseline fast-forward, and a diff on the agent's own containment surface
+    # additionally requires a pre-existing, cryptographically signed approval
+    # (promotion_gate.SignedPromotionApproval) bound to candidate/diff sha,
+    # scope, approver, policy version and expiry. Fail-closed throughout: with
+    # no adversarial_review and no approval_provider (the defaults) a
+    # sensitive-surface candidate can NEVER promote — baseline unchanged.
+    # Whether approval is required is decided by matches_sensitive_pattern
+    # over the diff's real paths; no candidate- or model-populated boolean is
+    # ever consulted.
+    warden: Any = None  # the quarantine scanner; None builds a stock Warden
+    adversarial_review: Any = None  # AdversarialReview | None (None = park)
+    approval_provider: Any = None  # (candidate_sha, diff_sha, scope) -> approval | None
+    approval_signing_secret: str | None = None  # None -> promotion_gate default
     # Governance override for the protected_test_inventory gate (#306): when
     # True, a candidate that deletes/renames/disables tests still PASSES that
     # gate — but never silently: the gate logs a warning and the promotion
@@ -1311,6 +1326,12 @@ class LocalRsiLoop:
     ) -> None:
         self._config = config
         self._injected_apply = apply_patch
+        # The promotion gate's quarantine scanner (#302): constructed once, at
+        # the same trust boundary as the loop itself, so a candidate can never
+        # influence which Warden instance scans its diff.
+        from maistro.security.warden.detector import Warden as _PromotionWarden
+
+        self._promotion_warden = config.warden or _PromotionWarden()
         # Canonical convergence (#50): when a provenance adapter is wired,
         # every executed cycle is recorded as one canonical
         # Run/NodeRun/Attempt in the authorized Workspace/Project, and the
@@ -1341,17 +1362,12 @@ class LocalRsiLoop:
         # promote so the next cycle diffs against what was actually kept.
         self._baseline_test_inventory_cache: InventoryResult | None = None
         self._start_ref: str | None = None  # baseline sha before any promotion
-        # Checkpoint-time RLPHD review (promotion_review.py) scans only commits
-        # since the LAST review pass — set to _start_ref once the baseline is
-        # ready, advanced after each _review_promotions() call.
-        self._last_reviewed_ref: str | None = None
-        # Commits on baseline_branch that are real (a resume commit, a revert)
-        # but aren't in result.cycles as a promotion — _check_persistence_integrity
-        # must add these back in, or every resume/revert reads as a false
-        # "history diverged from the promotion count" alarm. export_promotions
-        # also excludes these shas: a reverted promotion and its own revert
-        # commit both represent "nothing net happened," not exportable work.
+        # Commits on baseline_branch that are real (a resume commit) but aren't
+        # in result.cycles as a promotion — _check_persistence_integrity must
+        # add these back in, or every resume reads as a false "history diverged
+        # from the promotion count" alarm.
         self._non_promotion_commits = 0
+        self._last_reviewed_ref: str | None = None
         self._excluded_from_export: set[str] = set()
         # Scout model fallback (scout_fallback.py): loaded lazily on first use
         # (needs report_dir, which _setup_baseline doesn't touch) so it survives
@@ -2266,79 +2282,17 @@ class LocalRsiLoop:
             promote_branch, composite, files, kept_n, judge_score, promoted_trace = (
                 self._select_and_merge(index, target, accepted, created)
             )
-            pre_promotion_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
-            _git(self._baseline, "merge", "--ff-only", promote_branch)
-            promoted_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
-            note = (
-                f"tournament: {len(competitors)} competitor(s), {len(accepted)} passed, "
-                f"kept {kept_n} (composite={composite})"
-            )
-            if not self._annotate_promotion(
-                promoted_sha,
-                index,
-                target,
-                accepted[0],
-                composite,
-                files,
-                note,
-                trace=promoted_trace,
-            ):
-                # The git-notes trace is the promotion's durable audit record
-                # (#342): a promotion that landed without it would be exactly
-                # the unaudited state change the formal conformance model
-                # forbids. Roll the fast-forward back and report the cycle as
-                # not promoted — the ratchet only advances with its evidence.
-                _git(self._baseline, "reset", "--hard", pre_promotion_sha)
-                logger.error(
-                    "rsi_local_promotion_audit_write_failed",
-                    index=index,
-                    sha=promoted_sha,
-                    target=target,
-                )
-                return CycleOutcome(
-                    index,
-                    changed=True,
-                    tests_passed=True,
-                    promoted=False,
-                    files_touched=files,
-                    target=target,
-                    composite=composite,
-                    note="promotion audit record failed to write — promotion rolled back",
-                    kind=accepted[0].kind,
-                    regression_judge_score=judge_score,
-                )
-            self._record_scout_success(self._last_scout_model)
-            # Baseline advanced — recompute coverage/uncovered/spec-gaps next
-            # cycle (a promotion may have covered lines or claimed AC gaps).
-            self._baseline_cov = None
-            self._baseline_missing = {}
-            self._spec_gaps = None
-            # ...and the protected test inventory (#306): the next cycle must
-            # diff against the suite as it NOW stands, not the one this cycle
-            # started from.
-            self._baseline_test_inventory_cache = None
-            logger.info(
-                "rsi_local_cycle_promoted",
+            return self._promote(
                 index=index,
                 target=target,
-                competitors=len(competitors),
-                passed=len(accepted),
-                kept=kept_n,
+                competitor_count=len(competitors),
+                accepted=accepted,
+                promote_branch=promote_branch,
                 composite=composite,
-                sha=promoted_sha,
-            )
-            return CycleOutcome(
-                index,
-                changed=True,
-                tests_passed=True,
-                promoted=True,
-                files_touched=files,
-                target=target,
-                composite=composite,
-                note=note,
-                sha=promoted_sha,
-                kind=accepted[0].kind,
-                regression_judge_score=judge_score,
+                files=files,
+                kept_n=kept_n,
+                judge_score=judge_score,
+                promoted_trace=promoted_trace,
             )
         finally:
             for branch, worktree_dir in created:
@@ -2346,6 +2300,388 @@ class LocalRsiLoop:
                     self._baseline, "worktree", "remove", "--force", str(worktree_dir), check=False
                 )
                 _git(self._baseline, "branch", "-D", branch, check=False)
+
+    def _promote(
+        self,
+        *,
+        index: int,
+        target: str,
+        competitor_count: int,
+        accepted: list[_VariantResult],
+        promote_branch: str,
+        composite: float,
+        files: int,
+        kept_n: int,
+        judge_score: float | None,
+        promoted_trace: dict[str, Any],
+    ) -> CycleOutcome:
+        """Gate, judge, evidence and apply ONE promotion (#302).
+
+        Split out of ``_run_cycle`` so the promotion boundary reads as one
+        ordered sequence: the canonical quarantine + signed-approval gate,
+        then the judgment on the still-unpromoted candidate, then the durable
+        evidence, and only then the fast-forward that moves the baseline.
+        """
+        # The promotion gate (#302): the ONE canonical quarantine + approval
+        # boundary. Runs BEFORE the fast-forward, so a refusal never moves
+        # the baseline — denial, expiry, an unavailable reviewer, malformed
+        # evidence, a Warden flag or a sensitive-path hit all leave the
+        # baseline exactly as it was.
+        gate_evidence, gate_note = self._run_promotion_gate(promote_branch)
+        if gate_evidence is None:
+            return CycleOutcome(
+                index,
+                changed=True,
+                tests_passed=True,
+                promoted=False,
+                files_touched=files,
+                target=target,
+                composite=composite,
+                note=gate_note,
+                kind=accepted[0].kind,
+                regression_judge_score=judge_score,
+            )
+        promoted_trace = {**promoted_trace, "gate": gate_evidence}
+        note = (
+            f"tournament: {competitor_count} competitor(s), {len(accepted)} passed, "
+            f"kept {kept_n} (composite={composite})"
+        )
+        # The RLPHD judgment now runs on the UNPROMOTED candidate (#302).
+        # It used to run at checkpoint time, AFTER the merge, and REVERT a
+        # promotion it did not like — so a "deny" could never prevent the
+        # change from having been in the baseline, which is the containment
+        # defect this issue is about. Same classification, same model, same
+        # features, same durable records; only the ORDER changed: a candidate
+        # the reviewer would not approve is parked while it is still
+        # unpromoted, and the baseline never moves. Mechanical candidates
+        # (#110: quarantine-clean, gates green, decisive evidence) need no
+        # judge on either side of the merge — the classification decides.
+        keep, review_note, kept_review = self._judge_unpromoted_candidate(
+            index=index,
+            target=target,
+            kind=accepted[0].kind,
+            composite=composite,
+            judge_score=judge_score,
+            candidate_sha=str(gate_evidence["candidate_sha"]),
+            promote_branch=promote_branch,
+            touched_paths=self._promote_branch_touched_paths(promote_branch),
+            governance_override=bool((promoted_trace.get("inventory") or {}).get("override")),
+        )
+        if not keep:
+            return CycleOutcome(
+                index,
+                changed=True,
+                tests_passed=True,
+                promoted=False,
+                files_touched=files,
+                target=target,
+                composite=composite,
+                note=review_note,
+                kind=accepted[0].kind,
+                regression_judge_score=judge_score,
+            )
+        # The promotion's durable evidence is written BEFORE the merge
+        # (#302). The fast-forward is the commit point, so the order is
+        # what makes "merged but unapproved" unconstructible: a crash
+        # between the two leaves an annotated-but-unmerged candidate
+        # (harmless), never a merged commit without its quarantine
+        # verdict and approval provenance. The old order had to roll the
+        # merge back when the write failed; here the merge simply never
+        # happens.
+        promoted_sha = str(gate_evidence["candidate_sha"])
+        if not self._annotate_promotion(
+            promoted_sha,
+            index,
+            target,
+            accepted[0],
+            composite,
+            files,
+            note,
+            trace=promoted_trace,
+        ):
+            # The git-notes trace is the promotion's durable audit record
+            # (#342): a promotion that landed without it would be exactly
+            # the unaudited state change the formal conformance model
+            # forbids. The baseline has not moved yet, so refusing is
+            # enough — the ratchet only advances with its evidence.
+            logger.error(
+                "rsi_local_promotion_audit_write_failed",
+                index=index,
+                sha=promoted_sha,
+                target=target,
+            )
+            return CycleOutcome(
+                index,
+                changed=True,
+                tests_passed=True,
+                promoted=False,
+                files_touched=files,
+                target=target,
+                composite=composite,
+                note="promotion audit record failed to write — promotion not applied",
+                kind=accepted[0].kind,
+                regression_judge_score=judge_score,
+            )
+        _git(self._baseline, "merge", "--ff-only", promote_branch)
+        head_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
+        if head_sha != promoted_sha:
+            # The fast-forward did not land the candidate the gate cleared.
+            # Report the cycle as not promoted: the baseline is the
+            # authority on what landed, and the evidence on the record
+            # names a commit the baseline does not carry.
+            logger.error(
+                "rsi_local_promotion_merge_mismatch",
+                index=index,
+                expected=promoted_sha,
+                actual=head_sha,
+                target=target,
+            )
+            return CycleOutcome(
+                index,
+                changed=True,
+                tests_passed=True,
+                promoted=False,
+                files_touched=files,
+                target=target,
+                composite=composite,
+                note="promotion did not land on the baseline — promotion not applied",
+                kind=accepted[0].kind,
+                regression_judge_score=judge_score,
+            )
+        if kept_review is not None:
+            # The RLPHD "kept" record is written only once the promotion
+            # has actually landed, so the review list never names a
+            # promotion the baseline does not carry.
+            from maistro_rsi.promotion_review import save_kept_review
+
+            save_kept_review(
+                Path(self._config.report_dir or ".") / "kept",
+                kept_review,
+                _git(self._baseline, "show", promoted_sha).stdout,
+            )
+        self._record_scout_success(self._last_scout_model)
+        # Baseline advanced — recompute coverage/uncovered/spec-gaps next
+        # cycle (a promotion may have covered lines or claimed AC gaps).
+        self._baseline_cov = None
+        self._baseline_missing = {}
+        self._spec_gaps = None
+        # ...and the protected test inventory (#306): the next cycle must
+        # diff against the suite as it NOW stands, not the one this cycle
+        # started from.
+        self._baseline_test_inventory_cache = None
+        logger.info(
+            "rsi_local_cycle_promoted",
+            index=index,
+            target=target,
+            competitors=competitor_count,
+            passed=len(accepted),
+            kept=kept_n,
+            composite=composite,
+            sha=promoted_sha,
+        )
+        return CycleOutcome(
+            index,
+            changed=True,
+            tests_passed=True,
+            promoted=True,
+            files_touched=files,
+            target=target,
+            composite=composite,
+            note=note,
+            sha=promoted_sha,
+            kind=accepted[0].kind,
+            regression_judge_score=judge_score,
+        )
+
+    def _run_promotion_gate(self, promote_branch: str) -> tuple[dict[str, Any] | None, str]:
+        """#302: quarantine + signed approval for ONE promotion, fail-closed.
+
+        Returns ``(gate_evidence, "")`` when the promotion may proceed, or
+        ``(None, refusal_note)`` when it may not — the caller must not touch
+        the baseline in that case. The evidence dict rides the promotion's
+        trace note, so the durable record names the quarantine verdict and
+        (when required) the approval that authorized it.
+        """
+        from maistro_rsi.promotion_gate import evaluate_promotion, promotion_scope
+        from maistro_rsi.sensitive_paths import SENSITIVE_PATH_POLICY_VERSION
+
+        candidate_sha = _git(self._baseline, "rev-parse", promote_branch).stdout.strip()
+        revision = f"{self._config.baseline_branch}..{promote_branch}"
+        diff = _git(self._baseline, "diff", revision).stdout
+        touched = [
+            p.strip()
+            for p in _git(self._baseline, "diff", "--name-only", revision).stdout.splitlines()
+            if p.strip()
+        ]
+        scope = promotion_scope(self._config.repo_path, self._config.baseline_branch)
+        try:
+            verdict = asyncio.run(
+                evaluate_promotion(
+                    diff=diff,
+                    touched_paths=touched,
+                    candidate_sha=candidate_sha,
+                    scope=scope,
+                    warden=self._promotion_warden,
+                    adversarial_review=self._config.adversarial_review,
+                    approval_provider=self._config.approval_provider,
+                    signing_secret=self._config.approval_signing_secret,
+                )
+            )
+        except Exception as exc:  # a crashed gate is a refused gate
+            logger.warning(
+                "rsi_local_promotion_gate_crashed",
+                branch=promote_branch,
+                error=str(exc),
+                exc_info=True,
+            )
+            return None, f"quarantine gate failed: {type(exc).__name__}: {exc}"
+        if not verdict.cleared:
+            logger.warning(
+                "rsi_local_promotion_gate_refused",
+                branch=promote_branch,
+                requires_approval=verdict.requires_approval,
+                sensitive_paths=list(verdict.sensitive_paths),
+                reason=verdict.reason,
+                flags=list(verdict.flags),
+            )
+            return None, f"quarantine gate refused: {verdict.reason}"
+        evidence: dict[str, Any] = {
+            "quarantine_cleared": True,
+            "requires_approval": verdict.requires_approval,
+            "sensitive_paths": list(verdict.sensitive_paths),
+            "warden_flags": list(verdict.flags),
+            "policy_version": SENSITIVE_PATH_POLICY_VERSION,
+            "candidate_sha": candidate_sha,
+            "scope": scope,
+        }
+        if verdict.approval is not None:
+            evidence["approval"] = verdict.approval
+        return evidence, ""
+
+    def _promote_branch_touched_paths(self, promote_branch: str) -> list[str]:
+        """The candidate's changed files, read from the promote branch diff
+        against the baseline — the same surface the checkpoint classification
+        reads from the merged commits, computed BEFORE the fast-forward so
+        the pre-merge judgment (#302) routes on the same evidence."""
+        proc = _git(
+            self._baseline,
+            "diff",
+            "--name-only",
+            f"{self._config.baseline_branch}..{promote_branch}",
+        )
+        return [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+
+    def _judge_unpromoted_candidate(
+        self,
+        *,
+        index: int,
+        target: str,
+        kind: ImprovementKind,
+        composite: float,
+        judge_score: float | None,
+        candidate_sha: str,
+        promote_branch: str,
+        touched_paths: list[str] | None = None,
+        governance_override: bool = False,
+    ) -> tuple[bool, str, Any]:
+        """Judge the UNPROMOTED candidate before it can move the baseline.
+
+        This is the CONVERSION of the checkpoint-time promotion review, not a
+        second judgment: that path merged the promotion first and reverted it
+        afterwards, so a reviewer's "deny" could never prevent the change from
+        having been in the baseline — exactly the containment defect #302
+        describes. The classification (#110), the model, the action class, the
+        adaptive theta and the durable records are the same; only the ORDER
+        changed. A candidate the reviewer would not approve is parked while it
+        is still unpromoted, with its patch saved under ``flagged/`` for the
+        human decision that feeds the model back — the same record the old
+        path wrote, produced before the merge instead of after a revert.
+
+        Mechanical candidates (#110: no sensitive surface, no governance
+        override, decisive evidence) take no judgment here — the checkpoint
+        pass keeps them with their records, so the pre-merge boundary must
+        not invent a veto they would never have hit.
+
+        The judgment applies to exactly the runs the checkpoint review applied
+        to: a review-enabled run that has a report directory to keep the
+        model's state and its records in. A run without one has neither.
+
+        Fails CLOSED: an unavailable reviewer parks the candidate instead of
+        waving it through, and the cycle reports why.
+        """
+        if not self._config.promotion_review or not self._config.report_dir:
+            return True, "", None
+        try:
+            from maistro_rsi.promotion_review import (
+                PendingReview,
+                RlphdStateStore,
+                action_class_for,
+                classify_promotion,
+                extract_features,
+                flag_for_review,
+                now_iso,
+            )
+
+            classification = classify_promotion(
+                touched_paths=touched_paths if touched_paths is not None else [],
+                judge_score=judge_score,
+                composite=composite,
+                governance_override=governance_override,
+            )
+            if classification.review_path != "judgment":
+                # Mechanical path (#110): no LLM and no human judge — kept
+                # with its evidence at the checkpoint, so it is kept here too.
+                return True, "", None
+
+            report_dir = Path(self._config.report_dir)
+            action_class = action_class_for(kind)
+            features = extract_features(
+                regression_judge_score=judge_score, composite=composite, kind=kind
+            )
+            state = RlphdStateStore(report_dir / "rlphd_state.json")
+            p, theta = state.predict(action_class, features)
+            review = PendingReview(
+                sha=candidate_sha,
+                index=index,
+                target=target,
+                kind=kind.value,
+                action_class=action_class,
+                features=features,
+                predicted_p=p,
+                theta=theta,
+                flagged_at=now_iso(),
+                note=f"composite={composite} judge_score={judge_score}",
+            )
+            if p >= theta:
+                # The "kept" record is written by the caller once the
+                # promotion has actually landed, so the review list never
+                # names a promotion the baseline does not carry.
+                return True, "", review
+            patch_text = _git(self._baseline, "show", candidate_sha).stdout
+            flag_for_review(report_dir / "flagged", review, patch_text)
+            logger.warning(
+                "rsi_local_candidate_held_for_review",
+                index=index,
+                sha=candidate_sha,
+                branch=promote_branch,
+                predicted_p=p,
+                theta=theta,
+                note="candidate parked BEFORE promotion — baseline unchanged",
+            )
+            return (
+                False,
+                f"promotion review held the candidate (p={p:.3f} < theta={theta:.3f}) — "
+                "parked for human review, baseline unchanged",
+                None,
+            )
+        except Exception as exc:
+            logger.error("rsi_local_review_error", index=index, error=str(exc))
+            return (
+                False,
+                f"promotion review unavailable ({type(exc).__name__}) — candidate parked, "
+                "baseline unchanged",
+                None,
+            )
 
     def _live_evolution_step(self, index: int, variants: list[_VariantResult]) -> None:
         """The unified loop's between-cycle evolution — real work IS the evaluation.
@@ -2897,6 +3233,7 @@ class LocalRsiLoop:
             ),
             note=summary,
             inventory=source.get("inventory"),
+            gate=source.get("gate"),
             fail_first=source.get("fail_first"),
             evaluator=source.get("evaluator"),
         )
@@ -2972,8 +3309,7 @@ class LocalRsiLoop:
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
         # Review starts AFTER any resume commit: a resumed patch is already-
-        # decided history from a prior run, not a fresh scored promotion — it
-        # must never be re-reviewed (it has no CycleOutcome/features to score).
+        # decided history from a prior run, not a fresh scored promotion.
         self._last_reviewed_ref = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
         result = LocalRsiResult(baseline_dir=str(self._baseline))
         for index in range(1, self._config.max_cycles + 1):
@@ -3154,14 +3490,22 @@ class LocalRsiLoop:
             (report_dir / f"checkpoint-{slug}.json").write_text(
                 json.dumps(data, indent=2), encoding="utf-8"
             )
+            # The checkpoint review (#110) runs AFTER the cycle's promotion:
+            # the promote-time judgment (#302) already parked any candidate
+            # the reviewer would not hold approve BEFORE the fast-forward, so
+            # this pass records the kept promotions' evidence (mechanical and
+            # judgment records, shared-contract legs) against a baseline that
+            # only ever moved for candidates the pre-merge judge approved —
+            # and re-checks the same model, so a disagreement here reverts a
+            # promotion that never should have landed.
             self._review_promotions(result, report_dir)
             self._check_persistence_integrity(result, label)
             # Refresh a rolling, COMPLETE export of everything promoted so far, so
             # an interrupted long run stays harvestable from its last checkpoint.
             # Always clear+rewrite — even at zero promotions — so a reused report
             # dir can't leave stale patches/manifest that `harvest` would apply.
-            # Runs AFTER _review_promotions so a just-reverted promotion is never
-            # exported as if it were still kept.
+            # Runs AFTER _review_promotions so the records reflect what the
+            # review pass decided, not the pre-review state.
             self.export_promotions(report_dir / "export", clear=True)
             logger.info(
                 "rsi_local_checkpoint",
