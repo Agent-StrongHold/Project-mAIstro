@@ -307,17 +307,42 @@ Tracking: each needs a wiring design, not just a call site — see #346.
 
 ### Generic Workspace backlog control plane (#82)
 
-The M3 exit condition for #82 required the generic Workspace
-BacklogItem/service/claim/campaign path to be either durably cut over or
-explicitly release-deferred. It is release-deferred: `git grep BacklogItem`
-over `packages/` returns nothing, and Hive's `/v1/work-items` routes are a
-suggest/draft surface only. Work intake today is Hive tasks and canonical
-Runs; there is no generic backlog work-source, claim transaction, or campaign
-notion anywhere in the shipped services.
+Updated by #7 validation (2026-11-26): the M3 exit condition for #82 required
+the generic Workspace BacklogItem/service/claim/campaign path to be either
+durably cut over or explicitly release-deferred. The durable control plane
+ships; the earlier "release-deferred, nothing exists" statement here was
+written against a stale tree and was false after the develop sync that landed
+the #98/#100/#103 slices (`05070ff077`, `5ca5a969d1`). What is reachable in
+production today: `maistro.workspaces.backlog` defines the canonical
+Workspace `BacklogItem` and store contract with atomic, fenced claim/lease
+semantics (claim/renew/release/active_claim as one CAS transition, receipts
+on every claim and release), with an in-memory reference and a SQLite durable
+store wired off the deployment's Project backend (`wire_backlog_store` in the
+canonical container); maistro-server exposes it at
+`/{workspace_id}/backlog` (CRUD, claim, dependencies, children, history).
+Campaign operator policy — pin-next/pause/exclude/human-only controls, parks,
+per-item policy records, every write attributed with its policy version —
+ships as durable state (`maistro.workspaces.campaigns` with a SQLite twin,
+plus `/{workspace_id}/campaigns` routes; without a database the fallback is
+in-memory and says so loudly). Hive's Conductor backlog board (`/v1/backlog`
+over `services.backlog`) remains the product editing surface for Conductor
+work, and `maistro.backlog.agent_surface` (list/select/claim/write/release/
+close behind one fail-closed authorization hook) backs the `maistro` backlog
+CLI. Hive's `/v1/work-items` routes stay a suggest/draft Jira surface.
 
-Tracking: #82 needs the control-plane design (durable BacklogItem store,
-claim semantics, campaign source) before any cutover; do not add routes
-ahead of the store.
+What remains limited: the Workspace `BacklogItem` store has no PostgreSQL
+backend yet, so a deployment whose Projects are PostgreSQL keeps its
+BacklogItems in-process (lost on restart) behind a logged startup warning;
+and no shipped service drives campaign selection or claims autonomously —
+`select_next` and the claim service are durable primitives with no production
+caller that turns a selection or a claim into canonical Runs, so work still
+starts through tasks, schedules, and agent/operator action. The control plane
+cannot launch work by itself.
+
+Tracking: finish under #82/#103 — a PostgreSQL BacklogItem backend and a
+designated production consumer for selection/claims that admits canonical
+Runs; do not add a background scheduler outside the canonical Run admission
+path.
 
 ### Adaptive-Workspace user-model memory is specified but not reachable
 
@@ -366,7 +391,11 @@ The following text is intended to be copied verbatim into the release notes.
 > Design Studio can discover resources and select artifact modes, but visual
 > generation and editing/preview still need wired providers. Conductor can run
 > in degraded mode when optional services are unavailable. The generic Workspace
-> backlog control plane (#82) is release-deferred: work intake is tasks and
-> canonical Runs only. Entra group-gated JIT provisioning (#492) gates
-> account creation only; removing a user from an eligible group does not
-> revoke an already-provisioned account's permissions.
+> backlog control plane (#82) ships as durable state — BacklogItems with
+> fenced claim/lease semantics and campaign operator policy over SQLite —
+> but has no PostgreSQL BacklogItem backend yet (Projects-PostgreSQL
+> deployments keep items in-process), and no shipped service converts campaign
+> selections or claims into canonical Runs autonomously; work still starts
+> through tasks, schedules, and agent/operator action. Entra group-gated JIT
+> provisioning (#492) gates account creation only; removing a user from an
+> eligible group does not revoke an already-provisioned account's permissions.

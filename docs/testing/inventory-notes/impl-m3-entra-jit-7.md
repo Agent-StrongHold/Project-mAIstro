@@ -29,6 +29,11 @@ repairs. This round implements the bounded set and declares the rest:
    for the generic Workspace backlog control plane (prior finding: "not
    declared anywhere"). It is now release-deferred with a Tracking line, per
    the exit condition's own "explicitly cut over or release-deferred" wording.
+   Correction (2026-11-26, later round): that deferral was written against a
+   stale tree — the merged develop base ships the #98/#100/#103 BacklogItem/
+   claim/campaign slices, so the disposition was false. KNOWN-GAPS.md now
+   records the shipped-with-limits state; see
+   `docs/implementation/issue-7-handoff.md` Round 3.
 3. **#1047 user-model unreachability is now declared** (same file): modules
    and tests exist, no producer or wiring does — the specified-but-not-reached
    pattern, tracked under #1046 rather than counted as shipped.

@@ -81,8 +81,8 @@ The supplied develop base `7ba29c1cd0` was **not** an ancestor of the branch: th
 | 3 | Clean-machine install/deploy and real-model Graph E2E | UNVERIFIED: backend tests ran locally with test doubles; no clean-machine/live-model proof. |
 | 4 | Backup/restore including Conductor credentials/decryption escrow | UNVERIFIED: no live backup/restore or escrow exercise. |
 | 5 | RC soak and byte-equivalent final promotion | UNVERIFIED: no RC artifacts or soak environment supplied. |
-| 6 | Every KNOWN-GAPS item shipped/deferred | UNVERIFIED: inherited gap notes are not current acceptance proof; release consistency does not certify dispositions. |
-| 7 | Durable backlog path cut over or release-deferred | UNVERIFIED: inherited KNOWN-GAPS deferral exists, but current production services were not reconciled in this bounded slice. |
+| 6 | Every KNOWN-GAPS item shipped/deferred | PASS (structural + corrected defect): every entry carries an explicit shipped/deferred statement and Tracking line; the one disposition contradicted by reachable production code (#82 — claimed "`git grep BacklogItem` over `packages/` returns nothing" while BacklogItem/claim/lease/campaign modules ship on the merged develop base) was found and rewritten this round (see Round 3). Other entries' facts were inherited, not re-proven against live behavior. |
+| 7 | Durable backlog path cut over or release-deferred | PASS (reconciled this round): the durable path **ships** — `maistro.workspaces.backlog` BacklogItem + atomic fenced claim/lease over a SQLite store wired in `maistro/container.py` (`wire_backlog_store`), HTTP at `/{workspace_id}/backlog`; campaign operator policy durable via `SqliteCampaignStore` (`/{workspace_id}/campaigns`); Hive board `/v1/backlog` over `services.backlog`; agent surface `maistro.backlog.agent_surface` behind the `maistro` CLI. Declared limits: no PostgreSQL BacklogItem backend (in-process fallback with warning on PG Projects), and no production consumer turns campaign selection/claims into canonical Runs. KNOWN-GAPS disposition corrected from false "release-deferred/nothing exists" to shipped-with-limits. |
 | 8 | Persistent Workspace Agent progresses canonical Goals and survives failover without duplicate authority | UNVERIFIED: no new restart/failover acceptance exercise; canonical execution authorities unchanged. |
 | 9 | Goal completion is evidence-backed desired-state truth | UNVERIFIED: not inferred from backend suite passing. |
 | 10 | Canonical Workspace/Project/Goal/Agent/reconciliation/Run inspection | UNVERIFIED: backend tests alone do not prove every required projection. |
@@ -104,3 +104,30 @@ The supplied develop base `7ba29c1cd0` was **not** an ancestor of the branch: th
 - The broad inherited branch diff relative to the supplied develop base has been reconciled: origin/develop `7ba29c1cd0` is now merged into the branch with conflicts resolved in place (see the develop-sync section). Remaining milestone capabilities are still acceptance review only, not implementation scope for this bounded round.
 - Progress: `{checked: 19, done: 2, skipped: 17, errors: 0, next: "decompose remaining milestone acceptance; obtain operator release/live-service evidence"}`. Done counts deterministic acceptance only; the live-tenant caveat above still applies.
 - Develop-sync round adds: `{checked: 3, done: 3, skipped: 0, errors: 0}` conflict resolutions (KNOWN-GAPS paragraph, HiveAccount rename, RETIRE-ledger/test pin); branch now contains origin/develop `7ba29c1cd0` with all conflicts resolved in place and gates re-run post-merge. Milestone-level acceptance accounting is unchanged: still 2 deterministic passes, 17 unverified.
+
+## Round 3 (job `a323711da6314257b70485c99e07b5d1`): fresh validation + #82 disposition repair
+
+The driver supplied no `check-*.log` files (`checks: []` in the manifest), so every check below was executed fresh against HEAD `1757607b5e`; earlier claims were treated as unproven and re-run. One acceptance-relevant defect was found and repaired.
+
+Fresh validation results (all exit 0 unless noted):
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | all checks passed |
+| `uv run ruff format --check .` | 3677 files already formatted |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | 40 passed |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4571 passed, 113 skipped** (243s) |
+| `uv run pytest packages/maistro-rsi/tests -q` | 1793 passed, 4 skipped |
+| `uv run python scripts/check-reachability.py` | 1508 modules / 81 unreachable |
+| `uv run python scripts/check-reachability-dispositions.py` | 27 groups cover all 81 |
+| `uv run python scripts/check-reachability-dispositions-provenance.py` / `check-reachability-provenance.py` | no unauthorized expansion |
+| `uv run python scripts/check-release-consistency.py` | released none / shipping 0.9.0 / target 1.0.0 |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | suites match recorded inventory |
+| `uv run python scripts/check-backlog-consistency.py` | 167 items parse |
+| `uv run python scripts/check-promotion-surface.py` / `check-radon-baseline.py` | ok / 124 reviewed blocks |
+
+Red-run evidence for the #492 pagination repair was re-confirmed from the recorded logs (`/tmp/issue-7-pagination-red.log`: 17 failed, 22 deselected; `/tmp/issue-7-jit-after.log`: 39 passed); the regression tests assert structure, not just outcomes (`len(membership_requests) == 1` proves the login bearer token is never forwarded to a foreign `@odata.nextLink`).
+
+**Defect found and repaired — KNOWN-GAPS #82 disposition was false against reachable production code.** The entry claimed `git grep BacklogItem` over `packages/` returns nothing and that no claim transaction or campaign notion exists anywhere in shipped services. The merged develop base `7ba29c1cd0` itself contains the #98/#100/#103 slices: `maistro/workspaces/backlog/` (BacklogItem model, store contract, atomic fenced claim/renew/release/active_claim, SQLite durable store + in-memory reference + `wire_backlog_store` called from `maistro/container.py:2808`), `maistro/workspaces/campaigns/` (durable `SqliteCampaignStore` + loud in-memory fallback, wired at `container.py:2564`), HTTP surfaces `maistro_server/api/backlog.py` + `backlog_history.py` + `campaigns.py` mounted through `api/workspaces.py` → `main.py:968`, Hive's canonical board `routes/backlog.py` (`/v1/backlog`, mounted `main.py:412`) over `services/backlog.py`, and the agent surface `maistro.backlog.agent_surface` consumed by `maistro/cli/_backlog.py`. Repaired: KNOWN-GAPS #82 entry rewritten to the shipped-with-limits truth (no PostgreSQL BacklogItem backend yet — in-process fallback with logged warning on PG Projects; no production consumer turns `select_next`/claims into canonical Runs) and the Release-Notes Text sentence corrected to match. No production code, tests, or ledgers were edited; the repair is docs-only, so no inventory delta.
+
+Updated acceptance rows: 6 and 7 now PASS (see table above); deterministic passes stand at 4 of 19, 15 unverified (live-tenant/release-pipeline classes unchanged).
