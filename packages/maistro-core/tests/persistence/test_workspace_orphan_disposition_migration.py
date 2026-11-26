@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -49,18 +51,51 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _alembic_config():
-    """The repo's own alembic env, pointed at the test database."""
-    from alembic.config import Config
-
+def _alembic_root() -> Path:
+    """The directory holding the repo's own alembic.ini."""
     root = Path(__file__)
     while root.parent != root:
         if (root / "alembic.ini").is_file():
-            break
+            return root
         root = root.parent
     else:  # pragma: no cover - the repo layout is fixed
         pytest.fail("alembic.ini not found above this test")
-    return Config(str(root / "alembic.ini"))
+
+
+def _alembic(dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """One alembic command in a subprocess aimed at this test's database.
+
+    The round trip has to stay out of process: `alembic/env.py` runs
+    `fileConfig()`, whose default `disable_existing_loggers=True` tears down
+    every logger the pytest process already holds -- caplog's handler
+    included -- so every later log-assertion in the session reads an empty
+    `caplog.text` and fails. CI runs this file at the front of one long
+    shared session (quality.yml's coverage-postgres invocation walks
+    persistence -> runs -> workspaces -> ...), where that is a rail of
+    downstream failures that are all green in isolation. Same shape as
+    `tests/migrations/test_migration_chain.py::_alembic`, which subprocesses
+    for the same reason.
+    """
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=str(_alembic_root()),
+        # env.py resolves one URL through DATABASE_URL; scope the answer to
+        # the subprocess instead of mutating this process's environment.
+        env={**os.environ, "DATABASE_URL": dsn},
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+
+def _alembic_or_fail(dsn: str, *args: str) -> None:
+    result = _alembic(dsn, *args)
+    if result.returncode != 0:
+        pytest.fail(
+            f"alembic {' '.join(args)} failed "
+            f"(rc={result.returncode}):\n{result.stdout}\n{result.stderr}"
+        )
 
 
 async def _seed_orphans(dsn: str) -> dict[str, str]:
@@ -137,21 +172,15 @@ async def _fetch_all(dsn: str, sql: str):
 
 async def test_the_orphan_disposition_preserves_provenance_and_refuses_new_orphans() -> None:
     import asyncpg
-    from alembic import command
 
     dsn = postgres_dsn()
-    cfg = _alembic_config()
-    old_url = os.environ.get("DATABASE_URL")
-    # env.py reads the shared answer; point it at this test's database for the
-    # duration of the round trip and put the caller's value back afterwards.
-    os.environ["DATABASE_URL"] = dsn
     upgraded = False
     try:
         # Seed at 068: the pre-fence schema is what accepted these rows, so
         # the downgrade has to happen before the orphans exist.
-        command.downgrade(cfg, "068")
+        _alembic_or_fail(dsn, "downgrade", "068")
         seeded = await _seed_orphans(dsn)
-        command.upgrade(cfg, "head")
+        _alembic_or_fail(dsn, "upgrade", "head")
         upgraded = True
 
         quarantine = await _fetch_all(
@@ -208,14 +237,10 @@ async def test_the_orphan_disposition_preserves_provenance_and_refuses_new_orpha
         finally:
             await conn.close()
     finally:
-        # Whatever the assertions did, leave the database migrated and the
-        # caller's environment untouched: a later suite must meet head.
+        # Whatever the assertions did, leave the database migrated: a later
+        # suite must meet head. The caller's environment was never touched.
         if not upgraded:
-            command.upgrade(cfg, "head")
-        if old_url is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = old_url
+            _alembic_or_fail(dsn, "upgrade", "head")
 
 
 async def test_a_tombstoned_orphan_workspace_id_cannot_gain_authority_over_its_history() -> None:
