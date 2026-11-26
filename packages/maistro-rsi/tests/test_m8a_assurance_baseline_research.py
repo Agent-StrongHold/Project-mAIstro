@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal
 
 import pytest
@@ -130,6 +131,10 @@ class AssuranceCandidate:
     failure_class: str | None = None
 
     def __post_init__(self) -> None:
+        # A frozen dataclass does not freeze caller-owned dictionaries. Copy
+        # before validating, then expose read-only views of the recorded data.
+        object.__setattr__(self, "scores", MappingProxyType(dict(self.scores)))
+        object.__setattr__(self, "evidence", MappingProxyType(dict(self.evidence)))
         if not self.name or not self.name.strip():
             raise ValueError("candidate name must be non-empty")
         if self.kind not in ("baseline", "technique"):
@@ -205,7 +210,7 @@ def rank_candidates(candidates: Sequence[AssuranceCandidate]) -> tuple[Assurance
 
 
 # ---------------------------------------------------------------------------
-# Measured baseline rows at this head (feb19affc)
+# Historical baseline rows measured at feb19affc (not the current CI state)
 # ---------------------------------------------------------------------------
 #
 # These rows record the state of the *existing* quality stack the epic text
@@ -497,13 +502,13 @@ def _technique_rows() -> tuple[AssuranceCandidate, ...]:
     """Technique rows for leaves that have reported experiments."""
     return (
         AssuranceCandidate(
-            name="execution Hypothesis state machines (#881)",
+            name="linear Run transition helper (#881 precursor)",
             kind="technique",
             scores={
                 "defect_yield": 0,
                 "confidence_strength": 2,
-                "applicability_breadth": 2,
-                "oracle_trustworthiness": 3,
+                "applicability_breadth": 1,
+                "oracle_trustworthiness": 1,
                 "implementation_effort": 1,
                 "maintenance_burden": 1,
                 "ci_runtime_cost": 1,
@@ -522,11 +527,12 @@ def _technique_rows() -> tuple[AssuranceCandidate, ...]:
                 ),
                 "applicability_breadth": Evidence(
                     "docs/research/880-advanced-verification-assurance.md",
-                    "applies to execution lifecycle seam; other seams require different models",
+                    "only the in-memory Run helper; no NodeRun, Attempt, or store exercise",
                 ),
                 "oracle_trustworthiness": Evidence(
                     "docs/research/880-advanced-verification-assurance.md",
-                    "model derived from documented transitions in maistro.runs.lifecycle",
+                    "model and implementation read the same RUN_TRANSITIONS table; "
+                    "cannot detect an incorrect table entry",
                 ),
                 "implementation_effort": Evidence(
                     "docs/research/880-advanced-verification-assurance.md",
@@ -546,7 +552,7 @@ def _technique_rows() -> tuple[AssuranceCandidate, ...]:
                 ),
             },
             disposition="INCUBATE",
-            failure_class="interleaved lifecycle sequences (unit tests fix one path)",
+            failure_class="sequential Run helper enforcement diverging from its transition table",
         ),
     )
 
@@ -563,6 +569,41 @@ ALL_CANDIDATES: Final = MEASURED_BASELINE + _technique_rows()
 def test_advisory_only_marker_is_true() -> None:
     """The evidence-only contract marker must be explicit and asserted."""
     assert ADVISORY_ONLY is True
+
+
+@pytest.mark.parametrize("field", ("scores", "evidence"))
+def test_candidate_snapshots_caller_owned_mappings(field: str) -> None:
+    """Clearing input dictionaries must not erase a recorded row or its rank."""
+    scores = dict.fromkeys(ALL_AXES, 1)
+    evidence = {axis: Evidence(f"recorded/{axis}") for axis in ALL_AXES}
+    row = AssuranceCandidate(
+        name="recorded", kind="technique", scores=scores, evidence=evidence, disposition="WATCH"
+    )
+    recorded_scores = dict(scores)
+    recorded_evidence = dict(evidence)
+    inputs = {"scores": scores, "evidence": evidence}
+
+    inputs[field].clear()
+
+    assert dict(row.scores) == recorded_scores
+    assert dict(row.evidence) == recorded_evidence
+    assert row.rankable
+    assert rank_candidates([row]) == (row,)
+
+
+@pytest.mark.parametrize("field", ("scores", "evidence"))
+def test_candidate_exposes_read_only_mappings(field: str) -> None:
+    """A consumer cannot rewrite a recorded score or citation through the row."""
+    row = _candidate()
+    mapping = getattr(row, field)
+    original = dict(mapping)
+    replacement = 3 if field == "scores" else Evidence("replacement")
+
+    with pytest.raises(TypeError):
+        mapping["defect_yield"] = replacement
+
+    assert dict(mapping) == original
+    assert row.rankable
 
 
 def test_axis_vocabulary_matches_the_epic_exactly() -> None:
@@ -718,12 +759,11 @@ def test_every_measured_baseline_row_is_fully_evidenced() -> None:
 
 
 def test_baseline_records_the_documented_vs_actual_gaps() -> None:
-    """The two baseline gaps this head's audit found must stay recorded.
+    """Preserve the two historical gaps measured at feb19affc.
 
-    The epic contract (item 2) is to establish the *current* baseline. These
-    assertions pin the recorded facts so the matrix cannot quietly drift back
-    to the quality.yml header's aspirational claims: mutation is parked and
-    schemathesis is documented but absent.
+    This is an audit-trail assertion, not a probe of today's workflows. Mutation
+    and Schemathesis have since gained executing jobs/tests; current acceptance
+    must use fresh measurements rather than treating these rows as live facts.
     """
     by_name = {row.name: row for row in MEASURED_BASELINE}
     mutation = by_name["mutation testing (cosmic-ray)"]
