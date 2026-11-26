@@ -310,3 +310,202 @@ async def test_malformed_writes_are_422_or_404_not_500(api) -> None:
     listed = api.client.get(base)
     assert listed.status_code == 200
     assert [i["version"] for i in listed.json()] == [1]
+
+
+# -- claims (#100): claim/renew/release over the same membership boundary -----
+
+
+def _claim(api: _Api, workspace_id: str, item_id: str, **json) -> dict:
+    response = api.client.post(f"/workspaces/{workspace_id}/backlog/{item_id}/claim", json=json)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_contributor_claim_cycle_records_claimant_lease_and_fence(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id)
+    base = f"/workspaces/{workspace_id}/backlog/{item['item_id']}"
+
+    claimed = _claim(api, workspace_id, item["item_id"])
+    assert claimed["claimant_principal_id"] == "contributor"
+    assert claimed["claimant_agent_id"] is None
+    assert claimed["fence_token"] == 1
+    assert claimed["lease_expires_at"] is not None
+    assert claimed["version"] == item["version"] + 1
+    assert claimed["goal_ref"] == item["goal_ref"]
+
+    # The dedicated claim read shows the live receipt; any member sees it.
+    _as_user(api.app, "member")
+    snapshot = api.client.get(f"{base}/claim")
+    assert snapshot.status_code == 200
+    assert snapshot.json()["claimant_principal_id"] == "contributor"
+    assert snapshot.json()["fence_token"] == 1
+    _as_user(api.app, "contributor")
+
+    # A second claim loses atomically, and the current item shows the holder.
+    held = api.client.post(f"{base}/claim", json={}, headers={"X-Ignore": "1"})
+    assert held.status_code == 409
+    assert held.json()["current"] == claimed
+
+    # An edit of a claimed item needs the live fence.
+    fenceless = api.client.patch(base, json={"expected_version": claimed["version"], "title": "x"})
+    assert fenceless.status_code == 409
+    assert fenceless.json()["current"] == claimed
+    fenced = api.client.patch(
+        base,
+        json={"expected_version": claimed["version"], "title": "holder edit", "fence_token": 1},
+    )
+    assert fenced.status_code == 200, fenced.text
+
+    # Renewal extends the lease at the same generation; the fence stays.
+    renewed = api.client.post(f"{base}/claim/renew", json={"fence_token": 1, "lease_seconds": 1800})
+    assert renewed.status_code == 200
+    assert renewed.json()["fence_token"] == 1
+    assert renewed.json()["lease_expires_at"] >= claimed["lease_expires_at"]
+    stale_renewal = api.client.post(
+        f"{base}/claim/renew", json={"fence_token": 9, "lease_seconds": 500}
+    )
+    assert stale_renewal.status_code == 409
+
+    # Release clears the claim; the old receipt can no longer renew or edit.
+    released = api.client.post(f"{base}/claim/release", json={"fence_token": 1})
+    assert released.status_code == 200
+    assert released.json()["claimant_principal_id"] is None
+    assert released.json()["lease_expires_at"] is None
+    assert released.json()["fence_token"] == 2
+    released_again = api.client.post(f"{base}/claim/release", json={"fence_token": 2})
+    assert released_again.status_code == 409
+    assert api.client.get(f"{base}/claim").json() is None
+    unclaimed_edit = api.client.patch(
+        base, json={"expected_version": released.json()["version"], "title": "anyone"}
+    )
+    assert unclaimed_edit.status_code == 200
+
+
+async def test_claim_records_the_agent_run_and_declared_scope(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(
+        api,
+        workspace_id,
+        project_id,
+        allowed_scope=["packages/"],
+        protected_scope=["deploy/"],
+    )
+    base = f"/workspaces/{workspace_id}/backlog/{item['item_id']}"
+
+    claimed = _claim(
+        api,
+        workspace_id,
+        item["item_id"],
+        agent_id="agent-7",
+        run_id="run-9",
+        scope=["packages/maistro-core/src/x.py"],
+    )
+    assert claimed["claimant_agent_id"] == "agent-7"
+    assert claimed["claim_run_id"] == "run-9"
+    assert claimed["claimant_principal_id"] == "contributor"
+
+    released = api.client.post(
+        f"{base}/claim/release", json={"fence_token": claimed["fence_token"]}
+    )
+    assert released.status_code == 200
+    protected = api.client.post(
+        f"{base}/claim", json={"agent_id": "agent-7", "scope": ["deploy/prod.yml"]}
+    )
+    assert protected.status_code == 409
+    assert "protected scope" in protected.json()["detail"]
+    outside = api.client.post(
+        f"{base}/claim", json={"agent_id": "agent-7", "scope": ["frontend/app.ts"]}
+    )
+    assert outside.status_code == 409
+    assert "allowed scope" in outside.json()["detail"]
+
+
+async def test_human_only_items_refuse_agent_claims_over_http(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id, autonomy_mode="human-only")
+
+    refused = api.client.post(
+        f"/workspaces/{workspace_id}/backlog/{item['item_id']}/claim", json={"agent_id": "agent-1"}
+    )
+    assert refused.status_code == 409
+    assert "autonomy mode" in refused.json()["detail"]
+    human = _claim(api, workspace_id, item["item_id"])
+    assert human["claimant_principal_id"] == "contributor"
+
+
+async def test_claim_refused_on_open_dependencies_returns_409_with_reason(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    dependency = _create(api, workspace_id, project_id, rank=1)
+    item = _create(api, workspace_id, project_id, rank=2)
+    base = f"/workspaces/{workspace_id}/backlog"
+    assert (
+        api.client.put(f"{base}/{item['item_id']}/dependencies/{dependency['item_id']}").status_code
+        == 204
+    )
+
+    refused = api.client.post(f"{base}/{item['item_id']}/claim", json={})
+    assert refused.status_code == 409
+    assert dependency["item_id"] in refused.json()["detail"]
+    fetched = api.client.get(f"{base}/{item['item_id']}").json()
+    assert fetched["claimant_principal_id"] is None
+
+    satisfied = api.client.patch(
+        f"{base}/{dependency['item_id']}",
+        json={"expected_version": 1, "status": "implemented"},
+    )
+    assert satisfied.status_code == 200
+    claimed = _claim(api, workspace_id, item["item_id"])
+    assert claimed["fence_token"] == 1
+
+
+async def test_claim_authorization_follows_the_membership_boundary(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id)
+    base = f"/workspaces/{workspace_id}/backlog/{item['item_id']}"
+
+    _as_user(api.app, "member")
+    assert api.client.post(f"{base}/claim", json={}).status_code == 403
+    assert (
+        api.client.post(
+            f"{base}/claim/renew", json={"fence_token": 1, "lease_seconds": 10}
+        ).status_code
+        == 403
+    )
+    assert api.client.post(f"{base}/claim/release", json={"fence_token": 1}).status_code == 403
+    _as_user(api.app, "stranger")
+    assert api.client.post(f"{base}/claim", json={}).status_code == 404
+
+    # A cross-Workspace id stays a 404, never a claim on someone else's item.
+    b_id, b_project = await _workspace(api, "Beta")
+    _as_user(api.app, "contributor")
+    other = _create(api, b_id, b_project)
+    assert (
+        api.client.post(
+            f"/workspaces/{workspace_id}/backlog/{other['item_id']}/claim", json={}
+        ).status_code
+        == 404
+    )
+
+
+async def test_claim_body_validation_is_422(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id)
+    base = f"/workspaces/{workspace_id}/backlog/{item['item_id']}"
+
+    assert api.client.post(f"{base}/claim", json={"lease_seconds": 0}).status_code == 422
+    assert api.client.post(f"{base}/claim", json={"fence_token": 1}).status_code == 422
+    assert (
+        api.client.post(
+            f"{base}/claim/renew", json={"fence_token": 0, "lease_seconds": 10}
+        ).status_code
+        == 422
+    )
+    assert api.client.post(f"{base}/claim/release", json={}).status_code == 422
+    assert api.client.post(f"{base}/claim", json={"unknown": 1}).status_code == 422

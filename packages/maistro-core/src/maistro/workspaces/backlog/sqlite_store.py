@@ -1,24 +1,27 @@
-"""SQLite persistence for Workspace BacklogItems (#98).
+"""SQLite persistence for Workspace BacklogItems (#98, #100).
 
 Held to the in-memory reference by one conformance suite. The rules that need
 a read before the write -- the Project belongs to the item's Workspace, an edge
 stays inside one Workspace and closes no cycle, the stored version is still
-the expected one -- run inside the paired `SqliteProjectScopeStore`'s
-`transaction()`: its lock and its `BEGIN IMMEDIATE` on the one shared
-connection, the `SqliteWorkspaceStore` precedent (#1121). A lock of this
-store's own over that connection is how "cannot start a transaction within a
-transaction" happens. The version check is also the `UPDATE`'s own `WHERE`, so
-it holds even against a second process on the same file.
+the expected one, and (#100) at most one live claim exists per item -- run
+inside the paired `SqliteProjectScopeStore`'s `transaction()`: its lock and
+its `BEGIN IMMEDIATE` on the one shared connection, the `SqliteWorkspaceStore`
+precedent (#1121). A lock of this store's own over that connection is how
+"cannot start a transaction within a transaction" happens. The version check
+is also the `UPDATE`'s own `WHERE`, so it holds even against a second process
+on the same file -- and the claim gates run in that same critical section, so
+an item cannot be claimed past a policy gate another writer just changed.
 
 The payload JSON is the record; the other columns exist to be queried, and
-timestamps are ISO-8601 text as in the Workspace store.
+timestamps are ISO-8601 text as in the Workspace store. Claim/lease/fence
+state (#100) lives in the payload, versioned by the same compare-and-set.
 """
 
 from __future__ import annotations
 
 import builtins
 import sqlite3
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -26,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 from maistro.projects.scope_store import DurableProjectScopeStore, TransactionalProjectScopeStore
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.backlog.model import (
+    DEFAULT_LEASE_SECONDS,
+    BacklogClaim,
     BacklogItem,
     BacklogItemAlreadyExists,
     BacklogItemNotFound,
@@ -34,8 +39,20 @@ from maistro.workspaces.backlog.model import (
     BacklogVersionConflict,
     apply_changes,
     new_item,
+    require_claim_policy,
+    require_claimant,
+    require_lease,
 )
 from maistro.workspaces.backlog.store import (
+    active_claim_of,
+    claim_now,
+    plan_claim,
+    plan_release,
+    plan_renew,
+    refuse_held_claim,
+    release_if_retired,
+    require_claim_holder,
+    require_current_fence,
     require_not_self,
     require_project_in_workspace,
     require_same_workspace,
@@ -200,17 +217,97 @@ class SqliteBacklogItemStore:
         )
 
     async def update(
-        self, item_id: str, *, expected_version: int, changes: Mapping[str, Any]
+        self,
+        item_id: str,
+        *,
+        expected_version: int,
+        changes: Mapping[str, Any],
+        fence_token: int | None = None,
     ) -> BacklogItem:
         async with self._write() as conn:
-            current = await self._current(item_id, expected_version)
-            updated = apply_changes(current, dict(changes))
+            current = await self._require(item_id)
+            require_current_fence(current, fence_token, now=claim_now(None))
+            if current.version != expected_version:
+                raise BacklogVersionConflict(expected_version, current)
+            updated = release_if_retired(apply_changes(current, dict(changes)))
             if updated.project_id != current.project_id:
                 await require_project_in_workspace(
                     self._project_store, updated.project_id, updated.workspace_id
                 )
             await self._compare_and_set(conn, updated, expected_version)
         return updated
+
+    async def claim(
+        self,
+        item_id: str,
+        *,
+        principal_id: str | None = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        scope: Iterable[str] = (),
+        lease_seconds: float = DEFAULT_LEASE_SECONDS,
+        at: datetime | None = None,
+    ) -> BacklogItem:
+        require_claimant(principal_id, agent_id)
+        require_lease(lease_seconds)
+        now = claim_now(at)
+        async with self._write() as conn:
+            current = await self._require(item_id)
+            refuse_held_claim(current, now)
+            require_claim_policy(
+                current,
+                await self.dependencies_of(item_id),
+                agent_id=agent_id,
+                scope=tuple(scope),
+            )
+            updated = plan_claim(
+                current,
+                principal_id=principal_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+            await self._compare_and_set(conn, updated, current.version)
+        return updated
+
+    async def renew_claim(
+        self,
+        item_id: str,
+        *,
+        fence_token: int,
+        lease_seconds: float,
+        at: datetime | None = None,
+    ) -> BacklogItem:
+        require_lease(lease_seconds)
+        now = claim_now(at)
+        async with self._write() as conn:
+            current = await self._require(item_id)
+            require_claim_holder(current, fence_token, now)
+            updated = plan_renew(current, now=now, lease_seconds=lease_seconds)
+            await self._compare_and_set(conn, updated, current.version)
+        return updated
+
+    async def release_claim(
+        self,
+        item_id: str,
+        *,
+        fence_token: int,
+        at: datetime | None = None,
+    ) -> BacklogItem:
+        now = claim_now(at)
+        async with self._write() as conn:
+            current = await self._require(item_id)
+            require_claim_holder(current, fence_token, now)
+            updated = plan_release(current, now=now)
+            await self._compare_and_set(conn, updated, current.version)
+        return updated
+
+    async def active_claim(
+        self, item_id: str, *, at: datetime | None = None
+    ) -> BacklogClaim | None:
+        current = await self._require(item_id)
+        return active_claim_of(current, claim_now(at))
 
     async def add_dependency(self, item_id: str, depends_on_item_id: str) -> None:
         async with self._write() as conn:

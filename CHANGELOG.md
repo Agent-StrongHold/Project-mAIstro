@@ -25,6 +25,23 @@ or placeholder-only section.
 
 ### Added
 
+- **Atomic backlog claim/lease semantics for authorized Workspace actors
+  (#100).** The Workspace BacklogItem service (#98) gains the claim service
+  its reserved fields were held for: `claim`/`renew_claim`/`release_claim` on
+  both stores (one atomic claim per item — the loser gets the holder's
+  receipt), policy gates inside the same critical section (claimable status
+  pool, satisfied dependencies, #103 autonomy modes with human-only and
+  unknown tokens refusing Agent claims, declared scope checked against
+  allowed/protected scope), a monotone per-item fence token required to edit
+  an actively claimed item (a stale holder is refused even at the right
+  version), and deterministic re-eligibility (lease expiry, explicit release,
+  status moves; retiring a claimed item releases the claim in the same
+  write). HTTP: `POST .../backlog/{id}/claim`, `/claim/renew`,
+  `/claim/release` (contributor-gated) and `GET .../backlog/{id}/claim`; the
+  item payload itself carries claimant, lease and fence. A claim is work
+  coordination, never Goal ownership: it never touches `goal_ref` or the
+  canonical Goal -> Graph -> Run spine.
+
 - **Read-only, acceptance-based delivery planning for maintainers (#1629).**
   `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
   reviewed GitHub snapshot. It refuses work selection on stale/incomplete

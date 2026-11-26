@@ -1,10 +1,15 @@
-"""Workspace BacklogItem API (#98).
+"""Workspace BacklogItem API (#98, #100).
 
 Workspace membership is the boundary: any member reads, only a CONTRIBUTOR or
 OWNER writes, and an outsider -- or an id from another Workspace -- gets 404 so
 the route never discloses what exists elsewhere. Field edits are a
 compare-and-set on `expected_version`; a stale one gets 409 with the item as it
 now stands, so the UI or agent can rebase instead of overwriting.
+
+#100 adds the claim service over the same boundary: claim/renew/release are
+contributor writes on one atomic, fenced lease per item, and every read of the
+item already shows the current claimant, lease and fence -- that is the UI's
+claim state, with no second source of truth.
 """
 
 from __future__ import annotations
@@ -20,12 +25,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.workspaces import WorkspaceStore
 from maistro.workspaces.backlog import (
+    DEFAULT_LEASE_SECONDS,
+    BacklogClaim,
+    BacklogClaimHeld,
+    BacklogClaimRefused,
     BacklogItem,
     BacklogItemAlreadyExists,
     BacklogItemNotFound,
     BacklogItemStatus,
     BacklogItemStore,
     BacklogRelationError,
+    BacklogStaleFence,
     BacklogVersionConflict,
     GoalReference,
 )
@@ -109,8 +119,43 @@ _NULLABLE_FIELDS = frozenset(
         "autonomy_mode",
         "archived_at",
         "goal_ref",
+        "fence_token",
     }
 )
+
+
+class ClaimBacklogItemBody(BaseModel):
+    """Who is claiming, and on what terms (#100).
+
+    The authenticated principal is always recorded; `agent_id` adds the Agent
+    acting (delegated Agent, persistent Workspace Agent), `run_id` the
+    canonical Run the claim progresses, and `scope` declares what the claimant
+    intends to work in -- checked against the item's allowed/protected scope.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str | None = None  # noqa: V107
+    run_id: str | None = None  # noqa: V107
+    scope: list[str] = Field(default_factory=list)  # noqa: V107
+    lease_seconds: float = Field(default=DEFAULT_LEASE_SECONDS, gt=0)
+
+
+class RenewClaimBody(BaseModel):
+    """Extend the live claim's lease; only the live fence may renew."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fence_token: int = Field(ge=1)
+    lease_seconds: float = Field(gt=0)
+
+
+class ReleaseClaimBody(BaseModel):
+    """Give the claim up; only the live fence may release it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fence_token: int = Field(ge=1)
 
 
 class UpdateBacklogItemBody(BaseModel):
@@ -141,6 +186,9 @@ class UpdateBacklogItemBody(BaseModel):
     pinned: bool | None = None
     archived_at: datetime | None = None
     goal_ref: GoalReference | None = None  # noqa: V107
+    #: The live claim's fence, required to edit an actively claimed item
+    #: (#100). Absent means "no fence presented".
+    fence_token: int | None = None  # noqa: V107
 
     @model_validator(mode="after")  # noqa: V105
     def _no_null_for_required_fields(self) -> Self:
@@ -168,6 +216,17 @@ def _store_errors() -> Iterator[None]:
         yield
     except BacklogVersionConflict as exc:
         raise _Conflict(exc.current_item) from exc
+    except BacklogClaimHeld as exc:
+        # Same shape as a stale edit: the current item shows who holds the
+        # claim, the fence it carries, and the lease it runs on.
+        raise _Conflict(exc.current_item) from exc
+    except BacklogStaleFence as exc:
+        raise _Conflict(exc.current_item) from exc
+    except BacklogClaimRefused as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"BacklogItem claim refused: {exc.reason}",
+        ) from exc
     except BacklogItemNotFound as exc:
         raise _not_found() from exc
     except BacklogRelationError as exc:
@@ -281,11 +340,14 @@ async def update_backlog_item(
 ) -> BacklogItem | JSONResponse:
     await _require_contributor(workspace_store, workspace_id, auth)
     await _require_item(store, workspace_id, item_id)
-    changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
+    changes = body.model_dump(exclude_unset=True, exclude={"expected_version", "fence_token"})
     try:
         with _store_errors():
             return await store.update(
-                item_id, expected_version=body.expected_version, changes=changes
+                item_id,
+                expected_version=body.expected_version,
+                changes=changes,
+                fence_token=body.fence_token,
             )
     except _Conflict as conflict:
         return _conflict_response(conflict)
@@ -317,6 +379,102 @@ async def set_backlog_item_parent(
             )
     except _Conflict as conflict:
         return _conflict_response(conflict)
+
+
+@router.post(  # noqa: V103
+    "/{item_id}/claim",
+    response_model=BacklogItem,
+    responses={status.HTTP_409_CONFLICT: {"description": "Claimed, refused, or a stale fence"}},
+)
+async def claim_backlog_item(  # noqa: V103
+    workspace_id: str,
+    item_id: str,
+    body: ClaimBacklogItemBody,
+    auth: RequireAuth,
+    workspace_store: WorkspaceStoreDep,
+    store: BacklogStoreDep,
+) -> BacklogItem | JSONResponse:
+    """Take the item's claim (#100): atomic, policy-checked, fenced. The
+    authenticated principal is the claimant of record; `agent_id` names the
+    Agent acting under it."""
+    await _require_contributor(workspace_store, workspace_id, auth)
+    await _require_item(store, workspace_id, item_id)
+    try:
+        with _store_errors():
+            return await store.claim(
+                item_id,
+                principal_id=user_id(auth),
+                agent_id=body.agent_id,
+                run_id=body.run_id,
+                scope=tuple(body.scope),
+                lease_seconds=body.lease_seconds,
+            )
+    except _Conflict as conflict:
+        return _conflict_response(conflict)
+
+
+@router.post(  # noqa: V103
+    "/{item_id}/claim/renew",
+    response_model=BacklogItem,
+    responses={status.HTTP_409_CONFLICT: {"description": "No live claim or a stale fence"}},
+)
+async def renew_backlog_item_claim(  # noqa: V103
+    workspace_id: str,
+    item_id: str,
+    body: RenewClaimBody,
+    auth: RequireAuth,
+    workspace_store: WorkspaceStoreDep,
+    store: BacklogStoreDep,
+) -> BacklogItem | JSONResponse:
+    await _require_contributor(workspace_store, workspace_id, auth)
+    await _require_item(store, workspace_id, item_id)
+    try:
+        with _store_errors():
+            return await store.renew_claim(
+                item_id, fence_token=body.fence_token, lease_seconds=body.lease_seconds
+            )
+    except _Conflict as conflict:
+        return _conflict_response(conflict)
+
+
+@router.post(  # noqa: V103
+    "/{item_id}/claim/release",
+    response_model=BacklogItem,
+    responses={status.HTTP_409_CONFLICT: {"description": "No live claim or a stale fence"}},
+)
+async def release_backlog_item_claim(  # noqa: V103
+    workspace_id: str,
+    item_id: str,
+    body: ReleaseClaimBody,
+    auth: RequireAuth,
+    workspace_store: WorkspaceStoreDep,
+    store: BacklogStoreDep,
+) -> BacklogItem | JSONResponse:
+    await _require_contributor(workspace_store, workspace_id, auth)
+    await _require_item(store, workspace_id, item_id)
+    try:
+        with _store_errors():
+            return await store.release_claim(item_id, fence_token=body.fence_token)
+    except _Conflict as conflict:
+        return _conflict_response(conflict)
+
+
+@router.get("/{item_id}/claim", response_model=BacklogClaim | None)  # noqa: V103
+async def get_backlog_item_claim(  # noqa: V103
+    workspace_id: str,
+    item_id: str,
+    auth: RequireAuth,
+    workspace_store: WorkspaceStoreDep,
+    store: BacklogStoreDep,
+) -> BacklogClaim | None:
+    """The item's live claim (#100), or ``null`` once the lease has expired.
+
+    The canonical read for "who holds this work": claimant, fence and lease in
+    one snapshot, and the check a consumer makes before launching later work
+    for a claimed item."""
+    await _require_reader(workspace_store, workspace_id, auth)
+    await _require_item(store, workspace_id, item_id)
+    return await store.active_claim(item_id)
 
 
 @router.get("/{item_id}/children", response_model=list[BacklogItem])  # noqa: V103
