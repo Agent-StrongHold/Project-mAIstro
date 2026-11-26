@@ -348,3 +348,72 @@ substrate lanes → product closeout → tracker disposition). This worker start
 child items or PRs. Final accounting: **checked 1, done 0 (initiative), skipped 0,
 errors 0**; completed local artifact is this corrected acceptance handoff. No
 source, tests, gates, grants, ledgers or inventory baselines changed.
+
+## Addendum 4 — review round bcd238ffd (2026-11-26), dispatched to resolve the
+## prior NEEDS-DEEP-REVIEW
+
+This job (`bcd238ffd…`, head `d9f9ab0078`, supplied base `7ba29c1cd`,
+`review: true`) was dispatched to resolve the previous worker's
+NEEDS-DEEP-REVIEW request. Resolution performed below: the review items that
+*are* inside a bounded lane's authority were re-proven first-hand; the items
+outside it (issue dispositions) are confirmed owner actions and remain the
+honest verdict, not an unresolved lane defect.
+
+- **No driver checks to inspect:** this job's directory contains no
+  `check-*.log` files and its manifest records `checks: []`. No driver
+  validation was assumed; every claim below is first-hand.
+- **Not a develop-sync conflict:** the branch predates current `origin/develop`
+  (`merge-base HEAD,origin/develop = 4de7e906d9`; supplied base not an ancestor
+  of HEAD). No conflict exists and the prior verdict was about acceptance
+  boundaries, not sync; per the round instruction a sync merge is only prescribed
+  for actual conflicts, so none was performed. The lane diff vs its local
+  ancestor `4de7e906d9` remains exactly the four `.cursor/context` notes.
+- **Fresh executed battery at `d9f9ab0078` (logs `writer-*.log` in this job's
+  directory; all exit 0):** `ruff check .` all passed; `ruff format --check .`
+  3484 files; `pytest packages/maistro-evolve/tests -q` **998 passed, 6 skipped**
+  (official IFEval skips, unchanged); core
+  governance/repertoire/fitness/memory **1158 passed, 11 skipped** (PG DSN
+  skips, unchanged); hive optimizer/canonical-graph files **124 passed**;
+  `check-suite-inventory.py` 21 suites, 0 duplicate/byte-identical groups;
+  `check-backlog-consistency.py` OK (167 items); `check-adr-index.py` OK;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (CI argv, `vulture-ratchet.yml:84-85`) exit 0, 1302
+  identities, trusted base `4de7e906d9`.
+- **Checkpoint state re-derived from this job's own frozen capture** (125
+  sources, 2026-11-26T17:19Z, `dispatch-context.json`): all ten epics #21–#26
+  and #104–#107 **open**; #8 **open**; #389 **open** (only open direct
+  EVENTUALLY leaf, 20/21 closed); #852/#853/#854/#861 closed; nested M4 leaves
+  #110/#112/#113/#115/#116, #117–#121, #301, #384 closed. Identical to
+  Addendum 3 — checkpoints 8–9 remain NOT MET and no lane action can change
+  captured issue state.
+- **New evidence — promotion-contract adoption census (Gate A):** two contract
+  definitions exist (`maistro/graph/templates.py:88`,
+  `maistro_evolve/population.py:284`). Production callers found by scan:
+  `maistro/graph/harness_targets.py:319` (harness-target activation) and
+  `packages/hive-conductor/backend/services/optimizer_candidates.py:365`
+  (optimizer candidate application, with the source-hash binding at `:279`);
+  the genome path is enforced as the only sanctioned activation
+  (`population.py:197`) and is executed by the passing governance suites
+  (`test_promotion_governance.py`, `test_rsi_safety.py`, `test_retrodiction.py`,
+  `test_archive.py`). This bounds Gate A's unproven remainder to cross-family
+  adoption and measured later effect, matching ADR-100126-a9c4's incremental
+  stance — still UNVERIFIED overall, now with an explicit caller census.
+- **New evidence — Gauntlet seam re-scan:** a fresh scan of `packages/*/src`
+  finds zero construction sites of `IndependentTrialsGauntlet(`/
+  `LearningPromoter(` outside the explanatory whitelist comment
+  (`_vulture_whitelist.py:352-356`). The seam disposition stands; not a defect.
+- **Line citations re-opened at this head, all resolve:** `sandbox_exec.py:186`
+  `_grade_case`; `fitness.py:134/197/369` hard gate/weighted score/compute;
+  `population.py:141/284`; `optimizer_candidates.py:279/365`;
+  `gauntlet.py:238`; `promoter.py:81/94/176`; `routes/evolution.py:165`;
+  `services/evolution.py:472-473` (proxy fidelity);
+  `evolution_graph.py:919` (`run_store.create_run`).
+
+No reproduced source, test or gate failure exists to repair; no tests were
+added or changed, so no inventory delta applies. **Verdict: NEEDS-DEEP-REVIEW**
+stands, now with the review boundary sharpened: checkpoints 1–4 carry bounded
+passing evidence plus an explicit adoption census; checkpoints 5–7 require
+documented epic-level dispositions; checkpoints 8–9 require explicit issue
+closure/reclassification that no implementation lane may perform. Final
+accounting: **checked 1, done 1 (bounded re-verification artifact), skipped 0,
+errors 0**.
