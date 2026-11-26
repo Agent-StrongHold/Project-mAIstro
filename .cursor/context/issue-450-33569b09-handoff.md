@@ -478,8 +478,12 @@ for #450 is initiative-level acceptance — per-epic dispositions (checkpoints
 — all outside a bounded implementation lane's authority. Final accounting:
 **checked 1, done 1 (sync + re-verified handoff), skipped 0, errors 0**.
 
-## Addendum 6 — implement round a9f1e80d (2026-11-26): residual classified as
-### owner-only; lane terminal state BLOCKED
+## Addendum 6 — implement round a9f1e80d (2026-11-26): historical conclusion
+### Owner-only determination RETRACTED by round 55128769 below
+
+> The validation results below are historical. The conclusion that all remaining
+> work is administrative was not justified: unrelated durable-store tests do not
+> prove PostgreSQL durability of the retained working log required by #105.
 
 Dispatched to resolve the standing NEEDS-DEEP-REVIEW from round `2db7ab28`.
 No new failure was reproduced; this round re-proved the substantive evidence
@@ -533,3 +537,113 @@ residual = owner dispositions of #389, the ten epics, and #8 (which closes
 only after #450 itself). No tests were added; no inventory-note delta
 applies. Final accounting: **checked 1, done 1 (validation re-proven +
 residual classified), skipped 0, errors 0**.
+
+## Correction — round 55128769 (2026-11-26): substantive acceptance still missing
+
+**Current verdict: NEEDS-REPAIR.** This supersedes Addendum 6's owner-only
+conclusion, not its preserved historical results. The smallest independently
+solvable change in this review is correcting that false acceptance claim. No
+production repair or initiative completion is claimed.
+
+### Frozen scope and authority
+
+- Issue #450 only; supplied capture completed **2026-11-26T18:30:43.865210Z**,
+  starting head `fbd663afc047bb22d6831dcf2811583c4328a41a`, declared base
+  `7926d9ab4dda6a699a80536c6d03a59eab205725`. Initial history/diff/status
+  inspected; clean tree, all prior commits/notes preserved. No API refreshes.
+- Job `551287697500484d8e49d9b99b94e959` has no `check-*.log` files and its
+  manifest has `checks: []`; all validation below was executed first-hand.
+- Accepted ADR-062's retirement notice and ADR-082826-d9f5 require the existing
+  canonical Run store, not another scheduler/store. ADR-100126-a9c4 permits
+  incremental family adoption; contract tests alone cannot prove Gate A.
+  Accepted ADR-100126-5445 requires measured learning evidence. The related
+  ADR-100126-8c2d is **Proposed**, not an accepted authority.
+- ADR-082226-5104 §§1/6/9 requires PostgreSQL retained evidence with a disposable
+  projection, not SQLite as another canonical authority. The frozen #105 body
+  expressly requires PostgreSQL log/results, no warning-only fallback for a
+  configured durable path, and real-PostgreSQL/fresh-process recovery tests.
+
+### Actual production counterexample to the previous conclusion
+
+`packages/maistro-core/src/maistro/container.py:2690` initializes the SQLite
+`db_pool` to `None`. Its PostgreSQL branch (`:2731–2744`) sets `pg_pool`, not
+`db_pool`. The retained working log at `:2832` nevertheless passes **only**
+`db_pool` to `_wire_working_memory_backend`. That helper (`:2568–2574`) selects
+SQLite or warning-only `InMemoryWorkspaceLogStore`; it cannot select PostgreSQL.
+`memory/working/wiring.py:11–13` explicitly says PostgreSQL working-log tables
+are absent; `:47–49` recommends SQLite to regain durability. The claim in
+`memory/working/store.py:4` that this is "PostgreSQL/SQLite durable" is not proof.
+
+Executed diagnostic (exit **1** at the retention assertion):
+
+```python
+import asyncio
+from maistro.container import _wire_working_memory_backend
+
+async def main():
+    first = await _wire_working_memory_backend(None)
+    await first.observe("issue-450-repro", cycle=1, text="retained observation")
+    before = await first.store.list_entries("issue-450-repro")
+    second = await _wire_working_memory_backend(None)
+    after = await second.store.list_entries("issue-450-repro")
+    print(type(first.store).__name__, type(second.store).__name__)
+    print(len(before), len(after))
+    assert len(after) == len(before)
+
+asyncio.run(main())
+```
+
+Run with `uv run python` via stdin. Observed **InMemoryWorkspaceLogStore** for
+both managers, **1 before / 0 after**, and warnings recommending SQLite. This
+exercises the production helper with the argument the PostgreSQL branch passes;
+it is **not** a real-PostgreSQL or fresh-process test. Those required legs remain
+unexecuted, and no PostgreSQL working-log implementation was demonstrated.
+Adjacent tests confirm the coverage gap, not its absence:
+`tests/memory/test_working_memory.py:702–703` expects this in-memory fallback;
+`tests/memory/test_working_log_store_conformance.py:77` parametrizes only memory
+and SQLite. DAG history, settings, and node-metrics durability cannot substitute
+for retention/recovery of these observations and full results.
+
+### Current first-hand validation
+
+All commands use `uv run` unless noted. Full logs are `writer-*.log` in this job's
+directory; command outcomes below, unlike historical claims, are from this head.
+
+| Command | Outcome |
+|---|---|
+| `uv sync --locked --extra dev` | Pass; 465 resolved, 216 checked |
+| `ruff check .`; `ruff format --check .` | Pass; 3676 formatted files |
+| `pytest packages/maistro-evolve/tests -x -q -rs` | 1005 passed, 12 skipped: 6 missing official IFEval `absl`, 6 no TRUSTED_TOOL sandbox backend |
+| `pytest packages/maistro-core/tests/governance packages/maistro-core/tests/repertoire packages/maistro-core/tests/fitness packages/maistro-core/tests/memory -x -q -rs` | 1158 passed, 11 skipped: user-model PostgreSQL DSN absent |
+| `pytest packages/hive-conductor/backend/tests/test_optimizer.py packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py packages/hive-conductor/backend/tests/test_evolution_canonical_edge_cases.py packages/hive-conductor/backend/tests/test_optimizer_candidate_apply.py packages/hive-conductor/backend/tests/test_memory_routes.py packages/hive-conductor/backend/tests/test_quotas.py -x -q -rs` | 171 passed |
+| `python scripts/check-api-route-contracts.py` | Pass; 306 handlers, 15 audited routes, 0 canned |
+| `pytest tests/test_check_api_route_contracts.py -x -q` | 64 passed |
+| `python scripts/check-suite-inventory.py` | Pass; 21 suites, 37036 unique identities, no duplicates; collection only |
+| `python scripts/check-backlog-consistency.py`; `python scripts/check-adr-index.py` | Pass; 167 backlog items; ADR front matter agrees |
+| Working-log diagnostic above | Exit 1: retained observation lost across manager reconstruction |
+
+No tests added/changed; no inventory delta is applicable. No gates, grants,
+ledgers, baselines, or production code changed. Pytest emitted existing
+asyncio-fixture/CallSpec deprecation warnings.
+
+### All nine steering checkpoints — bounded evidence, not inferred completion
+
+| Criterion | Current evidence / disposition |
+|---|---|
+| 1. Gate A including #854/#861 | **PARTIAL; overall UNVERIFIED.** `population.py:322` audited eligibility/incumbent gate and `optimizer_candidates.py:279–402` immutable application path exercised by green suites. Canonical Hive test at `test_evolution_canonical_graph.py:227` verifies stored Run/NodeRun/Attempt identity with substituted cycle/harness collaborators. No all-family measured later-effect attestation. |
+| 2. Verdict truth #852 | **PARTIAL; full closeout UNVERIFIED.** `benchmarks/sandbox_exec.py:192,299` host-owned grading executed in Evolve tests, including mutation killers. Six real-sandbox tests and official IFEval coverage skipped; no full external-evidence attestation. |
+| 3. Fitness truth #853 | **Bounded behavior green; full closeout UNVERIFIED.** `fitness.py:134,197,369` hard gates, host objective and missing-data policy exercised by Evolve tests; no independent campaign attestation. |
+| 4. Gate B | **PARTIAL; host/product adoption UNVERIFIED.** Core governance/repertoire/fitness/memory suite passed; isolated library evidence is not proof of the complete measured-reuse product loop. |
+| 5. Search/curriculum/harness complete or explicitly deferred | **UNVERIFIED.** Evolve suite passed; #25 still lists unchecked #783/#822. No accepted initiative-level disposition established. |
+| 6. Substrate lanes dispositioned | **NOT ESTABLISHED.** #105 retained-log PostgreSQL requirement has the concrete counterexample above. Other substrate-wide dispositions and required PostgreSQL restart leg remain UNVERIFIED. |
+| 7. EVENTUALLY zero/reclassified | **NOT MET in capture.** 20/21 leaves closed, #389 open. Its route gate, 64 gate tests and Hive memory/quota tests passed; that does not certify every product leaf or authorize closure. |
+| 8. Ten epics closed/reclassified | **NOT MET.** #21–#26/#104–#107 all open in frozen capture. |
+| 9. #8 closed | **NOT MET.** #8 open; its unchecked child is #450. |
+
+**Next:** repair/disposition the #105 retained working-log PostgreSQL path using
+its existing protocol, schema lifecycle, canonical provenance, and fresh-process
+recovery/conformance tests; obtain independent acceptance for remaining gates.
+Do not close/reclassify issues or retry this parent as if administrative closure
+were the only missing work. This round commits a corrected handoff only.
+Accounting: **checked 1, done 0 (initiative), skipped 0; one reproduced acceptance
+failure; documentation correction complete**.
