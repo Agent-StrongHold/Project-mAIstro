@@ -1,5 +1,45 @@
 # auto-880 develop sync — conflict resolution record (round: 2026-10-24)
 
+## Follow-up round: 2026-11-26 (fresh evidence, not inherited verification)
+
+The record below is historical. The supplied prior result file and driver
+check logs were absent from job `ad341667e2e24753b26f0486edd200d6` at entry.
+This round independently:
+
+- Preserved both staged and unstaged incoming diffs outside the worktree in
+  `../incoming-880-index.patch` and `../incoming-880.patch`.
+- Completed the pending merge of `3825fb9b57` in `c371430237`, then merged
+  the assigned frozen develop base `7926d9ab4dda` in `6ff4999044` after a
+  successful fetch. Only `CHANGELOG.md` conflicted in each step; both sides'
+  unique conflicting entries were preserved, with byte-identical bullet
+  duplicates collapsed. No quality ledger or grant differs from that base.
+- Reproduced a real defect in the #880 research harness: frozen candidates
+  still exposed mutable score/evidence dictionaries. Four regression cases
+  failed, then passed after defensive copies and read-only views. Repair
+  committed as `eaf06dd1c2`, with a `packages/maistro-rsi/tests: +4` note.
+- Ran `uv sync --locked --extra dev`, repository ruff check and format check
+  (3678 files), RSI tests (1819 passed / 4 skipped), and formal tests
+  (668 passed / 4 skipped). Explicit evolve/rsi `PYTHONPATH` entries were used
+  for both suites; formal additionally included core. No services were started.
+- Passed targeted inventory (1823 RSI / 672 formal nodes), formal oracle
+  independence against the frozen base, execution-lifecycles (19 vocabularies)
+  and release-consistency gates. Raw command results are in the current job's
+  `check-*.log` files. These are new runs, not the older claims below.
+
+The research note now dates the old baseline, corrects the stale not-running
+claim about the linear precursor, and lowers its shared-table oracle judgment.
+Current generated API workflows and mutation tooling contradict the historical
+absent/parked baseline, which is retained only as an explicitly historical
+record. No new product authority or quality-gate exemption was introduced.
+
+**Partial handoff only:** PostgreSQL lifecycle/lease tests skipped without a
+DSN; no fresh current all-leaf ranked synthesis or per-leaf experiment-contract
+audit was executed. The epic's complete acceptance is UNVERIFIED. See
+`docs/research/880-advanced-verification-assurance.md` for the requirement-by-
+requirement record. No GitHub changes were made.
+
+## Historical 2026-10-24 record
+
 Resolves the preserved merge state in this worktree and completes the develop
 sync to the lane's stated base. Two commits:
 

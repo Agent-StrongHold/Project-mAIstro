@@ -3,13 +3,29 @@
 Epic: #880. Leaves: #881, #882, #883, #884, #885, #886, #887, #888, #889, #890,
 #891, #892, #893, #894, #896, #897. Initiative: #879. Milestone tracker: #878.
 
+## Scope and freshness
+
+This is a **partial epic artifact**, not completion evidence for all 16 leaves.
+The baseline audit and its six harness rows are historical observations at
+`feb19affc`, not live probes of the current tree. Citation strings and numerical
+scores are review judgments, not independently verified measurements. In
+particular, mutation and Schemathesis are no longer absent: develop now has
+`scripts/mutation_pr_gate.py` wired in `mutation.yml` and generated API workflow
+tests in `packages/maistro-server/tests/api/test_stateful_workflow_api.py`.
+Their current defect yield and CI cost have **not** been remeasured here.
+
+The linear helper prototype below predates the richer PostgreSQL experiment in
+[leaf #881's own note](881-execution-lifecycle-state-machines.md). Do not read
+its narrow assurance-matrix row as a ranking of that entire leaf. Fresh local
+validation and the remaining epic acceptance gaps are recorded at the end.
+
 ## Research question
 
 Which advanced verification and assurance techniques materially improve
 confidence in MAIstro beyond the existing quality stack, at acceptable
 engineering and CI cost?
 
-## Baseline audit (epic contract item 2, executed at this head)
+## Historical baseline audit (epic contract item 2, at feb19affc)
 
 The epic text credits the existing stack with "property testing, mutation
 testing, OpenAPI contract fuzzing, strict typing, architecture fitness
@@ -18,7 +34,7 @@ functions, coverage gates, real PostgreSQL/S3 integration legs, and a
 those controls *actually do*, not what the quality workflow's header says they
 do. Audited at `feb19affc`:
 
-| Claimed control | Actual state at this head | Evidence |
+| Claimed control | State at the audited revision | Evidence |
 | --- | --- | --- |
 | `formal/` Hypothesis suite | **Executing.** Invariants I1–I29 against real `maistro.security`/`auth` code; PR-gated plus nightly profile. Executed locally: `uv run pytest formal -q` → **663 passed, 1 skipped** (I29 `PgRunStore` skips without `MAISTRO_TEST_PG_DSN`, `formal/models/test_run_lease_fence.py:114`), ≈56 s wall clock on the CI profile. | `formal/README.md`, `.github/workflows/formal-conformance.yml` |
 | Property testing in packages | Partial. `hypothesis` is a declared dev dependency of `hive-conductor`, `maistro-design`, and `formal/` only; leaf #881 now ships a collected `Run` lifecycle state machine, while Invocation effects (#882) still have none. | `packages/*/pyproject.toml`, `formal/models/test_execution_lifecycle.py` |
@@ -65,10 +81,11 @@ second authority):
 | #896 coverage-guided fuzzing (Atheris) | parsers/untrusted-input attack surface | structured-input crashes beyond grammar-guided cases |
 | #897 Lean/Rust/Aeneas correctness kernel | tiny kernel candidate | proof-grade guarantees (feasibility question only) |
 
-## Record
+## Historical audit record
 
-This note reports the baseline audit and the comparative machinery; it runs no
-leaf experiment and adds no product code, flag, or authority (M8 guardrails 1–2). Executed evidence at this head:
+The initial artifact reported only the baseline audit and comparative machinery;
+it ran no leaf experiment and added no product code, flag, or authority (M8
+guardrails 1–2). Evidence recorded at feb19affc (not revalidated as current):
 
 1. **formal/ suite run** (procedure above): 663 passed, 1 skipped, ≈56 s — the
    matrix's anchor row for "what already executes".
@@ -94,7 +111,7 @@ net (mean benefit − mean cost), name-tiebroken for determinism. The measured
 baseline rows from the audit above ship in that module as the reference
 population; leaves append evidenced rows and rank against them.
 
-## Leaf #881 experiment: Execution lifecycle state machine
+## Historical #881 precursor: linear Run helper state machine
 
 As part of leaf #881, we created a Hypothesis state machine to test the
 execution lifecycle of a `Run` object. The state machine models the `Run`
@@ -104,8 +121,9 @@ matches the `Run`'s status at every step.
 
 ### Experiment details
 
-- **Target seam**: `maistro.graph` executor/`NodeRun` transitions
-- **Failure class targeted**: interleaved lifecycle sequences (unit tests fix one path)
+- **Target seam**: in-memory `maistro.runs.lifecycle.transition_run`
+- **Failure class targeted**: sequential helper enforcement diverging from its
+  transition table (not concurrent, persisted, NodeRun or Attempt behavior)
 - **Experimental artifact**: `formal/models/test_execution_lifecycle.py`
 - **Procedure**: We defined a `RuleBasedStateMachine` that creates a minimal
   `Graph` and `Run` instance, then defines rules for each possible transition
@@ -122,15 +140,18 @@ step calls the production `transition_run` helper from
 `maistro.runs.lifecycle` rather than mirroring the status by hand, so a
 divergence between the documented `RUN_TRANSITIONS` table and the helper's
 enforcement surfaces as a failed property. The invariants (model matches the
-Run status, terminal statuses have no outgoing transitions, and every
-persisted status is in the table's domain) hold across the CI profile's
-example budget; no counterexample has been found so far.
+Run status, terminal statuses have no outgoing transitions, and the in-memory
+status is in the table's domain) hold across the CI profile's example budget;
+no counterexample has been found so far. Both oracle and implementation read
+`RUN_TRANSITIONS`, so a wrong table entry can pass both. These properties do
+not establish oracle independence or the full execution contract.
 
 ### Evidence
 
 - Source: `formal/models/test_execution_lifecycle.py`
-- Note: The state machine defines the execution lifecycle transitions and
-  invariants. The class can be imported and instantiated without error.
+- Executed in this round: `uv run pytest formal -x -q` (with core/evolve/rsi
+  source paths) includes the collected machine. The module's second test is an
+  empty placeholder, not additional behavioral evidence.
 
 ### Disposition
 
@@ -141,7 +162,7 @@ still covers only the linear `Run` lifecycle (not `NodeRun`/`Attempt`, and
 no concurrency or crash interleaving). It should graduate only after those
 seams are modeled and a defect-finding yield is observed.
 
-## Assurance matrix — state at this head
+## Assurance matrix — historical baseline plus linear precursor
 
 Rubric: each row scores the epic's eight criteria 0–3, every score cited;
 net = mean(benefit) − mean(cost); unevidenced rows excluded, not zeroed.
@@ -151,25 +172,75 @@ PostgreSQL/S3 legs trade breadth and runtime cost for the strongest oracle;
 diff coverage adds breadth, not depth; mutation and contract fuzzing rank
 last as non-executing controls.
 
-Leaf #881 (execution Hypothesis state machines) is added as a technique row
-with the following scores and evidence (based on the experiment record above):
+The `linear Run transition helper (#881 precursor)` row has these advisory
+scores, matching the harness (not a measurement of the PostgreSQL leaf):
 
-- defect_yield: 0 (no counterexamples found yet due to test not running)
-- confidence_strength: 1 (model matches initial state, but no transitions
-  executed in test)
-- applicability_breadth: 2 (applies to the execution lifecycle seam;
-  other seams like invocation effects require different models)
-- oracle_trustworthiness: 3 (model is derived from the documented
-  transitions in `maistro.runs.lifecycle`)
-- implementation_effort: 1 (state machine is straightforward to write)
-- maintenance_burden: 1 (minimal; depends on the documented lifecycle)
-- ci_runtime_cost: 0 (test not yet running in CI)
-- async_distributed_friction: 1 (model does not capture concurrency;
-  only linear transitions)
+- defect_yield: 0 (no counterexamples observed)
+- confidence_strength: 2 (collected machine calls the production helper)
+- applicability_breadth: 1 (only Run helper transitions)
+- oracle_trustworthiness: 1 (shared production table, not an independent oracle)
+- implementation_effort: 1 (small existing machine)
+- maintenance_burden: 1 (depends on lifecycle table and Run construction)
+- ci_runtime_cost: 1 (runs in the existing formal suite)
+- async_distributed_friction: 1 (only sequential, in-memory transitions)
 
-Net score: (0+1+2+3)/4 - (0+1+1+0)/4 = 1.5 - 0.5 = 1.0
+Net score: (0+2+1+1)/4 - (1+1+1+1)/4 = 0.0.
+Disposition: INCUBATE. This row cannot support a current, all-leaf ranking.
 
-Disposition: INCUBATE (collection blocker resolved; runnable property test)
+## Independent repair and acceptance check (2026-11-26)
 
-This technique row is added to the assurance matrix for ranking against the
-baseline population.
+Frozen develop base: `7926d9ab4dda6a699a80536c6d03a59eab205725`.
+The preserved merge conflict was completed without dropping either side's
+unique conflicting changelog entries, then that base was merged. No quality
+ledger or grant differs from that base.
+
+A concrete defect in the epic's comparative machinery was reproduced: frozen
+`AssuranceCandidate` objects retained mutable score/evidence dictionaries.
+Clearing a caller-owned dictionary could remove an already-recorded row from
+ranking; assignment through a candidate could rewrite scores or citations.
+Four regression cases failed against the old harness and now pass after
+copying both inputs into read-only snapshots. This is a **research artifact
+defect**, owned and repaired in #880, not a live M0–M7 product defect. It was
+found by inspection plus deterministic witnesses, not by the #881 state machine.
+No false positive was observed in these four cases; this is not a measured
+false-positive rate for any technique. Maintenance cost is two mapping copies
+and four cases in the existing test module, with no new dependency or CI job.
+
+Executed validation (job `ad341667e2e24753b26f0486edd200d6`; logs named
+`check-*.log` in that job directory):
+
+- `uv sync --locked --extra dev` succeeded.
+- `uv run ruff check .` and `uv run ruff format --check .` passed (3678 files).
+- With `PYTHONPATH=packages/maistro-evolve/src:packages/maistro-rsi/src`,
+  `uv run pytest packages/maistro-rsi/tests -x -q` passed: **1819 passed,
+  4 skipped**, 101.82 s, including all 26 matrix tests.
+- With core/evolve/rsi source paths, `uv run pytest formal -x -q` passed:
+  **668 passed, 4 skipped**, 56.37 s. The PostgreSQL lifecycle and lease/fence
+  tests skipped without a DSN; they are **not acceptance evidence** in this run.
+- Standalone matrix run: `uv run pytest
+  packages/maistro-rsi/tests/test_m8a_assurance_baseline_research.py -x -q`
+  passed **26 tests**, 0.06 s (local pytest time, not a CI latency estimate).
+  `check-test-duplicates.py` also passed: 1844 unique files, no duplicates.
+- Suite inventory matched **1823 RSI / 672 formal** collected nodes, including
+  the new `packages/maistro-rsi/tests: +4` delta.
+- Formal-oracle-independence against the frozen base, execution-lifecycles
+  (19 classified vocabularies), and release-consistency gates passed.
+
+| Epic acceptance requirement | Evidence / remaining gap |
+| --- | --- |
+| Real MAIstro target | Linear precursor calls production `transition_run`; persisted execution and other leaf seams not reverified here. |
+| Current baseline | Historical audit preserved and explicitly dated; formal and RSI suites freshly executed. Current all-control cost/yield comparison **UNVERIFIED**. |
+| Bounded prototype | Existing test-only matrix and collected helper machine remain; four cases repair the matrix's evidence snapshot boundary. No production rewrite. |
+| Defects, false positives, CI cost, complexity, maintenance | Snapshot defect, red/green cases and suite costs above. Per-leaf measurement completeness **UNVERIFIED**. |
+| Additional failure class | Helper/table enforcement mismatch and evidence mutation documented; neither is a proof of distributed execution semantics. |
+| Terminal disposition per leaf | Precursor remains INCUBATE; other leaves' dispositions and their supporting evidence **UNVERIFIED** in this round. |
+| Route live defects to M0–M7 owner | No live product defect established here; research-only snapshot defect repaired in #880. No GitHub mutations. |
+| Ranked matrix across eight criteria when leaves complete | Scorer exercises all eight axes; population is six historical baseline rows plus one precursor, **not** a completed all-leaf comparative output. |
+
+Accepted ADRs `ADR-081226-a66b` and `ADR-081426-1f7c` retain canonical domain
+lifecycle ownership; `ADR-083126-5e62` separates evidence from the trusted
+judge. Reconciliation: M8 scores and dispositions are advisory only, never
+execution, authorization, event or quality-gate authority. A shared-table
+model is not called independent, and randomized passing runs are not proofs.
+The epic still needs a separately validated, current all-leaf synthesis;
+this repair is a partial handoff, not integration approval or issue closure.
