@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -93,6 +94,32 @@ class WorkspaceMembership(BaseModel):
     @property
     def can_administer(self) -> bool:
         return self.role is WorkspaceRole.OWNER
+
+
+def creation_memberships(
+    workspace: Workspace,
+    creator_user_id: str,
+    initial_memberships: Mapping[str, WorkspaceRole] | None,
+) -> list[WorkspaceMembership]:
+    """Validate the entire initial roster before any canonical create write.
+
+    Convergence imports supply a roster once, in the identity/Root transaction,
+    never as later membership upserts which could undo a concurrent revocation.
+    Ordinary creates still provision only their creator as owner.
+    """
+    roles = {creator_user_id: WorkspaceRole.OWNER, **(initial_memberships or {})}
+    memberships = [
+        WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=user_id,
+            role=role,
+            added_at=workspace.created_at,
+        )
+        for user_id, role in roles.items()
+    ]
+    if roles[creator_user_id] != WorkspaceRole.OWNER:
+        raise ValueError("the Workspace creator must be an owner")
+    return memberships
 
 
 # Backward-compatible alias: WorkspaceMembership is the canonical identity;

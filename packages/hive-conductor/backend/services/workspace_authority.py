@@ -349,6 +349,9 @@ async def _migrate_one(
                 workspace_id=legacy.id,
                 created_at=legacy.created_at,
                 updated_at=legacy.updated_at,
+                initial_memberships={
+                    member.user_id: _canonical_role(member.role) for member in legacy.members
+                },
             )
         except WorkspaceDeleted as exc:
             # The canonical store tombstones deleted ids (#37): this id was a
@@ -368,7 +371,10 @@ async def _migrate_one(
     # Only an import started by this adapter owns the right to replay source
     # membership. A canonical Workspace that pre-dated the migration remains
     # authoritative and stale legacy membership is ignored.
-    if managed_import:
+    if managed_import and not created:
+        # Only ephemeral interrupted imports resume. Fresh imports committed
+        # the complete roster with identity/Root; replaying even one upsert
+        # after that commit could undo another client's canonical revocation.
         try:
             await _copy_import_roster(store, legacy)
         except WorkspaceNotFound as exc:

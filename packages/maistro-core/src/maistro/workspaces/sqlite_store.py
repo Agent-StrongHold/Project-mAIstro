@@ -39,7 +39,7 @@ would be dead code carrying a promise it cannot keep.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
@@ -53,6 +53,7 @@ from maistro.workspaces.model import (
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
+    creation_memberships,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -168,6 +169,7 @@ class SqliteWorkspaceStore:
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
         workspace_kwargs: _WorkspaceCreateKwargs = {"name": name, "description": description}
         if workspace_id is not None:
@@ -177,13 +179,8 @@ class SqliteWorkspaceStore:
         if updated_at is not None:
             workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
-        owner = WorkspaceMembership(
-            workspace_id=workspace.workspace_id,
-            user_id=creator_user_id,
-            role=WorkspaceRole.OWNER,
-            added_at=workspace.created_at,
-        )
-        # One `BEGIN IMMEDIATE` ... `COMMIT` for all three rows (#1121). The
+        memberships = creation_memberships(workspace, creator_user_id, initial_memberships)
+        # One `BEGIN IMMEDIATE` ... `COMMIT` for identity, roster and Root. The
         # Root Project is written last, inside the block, so a failure
         # anywhere rolls the Workspace and membership back with it.
         async with self._write_transaction() as conn:
@@ -199,7 +196,8 @@ class SqliteWorkspaceStore:
             if await cursor.fetchone() is not None:
                 raise WorkspaceDeleted(workspace.workspace_id)
             await self._insert_workspace(workspace)
-            await self._write_membership(owner)
+            for member in memberships:
+                await self._write_membership(member)
             await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 

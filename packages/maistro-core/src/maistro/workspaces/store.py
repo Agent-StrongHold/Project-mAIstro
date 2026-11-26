@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
@@ -11,6 +12,7 @@ from maistro.workspaces.model import (
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
+    creation_memberships,
 )
 
 if TYPE_CHECKING:
@@ -49,8 +51,14 @@ class WorkspaceStore(Protocol):
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
-        """Create a Workspace, preserving identity/timestamps only for convergence imports."""
+        """Atomically create identity, initial roster and Root.
+
+        Explicit identity/timestamps and an initial roster support convergence
+        imports. The creator must remain an owner. No roster write may follow
+        create's commit: a concurrent canonical revocation must win.
+        """
         ...
 
     async def get(
@@ -151,6 +159,7 @@ class InMemoryWorkspaceStore:
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
         """Create canonical identity, optionally retaining convergence metadata.
 
@@ -171,19 +180,16 @@ class InMemoryWorkspaceStore:
             raise WorkspaceDeleted(workspace.workspace_id)
         if workspace.workspace_id in self._workspaces:
             raise ValueError(f"Workspace {workspace.workspace_id!r} already exists")
-        owner = WorkspaceMembership(
-            workspace_id=workspace.workspace_id,
-            user_id=creator_user_id,
-            role=WorkspaceRole.OWNER,
-            added_at=workspace.created_at,
-        )
+        memberships = creation_memberships(workspace, creator_user_id, initial_memberships)
         self._workspaces[workspace.workspace_id] = workspace
-        self._memberships[(workspace.workspace_id, creator_user_id)] = owner
+        for member in memberships:
+            self._memberships[(workspace.workspace_id, member.user_id)] = member
         try:
             await self.project_store.create_root(workspace.workspace_id)
         except BaseException:
             del self._workspaces[workspace.workspace_id]
-            del self._memberships[(workspace.workspace_id, creator_user_id)]
+            for member in memberships:
+                del self._memberships[(workspace.workspace_id, member.user_id)]
             # A failing scope backend may have persisted the Root before
             # reporting the failure; remove it so the operation is atomic in
             # the reference store as well as in the durable transactions.

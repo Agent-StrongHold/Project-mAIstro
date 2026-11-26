@@ -49,6 +49,7 @@ code carrying a promise it cannot keep.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
@@ -61,6 +62,7 @@ from maistro.workspaces.model import (
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
+    creation_memberships,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -117,8 +119,9 @@ class PgWorkspaceStore:
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
-        """Write the Workspace, its owner membership, and its Root Project.
+        """Write the Workspace, its initial memberships, and its Root Project.
 
         Ordinary callers omit the explicit identity/timestamps. Those values
         exist only for convergence imports so a durable legacy Workspace keeps
@@ -132,13 +135,10 @@ class PgWorkspaceStore:
         if updated_at is not None:
             workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
-        owner = WorkspaceMembership(
-            workspace_id=workspace.workspace_id,
-            user_id=creator_user_id,
-            role=WorkspaceRole.OWNER,
-            added_at=workspace.created_at,
-        )
-        # One transaction for all three rows (#1121). The Root Project is
+        memberships = creation_memberships(workspace, creator_user_id, initial_memberships)
+        # One transaction for identity, the entire roster and Root (#37/#1121).
+        # No member is replayed after commit, when another client can revoke.
+        # The Root Project is
         # written *last* and read back on the same connection, so a failure
         # anywhere rolls the Workspace and membership back with it; there is
         # nothing to compensate.
@@ -167,7 +167,8 @@ class PgWorkspaceStore:
             )
             if tombstoned is not None:
                 raise WorkspaceDeleted(workspace.workspace_id)
-            await self._insert_membership(conn, owner)
+            for member in memberships:
+                await self._insert_membership(conn, member)
             await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 

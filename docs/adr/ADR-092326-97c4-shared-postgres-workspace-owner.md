@@ -133,13 +133,15 @@ run everywhere.
   operational recovery owner; they are not silently marked complete. An import
   interrupted before `create` is also held because absence does not prove that
   it was never created. The ephemeral development recovery path still resumes.
-  The initial roster copy still holds only a process-local lock, so a concurrent
-  revocation through maistro-server during that first copy remains an open
-  transaction-boundary requirement under #37/#1419.
-- The journal that makes the import idempotent lives in Hive's local state. If
-  that state is lost while the mirror rows survive, the next start imports the
-  surviving rows again. That could bring back a Workspace deleted from the
-  shared database after the first import.
+  Fresh imports now commit their entire initial roster with canonical identity
+  and Root in `WorkspaceStore.create`; no post-commit roster upsert can reverse
+  a concurrent revocation. The deterministic separate-client regression is
+  `test_first_import_cannot_replay_a_revocation_after_canonical_create` (#37).
+- The journal that makes the import idempotent lives in Hive's local state.
+  If it is lost while mirror rows survive, the adapter may attempt import
+  again. Canonical deletion tombstones now refuse recreation and quarantine
+  that source; an existing canonical Workspace never receives a stale roster.
+  The journal remains migration evidence, not authorization.
 - If the canonical database is replaced, mirror rows already marked imported
   are not re-imported. The shared database is the authority, and restoring it
   is an operator task.
@@ -155,8 +157,10 @@ run everywhere.
   `admission_source` is `hive_legacy_dag`.
 - The PostgreSQL legs of the tests run only where `MAISTRO_TEST_PG_DSN` points
   at a migrated database. Their SQLite twins run everywhere.
-- These remain open under #37 and are out of scope here: the Turing backend's
-  private per-process `InMemoryWorkspaceStore`; maistro-server's
-  `WorkspaceRoutingAdmitter` minting Root Projects for Workspace ids that have
-  no `canonical_workspaces` row; and the missing
-  `canonical_projects -> canonical_workspaces` foreign key.
+- The Turing backend's private per-process `InMemoryWorkspaceStore` remains
+  open under #37; these Hive/store tests do not prove its convergence.
+  The preserved #37 authority-fence implementation checks canonical existence
+  when resolving Root Projects and adds the PostgreSQL
+  `canonical_projects -> canonical_workspaces` foreign key in migration 069.
+  This does not by itself prove the full delete/revoke/Run-admission race or
+  the joint #1419 representation-purpose audit.

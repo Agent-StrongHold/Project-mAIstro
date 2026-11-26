@@ -171,6 +171,12 @@ async def test_interrupted_membership_import_resumes_instead_of_dropping_members
         ]
     )
 
+    # A pre-atomic-create ephemeral import may already have committed identity
+    # without its roster. Preserve that dev-only recovery path explicitly;
+    # fresh imports now commit the roster with identity and cannot hit this seam.
+    await canonical.create(creator_user_id="alice", name="Legacy", workspace_id="legacy-ws")
+    workspace_authority.quarantine_store()  # Bind the adapter's persisted journal.
+    workspace_authority._write_journal("legacy-ws", status="importing", mode="fallback_recovery")
     with pytest.raises(RuntimeError, match="transient membership write failure"):
         await workspace_authority.visible_view("alice", "legacy-ws")
 
