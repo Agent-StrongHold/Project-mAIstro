@@ -165,16 +165,19 @@ async def test_trigger_charges_the_ledger_and_exhaustion_refuses(
 
     first = await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
     assert first["run_id"] == "run-a"
-    # The cycle's nodes charge the ledger at execution time, keyed by Run id
-    # — simulate the fetch node's context read that production would do.
-    await discovery.cycle_context(ws, ws, "admin", cycle_key="run-a")
+    # The cycle's nodes charge the ledger at execution time, keyed by Run id,
+    # through the provider object the node resolver actually wires
+    # (adapters.maistro_core: container.discovery_context) — the Protocol
+    # shape the fetch/scout/curate nodes call with ctx.run_id.
+    provider = discovery.discovery_context_provider()
+    await provider.context_for(ws, ws, "admin", cycle_key="run-a")
     ledger = discovery.today_ledger(ws)
     assert ledger["fetches"] == 1  # one cycle's worth of the declared source
     assert len(ledger["cycles"]) == 1
 
     fake_runner.records["next"] = _fake_record("run-b", [])
     second = await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
-    await discovery.cycle_context(ws, ws, "admin", cycle_key=second["run_id"])
+    await provider.context_for(ws, ws, "admin", cycle_key=second["run_id"])
 
     with pytest.raises(discovery.DiscoveryCycleRefused, match="discovery_cycle_budget_exhausted"):
         await discovery.run_discovery_cycle(ws, ws, "admin", actor_id="admin")
@@ -192,14 +195,112 @@ async def test_fetch_budget_refuses_before_any_run(fake_runner: Any) -> None:
 async def test_ledger_charges_are_idempotent_per_cycle_key() -> None:
     ws = "ws-ledger"
     _enable(ws)
-    first = await discovery.cycle_context(ws, ws, "admin", cycle_key="run-1")
+    provider = discovery.discovery_context_provider()
+    first = await provider.context_for(ws, ws, "admin", cycle_key="run-1")
     assert first.budget_refusal == ""
-    # The three nodes of one cycle all read with the same run id.
-    again = await discovery.cycle_context(ws, ws, "admin", cycle_key="run-1")
+    # The nodes of one cycle all read with the same run id — the Protocol
+    # shape the pipeline's cycle-key pin proves the nodes really use.
+    again = await provider.context_for(ws, ws, "admin", cycle_key="run-1")
     assert again.budget_refusal == ""
     ledger = discovery.today_ledger(ws)
     assert ledger["fetches"] == 1  # charged once, not three times
     assert len(ledger["cycles"]) == 1
+
+
+async def test_an_unkeyed_read_is_look_only_and_never_charges() -> None:
+    """No Run identity, no charge: an unkeyed read cannot be idempotent."""
+    ws = "ws-unkeyed"
+    _enable(ws)
+    provider = discovery.discovery_context_provider()
+    for _ in range(3):
+        context = await provider.context_for(ws, ws, "admin")
+        assert context.budget_refusal == ""
+        assert context.watch_topics == ("camera",)
+    ledger = discovery.today_ledger(ws)
+    assert ledger["cycles"] == []
+    assert ledger["fetches"] == 0
+    assert ledger["curated"] == 0
+
+
+async def test_an_admitted_cycle_is_not_re_refused_mid_run_by_its_own_charge() -> None:
+    """Exhaustion stops *new* cycles; it must not close under one in flight.
+
+    The fetch node's read charges this Run's fetches; the scout and curator
+    then read the same ledger. Re-running the gate on those reads would see
+    the charged spend as fresh spend and refuse a Run that was admitted and
+    billed — the partially-charged work exhaustion must never create.
+    """
+    ws = "ws-midrun"
+    _enable(ws, daily_fetch_budget=1, sources_count=1)
+    provider = discovery.discovery_context_provider()
+
+    fetched = await provider.context_for(ws, ws, "admin", cycle_key="run-x")
+    assert fetched.budget_refusal == ""
+    assert discovery.today_ledger(ws)["fetches"] == 1  # the cycle's own charge
+
+    # A fresh cycle is now refused: the day's fetch budget is spent.
+    fresh = await provider.context_for(ws, ws, "admin", cycle_key="run-y")
+    assert fresh.budget_refusal == "discovery_fetch_budget_exhausted"
+    # ...but the admitted Run's later reads still carry full context.
+    scout_read = await provider.context_for(ws, ws, "admin", cycle_key="run-x")
+    assert scout_read.budget_refusal == ""
+    assert scout_read.watch_topics == ("camera",)
+    assert scout_read.seen_fingerprints == frozenset()
+    assert len(discovery.today_ledger(ws)["cycles"]) == 1
+
+
+async def test_the_real_scout_node_charges_once_through_the_wired_provider() -> None:
+    """The cross-package seam, executed: node → Protocol → Hive ledger.
+
+    The pipeline suite pins that nodes pass ``ctx.run_id``; this test pins
+    the Hive half with the real node class and the provider the node
+    resolver wires: one Run's execution charges once, a retried execution of
+    the same Run charges nothing, and the scout's output honors the Hive
+    seen ledger.
+    """
+    from maistro.graph.nodes import NodeContext
+    from maistro.graph.nodes.discovery_scout import DiscoveryScoutNode
+
+    ws = "ws-node-charge"
+    _enable(ws)
+    entry = {
+        "id": "e1",
+        "url": "https://x.example.com/1",
+        "title": "Camera tripod stand",
+        "summary": "",
+        "category": "camera-deals",
+        "source_url": "https://feeds.example.com/rss",
+        "published_at": "",
+    }
+    node = DiscoveryScoutNode(discovery_context=discovery.discovery_context_provider())
+    ctx = NodeContext(
+        run_id="run-node-1",
+        dag_id=discovery.DISCOVERY_DAG_ID,
+        node_id="discovery_scout",
+        workspace_id=ws,
+        user_id="admin",
+    )
+
+    first = await node.run({"entries": [entry], "min_score": 0.1}, ctx)
+    assert first.success
+    assert len(first.output.candidates) == 1
+    ledger = discovery.today_ledger(ws)
+    assert ledger["cycles"] == ["run-node-1"]
+    assert ledger["fetches"] == 1
+    assert ledger["curated"] == 1
+
+    # The same Run executing again (a replay/retry) keeps its charge.
+    retry = await node.run({"entries": [entry], "min_score": 0.1}, ctx)
+    assert retry.success
+    assert discovery.today_ledger(ws)["cycles"] == ["run-node-1"]
+    assert discovery.today_ledger(ws)["fetches"] == 1
+
+    # A different Run is a new cycle: it charges again.
+    other = NodeContext(**{**ctx.model_dump(), "run_id": "run-node-2"})
+    second = await node.run({"entries": [entry], "min_score": 0.1}, other)
+    assert second.success
+    assert sorted(discovery.today_ledger(ws)["cycles"]) == ["run-node-1", "run-node-2"]
+    assert discovery.today_ledger(ws)["fetches"] == 2
 
 
 async def test_a_new_day_resets_the_budget() -> None:

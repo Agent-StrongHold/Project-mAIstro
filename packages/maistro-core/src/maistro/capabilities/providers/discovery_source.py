@@ -37,6 +37,7 @@ from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.invocation import EffectNotApplied
 from maistro.capabilities.types import Unavailable
 from maistro.http import shared_client
+from maistro.security.ssrf import SSRFBlockedError
 
 DISCOVERY_SOURCE_CAPABILITY = "discovery.source"
 
@@ -159,6 +160,17 @@ async def execute_discovery_source(
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"source unreachable, no effect occurred: {exc}") from exc
+    except SSRFBlockedError as exc:
+        # Redirects are followed (a feed that moved to https is still the
+        # declared source), so a hostile hop is stopped by the outbound
+        # policy at the transport — the shared client re-validates every
+        # redirect hop, exactly like the browser tool's per-hop guard. A
+        # refused hop means nothing was fetched into entries: read-only
+        # GETs, no external effect, so the honest classification is the
+        # same one an unreachable source gets, not an UNKNOWN failure.
+        raise EffectNotApplied(
+            f"source fetch refused by the outbound policy, no effect occurred: {exc}"
+        ) from exc
     if response.status_code >= 400:
         raise DiscoverySourceHttpError(
             f"discovery_source_http_error status={response.status_code}", response.status_code

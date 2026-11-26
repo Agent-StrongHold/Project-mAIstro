@@ -243,7 +243,10 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
 
     async def _execute(self, inputs: DiscoveryCurateIn, ctx: NodeContext) -> DiscoveryCurateOut:
         cycle = await self._cycle.context_for(
-            str(ctx.workspace_id or ""), str(ctx.project_id or ""), str(ctx.user_id or "")
+            str(ctx.workspace_id or ""),
+            str(ctx.project_id or ""),
+            str(ctx.user_id or ""),
+            cycle_key=ctx.run_id,
         )
         refused = _refusal_out(cycle)
         if refused is not None:
@@ -315,7 +318,10 @@ class DiscoveryCurateNode(BaseNode[DiscoveryCurateIn, DiscoveryCurateOut]):
         binding_id = inputs.binding_id.strip()
         if not binding_id:
             cycle = await self._cycle.context_for(
-                str(ctx.workspace_id or ""), str(ctx.project_id or ""), str(ctx.user_id or "")
+                str(ctx.workspace_id or ""),
+                str(ctx.project_id or ""),
+                str(ctx.user_id or ""),
+                cycle_key=ctx.run_id,
             )
             binding_id = cycle.curator_binding_id
         if not binding_id:

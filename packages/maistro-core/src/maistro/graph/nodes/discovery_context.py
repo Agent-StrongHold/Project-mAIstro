@@ -62,10 +62,18 @@ class DiscoveryCycleContext:
 
 
 class DiscoveryContextProvider(Protocol):
-    """The host-implemented read for one Workspace's discovery cycle state."""
+    """The host-implemented read for one Workspace's discovery cycle state.
+
+    ``cycle_key`` is the calling Run's id. Every node of one cycle reads with
+    the same key, so a host that charges a budget per cycle can do so
+    idempotently: the first read of a Run charges it, the rest recognize it.
+    A node always passes ``ctx.run_id`` — a host receiving an empty key
+    cannot tell which cycle a read belongs to, so it must treat it as a
+    read-only look, never a fresh charge.
+    """
 
     async def context_for(
-        self, workspace_id: str, project_id: str, user_id: str
+        self, workspace_id: str, project_id: str, user_id: str, cycle_key: str = ""
     ) -> DiscoveryCycleContext: ...
 
 
@@ -73,7 +81,7 @@ class _BareProvider:
     """Context-free default: no topics, no ledger, no Binding ids, no budget."""
 
     async def context_for(
-        self, workspace_id: str, project_id: str, user_id: str
+        self, workspace_id: str, project_id: str, user_id: str, cycle_key: str = ""
     ) -> DiscoveryCycleContext:
         return DiscoveryCycleContext()
 

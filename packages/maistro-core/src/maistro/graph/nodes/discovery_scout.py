@@ -172,7 +172,10 @@ class DiscoveryScoutNode(BaseNode[DiscoveryScoutIn, DiscoveryScoutOut]):
 
     async def _execute(self, inputs: DiscoveryScoutIn, ctx: NodeContext) -> DiscoveryScoutOut:
         cycle = await self._cycle.context_for(
-            str(ctx.workspace_id or ""), str(ctx.project_id or ""), str(ctx.user_id or "")
+            str(ctx.workspace_id or ""),
+            str(ctx.project_id or ""),
+            str(ctx.user_id or ""),
+            cycle_key=ctx.run_id,
         )
         topics = list(dict.fromkeys([*inputs.watch_topics, *cycle.watch_topics]))
         downweights = dict(cycle.category_downweights)

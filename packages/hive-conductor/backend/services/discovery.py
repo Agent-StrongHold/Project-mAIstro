@@ -242,14 +242,16 @@ def _charge(
 ) -> None:
     """Charge one cycle to the ledger, idempotent by Run id.
 
-    Every node of one cycle consults the context with the same Run id, so the
-    charge lands once even though three nodes read it; a replayed or retried
-    Run keeps its charge rather than minting a second one.
+    Every node of one cycle consults the context with the same Run id (the
+    ``discovery_context`` Protocol's ``cycle_key``), so the charge lands once
+    even though three nodes read it; a replayed or retried Run keeps its
+    charge rather than minting a second one. An empty key charges nothing:
+    an unkeyed read has no identity to be idempotent against, and billing it
+    would mint phantom cycles — the reachable path always carries the Run id.
     """
-    if cycle_key and cycle_key in ledger["cycles"]:
+    if not cycle_key or cycle_key in ledger["cycles"]:
         return
-    if cycle_key:
-        ledger["cycles"].append(cycle_key)
+    ledger["cycles"].append(cycle_key)
     ledger["fetches"] = int(ledger.get("fetches", 0)) + int(config.get("sources_count", 0))
     ledger["curated"] = int(ledger.get("curated", 0)) + 1
     ledger["updated_at"] = datetime.now(UTC).isoformat()
@@ -395,21 +397,29 @@ async def _goal_notes(user_id: str, workspace_id: str) -> list[str]:
 
 
 async def cycle_context(
-    workspace_id: str, project_id: str, user_id: str, *, cycle_key: str
+    workspace_id: str, project_id: str, user_id: str, *, cycle_key: str = ""
 ) -> DiscoveryCycleContext:
     """One cycle's full context, read fresh at node execution time.
 
-    Charges the budget for this Run (idempotently) and refuses cleanly when
-    the feature is off or the day's budget is spent — the refusal travels to
-    the fetch node as its output, so a scheduled fire ends as an honest,
-    visible no-op rather than new spend.
+    The first keyed read of a Run charges the budget for that Run (idempotently)
+    and refuses cleanly when the feature is off or the day's budget is spent —
+    the refusal travels to the fetch node as its output, so a scheduled fire
+    ends as an honest, visible no-op rather than new spend. Reads for a cycle
+    already charged skip the gate: the budget arithmetic counts a charged
+    cycle's fetches as spent, so re-checking it per node read would close the
+    gate under a Run that was admitted and billed — mid-flight, exactly the
+    "partially-charged work" exhaustion must not create. Unkeyed reads are
+    look-only: no gate refusal is *acted* on beyond returning it, and nothing
+    is charged (there is no Run identity to charge against).
     """
     config = get_config(workspace_id)
     ledger = today_ledger(workspace_id)
-    refusal = discovery_refusal(config, ledger)
-    if refusal is not None:
-        return DiscoveryCycleContext(budget_refusal=refusal)
-    _charge(workspace_id, config, ledger, cycle_key=cycle_key)
+    already_charged = bool(cycle_key) and cycle_key in ledger["cycles"]
+    if not already_charged:
+        refusal = discovery_refusal(config, ledger)
+        if refusal is not None:
+            return DiscoveryCycleContext(budget_refusal=refusal)
+        _charge(workspace_id, config, ledger, cycle_key=cycle_key)
 
     notes = [
         *await _persona_notes(workspace_id),

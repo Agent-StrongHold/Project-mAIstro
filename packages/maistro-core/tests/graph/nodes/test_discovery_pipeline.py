@@ -784,3 +784,130 @@ def test_fingerprint_is_url_identity_with_content_fallback() -> None:
     assert fingerprint_for(entry_id="", url="", title="t") != fingerprint_for(
         entry_id="", url="", title="other"
     )
+
+
+# ---------------------------------------------------------------------------
+# Cycle key: the reachable path reads the context with the calling Run id
+# ---------------------------------------------------------------------------
+
+
+async def test_every_node_read_carries_the_run_id_as_its_cycle_key() -> None:
+    """The charge is the host's to make, but only if it can tell Runs apart.
+
+    This is the link that makes per-Run budget charging reachable at all: a
+    host cannot charge idempotently unless each node read names its Run. If a
+    node drops the key, this fails while every behavior test stays green —
+    exactly the failure mode the Hive ledger shipped with before this pin.
+    """
+    run_id = _ctx("n2").run_id
+    assert run_id  # the executor always names the Run; the pin needs it
+
+    scout_cycle = _Cycle(DiscoveryCycleContext(watch_topics=("tripod",)))
+    scout = DiscoveryScoutNode(discovery_context=scout_cycle)
+    scout_result = await scout.run(
+        {"entries": [_entry("Carbon tripod stand", "https://x.example.com/1")], "min_score": 0.1},
+        _ctx("n2"),
+    )
+    assert scout_result.success
+    assert scout_cycle.asked == [run_id]
+
+    curate_cycle = _Cycle(DiscoveryCycleContext())
+    curate = DiscoveryCurateNode(discovery_context=curate_cycle)
+    curate_result = await curate.run(
+        {
+            "candidates": [],
+            "strategy": "lexical",
+        },
+        _ctx("n3"),
+    )
+    assert curate_result.success
+    assert curate_cycle.asked == [run_id]
+
+    fetch_cycle = _Cycle(DiscoveryCycleContext(budget_refusal="discovery_disabled"))
+    fetch = DiscoverySourceFetchNode(discovery_context=fetch_cycle)
+    fetch_result = await fetch.run(
+        {"binding_id": "dsrc-1", "limit": 5},
+        _ctx("n1"),
+    )
+    # Even the refusal read names its Run — the host decided *before* any
+    # node ran whether this cycle may spend, so it must know which cycle
+    # is asking.
+    assert fetch_result.output.refusal == "discovery_disabled"
+    assert fetch_cycle.asked == [run_id]
+
+
+# ---------------------------------------------------------------------------
+# Redirect hops: the provider rides the guarded shared client (#155)
+# ---------------------------------------------------------------------------
+
+
+class _RedirectingSource(httpx.AsyncBaseTransport):
+    """The declared source 302s to a metadata address; anything else answers.
+
+    Deliberately not `httpx.MockTransport`: `guarded()` returns that one
+    unwrapped, so a test built on it never reaches the policy at all — the
+    exact blind spot this test exists to close for the discovery provider.
+    """
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(str(request.url))
+        if request.url.host == "feeds.example.com":
+            return httpx.Response(
+                302,
+                headers={"Location": "http://169.254.169.254/latest/meta-data/"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/rss+xml"},
+            text='<?xml version="1.0"?><rss version="2.0"/>',
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_provider_redirect_into_a_private_target_is_refused_at_that_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared feed cannot launder a fetch to an internal target.
+
+    The provider follows redirects (a feed that moved hosts is still the
+    declared source), so the control that matters is the outbound policy on
+    every hop — the shared client's transport is guarded, and httpx re-enters
+    it per hop. The provider must surface that refusal as the honest
+    no-effect contract, not as an UNKNOWN outcome on the Invocation ledger.
+    """
+    from maistro.capabilities.invocation import EffectNotApplied
+    from maistro.security.outbound import configure_outbound_policy, reset_outbound_policy
+
+    effects = await _effects_with_source()
+    provider = await _resolve_provider(effects)
+    inner = _RedirectingSource()
+    real_client = httpx.AsyncClient
+
+    def _guarded_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        from maistro.security.outbound import guarded
+
+        kwargs["transport"] = guarded(inner)  # type: ignore[arg-type]
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", _guarded_client)
+    # Hop 0 is the declared origin, allowed by policy so this test needs no
+    # DNS; the private hop is validated and refused by address.
+    configure_outbound_policy("https://feeds.example.com")
+    try:
+        with pytest.raises(EffectNotApplied, match="outbound policy"):
+            await execute_discovery_source(
+                provider,
+                DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5),
+                timeout_s=5.0,
+            )
+    finally:
+        reset_outbound_policy()
+    # Hop 0 was made; the private hop never reached any transport.
+    assert inner.seen == [_SOURCE_URL]

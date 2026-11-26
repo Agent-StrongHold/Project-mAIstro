@@ -94,3 +94,13 @@ fields directly):
   Counters are now accumulated locally and set through constructors, so no
   attribute-write sites remain. The genuinely dead
   `DiscoveryCycleContext.binding_id_for` was removed rather than banked.
+
+## Post-verification repair (reachable path)
+
+Post-merge verification found the per-Run charging above was not reachable:
+the Protocol carried no cycle key, so no production caller could name its
+Run and the ledger billed per context read. The repair — nodes pass
+`ctx.run_id`, the host charges keyed reads idempotently, tests exercise the
+wired provider shape, and the discovery provider's guarded-redirect refusal
+is pinned — is recorded with its own deltas in
+[`1051-reachable-path-charging-repair.md`](1051-reachable-path-charging-repair.md).

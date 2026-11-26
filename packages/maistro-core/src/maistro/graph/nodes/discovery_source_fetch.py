@@ -212,7 +212,10 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
         self, inputs: DiscoverySourceFetchIn, ctx: NodeContext
     ) -> DiscoverySourceFetchOut:
         cycle = await self._cycle.context_for(
-            str(ctx.workspace_id or ""), str(ctx.project_id or ""), str(ctx.user_id or "")
+            str(ctx.workspace_id or ""),
+            str(ctx.project_id or ""),
+            str(ctx.user_id or ""),
+            cycle_key=ctx.run_id,
         )
         if cycle.budget_refusal:
             # Budget exhausted is a clean stop, not a failure to hide: the
