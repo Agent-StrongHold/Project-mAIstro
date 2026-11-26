@@ -52,6 +52,413 @@ or placeholder-only section.
   catalog through `provider_adapter_catalog`; configuring an adapter
   authorizes nothing by itself). See ADR-105.
 
+- **Atomic backlog claim/lease semantics for authorized Workspace actors
+  (#100).** The Workspace BacklogItem service (#98) gains the claim service
+  its reserved fields were held for: `claim`/`renew_claim`/`release_claim` on
+  both stores (one atomic claim per item — the loser gets the holder's
+  receipt), policy gates inside the same critical section (claimable status
+  pool, satisfied dependencies, #103 autonomy modes with human-only and
+  unknown tokens refusing Agent claims, declared scope checked against
+  allowed/protected scope), a monotone per-item fence token required to edit
+  an actively claimed item (a stale holder is refused even at the right
+  version), and deterministic re-eligibility (lease expiry, explicit release,
+  status moves; retiring a claimed item releases the claim in the same
+  write). HTTP: `POST .../backlog/{id}/claim`, `/claim/renew`,
+  `/claim/release` (contributor-gated) and `GET .../backlog/{id}/claim`; the
+  item payload itself carries claimant, lease and fence. A claim is work
+  coordination, never Goal ownership: it never touches `goal_ref` or the
+  canonical Goal -> Graph -> Run spine.
+
+- **Read-only, acceptance-based delivery planning for maintainers (#1629).**
+  `tools/plan_delivery.py` produces a bounded, advisory-only plan from a
+  reviewed GitHub snapshot. It refuses work selection on stale/incomplete
+  ownership coverage, does not treat merged PRs as acceptance evidence, and
+  protects reserved task scopes. A dated example plan, sample seed, operator
+  skill and 56 focused adversarial cases document the non-dispatch boundary.
+  This does not configure or operate the external orchestrator.
+
+### Changed
+
+- **Collaboration stays CONNECT / parked until A2UI (#2323).** Disposition
+  group `collaboration` remains CONNECT with #2323 naming the A2UI root
+  (ADR-070426-3a1f). No Workspaces nav or docs claim; pin test locks the park.
+
+- **Tool approval decision core on irreversible governed calls (#2316).**
+  `GovernedToolExecutor` consults SPEC-253 / ADR-051 `needs_escalation` before
+  dispatching `IRREVERSIBLE` tools: missing `ApprovalGate` fails closed
+  (`ToolApprovalRequired`); a live gate must approve; a declared plan state
+  covering the call skips the gate when no thresholds trip. Reachability group
+  `tools-approval-and-reversibility` pruned.
+
+- **Governance conformance stays CONNECT / post-v1 park (#2322).** Disposition
+  group `governance-conformance` keeps CONNECT with #2322 as the named owner
+  until Sentinel + ADR-068/#60; ROADMAP deferred line names the park. No early
+  wire for the v1.0 tag.
+
+- **Integration bridges RETIREd for Workspaces v1.0 (#2320).** Disposition
+  group `integrations-bridges` flips CONNECT → RETIRE with `replaced_by`
+  naming Capabilities MCP (`/v1/mcp`), NotificationClient / ntfy_action,
+  maistro-turing, and the connector SDK (ADR-100526-be49). Docs/Setup stop
+  claiming HA/CoinSwarm as shipped; FEATURE-PARITY and CONVERGENCE-MATRIX
+  match. Empty `maistro.tools.media` deleted and dropped from the
+  reachability baseline (`tools-unwired` group removed). Physical bridge
+  deletion still waits on #35.
+
+- **Hive never-registered / unfinished climb services RETIREd (#2309).**
+  Disposition groups `hive-unwired-services`, `hive-pg-persistence`, and
+  `hive-dag-and-artifact-optimisation` flip CONNECT → RETIRE with `replaced_by`
+  naming live optimizer/Attention, `pg_store`/persistence, operator hill-climb
+  scripts, and #491/#492 identity. Projects onboarding already mounted;
+  Evolution stays hidden (#2275). Physical deletion waits on #35.
+
+- **Unwired skills/repertoire packages RETIREd (#2319).** Disposition group
+  `supply-chain-unwired` flips CONNECT → RETIRE with `replaced_by` naming the
+  live #59 import path and learnings repertoire. FEATURE-PARITY / cutover docs
+  stop claiming a Skills.tsx catalog/forge UI after Capabilities (#2273).
+
+- **CLI container runtimes stay CONNECT / unwired (#2324).** Pins
+  `maistro.cli._container*` as a parked operator-lifecycle leaf under
+  #2280 Decision A (no Typer `container` subcommand; no Workspace UI CRUD).
+  Reachability disposition rationale names the future ADR-093 / operator
+  root. Collaboration CONNECT park (#2323) rationale updated to name A2UI.
+
+### Removed
+
+- **MessageBoard and OptimizationInbox SPA pages (#1049 MERGE).** Deleted
+  `MessageBoard.tsx` and `OptimizationInbox.tsx`; AppShell no longer links
+  Messages or Optimizer. `/messages`, `/optimizer`, and `/optimization-inbox`
+  `Navigate` to `/attention` so bookmarks cannot revive the modules. Backend
+  `/v1/messages` and `/v1/optimizer` remain the canonical owners projected
+  into Attention.
+
+### Changed
+
+- **Agent model calls consume AdmittedModelCalls with delegation-scoped effects (#1084 / port of #1981).**
+  `GovernedLLMClient` wraps configured `AdmittedModelCalls` instead of synthesizing
+  an `agent-runtime` Binding; Hive boot and materialization share that helper.
+  Effect keys incorporate Agent name + delegation depth so parent/child/self
+  chains do not collide inside one Attempt. Incremental streams use the SPEC-285
+  observer path with workspace narrowing for materialized Agents.
+
+- **Attention projects messages + optimizer proposals (#1049).** Unread agent
+  messages and pending Workspace-scoped optimizer proposals join the
+  read-time Attention projection (critical→severity/blocking, warning→queued,
+  info + optimizer→proactive/Waiting). Summary adds interruption counts and
+  Waiting quality metadata. Priority ladder remains severity >
+  time_sensitive > blocking > queued > follow_up > proactive. HITL
+  answer/defer/dismiss behavior is unchanged.
+
+### Fixed
+
+- **Admitted stream replay preserves tool_calls and finish_reason (#1084 / #2418).**
+  Effect-deduplicated streams now replay persisted `_stream_chunks` (with the
+  `_maistro_replayed` marker) instead of collapsing to a text-only
+  `finish_reason=stop` chunk, so tool-only responses stay tool calls on resume.
+
+- **Hive adapter keeps a direct `container.model_chat_client` read (#1084 / #2418).**
+  The embedded bridge again hands the Container's model client into
+  `create_agents` (with `build_model_chat_client` as the container-shaped
+  fallback) so the wiring-reads ratchet stays honest, while RuntimeSource
+  still holds the shared `AdmittedModelCalls`-backed client for materialization.
+
+- **Materialized Agent authority suite restored (#1084 / #2418).**
+  `test_materialized_model_authority.py` proves definition-Workspace restriction,
+  Binding refusal, live Attempt lease, sampling/API-base fidelity, distinct
+  Agent effect keys, and revocation-before-replay for later-materialized Agents.
+
+- **Hive SQLite admitted-execution join proof restored (#1084 / #2418).**
+  `test_configured_hive_agents_use_admitted_execution_and_usage` (boot and
+  materialized) joins a real bridge Agent call to actor/Workspace/Project/Run/
+  Attempt/Binding/usage over temp SQLite, then proves Binding revocation leaves
+  zero new effects.
+
+- **Conductor Run projection purity: nonterminal never invents `finished_at`
+  (#1036).** `DagRunStore.finish_run` demotes CREATED/QUEUED/RUNNING/WAITING/
+  PAUSED to `record_status` (exact status, `finished_at` null) so a bypass of
+  `record_outcome` cannot irreversibly finish a Run the spine still holds
+  open. Chat cancel mirrors CANCELLED through `record_outcome` after the
+  spine fence; `POST /v1/dag-runs/{id}/cancel` still writes no projection
+  terminal state — #1169/`RunExecutionService` remains the only control
+  authority and inspection overlays the result.
+
+- **Attention CI repair (#2363).** The `test` job failed on a new
+  `react-hooks/refs` error: `Attention.tsx` wrote `activeWorkspaceIdRef.current`
+  during render; the mirror now happens in an effect declared before the load
+  effect (same observable ordering — `load` only ever runs from effects and
+  handlers). Four projection unit tests cover the guards diff-coverage found
+  below the 90% floor (unwired message provider; non-dict/id-less message
+  rows; optimizer rows re-checked for decision/Workspace/id/shape after the
+  store query; follow_up counted as valuable Waiting), lifting
+  `services/attention.py` to 100% of changed lines. Pruned the superseded
+  `design_coverage@39.641` authorization: three independently landed notes
+  (auto-1084, auto-62, auto-80) each hold the floor above the grant on their
+  own, and the acceptance-state gate refuses to pass while the overtaken
+  correction still sits in the file.
+- **CodeQL workflow scope test expects `develop` triggers (#2359; follow-up to #2357).**
+  `tests/test_codeql_scan_scope.py` still asserted `main`-only push/PR after
+  CodeQL Advanced was widened to `develop`; align the pin so CI catches
+  regressions of the Security-tab refresh path. DevSkim also gains
+  `workflow_dispatch` so a cancelled tip SARIF upload can be re-run without
+  another product commit. (#2359)
+
+- **Container gate: clear the fresh Trivy/Grype advisories that re-flagged the
+  four shipped images (#2303 CI repair).** The merge-queue evaluation at
+  d754936 failed exactly one required check — "Container scan + SBOM + cosign"
+  (job 133166051159) — and the `npm audit` tail in its log was a red herring:
+  step #27, `RUN npm ci` in the hive-conductor frontend stage, completed
+  successfully (identical output, exit 0, reproduced against the pinned
+  node:22-alpine digest). The real failure was the maistro-rsi-runner Trivy
+  scan: temporalio 1.34.0's bundled `bridge/Cargo.lock` carries the `zip` crate
+  8.6.0 with one CRITICAL and three HIGH advisories (CVE-2026-115905/-907/-908/-909,
+  fixed in zip 9.0.0–9.0.5) that the Trivy DB gained after develop's own
+  containers run passed. And because that scan failed first, the job never
+  reached the Grype cross-check, whose fresh DB flags CVE-2026-115557 (CRITICAL)
+  in the CPython 3.12.15/3.13.16 binaries the digest-pinned bases ship, plus
+  1 CRITICAL + 3 HIGH in the node 24.21.0 binary bundled by the playwright/
+  patchright 1.64 wheels (fixed in node 24.22.1). All fixed upstream, so the
+  repair moves dependencies rather than adding ignores:
+
+  - uv.lock: temporalio 1.34.0 -> 1.36.1 (bridge Cargo.lock now ships zip 9.5.1;
+    nexus-rpc moves 1.4.0 -> 1.5.0 with it), playwright 1.64.0 -> 1.65.2 and
+    patchright 1.64.1 -> 1.64.4 (bundled driver node now 26.13.1 / 24.22.1).
+    temporalio reaches only the rsi-runner image (root meta-package dep);
+    playwright/patchright only the research image (browser extra) — the
+    engine/hive/research Trivy scans and the pip-audit gate are unaffected.
+  - Base pins: python:3.13.16-slim-bookworm -> 3.13.18-slim-bookworm
+    (sha256:a5a7017e…) for the engine and Conductor images and
+    python:3.12-slim -> sha256:5e2bdb1b… (now 3.12.16) for research, rsi-runner,
+    e2e and sbx-tests, recorded in quality/image-pins.json — the same
+    grype-driven refresh mechanism as #363 and #1152. The Conductor identity
+    contract moves with the pin: the in-image assertion, both security.yml
+    identity smokes and tests/test_distribution_contract.py now assert
+    (3, 13, 18), and the canvas smoke's control image follows the same digest
+    (held closed by tests/test_pinned_digest_references.py).
+
+  Proven locally with CI's exact procedures on rebuilt images: Trivy 0.73.0
+  `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile
+  .trivyignore.yaml` exits 0 on all four, Grype v0.116.0 `--fail-on high
+  --only-fixed` exits 0 on all four (rsi-runner's only raw findings left are
+  the documented moto secret fixtures), `check-image-lock-reconciliation.py`
+  passes for rsi-runner (220 distributions) and research (147), the Conductor
+  identity smoke prints `identity=operational python=3.13.18`, and the
+  pip-audit gate still passes (only the triaged ecdsa advisory remains).
+  (#2303)
+
+### Security
+
+- **docker CLI vendored klauspost/compress raised to v1.20.2 for the Grype
+  High (#2059).** The Grype cross-check (`--fail-on high --only-fixed`) in
+  "Container scan + SBOM + cosign" failed on `maistro-engine:pr-2059`
+  (security.yml run 43878205511, job 133336745388): GO-2026-6865 (High,
+  fixed in 1.20.2) in the vendored module set of the source-built
+  `/usr/local/bin/docker`. Both Dockerfiles that build that CLI add
+  `github.com/klauspost/compress@v1.20.2` to the stage's `go get`;
+  `tests/test_docker_cli_vendored_advisory_floors.py` holds the pin closed.
+
+- **Container-gate images move to CPython 3.13.18 / 3.12.16 for the grype
+  CPython-binary CRITICAL (#2059).** The Grype cross-check
+  (`--fail-on high --only-fixed`) failed on `hive-conductor:pr-2059`
+  (security.yml run 43844074725): CVE-2026-115557 (CRITICAL, fixed in
+  3.13.18/3.12.16) in the CPython binary the pinned bases ship. The
+  `python:3.13.18-slim-bookworm` and refreshed `python:3.12-slim`
+  (3.12.16) digests are re-recorded in `quality/image-pins.json` and
+  referenced verbatim by every Dockerfile that builds from them (including
+  the canvas-smoke control image); security.yml's docker-run identity
+  asserts follow to `(3, 13, 18)`. New
+  `tests/test_cpython_base_grype_floor.py` holds the floor and the
+  assert-vs-pin equivalence closed.
+
+- **Chat complete/stream refuse foreign or wrong-Workspace `session_id` before
+  the model (#1822 AC-5).** Naming another principal's (or another Workspace's)
+  session now returns the same 404 as a missing id; provenance-omit-and-admit
+  is gone. Workspace switch clears the prior transcript immediately and Chat
+  Retry re-hydrates after load failures (AC-3/AC-7).
+
+- **Overlay patchright driver Node 24.22.3 in the research image (#2356).**
+  Grype `--only-fixed --fail-on high` failed Container scan on
+  `maistro-engine-research` for seven HIGHs in the wheel-bundled
+  `patchright/driver/node` 24.22.1 (CVE-2026-126051/123865/123866/123874/
+  123863/123872/123864; fixed in 24.22.3/26.13.1). No newer patchright
+  wheel on PyPI; copy the digest-pinned `node:24.22.3-bookworm-slim` binary
+  over the driver and assert `v24.22.3`.
+
+- **Rebuild age + docker CLI on Go 1.27.4 for CVE-2026-97054 (#2375; aligned
+  in #2356).** Trivy HIGH on `usr/bin/age` / `age-keygen` (and the same
+  stdlib in the static docker CLI) when built on `golang:1.27.3-alpine`:
+  MaxBytesReader HTTP/1 hang, fixed in go1.26.11/1.27.4. Digest-pinned
+  builder in `packages/hive-conductor/Dockerfile`, root `Dockerfile`, and
+  `Dockerfile.research`; `quality/image-pins.json` single 1.27.4 row.
+
+- **GHAS scanner plumbing: DevSkim allowlist + absolute-safe denies, CodeQL on
+  develop (no linked issue: open code-scanning backlog).** Tip SARIF still
+  contained `.github/` and `deploy/` findings while those trees were listed in
+  `ignore-globs`: DenyFilters match absolute `$GITHUB_WORKSPACE` paths, so
+  unprefixed patterns never hit. DevSkim now allowlists
+  `**/packages/**,**/scripts/**,**/templates/**,**/extensions/**` via
+  `--include-globs`, denies nested noise with `**/`-prefixed globs only
+  (including `**/deploy/scripts/**` so ops scripts drop without hiding shipped
+  `templates/**/deploy/**`), and CI refuses directory denies that omit the
+  `**/` prefix. CodeQL Advanced now runs on `develop` push/PR (was `main` +
+  weekly cron only), so tip fixes stop rotting behind a stale `774ae42f`
+  analysis. Pip-audit ecdsa triage prose avoids the DS440100 curve false
+  positive without a suppression comment.
+
+- **GHAS CodeQL + DevSkim backlog continuation (no linked issue: open
+  code-scanning alerts on develop).** Route mutation-baseline CI error
+  annotations through the allowlisted `_ci_error_annotation` scrubber
+  (CodeQL `py/clear-text-logging-sensitive-data`). Move DevSkim integrity-pin
+  suppressions onto the same line as each `scripts/vendor_bfcl.py` digest;
+  clear remaining script/product false positives (loopback CLI default,
+  ontology `TODO` enum, placeholder-gate prose, pip-audit curve triage) with
+  same-line dated ignores or rewording. Expand DevSkim `ignore-globs` for
+  immutable `packages/hive-conductor/eval/**` and `quality/**` ledgers so the
+  Security tab stays actionable without editing cage-guarded trees.
+
+### Removed
+
+- **Legacy Agents / MCP / Skills / Topology pages deleted (#2273).** Capabilities
+  is the only Hive Conductor product surface for those concerns. Deep links
+  `/agents`, `/mcp`, `/skills`, and `/topology` redirect to `/capabilities`
+  (replace) and must not revive the deleted page modules.
+
+### Added
+
+- **Workspace landing preference parity — Agent/UI/API + dismiss cooldown
+  (#1050).** Chat `profile_set` maps “hold onto my sessions longer” onto
+  `workspace_restore_aggressiveness=generous` (same durable key as Profile /
+  PATCH), which expands the restore window versus balanced. Learned-landing
+  “Not now” writes a durable profile cooldown
+  (`workspace_landing_suggestion_cooldown`) so ignore does not re-nag every
+  return; accept remains the only path that applies a learned default.
+  Workspace preference mutations from Agent and API leave
+  `profile_preference_set` audit entries on the settings audit trail and stay
+  reversible via the same keys (no scope widening).
+
+- **Extension attribution evidence: identity, version, publisher, and provenance
+  through canonical telemetry (#976).** `maistro.extensions` now ships the
+  version-tagged `ExtensionAttribution` payload — the exact extension name,
+  strict-semver version, publisher, and package/manifest SHA-256 digests behind
+  one effect, plus its install/org/Workspace/catalog linkage — constructible
+  from B1 install records and governed B2 installs, and decodable fail-closed
+  from stored evidence with no registry, store, or installed package consulted
+  (historical evidence stays readable across upgrades and removal). Provider
+  adapter packages may declare the same identity on `ProviderAdapterSpec`
+  (all four fields or none; strict semver and digest shape enforced at
+  registration, with an optional `extension_id` naming the installed package
+  itself when the adapter is provided by an out-of-tree extension):
+  `bootstrap_provider_adapters` snapshots the payload into the wired
+  `model.chat` Binding, governed adapter calls log canonical
+  `extension_*` identity fields, adapter errors name the failing version and
+  publisher, and durable Invocation evidence carries the attribution beside —
+  never instead of — the canonical caller/Workspace/Run/NodeRun/Attempt/
+  Invocation ids. Attribution is provenance only: the canonical correlation
+  namespace rejects extension-defined ids, and the Event envelope's existing
+  provenance redaction applies to the fragment. The shipped out-of-tree
+  gallery adapter package proves the chain end to end: its manifest id,
+  version, publisher and the digests of the manifest and the wheel it
+  publishes travel with one governed call into the terminal audit event.
+
+- **Workspace Approvals projection over the existing capability + HITL APIs
+  (#2278, Parity P-1).** New `/approvals` page lists
+  `/v1/capabilities/approvals` and `/v1/hitl/pending`, and posts
+  approve/deny/answer/cancel through those same doors — identical authority
+  to `maistro approvals` and the HITL routes. No parallel approvals store.
+
+- **Capabilities becomes the primary Hive Conductor surface for slots and
+  providers (#2273, `conductor-407`).** New `/capabilities` page lists
+  `/v1/capabilities` slots with host-owned trust/provenance, re-discover, and
+  enable/disable over the same public APIs. Agents, Topology, Integrations,
+  and Skills leave primary nav; their page modules are deleted (see Removed).
+
+- **Workspace Agent persona swap on one API/UI/Agent path (#2277).**
+  `GET`/`PUT /v1/workspaces/{id}/agent` read and swap the stable Workspace
+  Agent's `persona_template_id` without changing its id or `created_at`.
+  Owners only for writes; the chat tool `set_workspace_agent_persona` calls
+  the same `services.workspace_agent.set_workspace_agent_persona` door. The
+  toolbar "Agent persona" control is distinct from WorkspaceTabs /
+  PersonaWizard template chrome.
+
+- **Workspace `tool_bindings` apply at agent dispatch (#2276).** Sticky
+  presentation bindings now narrow (or zero) tools at `resolve_agent_task` /
+  `pulse_roster` and when building the runtime Agent identity, including
+  prompt-fragment append. UI/API-saved bindings share that path; persona
+  templates are not mutated.
+
+- **Attention defer/dismiss preference evidence (#1049).** `POST`/`DELETE
+  /v1/workspaces/{id}/attention/dismiss` records Workspace-scoped defer/dismiss
+  preferences (JsonStore, same shape as Home adaptive dismissals). GET Attention
+  filters those source ids and reports `dismissed_count`. Defer/Dismiss CTAs on
+  the Attention page write that door; answering still stays on the HITL answer
+  route. Approve/reject pauses submit `{ verdict }` (not a text-only
+  `{ answer }`) so the durable store can resume. Does not settle HITL or Run
+  state outside that door.
+
+- **DAG Run projection writers honor nonterminal mirroring (#1036).** HTTP
+  `_record_run_projection` and live `LiveRunProjection.record_result` now
+  mirror CREATED/QUEUED/RUNNING/WAITING/PAUSED via `record_status` /
+  `record_outcome` (exact status, `finished_at` null) instead of leaving the
+  row at the store default or coercing missing status to `failed`.
+
+- **Bounded learned-landing suggestion (#1050).** Immediate Home→surface hops
+  (published streak band) can show a non-blocking proposal to make that surface
+  the default. Accept PATCHes `workspace_default_landing`; dismiss suppresses
+  further nags for that path. Explicit non-Home default outranks learning.
+
+- **Chat stream abort marks the optimistic turn interrupted (#1822).** Switching
+  Workspace/session mid-stream aborts the request, epoch-gates late
+  delta/brief/done frames, and marks the in-flight assistant bubble interrupted
+  until reopen replaces from GET truth.
+
+- **Recent-return restore consumes restore aggressiveness (#1050 / #1822).**
+  Authenticated `/` now prefers the last Workspace surface (tracked in owned
+  `hive_last_surface`) when `workspace_restore_aggressiveness` still covers the
+  absence (`off` / `brief` 15m / `balanced` 4h+½ session / `generous`
+  24h+full session); otherwise it uses `workspace_default_landing` (Home
+  baseline). Chat `brief` stream frames honor the same stream-epoch gate as
+  content patches so a late interview brief cannot paint onto a switched
+  Workspace/session.
+
+- **Goals waiting-human links to Approvals (#65).** A Goal whose execution
+  disposition is `waiting_human` offers Open in Approvals with the blocked
+  run id — joining the #2278 Approvals surface without a second HITL store.
+
+- **Home Goals section reads Goal inspection (#65).** Workspace Home projections
+  list Goals through `services.goal_inspection` (same door as `/goals`) instead
+  of reporting the Goal service unavailable or reading the retiring missions
+  store.
+
+- **Attention Answer CTA posts to the HITL door (#1049).** The Attention page
+  submits answers through `/v1/hitl/{run}/{node}/answer` — the same authority
+  as CLI — then refreshes the projection. Defer/dismiss persistence remains a
+  later slice.
+
+- **DagRuns Cancel control through the inspection door (#1036).** Non-terminal
+  Runs show Cancel on the detail pane; it posts `POST /v1/dag-runs/{id}/cancel`
+  (canonical `RunExecutionService.cancel_run`) and re-reads the inspection
+  seam — no product-private lifecycle writer.
+
+- **Durable Workspace landing + restore preferences (#1050, partial).** Authenticated
+  `/` reads `preferences.workspace_default_landing` from the canonical profile
+  store and navigates there (Home / Chat / Goals / Backlog / Work items). Profile
+  also exposes `workspace_restore_aggressiveness`
+  (`off`/`brief`/`balanced`/`generous`) for how eagerly a prior surface is
+  restored after absence. Both fields PATCH/profile_set the same profile
+  document; out-of-allow-list writes are refused (400). Missing or invalid
+  reads still mean Workspace Home / balanced.
+
+- **Workspace Attention page and nav (#1049, partial).** `/attention` lists the
+  existing Workspace Attention projection (HITL pauses + failed Runs) with the
+  backend summary and Run inspection links. Answering still uses the HITL API
+  named by `answer_href`; defer/dismiss and Messages/Optimizer MERGE remain
+  follow-ons.
+
+- **Workspace Home is the default Mission-Control landing (#1048, partial).**
+  Authenticated `/` now opens `/home`, which reads the existing Home layout and
+  projections APIs, supports pin/unpin against that authority, and shows honest
+  empty/unavailable section states (including Goals until #65). Legacy
+  Dashboard remains reachable until retirement burn-down. Chat projections use
+  the durable Workspace-scoped session index (#1822).
+
 - **Workspace chat sessions are durable and Workspace-scoped (#1822).**
   Hive Conductor keeps conversation metadata in a service-owned
   `conversation_sessions` index and transcripts in `maistro.sessions`
@@ -752,6 +1159,7 @@ or placeholder-only section.
   per-item sequence) share one store contract; the Container wires it on the
   Project store's backend and maistro-server serves member-only reads at
   `GET /v1/workspaces/{workspace_id}/backlog/{item_id}/history`.
+
 - **Governed `image.generate` Capability for Canvas/Design Studio generation
   (#286, partial).** `maistro.capabilities.ImageGenerationEgress.generate`
   runs one image generation through the canonical Binding → policy →
@@ -917,6 +1325,7 @@ or placeholder-only section.
   registry, LLM router, and resolver, so the Container dropping one and
   letting `build_node_resolver`'s bare default stand in now fails CI. Test
   only; no wiring gap was found.
+
 - **`GET /v1/runs/{run_id}/node-runs` now lists each NodeRun's Attempts,
   including the agent a chat turn dispatched to (#223).** Every NodeRun carries
   an additive `attempts` array of `attempt_id`, `ordinal`, `status`,
@@ -945,6 +1354,18 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Workspace BacklogItem service (#98, partial).** `maistro.workspaces.backlog`
+  adds a Workspace/Project-scoped `BacklogItem` record, a backend-independent
+  `BacklogItemStore` contract with version compare-and-set updates, acyclic
+  same-Workspace dependency and parent relations, and an exact
+  `(goal_id, goal_revision)` Goal reference. It has in-memory and SQLite
+  (`workspace_backlog_items`, `workspace_backlog_dependencies`) stores, wired
+  as `Container.backlog_store`. maistro-server serves it at
+  `/workspaces/{workspace_id}/backlog`: members read it, contributors and
+  owners write it, and a stale `expected_version` gets 409 with the current
+  item. On PostgreSQL the store is still in-process and logs a warning.
+  BACKLOG.md remains the authority.
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
@@ -957,6 +1378,7 @@ or placeholder-only section.
   `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
   declaring their authorities, and an accepted-outcome-required check on
   parked Run resume).
+
 
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
@@ -990,6 +1412,7 @@ or placeholder-only section.
   `workspace_id`, and a turn there that asks for work is answered by the
   interview instead of the model, with a `brief` event the Chat page renders
   as the "brief so far" panel. The Warden input boundary still runs first.
+
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
@@ -1031,6 +1454,7 @@ or placeholder-only section.
   Attempt still bound on the same event loop tick. The id is correlation
   metadata only; unlike the signed Workspace-scope headers, it can never
   assert scope or authorization.
+
 - **Recurring schedule admission has cross-backend parity tests (#46).** One
   scenario runs through `ScheduleRunAdmitter` on the in-memory, SQLite and
   PostgreSQL stores (wired by `wire_execution_spine`): an hourly schedule with
@@ -1042,6 +1466,48 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **Supply-chain floors raised above four new advisories (#2059).** The frozen
+  lock now resolves dnspython ≥ 2.9.2 (CVE-2026-128089), graphql-core ≥ 3.3.1
+  (CVE-2026-119286), joserfc ≥ 1.7.6 (CVE-2026-119284) and opentelemetry-api
+  ≥ 1.45.2 (CVE-2026-126360); every advisory has a released fix, so none is
+  allowlist-triaged. The pip-audit gate verdict is unchanged.
+
+- **Vulture scans have one owner per existing event profile (#1357).** The
+  required Vulture Ratchet job owns PR, merge-queue and protected-push scans;
+  Quality keeps only its unique topic-push fallback. Scan scope, locked analyzer,
+  trusted-base semantics, required status names and debt ledgers are unchanged.
+
+- **A document's status lives in front matter and nowhere else
+  (`ADR-092126-a28a`).** (#1532) The duplicated body `**Status:**` line is removed
+  from all 94 documents under `docs/adr/` and `docs/specs/` that carried one,
+  in both the bare and list-item spellings. Nothing but the gate written to
+  police them ever read those lines -- every other tool already read front
+  matter -- and storing one fact twice is what produced `#387` in the first
+  place: ADR-046's three-week contradiction, 28 more banked behind it, and 19
+  specs claiming a status (`Active`) that is not in the vocabulary at all.
+  `scripts/check-adr-status-language.py` accordingly changes its first
+  category from *agreement* to *absence*: any body status line is a finding
+  whatever it says, because one that agrees today is a second place to edit
+  tomorrow. Categories 2 and 3 (replacement banners, status-asserting prose)
+  are unchanged -- they police claims front matter cannot express. Operators
+  and authors read status from front matter, which every tool already acts on;
+  the scaffolding never emitted a body line, so nothing needs to change in how
+  new documents are written.
+
+- **Feature-parity decisions for v1.0 (#2279, #2280).** Run retry is a
+  deliberate v1.0 non-goal (post-v1.0 must be a new Attempt under the same
+  Run/NodeRun — never a `RetryRun`). CLI stays operator-lifecycle only; product
+  CRUD remains Workspace UI + public HTTP APIs. Recorded in
+  `FEATURE-PARITY-MATRIX.md`, `ROADMAP.md` explicit non-goals, and the
+  retirement delete map (#2274).
+
+- **Evolution is hidden from the v1.0 shipped product surface (#2275,
+  `conductor-411`).** `/evolution` is unregistered from the Hive Conductor
+  route table and stays out of nav; the page module remains in-tree for the
+  **v1.2** restore. Docs no longer describe Evolution as an available feature.
+  Evolve implementation ownership stays with #51. The retirement ledger and
+  `route-inventory` record HIDE v1.0 / restore v1.2.
 
 - **Evolve proxy fitness no longer credits text narration (#384).** The
   `proxy_gaia` scorer lost its fuzzy fallbacks (0.9 raw-substring, 0.85
@@ -1181,6 +1647,7 @@ or placeholder-only section.
   slate. Bricolage Grotesque ships from the app's origin beside JetBrains
   Mono, and every font size below the 12px floor (23 in the stylesheet, 524
   inline) is raised to it.
+
 - **The merge-queue bot quarantines a head that already failed inside the
   queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
   re-requested any policy-green PR head on every scan, including one the
@@ -1232,36 +1699,76 @@ or placeholder-only section.
   explicitly and are unaffected; a caller that omits it now gets a
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
-### Removed
-
-- **`RouterEngine` no longer takes a `quota_tracker` constructor argument
-  (#1196, partial).** The tracker was stored on `self._quota` and never read:
-  `select()` always calls `select_with_usage()` with an empty usage map, so
-  no quota check ever ran through the router. Removing the dead parameter
-  stops it from being mistaken for — or later wired up as — a second,
-  non-authoritative quota-enforcement point; enforcement belongs at the
-  canonical Invocation boundary. `RouterEngine()` now takes no arguments. A
-  new fitness test (`tests/fitness/test_quota_single_authority.py`)
-  AST-scans `maistro.router` for any `QuotaTracker` import, reference or
-  constructor parameter so the dependency cannot be quietly revived.
-  `Agent._quota_tracker` is unaffected by this change.
-
-- **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
-  `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
-  The wrapper built an ephemeral `GraphRun` and started it, recording no
-  canonical Run/NodeRun/Attempt evidence and no restart recovery, so physical
-  Graph work reached through it was invisible to every recovery sweep — a
-  second execution universe beside the durable one. It had no non-test callers.
-  Importers use `maistro.graph.durable_runs` for canonical execution, which
-  shares no code with the retired path — it never imported `GraphRun`.
-  `GraphRun` is still importable from `maistro.graph.run` as Graph-domain
-  traversal, but it is not an execution authority and is no longer re-exported
-  as one; with the wrapper gone it and `maistro.graph.executor` are reachable
-  only from tests. The private
-  `_ensure_node_configs` helper went with it — set `NodeConfig.beam_width`
-  directly instead of passing `parallel_generations`.
-
 ### Fixed
+
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. Workspace-scoped admitters share
+  one process-wide `max_retained` budget; more users do not multiply it.
+  Tracking refuses foreign-Workspace and non-chat Runs.
+- **Conductor batch inspection respects existing projection scope (#1036).**
+  Canonical fallback applies only when no projection exists, keeping verdict-list
+  visibility consistent with detail and stream admission for colliding run IDs.
+
+- **Pending HITL discovery is fair instead of filtering after a bounded PAUSED
+  prefix (#1109).** `GET /v1/hitl/pending` used to page the generic PAUSED
+  listing and filter each page in memory, so `limit` bounded a PAUSED *prefix*
+  rather than human work: a run of machine-only pauses longer than one
+  request's inspection ceiling hid the human pause behind it from every
+  request, each one rereading the same prefix and returning the same empty
+  answer. The canonical continuation now carries a pause-kind projection
+  (`has_hitl_pause`, maintained beside the deadline projection #1056 uses) on
+  every backend — in-memory, SQLite, PostgreSQL (migration 059) — and the
+  door pages `list_hitl_paused`, which reads it: human eligibility is decided
+  by the store before any page is cut, so no prefix, however long, can stand
+  between a person and their work. The projection is an index, not a second
+  HITL queue: the durable pause entry stays the source of truth and every
+  disclosed record is revalidated against it, with Workspace and Project
+  scope still applied from canonical state before disclosure. Deadline-less
+  human pauses — invisible to the deadline index — are discoverable, answered
+  work leaves the projection on the next read, and repeated requests (and
+  restarts) cannot make a pending item vanish by consuming a scan position.
+  The Workspace Attention projection, which had duplicated the same
+  filter-after-prefix walk against the route's private constants, now walks
+  the same canonical `pending_hitl_records` contract. Workspace-wide
+  discovery (no Project named) also survives a multi-tenant projection:
+  `list_hitl_paused` reports its progress through the projection separately
+  from the eligible items it returns (a `ScanPage`, as the due-index scan
+  has done since #1098), so a page that assembles to nothing this caller can
+  see — another tenant's rows, or a stale projected row — advances the walk
+  past itself instead of reading as the end of human work, and a bounded
+  walk that stops at its inspection ceiling reports capped, never exhausted.
+
+- **A full Recent Runs page no longer waits on one serialized canonical Run
+  read per row (#1333).** Conductor's Recent Runs list overlays canonical
+  lifecycle truth through one batched, Workspace-scoped reader call, but the
+  reader resolved the page's per-Run lookups with a sequential `await` per id:
+  at the supported page cap of 100 and a durable PostgreSQL/SQLite store, one
+  dashboard request still serialized up to 100 `get_run` round trips on an
+  endpoint built to be polled. `ScopedRunReader.get_runs` now overlaps the
+  page's independent lookups (bounded, 16 in flight) while keeping the scoped
+  decisions exactly once per Workspace/Project, so the visible-Runs answer and
+  its refusal semantics are unchanged; a page resolves in a few overlapping
+  waves instead of one wait per row.
+
+- **Chat admission compensation is conditional on the unchanged, unstarted Run (#338).**
+  A QUEUED or RUNNING write that commits but loses its response is compensated
+  before the existing retryable refusal, without dispatching the turn. The
+  stranded-chat sweep now compares the Run snapshot and checks NodeRun absence
+  atomically; a concurrent node creation defeats cancellation. SQLite guards
+  the physical cancel, node insertion and lifecycle writes against the exact
+  persisted parent snapshot, including when a sibling store commits on its
+  shared connection. Validation refusals preserve sibling writes. This does not change
+  admission liveness policy or recover historical NodeRuns with no Attempt.
+
+- **Workspace Attention no longer 500s without a graph spine (#1049).** Standalone
+  / e2e Conductor (no wired Container graph store) still returns Attention as a
+  200 with `summary.hitl_unavailable: true` and any failed-Run projections; HITL
+  pauses require the canonical spine and are omitted rather than crashing the
+  page.
 
 - **The live scheduler selects durable canonical due state (#46, #1199).**
   Configured Hive ticks now enumerate `ScheduleStore.due()` and re-read each
@@ -1287,6 +1794,7 @@ or placeholder-only section.
   for. List, detail, steps, status, and create now report no agent, the seed
   names none, and Assign Agent is disabled with that reason. This does not
   read a canonical Run agent; nothing is shown until a response does.
+
 - **Schedules and MCP work from the keyboard alone (#370, partial).** The
   Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
   schedule's enable toggle is a labelled switch, so a keyboard user can enable
@@ -1294,6 +1802,7 @@ or placeholder-only section.
   expands through a disclosure button, with its remove button a separate
   control. For pointer users, an MCP server now expands or collapses only
   from its header row, not from its details area or the card's padding.
+
 - **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
   `create_dashboard_widget` now saves against the revision it read; on a conflict it
   re-reads and re-applies the insertion once (via the pure
@@ -1445,6 +1954,7 @@ or placeholder-only section.
   wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
   containing `agent.synth_dag` now fails rather than completing with a
   refusal inside its output.
+
 - **Canvas job leases are fenced per claim, and stalled or cancelled jobs
   settle correctly (#735, follow-up to PR #1535).** A worker's completion write
   and lease heartbeat are now fenced on the claim's attempt number, not just
@@ -1595,6 +2105,7 @@ or placeholder-only section.
   implementations (the protocol, `InMemoryScheduleStore`,
   `SqliteScheduleStore`, `PgScheduleStore`) already accept the keyword and
   are unaffected.
+
 - **Builders' canonical pipeline executor no longer disagrees with legacy
   gate/revision, step-budget, and failure-reporting semantics (#1067).** A
   post-merge audit of #734/#744 found 4 parity defects in
@@ -1700,6 +2211,7 @@ or placeholder-only section.
   (light/dark appearance, `workspace_mode.py`'s authorization sense).
   `tests/e2e/workspace-toolbar.spec.ts` covers it; against the unfixed
   build the drawer still shows the retired control.
+
 - **The shell paints its chrome before the auth chain resolves, and the
   setup-status and whoami probes fire together instead of one after the
   other (#1408).** The Conductor used to await `/v1/setup/status`, then
@@ -1849,6 +2361,7 @@ or placeholder-only section.
   account signs in, cleared on sign-out, and listed with their values on the
   Profile page beside a "Clear browser state" button.
   `tests/e2e/workspace-toolbar.spec.ts` covers each in a real browser.
+
 - **A Workspace and its Root Project are created and deleted in one
   transaction (#1121).** The durable Workspace stores wrote the Workspace row
   and its owner membership, committed, and only then asked the Project store
@@ -1868,6 +2381,7 @@ or placeholder-only section.
   read: `root_for_workspace()` stays a true invariant because creation is
   atomic. The conformance suite injects a failure at each seam and reads a
   fresh store back on all three backends.
+
 - **Workspace mutations confirm, ask before they destroy, and cost one
   request (#1407, #1429, #1428, #1430, #1434).** Creating, archiving,
   deleting a workspace, inviting or removing a member and saving tool
@@ -1881,6 +2395,7 @@ or placeholder-only section.
   after an archive or delete rather than refetching the whole list.
   `tests/e2e/workspace-lifecycle.spec.ts` walks each as the admin account
   and counts the requests.
+
 - **Workspace status messages announce, and wizard fields are named by their
   visible labels (#1405, #1416).** The Conductor's toast container is now a
   polite live region and the error regions of the workspace tab bar, Share
@@ -1891,6 +2406,7 @@ or placeholder-only section.
   the shorter `aria-label` that overrode their visible labels, so a
   voice-control user can target them by the words on screen (WCAG 2.5.3).
   `tests/e2e/workspace-a11y.spec.ts` asks the accessibility tree for each.
+
 - **Workspace-scoped pages wait for the workspace to resolve (#1427).** On a
   first-ever session the Conductor's Jira drafts, Agents and Missions pages
   fired their workspace-scoped requests before `GET /v1/workspaces` had
@@ -1901,6 +2417,7 @@ or placeholder-only section.
   modal refuses to suggest, and the guidance thread asks for a workspace
   first. `tests/e2e/workspace-scope.spec.ts` records every request the three
   pages make and fails on one that names a workspace and leaves it blank.
+
 - **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
   observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
   workflow scope check regardless of path scope. GitHub evaluates a job-level
@@ -1970,6 +2487,7 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+
 - **A raw store or driver error after the model answered no longer loses the
   answer (#1108).** Only `RunIntegrityError` was classified by
   `ChatAttemptExecutor`, but the PostgreSQL and SQLite stores wrap integrity
@@ -1992,6 +2510,7 @@ or placeholder-only section.
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.
+
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
@@ -2001,6 +2520,7 @@ or placeholder-only section.
   An Attempt still `CREATED` now settles as `CANCELLED` carrying the refusal
   as its error (nothing ran, so nothing failed), the refusal propagates, and
   the NodeRun parks for a retry decision exactly as a `FAILED` Attempt would.
+
 - **A task's worker executes under the request id that admitted it
   (#1063).** `TaskRunAdmitter` recorded `X-Request-ID` on the Run's
   provenance, but the worker that later picks the task up runs from the
@@ -2009,6 +2529,7 @@ or placeholder-only section.
   no request id at all. `TaskAttemptExecutor` now binds the Run's persisted
   request id, Workspace and Project around the Attempt it runs, so one id
   follows a task from the HTTP boundary through the Run into its execution.
+
 - **The migration chain has one head again, and the debt ledger matches the
   shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
   a renumber made against an older base: it renamed
@@ -2035,6 +2556,7 @@ or placeholder-only section.
   duplicates. `last_fired_at` and `next_due_at` are no longer stamped with the
   manual fire's instant, so an occurrence the cron already owed is still
   admitted by the next tick; `last_run_id` still points at the manual Run.
+
 - **A schedule's due cursor is recorded on every evaluation, and SQLite
   `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
   `next_due_at` on an evaluation that fired nothing but never persisted it, so
@@ -2065,6 +2587,7 @@ or placeholder-only section.
   due-cursor-only write), so a bounded schedule cannot be spent by one. The
   live Hive tick still enumerates its own schedule rows; moving it onto
   `ScheduleStore.due()` is #1199's remaining scope.
+
 - **HITL settlement repair is fair, idempotent, and keeps the recorded time
   (#737).** Startup reconciliation now finds crash residue (a canonical Run
   still PAUSED under a CANCELLED/TIMED_OUT continuation) from the canonical
@@ -2086,6 +2609,7 @@ or placeholder-only section.
   scope was persisted, announces the reconciled terminal state on the event
   stream, carries recovered usage into an APPLIED settlement, and reads naive
   timestamps as UTC instead of raising during discovery.
+
 - **A scheduled Run whose resumed Attempt died is resumed again by the
   ordinary tick (#1112).** `recover_abandoned_attempts` reclaims a crashed
   resume's Attempt as CANCELLED and parks the Run WAITING, but
@@ -2095,6 +2619,7 @@ or placeholder-only section.
   (recognised by the sweep's own error text via `is_reclaimed_attempt`);
   FAILED, TIMED_OUT, and requested-CANCELLED rows still park the Run for
   whoever owns retries.
+
 - **`agent.synth_dag` can no longer report success for a sub-graph nothing
   ran, and node dependencies are declared on the class (#1193).** The
   production node resolver fell through to generic registry construction for
@@ -2132,6 +2657,7 @@ or placeholder-only section.
   database created by an older release upgrades its
   `canonical_project_memberships` table the same way the first time
   `ensure_schema()` runs against it.
+
 - **A delegated re-grant can no longer silently clear an existing Project
   deny (#1148).** `add_project_membership`'s non-owner path only rejected a
   request that explicitly repeated `denies`, not one that simply omitted
@@ -2140,6 +2666,7 @@ or placeholder-only section.
   re-grant would have overwritten an owner-issued deny by omission. The
   route now carries an existing deny forward when the requester cannot
   administer the Workspace.
+
 - **SQLite `move_project` now serializes the cycle check with the reparent
   write (#1147).** PostgreSQL already locked a Workspace's Projects with
   `FOR UPDATE` before checking ancestry; the SQLite twin did a plain
@@ -2154,6 +2681,7 @@ or placeholder-only section.
   `delete`, `put_resource`) now takes the same write-critical section, so an
   unlocked writer left mid-transaction can no longer make a locked writer's
   `BEGIN IMMEDIATE` raise outright.
+
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate
@@ -2171,6 +2699,7 @@ or placeholder-only section.
   chat Run with no NodeRun after a bounded grace period, recording
   `execution_never_started` — a new, distinct category from the existing
   `admission_incomplete` (which covers the earlier CREATED/QUEUED gap).
+
 - **Naive Workspace timestamps no longer decode to a different instant
   depending on the reading host (#1149).** `Workspace.created_at`/`updated_at`
   and `WorkspaceMembership.added_at` now normalize a naive datetime to UTC
@@ -2278,6 +2807,38 @@ or placeholder-only section.
 
 ### Dependencies
 
+- **Trivy-advisory refresh in the research image venv (#2303 CI repair).**
+  The maistro-engine-research Trivy scan (merge-queue job 133112186114 at
+  58cc1eb) flagged 13 HIGH advisories with fixed releases available that the
+  trivy DB gained after develop's own 2026-11-08 run passed the same scan:
+  `oauthlib` 4.0.0 → 4.0.1 (CVE-2026-49272), `pyasn1` 0.6.4 → 0.6.5
+  (CVE-2026-119194/-119195/-119196/-119197), `pypdf` 6.21.2 → 7.1.0
+  (CVE-2026-119203 … CVE-2026-119209, eight findings fixed in 6.21.3/6.21.4)
+  and `soupsieve` 3.0.3 → 4.1.1 (CVE-2026-126190, fixed in 4.0.0). All four
+  are transitive dependencies (browser-use, beautifulsoup4, pyasn1-modules,
+  requests-oauthlib) with no manifest constraint to raise — pure `uv.lock`
+  moves under existing resolution constraints. Proven with CI's exact trivy
+  invocation (`--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+  --ignorefile .trivyignore.yaml`, trivy 0.73.0) on a rebuilt research image:
+  exit 0, zero findings. The pip-audit gate (its DB lags trivy on these four)
+  still passes with only the triaged ecdsa advisory.
+
+- **Pip-audit-advisory refresh across the lock and the engine docker CLI
+  (#2303 CI repair).** The supply-chain gate and the maistro-engine Trivy scan
+  both failed on advisories with fixed releases available. `uv.lock` moves
+  `dnspython` 2.9.0 → 2.9.2 (CVE-2026-128089), `graphql-core` 3.3.0 → 3.3.2
+  (CVE-2026-119286, fixed in 3.3.1), `joserfc` 1.7.5 → 1.8.0 (CVE-2026-119284,
+  fixed in 1.7.6), and `opentelemetry-api` 1.45.1 → 1.45.2 (CVE-2026-126360;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move to their
+  matching releases). The engine and research images' source-built docker CLI
+  moves v29.9.1 → v29.9.3 (5457199, commit-verified in stage): v29.9.3 vendors
+  go-jose v4.1.7 upstream (CVE-2026-116587, fixed in v4.1.6), and the still-
+  pinned golang.org/x/net 0.60.0 is patched to v0.62.0 on the pinned tag
+  (CVE-2026-78661) with `go mod vendor` re-syncing the vendored tree before the
+  build. All four Python upgrades are floor moves
+  under existing constraints (no manifest change), and the image venvs that
+  install from the lock clear the Trivy `dnspython` HIGH in the same change.
+
 - **Pillow and certifi move past their open advisories (#363).** The
   installed `pillow` 12.3.0 carried eight advisories with fixes only in
   13.0.0, and `certifi` 2026.4.22 carried GHSA-6q48-6c7w-9gw2 with its
@@ -2289,7 +2850,17 @@ or placeholder-only section.
   and `certifi` 2026.10.19. No code path changes; both distributions keep
   the licenses the license inventory already recorded (MIT-CMU and MPL-2.0).
 
-### Fixed
+- **gitpython and graphql-core move past their open advisories (#1852
+  repair).** The locked dev set carried `gitpython` 3.1.62
+  (CVE-2026-114145, fixed in 3.2.1) and `graphql-core` 3.2.11
+  (CVE-2026-75507/75508, fixed in the 3.3.x line), so the pip-audit gate
+  (`scripts/pip_audit_gate.py`) failed on advisories outside its triaged
+  allowlist. Both are unconstrained transitive dependencies — `cosmic-ray`
+  -> `gitpython`, `moto[server]` -> `graphql-core` — so `uv.lock` alone
+  resolves them to `gitpython` 3.2.1 and `graphql-core` 3.3.0 (stable, not
+  the rc the advisory text named) with no manifest or floor change. No
+  shipped runtime image installs either distribution; the affected surfaces
+  are the dev toolset and the RSI runner's locked dev set.
 
 - **The license inventory gate stops accepting missing license metadata as a
   license, and stops hiding licensed shipped assets (#363).** Four defects in
@@ -2312,6 +2883,313 @@ or placeholder-only section.
   `quality/license-policy.json` are bound to the versions actually reviewed
   (`wcwidth` 0.7.0 / 0.9.2 / 0.9.3), so a later unreviewed release needs
   its own review.
+
+### Removed
+
+- **`RouterEngine` no longer takes a `quota_tracker` constructor argument
+  (#1196, partial).** The tracker was stored on `self._quota` and never read:
+  `select()` always calls `select_with_usage()` with an empty usage map, so
+  no quota check ever ran through the router. Removing the dead parameter
+  stops it from being mistaken for — or later wired up as — a second,
+  non-authoritative quota-enforcement point; enforcement belongs at the
+  canonical Invocation boundary. `RouterEngine()` now takes no arguments. A
+  new fitness test (`tests/fitness/test_quota_single_authority.py`)
+  AST-scans `maistro.router` for any `QuotaTracker` import, reference or
+  constructor parameter so the dependency cannot be quietly revived.
+  `Agent._quota_tracker` is unaffected by this change.
+
+- **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
+  `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
+  The wrapper built an ephemeral `GraphRun` and started it, recording no
+  canonical Run/NodeRun/Attempt evidence and no restart recovery, so physical
+  Graph work reached through it was invisible to every recovery sweep — a
+  second execution universe beside the durable one. It had no non-test callers.
+  Importers use `maistro.graph.durable_runs` for canonical execution, which
+  shares no code with the retired path — it never imported `GraphRun`.
+  `GraphRun` is still importable from `maistro.graph.run` as Graph-domain
+  traversal, but it is not an execution authority and is no longer re-exported
+  as one; with the wrapper gone it and `maistro.graph.executor` are reachable
+  only from tests. The private
+  `_ensure_node_configs` helper went with it — set `NodeConfig.beam_width`
+  directly instead of passing `parallel_generations`.
+
+### Security
+
+- **Container-gate repair round: CPython base refreshes, docker/cli v29.9.3,
+  and the temporalio/browser-stack floors that close its scan findings (#2110).**
+  The `Container scan + SBOM + cosign` gate at d3c793ae074e failed on four
+  HIGH findings (one CRITICAL) in `temporalio/bridge/Cargo.lock` — the Rust
+  `zip` crate 8.6.0 vendored inside the temporalio 1.34.0 wheel that only the
+  rsi-runner image's sync selection installs: CVE-2026-115905 (CRITICAL,
+  fixed 9.0.5), CVE-2026-115907/115908/115909 (HIGH, fixed 9.0.0). The root
+  lock now pins temporalio 1.36.1 (bridge `zip` 9.5.1; nexus-rpc moves
+  1.4.0 → 1.5.0 with its pin). Re-running the gate's grype leg locally on the
+  rebuilt image exposed the findings CI would have hit next, and they are
+  closed in the same round: the `python:3.12-slim` and
+  `python:3.13.16-slim-bookworm` digests move to the 3.12.16 / 3.13.18
+  releases (CVE-2026-115557, CRITICAL, fixed 3.12.16/3.13.18, plus
+  CVE-2026-114583 / CVE-2026-12345 on the same binary), the docker CLI is
+  rebuilt from docker/cli v29.9.3 (vendors go-jose v4.1.7 ≥ the CVE-2026-116587
+  fix and klauspost/compress v1.20.2 ≥ the GO-2026-6865 fix; x/net still
+  patched in place to v0.62.0 for CVE-2026-78661), and constraint floors pin
+  playwright ≥1.65.2 / patchright ≥1.64.4 so the browser drivers stop
+  bundling Node 24.21.0 (CVE-2026-106069 / CVE-2026-105483). All pins are
+  re-recorded in `quality/image-pins.json`; the conductor identity contract
+  asserts 3.13.18; the e2e and sbx-tests images ride the refreshed 3.12
+  digest. All four production images rebuild and rescan clean under the
+  gate's exact trivy (HIGH/CRITICAL, exit-code 1, ignore-unfixed) and grype
+  (--fail-on high --only-fixed) invocations.
+
+- **Windows bootstrap no longer overrides execution policy when it elevates
+  or resumes (#2110).** `get.ps1` removed the `-ExecutionPolicy Bypass`
+  tokens from its `Invoke-Elevated` and RunOnce resume commands: an
+  administrator-approved `AllSigned`/`RemoteSigned` policy now stays in
+  force across the elevation and the post-logon resume instead of being
+  silently dropped by the installer, and the download-and-run help text
+  documents the administrator-approved prerequisite, read-only policy
+  inspection, and fail-closed guidance. Ordinary policy resolution, `RunAs`,
+  quoting, argument passthrough, and the HKCU RunOnce destination are
+  unchanged; static and mocked-PowerShell regressions pin the behavior.
+
+- **Vuln-gated images rebuild their Go binaries on go1.27.3 (#1852 repair).**
+  The `age` binaries in the conductor image and the static Docker CLI in the
+  engine and research images are compiled in-tree from pinned release tags
+  precisely so a patched toolchain can ship them (#363 policy). The pinned
+  `golang:1.27.2-alpine` builder now emits stdlib 1.27.2, which trivy flags
+  with CVE-2026-111943 (HIGH, crypto/x509 MITM via untrusted intermediate
+  certificates, fixed in go1.26.10/1.27.3) — the container gate fails on the
+  conductor image's first scan step. All three Dockerfiles move to
+  `golang:1.27.3-alpine` (digest re-recorded in `quality/image-pins.json`);
+  the rebuilt binaries rescan clean at HIGH/CRITICAL with fixes, and the
+  conductor/observability runtime verify steps are unchanged.
+
+- **CodeQL / DevSkim backlog cleanup (path injection, stack-trace exposure,
+  regex injection, and scan-scope noise)** (no linked issue: GitHub
+  code-scanning backlog on develop, not a numbered tracker issue). Remaining
+  open CodeQL findings are cleared with `realpath`+`startswith` containment
+  (Lulu preflight sinks, RSI promotion export under temp/`RSI_WORK_ROOT`/
+  `RSI_EXPORT_ROOTS`, workspace mounts, RSI repo roots), kind-only public
+  failure text (including `/health` optional-router outcomes), escaped
+  consistency markers, and prototype-safe book-plan / scene field assignment
+  (`isSafeObjectKey`). DevSkim drops non-shipped trees (`systems/catalog`,
+  `benchmarks/corpora`, `formal/`, `.github/`, `deploy/`, `alembic/`) and dated
+  suppressions for integrity-pin / non-crypto RNG / intentional loopback
+  defaults so the Security tab is actionable again. Docstring/comment examples
+  that only named loopback URLs are reworded so DevSkim does not treat prose as
+  a binding. Lockfile bumps `fastmcp`, `setuptools`, and `pypdf` for
+  pip-audit/Trivy; canvas frontend `npm audit fix` clears high advisories;
+  Trivyignore documents the bookworm-only libbrotli finding.
+
+- **Memory write authority (ADR-057) is enforced at every memory store
+  boundary (#390, partial).** Every production memory store — learnings
+  (in-memory, SQLite, PostgreSQL and the hybrid-search wrapper's inner store),
+  episodic, outcomes and skill mutations — now calls the exposure-mode gate as
+  the first statement of each mutating method. A store constructed without a
+  declared `MemoryExposureMode` refuses to mutate at all
+  (`MemoryUndeclaredModeError`, fail-closed; SPEC-062126-6a31's no-implicit-
+  default rule), an agent-actor write or promotion under `system_managed`
+  raises `MemoryWriteDenied` before any state changes (denied writes leave no
+  partial durable state), and a system actor writes under every mode. The
+  decision reads only the declared mode, the actor and the per-block tag —
+  never model or persona content. The container declares the deployment's
+  posture from the new `AgentConfig.memory.exposure_mode` setting
+  (`agent_managed` default — the engine's existing behavior, now explicit;
+  set `system_managed` for curated-context deployments). The M4-B lifecycle
+  mutations added by the develop sync — `supersede`, `consolidate` and the
+  store-level `advance_stage` on all three learning-store backends — are
+  gated by the same decision as first statements, behind an explicit ADR-057
+  principal kept distinct from the ADR-103 attribution string, so a denied
+  supersede retires nothing and stores nothing. Not yet wired, and
+  disclosed in KNOWN-GAPS until then: per-call read gating, `hybrid` per-block
+  tags (agent writes fail closed under `hybrid`), `memory.write.denied` event
+  emission, and a product-reachable E2E proving a denied write.
+
+- **Active root Runs are capped per principal and per Workspace (#1182,
+  partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
+  refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
+  its actor principal (across Workspaces) or 32 for its Workspace. "Active"
+  means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
+  terminal Runs hold no slot, and a parked Run resuming is not a new admission.
+  A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
+  serializes the insert and the count with transaction-scoped advisory locks,
+  so the ceiling holds across replicas. SQLite relies on the store's write
+  lock, since that tier is a single process. A SQLite refusal rolls back to a
+  savepoint, so a sibling store's open transaction on the shared connection
+  is neither committed nor ended. Partial indexes serve both SQLite counts.
+  - A chat turn that meets a full ceiling first reclaims slots held by dead
+    turns, then asks once more. `recover_stranded_chat_admissions` now also
+    cancels chat Runs stranded in CREATED or QUEUED.
+  - The ceilings are governed floors in `quality/security-resource-floors.json`
+    (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+    Operators may lower them, but raising either requires
+    `ALLOW_UNSAFE_RESOURCE_OVERRIDES`.
+  - Both values appear in maistro-server's `/health` `effective_resource_policy`.
+  - maistro-server `/v1/chat/completions` answers a refused turn with 429 and
+    `Retry-After`. `Container` chat admission re-raises the refusal instead of
+    answering unrecorded.
+  - The server's `HTTPException` handler now keeps the raiser's headers.
+  - The scheduler already keeps a refused occurrence owed and retries it on a
+    later tick.
+  - Not yet done: the other HTTP/WebSocket submit surfaces still need to map
+    the refusal to 429.
+
+- **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
+  An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
+  to execute tool calls unauthorized; it now returns `Error: Permission denied
+  for tool …` and logs why. The standalone ReAct and Artificer strategy paths
+  apply the same rule. Callers that construct Agents directly must wire a
+  Sentinel whose permission table grants the tools they need.
+
+- **Layer-1 episodic recall is scoped to the current Project (#1047,
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to the working-memory hot projection and
+  both ranked and unranked durable fallback reads; a memory with no project
+  is not guessed into one. An empty `project_id` keeps the agent-wide recall;
+  nonempty values, including whitespace, remain exact filters.
+
+- **Retired the process-local Home Assistant confirmation store and
+  `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
+  /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
+  mounted: the GETs answer 404, and the POST answers 405 wherever the SPA is
+  served (its GET-only catch-all owns every path), 404 otherwise. The respond
+  route needed only authentication and wrote Home Assistant state; its
+  in-memory store (`_PENDING_CONFIRMS`) had no production producer, so it
+  could never hold a real confirmation. Nothing in production imported
+  `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
+  definitions were never offered to a model), so the module is deleted with
+  `send_confirm` and the store. Human approval has one model: a waiting human
+  NodeRun answered through `/v1/hitl`; any future HA push confirmation must be
+  a notification transport for that NodeRun.
+
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel (BuildersLearning delegates to ReAct on that path). It checks that
+  a PII-bearing or prompt-injection tool result reaches the model as the same
+  redacted text or Sentinel refusal, and never raw, for each of them.
+  Direct and PlanExecute are not covered yet. Test-only; no runtime behavior
+  changes.
+
+- **anyio bumped 4.13.0 → 4.14.2 (and the 4.15.1 leg some members resolve
+  separately), clearing CVE-2026-63374 and CVE-2026-64847 that fail every
+  fresh `pip-audit` run (no linked issue: caught by the required Supply
+  chain (pip-audit) check on #1502, the same class of reactive advisory fix
+  as the gitpython bump above).** Lockfile-only change; no API or behavior
+  delta.
+
+- **Due-recovery failures never persist or log credential text (#1143).** A
+  node-resolver factory that fails while a due Run is being resumed now
+  terminalizes the Run with a stable `NodeResolverUnavailable` message (Run id
+  and exception type only) instead of the factory's raw error, and the
+  recovery log sanitizer also redacts quoted keys (`{'api_key': ...}`),
+  `Authorization`/`Bearer` headers, and provider-style key literals
+  (`sk-…`, `ghp_…`, `xox…`, `AKIA…`).
+
+- **gitpython bumped 3.1.59 → 3.1.62, clearing five untriaged advisories that
+  fail every fresh `pip-audit` run (#1493).** The lockfile carried
+  `gitpython 3.1.59` (transitive via `cosmic-ray`), which `pip-audit --strict`
+  now flags with PYSEC-2026-3982/-3983/-3984 and two companions, fix 3.1.60.
+  `Supply chain (pip-audit)` is a required check on every PR, so every
+  candidate entering the merge queue failed group validation within ~90
+  seconds of enqueueing. Lockfile-only change; no API or behavior delta.
+
+- **Canonical Event payloads are scrubbed of credential material before any
+  backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
+  and `provenance` in its constructor — the one seam the memory, SQLite,
+  PostgreSQL and outbox paths all already go through for their size bound — so
+  a token pasted into an event can no longer reach durable storage, a replay,
+  or an operator's inspection of the event log. Both halves of #1159's policy
+  apply: a field whose *name* classifies as credential material
+  (`api_key`, `private_key`, `ssh_key`, a bare `key`, …) loses its value, and
+  every surviving string is scanned for secret *shapes* (Slack and AWS
+  credentials, bearer assignments, PEM blocks, high-entropy runs). Identifiers
+  are preserved — `key_arn`, `token_id`, digests, uuid4 ids and ordinary prose
+  survive untouched — and the scrub is idempotent, so re-validating a staged
+  envelope does not rewrite already-recorded evidence. Rows written before this
+  change are read back exactly as they were recorded rather than re-scrubbed on
+  read. Mapping *keys* are scanned too, so a token-indexed object cannot carry
+  the credential past the scrub in its key, with two keys that redact to the
+  same label kept distinct rather than collapsed. A `key` that names what it
+  identifies (`effect_key`, `idempotency_key`, `partition_key`, `parent_key`,
+  …) now classifies as an identifier in `maistro.security.secret_policy`, so
+  the canonical capability events keep the `effect_key` that audit and replay
+  consumers join on. The byte ceiling is re-checked after the scrub, because
+  redaction can grow a field that passed the ceiling as submitted.
+
+- **An identity-free chat turn is routed as the anonymous principal again
+  (#1165 regression, introduced by #1288).** `Container.route_request` had
+  stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
+  carried no identity reached the strategies with `auth=None` — and they
+  consult Sentinel only when `auth is not None`, which let an unauthenticated
+  turn walk past the fail-closed permission table. The armed-controls refusal
+  survived; only the substitution was lost. Both halves are restored through
+  one `_resolve_chat_auth`, and the existing regression test for #1165 passes
+  again.
+
+- **DevSkim scans the shipped surface instead of everything (no linked issue:
+  scanner configuration).** The action ran unconfigured, so the test and
+  vendored trees were scanned alongside the shipped ones and supplied 619 of
+  its 912 `http://`/`localhost` findings — fixtures that assert an insecure
+  URL is refused, loopback addresses in test servers, vendored benchmark
+  corpora. A scanner two-thirds noise is one nobody reads. `ignore-globs` now
+  names those trees, and only trees: every entry ends in a directory segment,
+  because a filename shape reaches across the repository and silently drops
+  shipped code (`**/test_*.py` did exactly that in the CodeQL config, where it
+  also matched `maistro_rsi/test_inventory.py`). `docs/**` is deliberately not
+  excluded, and no rule is suppressed repo-wide. What DevSkim reports about
+  shipped code is unchanged; only the noise around it is gone.
+
+- **Sentinel's permission table is fail-closed, and the production paths can
+  both feel it and configure it (#1165).** An empty or omitted deployment
+  table now denies every tool instead of authorizing all of them. A chat turn
+  that carries no identity is evaluated as the role-less anonymous principal
+  rather than walking past the table (the strategies only consult Sentinel
+  when an identity is present), so an auth-less request can no longer execute
+  tools the table denies; a configured table or strike tracking still refuses
+  to run without a real identity. Operators state grants in `maistro.yaml`
+  (`security.permission_preset`, `security.permissions`, unknown presets
+  refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
+  `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
+  Hive's bridge and engine accept the caller's principal on `route`.
+
+- **Frontend transitive advisories closed (no linked issue: Dependabot
+  security alerts, no tracked issue).** `packages/hive-conductor/frontend`
+  regenerates its lockfile so the transitive `brace-expansion`
+  (GHSA-rgw5-rvv9-x895, unbounded intermediate arrays) and `nanoid`
+  (GHSA-2v37-7h3g-55p8, zero-size custom generator loop) resolve to patched
+  releases; no direct dependency changes. `npm audit` reports zero findings.
+  The canvas frontend's own `@vitest/mocker` advisory (GHSA-82fw-gwwq-j7x9,
+  path traversal via the redirect mock) is closed on `develop` by #1212's
+  move to `vitest` 5, which this branch now takes rather than the 4.x pin it
+  originally carried.
+
+- **Python dependency floors raised past their advisories (no linked issue:
+  Dependabot security alerts, no tracked issue).** Every `pyproject.toml` in
+  the workspace and both backend `requirements.txt` files declared version
+  ranges whose lower bound was a release with open advisories, which is what
+  Dependabot alerts on for a range: `pydantic` (>=2.4.0, GHSA-mr82-8j83-vxmv),
+  `python-multipart` (>=0.0.31, eight advisories through GHSA-v9pg-7xvm-68hf),
+  `pyjwt` (>=2.13.0, seven through GHSA-xgmm-8j9v-c9wx), `pytest` (>=9.0.3,
+  GHSA-6w46-j5rx-g56g), `pillow` (>=12.3.0, seventeen through
+  GHSA-xj96-63gp-2gmr), `fastmcp` (>=3.2.0, eight through
+  GHSA-vv7q-7jx5-f767), `pynacl` (>=1.6.2, GHSA-mrfv-m5wm-5w6w), `starlette`
+  (>=1.3.1, seven through GHSA-82w8-qh3p-5jfq), `nltk` (>=3.10.3; three
+  advisories have no fixed release and remain), and the dev-tools-only
+  `guarddog` (>=2.7.1; two have no fixed release and remain). `uv.lock`
+  already resolved every one of these at or above the new floor, so no
+  installed version changes; the lock's recorded specifiers are refreshed.
+
+- **Bootstrap credential staging is now private, atomic, and never follows a
+  link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
+  temp file in the same directory and promotes it with `os.replace`, so secret
+  bytes never land in a pre-existing permissive inode, a planted symlink at
+  the final path is refused rather than followed, and an interruption can no
+  longer leave truncated JSON at the staged path. A pre-existing file is
+  reused only after parse-validation — existence alone is no longer treated
+  as staged input by the CLI's "already staged" skip either.
 
 ## [1.0.0] - TBD
 

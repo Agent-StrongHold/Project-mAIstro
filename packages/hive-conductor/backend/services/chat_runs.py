@@ -62,6 +62,10 @@ class AdmittedTurn:
     container: Any
     admitter: ChatRunAdmitter
     session_id: str | None = None
+    #: Client logical-turn key (#1822 AC-4). When set, SessionStore append
+    #: uses it as the idempotence key so a retry of the same client turn
+    #: cannot duplicate the transcript.
+    client_turn_id: str | None = None
 
 
 def _capacity(exc: RunConcurrencyExceeded) -> HTTPException:
@@ -189,23 +193,29 @@ def _owned_session(
     session_id: Any,
     workspace_id: Any = None,
 ) -> str | None:
-    """The session id to record as provenance, when it is the caller's own.
+    """The caller's session id for provenance, or None when the turn has none.
 
-    Provenance is what a conversation's Runs are later found by, so a caller
-    must not be able to file a turn under someone else's session. Unknown or
-    foreign session ids still admit the turn — provenance is simply omitted
-    (AC-5 stream non-disclosure). When `workspace_id` is provided, the
-    session's Workspace must match or provenance is dropped the same way.
+    Provenance is what a conversation's Runs are later found by. A missing /
+    empty ``session_id`` still admits the turn without session provenance.
+    When the client *does* name a session, unknown, foreign, or wrong-Workspace
+    ids refuse before the model runs — same 404 body as list/get (#1822 AC-5).
     """
     if not isinstance(session_id, str) or not session_id:
         return None
     user_id = user_id_from_request(request)
     ws = workspace_id if isinstance(workspace_id, str) and workspace_id else None
-    try:
-        conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
-    except HTTPException:
-        return None
+    conversation_sessions.require_owned(user_id, session_id, workspace_id=ws)
     return session_id
+
+
+def _client_turn_id(raw: Any) -> str | None:
+    """A nonempty client turn key, or None when absent/invalid."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > 128:
+        return None
+    return value
 
 
 async def admit_turn(
@@ -214,9 +224,13 @@ async def admit_turn(
     *,
     workspace_id: Any = None,
     session_id: Any = None,
+    turn_id: Any = None,
 ) -> AdmittedTurn:
     """Admit one turn as a RUNNING chat Run, or refuse it before the model."""
     user_id = user_id_from_request(request)
+    # Authz before availability (#1822 AC-5): foreign/unknown session ids must
+    # not become 503 merely because the Run spine is down.
+    owned_session = _owned_session(request, session_id, workspace_id)
     container = _container()
     if container is None:
         raise _unavailable(
@@ -226,12 +240,11 @@ async def admit_turn(
     run: Run | None = None
     admitter: ChatRunAdmitter | None = None
     marked = False
-    owned_session: str | None = None
+    client_turn = _client_turn_id(turn_id)
     try:
         ws = await _turn_workspace(user_id, workspace_id)
         agent = await resolve_workspace_agent(ws)
         admitter = await _admitter_for(container, ws)
-        owned_session = _owned_session(request, session_id, workspace_id)
         run = await admitter.admit(
             messages,
             session_id=owned_session,
@@ -257,6 +270,12 @@ async def admit_turn(
         _release_dispatch_shield(admitter, run, marked)
         await container._cancel_incomplete_admission(run)
         raise _capacity(exc) from exc
+    except HTTPException:
+        # Authz / membership / foreign-session refusals (#1822 AC-5) must keep
+        # their status — do not rewrite them as admission 503.
+        _release_dispatch_shield(admitter, run, marked)
+        await container._cancel_incomplete_admission(run)
+        raise
     except Exception:
         logger.warning("chat turn could not be admitted as a Run", exc_info=True)
         _release_dispatch_shield(admitter, run, marked)
@@ -268,6 +287,7 @@ async def admit_turn(
         container=container,
         admitter=admitter,
         session_id=owned_session,
+        client_turn_id=client_turn,
     )
 
 
@@ -334,9 +354,10 @@ async def _persist_conversation_turn(
 ) -> None:
     """Append the accepted user+assistant pair to SessionStore after a model answer.
 
-    Uses the Run id as `turn_id` so a retry of the same Run cannot duplicate
-    the transcript (#327 / ADR-083026-5fab). Failures here must not undo the
-    answered turn — the Run already closed successfully.
+    Prefer the client `turn_id` when admitted (#1822 AC-4); otherwise the Run
+    id so a retry of the same Run cannot duplicate the transcript (#327 /
+    ADR-083026-5fab). Failures here must not undo the answered turn — the
+    Run already closed successfully.
     """
     if not turn.session_id:
         return
@@ -352,17 +373,18 @@ async def _persist_conversation_turn(
     if last_user is not None and isinstance(last_user.get("content"), str):
         batch.append({"role": "user", "content": last_user["content"]})
     batch.append({"role": "assistant", "content": content})
+    idempotence_key = turn.client_turn_id or turn.run.run_id
     try:
         await conversation_sessions.append_turn(
             turn.session_id,
             batch,
-            turn_id=turn.run.run_id,
+            turn_id=idempotence_key,
         )
     except Exception:
         logger.warning(
             "conversation transcript append failed for session %s turn %s",
             turn.session_id,
-            turn.run.run_id,
+            idempotence_key,
             exc_info=True,
         )
 

@@ -26,6 +26,7 @@ contracts:
   - behavioral
 tests:
   - packages/hive-conductor/backend/tests/test_node_metrics_are_measured.py
+  - packages/hive-conductor/backend/tests/test_durable_node_metrics.py
 source:
   - packages/hive-conductor/backend/services/node_metrics_store.py
   - packages/hive-conductor/backend/services/dag_agents.py
@@ -37,6 +38,11 @@ ac-modules:
   AC-3: '@flat/hive-conductor/services.dag_agents'
   AC-4: '@flat/hive-conductor/services.optimizer'
   AC-5: '@flat/hive-conductor/services.node_metrics_store'
+  AC-6: '@flat/hive-conductor/services.node_metrics_store'
+  AC-7: '@flat/hive-conductor/services.node_metrics_store'
+  AC-8: '@flat/hive-conductor/services.node_metrics_store'
+  AC-9: '@flat/hive-conductor/services.node_metrics_store'
+  AC-10: '@flat/hive-conductor/services.node_metrics_store'
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
@@ -72,10 +78,27 @@ callers. Readers use the store's public surface.
 
 ## What this deliberately leaves open
 
-The buffer stays in memory and bounded, and the module now says so instead of
-calling itself durable. Making the observations durable needs the UI run path
-to mint a canonical Run, which `execute_dag` does not — that is **#53**, the
-same blocker SPEC-083026-2601 records for run history.
+Making the observations durable needed the UI run path to mint a canonical
+Run, which `execute_dag` does not — that is **#53**, the same blocker
+SPEC-083026-2601 records for run history. Convergence of the UI path onto the
+spine is still open; what changed is the projection's storage, below.
+
+## Amendment (2026-10-24, #337): the projection is durable or says so
+
+The ephemeral buffer became a durable projection. With Conductor persistence
+configured, observations are backed by a `node_metrics` JsonStore owned by
+`services/node_metrics_store` and registered through
+`stores.register_json_store` (deliberately not declared in `stores.py`: every
+store there is a row in the cutover retirement ledger, where a retiring
+surface may not gain consumers), and a store refreshes before production
+reads, so a replica and a restarted process answer with the same history.
+The canonical attempt id is the idempotency key — a re-delivered completion
+updates its row instead of double-counting — and the projection carries the
+Run/NodeRun/Attempt/Workspace identities its readers correlate on. Retention
+evicts the oldest durable row at the same bound, and HTTP reads scope
+fail-closed to the caller's Workspace universe while the in-process seam the
+optimizer reads stays whole. Deployments without persistence keep the
+ephemeral buffer and report `durable: false` (ADR-083026-a91e, amended).
 
 ## What the review changed
 
@@ -169,4 +192,42 @@ Feature: Node metrics are measured or absent
     When the metrics store is reset
     Then the process store is a fresh empty buffer
     And the engine performs that reset at start
+
+  @AC-6
+  Scenario: The projection survives a restart and reaches an already-running replica
+    Given a writer and a reader over one shared durable records store
+    When the writer records an observation
+    Then the already-running reader answers with it without a restart
+    And a store built later on the same records answers with the same history
+    And each row carries its canonical Run, NodeRun, Attempt and Workspace ids
+
+  @AC-7
+  Scenario: The canonical attempt is the idempotency key
+    Given a completion already recorded for a canonical attempt
+    When the same attempt's completion is recorded again
+    Then the store holds one row for that attempt
+    And the row reflects the latest delivery rather than a duplicate
+
+  @AC-8
+  Scenario: A completion projection is correlated from the canonical spine
+    Given a finished canonical run with its NodeRuns and a graph snapshot
+    When the completion is projected
+    Then each observation names that run's Run, NodeRun and Attempt ids
+    And the Workspace the run belongs to
+
+  @AC-9
+  Scenario: Retention evicts the oldest durable row
+    Given a durable store bounded to one observation
+    When a second observation is recorded
+    Then the older attempt's row is gone from the records and from reads
+    And the newest attempt's row is the one that answers
+
+  @AC-10
+  Scenario: HTTP reads are fail-closed to the caller's Workspace universe
+    Given observations from my Workspace, a foreign Workspace and no Workspace
+    When the reads are scoped to my Workspace universe
+    Then my Workspace's observations are served
+    And the foreign one and the Workspace-less one are not
+    And an empty scope serves nothing at all
+    And the in-process seam without a scope still answers with everything
 ```

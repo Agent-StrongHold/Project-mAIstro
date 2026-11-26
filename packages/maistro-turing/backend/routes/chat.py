@@ -13,7 +13,7 @@ contracts without changing the chat node.
 
 Streaming is not implemented: the underlying TuringChatSession exposes only a
 non-streaming handle_message(). A streaming endpoint would need a token-yielding
-method on the runtime, which does not exist yet — left as a TODO so the contract
+method on the runtime, which does not exist yet — deferred so the contract
 isn't faked.
 """
 

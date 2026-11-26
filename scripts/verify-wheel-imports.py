@@ -145,6 +145,15 @@ CORE_PUBLIC_SURFACE = [
     "maistro.governance",
     "maistro.integrations",
     "maistro.interop",
+    # The in-repo cosmic-ray operator provider (PR #1994, #330). Importable
+    # from a bare install: cosmic-ray and parso sit behind a guarded import,
+    # so the module resolves and its provider names raise an error that says
+    # what is missing, rather than failing at import (the maistro.archive
+    # rule). It ships because the stevedore entry point that registers the
+    # provider is part of the published metadata; listing it here asserts the
+    # import contract instead of tolerating silence (SURFACE_EXEMPT is for
+    # modules a bare install should refuse, which this one is not).
+    "maistro.mutation_operator_provider",
     "maistro.observability",
     "maistro.personas",
     "maistro.policy",

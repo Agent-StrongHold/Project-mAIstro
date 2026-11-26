@@ -33,7 +33,7 @@ from maistro.runs.reconciliation import (
     AttemptLifecycleStore,
     CancellationCause,
 )
-from maistro.runs.store import AttemptNotFound, RunIntegrityError
+from maistro.runs.store import AttemptNotFound, RunIntegrityError, StaleExecutionFence
 from maistro.runtime import (
     ExecutionCallable,
     ExecutionPaused,
@@ -171,6 +171,17 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
         error: str | None = None,
         metrics: dict[str, object] | None = None,
         fencing_token: str | None = None,
+        cancellation_cause: CancellationCause | None = None,
+    ) -> Attempt: ...
+
+    async def compensate_unlaunched_attempt(
+        self,
+        attempt_id: str,
+        *,
+        fencing_token: str,
+        at: datetime | None = None,
+        result: object | None = None,
+        error: str | None = None,
     ) -> Attempt: ...
 
 
@@ -181,6 +192,22 @@ async def _active_run_attempts(store: AttemptExecutionStore, run_id: str) -> lis
         for node_run in await store.list_node_runs(run_id)
         for attempt in await store.list_attempts(node_run.node_run_id)
         if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+    ]
+
+
+async def _all_run_attempts(store: AttemptExecutionStore, run_id: str) -> list[Attempt]:
+    """Every Attempt row under one Run, terminal or not.
+
+    Cancellation receipts read this rather than `_active_run_attempts` because
+    the honest answer needs the *settled* rows too: an Attempt that reached
+    `COMPLETED` inside the cancellation race is the race's actual winner, and a
+    receipt that only looked at live rows would report `STOP_CONFIRMED` for it
+    (#1242).
+    """
+    return [
+        attempt
+        for node_run in await store.list_node_runs(run_id)
+        for attempt in await store.list_attempts(node_run.node_run_id)
     ]
 
 
@@ -648,6 +675,23 @@ class AttemptExecutionService:
             return False
         return await service._cancel_local_attempt(attempt_id)
 
+    @classmethod
+    async def cancel_registered_evidence(cls, attempt_id: str) -> bool | None:
+        """Like :meth:`cancel_registered`, but ``None`` means "not ours".
+
+        The bool return of `cancel_registered` collapses two very different
+        facts — "this process owns no Runtime handle for that Attempt" and
+        "this process owns it and the cancel did not take" — into one False.
+        A truthful cancellation receipt has to tell them apart: only the first
+        leaves a live try that some *other* worker may still be running
+        (#1242). `False` here keeps its old meaning, so callers that only ask
+        "did this process stop it" are unaffected.
+        """
+        service = cls._active_services.get(attempt_id)
+        if service is None:
+            return None
+        return await service._cancel_local_attempt(attempt_id)
+
     async def cancel(self, attempt_id: str) -> bool:
         return await self.cancel_registered(attempt_id)
 
@@ -674,18 +718,25 @@ class AttemptExecutionService:
         return True
 
     @classmethod
-    async def cancel_registered_run(cls, run_id: str) -> bool:
-        """Cancel the local owner of a Run, including its durable projection."""
+    async def cancel_registered_run_evidence(cls, run_id: str) -> tuple[bool, dict[str, bool]]:
+        """Cancel locally and report per-Attempt evidence of what this process did.
+
+        Returns ``(owner_found, {attempt_id: runtime_answer})``. The mapping is
+        only this process's own signal results — it is never a claim about a
+        worker in another replica, which is the confusion #1242 removes.
+        """
         owners: set[AttemptExecutionService] = set()
         for service in set(cls._active_services.values()):
             run = await service._store.get_run(run_id)
             if run is not None:
                 owners.add(service)
+        evidence: dict[str, bool] = {}
         for service in owners:
-            await service._cancel_local_run(run_id)
-        return bool(owners)
+            evidence.update(await service._cancel_local_run(run_id))
+        return bool(owners), evidence
 
-    async def _cancel_local_run(self, run_id: str) -> None:
+    async def _cancel_local_run(self, run_id: str) -> dict[str, bool]:
+        """Cancel this service's live tries for a Run; map each to its answer."""
         async with self._launch_lock:
             active = await _active_run_attempts(self._store, run_id)
             current_run = await self._store.get_run(run_id)
@@ -695,8 +746,11 @@ class AttemptExecutionService:
                 await self._store.transition_run(
                     run_id, RunStatus.CANCELLED, error="execution cancelled"
                 )
-            await asyncio.gather(*(self._runtime.cancel(attempt.attempt_id) for attempt in active))
+            answers = await asyncio.gather(
+                *(self._runtime.cancel(attempt.attempt_id) for attempt in active)
+            )
             await _cancel_settled_node_runs(self._store, run_id)
+        return {attempt.attempt_id: answer for attempt, answer in zip(active, answers, strict=True)}
 
     async def _terminalize_if_open(
         self,
@@ -727,16 +781,31 @@ class AttemptExecutionService:
         if current.status is AttemptStatus.CREATED and status is not AttemptStatus.CANCELLED:
             # A CREATED Attempt never launched: the RUNNING claim never landed,
             # so no physical work happened that could fail or time out. The
-            # lifecycle deliberately gives CREATED no edge to FAILED or
-            # TIMED_OUT -- recording one would claim a physical outcome the
-            # attempt never had and count a failure that never happened
-            # (ADR-082426-f170's distinction: cancelled means nothing ran,
-            # failed means work happened). CANCELLED is the honest, legal word
-            # for abandoned before launch -- the same record
-            # `_cancel_local_attempt` and `reclaim_attempt` write for an
-            # Attempt that never finished -- while the real reason survives in
-            # `error` and the caller still sees the original exception.
-            status = AttemptStatus.CANCELLED
+            # dedicated prelaunch leaf (#2369 / #232 P2d) commits
+            # CANCELLED+RECOVERED under the store lock — not a generic
+            # transition that would leave the cause unknown, and not FAILED /
+            # TIMED_OUT (CREATED has no edge there; ADR-082426-f170).
+            # Requested CancelledError keeps status CANCELLED above and uses
+            # the ordinary terminalize path so it is not stamped RECOVERED.
+            try:
+                return (
+                    await self._store.compensate_unlaunched_attempt(
+                        attempt_id,
+                        fencing_token=fencing_token,
+                        result=result,
+                        error=error,
+                    ),
+                    True,
+                )
+            except (InvalidLifecycleTransition, StaleExecutionFence):
+                refreshed = await self._store.get_attempt(attempt_id)
+                if refreshed is None:
+                    raise RunIntegrityError(
+                        f"Attempt {attempt_id!r} disappeared during prelaunch compensation"
+                    ) from None
+                if refreshed.status in TERMINAL_ATTEMPT_STATUSES:
+                    return refreshed, False
+                raise
         return (
             await self._terminalize(
                 attempt_id,

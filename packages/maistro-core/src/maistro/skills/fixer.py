@@ -48,7 +48,10 @@ def _strip_unicode_markers(fixed: str) -> tuple[str, list[str]]:
 
 _EXEC_PATTERNS = [
     (r"\bexec\s*\([^)]*\)", "exec() call"),
-    (r"\beval\s*\([^)]*\)", "eval() call"),
+    (
+        r"\beval\s*\([^)]*\)",
+        "eval() call",
+    ),  # DevSkim: ignore DS189424 until 2027-12-31 — pattern detects eval, does not call it
     (r"\bsubprocess\.\w+\s*\([^)]*\)", "subprocess call"),
     (r"\bos\.system\s*\([^)]*\)", "os.system() call"),
     (r"__import__\s*\([^)]*\)", "__import__() call"),

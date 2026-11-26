@@ -17,6 +17,8 @@ from services.chat_gate import (
 from services.chat_runs import admit_turn, execute_turn
 from services.request_principal import optional_actor_id
 
+from maistro.capabilities.model_chat import model_execution_context
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["voice"])
@@ -116,9 +118,17 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
         ChatCompletionRequest(messages=[{"role": "user", "content": utterance}])
     )
     turn = await admit_turn(request, req.messages)
+    run = turn.run
 
     async def call_model() -> dict:
-        return await build_llm_port().complete(req)
+        llm = build_llm_port()
+        # Same join as /chat/complete: the governed Invocation carries the
+        # actor admission authenticated (#1084), read from the persisted Run
+        # rather than any request-supplied text. Binding scope stays the
+        # deployment's configured model Binding (#1824 owns Workspace-scoped
+        # credential provisioning).
+        with model_execution_context(actor_id=run.actor_principal_id or ""):
+            return await llm.complete(req)
 
     result = await execute_turn(turn, req.messages, call_model)
 

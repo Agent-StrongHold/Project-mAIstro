@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
 import { LlmProviders } from "../components/LlmProviders";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
+// frontend-typed-client: allow pre-existing banked local type (was :6); line shifted by the #2283 authorization import lines above.
 type ConfigField = {
   name: string;
   label: string;
@@ -10,6 +13,7 @@ type ConfigField = {
   required: boolean;
 };
 
+// frontend-typed-client: allow pre-existing banked local type (was :13); line shifted by the #2283 authorization import lines above.
 type CredentialRow = {
   id: string;
   label: string;
@@ -46,6 +50,8 @@ export default function Credentials() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const authorization = useAuthorization();
+  const credentialPermission = authorization.surfacePermission("credentials") ?? "credentials.write";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -166,6 +172,8 @@ export default function Credentials() {
         subtitle="Encrypted at rest in this container — used by Hive agents and MCP at runtime. Never sent back to the browser."
       />
 
+      <AuthorizationNotice permission={credentialPermission} label="Credential changes" />
+
       <LlmProviders />
 
       <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
@@ -250,7 +258,7 @@ export default function Credentials() {
                 <button
                   type="button"
                   className="btn btn-accent"
-                  disabled={saving === row.id || !drafts[row.id]?.trim()}
+                  disabled={!authorization.can(credentialPermission) || saving === row.id || !drafts[row.id]?.trim()}
                   onClick={() => void save(row.id)}
                   style={{ fontSize: 12 }}
                 >
@@ -260,7 +268,10 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    /* The toggle issues the same credentials.write PUT as
+                       save/delete (#373): without the authority it must sit
+                       disabled beside them, not look actionable and 403. */
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void setEnabled(row.id, !row.enabled)}
                     style={{ fontSize: 9 }}
                   >
@@ -271,7 +282,7 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void remove(row.id)}
                     style={{ fontSize: 12 }}
                   >
@@ -353,7 +364,7 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void saveConfig(row.id)}
                     style={{ fontSize: 12, marginTop: 4 }}
                   >
@@ -363,7 +374,11 @@ export default function Credentials() {
                     <button
                       type="button"
                       className="btn btn-accent"
-                      disabled={saving === row.id}
+                      /* POST /v1/credentials/{id}/test is a credentials.write
+                         op (#373): the probe button is gated like every other
+                         write control on the page, or an unauthorized user
+                         gets a primary-looking button that can only 403. */
+                      disabled={!authorization.can(credentialPermission) || saving === row.id}
                       onClick={() => void testGateway(row.id)}
                       style={{ fontSize: 9, marginTop: 4, marginLeft: 6 }}
                     >

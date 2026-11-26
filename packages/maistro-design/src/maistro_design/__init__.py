@@ -29,6 +29,7 @@ from maistro_design.brief import (
     ProtectedFieldOverrideError,
     RequiredFact,
 )
+from maistro_design.canonical_execution import DesignCanonicalExecution
 from maistro_design.engine import DesignEngine
 from maistro_design.explore import (
     EXPLORE_NODE_KIND,
@@ -46,6 +47,18 @@ from maistro_design.model_judge import (
     DesignJudgeOut,
     DesignJudgeThesis,
     HumanJudgeNotResolvedError,
+)
+
+# design.orchestrate / design.consistency_eval: same pattern as explore/judge —
+# import the registration module from the package surface so process entry
+# points that load maistro_design get the kinds without a side catalog sweep
+# (#2311 design-node CONNECT).
+from maistro_design.nodes import (
+    ConsistencyEvalNode,
+    ConsistencyEvalOut,
+    DesignOrchestrateIn,
+    DesignOrchestrateNode,
+    DesignOrchestrateOut,
 )
 
 # M7-A6 (#795): the closed design-loop proof driver is a published surface of
@@ -176,6 +189,8 @@ __all__ = [
     "ChangeKind",
     "ChangeOrigin",
     "ColorToken",
+    "ConsistencyEvalNode",
+    "ConsistencyEvalOut",
     "ControlMode",
     "CreativeArtifactService",
     "CreativeBrief",
@@ -183,6 +198,7 @@ __all__ = [
     "CreativeBriefStore",
     "CreativeGraphPlan",
     "CrossWorkspaceReferenceError",
+    "DesignCanonicalExecution",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
@@ -194,6 +210,9 @@ __all__ = [
     "DesignJudgeOut",
     "DesignJudgeThesis",
     "DesignLoopProof",
+    "DesignOrchestrateIn",
+    "DesignOrchestrateNode",
+    "DesignOrchestrateOut",
     "DesignOutput",
     "DesignOutputShapeError",
     "DesignProject",

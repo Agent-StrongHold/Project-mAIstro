@@ -1,7 +1,7 @@
 ---
 name: spec
-description: Scaffold a new SPEC design doc in docs/specs/. Produces strict front matter validated by maistro-registry (id, title, repo, kind, status, created, lifecycle history, layer, owners, relationships). Pass a short title as the argument, e.g. /spec capability-budgeting
-disable-model-invocation: false
+description: "Scaffold a new SPEC design doc in docs/specs/. Produces strict front matter validated by maistro-registry (id, title, repo, kind, status, created, lifecycle history, layer, owners, relationships). Pass a short title as the argument, e.g. /spec capability-budgeting
+disable-model-invocation: false"
 ---
 
 The user wants to create a new SPEC. The argument is $ARGUMENTS (the short title/slug).

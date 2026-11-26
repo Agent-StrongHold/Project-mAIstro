@@ -26,7 +26,7 @@ from models.schemas import (
     ChatMessage,
     ChatSession,
     Container,
-    HiveUser,
+    HiveAccount,
     MCPServer,
     MCPTool,
     MemoryEntry,
@@ -105,7 +105,7 @@ backlog_items: ModelStore = ModelStore("backlog_items", BacklogItem)
 # write-through wrapper could have observed. See ADR-082926-0b72.
 chat_sessions: ModelStore = ModelStore("chat_sessions", ChatSession)
 cli_sessions: JsonStore = JsonStore("cli_sessions")
-users: ModelStore = ModelStore("users", HiveUser, unique_fields=("username",))
+users: ModelStore = ModelStore("users", HiveAccount, unique_fields=("username",))
 sessions: JsonStore = JsonStore("sessions")
 program_contexts: JsonStore = JsonStore("program_contexts")
 brief_interviews: JsonStore = JsonStore("brief_interviews")
@@ -127,9 +127,9 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
 #: Stable OIDC identity links. Records contain no provider token or email.
 oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
-#: DAG run history — the records behind the "Live DAG Runs" page. In-memory
-#: until #697; the page presented a 100-entry deque as history, empty after
-#: every restart.
+#: DAG run history — the records behind the "Live DAG Runs" page. The
+#: projection is bounded and uses the same state database as the other Hive
+#: projections; canonical lifecycle truth remains in maistro-core's Run spine.
 dag_runs: JsonStore = JsonStore("dag_runs")
 #: Registration invitations (#313) — insert-only records under
 #: ``inv:<sha256(token)>`` plus the ``used:<sha256(token)>`` redemption marker
@@ -139,7 +139,6 @@ registration_invitations: JsonStore = JsonStore("registration_invitations")
 #: Canonical case-folded username -> user-id claims. Account creation writes
 #: this index and the user row in one durable transaction.
 username_claims: JsonStore = JsonStore("username_claims")
-
 _all_model_stores: list[ModelStore] = [
     missions,
     schedules,
