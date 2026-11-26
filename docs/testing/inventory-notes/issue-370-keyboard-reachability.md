@@ -64,21 +64,67 @@ debt.
 - `setup step navigation and hardware choices are buttons` — fills the
   required name, acknowledges the gateway-unverified gate when it renders,
   advances the wizard, and selects a hardware preset.
+- `narrow viewport keeps initial focus off the hamburger so the skip link
+  stays first` — pins the Codex finding on PR #2530: at ≤900px the first
+  render must not steal focus for the hamburger (that used to jump past the
+  skip link), and the first Tab from <body> still lands on the skip link.
 
 Sibling specs own the rest of the #370 surface: `agents-rsi-keyboard.spec.ts`
 (RSI Stop + deleted-page redirects), `schedules-mcp-keyboard.spec.ts`
 (schedule tabs/switch/presets + axe), `design-studio-keyboard.spec.ts`
 (editor walks), `rich-tooltip-keyboard.spec.ts`, `modal-a11y.spec.ts`,
-`workspace-a11y.spec.ts`, `toggle-switch-name.spec.ts`.
+`workspace-a11y.spec.ts`, `toggle-switch-name.spec.ts`, and — added in the
+post-review repair round — `dag-builder-keyboard-save-race.spec.ts`.
+
+## Repair round: focus-restore transition + serialized keyboard saves
+
+Two evidence-driven repairs landed after the first review pass, each with its
+own regression journey:
+
+- **AppShell drawer focus restore (Codex P2 on PR #2530).** The restore
+  effect fired `menuButtonRef.current?.focus()` whenever `isMobile` held with
+  the drawer closed — including the narrow viewport's first render, walking
+  the user past the skip link before any interaction. The restore now runs
+  only after an actual open→closed transition (`drawerWasOpenRef`). The
+  narrow-viewport journey above pins it. The comment claiming an Escape
+  close path was also corrected: the drawer closes via its close button,
+  the overlay, and nav links — no Escape handler exists.
+- **DAG Builder keyboard saves (`dag-builder-keyboard-save-race.spec.ts`).**
+  Arrow-key node moves call `handleSaveDag` per keypress, so key-repeat fired
+  overlapping PUTs whose out-of-order responses could roll the canvas back to
+  a stale snapshot. Saves are now serialized and coalesced (≤1 in flight,
+  callers mid-flight collapse into one trailing save with the latest
+  snapshot; a failed chain drops its queued snapshot instead of replaying it
+  stale). The spec asserts the structural contract, not wall-clock: max
+  in-flight PUTs == 1 under a 400ms stub delay, the trailing save carries the
+  final position, the failed-save path fires exactly two PUTs (failed +
+  retry) and the canvas never shows the dropped stale frame.
 
 ## Executed evidence
 
-All 16 keyboard journeys across the five keyboard specs pass (16/16, ~17s)
-against a live hive backend built from this tree, walked with a real Chromium.
-The full browser suite — 233 specs — passes 233/233 on a fresh hive. The
-click-only ratchet passes on the tree and fails CI-shaped when a click-only
-`<div onClick>` is planted in `src/` (observed on the pre-resolution merge,
-which reported the exact Backlog/Schedules/Setup violations listed above).
+All 19 keyboard journeys across the six keyboard specs pass (59/59 across the
+whole keyboard/DAG/drawer/a11y cluster, and 236/236 across the full browser
+suite in 3.4m) against a live hive backend built from this tree, driven the
+way CI drives it: Playwright inside the `e2e-tests` container from
+`docker-compose.test.yml`, against the `hive` service built from the same
+sources. The click-only ratchet passes on the tree and fails CI-shaped when a
+click-only `<div onClick>` is planted in `src/` (probe file, exit 1, removed
+afterward).
+
+The two new repair-round journeys were also shown to fail against the code
+they fix, each on a purpose-built image: the narrow-viewport skip-link test
+reports the hamburger focused on load with the old focus-restore effect
+(exactly the Codex finding), and the save-race concurrency assertion fails
+with the old per-keypress save path (4 overlapping PUTs under a 400ms stub
+delay, against a max-in-flight of 1 with the fix).
+
+Host-side Playwright runs (outside the e2e-tests container) are NOT the CI
+execution mode: `rich-tooltip-keyboard.spec.ts` documents its local
+`E2E_SRC_ROOT`/`E2E_NODE_PATHS` requirement, and the full-page axe scan in
+`design-studio-keyboard.spec.ts` fails from the host browser while passing
+8/8 in-container on both this tree and the develop base — a host
+browser-environment artifact, not a product or branch regression (reproduced
+against a base-commit build to prove attribution).
 
 ## Reviewed exceptions
 

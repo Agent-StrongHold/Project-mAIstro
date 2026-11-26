@@ -38,6 +38,12 @@ let page: Page;
 // agents-rsi-keyboard.spec.ts uses. The PM session above stays untouched.
 let rsiContext: BrowserContext;
 let rsiPage: Page;
+// Narrow-viewport session for the drawer/skip-link shell contract (Codex
+// review on PR #2530): at ≤900px the hamburger replaces the rail, and the
+// page must not steal focus for it on load, or the skip link stops being
+// the first tab stop.
+let narrowContext: BrowserContext;
+let narrowPage: Page;
 
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({
@@ -92,11 +98,21 @@ test.beforeAll(async ({ browser }) => {
   rsiPage = await rsiContext.newPage();
   await setupIfNeeded(rsiPage);
   await loginAsAdmin(rsiPage);
+
+  narrowContext = await browser.newContext({
+    baseURL: test.info().project.use.baseURL,
+    viewport: { width: 390, height: 844 },
+  });
+  await narrowContext.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
+  narrowPage = await narrowContext.newPage();
+  await setupIfNeeded(narrowPage);
+  await loginAsPM(narrowPage);
 });
 
 test.afterAll(async () => {
   await context.close();
   await rsiContext.close();
+  await narrowContext.close();
 });
 
 /**
@@ -163,6 +179,25 @@ test("skip link is the first tab stop and moves focus to the main landmark", asy
 
   await page.keyboard.press("Enter");
   await expect(page.locator("main#main-content")).toBeFocused();
+});
+
+test("narrow viewport keeps initial focus off the hamburger so the skip link stays first", async () => {
+  // The Codex finding this pins: the matchMedia effect reports isMobile on
+  // load, and a focus-restore written as `else if (isMobile)` fires on that
+  // first render too — before the drawer was ever opened — putting the user
+  // on the hamburger at page load. The next Tab then walks past the skip
+  // link, which is exactly the failure the skip link exists to prevent.
+  await narrowPage.goto("/home", { waitUntil: "domcontentloaded" });
+  await narrowPage.locator("a.skip-link").waitFor({ state: "attached", timeout: 15000 });
+  await expect(narrowPage.getByRole("button", { name: "Open menu" })).toBeVisible();
+
+  // No code path may move focus on load: the user has not interacted yet.
+  await expect(narrowPage.getByRole("button", { name: "Open menu" })).not.toBeFocused();
+
+  // And the walk from <body> still starts at the skip link on mobile.
+  await narrowPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await narrowPage.keyboard.press("Tab");
+  await expect(narrowPage.locator("a.skip-link")).toBeFocused();
 });
 
 test("chat model menu is operable without a pointer and returns focus", async () => {

@@ -271,16 +271,46 @@ export default function DagBuilder() {
     setEditAgentId(node.agent_id ?? "");
   }, [dag, selectedNode]);
 
+  // DAG saves are serialized and coalesced: at most one PUT is in flight, and
+  // key-repeat/mouse-drag callers that arrive mid-flight are merged into a
+  // single trailing save carrying the latest snapshot. Responses are only
+  // applied when nothing newer is pending, so a stale response can never
+  // roll back newer local edits.
+  const saveStateRef = useRef<{ inFlight: boolean; pending: DAGFile | null }>({
+    inFlight: false,
+    pending: null,
+  });
+
   const handleSaveDag = useCallback(async (updated: DAGFile) => {
+    if (saveStateRef.current.inFlight) {
+      saveStateRef.current.pending = updated;
+      return;
+    }
+    saveStateRef.current.inFlight = true;
     setSaving(true);
     try {
-      const saved = await apiPut<DAGFile>(`/v1/dags/${updated.id}`, updated);
-      setDag(saved);
-      setDags((prev) => prev.map((d) => (d.id === saved.id ? saved : d)));
-      toast("DAG saved");
+      let payload = updated;
+      for (;;) {
+        const saved = await apiPut<DAGFile>(`/v1/dags/${payload.id}`, payload);
+        const pending = saveStateRef.current.pending;
+        saveStateRef.current.pending = null;
+        if (!pending) {
+          setDag(saved);
+          setDags((prev) => prev.map((d) => (d.id === saved.id ? saved : d)));
+          toast("DAG saved");
+          return;
+        }
+        payload = pending;
+      }
     } catch {
+      // Drop any snapshot queued behind the failed PUT: it is older than the
+      // local state, and replaying it after the next successful save would
+      // apply a stale response over newer edits (one visual rollback per
+      // failure chain, plus a wasted PUT of an out-of-date frame).
+      saveStateRef.current.pending = null;
       toast("Save failed", "error");
     } finally {
+      saveStateRef.current.inFlight = false;
       setSaving(false);
     }
   }, [toast]);

@@ -132,13 +132,21 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }, []);
 
   // Keyboard journeys (#370): opening the drawer moves focus into the menu;
-  // closing it (Escape, overlay click, or nav) restores focus to the trigger
-  // instead of stranding the user on <body> so the next Tab restarts the page.
+  // closing it (close button, overlay click, or a nav link) restores focus to
+  // the trigger instead of stranding the user on <body> so the next Tab
+  // restarts the page. The restore runs only after an actual open→closed
+  // transition: a narrow viewport's first render also lands here with
+  // drawerOpen already false, and stealing focus for the hamburger then would
+  // jump the user past the skip link before they pressed anything (Codex
+  // review on PR #2530). The drawer has no Escape handler; do not claim one.
+  const drawerWasOpenRef = useRef(false);
   useEffect(() => {
     if (drawerOpen) {
+      drawerWasOpenRef.current = true;
       drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
-    } else if (isMobile) {
-      menuButtonRef.current?.focus();
+    } else if (drawerWasOpenRef.current) {
+      drawerWasOpenRef.current = false;
+      if (isMobile) menuButtonRef.current?.focus();
     }
   }, [drawerOpen, isMobile]);
   const nav = fullNav.filter((item) => {
