@@ -282,6 +282,45 @@ def test_final_cli_rejects_a_checkout_other_than_the_final_tree(promotion_tree, 
     assert "checkout differs from final tag" in capsys.readouterr().err
 
 
+def test_final_cli_outputs_the_adopted_rc_tag(promotion_tree, guard_mod):
+    """The workflow needs to know WHICH candidate to adopt bytes from; the
+    guard's selection is the single source of truth (#89)."""
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "older candidate")
+    git("tag", "-a", "v1.0.0-rc2", "-m", "latest candidate")
+    git("commit", "--allow-empty", "-qm", "promotion merge marker")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 0
+    )
+    assert "rc_tag=v1.0.0-rc2\n" in output.read_text()
+
+
+def test_rc_cli_writes_no_rc_tag_output(release_tree, guard_mod):
+    """A candidate builds; there is nothing to adopt."""
+    output = release_tree.parent / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0-rc1", "--verify-rc-tree", "--github-output", str(output)])
+        == 0
+    )
+    assert "rc_tag=" not in output.read_text()
+
+
+def test_failed_tree_check_writes_no_outputs(promotion_tree, guard_mod):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    (root / "runtime.py").write_text("print('unsoaked')\n")
+    git("add", "runtime.py")
+    git("commit", "-qm", "unsoaked change")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 1
+    )
+    assert not output.exists()
+
+
 def test_rc_cli_needs_no_previous_candidate(release_tree, guard_mod):
     # The first RC must build; this fixture is deliberately not a git repo.
     assert guard_mod.main(["--tag", "v1.0.0-rc1", "--verify-rc-tree"]) == 0

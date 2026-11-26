@@ -35,6 +35,12 @@ What it enforces
    No metadata exceptions are made. This source check does not certify soak
    completion or byte identity of artifacts rebuilt from the same tree.
 
+6. **Final promotion names the RC it adopts** (`rc_tag` output). ADR §6: "the
+   final release ships the artifacts the last rc already validated" (#89). The
+   shipping workflow consumes this output to reuse that candidate's wheels and
+   image digests instead of rebuilding; `scripts/promote_release.py` binds the
+   byte identity and the soak evidence to it.
+
 Outputs
 -------
 With `--github-output PATH` it writes the values the rest of the workflow
@@ -46,6 +52,8 @@ needs:
     rc=1                  rc number, empty for a final tag
     minor=1.0             the `X.Y` moving image tag (final releases only)
     target_branch=develop   branch the tag commit must descend from
+    rc_tag=v1.0.0-rc1     latest same-version candidate (finals only, with
+                          --verify-rc-tree): the soak source the final must adopt
 
 Usage
 -----
@@ -179,8 +187,11 @@ def guard(tag: str, changelog: Path) -> tuple[int, dict[str, str]]:
     return 0, outputs
 
 
-def verify_rc_tree(tag: str, version: str) -> int:
+def verify_rc_tree(tag: str, version: str) -> tuple[int, str]:
     """Refuse final promotion from anything but the last candidate's tree.
+
+    Returns ``(status, rc_tag)``; ``rc_tag`` names the selected candidate so
+    the shipping workflow adopts THAT candidate's artifacts (ADR §6 / #89).
 
     Tags are immutable by release policy. Select the highest *numeric* RC,
     never an older candidate just because its tree happens to match. Git tree
@@ -203,20 +214,20 @@ def verify_rc_tree(tag: str, version: str) -> int:
                 f"::error::no release candidate exists for {tag}; cut and soak an RC first.",
                 file=sys.stderr,
             )
-            return 1
+            return 1, ""
         _, candidate = max(candidates)
         candidate_ref = f"refs/tags/{candidate}"
         if git("cat-file", "-t", candidate_ref) != "tag":
             print(f"::error::candidate {candidate} must be annotated (ADR §2).", file=sys.stderr)
-            return 1
+            return 1, ""
         final_tree = git("rev-parse", "--verify", f"refs/tags/{tag}^{{tree}}")
         if git("rev-parse", "--verify", "HEAD^{tree}") != final_tree:
             print(f"::error::checkout differs from final tag {tag}.", file=sys.stderr)
-            return 1
+            return 1, ""
         candidate_tree = git("rev-parse", "--verify", f"{candidate_ref}^{{tree}}")
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"::error::cannot verify RC promotion: {exc}", file=sys.stderr)
-        return 1
+        return 1, ""
 
     if final_tree != candidate_tree:
         print(
@@ -225,9 +236,10 @@ def verify_rc_tree(tag: str, version: str) -> int:
             "before promotion (ADR §6 / #89).",
             file=sys.stderr,
         )
-        return 1
+        return 1, ""
     print(f"RC source-tree check passed: {tag} == {candidate} ({final_tree})")
-    return 0
+    print(f"  promotion adopts {candidate}'s soaked artifacts (release.yml reuse path, #89)")
+    return 0, candidate
 
 
 def main(argv: list[str]) -> int:
@@ -253,7 +265,9 @@ def main(argv: list[str]) -> int:
 
     status, outputs = guard(args.tag, args.changelog)
     if status == 0 and args.verify_rc_tree and outputs["prerelease"] == "false":
-        status = verify_rc_tree(args.tag, outputs["version"])
+        status, rc_tag = verify_rc_tree(args.tag, outputs["version"])
+        if status == 0:
+            outputs["rc_tag"] = rc_tag
     if status == 0 and args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as handle:
             for key, value in outputs.items():
