@@ -88,6 +88,10 @@ class RunMetering(BaseModel):
     security_tax: float = Field(ge=0.0, le=1.0, default=0.0)
     gaming_signals: dict[str, int] = Field(default_factory=dict)
     rhae_estimate: float = Field(ge=0.0, le=1.0, default=0.0)
+    #: True when the published cost is a documented estimate (e.g. ARC's fixed
+    #: $0.002/call), not observed provider spend — consumers comparing costs
+    #: across harnesses must be able to tell the two apart.
+    cost_estimate: bool = False
     #: Events the policy could not resolve to "defeated" — the only metered
     #: fact that is gate-worthy rather than merely reportable.
     unresolved_security_violations: int = 0
@@ -107,6 +111,7 @@ class RunMetering(BaseModel):
             "security_tax": self.security_tax,
             "gaming_signals": dict(self.gaming_signals),
             "rhae_estimate": self.rhae_estimate,
+            "cost_estimate": self.cost_estimate,
             "unresolved_security_violations": self.unresolved_security_violations,
         }
 
@@ -141,6 +146,7 @@ def meter_results(results: list[EvalResult]) -> RunMetering:
     cost = 0.0
     duration = 0.0
     samples = 0
+    cost_estimate = False
     for result in results:
         cost += result.cost_usd
         duration += result.duration_seconds
@@ -156,6 +162,7 @@ def meter_results(results: list[EvalResult]) -> RunMetering:
         ).items():
             gaming[kind] = gaming.get(kind, 0) + count
         unresolved += int(result.metadata.get("unresolved_security_violations", 0))
+        cost_estimate = cost_estimate or bool(result.metadata.get("cost_estimate"))
 
     total_security = sum(security.values())
     total_gaming = sum(gaming.values())
@@ -183,6 +190,7 @@ def meter_results(results: list[EvalResult]) -> RunMetering:
         security_tax=round(security_tax, 4),
         gaming_signals=gaming,
         rhae_estimate=round(rhae, 4),
+        cost_estimate=cost_estimate,
         unresolved_security_violations=unresolved,
     )
 

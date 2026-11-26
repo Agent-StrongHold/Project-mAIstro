@@ -391,7 +391,7 @@ def _evidence_hash(
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _inversion_entry_failures(transfers: dict, epsilon: float) -> list[str]:
+def _inversion_entry_failures(transfers: dict[str, Any], epsilon: float) -> list[str]:
     """Rule 1: a measured ``transfer < -epsilon`` disqualifies, however big the lift."""
     failures: list[str] = []
     for bench, entry in sorted(transfers.items()):
@@ -417,7 +417,7 @@ def _inversion_entry_failures(transfers: dict, epsilon: float) -> list[str]:
     return failures
 
 
-def _missing_transfer_evidence(genome: PipelineGenome, transfers: dict) -> list[str]:
+def _missing_transfer_evidence(genome: PipelineGenome, transfers: dict[str, Any]) -> list[str]:
     """Rule 2: a promotion candidate carries transfer evidence for every scored benchmark."""
     if not genome.approved_for_promotion:
         return []
@@ -446,7 +446,7 @@ def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
     still evidence; an absent one is not" (SPEC-281 §2) — stale entries pass
     this gate, absent ones do not.
     """
-    transfers: dict = genome.harness_params.get("transfer_by_benchmark") or {}
+    transfers: dict[str, Any] = genome.harness_params.get("transfer_by_benchmark") or {}
     if not isinstance(transfers, dict):
         return [
             "transfer_by_benchmark must be a mapping of benchmark -> "

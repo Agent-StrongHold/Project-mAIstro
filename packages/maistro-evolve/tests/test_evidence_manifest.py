@@ -137,6 +137,19 @@ class TestBuild:
                 metering_absent_reason="no metering in this run",
             )
 
+    def test_a_numeric_gap_closure_with_a_nonpositive_gap_is_refused(self) -> None:
+        """A benchmark with no gap to close has null-only closure semantics:
+        a caller-supplied ``gap=0.0, gap_closure=1.0`` would publish a fully
+        closed gap where none was measurable."""
+        with pytest.raises(ValueError, match=r"nonpositive gap|no gap to close"):
+            build_evidence_manifest(
+                "run-1",
+                [_result()],
+                lift_reports=[_lift_report(gap=0.0, gap_closure=1.0, lift=0.0)],
+                verdict_conformance=run_conformance(),
+                metering_absent_reason="no metering in this run",
+            )
+
     def test_an_absent_gap_closure_survives_to_publication(self) -> None:
         """``None`` means "this benchmark cannot measure lift"; it must not
         become 0.0 on the way to the manifest."""
@@ -211,6 +224,35 @@ class TestMetering:
         assert manifest["metering_absent_reason"].startswith("the run was a replay")
         assert verify_evidence_manifest(manifest) == []
 
+    def test_unresolved_security_violations_fail_verification(self, tmp_path: Path) -> None:
+        """The publication gate runs on verify, not only in the harness."""
+        manifest = _manifest(
+            metering=RunMetering(
+                cost_usd=0.02,
+                duration_seconds=1.0,
+                samples_evaluated=10,
+                security_events={"sandbox_escape": 2},
+                security_tax=0.5,
+                gaming_signals={},
+                rhae_estimate=0.5,
+                unresolved_security_violations=2,
+            )
+        )
+        errors = verify_evidence_manifest(manifest)
+        assert errors == [
+            "2 unresolved security violation(s) during evaluation — "
+            "containment unproven, evidence not publishable"
+        ]
+        with pytest.raises(ManifestVerificationError, match="unresolved security"):
+            publish_evidence_manifest(manifest, tmp_path)
+
+    def test_a_malformed_metering_block_fails_verification(self) -> None:
+        manifest = _manifest()
+        manifest["metering"]["security_tax"] = 5.0
+        errors = verify_evidence_manifest(manifest)
+        # the checksum mismatch fires too, but the malformed block is caught
+        assert "metering block is malformed — not a valid RunMetering block" in errors
+
 
 class TestRefusalsArePublished:
     def test_a_refused_diff_is_published_with_its_reason(self) -> None:
@@ -276,6 +318,13 @@ class TestTamperDetection:
         errors = verify_evidence_manifest(manifest)
         assert any("does not match its checksum" in e for e in errors)
 
+    def test_deleting_a_checksummed_section_is_rejected(self) -> None:
+        manifest = _manifest()
+        assert manifest["checksums"].get("lift")
+        del manifest["lift"]
+        errors = verify_evidence_manifest(manifest)
+        assert any("missing but its checksum is recorded" in e for e in errors)
+
     def test_editing_the_run_id_breaks_the_manifest_checksum(self) -> None:
         manifest = _manifest()
         manifest["run_id"] = "run-2"
@@ -321,10 +370,13 @@ class TestSectionRules:
         return manifest
 
     def test_a_section_that_was_never_written_is_not_a_checksum_error(self) -> None:
-        """An absent section was never checksummed; its absence is judged by
-        the section rules, not by a checksum that was never recorded."""
-        manifest = _manifest()
-        del manifest["lift"]
+        """A section whose payload is ``None`` was never checksummed; its
+        absence is judged by the section rules, not by a checksum that was
+        never recorded. Deleting a section whose checksum *was* recorded is
+        rejected (see TestTamperDetection)."""
+        manifest = _manifest(lift_reports=None)
+        assert manifest["metering_absent_reason"] is None
+        assert "metering_absent_reason" not in manifest["checksums"]
         assert verify_evidence_manifest(manifest) == []
 
     def test_results_must_be_a_non_empty_list(self) -> None:
@@ -390,6 +442,32 @@ class TestSectionRules:
         manifest["lift"][0]["gap_closure"] = "half"
         errors = verify_evidence_manifest(manifest)
         assert any("gap_closure must be a number or null" in e for e in errors)
+
+    def test_a_numeric_gap_closure_with_a_nonpositive_gap_is_refused(self) -> None:
+        """The verifier enforces the invariant too, not just the builder: a
+        row claiming a closed gap where none was measured cannot verify."""
+        manifest = self._reseal(_manifest())
+        manifest["lift"][0]["gap"] = 0.0
+        manifest["lift"][0]["gap_closure"] = 1.0
+        manifest["lift"][0]["lift"] = 0.0
+        errors = verify_evidence_manifest(manifest)
+        assert any("nonpositive gap" in e for e in errors)
+
+    def test_a_numeric_gap_closure_with_a_negative_gap_is_refused(self) -> None:
+        manifest = self._reseal(_manifest())
+        manifest["lift"][0]["gap"] = -0.1
+        manifest["lift"][0]["gap_closure"] = 0.25
+        errors = verify_evidence_manifest(manifest)
+        assert any("nonpositive gap" in e for e in errors)
+
+    def test_a_boolean_gap_does_not_trigger_the_nonpositive_check(self) -> None:
+        """``True == 1`` numerically, so a bool gap must not pass the numeric
+        gate by accident; it is simply not a measured gap."""
+        manifest = self._reseal(_manifest())
+        manifest["lift"][0]["gap"] = True
+        manifest["lift"][0]["gap_closure"] = 0.5
+        errors = verify_evidence_manifest(manifest)
+        assert not any("nonpositive gap" in e for e in errors)
 
     def test_a_lift_row_without_a_transfer_is_refused(self) -> None:
         """Without the transfer column an inversion cannot be detected."""
@@ -490,6 +568,15 @@ class TestPublish:
         payload["results"][0]["score"] = 0.99
         target.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ManifestVerificationError, match="does not match its checksum"):
+            load_evidence_manifest(target)
+
+    def test_loading_a_file_with_a_deleted_section_raises(self, tmp_path: Path) -> None:
+        manifest = _manifest()
+        target = publish_evidence_manifest(manifest, tmp_path)
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        del payload["refused_diffs"]
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ManifestVerificationError, match="missing but its checksum"):
             load_evidence_manifest(target)
 
     def test_loading_a_non_object_raises(self, tmp_path: Path) -> None:

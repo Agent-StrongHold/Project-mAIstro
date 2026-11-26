@@ -59,6 +59,17 @@ class TestAggregation:
         assert metering.rhae_estimate == 0.0
         assert metering.security_events == {}
         assert metering.gaming_signals == {}
+        assert metering.cost_estimate is False
+
+    def test_a_documented_cost_estimate_is_not_published_as_measured_spend(self) -> None:
+        # ARC-style adapters stamp cost_estimate on their results; the run's
+        # aggregated metering must keep that marker so consumers can tell an
+        # estimated cost from observed provider charges.
+        measured = meter_results([_result(cost_usd=0.01)])
+        estimated = meter_results([_result(cost_usd=0.01, metadata={"cost_estimate": True})])
+        assert measured.cost_estimate is False
+        assert estimated.cost_estimate is True
+        assert estimated.to_block()["cost_estimate"] is True
 
     def test_the_block_carries_every_metered_field(self) -> None:
         block = RunMetering(
@@ -69,6 +80,7 @@ class TestAggregation:
             security_tax=0.25,
             gaming_signals={"spoofed_pass_marker": 1},
             rhae_estimate=0.125,
+            cost_estimate=True,
             unresolved_security_violations=1,
         ).to_block()
         assert block == {
@@ -79,6 +91,7 @@ class TestAggregation:
             "security_tax": 0.25,
             "gaming_signals": {"spoofed_pass_marker": 1},
             "rhae_estimate": 0.125,
+            "cost_estimate": True,
             "unresolved_security_violations": 1,
         }
 

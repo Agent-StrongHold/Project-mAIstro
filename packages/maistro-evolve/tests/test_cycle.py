@@ -397,6 +397,7 @@ class TestEvidencePublication:
             population_size=2,
             target_benchmarks=["proxy_ifeval"],
             self_improve=False,
+            reconfirm_per_cycle=0,
             evidence_dir=str(tmp_path),
         )
 
@@ -406,7 +407,7 @@ class TestEvidencePublication:
         manifests = sorted(tmp_path.glob("*/manifest.json"))
         assert len(manifests) == 1
         manifest = load_evidence_manifest(manifests[0])
-        assert manifest["run_id"].startswith("g-a-cycle-")
+        assert manifest["run_id"].startswith("g-a-cycle-0-eval-")
         assert manifest["results"][0]["benchmark"] == "proxy_ifeval"
         assert manifest["results"][0]["samples_evaluated"] == 1
         # The metered block travels with the run; the verdict conformance
@@ -468,6 +469,7 @@ class TestEvidencePublication:
             population_size=2,
             target_benchmarks=["proxy_ifeval"],
             self_improve=False,
+            reconfirm_per_cycle=0,
             evidence_dir=str(tmp_path),
         )
 
@@ -476,8 +478,41 @@ class TestEvidencePublication:
 
         manifests = sorted(tmp_path.glob("*/manifest.json"))
         run_ids = {load_evidence_manifest(path)["run_id"] for path in manifests}
-        assert {"g-a-cycle-0", "g-b-cycle-0"} <= run_ids
+        assert {rid for rid in run_ids if rid.startswith("g-a-cycle-0-eval-")} and {
+            rid for rid in run_ids if rid.startswith("g-b-cycle-0-eval-")
+        }
         assert len({path.parent.name for path in manifests}) == len(manifests)
+
+    @pytest.mark.asyncio
+    async def test_reconfirming_a_genome_does_not_discard_its_first_sample(self, tmp_path):
+        """First eval and same-cycle reconfirmation stay independently inspectable.
+
+        With reconfirm enabled, ``run_cycle`` evaluates an unevaluated genome
+        and then takes a fresh sample of it in the same cycle. Both runs share
+        the genome id and cycle count, so the run id carries a per-evaluation
+        ordinal — otherwise the reconfirmation's ``os.replace`` would silently
+        overwrite the first evaluation's manifest while fitness kept both
+        samples.
+        """
+        population = PopulationStore()
+        population.add(_genome("a"))
+        harness = _fake_harness(["proxy_ifeval"])
+        config = EvolutionConfig(
+            population_size=2,
+            target_benchmarks=["proxy_ifeval"],
+            self_improve=False,
+            reconfirm_per_cycle=2,
+            evidence_dir=str(tmp_path),
+        )
+
+        cycle = EvolutionCycle(harness=harness)
+        await cycle.run_cycle(population, llm_call=None, config=config)
+
+        manifests = sorted(tmp_path.glob("*/manifest.json"))
+        assert len(manifests) == 2
+        run_ids = {load_evidence_manifest(path)["run_id"] for path in manifests}
+        assert len(run_ids) == len(manifests)
+        assert all(rid.startswith("g-a-cycle-0-eval-") for rid in run_ids)
 
     @pytest.mark.asyncio
     async def test_a_later_run_does_not_overwrite_an_earlier_run(self, tmp_path):
@@ -510,4 +545,4 @@ class TestEvidencePublication:
             load_evidence_manifest(path)["run_id"] for path in tmp_path.glob("*/manifest.json")
         }
         assert first <= run_ids
-        assert any(run_id.endswith("-cycle-1") for run_id in run_ids)
+        assert any("-cycle-1-eval-" in run_id for run_id in run_ids)

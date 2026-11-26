@@ -215,6 +215,12 @@ class EvolutionCycle:
         self.ledger = ledger or ProducerLedger()
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
+        # Monotonic per-evaluation ordinal (#104): one genome can be
+        # evaluated twice within a single cycle (first eval, then #854
+        # reconfirmation), and both runs share the genome id and cycle
+        # count. The published evidence needs its own identity so the
+        # second manifest cannot replace the first sample's.
+        self._evaluation_seq: int = 0
         # Prior-cycle trace evidence for the retrodiction prefilter (M4-A5).
         # The ledger deliberately outlives individual run_cycle() calls — the
         # point is replaying THIS cycle's candidates against traces recorded
@@ -492,7 +498,12 @@ class EvolutionCycle:
                 genome.id,
             )
             return
-        run_id = f"{genome.id}-cycle-{self._cycle_count}"
+        # One evaluation, one identity: first eval and #854 reconfirmation
+        # within the same cycle would otherwise publish under the same run
+        # id and the atomic replace would silently discard the first
+        # sample's manifest while fitness retained both samples.
+        self._evaluation_seq += 1
+        run_id = f"{genome.id}-cycle-{self._cycle_count}-eval-{self._evaluation_seq}"
         manifest = build_evidence_manifest(
             run_id=run_id,
             results=results,

@@ -166,6 +166,15 @@ class TestPrompt:
         assert "Example 1 input:" in prompt
         assert "Example 2 input:" not in prompt
 
+    def test_test_index_selects_which_entry_is_rendered(self) -> None:
+        task = _multi_test_task()
+        assert "7 8" in arc.render_task(task)
+        second = arc.render_task(task, test_index=1)
+        assert "1 1" in second
+        assert "Test input 2:" in second
+        # The withheld answer is never rendered, whichever entry is selected.
+        assert "2 2" not in second
+
 
 class TestGrading:
     def test_an_exact_grid_match_passes(self) -> None:
@@ -217,6 +226,13 @@ class TestGrading:
         assert arc.parse_output_grid("[[true, 1]]") is None
 
 
+def _multi_test_task() -> dict[str, Any]:
+    """A valid multi-test task: two test entries, distinct answers."""
+    task = _task()
+    task["test"].append({"input": [[1, 1]], "output": [[2, 2]]})
+    return task
+
+
 class TestRun:
     async def test_a_missing_llm_call_raises(self, corpus: Path) -> None:
         """No fabricated scores: there is no stub fallback."""
@@ -240,6 +256,36 @@ class TestRun:
         assert result.samples_evaluated == 2
         assert result.metadata["fidelity"] == "real"
         assert result.metadata["parse_failures"] == 0
+
+    async def test_every_test_entry_is_graded(self, tmp_path: Path) -> None:
+        """A multi-test task is solved only if *all* entries are correct."""
+        directory = tmp_path / "tasks"
+        directory.mkdir()
+        (directory / "a_task.json").write_text(json.dumps(_multi_test_task()), encoding="utf-8")
+
+        answered: list[str] = []
+
+        async def call(*args: Any, **kwargs: Any) -> str:
+            answered.append(str(args[0]))
+            return "[[8, 7], [0, 9]]"  # correct only for entry 0
+
+        result = await arc.run_arc_agi(_genome(), call, attempts=1, corpus_dir=directory)
+        assert result.score == 0.0
+        assert result.samples_evaluated == 1
+        assert len(answered) == 2  # both entries were attempted
+
+    async def test_a_multi_test_task_with_all_entries_correct_is_solved(
+        self, tmp_path: Path
+    ) -> None:
+        directory = tmp_path / "tasks"
+        directory.mkdir()
+        (directory / "a_task.json").write_text(json.dumps(_multi_test_task()), encoding="utf-8")
+
+        async def call(*args: Any, **kwargs: Any) -> str:
+            return "[[2, 2]]" if "Test input 2:" in str(args[0]) else "[[8, 7], [0, 9]]"
+
+        result = await arc.run_arc_agi(_genome(), call, attempts=1, corpus_dir=directory)
+        assert result.score == 1.0
 
     async def test_the_result_is_never_comparable_to_a_published_number(self, corpus: Path) -> None:
         async def call(*args: Any, **kwargs: Any) -> str:

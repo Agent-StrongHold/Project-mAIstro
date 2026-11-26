@@ -1,14 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +191
+  packages/maistro-evolve/tests: +206
 ---
 
 # 104-m4g-external-harness-evidence
 
 Epic #104 (M4-G) — external harness benchmarks and published evidence. This
-note records the test-inventory movement for the change: **+168 collected
-nodes** in `packages/maistro-evolve/tests` (722 → 890), all additions; no
-existing test was removed or renamed.
+note records the test-inventory movement for the change: **+206 collected
+nodes** in `packages/maistro-evolve/tests`, all additions; no existing test
+was removed or renamed.
 
 ## What moved and why
 
@@ -267,3 +267,125 @@ before this section was written; nothing was taken on trust. Results:
 
 No test was added, removed, or moved in this round (docs-only append), so
 the `inventory-delta` above is unchanged.
+
+## Review-repair round: Codex P2 findings on PR #2528 (2026-11-26, this lane)
+
+The independent Codex review of commit `1a344b3e6f` raised seven P2 findings
+against the M4-G evidence path. All seven are now repaired and each repair is
+pinned by a new regression node:
+
+1. **Unique evidence run ID** (`cycle.py`): first eval and same-cycle
+   `#854` reconfirmation published under the same `<genome>-cycle-<n>` id,
+   so the reconfirmation's atomic replace silently discarded the first
+   sample's manifest while fitness kept both samples. The run id now carries
+   a per-evaluation ordinal (`...-eval-N`). Nodes: `test_reconfirming...`,
+   plus the tightened assertions in the two existing publication tests.
+2. **Every ARC test input is graded** (`benchmarks/arc_agi.py`): a multi-test
+   task was solved by answering entry zero alone; now every `test` entry is
+   prompted and graded, and the task is solved only when all of them are.
+   Nodes: `test_every_test_entry_is_graded`,
+   `test_a_multi_test_task_with_all_entries_correct_is_solved`,
+   `test_test_index_selects_which_entry_is_rendered`.
+3. **Deleting a checksummed section is rejected** (`evidence_manifest.py`):
+   a manifest whose `lift`/`refused_diffs` section was removed after the
+   fact used to verify (its checksum remained recorded; the section rules
+   defaulted the absence). `_verify_checksums` now distinguishes a never-
+   checksummed payload (`None`) from a deleted one. Nodes:
+   `test_deleting_a_checksummed_section_is_rejected`,
+   `test_loading_a_file_with_a_deleted_section_raises`.
+4. **The metering publication gate runs at verify** (`evidence_manifest.py`):
+   a checksummed manifest reporting `unresolved_security_violations > 0`
+   used to verify and publish; `verify_evidence_manifest` now validates the
+   block and applies `metering_gate_failures()` (this retires the recorded
+   limitation 2 from the first validation block above). Nodes:
+   `test_unresolved_security_violations_fail_verification`,
+   `test_a_malformed_metering_block_fails_verification`.
+5. **Lift-mapping row roles** (`lift_matrix.py`, commit `2617b5baa4`): a
+   dict mapping that swapped the weak and frontier cells was accepted, so
+   the report silently swapped lift and transfer. Each mapped cell's
+   declared `model_role` must match its position.
+6. **Cost-estimate provenance** (`eval_metering.py`, `evidence_manifest.py`):
+   ARC's documented `$0.002/call` estimate was published as measured spend;
+   the `cost_estimate` marker now survives into the result row's
+   provenance and the run's aggregated metering block. Node:
+   `test_a_documented_cost_estimate_is_not_published_as_measured_spend`.
+7. **Nonpositive gap forbids a numeric closure** (`evidence_manifest.py`):
+   a caller-supplied `LiftReport(gap=0.0, gap_closure=1.0)` was accepted by
+   both build and verify even though `build_lift_report` derives
+   null-only closures for `gap <= 0`. `_lift_section_rows` refuses at
+   build; `_verify_lift` rejects the row at verify (this closes the last
+   of the seven findings). Nodes:
+   `test_a_numeric_gap_closure_with_a_nonpositive_gap_is_refused` (build),
+   `test_a_numeric_gap_closure_with_a_nonpositive_gap_is_refused` (verify),
+   `test_a_numeric_gap_closure_with_a_negative_gap_is_refused`,
+   `test_a_boolean_gap_does_not_trigger_the_nonpositive_check` (guard
+   against `bool` sneaking through the numeric gate).
+
+### Delta arithmetic for this round
+
+`+15` against the pre-round expectation of 1208: **13** new nodes from this
+round's repairs (enumerated above) **plus 2** committed-but-unrecorded nodes
+from `2617b5baa4` (`test_a_cell_in_the_wrong_row_is_refused`,
+`test_a_single_mismatched_role_in_a_mapping_is_refused`), whose note update
+was pending when the prior attempt aborted. The node-ID sets were diffed
+between `2617b5baa4` (temporary worktree, since removed) and this tree:
+13 added, 0 removed, 0 renamed. The note's cumulative delta is therefore
+`+191 → +206`; `check-suite-inventory.py` passes with 21 suites matching.
+
+### Validation executed for this repair (2026-11-26, `uv run`)
+
+- Fail-then-pass for finding 7: the two new build/verify regression nodes
+  were run against `2617b5baa4`'s `evidence_manifest.py` (file-copy swap,
+  `/tmp` backup, restored byte-identical) — both fail pre-repair, both pass
+  post-repair.
+- `pytest packages/maistro-evolve/tests -q` → **1211 passed, 12 skipped**;
+- `ruff check .` → all checks passed; `ruff format --check .` → clean;
+- `scripts/check-suite-inventory.py` → ok, 21 suites match, this note's
+  suite at **1223** collected nodes (651 folded + note deltas), no
+  duplicate evidence.
+
+## Gate-repair round: `lint-and-type-check` (2026-11-26, this lane)
+
+The PR head's `lint-and-type-check` check run failed: `uv run mypy` over the
+ten CI packages reported 5 errors, every one on code this branch added (the
+`arc_agi` benchmark, the `lift_matrix` position fix, the `fitness` transfer
+gates). No test was added, removed, or moved in this round — the
+`inventory-delta` above is unchanged.
+
+Repairs (typing-only, no behavior change):
+
+- `lift_matrix.py`: the second `cell = keyed.get(...)` binding reused a name
+  mypy had already pinned to `MatrixCell`; renamed to `found`.
+- `benchmarks/arc_agi.py`: `_is_grid` is now a
+  `TypeGuard[list[list[int]]]`, so `parse_output_grid` returning the guarded
+  value is no longer a `no-any-return` from `json.loads`.
+- `fitness.py`: the three bare `dict` annotations on the transfer-gate
+  helpers became `dict[str, Any]` (`Any` was already imported).
+
+### Validation executed for this round (2026-11-26, `uv run`)
+
+- `uv run mypy` with CI's exact ten-package argument list → **Success: no
+  issues found in 1139 source files** (was: 5 errors in 3 files);
+- Fail-then-pass, all via file-copy swap against the pre-repair source,
+  `/tmp` backup, restored byte-identical (sha256 verified):
+  - finding 3 + 4 + 7 (`evidence_manifest.py`): `deleted_section`,
+    `unresolved_security`, `malformed_metering`, `nonpositive_gap` —
+    **5 failed** pre-repair, pass post-repair;
+  - finding 1 (`cycle.py`): the reconfirmation regression node —
+    **failed** pre-repair (single run id collapses the
+    two manifests), passes post-repair;
+  - finding 2 (`arc_agi.py`): `test_every_test_entry_is_graded` — **failed**
+    pre-repair (entry zero alone scored the task), passes post-repair.
+- `pytest packages/maistro-evolve/tests -q` → **1211 passed, 12 skipped**;
+- `ruff check .` / `ruff format --check .` → clean;
+- `scripts/check-suite-inventory.py` (CI's invocation) → ok, 21 suites
+  match; `scripts/check-test-duplicates.py` → ok;
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI's exact arguments) → 1219 reviewed
+  identities, gate green, no ledger amendment needed.
+
+Remaining recorded limitations are unchanged: the cross-instance run-id
+shape (`g-...-eval-N` ordinals restart per `EvolutionCycle` instance, so two
+fresh instances at the same cycle count can still choose the same
+directory), the not-yet-vendored ARC-AGI-3 corpus, and the absence of real
+external-harness matched comparisons on the live path.

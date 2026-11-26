@@ -42,7 +42,8 @@ attempt is evidence about the candidate, not a score.
 The task files are the exam: the corpus directory is validated at load (every
 file must be well-formed ARC JSON with at least one train pair and at least
 one test input), and the test outputs are stripped from the prompt material —
-the model sees only train pairs and the test input.
+the model sees only train pairs and the test inputs — every one of them
+(each graded; see ``_solve_task``).
 
 Fail-closed rules
 -----------------
@@ -67,7 +68,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from ..types import EvalResult, PipelineGenome
 from .prompt_builder import build_messages, build_model_config, build_system_prompt
@@ -104,7 +105,7 @@ def available() -> tuple[bool, str]:
 Grid = list[list[int]]
 
 
-def _is_grid(value: Any) -> bool:
+def _is_grid(value: Any) -> TypeGuard[list[list[int]]]:
     """A grid is a non-empty list of equal-length rows of non-boolean ints.
 
     Rectangularity is part of the format: ARC grids are always rectangular, so
@@ -200,10 +201,17 @@ def render_grid(grid: Grid) -> str:
     return "\n".join(" ".join(str(cell) for cell in row) for row in grid)
 
 
-def render_task(task: dict[str, Any], max_train_pairs: int | None = None) -> str:
-    """Build the user prompt for one task: train pairs, then the test input.
+def render_task(
+    task: dict[str, Any],
+    max_train_pairs: int | None = None,
+    *,
+    test_index: int = 0,
+) -> str:
+    """Build the user prompt for one task: train pairs, then a test input.
 
-    The withheld test ``output`` is never rendered — it exists in the task file
+    Multi-test tasks are prompted once per entry (``test_index`` selects
+    which), each with its own answer. The withheld test ``output`` is never
+    rendered — it exists in the task file
     only to grade against. This function is the one place prompts are built,
     so that property has one home and one test file guarding it.
     """
@@ -223,9 +231,10 @@ def render_task(task: dict[str, Any], max_train_pairs: int | None = None) -> str
             render_grid(pair["output"]),
             "",
         ]
-    test_input = task["test"][0]["input"]
+    test_input = task["test"][test_index]["input"]
+    test_label = "Test input:" if test_index == 0 else f"Test input {test_index + 1}:"
     lines += [
-        "Test input:",
+        test_label,
         render_grid(test_input),
         "",
         "Respond with ONLY the output grid as a JSON array of arrays of "
@@ -295,46 +304,56 @@ async def _solve_task(
     attempts: int,
     timeout_s: float,
 ) -> _TaskOutcome:
-    """Run one task's attempts; return what it produced and what it cost."""
-    prompt = render_task(task)
-    expected = task["test"][0]["output"]
+    """Run one task's attempts; return what it produced and what it cost.
+
+    Every test entry is evaluated — a task counts as solved only if *all* of
+    them are answered correctly. Grading just ``test[0]`` would let a correct
+    first answer score a multi-input task without attempting the rest.
+    """
     parse_failures = 0
     gaming_signals = 0
     calls = 0
     errors = 0
-    for _attempt in range(attempts):
-        try:
-            response = await asyncio.wait_for(
-                llm_call(
-                    build_messages(system_prompt, prompt),
-                    temperature=model_config.get("temperature", 0.2),
-                    max_tokens=model_config.get("max_tokens", 2048),
-                ),
-                timeout=timeout_s,
-            )
-        except (TimeoutError, Exception):
-            # House pattern (see ifeval_real): a failed call is a failed
-            # attempt, counted and reported. It is never silently treated as a
-            # wrong answer *and* never as a pass.
+    for test_index in range(len(task["test"])):
+        prompt = render_task(task, test_index=test_index)
+        expected = task["test"][test_index]["output"]
+        entry_solved = False
+        for _attempt in range(attempts):
+            try:
+                response = await asyncio.wait_for(
+                    llm_call(
+                        build_messages(system_prompt, prompt),
+                        temperature=model_config.get("temperature", 0.2),
+                        max_tokens=model_config.get("max_tokens", 2048),
+                    ),
+                    timeout=timeout_s,
+                )
+            except (TimeoutError, Exception):
+                # House pattern (see ifeval_real): a failed call is a failed
+                # attempt, counted and reported. It is never silently treated as a
+                # wrong answer *and* never as a pass.
+                calls += 1
+                errors += 1
+                continue
             calls += 1
-            errors += 1
-            continue
-        calls += 1
-        correct, spoofed = grade_attempt(str(response), expected)
-        if spoofed:
-            gaming_signals += 1
-        if correct:
+            correct, spoofed = grade_attempt(str(response), expected)
+            if spoofed:
+                gaming_signals += 1
+            if correct:
+                entry_solved = True
+                break
+            if parse_output_grid(str(response)) is None:
+                parse_failures += 1
+        if not entry_solved:
             return _TaskOutcome(
-                solved=True,
+                solved=False,
                 parse_failures=parse_failures,
                 gaming_signals=gaming_signals,
                 calls=calls,
                 errors=errors,
             )
-        if parse_output_grid(str(response)) is None:
-            parse_failures += 1
     return _TaskOutcome(
-        solved=False,
+        solved=True,
         parse_failures=parse_failures,
         gaming_signals=gaming_signals,
         calls=calls,

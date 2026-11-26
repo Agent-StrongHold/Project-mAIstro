@@ -76,9 +76,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from .eval_metering import RunMetering
+from .eval_metering import RunMetering, metering_gate_failures
 from .lift_matrix import LiftReport
 from .types import EvalResult
 from .verdict_probes import ConformanceReport, conformance_gate_failures
@@ -208,6 +208,7 @@ def _results_rows(results: list[EvalResult]) -> list[dict[str, Any]]:
                         "official_comparable",
                         "official_comparable_reason",
                         "sampled",
+                        "cost_estimate",
                         "attempts_per_task",
                         "parse_failures",
                     )
@@ -238,13 +239,25 @@ def _require_verdict_conformance(
 
 
 def _lift_section_rows(lift_reports: list[LiftReport] | None) -> list[dict[str, Any]]:
-    """Lift rows; refuse a numeric ``gap_closure`` without its baseline (AC-10)."""
+    """Lift rows; refuse an uninterpretable ``gap_closure`` (SPEC-281 AC-10).
+
+    Numeric ``gap_closure`` needs its ``baseline_version``, and a benchmark
+    with no gap to close (``gap <= 0``) has null-only semantics: there is no
+    "closed fraction" of nothing, so a numeric closure there is fabricated.
+    """
     lift_rows = []
     for report in lift_reports or []:
         if report.gap_closure is not None and not report.baseline_version:
             raise ValueError(
                 f"{report.benchmark}: numeric gap_closure {report.gap_closure} "
                 "without baseline_version — uninterpretable, refusing to build "
+                "(SPEC-281 AC-10)"
+            )
+        if report.gap_closure is not None and report.gap <= 0:
+            raise ValueError(
+                f"{report.benchmark}: numeric gap_closure {report.gap_closure} "
+                f"with gap {report.gap} — a benchmark with no gap to close "
+                "publishes gap_closure as null, not a closed fraction "
                 "(SPEC-281 AC-10)"
             )
         lift_rows.append(
@@ -360,14 +373,22 @@ def build_evidence_manifest(
 def _verify_checksums(manifest: dict[str, Any], checksums: dict[str, Any]) -> list[str]:
     """Every section's bytes must still hash to what was recorded.
 
-    A section with no payload (``None``) was not checksummed when the
-    manifest was built, so there is nothing to compare it against — its
-    absence is judged by the section rules instead (metering, for instance,
-    must carry an explicit reason when it is absent).
+    A section whose recorded checksum is absent from the manifest was
+    deleted after the fact and is rejected. A section whose payload is
+    ``None`` was not checksummed when the manifest was built, so there is
+    nothing to compare it against — its absence is judged by the section
+    rules instead (metering, for instance, must carry an explicit reason
+    when it is absent).
     """
     errors: list[str] = []
     for section in SECTION_NAMES:
         if section not in manifest:
+            if checksums.get(section) is not None:
+                errors.append(
+                    f"section {section!r} is missing but its checksum is "
+                    "recorded — the section was deleted after the manifest "
+                    "was built"
+                )
             continue
         payload = manifest[section]
         if payload is None:
@@ -427,7 +448,8 @@ def _verify_results(results: Any) -> list[str]:
 
 
 def _verify_lift(lift: Any) -> list[str]:
-    """AC-10: a numeric gap_closure is meaningless without its baseline."""
+    """AC-10: a numeric gap_closure is meaningless without its baseline, and
+    meaningless again when the measured gap is nonpositive (nothing to close)."""
     errors: list[str] = []
     if not isinstance(lift, list):
         return ["lift section is not a list"]
@@ -444,6 +466,12 @@ def _verify_lift(lift: Any) -> list[str]:
                 )
             if not isinstance(gap_closure, (int, float)) or isinstance(gap_closure, bool):
                 errors.append(f"lift {name!r}: gap_closure must be a number or null")
+            gap = row.get("gap")
+            if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap <= 0:
+                errors.append(
+                    f"lift {name!r}: numeric gap_closure with nonpositive gap "
+                    f"{gap} — nothing to close, gap_closure must be null (AC-10)"
+                )
         if "transfer" not in row:
             errors.append(f"lift {name!r}: no transfer — inversion is undetectable without it")
     return errors
@@ -514,6 +542,17 @@ def _verify_trace(trace: Any) -> list[str]:
     return errors
 
 
+def _verify_metering(block: Any) -> list[str]:
+    """A present metering block must parse and pass the publication gate."""
+    if not isinstance(block, dict):
+        return ["metering block is not an object"]
+    try:
+        metering = RunMetering.model_validate(block)
+    except ValidationError:
+        return ["metering block is malformed — not a valid RunMetering block"]
+    return metering_gate_failures(metering)
+
+
 def verify_evidence_manifest(manifest: dict[str, Any]) -> list[str]:
     """Return every reason this manifest is not publishable; [] means valid."""
     errors: list[str] = []
@@ -533,6 +572,11 @@ def verify_evidence_manifest(manifest: dict[str, Any]) -> list[str]:
             )
     elif manifest.get("metering_absent_reason"):
         errors.append("metering present alongside metering_absent_reason")
+    else:
+        # Presence is not enough: a block reporting unresolved security
+        # violations is gate-worthy evidence and must fail verification,
+        # not publish (see :func:`metering_gate_failures`).
+        errors.extend(_verify_metering(manifest.get("metering")))
 
     errors.extend(_verify_results(manifest.get("results")))
     errors.extend(_verify_lift(manifest.get("lift", [])))

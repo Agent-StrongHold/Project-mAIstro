@@ -172,13 +172,13 @@ def _by_position(cells: list[MatrixCell] | dict[str, MatrixCell]) -> dict[str, M
     for pos in _POSITIONS:
         role = _POSITION_ROLE[pos[0]]
         kind = _POSITION_KIND[pos.split("_")[1]]
-        cell = keyed.get((role, kind))
-        if cell is None:
+        found = keyed.get((role, kind))
+        if found is None:
             raise UnmatchedCellsError(
                 f"missing cell for position {pos!r} — a lift matrix needs "
                 "exactly 4 cells (w_base, w_evo, f_base, f_evo)"
             )
-        by_position[pos] = cell
+        by_position[pos] = found
     return by_position
 
 
