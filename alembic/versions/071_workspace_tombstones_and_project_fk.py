@@ -36,9 +36,10 @@ copied into `canonical_orphan_project_quarantine` with its full payload and
 the reason it was held out, then removed from the live tree together with the
 memberships and resources that reference only it. Provenance survives in the
 quarantine table; nothing references a quarantined Workspace id again. Rows
-that own Runs are left in place untouched — `canonical_runs.project_id` is
-``ON DELETE RESTRICT``, so removing them would require rewriting the
-execution spine's history, which no disposition in this issue authorizes.
+that own protected history are left in place untouched —
+`canonical_runs.project_id` and `design_creative_briefs.project_id` are both
+``ON DELETE RESTRICT``, so removing their owners would require rewriting the
+execution and design history, which no disposition in this issue authorizes.
 They stay readable exactly as they are (historical Run scope is immutable)
 and stay un-admittable: `create_root_in` refuses their Workspace id and the
 tombstone it writes keeps it refused. For those leftover rows the foreign key
@@ -70,8 +71,10 @@ _QUARANTINE_REASON = "workspace_missing_at_fk_adoption"
 # `ON DELETE RESTRICT`. A run-owning orphan is excluded from the leaves rather
 # than tolerated failing: its `canonical_runs` RESTRICT would abort the whole
 # DELETE statement — every leaf in that pass, not just the run-owning row —
-# and the upgrade would die mid-disposition. Excluded, it stays live (its
-# history is immutable) and the loop still terminates when a pass removes
+# and the upgrade would die mid-disposition. The same holds for a brief-owning
+# orphan: `design_creative_briefs.project_id` is `ON DELETE RESTRICT` (050),
+# so it is excluded for the identical reason. Excluded, the row stays live
+# (its history is immutable) and the loop still terminates when a pass removes
 # nothing else.
 _PURGE_PASSES = 64
 
@@ -175,6 +178,9 @@ def upgrade() -> None:
                        AND NOT EXISTS (
                            SELECT 1 FROM canonical_runs r
                             WHERE r.project_id = q.project_id)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM design_creative_briefs b
+                            WHERE b.project_id = q.project_id)
                 )
                 DELETE FROM canonical_projects p
                  USING leaves l
