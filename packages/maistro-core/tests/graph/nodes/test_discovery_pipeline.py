@@ -20,6 +20,7 @@ from maistro.capabilities.effect_context import (
     new_in_memory_effect_context,
 )
 from maistro.capabilities.providers.discovery_source import (
+    DiscoverySourceProvider,
     DiscoverySourceRequest,
     execute_discovery_source,
     resolve_discovery_source_provider,
@@ -989,3 +990,513 @@ async def test_provider_redirect_into_a_private_target_is_refused_at_that_hop(
         reset_outbound_policy()
     # Hop 0 was made; the private hop never reached any transport.
     assert inner.seen == [_SOURCE_URL]
+
+
+# ---------------------------------------------------------------------------
+# Provider edges: resolution junk, foreign objects, HTTP failures, feed shapes
+# ---------------------------------------------------------------------------
+
+
+async def test_resolution_skips_malformed_source_rows_and_refuses_an_all_junk_list() -> None:
+    """The allowlist parser keeps only {url, category} dict rows with a URL.
+
+    A junk row among valid ones narrows the allowlist; a list of ONLY junk
+    rows is the same refusal as an empty one — never an open fetch.
+    """
+    from maistro.capabilities.types import Unavailable
+
+    mixed = await _effects_with_source(
+        config={
+            "sources": [
+                "https://not-a-dict.example.com",  # type: ignore[list-item]
+                {"category": "no url here"},
+                {"url": "   ", "category": "blank url"},
+                {"url": _SOURCE_URL, "category": "camera-deals"},
+            ]
+        }
+    )
+    binding = await mixed.bindings.get("dsrc-1")
+    assert binding is not None
+    resolved = await resolve_discovery_source_provider(binding)
+    assert isinstance(resolved, DiscoverySourceProvider)
+    assert tuple(s.url for s in resolved.sources) == (_SOURCE_URL,)
+    assert resolved.declared(_SOURCE_URL) is not None
+    assert resolved.declared("https://elsewhere.example.com") is None
+
+    all_junk = await _effects_with_source(
+        config={"sources": ["just-a-string", {"category": "url-less"}]}  # type: ignore[list-item]
+    )
+    junk_binding = await all_junk.bindings.get("dsrc-1")
+    assert junk_binding is not None
+    refused = await resolve_discovery_source_provider(junk_binding)
+    assert isinstance(refused, Unavailable)
+    assert "sources" in refused.reason
+
+    no_key = await _effects_with_source(config={"allowlist": "wrong key"})
+    no_key_binding = await no_key.bindings.get("dsrc-1")
+    assert no_key_binding is not None
+    refused = await resolve_discovery_source_provider(no_key_binding)
+    assert isinstance(refused, Unavailable)
+    assert "sources" in refused.reason
+
+
+async def test_a_binding_pinning_another_provider_name_is_unavailable() -> None:
+    from maistro.capabilities.types import Unavailable
+
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(
+        Binding(
+            binding_id="dsrc-wrong",
+            workspace_id=_WS,
+            project_id=_PROJECT,
+            node_id="n1",
+            capability="discovery.source",
+            provider_name="pm-polling",
+            config={"sources": [{"url": _SOURCE_URL, "category": "a"}]},
+        )
+    )
+    binding = await effects.bindings.get("dsrc-wrong")
+    assert binding is not None
+    resolved = await resolve_discovery_source_provider(binding)
+    assert isinstance(resolved, Unavailable)
+    assert "pm-polling" in resolved.reason
+
+
+async def test_the_capability_seam_refuses_a_binding_of_another_capability() -> None:
+    """invoke_discovery_source is wired to the discovery.source capability;
+    a Binding of any other capability must fail loudly at that seam."""
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.put(
+        Binding(
+            binding_id="model-x",
+            workspace_id=_WS,
+            project_id=_PROJECT,
+            node_id="n1",
+            capability="model.chat",
+            config={"sources": [{"url": _SOURCE_URL, "category": "a"}]},
+        )
+    )
+    binding = await effects.bindings.get("model-x")
+    assert binding is not None
+    with pytest.raises(ValueError, match="unexpected discovery capability"):
+        await invoke_discovery_source(
+            effects,
+            binding=binding,  # type: ignore[arg-type]
+            run_id="run-1",
+            node_run_id="nr-1",
+            attempt_id="attempt-1",
+            effect_key="discovery.source.fetch:x",
+            request=DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5),
+            timeout_s=5.0,
+        )
+
+
+async def test_execution_refuses_foreign_providers_and_requests() -> None:
+    effects = await _effects_with_source()
+    provider = await _resolve_provider(effects)
+    assert isinstance(provider, DiscoverySourceProvider)
+    request = DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5)
+    with pytest.raises(TypeError, match="foreign provider"):
+        await execute_discovery_source(object(), request, timeout_s=5.0)
+    with pytest.raises(TypeError, match="foreign request"):
+        await execute_discovery_source(provider, {"url": _SOURCE_URL}, timeout_s=5.0)  # type: ignore[arg-type]
+
+
+async def test_an_http_error_status_is_a_typed_error_carrying_the_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities.providers.discovery_source import DiscoverySourceHttpError
+
+    effects = await _effects_with_source()
+    _with_transport(monkeypatch, _Transport(status_code=404, text="gone", content_type="text/html"))
+    with pytest.raises(DiscoverySourceHttpError) as excinfo:
+        await execute_discovery_source(
+            await _resolve_provider(effects),
+            DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5),
+            timeout_s=5.0,
+        )
+    assert excinfo.value.status_code == 404
+
+
+async def test_an_unreachable_source_is_an_effect_not_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities.invocation import EffectNotApplied
+
+    effects = await _effects_with_source()
+
+    class _DeadClient:
+        is_closed = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+        async def __aenter__(self) -> _DeadClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs: object) -> object:
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _DeadClient)
+    with pytest.raises(EffectNotApplied, match="source unreachable"):
+        await execute_discovery_source(
+            await _resolve_provider(effects),
+            DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5),
+            timeout_s=5.0,
+        )
+
+
+def test_json_feeds_come_in_both_shapes_and_skip_foreign_rows() -> None:
+    from maistro.capabilities.providers.discovery_source import _parse_feed
+
+    as_list = '[{"id": "1", "title": "From a list"}, "not-a-dict"]'
+    rows = _parse_feed(_SOURCE_URL, "application/json", as_list, 20)
+    assert [row["title"] for row in rows] == ["From a list"]
+
+    as_items = '{"items": [{"id": "2", "title": "From items"}]}'
+    rows = _parse_feed(_SOURCE_URL, "application/json", as_items, 20)
+    assert [row["title"] for row in rows] == ["From items"]
+
+
+async def test_unparseable_and_unknown_shaped_feeds_are_loud_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effects = await _effects_with_source()
+    provider = await _resolve_provider(effects)
+
+    effects = await _effects_with_source()
+    provider = await _resolve_provider(effects)
+
+    async def _fetch(body: str, content_type: str, timeout_s: float) -> object:
+        # The pooled client is keyed by configuration, so each fetch uses a
+        # distinct timeout to get its own freshly-patched client.
+        _with_transport(monkeypatch, _Transport(text=body, content_type=content_type))
+        return await execute_discovery_source(
+            provider,
+            DiscoverySourceRequest(url=_SOURCE_URL, max_entries=5),
+            timeout_s=timeout_s,
+        )
+
+    garbage_atom = "this is not <feed at all"
+    with pytest.raises(RuntimeError, match="unparseable Atom"):
+        await _fetch(garbage_atom, "application/atom+xml", 5.0)
+
+    garbage_json = "{not json"
+    with pytest.raises(RuntimeError, match="unparseable JSON"):
+        await _fetch(garbage_json, "application/json", 6.0)
+
+    unknown_json = '{"entries": []}'
+    with pytest.raises(RuntimeError, match="neither a list nor an object with `items`"):
+        await _fetch(unknown_json, "application/json", 7.0)
+
+
+def test_every_feed_shape_honours_the_per_request_cap() -> None:
+    from maistro.capabilities.providers.discovery_source import _parse_feed
+
+    atom_entries = "".join(
+        f"<entry><id>e{i}</id><title>Entry {i}</title></entry>" for i in range(4)
+    )
+    atom = f'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">{atom_entries}</feed>'
+    assert len(_parse_feed(_SOURCE_URL, "application/atom+xml", atom, 2)) == 2
+
+    json_entries = ",".join(f'{{"id": "{i}", "title": "Row {i}"}}' for i in range(4))
+    assert len(_parse_feed(_SOURCE_URL, "application/json", f"[{json_entries}]", 3)) == 3
+
+
+async def test_timestamps_that_cannot_be_read_are_never_treated_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blank, foreign, and timezone-less stamps survive a strict age window."""
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    fresh_rfc822 = format_datetime(datetime.now(UTC) - timedelta(hours=2))
+    body = (
+        '<rss version="2.0"><channel>'
+        f"<item><title>Blank stamp</title><link>https://feeds.example.com/b</link>"
+        f"<guid>b1</guid><description>x</description></item>"
+        f"<item><title>Foreign stamp</title><link>https://feeds.example.com/f</link>"
+        f"<guid>f1</guid><description>x</description><pubDate>yesterday, maybe</pubDate></item>"
+        f"<item><title>Naive iso stamp</title><link>https://feeds.example.com/n</link>"
+        f"<guid>n1</guid><description>x</description>"
+        f"<pubDate>{datetime.now(UTC).replace(tzinfo=None).isoformat()}</pubDate></item>"
+        f"<item><title>Rfc stamp</title><link>https://feeds.example.com/r</link>"
+        f"<guid>r1</guid><description>x</description><pubDate>{fresh_rfc822}</pubDate></item>"
+        "</channel></rss>"
+    )
+    effects = await _effects_with_source()
+    _with_transport(monkeypatch, _Transport(text=body, content_type="application/rss+xml"))
+    node = DiscoverySourceFetchNode(effect_context=effects)
+    result = await node.run({"binding_id": "dsrc-1", "max_age_hours": 24, "limit": 10}, _ctx())
+    assert result.success
+    # Nothing was dropped: unreadable time is not old time.
+    assert result.output.skipped_stale == 0
+    titles = {entry["title"] for entry in result.output.entries}
+    assert titles == {"Blank stamp", "Foreign stamp", "Naive iso stamp", "Rfc stamp"}
+
+
+async def test_fetch_refuses_a_binding_whose_declared_rows_are_all_junk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effects = await _effects_with_source(
+        config={"sources": ["a-string", {"category": "no url"}]}  # type: ignore[list-item]
+    )
+    transport = _Transport(text=_RSS, content_type="application/rss+xml")
+    _with_transport(monkeypatch, transport)
+    node = DiscoverySourceFetchNode(effect_context=effects)
+    result = await node.run({"binding_id": "dsrc-1"}, _ctx())
+    assert not result.success
+    assert result.error_code == "BindingNotFound"
+    assert transport.urls == []
+
+
+async def test_fetch_ignores_foreign_rows_backfills_categories_and_honours_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-dict rows are skipped, missing categories come from the Binding's
+    declared source, and the cycle cap stops further sources."""
+    effects = await _effects_with_source(
+        config={
+            "sources": [
+                {"url": _SOURCE_URL, "category": "camera-deals"},
+                {"url": "https://feeds.example.com/rss2", "category": "b"},
+            ]
+        }
+    )
+    body = '["not-a-dict", {"id": "1", "title": "No category"}, {"id": "2", "title": "Second"}]'
+    _with_transport(monkeypatch, _Transport(text=body, content_type="application/json"))
+    node = DiscoverySourceFetchNode(effect_context=effects)
+    result = await node.run({"binding_id": "dsrc-1", "max_age_hours": 0, "limit": 2}, _ctx())
+    assert result.success
+    entries = result.output.entries
+    assert [entry["title"] for entry in entries] == ["No category", "Second"]
+    # The Binding's declared category backfills what the feed omitted.
+    assert all(entry["category"] == "camera-deals" for entry in entries)
+    # The cap stopped the cycle at 2: the second declared source was never
+    # queried.
+    assert result.output.sources_queried == 1
+    assert result.output.sources[0]["url"] == _SOURCE_URL
+
+
+def test_accept_entries_skips_foreign_rows_caps_remaining_and_keeps_declared_categories() -> None:
+    """The accept loop is the node's own defense line: a foreign row (or a
+    remaining-cap of zero) never becomes an entry, and an entry the feed
+    already categorized keeps that category instead of the Binding's."""
+    from datetime import UTC, datetime
+
+    from maistro.graph.nodes.discovery_source_fetch import DiscoverySourceFetchIn
+
+    node = DiscoverySourceFetchNode(effect_context=new_in_memory_effect_context())
+    inputs = DiscoverySourceFetchIn(binding_id="dsrc-1", max_age_hours=0, limit=5)
+    now = datetime.now(UTC)
+
+    rows, skipped = node._accept_entries(
+        {"entries": ["not-a-dict", {"id": "1", "title": "Kept"}]},
+        "camera-deals",
+        now=now,
+        inputs=inputs,
+        remaining=5,
+    )
+    assert skipped == 0
+    assert [row["title"] for row in rows] == ["Kept"]
+    assert rows[0]["category"] == "camera-deals"
+
+    # A remaining-cap of zero drops every row without raising.
+    rows, skipped = node._accept_entries(
+        {"entries": [{"id": "2", "title": "Over cap"}]},
+        "camera-deals",
+        now=now,
+        inputs=inputs,
+        remaining=0,
+    )
+    assert rows == []
+    assert skipped == 0
+
+    # An entry already carrying its feed's category keeps it.
+    rows, _ = node._accept_entries(
+        {"entries": [{"id": "3", "title": "Categorized", "category": "feed-category"}]},
+        "camera-deals",
+        now=now,
+        inputs=inputs,
+        remaining=5,
+    )
+    assert rows[0]["category"] == "feed-category"
+
+
+# ---------------------------------------------------------------------------
+# Curator edges: strict verdict shapes, honest drops, refusal, strategy
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_parsing_is_strict_about_shapes() -> None:
+    from maistro.graph.nodes.discovery_curate import _parse_verdicts, _score_triple
+
+    assert _parse_verdicts("the model rambled; no JSON at all") == {}
+    assert _parse_verdicts('{"candidates": broken}') == {}
+    assert _parse_verdicts('{"candidates": "everything is fine"}') == {}
+    assert _parse_verdicts('["a bare list is not a verdict"]') == {}
+    # Non-dict rows and rows without a string fingerprint are skipped.
+    parsed = _parse_verdicts('{"candidates": ["junk", {"fingerprint": 7}, {"fingerprint": "ok"}]}')
+    assert list(parsed) == ["ok"]
+
+    # Score triples: booleans, strings and out-of-range numbers are all
+    # refused; every field present and in range passes.
+    good = {"relevance": 0.9, "novelty": 0.8, "confidence": 0.7, "reason": "r"}
+    assert _score_triple(good) == (0.9, 0.8, 0.7, "r")
+    assert _score_triple({**good, "relevance": True}) is None
+    assert _score_triple({**good, "novelty": "0.8"}) is None
+    assert _score_triple({**good, "confidence": 1.5}) is None
+    assert _score_triple({"relevance": 0.9, "novelty": 0.8}) is None
+
+
+def test_lexical_notes_without_salient_words_score_nothing() -> None:
+    from maistro.graph.nodes.discovery_curate import _lexical_matches
+    from maistro.graph.nodes.discovery_scout import ScoutedCandidate
+
+    scouted = ScoutedCandidate.model_validate(
+        _candidate("Tripod deal", "https://x.example.com/t", ["tripod"])
+    )
+    # Stop-words only: nothing counts as an overlap hit.
+    score, matched = _lexical_matches(scouted, ["the a an of to"])
+    assert score == 0.0
+    assert matched == []
+
+
+async def test_verdict_shapes_are_scored_honestly_through_the_node(
+    monkeypatch: pytest.MonkeyPatch,
+    curator_binding: str,
+) -> None:
+    """A parseable verdict below the floor is a low-confidence drop, an
+    unparsable one is an unparsable drop, and a kept verdict without a reason
+    text adds no fabricated curator evidence."""
+    import json as _json
+
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake-litellm:4000")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "fake-key")
+    low_fp = fingerprint_for(entry_id="lo", url="https://x.example.com/low", title="Low conf")
+    bad_fp = fingerprint_for(entry_id="ba", url="https://x.example.com/bad", title="Bad triple")
+    quiet_fp = fingerprint_for(entry_id="qu", url="https://x.example.com/quiet", title="Quiet")
+
+    def _verdict_body_for(prompt: object) -> str:
+        """Verdicts for every candidate in the prompt — one completion, one
+        verdict per candidate, each in the shape that candidate tests."""
+        payload = _json.loads(str(prompt))
+        rows: list[dict[str, object]] = []
+        for row in payload["candidates"]:
+            fingerprint = str(row["fingerprint"])
+            if fingerprint == low_fp:
+                rows.append(
+                    {
+                        "fingerprint": fingerprint,
+                        "relevance": 0.9,
+                        "novelty": 0.8,
+                        "confidence": 0.1,
+                        "reason": "weak",
+                    }
+                )
+            elif fingerprint == bad_fp:
+                rows.append(
+                    {
+                        "fingerprint": fingerprint,
+                        "relevance": True,
+                        "novelty": 0.8,
+                        "confidence": 0.9,
+                        "reason": "bad",
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "fingerprint": fingerprint,
+                        "relevance": 0.9,
+                        "novelty": 0.8,
+                        "confidence": 0.9,
+                    }
+                )
+        return _json.dumps({"candidates": rows})
+
+    seen: dict[str, object] = {}
+
+    class _EchoResp:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": _verdict_body_for(seen["body"]["messages"][1]["content"])
+                        }
+                    }
+                ]
+            }
+
+    class _EchoClient:
+        is_closed = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+        async def __aenter__(self) -> _EchoClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> _EchoResp:
+            seen["body"] = kwargs.get("json")
+            return _EchoResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _EchoClient)
+    node = _curator_node()
+    result = await node.run(
+        {
+            "candidates": [
+                _candidate("Low conf", "https://x.example.com/low", []),
+                _candidate("Bad triple", "https://x.example.com/bad", []),
+                _candidate("Quiet", "https://x.example.com/quiet", []),
+            ],
+            "strategy": "model",
+            "binding_id": curator_binding,
+            "min_confidence": 0.5,
+        },
+        _ctx("n3"),
+    )
+    assert result.success
+    # One item survives: the quiet verdict with full scores and no reason.
+    assert [item.fingerprint for item in result.output.items] == [quiet_fp]
+    kept = result.output.items[0]
+    assert "curator:" not in kept.explain
+    assert kept.matched_context == []
+    # The other two are dropped into their honest buckets.
+    assert result.output.dropped_low_confidence == 1
+    assert result.output.dropped_unparsable == 1
+
+
+async def test_a_budget_refusal_is_the_curator_output_not_a_failure() -> None:
+    cycle = _Cycle(DiscoveryCycleContext(budget_refusal="discovery_cycle_budget_exhausted"))
+    node = DiscoveryCurateNode(discovery_context=cycle)
+    result = await node.run(
+        {
+            "candidates": [_candidate("X", "https://x.example.com/x", [])],
+            "strategy": "lexical",
+        },
+        _ctx("n3"),
+    )
+    assert result.success
+    assert result.output.items == []
+    assert result.output.strategy == "refused:discovery_cycle_budget_exhausted"
+
+
+async def test_an_unknown_strategy_is_a_node_error() -> None:
+    node = DiscoveryCurateNode(discovery_context=_no_context())
+    result = await node.run(
+        {
+            "candidates": [_candidate("X", "https://x.example.com/x", [])],
+            "strategy": "psychic",
+        },
+        _ctx("n3"),
+    )
+    assert not result.success
+    assert "model|lexical" in (result.error_message or "")

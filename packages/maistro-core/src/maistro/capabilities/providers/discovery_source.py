@@ -236,14 +236,6 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _text(element: ET.Element, *paths: str) -> str:
-    for path in paths:
-        for found in element.iter():
-            if _local(found.tag) == path and found.text and found.text.strip():
-                return found.text.strip()
-    return ""
-
-
 def _children(element: ET.Element, name: str) -> list[ET.Element]:
     return [child for child in element.iter() if _local(child.tag) == name]
 

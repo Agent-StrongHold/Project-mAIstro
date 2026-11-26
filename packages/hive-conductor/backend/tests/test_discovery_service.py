@@ -884,3 +884,95 @@ async def test_lift_scan_survives_inspection_being_down(monkeypatch: Any) -> Non
     body = await discovery.surfaced_items("admin", ws)
     assert body["items"] == []
     assert body["counts"]["surfaced"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Projection edges: foreign rows, unreadable time, and a degraded surface
+# ---------------------------------------------------------------------------
+
+
+async def test_attention_projection_tolerates_foreign_rows_and_unreadable_time() -> None:
+    """Rows without a fingerprint contribute nothing; an unparsable expiry is
+    no deadline (proactive waiting), and a timezone-less expiry is read as
+    UTC rather than crashing or escalating wrongly."""
+    from services.attention import list_attention
+
+    ws = await _workspace("admin", "Discovery attention edges")
+    _enable(ws)
+    now = datetime.now(UTC)
+    rows = [
+        {**_curated_item("fp-none", "No fingerprint row"), "fingerprint": ""},
+        {**_curated_item("fp-bad", "Bad expiry stamp"), "expires_at": "not-a-date"},
+        {
+            **_curated_item("fp-naive", "Naive expiry stamp"),
+            "expires_at": (now + timedelta(hours=3)).replace(tzinfo=None).isoformat(),
+        },
+    ]
+    for row in rows:
+        discovery.store[discovery._item_key(ws, str(row["fingerprint"]) or "blank")] = {
+            **row,
+            "status": "surfaced",
+            "surfaced_at": now.isoformat(),
+        }
+
+    body = await list_attention("admin", ws, now=now)
+    assert body is not None
+    by_kind = {
+        item["source_id"]: item for item in body["items"] if item["source_kind"] == "discovery_item"
+    }
+    # The fingerprint-less row was skipped; the other two projected.
+    assert set(by_kind) == {"fp-bad", "fp-naive"}
+    assert by_kind["fp-bad"]["attention_class"] == "proactive"
+    assert by_kind["fp-naive"]["attention_class"] == "time_sensitive"
+
+
+async def test_the_projections_degrade_to_empty_when_the_surface_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attention and Home read the discovery service read-only: a service
+    that raises, or answers with a non-dict body, contributes nothing to
+    either projection instead of failing the page."""
+    from services import home_projections
+    from services.attention import list_attention
+
+    ws = await _workspace("admin", "Discovery degraded surface")
+    _enable(ws)
+    now = datetime.now(UTC)
+
+    async def broken_surfaced_items(user_id: str, workspace_id: str) -> dict[str, Any]:
+        raise RuntimeError("surface unavailable")
+
+    monkeypatch.setattr(discovery, "surfaced_items", broken_surfaced_items)
+    attention_body = await list_attention("admin", ws, now=now)
+    assert attention_body is not None
+    assert not [item for item in attention_body["items"] if item["source_kind"] == "discovery_item"]
+    home_body = await home_projections.adaptive_items("admin", ws)
+    assert not [c for c in home_body["candidates"] if c["item_type"] == "discovery_item"]
+
+    async def non_dict_surfaced_items(user_id: str, workspace_id: str) -> Any:
+        return "not-a-dict"
+
+    monkeypatch.setattr(discovery, "surfaced_items", non_dict_surfaced_items)
+    attention_body = await list_attention("admin", ws, now=now)
+    assert attention_body is not None
+    assert not [item for item in attention_body["items"] if item["source_kind"] == "discovery_item"]
+
+    async def foreign_rows_surfaced_items(user_id: str, workspace_id: str) -> dict[str, Any]:
+        return {
+            "items": [
+                "not-a-dict",
+                {"fingerprint": "", "title": "no fingerprint"},
+                {"fingerprint": "fp-real", "title": "Real", "url": "https://x.example.com/r"},
+            ]
+        }
+
+    monkeypatch.setattr(discovery, "surfaced_items", foreign_rows_surfaced_items)
+    home_body = await home_projections.adaptive_items("admin", ws)
+    discovery_candidates = [
+        c for c in home_body["candidates"] if c["item_type"] == "discovery_item"
+    ]
+    # The foreign rows and the fingerprint-less row were skipped; the real
+    # row carries its explain fallback evidence and its url.
+    assert [c["resource_id"] for c in discovery_candidates] == ["fp-real"]
+    assert discovery_candidates[0]["explain"] == "discovered for this Workspace"
+    assert discovery_candidates[0]["href"] == "https://x.example.com/r"
