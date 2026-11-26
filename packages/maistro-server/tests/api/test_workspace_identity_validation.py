@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from maistro.workspaces import InMemoryWorkspaceStore
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 
 
 @pytest.fixture
@@ -17,9 +17,8 @@ def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(workspace_api.router)
     workspace_api.configure_workspace_store(InMemoryWorkspaceStore())
-    principal = AuthenticatedPrincipal(
+    principal = Principal(
         user_id="alice",
-        token="token-alice",
         roles=frozenset({"user"}),
     )
     app.dependency_overrides[verify_api_key] = lambda: principal
