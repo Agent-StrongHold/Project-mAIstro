@@ -17,6 +17,14 @@ negative cases run the same reconciliation against synthetic trees: a
 reachable registration omitted from loading is detected, an unreachable one
 without a reviewed disposition is detected, and test-shaped registrations
 stay outside the universe.
+
+#1864 adds the identity layer: :mod:`_registration_inventory` derives, from
+source alone and without importing anything, which kind each reachable
+registration expression binds to which class in which defining module and
+checkout file — failing closed on registration forms it cannot attribute —
+and the registry must bind exactly that. A fresh-process core-only load
+fails that proof for the reachable design registrations even when the parent
+pytest process has Design imported; the real production loaders pass it.
 """
 
 from __future__ import annotations
@@ -25,8 +33,11 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from maistro.graph.nodes import get_node, list_kinds
 
@@ -39,12 +50,34 @@ from ._production_registration import (
     scan_registration_modules,
     unreachable_identities,
 )
+from ._registration_inventory import (
+    ExpectedRegistration,
+    UnsupportedRegistration,
+    expected_in_module,
+    expected_registrations,
+    verify_identity_parity,
+)
 
 _CREATIVE_MODULE = "maistro_design.creative_nodes"
+
+#: The statically expected inventory, derived once per session. Pure source
+#: analysis: computing it imports no registration module and registers no
+#: kind, so it can judge registries loaded independently of this helper.
+_EXPECTED: dict[str, list[ExpectedRegistration]] = expected_registrations(_REPO_ROOT)
 
 
 def _real_reconciliation() -> Reconciliation:
     return reconcile(_REPO_ROOT, LOADED_REGISTRATION_MODULES)
+
+
+def _expected_registrations() -> list[ExpectedRegistration]:
+    return [reg for regs in _EXPECTED.values() for reg in regs]
+
+
+def _expected_for_kind(kind: str) -> ExpectedRegistration:
+    hits = [reg for reg in _expected_registrations() if reg.kind == kind]
+    assert len(hits) == 1, f"expected exactly one source registration for {kind!r}"
+    return hits[0]
 
 
 # --- the real tree: the three views must agree --------------------------------------
@@ -198,6 +231,19 @@ _REGISTRATION_BODY = (
     "@register_node\n"
     "class _Synthetic:\n"
     "    pass\n"
+)
+
+#: A registration the identity layer can attribute end to end: kind, class
+#: and file all derive from this source text alone.
+_ATTRIBUTED_REGISTRATION_BODY = (
+    "from maistro.graph.nodes import register_node\n"
+    "\n"
+    "\n"
+    "@register_node\n"
+    "class _Synthetic:\n"
+    "    kind = 'x.synthetic'\n"
+    "    async def _execute(self, inputs, ctx):\n"
+    "        raise NotImplementedError\n"
 )
 
 
@@ -357,3 +403,562 @@ def test_the_loaded_registration_modules_are_importable_production_modules() -> 
     for dotted in sorted(LOADED_REGISTRATION_MODULES):
         module = importlib.import_module(dotted)
         assert getattr(module, "__file__", None), dotted
+
+
+# --- statically derived identity inventory (#1864) -----------------------------------
+
+
+def test_the_static_inventory_covers_exactly_the_loaded_reachable_modules() -> None:
+    """The identity layer and the loading layer describe the same universe:
+    every statically attributed registration module is one the loader
+    imported, and none of them came out empty (which would mean the extractor
+    dropped references the site scan saw)."""
+    assert set(_EXPECTED) == set(LOADED_REGISTRATION_MODULES)
+    assert _EXPECTED, "the static inventory attributed no registration modules"
+    empty = sorted(module for module, regs in _EXPECTED.items() if not regs)
+    assert not empty, f"scanned registration modules with no expected registration: {empty}"
+
+
+@pytest.mark.parametrize("reg", _expected_registrations(), ids=lambda reg: reg.kind)
+def test_the_registry_binds_each_expected_registration_to_its_defining_identity(
+    reg: ExpectedRegistration,
+) -> None:
+    """The four identity witnesses per registration: the kind is registered,
+    to the class the source names, in the module the source ships it in,
+    compiled from the checkout file the source scan attributed — so a wrong
+    class, a same-named substitute or a stale module copy cannot pass."""
+    cls = get_node(reg.kind)  # absent -> KeyError naming the missing kind
+    assert cls.__name__ == reg.class_name
+    assert cls.__module__ == reg.module
+    from ._registration_inventory import _own_function_files
+
+    witnessed = _own_function_files(cls)
+    assert witnessed, "class defines no own functions; source-file parity has no witness"
+    assert all(Path(name).resolve() == reg.file.resolve() for name in witnessed), (
+        f"{reg.kind!r} is compiled from {sorted(witnessed)}, not the checkout file {reg.file}"
+    )
+
+
+def test_the_parity_report_is_clean_and_checks_the_whole_minimum() -> None:
+    """The aggregate proof the fresh-process case reuses: no expected kind
+    missing, none substituted, none from another source file, and the
+    positive result covers the entire statically derived minimum."""
+    report = verify_identity_parity(_EXPECTED)
+    assert report.checked == len(_expected_registrations())
+    assert not report.failures(), report.failures()
+
+
+def test_incidental_extra_registrations_are_reported_separately_from_the_minimum() -> None:
+    """Registry entries outside the derived reachable minimum are reported as
+    data on their own — never folded into the production reachability proof
+    (and today, none exist: extras would mean a registration no shipped
+    source expression accounts for)."""
+    report = verify_identity_parity(_EXPECTED)
+    assert isinstance(report.extras, dict), "extras must be reported separately"
+    assert not report.extras, (
+        f"incidental extra registrations outside the reachable minimum: {report.extras}"
+    )
+
+
+def test_the_static_minimum_does_not_narrow_the_broader_guard_coverage() -> None:
+    """The derived minimum is exactly that — a floor. The guards' broader
+    non-`test.*` registry sweep keeps covering incidental entries on top of
+    it, so deriving the minimum cannot shrink what the sweeps prove."""
+    from .test_node_composition import shipped_kinds
+
+    minimum = {reg.kind for reg in _expected_registrations()}
+    broader = set(shipped_kinds())
+    assert minimum <= broader
+    assert broader - minimum == set(verify_identity_parity(_EXPECTED).extras)
+
+
+# --- fresh process: a core-only load fails the proof ---------------------------------
+
+
+def _pytest_pythonpath() -> list[str]:
+    """The collection paths CI's core command gives its pytest processes."""
+    config = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    return list(tomllib.loads(config)["tool"]["pytest"]["ini_options"]["pythonpath"])
+
+
+def test_a_fresh_core_only_load_fails_the_proof_for_reachable_design_registrations() -> None:
+    """The #1082 selection hole, executed end to end: a fresh interpreter
+    loading only the core catalog fails the identity proof for every
+    reachable design registration — naming each missing kind and the design
+    module that ships it — even though this parent pytest process has Design
+    imported and its own registry passes. The proof reads the loader's
+    attribution, not whichever imports happened to precede collection."""
+    # The parent has previously imported Design through the real loaders:
+    assert "maistro_design.creative_nodes" in sys.modules
+    parent_creative = [kind for kind in list_kinds() if kind.startswith("creative.")]
+    assert parent_creative, "parent registry lacks the creative kinds it imported"
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(_REPO_ROOT / entry) for entry in _pytest_pythonpath()])
+    probe = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, r'{Path(__file__).parent}')\n"
+        "import maistro.graph.nodes as nodes\n"
+        "registry = {k: nodes.get_node(k) for k in nodes.list_kinds()"
+        " if not k.startswith('test.')}\n"
+        "from _registration_inventory import (\n"
+        "    expected_registrations, verify_identity_parity,\n"
+        ")\n"
+        f"expected = expected_registrations(Path(r'{_REPO_ROOT}'))\n"
+        "report = verify_identity_parity(expected, kind_classes=registry)\n"
+        "print(json.dumps({\n"
+        "    'bare': sorted(registry),\n"
+        "    'missing': report.missing,\n"
+        "}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+    observed: dict[str, Any] = json.loads(proc.stdout)
+
+    bare = set(observed["bare"])
+    assert not {kind for kind in bare if kind.startswith(("creative.", "design."))}
+    missing = observed["missing"]
+    creative_missing = {k: v for k, v in missing.items() if k.startswith("creative.")}
+    assert len(creative_missing) == 11, sorted(creative_missing)
+    assert all(source.startswith(_CREATIVE_MODULE) for source in creative_missing.values()), (
+        creative_missing
+    )
+    reachable_design = {
+        reg.kind: reg.module
+        for module, regs in _EXPECTED.items()
+        if module.startswith("maistro_design.")
+        for reg in regs
+    }
+    assert set(missing) == set(reachable_design), sorted(missing)
+    assert all(missing[kind].startswith(module) for kind, module in reachable_design.items()), (
+        missing
+    )
+
+    # The actual production loaders pass the same proof, in this process:
+    assert not verify_identity_parity(_EXPECTED).failures()
+
+
+# --- parity negatives: substituted identities cannot pass ----------------------------
+
+
+def test_a_wrong_registered_class_cannot_satisfy_identity_parity() -> None:
+    """The registry binds the expected kind to a different class entirely:
+    parity fails naming both class identities."""
+    reg = _expected_for_kind("llm.summarize")
+    substitute = get_node("creative.brief_resolve")
+    report = verify_identity_parity(
+        {reg.module: [reg]},
+        kind_classes={"llm.summarize": substitute},
+    )
+    assert report.missing == {}
+    assert report.wrong_class == {"llm.summarize": (reg.class_name, substitute.__name__)}
+
+
+def test_a_same_named_substituted_class_cannot_satisfy_identity_parity() -> None:
+    """A different class with the exact expected name, defined (and therefore
+    compiled) elsewhere: the defining-module witness fails."""
+    reg = _expected_for_kind("llm.summarize")
+
+    # Same name, wrong provenance: defined in this test module.
+    class LlmSummarizeNode:
+        pass
+
+    report = verify_identity_parity(
+        {reg.module: [reg]},
+        kind_classes={"llm.summarize": LlmSummarizeNode},
+    )
+    assert report.wrong_class == {}
+    assert report.wrong_module == {"llm.summarize": (reg.module, LlmSummarizeNode.__module__)}
+    assert report.wrong_source_file, "a substitute class must also fail file parity"
+
+
+def test_a_wrong_source_file_module_cannot_satisfy_identity_parity() -> None:
+    """A same-named class whose `__module__` is spoofed to the expected
+    module passes the name and module witnesses, but its own methods still
+    compile from wherever it was really defined — the code-object witness
+    pins the checkout file."""
+    reg = _expected_for_kind("llm.summarize")
+
+    class LlmSummarizeNode:
+        async def _execute(self, inputs: object, ctx: object) -> object:
+            raise NotImplementedError
+
+    LlmSummarizeNode.__module__ = reg.module  # spoofed binding
+    compiled_from = [
+        value.__code__.co_filename
+        for value in vars(LlmSummarizeNode).values()
+        if hasattr(value, "__code__")
+    ]
+    assert compiled_from and all(
+        Path(name).resolve() != reg.file.resolve() for name in compiled_from
+    )
+    report = verify_identity_parity(
+        {reg.module: [reg]},
+        kind_classes={"llm.summarize": LlmSummarizeNode},
+    )
+    assert report.wrong_class == {} and report.wrong_module == {}
+    assert report.wrong_source_file == {
+        "llm.summarize": (str(reg.file), sorted(set(compiled_from)))
+    }
+
+
+def test_a_missing_reachable_registration_fails_naming_kind_and_source() -> None:
+    """A reachable source registration the loader's registry never received
+    fails with the missing kind AND its shipping module/file identified — no
+    hand-maintained list is consulted anywhere in the detection."""
+    reg = _expected_for_kind("llm.summarize")
+    report = verify_identity_parity({reg.module: [reg]}, kind_classes={})
+    assert report.missing == {"llm.summarize": reg.source}
+    assert "llm.summarize" in report.failures()[0]
+
+
+def test_a_new_reachable_source_registration_needs_no_hand_maintained_list(
+    tmp_path: Path,
+) -> None:
+    """The audit's prospective case, on a synthetic tree: adding a reachable
+    registration file makes the static inventory derive its kind, class and
+    file from source alone — so a registry without it fails naming all
+    three, without any census update."""
+    root = _synthetic_repo(
+        tmp_path,
+        registration_files={"packages/x/src/x/reg.py": _ATTRIBUTED_REGISTRATION_BODY},
+        unreachable=set(),
+        dispositioned=set(),
+    )
+
+    derived = expected_registrations(root)
+    assert set(derived) == {"x.reg"}
+    (reg,) = derived["x.reg"]
+    assert (reg.kind, reg.class_name, reg.module) == ("x.synthetic", "_Synthetic", "x.reg")
+    assert reg.file == root / "packages" / "x" / "src" / "x" / "reg.py"
+
+    report = verify_identity_parity(derived, kind_classes={})
+    assert report.missing == {"x.synthetic": reg.source}
+
+
+# --- static extraction: shipped forms attribute exactly ------------------------------
+
+
+def _inventory_of(tmp_path: Path, body: str, dotted: str = "x.reg") -> list[ExpectedRegistration]:
+    path = tmp_path / "reg.py"
+    path.write_text(body, encoding="utf-8")
+    return expected_in_module(path, dotted)
+
+
+def _two_class_body(import_line: str) -> str:
+    return (
+        f"{import_line}\n"
+        "\n"
+        "\n"
+        "class Alpha:\n"
+        "    kind = 'x.alpha'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class Beta:\n"
+        "    kind: ClassVar[str] = 'x.beta'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+    )
+
+
+def test_a_decorator_registration_attributes_its_class(tmp_path: Path) -> None:
+    regs = _inventory_of(
+        tmp_path,
+        _two_class_body("from maistro.graph.nodes import register_node")
+        + "\n\n@register_node\nclass Decorated:\n"
+        "    kind = 'x.decorated'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n",
+    )
+    assert [(r.class_name, r.kind) for r in regs] == [("Decorated", "x.decorated")]
+    assert regs[0].line > 0 and regs[0].module == "x.reg"
+    assert regs[0].file == tmp_path / "reg.py"
+
+
+def test_a_relative_import_decorator_attributes_its_class(tmp_path: Path) -> None:
+    """The core leaf modules' shipped form: `from . import register_node`.
+    The dotted name must place the module inside maistro.graph.nodes for the
+    relative import to resolve to the registrar."""
+    body = (
+        "from __future__ import annotations\n"
+        "from . import register_node\n"
+        "\n"
+        "\n"
+        "@register_node\n"
+        "class Relative:\n"
+        "    kind = 'x.relative'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+    )
+    regs = _inventory_of(tmp_path, body, dotted="maistro.graph.nodes.relative_kind")
+    assert [(r.class_name, r.kind, r.module) for r in regs] == [
+        ("Relative", "x.relative", "maistro.graph.nodes.relative_kind")
+    ]
+
+
+def test_an_aliased_registrar_import_enters_the_universe(tmp_path: Path) -> None:
+    """`import register_node as rn` then `rn(Cls)`: the site scan must see the
+    module (a name-literal-only scan silently missed it — a deceptively
+    smaller universe) and the extraction must attribute the call."""
+    body = (
+        "from maistro.graph.nodes import register_node as rn\n"
+        "\n"
+        "\n"
+        "class Aliased:\n"
+        "    kind = 'x.aliased'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "rn(Aliased)\n"
+    )
+    assert [(r.class_name, r.kind) for r in _inventory_of(tmp_path, body)] == [
+        ("Aliased", "x.aliased")
+    ]
+
+    root = _synthetic_repo(
+        tmp_path,
+        registration_files={"packages/x/src/x/reg.py": body},
+        unreachable=set(),
+        dispositioned=set(),
+    )
+    assert set(scan_registration_modules(root)) == {"x.reg"}
+
+
+def test_literal_loops_and_module_constants_attribute_each_class(tmp_path: Path) -> None:
+    """The creative_nodes shipped form (inline tuple loop) plus its accepted
+    variants (module-constant iterable, module-constant kind): every class
+    gets its own correct identity, and unrelated loops do not conflate."""
+    body = (
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "_FIRST_KIND = 'x.first'\n"
+        "\n"
+        "\n"
+        "class First:\n"
+        "    kind = _FIRST_KIND\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class Second:\n"
+        "    kind = 'x.second'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class Third:\n"
+        "    kind = 'x.third'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "for _node_cls in (First, Second):\n"
+        "    register_node(_node_cls)\n"
+        "\n"
+        "\n"
+        "_LAST = (Third,)\n"
+        "for _other_cls in _LAST:\n"
+        "    register_node(_other_cls)\n"
+    )
+    regs = _inventory_of(tmp_path, body)
+    assert [(r.class_name, r.kind) for r in regs] == [
+        ("First", "x.first"),
+        ("Second", "x.second"),
+        ("Third", "x.third"),
+    ]
+
+
+def test_a_direct_call_and_a_loop_in_one_module_stay_separate(tmp_path: Path) -> None:
+    body = (
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "\n"
+        "class Solo:\n"
+        "    kind = 'x.solo'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "class Paired:\n"
+        "    kind = 'x.paired'\n"
+        "    async def _execute(self, inputs, ctx):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "\n"
+        "register_node(Solo)\n"
+        "for _cls in (Paired,):\n"
+        "    register_node(_cls)\n"
+    )
+    regs = _inventory_of(tmp_path, body)
+    assert [(r.class_name, r.kind) for r in regs] == [
+        ("Solo", "x.solo"),
+        ("Paired", "x.paired"),
+    ]
+
+
+# --- static extraction: unsupported forms fail closed --------------------------------
+
+
+def _assert_unsupported(tmp_path: Path, body: str, diagnosis: str, dotted: str = "x.reg") -> None:
+    path = tmp_path / "reg.py"
+    path.write_text(body, encoding="utf-8")
+    try:
+        expected_in_module(path, dotted)
+    except UnsupportedRegistration as exc:
+        assert diagnosis in str(exc), str(exc)
+        assert dotted in str(exc), f"diagnosis must name the module: {exc}"
+    else:  # pragma: no cover - the failure is the point
+        raise AssertionError(f"expected UnsupportedRegistration for: {diagnosis}")
+
+
+def test_dynamic_registration_arguments_fail_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "def build():\n"
+        "    return object\n"
+        "\n"
+        "register_node(build())\n",
+        "dynamic registration argument",
+    )
+
+
+def test_qualified_registrar_access_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "import maistro.graph.nodes as g\n"
+        "\n"
+        "\n"
+        "class Qualified:\n"
+        "    kind = 'x.qualified'\n"
+        "\n"
+        "g.register_node(Qualified)\n",
+        "qualified registrar access",
+    )
+
+
+def test_star_import_registrar_access_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import *\n"
+        "\n"
+        "\n"
+        "class Starred:\n"
+        "    kind = 'x.starred'\n"
+        "\n"
+        "register_node(Starred)\n",
+        "unclassified registrar reference",
+    )
+
+
+def test_a_reexport_chain_registrar_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from .shim import register_node\n"
+        "\n"
+        "\n"
+        "class Reexported:\n"
+        "    kind = 'x.reexported'\n"
+        "\n"
+        "register_node(Reexported)\n",
+        "unclassified registrar reference",
+    )
+
+
+def test_nested_deferred_registration_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "\n"
+        "class Deferred:\n"
+        "    kind = 'x.deferred'\n"
+        "\n"
+        "\n"
+        "def setup() -> None:\n"
+        "    register_node(Deferred)\n",
+        "nested inside a function/class body",
+    )
+
+
+def test_ambiguous_loop_bindings_fail_closed(tmp_path: Path) -> None:
+    body = _two_class_body("from maistro.graph.nodes import register_node")
+    _assert_unsupported(
+        tmp_path,
+        body + "\n\nfor _cls in (Alpha,):\n    register_node(_cls)\n"
+        "for _cls in (Beta,):\n    register_node(_cls)\n",
+        "ambiguous loop bindings",
+    )
+
+
+def test_a_stray_call_referencing_a_leaked_loop_variable_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A module-level call after the loop references the loop variable's
+    leaked binding — not attributable to any literal sequence, so it fails
+    closed instead of silently re-registering whatever the loop last held."""
+    body = _two_class_body("from maistro.graph.nodes import register_node")
+    _assert_unsupported(
+        tmp_path,
+        body + "\n\nfor _cls in (Alpha,):\n    register_node(_cls)\nregister_node(_cls)\n",
+        "dynamic registration sequence",
+    )
+
+
+def test_a_loop_call_not_passing_the_target_fails_closed(tmp_path: Path) -> None:
+    body = _two_class_body("from maistro.graph.nodes import register_node")
+    _assert_unsupported(
+        tmp_path,
+        body + "\n\nfor _cls in (Alpha,):\n    register_node(Alpha)\n",
+        "does not pass exactly the loop target",
+    )
+
+
+def test_a_non_literal_kind_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "def compute_kind():\n"
+        "    return 'x.computed'\n"
+        "\n"
+        "\n"
+        "@register_node\n"
+        "class Computed:\n"
+        "    kind = compute_kind()\n",
+        "has no `kind` this inventory can resolve",
+    )
+
+
+def test_a_missing_kind_fails_closed(tmp_path: Path) -> None:
+    _assert_unsupported(
+        tmp_path,
+        "from maistro.graph.nodes import register_node\n"
+        "\n"
+        "\n"
+        "@register_node\n"
+        "class Kindless:\n"
+        "    pass\n",
+        "has no `kind` this inventory can resolve",
+    )
+
+
+def test_a_dynamic_loop_iterable_fails_closed(tmp_path: Path) -> None:
+    body = _two_class_body("from maistro.graph.nodes import register_node")
+    _assert_unsupported(
+        tmp_path,
+        body + "\n\ndef candidates():\n    return (Alpha,)\n"
+        "\nfor _cls in candidates():\n    register_node(_cls)\n",
+        "dynamic registration sequence",
+    )
