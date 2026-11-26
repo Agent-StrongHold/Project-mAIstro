@@ -1,4 +1,4 @@
-# Domain pack: book (M7-A4, #793)
+# Domain pack: book (M7-A4, #793) — thick catalog (M7-A9, #985)
 # Thesis/outline/chapter-plan exploration; a text artifact tree as the
 # execute backend. Canvas is deliberately NOT bound — a book is manuscript
 # and chapters, so this pack proves canvas use is per-pack binding, never
@@ -6,7 +6,11 @@
 pack_id: book
 # Pack release version (M9-F3, #968): the identity Workspace activations
 # are recorded against; bump it when the manifest's defaults change.
-version: 1.0.0
+# 2.0.0: the thin #793 example catalog was replaced by the thick
+# picture-book read-aloud catalog (#985) — dimension ids changed, so this
+# is a major release, not a patch. Novels reuse THIS pack with a later
+# catalog revision, never a `novel` pack id.
+version: 2.0.0
 name: Book Pack
 summary: >-
   Thesis, outline, and a chapter plan explored before produce; manuscript and
@@ -24,16 +28,50 @@ artifact_kinds:
   - chapter_plan
   - chapter_draft
   - manuscript
+  - book_pages
+# The judged artifact: the ordered read-aloud spreads (M7-A9, #985). Canvas
+# may render `art`; it is not the pack, and the pages are the judged object.
+artifact_payload_kind: book_pages
 rubric_dimensions:
-  - dimension_id: thesis_coherence
-    name: Thesis coherence
-    description: Every chapter advances one thesis without contradicting it.
-  - dimension_id: chapter_purpose
-    name: Chapter purpose
-    description: Each chapter exists because the argument needs it.
-  - dimension_id: claim_evidence
-    name: Claim-evidence
-    description: Claims made in the manuscript are supported where they are made.
+  # Picture-book read-aloud v1 (#985). Weights sum to exactly 1; the scale
+  # is 1–5 with the named low/high anchors below; the method defaults to
+  # model_judge — a dimension marked `human` or `deterministic` says so.
+  - dimension_id: turn
+    name: Page-turn rhythm
+    description: Each spread makes the next page turn inevitable, not filler.
+    weight: 0.22
+    low_anchor: Filler pages
+    high_anchor: Inevitable turns
+  - dimension_id: cadence
+    name: Read-aloud cadence
+    description: The text reads aloud as spoken music, not prose lumps.
+    weight: 0.18
+    low_anchor: Prose lump
+    high_anchor: Spoken music
+  - dimension_id: arc
+    name: Emotional arc
+    description: The feeling is earned by the story, never flat or preachy.
+    weight: 0.18
+    low_anchor: Flat or preachy
+    high_anchor: Earned feeling
+  - dimension_id: age
+    name: Age band 4–7
+    description: The book sits in a 4–7-year-old's lap, not the wrong room.
+    weight: 0.16
+    low_anchor: Wrong room
+    high_anchor: Sits in the lap
+  - dimension_id: contract
+    name: Text/image contract
+    description: Text and art carry two channels, not the same one twice.
+    weight: 0.14
+    low_anchor: Redundant
+    high_anchor: Two channels
+  - dimension_id: voice
+    name: Voice consistency
+    description: One instrument plays the whole book; the tone never drifts.
+    weight: 0.12
+    low_anchor: Tone drift
+    high_anchor: One instrument
 fence_points:
   - explore.accept
   - refine.accept
