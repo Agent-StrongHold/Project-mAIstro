@@ -76,6 +76,10 @@ def _genome(genome_id: str, approved: bool = True, fitness: float = 0.9) -> Pipe
     g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
     g.harness_params["objective_version"] = "objective-test"
     g.harness_params["evidence_cycle"] = 1
+    # SPEC-281 §2 (#104): an approved promotion candidate carries transfer
+    # evidence for every scored benchmark — the promotion path consults the
+    # same composed gate as fitness, so the fixture must satisfy it.
+    g.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
     return g
 
 

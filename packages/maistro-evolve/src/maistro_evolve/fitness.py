@@ -184,15 +184,33 @@ def hard_gate_threshold(benchmark: str) -> float:
     return _DEFAULT_GATE_FLOOR if tuned is None else tuned
 
 
+def _gate_failures(genome: PipelineGenome) -> list[str]:
+    """Every correctness-gate failure the host records for ``genome``.
+
+    The composed definition shared by every gate consumer: per-benchmark
+    thresholds (``_check_hard_gate``) plus the transfer-inversion rules
+    (``_check_transfer_inversion``) that zero ``compute_fitness``. Fitness,
+    the retrodiction accounting, selection/promotion eligibility, and the
+    raw promote transition all ask this one list, so "disqualified" means
+    the same thing on every path (#104: a measured inversion must gate M4
+    promotion, not just the score — a gate that only reaches fitness cannot
+    stop an activation).
+    """
+    _, failures = _check_hard_gate(genome)
+    return failures + _check_transfer_inversion(genome)
+
+
 def passes_hard_gate(genome: PipelineGenome) -> bool:
-    """Public pass/fail read of the hard gate over a genome's current scores.
+    """Public pass/fail read of the correctness gates over a genome's evidence.
 
     Used by the retrodiction prefilter's false-negative accounting: a
     filtered candidate that later passes full evaluation counts against the
-    filter. Delegates to ``_check_hard_gate`` — same gate, one definition.
+    filter. Delegates to ``_gate_failures`` — the same composed gate, one
+    definition — including the transfer-inversion rules, so a candidate
+    that inverts on the frontier model is not counted as a filter false
+    negative.
     """
-    passed, _ = _check_hard_gate(genome)
-    return passed
+    return not _gate_failures(genome)
 
 
 def _weighted_eval_score(
@@ -468,9 +486,8 @@ def compute_fitness(
     ``capability_score``, and a gate failure zeroes ``total`` regardless of
     any weight configuration or padded context evidence.
     """
-    passed, gate_failures = _check_hard_gate(genome)
-    gate_failures = gate_failures + _check_transfer_inversion(genome)
-    passed = passed and not gate_failures
+    gate_failures = _gate_failures(genome)
+    passed = not gate_failures
 
     w_eval = _weighted_eval_score(genome, objective)
     cost_eff = _cost_efficiency(genome)

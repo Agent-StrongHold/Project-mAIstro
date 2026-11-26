@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +184
+  packages/maistro-evolve/tests: +191
 ---
 
 # 104-m4g-external-harness-evidence
@@ -74,12 +74,13 @@ this note:
 
 ## Writer repair: transfer-gate policy and evidence identity
 
-The historical +168 delta above is supplemented by **16 new regression nodes**
-in `test_fitness_transfer_gate.py` (+184 total for this note). The added cases
+The historical +168 delta above is supplemented by **23 new regression nodes**
+in `test_fitness_transfer_gate.py` (+191 total for this note). The added cases
 exercise candidate-supplied tolerance relaxation/malformed values (7), non-finite
 or impossible transfers (5), fitness digest changes for transfer/tolerance/
-approval inputs (3), and the real cycle recomputability guard after a transfer
-refresh (1). No existing test is removed or renamed.
+approval inputs (3), the real cycle recomputability guard after a transfer
+refresh (1), and the promotion-path gate reach (7, see the next section). No
+existing test is removed or renamed.
 
 The repair is bounded to the existing transfer fitness implementation. A
 candidate may request a stricter tolerance, but cannot weaken the host's
@@ -120,12 +121,14 @@ all four mutants killed) and that ARC availability is honestly reported
 (`False`, corpus not vendored — see below). Three observed limitations are
 recorded for review, not repaired here:
 
-1. `promotion`/`selection_eligibility` and `PopulationStore._promote`
+1. ~~`promotion`/`selection_eligibility` and `PopulationStore._promote`
    re-derive only `_check_hard_gate` (per-benchmark thresholds); the
    transfer-inversion rules reach `compute_fitness` but not the activation
    path, so a measured inversion with `fitness_score=0.0` and
    `approved_for_promotion=True` can still activate when no incumbent is
-   active.
+   active.~~ **Repaired in this change** (see the promotion-path section
+   below); the probe scenario now refuses with `PermissionError` naming the
+   inversion and leaves no active genome.
 2. `publish_evidence_manifest` accepts and verifies a manifest whose run
    metering records `unresolved_security_violations=1` — publishing
    evidence of a violation vs refusing to publish is a design call for
@@ -143,3 +146,73 @@ ARC-AGI-3 evaluation has run), matched same-model comparisons against real
 external harnesses (the lift matrix machinery exists and is tested, but no
 external harness has been wrapped), and fresh-workspace controls on the
 real evaluation path.
+
+## Writer repair: the composed gate reaches the promotion path
+
+The probe limitation above was repaired rather than reported: the
+acceptance-probe scenario (fitness 0.0 from a measured inversion, human
+approval, no incumbent) now refuses with `PermissionError` naming the
+inversion, and no genome is activated.
+
+`fitness._gate_failures(genome)` is now the one composed definition of the
+correctness gates — per-benchmark thresholds plus the transfer-inversion
+rules — and every consumer asks it: `compute_fitness` (fitness zeroing,
+replacing its private two-call composition), `passes_hard_gate` (retrodiction
+false-negative accounting, so a candidate that inverts is not counted as a
+filter false negative), `promotion.selection_eligibility` (champion
+selection and governed promotion), and `PopulationStore._promote` (the raw
+activation transition `promote_audited` wraps). #104's acceptance asks that
+benchmark pass/fail is host-owned "before results are published or fed into
+M4 fitness/promotion" — a gate that only reached fitness could not stop a
+cold-start activation, which is exactly what the probe demonstrated.
+
+Rule 2 (an approved promotion candidate carries transfer evidence for every
+scored benchmark — SPEC-281 §2, "stale is acceptable, absent is not") now
+binds the promotion path too, so the fixture builders in
+`test_population_audit.py`, `test_promotion_governance.py`,
+`test_archive.py`, and `test_rsi_safety.py` stamp that evidence alongside
+the existing #854 stamps; no assertion or test name changed. The same stamp
+was required by the two `formal/models` RSI conformance suites
+(`test_rsi_audit_trail_conformance.py`, `test_rsi_rollback_conformance.py`;
+run nightly by `formal-conformance-nightly.yml` with `maistro-evolve`
+installed) — their legitimately-promotable fixtures initially hit the new
+Rule-2 refusal (7 failures: "promotion candidate lacks transfer evidence
+for proxy_ifeval") and were stamped identically; 10/10 pass, again with no
+assertion or test name changed. One fixture
+assumption was corrected rather than papered over: in
+`test_production_cycle_repeats_evaluation_and_folds_ema` the fresh candidate
+`g` rode the helper's `approved=True` default, which contradicted both the
+test's own commentary (a candidate under evaluation is not yet approved) and
+the SPEC-281 §2 duty binding promotion candidates; it is now
+`approved=False`, which also makes the test's fitness commentary literally
+true instead of coincidentally passing on all-zero fitness ties.
+
+Fail-then-pass, re-executed by swapping the three source files against
+commit `2d5525c4fa`: 6 of the 7 new `TestPromotionPathGate` nodes fail
+pre-repair (the seventh pins that a carried transfer sample still unlocks
+promotion — the over-blocking guard, intentionally green on both sides).
+
+Post-repair battery:
+
+- `pytest packages/maistro-evolve/tests -q` → **1189 passed, 6 skipped**
+  (was 1182 before the 7 new nodes);
+- `pytest packages/maistro-rsi/tests -q` (imports `maistro_evolve`) →
+  **1729 passed, 4 skipped**;
+- consumer sweep beyond the evolve suite: the only other `maistro_evolve`
+  importers are `packages/hive-conductor/backend` (uses `get_champion` and
+  the promotion path via `services/evolution.py`) and `formal/models`
+  (above). `hive-conductor`'s evolution/optimizer/graph-runner tests all
+  pass unchanged (**263 passed** across `test_evolution_*`,
+  `test_optimizer*`, `test_dags_routes`, `test_graph_runner`,
+  `test_optimizer_candidate_apply`); `maistro_core`'s
+  `promote_audited` is the graph-template domain (unrelated);
+- `pytest formal/models/test_rsi_audit_trail_conformance.py
+  formal/models/test_rsi_rollback_conformance.py -q` (needs
+  `PYTHONPATH=packages/maistro-evolve/src` locally; CI installs the
+  package) → **10 passed**;
+- `scripts/check-suite-inventory.py` → ok, this note's suite at **1195
+  collected nodes** (651 folded + note deltas);
+- `ruff check .` and `ruff format --check .` → clean;
+- radon/vulture/execution-lifecycles/model-egress ratchets re-run against
+  `origin/develop` → unchanged and passing (see the final validation block
+  below).
