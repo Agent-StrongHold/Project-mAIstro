@@ -994,11 +994,13 @@ jobs:
         with:
           name: release-evidence
           path: evidence/
+      # An RC has not been soaked yet. Finals must download this artifact;
+      # missing evidence is an error, not an optional release attachment.
       - uses: actions/download-artifact@v8
+        if: needs.guard.outputs.prerelease == 'false'
         with:
           name: soak-evidence
           path: soak-evidence/
-          if-no-files-found: ignore
 
       # Body = the curated CHANGELOG section (which carries the ADR-076 API
       # statement) + a verification block. The script appends the API statement

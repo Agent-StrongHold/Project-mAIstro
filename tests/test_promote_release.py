@@ -838,6 +838,26 @@ def test_pypi_waits_for_the_soak_gate_before_irreversible_publication():
     assert pypi["environment"]["name"] == "release"
 
 
+def test_candidate_release_does_not_require_future_soak_evidence():
+    """The RC release must finish before its soak can produce promotion evidence."""
+    import yaml
+
+    jobs = yaml.safe_load((REPO / ".github/workflows/release.yml").read_text())["jobs"]
+    download = next(
+        s
+        for s in jobs["github-release"]["steps"]
+        if s.get("uses", "").startswith("actions/download-artifact")
+        and s["with"]["name"] == "soak-evidence"
+    )
+    assert download.get("if") == "needs.guard.outputs.prerelease == 'false'", (
+        "RC runs have no soak artifact yet; only finals must download it"
+    )
+    assert "if-no-files-found" not in download["with"], (
+        "download-artifact has no skip-missing input; finals must fail if evidence is absent"
+    )
+    assert not download.get("continue-on-error", False)
+
+
 def test_shipping_workflow_promotes_rc_artifacts_on_finals():
     import yaml
 

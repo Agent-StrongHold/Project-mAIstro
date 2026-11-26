@@ -46,5 +46,28 @@ files formatted). Inventory delta: `tests/: +1`. Existing pytest plugin
 warnings (unset async fixture loop scope and AnyIO CallSpec2 deprecation)
 are unrelated to this workflow repair.
 
+First independently solvable repair committed as `684e9fa5ea`.
+
+Second reachable workflow defect in the same frozen file: `github-release`
+unconditionally downloads `soak-evidence`, even for RC runs, although its
+producer in `images` runs only for finals and the workflow explicitly says the
+candidate has no soak evidence yet. An absent artifact is not optional for
+`download-artifact`; `if-no-files-found` is an upload-artifact input, not a
+skip-missing download input. The RC run cannot finish successfully to become
+eligible for `select_rc_run`. Repair only this branch mismatch: download the
+soak evidence on finals, fail closed if absent there, skip on RCs. Add a
+workflow regression test before editing the branch condition. It failed at
+`tests/test_promote_release.py:852` with `None` rather than the finals-only
+condition. After repair, `uv run pytest tests/test_promote_release.py
+tests/test_release_guard.py -x -q` passed **85 tests** (1.03 s).
+
+Fresh gate results (all exit 0):
+- `uv run python scripts/check-image-inventory.py`: 10 Dockerfiles inventoried.
+- `uv run python scripts/check-workflow-inventory.py`: 33 workflows dispositioned.
+- `uv run python scripts/check-release-consistency.py`: released none, shipping
+  0.9.0, working toward 1.0.0.
+- `uv run python scripts/check-suite-inventory.py --suite tests/`: 6501 unique
+  test identities match baseline plus deltas; new inventory delta is now +2.
+
 Operational acceptance remains UNVERIFIED unless actual immutable RC/soak/final
 evidence is supplied. Local tests are machinery evidence only.
