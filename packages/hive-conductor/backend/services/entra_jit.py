@@ -30,7 +30,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
-import stores
 from config import Settings
 from models.schemas import HiveAccount
 from routes.audit import log_audit
@@ -298,7 +297,7 @@ class EntraJitProvisioner:
             # so one human never holds two JIT accounts.
             username_registry.rollback_users([user])
             existing_id = await links.resolve("entra", identity.sub)
-            existing = stores.users.get(existing_id) if existing_id else None
+            existing = username_registry.get_user(existing_id) if existing_id else None
             if existing is not None and existing.is_active:
                 log_audit(
                     "auth.entra.jit",

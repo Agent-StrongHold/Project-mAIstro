@@ -798,3 +798,93 @@ class TestConcurrentLinkRace:
             assert leftover == []
         finally:
             stores.users.pop("canonical-user", None)
+
+    @pytest.mark.asyncio
+    async def test_a_lost_link_race_resolves_the_canonical_account_from_the_durable_backend(
+        self, jit_harness: JitHarness, tmp_path
+    ) -> None:
+        """The lost-race recovery reaches an account in the durable backend.
+
+        After the rollback the loser keeps whichever account the identity link
+        canonically names, exercised here against a real persistence backend
+        through the registry seam the provisioner must use. The canonical
+        account is written to the backend only, never to the memory dict.
+        Note allocation itself hydrates the users table into memory
+        (``UsernameRegistry._all_users``), so the outcome does not by itself
+        discriminate a memory-only recovery read; the guard that fails on a
+        direct ``stores.users`` consumer is the structural pin below and the
+        CI workspace-retirement ratchet it mirrors.
+        """
+        from services.oauth_login import IdentityLinkConflictError
+
+        from maistro.state import PersistedStore, State
+
+        canonical = stores.users._model_class(
+            id="canonical-user",
+            username="canonical",
+            password_hash=ENTRA_JIT_UNUSABLE_PASSWORD_HASH,
+            role="user",
+            is_active=True,
+            permissions=[],
+            created_at=datetime.now(UTC),
+        )
+        backend = PersistedStore(State(tmp_path / "jit-race-recovery.db"))
+        backend.initialize()
+        backend.put("users", canonical.id, canonical)
+        original_persisted = stores.users._persisted
+        stores.users._persisted = backend
+        try:
+            original_link = jit_harness.links.link
+
+            async def losing_link(provider: str, sub: str, user_id: str) -> None:
+                # First writer won between our resolve and our link attempt.
+                await original_link(provider, sub, canonical.id)
+                raise IdentityLinkConflictError("identity is already linked")
+
+            jit_harness.links.link = losing_link  # type: ignore[method-assign]
+            provisioner = EntraJitProvisioner(
+                _policy(),  # type: ignore[arg-type]
+                jit_harness.resolver,  # type: ignore[arg-type]
+                links=jit_harness.links,
+            )
+            exchange = OAuthExchange(
+                identity=OAuthIdentity(
+                    provider="entra", sub=_ENTRA_SUBJECT, display_name="Race Runner"
+                ),
+                token=OAuthToken(access_token="jit-access-token", token_type="Bearer"),
+            )
+
+            assert stores.users.get(canonical.id) is None, (
+                "precondition: the canonical account exists only durably"
+            )
+            user = await provisioner.provision(exchange.identity, exchange)
+
+            assert user is not None and user.id == canonical.id
+            reasons = [
+                entry["detail"]["reason"]  # type: ignore[index]
+                for entry in _jit_audit_entries()
+            ]
+            assert "superseded_by_existing_link" in reasons
+            # The durable rollback removed the duplicate allocation everywhere.
+            assert backend.get("users", "duplicate-nonexistent", type(canonical)) is None
+            leftover = [
+                u
+                for u in stores.users.values()
+                if u.username == "Race-Runner"  # type: ignore[attr-defined]
+            ]
+            assert leftover == []
+        finally:
+            stores.users._persisted = original_persisted
+            backend._state.close()
+
+    def test_entra_jit_never_imports_the_retiring_users_store(self) -> None:
+        """The JIT provisioner resolves accounts through the registry only.
+
+        ``services.entra_jit`` is a new consumer; the retirement ledger's
+        importer list for ``stores.py::users`` only shrinks, so a direct
+        ``import stores`` there reds the CI ratchet. Binding the module name
+        is what the AST scan sees, so its absence is the unit-level pin.
+        """
+        import services.entra_jit as entra_jit_module
+
+        assert not hasattr(entra_jit_module, "stores")

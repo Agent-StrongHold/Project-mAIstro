@@ -325,3 +325,108 @@ acceptance** remains the correct disposition; no code repair belongs in this
 verification-only round.
 
 Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
+
+## Round 7 — CI-gate repair (job `2ae0ec2d0d5e475abd5a3004df873544`)
+
+Starting HEAD `df001b9478` (exact match), worktree clean, no uncommitted salvage;
+the two immediately prior jobs died on provider 404s before any work. The driver
+supplied no `check-*.log` files, so every result below is fresh. What this round
+adds: the dispatch snapshot carries the PR #2529 check-runs for head `90dbb33db0`
+— **4 failures** (`Coverage gate (publish-set floor + diff coverage)`, `Quality
+gate (Pillars 1–4, 7, 8)`, `Quality / Workspace retirement`, `test`) with no log
+output captured. They were reproduced locally with CI's exact arguments instead
+of being assumed base-level.
+
+### Root cause found and repaired: the #492 slice gained a consumer of a retiring surface
+
+`RATCHET_BASE_REV=origin/develop uv run python scripts/check-workspace-retirement.py`
+failed verbatim: `stores.py::users: NEW importer
+packages/hive-conductor/backend/services/entra_jit.py -- a retiring surface may
+not gain consumers`. `quality/workspace-retirement.json` is a shrink-only
+ledger: `stores.py::users` is a RETIRE row (delete-by M3, replaced by the P0.1
+identity store) whose importer list may not grow, so no ledger edit was
+possible or made. The repair is composition-only, on existing seams:
+
+1. `services/username_registry.py` — new public `UsernameRegistry.get_user`
+   (the public form of `_durable_user`, including its durable-backend
+   fallback) plus the module-level delegate; the registry is already a
+   recorded importer of the users store.
+2. `services/entra_jit.py` — the lost-link-race recovery resolves the
+   canonical account through `username_registry.get_user(...)` and the module
+   no longer binds `stores`.
+
+Gate after the repair: `78 tolerated importers -> 78`, `OK: 89 retirement
+ledger entries match the tree`. This also clears the one reproduced cause of
+the `Quality gate (Pillars 1–4, 7, 8)` aggregate (its `quality-retirement`
+need).
+
+### Regression tests (inventory note `issue-7-jit-retiring-store.md`, backend suite +2)
+
+- Structural pin: `services.entra_jit` must not bind the retiring `stores`
+  module. Demonstrated red against the pre-repair module (`assert not True` on
+  `hasattr(m, "stores")`), green after the repair; the CI ratchet it mirrors
+  runs only in quality.yml, this suite runs in every backend producer.
+- Durable-race case: the recovery returns the canonical account from a real
+  `PersistedStore` backend when the account exists only durably. Its docstring
+  records the honest limit found while red-proving: allocation itself
+  hydrates the users table into memory (`UsernameRegistry._all_users`), so
+  this case is capability coverage of the repaired seam, not a discriminator;
+  the structural pin above is the guard.
+
+### Fresh validation (all exit 0 unless noted)
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4573 passed, 113 skipped** (4571 + the 2 new tests) |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py -q` | 41 passed |
+| `uv run pytest packages/hive-conductor/backend/tests/test_username_registry.py packages/hive-conductor/backend/tests/test_registration_policy.py -q` | 81 passed |
+| `uv run pytest packages/maistro-turing/tests packages/maistro-turing/backend/tests -q` | 363 passed |
+| `uv run pytest packages/maistro-ext-harness/tests packages/maistro-ext-sdk/tests -q` | 420 passed |
+| `uv run pytest packages/maistro-rsi/tests -q` | 1793 passed, 4 skipped |
+| `uv run pytest tests/ --ignore=tests/tools/registry -q` (REQUIRE_AUTH=false, MAISTRO_DRY_RUN=1, RATCHET_BASE_REV=origin/develop) | **6206 passed, 141 skipped** — the one `test`-job component no prior round had run |
+| `uv run ruff check .` / `ruff format --check .` | all checks passed / 3678 files formatted |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | ok, matches inventory + the recorded +2 delta |
+| `uv run python scripts/check-release-consistency.py` | ok: released none / shipping 0.9.0 / target 1.0.0 |
+| `uv run python scripts/check-contract-markers.py` / `check-backlog-consistency.py` | ok / ok |
+| `uv run python scripts/check-reachability.py` + `-dispositions` + `-provenance` + `-dispositions-provenance` | ok: 81 unreachable of 1508, 27 groups, no expansion |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1219 reviewed -> 1219 findings |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check_enumerations.py` / `check-principal-identity.py` / `check-route-permissions.py` | ok (1 baselined enumeration gap, 0 new; 0 principal violations; 42 declared routes) |
+| Coverage-gate replication: `coverage run --branch --source=packages/hive-conductor/backend -m pytest packages/hive-conductor/backend/tests` then `--append --source=packages/maistro-rsi/src/maistro_rsi -m pytest packages/maistro-rsi/tests`, `coverage xml`, `check-diff-coverage.py coverage.xml --base 7926d9ab4dda` | ok: 5 changed files measured (2 test files exempt), **every measured file at or above 90% lines / 80% branch arcs** |
+
+### CI-failure disposition and verdict carried forward
+
+- `Quality / Workspace retirement` and (through its aggregate) `Quality gate`:
+  lane-caused, root-caused, and **repaired above**.
+- `test`: every suite that job runs passes locally at this head — server and
+  design at `90dbb33db0` (Round 6), turing/ext/rsi/backend/root fresh this
+  round. No lane-caused failure remains; the red on `90dbb33db0` is consistent
+  with the documented runner/worker-death class (the same shape the
+  `test_scheduler_projection_authority` worker names for PR #2512), not
+  branch content.
+- `Coverage gate`: the per-file line+branch diff gate — the part the lane's
+  diff feeds — passes locally for every changed file with the gate's own
+  script and thresholds. The publish-set 87% aggregate floor needs the full
+  multi-producer job (~45 min in CI) and was not replicated; no evidence
+  points at the lane diff for it (+~500 statements land in hive-conductor,
+  which is deliberately outside the publish set).
+- Milestone acceptance accounting (Round 5/6, 19 rows) is unchanged by this
+  round and its load-bearing negative composition claims were re-proven
+  independently here: `container.py:1409` returns 0 with no policy and no
+  production caller/assignment exists (row 8); `wiring.py` answers a PG pool
+  with `InMemoryGoalStore` (row 8); `manager.py:39` selects the embedded
+  dictionary backend and `backend.py` records `ladybugdb` as unpublished (row
+  11); `promote_evidence` has no production caller and `recall_for_task` only
+  the owner HTTP route (row 12); `packages/maistro-design/src` has no
+  UserModel/Attention consumer (row 18).
+
+**NEEDS-REPAIR for milestone acceptance remains the correct disposition.**
+This round repaired the branch's own CI gate; it did not implement rows
+8/12/17/18 production composition and did not obtain operator release,
+clean-machine, RC-soak or live-tenant evidence, so rows 2/3/5/17 UNVERIFIED,
+4/7/9/11/12 PARTIAL, 8/18 NOT MET stand. No quality ledger, grant, gate or
+policy was edited; the only ledger-adjacent file is the new inventory note.
+
+Progress: `{checked: 4, done: 2, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
+Here `checked` counts the four CI failures, `done` the two repaired
+(retirement + its Quality-gate aggregate); the other two carry the disposition
+above.
