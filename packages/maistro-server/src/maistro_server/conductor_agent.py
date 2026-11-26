@@ -134,7 +134,12 @@ class ConductorAgent:
             raise
 
         final = result.final_answer or "Task completed successfully."
-        outcome: GateResult = await self._sentinel.process_output("assistant_response", final, auth)
+        # compress_tool_result=False: this is the final-answer boundary, not a
+        # tool result — optimize_result would cap the client's answer at 4,000
+        # characters and append a tool-result truncation marker.
+        outcome: GateResult = await self._sentinel.process_output(
+            "assistant_response", final, auth, compress_tool_result=False
+        )
         if outcome.blocked:
             return AgentResponse.blocked_response(
                 outcome.block_reason or "Final response blocked by Warden"

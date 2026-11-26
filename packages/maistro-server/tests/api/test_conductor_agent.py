@@ -44,9 +44,13 @@ class _RecordingWarden:
 class _RecordingSentinel:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self.call_kwargs: list[dict[str, Any]] = []
 
-    async def process_output(self, tool_name: str, content: str, auth: Any) -> GateResult:
+    async def process_output(
+        self, tool_name: str, content: str, auth: Any, **kwargs: Any
+    ) -> GateResult:
         self.calls.append((tool_name, content, auth))
+        self.call_kwargs.append(kwargs)
         return GateResult(sanitized_text="sanitized")
 
 
@@ -87,6 +91,9 @@ class TestWhatReachesTheConductor:
 
         assert response.content == "sanitized"
         assert sentinel.calls == [("assistant_response", "raw", ANONYMOUS_AUTH)]
+        # Final answers are not tool results: token optimization would cap
+        # them at 4,000 characters and append a truncation marker.
+        assert sentinel.call_kwargs == [{"compress_tool_result": False}]
 
     async def test_no_fixed_identity_stand_in_reaches_run_task(
         self, monkeypatch: pytest.MonkeyPatch
