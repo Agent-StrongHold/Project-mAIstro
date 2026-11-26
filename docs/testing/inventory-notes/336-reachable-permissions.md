@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +4
-  packages/hive-conductor/frontend/e2e: +2
 ---
 # Issue 336 — reachable UI permissions
 
