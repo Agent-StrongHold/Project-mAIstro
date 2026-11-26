@@ -835,3 +835,117 @@ tests on canonical seams; the remaining gaps are the #805 policy
 composition, the control-plane PG twin, and operator release evidence.
 
 Progress: `{checked: 19, done: 2, skipped: 0, errors: 0, next: "compose #805 reconciliation policy on canonical seams (row 8); obtain operator release evidence (rows 2/3/5)"}`.
+
+## Round 13 — develop-base sync (M3-E5 #1051 proactive discovery) + merged-head validation (repair stage)
+
+Job `09e5a281c60243d9bdd33817b462c221`; starting HEAD `a2407aa3cc` (exact match,
+the round-12 commit plus the EPIC M8-A merge `4f8f40352d`); worktree clean on
+arrival; the prior job (`e63ff45c`) died at spawn (worker_error, 0 checks) and
+left nothing to salvage; no driver `check-*.log` files exist in this job
+directory, so every result below was executed fresh at this round's heads.
+
+### Why the sync was required (quality-row provenance, not a guess)
+
+`git diff --numstat origin/develop -- quality/` at `a2407aa3cc` showed a
+**0/30 deletion** in `quality/shipped-surface-truth.json` beyond the two
+documented lane deltas. Provenance pinned by file history: the branch's last
+touch of that file is `5ca5a969d1`; develop's tip `8d8f10616f` (M3-E5) modified
+it after the branch diverged — the 30 rows are **develop-side additions the
+branch predated**, not a silent row loss. Only that one commit separated the
+branch from its declared develop base (`git log HEAD..origin/develop` → exactly
+`8d8f10616f`; merge-base `4f8f40352d`). `git merge-tree --write-tree` reported
+**zero conflicts**, and the lane brief directs resolving the branch against its
+declared base. Merged as `4a682e7c26` with no manual resolutions.
+
+### What the sync brings: the #1051 bounded proactive-discovery pipeline (row 17)
+
+develop's `8d8f10616f` ships, on canonical seams only (no second scheduler,
+no new authority — `services/discovery.py` module docstring: "cycles are
+triggered by callers that already hold a" schedule authority, fired through
+`run_registered_dag` like a schedule fire):
+
+- maistro-core: `capabilities/providers/discovery_source.py` (Binding-declared
+  source allowlist, governed egress), `discovery_source_fetch` / `discovery_scout`
+  / `discovery_curate` node kinds, `discovery_context` Container authority
+  (bare default provides nothing), `seeds/proactive_discovery.py`;
+- hive-conductor: `services/discovery.py` (config off-switch, durable day-keyed
+  budget ledger charged once per Run, seen-fingerprint suppression,
+  `_lift_pending_scheduled_runs` consuming scheduled fires through the canonical
+  admitter), `routes/discovery.py` (member-scoped, auth-tested), Attention
+  Waiting-by-default + deadline-evidence escalation, Home adaptive candidates,
+  keep/dismiss category preferences; `dag_agents.py:159` registers
+  `proactive_discovery_seed()` in the production DAG registry;
+- `quality/shipped-surface-truth.json` +30 rows (the three new mutating routes
+  classified) — the diff-vs-develop anomaly above is resolved;
+- develop's own inventory notes (`1051-*.md`, `auto-1051-bf91.md`) arrive with
+  the tests, so no new inventory delta arises from this round (verified below:
+  the merged baseline matches collection exactly).
+
+### Fresh validation at the merged head `4a682e7c26` (all exit 0, this round)
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv sync --locked --extra dev` | ok (+defusedxml, +types-defusedxml; uv.lock from the base) |
+| `uv run ruff check .` | All checks passed! (warnings only: develop's intentional `# noqa: vulture` markers) |
+| `uv run ruff format --check .` | 3698 files already formatted |
+| `uv run pytest packages/hive-conductor/backend/tests -q --timeout=120` | **4639 passed, 118 skipped** (264.2s; 4757 collected = recorded inventory) |
+| `uv run pytest packages/maistro-core/tests/graph/nodes/test_discovery_pipeline.py test_idempotent_replay_conformance.py test_container_node_composition.py -q` | **112 passed** |
+| `uv run pytest packages/maistro-turing/tests/test_runtime.py packages/maistro-turing/backend/tests/test_chat.py formal/models/test_execution_lifecycle.py packages/maistro-rsi/tests/test_m8a_assurance_baseline_research.py -q` | **105 passed** (first validation of the M8-A merge content, which round 12 predated) |
+| `uv run python scripts/check-suite-inventory.py` (CI's exact invocation, `ci.yml:751`) | ok: **21 suites match**, 37382 collected identities, 0 duplicate evidence |
+| `uv run python scripts/check-test-duplicates.py` | ok: 0 byte-identical groups |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI args, `quality.yml:1630-1634`) | exit 0: 1219 reviewed → 1219 findings, unclassified 0 — no unbanked identities, no ledger amendment |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-workspace-retirement.py` (CI args, `quality.yml:1148`) | exit 0: 78 → 78 tolerated importers, OK on 89 entries |
+| `uv run python scripts/check-shipped-surface-truth.py` | "Shipped-surface truth matrix is complete" |
+| `uv run python scripts/check-release-consistency.py` | ok: released none / shipping 0.9.0 / working toward 1.0.0 (row 1) |
+| `uv run python scripts/check-reachability.py` / `-dispositions.py` / `-provenance.py` | 1519 modules / 81 unreachable; 27 groups disposed; no candidate-approved expansion |
+| `uv run mypy packages/maistro-core/src packages/maistro-server/src packages/maistro-turing/src packages/maistro-canvas/src packages/maistro-bootstrap/src packages/maistro-registry/src packages/maistro-ext-sdk/src` | **Success: no issues found in 970 source files** |
+| `git diff --numstat origin/develop -- quality/` | exactly the documented lane deltas (`reachability-baseline.json` −1, `reachability-dispositions.json` +1/−1); the shipped-surface −30 anomaly is gone |
+
+### Updated acceptance accounting (delta on Rounds 5–12)
+
+- **Row 17 (#1051): UNVERIFIED → PARTIAL, deterministic-PASS of the shipped
+  pipeline.** The prior finding "no idle/overnight proactive discovery pipeline
+  ships" was true at `a2407aa3cc` and is superseded by the sync: the bounded
+  fetch/scout/curate pipeline, its canonical seed (production-registered),
+  durable budgets, suppression, Waiting/Home surfacing, feedback preferences and
+  the scheduled-fire lift path now ship and are green in the collected inventory
+  (core pipeline 112, conductor discovery routes/service tests within the 4639).
+  What remains for full closure is live operator evidence — an actual overnight
+  fire against real sources in a deployed environment and curation quality under
+  a real model — which this lane cannot execute (live-model/tenant evidence,
+  prohibited GitHub/release mutations).
+- **Row 8: PARTIAL, unchanged** — re-pinned at this head:
+  `container.py:1426` `if self.goal_reconciliation_policy is None: return 0`;
+  grep for a production `goal_reconciliation_policy=` assignment returns none.
+  The tick-caller half landed in Round 11; the decide-half belongs to #805's
+  policy composition (deliberately not invented in a repair lane) and the
+  control-plane PG twin is the tracked follow-up (#1572).
+- **Row 12: PARTIAL, unchanged** — `promote_evidence` still has no production
+  caller (definition, docstring and re-export hits only).
+- **Rows 2/5: UNVERIFIED, unchanged** — `.github/workflows/release.yml:23-24`
+  still self-declares "NOT YET EXERCISED … has never run"; `git tag -l 'v*'`
+  counts 0. Release-pipeline execution and tags are operator actions with GitHub
+  mutations this lane is prohibited from performing.
+- **Row 18: composition landed (Round 12), carries forward unchanged**; the
+  #804 consumption half (Design Studio consuming the persistent Agent's
+  Goal/reconciliation APIs rather than private instantiations) is the remaining
+  verification boundary.
+- Rows 3/4/7/9/11 PARTIAL and rows 1, 6, 10, 13–16, 19 carry forward from
+  Rounds 5–12 unchanged by this diff (clean-machine/live-model E2E, backup/
+  restore soak, RC promotion, KNOWN-GAPS operator dispositions remain
+  operator-evidence items).
+
+**Verdict: NEEDS-REPAIR for milestone acceptance stands**, now on a narrower
+basis: every CI gate this branch touches is green with CI's exact arguments at a
+head fully synced to its declared develop base, and the row-17 capability gap is
+closed in code with tests; what remains is (a) the #805 reconciliation-policy
+composition (row 8 decide-half), (b) the #804 Design-Studio/Agent consumption
+verification (row 18 tail), (c) the promote_evidence production producer (row
+12), and (d) operator release/live evidence (rows 2/3/5 and the soak/promotion
+halves) — program-scale work and actions outside this lane's authority.
+
+No test was added by this round (the sync's tests arrive with develop's own
+inventory notes), so no new inventory delta arises; the merged baseline was
+verified to match collection exactly (21/21 suites above).
+
+Progress: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "compose #805 policy semantics (row 8 decide-half); verify the #804 Design-Studio consumption tail (row 18); obtain operator release/live evidence (rows 2/3/5, row 17 live half)"}`.
