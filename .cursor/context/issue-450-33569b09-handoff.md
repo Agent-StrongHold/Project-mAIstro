@@ -647,3 +647,84 @@ Do not close/reclassify issues or retry this parent as if administrative closure
 were the only missing work. This round commits a corrected handoff only.
 Accounting: **checked 1, done 0 (initiative), skipped 0; one reproduced acceptance
 failure; documentation correction complete**.
+
+## Repair — round 2c777ee3 (2026-11-26): the #105 retained-log counterexample, fixed
+
+This round performed the repair the Correction above scoped: the retained
+working log's PostgreSQL path. Starting head `558efc405a`, clean tree, all
+prior commits preserved; no `check-*.log` driver claims assumed — every result
+below was executed first-hand in this worktree.
+
+### What was wrong (re-verified first-hand, then fixed)
+
+`_wire_working_memory_backend(db_pool)` was called with `db_pool` only, and the
+container's PostgreSQL branch never sets `db_pool` — so `wire_working_memory`
+could only ever answer SQLite or the in-process store. `memory/working/
+wiring.py`'s own docstring said so: "PostgreSQL working-log tables are not
+part of the schema yet; ... the seam a `PgWorkspaceLogStore` would land
+behind." The exit-1 diagnostic in the Correction was re-run at this head with
+the identical outcome (InMemory store twice, 1 before / 0 after) before any
+edit; after the repair the same shape through a codec-registered production
+pool retains the observation and its full result across a brand-new pool.
+
+### The repair (7 files + 1 inventory note + 1 CI step)
+
+- `memory/working/pg_store.py` (new): `PgWorkspaceLogStore` + `ensure_working_
+  log_schema` (advisory-locked bootstrap) over `workspace_working_log` /
+  `workspace_working_results`; JSON bound as text with `::text::jsonb` and
+  read via `decode_payload`, so no pool-construction choice changes what a row
+  stores; `purge_workspace` is one transaction.
+- `alembic/versions/071_workspace_working_log.py` (new): the managed-deployment
+  DDL, mirroring the runtime bootstrap, with a full `downgrade`.
+- `memory/working/wiring.py`: PG-first selection (the goal-wiring contract);
+  stale "no PG schema yet" docstring replaced; `WORKING_LOG_PG_TABLES`
+  re-exported like `GOAL_PG_TABLES`.
+- `container.py`: the call site passes `pg_pool=pg_pool` — the one-line defect.
+- `quality/durable-table-retention.json`: both tables now declared
+  `["postgres", "sqlite"]` (surgical 4-line diff).
+- `tests/migrations/test_migration_chain.py`: the two tables in
+  `EXPECTED_TABLES`.
+- `.github/workflows/ci.yml`: the postgres job runs the three working-log
+  suites under `MAISTRO_REQUIRE_PG_LEGS=1` — a skip and a pass are the same
+  green tick, so the leg must run where the server is.
+- Tests: conformance `"postgres"` leg + fresh-pool restart test; new
+  `test_working_log_pg_schema_agreement.py` (migration 071 vs runtime DDL
+  against a real catalogue, including the identity generation on `seq`);
+  recording-pool selection, bare-database bring-up with retention across a new
+  pool, purge; Container-seam PG selection. Net +21 node IDs, recorded in
+  `docs/testing/inventory-notes/450-working-log-postgres.md`.
+
+### Executed evidence (all first-hand, this tree)
+
+- Bug legs against real PostgreSQL 18 (`maistro-pg-test`, throwaway database
+  `wt450_working_log`): `pytest packages/maistro-core/tests/memory` with
+  DSN+`MAISTRO_REQUIRE_PG_LEGS=1` → **1101 passed, 0 skipped**; without DSN →
+  1071 passed, 30 skipped (correct skip behavior).
+- `tests/migrations/test_migration_chain.py` against the fresh database →
+  **18 passed** (chain applies from empty to the new 071 head, EXPECTED_TABLES
+  sees both tables, full downgrade/upgrade round trip; the first run failed 4
+  tests because the migration lacked `downgrade()` — fixed, re-run green).
+- Working-log three suites with PG legs → **116 passed** (first runs found two
+  real test bugs: the catalogue's identity value is `ALWAYS`, and the leg's
+  store() truncated on restart — fixed, re-run green).
+- Container seams over PG: container tests 144 passed; workspaces 494 passed;
+  goals 187 passed; Hive `test_workspace_authority_durable.py` 24 passed;
+  Hive evolution/optimizer/memory/quotas 171 passed.
+- Gates: `ruff check .` all passed; `ruff format --check .` 3679 files;
+  full-workspace `mypy` clean (964 files); `check-vulture-baseline.py` with
+  CI's exact args exit 0 (1219 == 1219; the new constant is re-exported so no
+  new debt); `check-suite-inventory.py` 21 suites match; `check-durable-table-
+  inventory.py` 127 tables declared; `check-required-checks.py` 79 checks;
+  `check-workflow-inventory.py` / `check-workflow-write-safety.py` clean;
+  backlog (167) and ADR index OK; `tests/test_ci_*`/gates/workflow-inventory
+  tests 223 passed; `git diff --check` clean.
+
+### Disposition
+
+Checkpoint 6's #105 retained-log gap is closed in production behavior and
+proven on a real server, fresh-pool legs included. The remaining unmet
+checkpoints are unchanged from the Correction's table (initiative-level
+dispositions and issue closures). No gates, grants or ledgers were touched;
+the retention inventory row edit is the declaration the durable-table gate
+requires of any new backend, not a grant. No GitHub actions. Accounting:
+**checked 1, done 1 (the scoped repair), skipped 0, errors 0**.

@@ -1428,6 +1428,7 @@
     {
       "table": "workspace_working_log",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
@@ -1435,11 +1436,12 @@
       "retention": "undecided",
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
-      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
+      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. SQLite bootstraps the table; Alembic 071 creates the PostgreSQL twin (PgWorkspaceLogStore, whose purge_workspace deletes the same rows on that backend). Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
     },
     {
       "table": "workspace_working_results",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
@@ -1447,7 +1449,7 @@
       "retention": "undecided",
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
-      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
+      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (SQLite: INSERT OR IGNORE on the content address; PostgreSQL: ON CONFLICT DO NOTHING). Deleted by the same purge_workspace that removes the log entries referencing them -- the PostgreSQL twin runs its two deletions in one transaction; the lifetime question is the log's."
     },
     {
       "table": "canonical_goals",
