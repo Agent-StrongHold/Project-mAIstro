@@ -31,10 +31,14 @@ contracts:
 tests:
   - packages/maistro-core/tests/agents/test_brief_interview.py
   - packages/hive-conductor/backend/tests/test_program_brief_routes.py
+  - packages/hive-conductor/backend/tests/test_chat_brief_interview.py
+  - packages/hive-conductor/backend/tests/test_brief_commit.py
 source:
   - packages/maistro-core/src/maistro/agents/brief_interview.py
   - packages/hive-conductor/backend/routes/program.py
   - packages/hive-conductor/backend/services/brief_store.py
+  - packages/hive-conductor/backend/services/brief_chat.py
+  - packages/hive-conductor/backend/services/brief_commit.py
 ac-modules:
   AC-1: maistro.agents.brief_interview
   AC-2: maistro.agents.brief_interview
@@ -45,6 +49,11 @@ ac-modules:
   AC-7: maistro.agents.brief_interview
   AC-8: maistro.agents.brief_interview
   AC-9: maistro.agents.brief_interview
+  AC-10: '@flat/hive-conductor/services.brief_commit'
+  AC-11: '@flat/hive-conductor/services.brief_commit'
+  AC-12: '@flat/hive-conductor/services.brief_commit'
+  AC-13: '@flat/hive-conductor/services.brief_commit'
+  AC-14: '@flat/hive-conductor/services.brief_commit'
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -141,9 +150,10 @@ may mint a Goal from an interview this function would not commit.
 ## What this spec does not do
 
 - It does not define `Goal`, `CreativeBrief` or their stores. Those remain
-  #458 and #774; `maistro.goals` is the declared owner in the interop
-  contract and does not exist yet. This spec produces the draft they will be
-  written from, and refuses to produce it early.
+  #458 (ontology), #1572 (canonical Goal store) and #774 (CreativeBrief
+  contract/persistence); `maistro.goals` and the #774 store are the owners
+  this spec's commit binds to, never re-defines. The interview produces the
+  draft they are written from and refuses to produce it early.
 - It does not call a model. A caller may paraphrase the questions with one;
   the fields, the routing and the gate are here.
 - It does not change the onboarding interview in
@@ -167,7 +177,7 @@ the caller is a member of and persisted per (user, workspace) in the
 | `GET /brief` | the open interview, its brief-so-far summary and the next question, or nothing |
 | `POST /brief/start` | opens an interview from the turn that asked for work (replaces any open one; it was never committed) |
 | `POST /brief/answer` | one free-text turn; the reply names the event and the field it touched |
-| `POST /brief/draft` | the gate: the draft, or 409 naming the missing fields. `written` is empty until the Goal and CreativeBrief writers exist |
+| `POST /brief/draft` | the gate: the draft, or 409 naming the missing fields. `written` stays empty here: this route drafts only — the durable commit is the chat boundary's (`services.brief_commit`, below) |
 | `DELETE /brief` | forgets the open interview |
 
 ### In chat
@@ -180,13 +190,39 @@ when an interview is open for this person in this workspace, or when the turn
 asks for work to be made (a verb such as make, start, draft or plan near a
 deliverable such as video, reel, storyboard, post or guide). Then the reply
 is the interview's, deterministic, and the stream carries a `brief` event
-(the summary, the next question, or the draft with `written: []`) before the
+(the summary, the next question, the draft while it is unconfirmed, or the
+commit's truthful result once the person confirms) before the
 `done` text. A turn that asks a question, or names no workspace, or comes
 from a non-member, reaches the model exactly as before. The Warden runs
 first, so a phrase its injection patterns refuse ("never mind") never reaches
 the interview; the chat's drop word is "cancel". The Chat page sends the
 active workspace with each turn and renders the `brief` event as the
 "brief so far" panel above the thread.
+
+## The commit
+
+The reviewed draft becomes durable work through `services.brief_commit` —
+one authorized application-service commit boundary, called only by the chat
+flow above once the person explicitly confirms the summary. It revalidates
+the interview's required fields and that explicit confirmation, resolves the
+authenticated principal, the canonical Workspace/Project and the accountable
+Workspace Agent on the server, maps the outcome and its success/stop
+conditions into a canonical Goal revision through the `ScopedGoalStore`
+authorization seam (#1572), and binds the creative projection to that exact
+Goal identity/revision as a CreativeBrief version through the #774 store —
+preserving every field's source (`user`, `verbatim`, `record`, `assumed`),
+the notes and the opening turn, never inventing missing intent.
+
+The pair is one logical commit: the whole identity — `goal_id` included — is
+recorded durably before the first write, so a crash before, between or after
+the writes resumes the same Goal and brief instead of stranding a half
+intake or minting a duplicate; a replayed confirmation returns the existing
+result; a non-owner is refused before any identity is minted; and a missing
+prerequisite (no durable brief store wired) is an explicit, retryable
+limitation rather than a silently false draft. The commit admits no Run:
+fulfillment stays with Goal -> Graph -> Run, discovered from the canonical
+Goal enumeration by reconciliation (#805/#806), never by an
+interview-owned loop.
 
 ## Acceptance Criteria
 
@@ -274,6 +310,46 @@ Feature: A requirements interview precedes every Goal and CreativeBrief commit
     When the person says "keep the intro under three seconds"
     Then it is recorded as a note on the brief
     And the committed draft carries the note
+
+  @AC-10
+  Scenario: A confirmed interview commits exactly one Goal and one CreativeBrief bound to it
+    Given an interview whose every required field is known
+    And the person has reviewed the draft and explicitly confirmed it
+    When the confirmation turn is answered
+    Then exactly one canonical Goal at revision 1 is created for the accountable Workspace Agent
+    And exactly one CreativeBrief version is written bound to that Goal's identity, revision and owner
+    And every field's recorded source, the notes and the opening turn are preserved
+    And the Goal enumerates through the canonical Goal inspection surface after the chat is gone
+    And the durable commit record names the same identities and admits no Run
+
+  @AC-11
+  Scenario: Cancellation and unconfirmed intake write nothing, and ordinary turns stay ordinary
+    Given an open interview the person does not confirm
+    When the person cancels
+    Then no Goal, CreativeBrief version or Goal-fulfillment Run exists
+    And the next ordinary chat turn reaches the model and is admitted as its Run as before
+
+  @AC-12
+  Scenario: A replayed confirmation returns the commit that already happened
+    Given a confirmation whose durable result was recorded but whose reply was lost
+    When the same confirmation is replayed
+    Then the existing Goal and CreativeBrief identities are returned as already committed
+    And no second Goal, brief version or Run is created
+
+  @AC-13
+  Scenario: Someone who is not the interview's owner cannot commit it
+    Given a ready interview in a workspace the caller is not the owner of
+    When that caller confirms the draft
+    Then the commit is refused before any identity is minted
+    And no Goal or CreativeBrief version is written and the draft stays open
+
+  @AC-14
+  Scenario: An unavailable prerequisite is an explicit, retryable limitation
+    Given the durable brief store is not wired
+    When the person confirms the draft
+    Then the reply names the limitation as unavailable and writes nothing
+    And the interview stays open with its recoverable draft
+    And the same confirmation can be retried once the prerequisite is wired
 ```
 
 ## Rollout
