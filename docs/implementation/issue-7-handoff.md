@@ -263,3 +263,65 @@ seams, not replace them. This round adds no competing store or scheduler.
 Progress: `{checked: 19, done: 8, skipped: 0, errors: 0, next: "repair operational composition gaps; obtain live release evidence"}`.
 Here `done` counts only the eight explicitly bounded deterministic/disposition
 PASS rows (1, 6, 10, 13–16, 19), not complete milestone acceptance.
+
+## Round 6 — independent repair-round re-verification (job `ed973a308d1d438480534c04b1a785aa`)
+
+Starting HEAD `90dbb33db0` (identical to the manifest head), worktree clean, no
+uncommitted salvage. The prior verify job (`ae850e8d…`) died on a provider 404
+*after* its deterministic checks; those logs (in that job directory) all
+returned 0 and were inspected, not trusted: every result below was re-executed
+fresh in this round. No code, tests, ledgers, gates or policy were edited; this
+section is the only change.
+
+### Fresh validation (all exit 0)
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv run ruff check .` / `ruff format --check .` | all checks passed / 3678 files already formatted |
+| `uv run pytest packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_entra_entitlements.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | **53 passed** |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4571 passed, 113 skipped** (248.9s) |
+| `uv run pytest packages/maistro-core/tests/goals packages/maistro-core/tests/memory/user_model packages/maistro-core/tests/memory/working_graph packages/maistro-core/tests/memory/working -q` | **311 passed, 35 skipped** (PG-gated) |
+| `uv run pytest packages/maistro-design/tests -q` | **724 passed, 1 skipped** |
+| `uv run pytest packages/maistro-server/tests/api/test_user_model_api.py -q` | **6 passed** |
+| `uv run python scripts/check-release-consistency.py` | ok: released none, shipping 0.9.0, working toward 1.0.0 |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | ok, matches recorded inventory, 0 duplicate evidence |
+| `uv run python scripts/check-reachability.py` / `-dispositions.py` / `-provenance.py` / `-dispositions-provenance.py` | ok: 81 unreachable of 1508 modules, 27 groups (38 CONNECT / 20 LIBRARY / 23 RETIRE), no candidate-approved expansion |
+| `uv run python scripts/check-contract-markers.py` | ok: every contract claim evidenced or recorded |
+| `uv run python scripts/check-backlog-consistency.py` | ok: 167 items parse |
+
+### Negative production-composition claims re-proven (they are true)
+
+- Row 8: `maistro/container.py:1409` — `reconcile_goals` returns 0 when
+  `goal_reconciliation_policy is None`; repo-wide grep found no production
+  caller of the tick and no production assignment of the policy (tests and the
+  reconciliation module only). `goals/reconciliation/wiring.py:119–131` answers
+  a PostgreSQL pool with `InMemoryGoalStore()` plus a loud warning.
+- Row 11: `working_graph/manager.py:39` selects `create_backend("embedded", …)`;
+  no production Ladybug backend registration exists.
+- Row 12: `promote_evidence` has no caller outside its defining module;
+  `recall_for_task` is reachable only through the owner-scoped HTTP route, not
+  any Agent-runtime path.
+- Row 18: `packages/maistro-design/src` contains no UserModel, Attention or
+  recall consumer.
+- Row 19: `services/oauth_login.py:344–350` invokes the JIT provisioner for
+  unlinked Entra identities; `services/entra_jit.py:65–92,157–162` validates
+  every `@odata.nextLink` against the HTTPS Graph origin and the
+  `/v1.0/me/transitiveMemberOf` subject endpoint. The strengthened
+  disabled-JIT test (`test_entra_jit_provisioning.py:497`) asserts 401, no
+  Graph membership request, and no account/link/session/audit side effects.
+- Ledger integrity: `git diff --numstat <base> -- quality/` shows exactly the
+  documented lane rows (`reachability-baseline.json` −1,
+  `reachability-dispositions.json` +1/−1); all four reachability provenance
+  gates pass against them.
+
+### Verdict carried forward
+
+The Round 5 accounting stands unchanged: 8 bounded deterministic/disposition
+PASS rows; rows 2, 3, 5, 17 UNVERIFIED (require operator release-pipeline,
+clean-machine/live-model, RC-soak and discovery-pipeline evidence not
+obtainable in this environment); rows 4, 7, 9, 11, 12 PARTIAL; rows 8 and 18
+not met by current production composition. **NEEDS-REPAIR for milestone
+acceptance** remains the correct disposition; no code repair belongs in this
+verification-only round.
+
+Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
