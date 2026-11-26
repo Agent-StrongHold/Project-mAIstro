@@ -228,6 +228,12 @@ dev = [
     # `crosshair` package (0.1.0.dev11, paramiko-era) — that name collision
     # shadows crosshair-tool's own `crosshair` import package.
     "crosshair-tool>=0.0.111",
+    # The M8-A13 stateful API workflow suite
+    # (packages/maistro-server/tests/api/test_stateful_workflow_api.py) builds
+    # its schema-generated request bodies from the served OpenAPI document via
+    # schemathesis — a fresh `uv sync` prunes an undeclared package, so the
+    # research suite must declare it or run green having verified nothing.
+    "schemathesis>=4.29",
 ]
 
 [project.scripts]
