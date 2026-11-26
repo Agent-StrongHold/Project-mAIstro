@@ -216,3 +216,54 @@ Post-repair battery:
 - radon/vulture/execution-lifecycles/model-egress ratchets re-run against
   `origin/develop` → unchanged and passing (see the final validation block
   below).
+
+## Independent verification round (2026-11-26, same lane, verifier+writer)
+
+Every claim above was re-executed from the committed tree at `a82db87205`
+before this section was written; nothing was taken on trust. Results:
+
+- `pytest packages/maistro-evolve/tests -q` → **1189 passed, 6 skipped**
+  (exact match); `pytest packages/maistro-rsi/tests -q` → **1729 passed,
+  4 skipped** (exact match); the two `formal/models` RSI conformance suites →
+  **10 passed**; `ruff check .` / `ruff format --check .` → clean;
+  `check-suite-inventory.py` → ok, this suite at **1195** collected nodes;
+  radon (0 new / 0 regressed / 0 stale), vulture (1302/1302, CI-exact args),
+  execution-lifecycles (19/19), model-egress, direct-effects, and
+  foreign-harness-egress gates all re-run green against `origin/develop`.
+- Both fail-then-pass reproductions re-executed with the repaired sources
+  shadowed out via pytest's ini `pythonpath` (file copies under `/tmp`, no
+  git history operations): round 1 — the `2d5525c4fa` module against
+  `8220813611`'s `fitness.py` fails **14/28**, passes **28/28** with the
+  repaired `fitness.py`; round 2 — the 7 `TestPromotionPathGate` nodes
+  against the `2d5525c4fa` sources fail **6/7**, pass 7/7 on the repaired
+  tree. Numbers match the claims above exactly.
+- Consumer sweep re-run: the hive-conductor evolution/optimizer/graph-runner
+  set as named above measures **272 passed** today (the note recorded 263;
+  the delta is develop-side test drift in files this branch does not touch —
+  every file in the named set passes unchanged).
+- Four production-path probe scripts (no test helpers, `/tmp` only)
+  confirmed reachable behavior, not just suite agreement: (1) a measured
+  transfer inversion with human approval and no incumbent is refused by
+  `PopulationStore.promote_audited` (`PermissionError` naming the inversion,
+  no genome active) and by `promotion.selection_eligibility`, while a
+  carried positive sample still promotes — the over-blocking guard holds;
+  (2) `run_conformance()` holds on all four graders (0 hostile accepted,
+  4/4 mutants killed), spoofed/prose/negated/empty responses score 0.0 on
+  every production grader, and `require_conformance` raises on a doctored
+  report; (3) `EvolutionCycle.run_cycle` with `evidence_dir` publishes a
+  manifest that `verify_evidence_manifest` accepts, a tampered result row
+  and a removed metering section are both detected, and no target means no
+  writes; (4) `attach_run_metering` stamps the block without rewriting
+  adapter `metadata`, is idempotent, unresolved violations fail
+  `metering_gate_failures`, and ARC-AGI grading is exact-match with spoof
+  detection while `available()` honestly reports the absent corpus.
+- The documented run-id collision limitation was re-observed live (two
+  fresh `EvolutionCycle` instances at the same cycle count write the same
+  `<genome>-cycle-<n>` directory); limitations 2 (publishing a manifest
+  whose metering carries an unresolved violation) and the epic-remaining
+  scope (ARC-AGI-3 corpus/evaluation run, real external-harness matched
+  comparisons, fresh-workspace controls) stand as recorded — no new
+  limitation found this round.
+
+No test was added, removed, or moved in this round (docs-only append), so
+the `inventory-delta` above is unchanged.
