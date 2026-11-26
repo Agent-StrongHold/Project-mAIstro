@@ -51,3 +51,8 @@ foreach ($case in $cases) {
 
 if ($failed -gt 0) { throw "$failed of $($cases.Count) case(s) failed under $PowerShell" }
 Write-Host "windows detection e2e ($PowerShell): all $($cases.Count) cases passed"
+
+# Command construction is mocked: no UAC, process launch, registry write or reboot.
+$relaunchHarness = Join-Path $PSScriptRoot 'relaunch_policy_harness.ps1'
+& $PowerShell -NoProfile -NonInteractive -File $relaunchHarness -GetPs1 $getPs1
+if ($LASTEXITCODE -ne 0) { throw "relaunch policy harness failed under $PowerShell" }

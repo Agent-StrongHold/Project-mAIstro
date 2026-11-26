@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 from fastapi.testclient import TestClient
 from main import app
@@ -120,10 +118,13 @@ def test_resolve_unknown_approval_404() -> None:
 # --- the headline acceptance criterion ---------------------------------
 
 
-async def test_destructive_action_blocks_until_approved_then_completes() -> None:
-    """A destructive infra_action is held pending approval, surfaces in the
-    approvals inbox, and only completes once resolved through the API."""
-    from routes import capabilities as cap_routes
+async def test_destructive_action_blocks_without_approved_flag_then_completes() -> None:
+    """#2405: HostHealthAction no longer awaits InboxApproval.
+
+    A destructive act without ``approved=True`` returns blocked immediately
+    (no in-process Event). With ``approved=True`` the host call proceeds.
+    Durable waiting-human admission for self-repair is covered in core tests.
+    """
     from services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
@@ -131,14 +132,13 @@ async def test_destructive_action_blocks_until_approved_then_completes() -> None
     from maistro.capabilities.providers.host_health import HostHealthAction
 
     reg = default_capability_registry()
-    inbox = reg.provider("approval", "inbox")
     http = HttpxAsyncHttp(
         "http://h:8150",
         transport=httpx.MockTransport(
             lambda req: httpx.Response(200, json={"status": "ok", "detail": "restarted"})
         ),
     )
-    action = HostHealthAction(http, autonomy="auto_safe", approval=inbox)
+    action = HostHealthAction(http, autonomy="auto_safe")
     reg.register(action)
     reg.activate("infra_action", "host_health")
 
@@ -146,34 +146,17 @@ async def test_destructive_action_blocks_until_approved_then_completes() -> None
     saved = engine._capabilities
     engine._capabilities = reg
     try:
-        task = asyncio.create_task(action.act("restart_stack", {}))  # DESTRUCTIVE tier
+        blocked = await action.act("restart_stack", {})
+        assert blocked.ok is False
+        assert blocked.blocked_pending_approval is True
 
-        # The action is parked awaiting approval; it shows up in the inbox.
-        for _ in range(100):
-            if cap_routes.list_approvals()["pending"]:
-                break
-            await asyncio.sleep(0.005)
-        pending = cap_routes.list_approvals()["pending"]
-        assert len(pending) == 1
-        assert pending[0]["tier"] == "destructive"
-        assert not task.done()  # still blocked
-
-        out = cap_routes.resolve_approval(
-            pending[0]["request_id"],
-            cap_routes.ResolveApprovalBody(approved=True, actor="tester"),
-            None,
-        )
-        assert out["resolved"] is True
-
-        result = await asyncio.wait_for(task, timeout=1.0)
+        result = await action.act("restart_stack", {}, approved=True)
         assert result.ok is True
-        assert cap_routes.list_approvals()["pending"] == []
     finally:
         engine._capabilities = saved
 
 
-async def test_destructive_action_denied_does_not_execute() -> None:
-    from routes import capabilities as cap_routes
+async def test_destructive_action_without_approved_does_not_execute() -> None:
     from services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
@@ -181,7 +164,6 @@ async def test_destructive_action_denied_does_not_execute() -> None:
     from maistro.capabilities.providers.host_health import HostHealthAction
 
     reg = default_capability_registry()
-    inbox = reg.provider("approval", "inbox")
     executed: list[str] = []
 
     def _handler(req: httpx.Request) -> httpx.Response:
@@ -189,23 +171,16 @@ async def test_destructive_action_denied_does_not_execute() -> None:
         return httpx.Response(200, json={"status": "ok"})
 
     http = HttpxAsyncHttp("http://h:8150", transport=httpx.MockTransport(_handler))
-    action = HostHealthAction(http, autonomy="auto_safe", approval=inbox)
+    action = HostHealthAction(http, autonomy="auto_safe")
     reg.register(action)
 
     engine = get_engine()
     saved = engine._capabilities
     engine._capabilities = reg
     try:
-        task = asyncio.create_task(action.act("docker_prune", {}))  # DESTRUCTIVE
-        for _ in range(100):
-            if cap_routes.list_approvals()["pending"]:
-                break
-            await asyncio.sleep(0.005)
-        rid = cap_routes.list_approvals()["pending"][0]["request_id"]
-        cap_routes.resolve_approval(rid, cap_routes.ResolveApprovalBody(approved=False), None)
-        result = await asyncio.wait_for(task, timeout=1.0)
+        result = await action.act("docker_prune", {})
         assert result.ok is False
         assert result.blocked_pending_approval is True
-        assert executed == []  # the host action was never sent
+        assert executed == []
     finally:
         engine._capabilities = saved

@@ -71,8 +71,10 @@ async def _seed_active_attempt(
         node_run.node_run_id,
         executor_id="dead-canvas-worker",
         lease_holder="dead-canvas-worker",
+        lease_ttl=timedelta(seconds=30),
     )
     assert attempt.execution_lease is not None
+    assert attempt.execution_lease.expires_at is not None
     await runs.transition_attempt(
         attempt.attempt_id,
         AttemptStatus.RUNNING,
@@ -168,6 +170,32 @@ async def test_successful_stage_is_one_completed_node_run_and_attempt() -> None:
     assert run.status is RunStatus.COMPLETED
 
 
+async def test_a_yielded_stage_is_an_integrity_error_not_a_silent_success() -> None:
+    """A stage whose operation paused (ExecutionYielded) returns a YIELDED
+    Attempt with no captured result. Canvas has no pause semantics, so the
+    stage must refuse truthfully rather than project an empty receipt — the
+    degenerate branch the projection guard exists for."""
+    from maistro.runs.execution import ExecutionYielded
+
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-yield",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+
+    async def pauses() -> list[str]:
+        raise ExecutionYielded(awaits_human=True)
+
+    with pytest.raises(RunIntegrityError, match="without a completed Attempt"):
+        await adapter.execute_stage(run_id, "generate", pauses)
+
+    attempts = await runs.list_attempts((await runs.list_node_runs(run_id))[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [AttemptStatus.YIELDED]
+
+
 async def test_failed_stage_retry_keeps_both_attempts_under_same_node_run() -> None:
     adapter, runs, _project_id = await _adapter()
     run_id = await adapter.admit(
@@ -239,6 +267,7 @@ async def test_reclaimed_worker_attempt_is_fenced_before_retry() -> None:
         AttemptStatus.COMPLETED,
     ]
     assert attempts[0].attempt_id == abandoned.attempt_id
+    assert attempts[0].cancellation_cause is CancellationCause.RECOVERED
     run = await runs.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.COMPLETED
@@ -528,6 +557,104 @@ async def test_abandoned_attempt_integrity_requires_persisted_attempt_and_lease(
             error="worker disappeared",
             cancellation=CancellationCause.RECOVERED,
         )
+
+    with pytest.raises(RunIntegrityError, match="no execution lease"):
+        await adapter._reclaim_recovered_attempt(unleased)
+
+
+async def test_race_or_require_terminal_resolves_or_refuses() -> None:
+    adapter, runs, _project_id = await _adapter()
+
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal("missing-attempt")
+
+    run_id = await adapter.admit(
+        job_id="job-race-terminal",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-race-terminal:generate"
+    )
+    with pytest.raises(RunIntegrityError, match="could not be settled"):
+        await adapter._race_or_require_terminal(attempt.attempt_id)
+
+    assert attempt.execution_lease is not None
+    cancelled = await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer won",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._race_or_require_terminal(cancelled.attempt_id)
+    assert raced.attempt_id == cancelled.attempt_id
+    assert raced.status is AttemptStatus.CANCELLED
+    assert node_run.node_run_id == cancelled.node_run_id
+
+
+async def test_reclaim_recovered_attempt_falls_back_when_reclaim_raises_or_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, runs, _project_id = await _adapter()
+    run_id = await adapter.admit(
+        job_id="job-reclaim-race",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run, attempt = await _seed_active_attempt(
+        runs, run_id, "canvas:job-reclaim-race:generate"
+    )
+    lease = attempt.execution_lease
+    assert lease is not None
+
+    async def boom(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        raise RuntimeError("reclaim raced")
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", boom)
+    # Peer already terminalized before our reclaim raised; argument keeps the
+    # pre-race lease so the reclaim path is entered, then falls back.
+    assert attempt.execution_lease is not None
+    await runs.transition_attempt(
+        attempt.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled first",
+        fencing_token=attempt.execution_lease.fencing_token,
+    )
+    raced = await adapter._reclaim_recovered_attempt(attempt)
+    assert raced.status is AttemptStatus.CANCELLED
+    assert raced.attempt_id == attempt.attempt_id
+
+    # Fresh attempt: reclaim returns None (still live / no write) while a peer
+    # settles concurrently — fall through to the race reader.
+    run_id_2 = await adapter.admit(
+        job_id="job-reclaim-none",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
+    _node_run_2, attempt_2 = await _seed_active_attempt(
+        runs, run_id_2, "canvas:job-reclaim-none:generate"
+    )
+
+    async def no_write(_attempt_id: str, *, now: datetime | None = None) -> Attempt | None:
+        return None
+
+    monkeypatch.setattr(runs, "reclaim_expired_attempt", no_write)
+    assert attempt_2.execution_lease is not None
+    await runs.transition_attempt(
+        attempt_2.attempt_id,
+        AttemptStatus.CANCELLED,
+        error="peer settled",
+        fencing_token=attempt_2.execution_lease.fencing_token,
+    )
+    again = await adapter._reclaim_recovered_attempt(attempt_2)
+    assert again.status is AttemptStatus.CANCELLED
+    assert again.attempt_id == attempt_2.attempt_id
 
 
 class _ReceiptStore:
@@ -972,6 +1099,99 @@ async def test_recovery_leaves_a_live_leased_running_receipt_alone() -> None:
     assert job.status == JobStatus.RUNNING
     assert job.leased_by == "live-worker"
     assert store.updates == []
+
+
+async def test_recovery_leaves_a_string_status_live_leased_receipt_alone() -> None:
+    """The live-lease guard must fire for driver-hydrated plain-string status.
+
+    ``PgCanvasStore._coerce_job`` used to hand back the status column as a
+    plain ``str``; identity comparison against ``JobStatus.RUNNING`` then
+    failed silently, the guard never fired, and a second worker's reconcile
+    requeued a live 300s lease back to PENDING -- observed live in the #93
+    two-worker race, where the same physical job was claimed twice under a
+    live lease (attempts=2, provider dispatched twice). This pins the exact
+    production shape: a receipt whose ``status`` is the string ``'running'``.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-string-live-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-string-live-lease",
+        run_id,
+        status="running",  # exactly what the PostgreSQL driver returns
+        leased_by="live-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+    )
+    store.jobs[("job-string-live-lease", "org-1")] = job
+    assert not isinstance(job.status, JobStatus)  # a plain string, as hydrated
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by == "live-worker"
+    assert store.updates == []
+
+
+async def test_recovery_requeues_a_string_status_receipt_whose_lease_expired() -> None:
+    """Equality (not identity) must not protect an *expired* string lease.
+
+    The companion fix could have over-corrected into "never touch a RUNNING
+    receipt"; an expired lease under a plain-string status is still a lost
+    worker and must be requeued.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-string-expired-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-string-expired-lease",
+        run_id,
+        status="running",
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-string-expired-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.PENDING
+
+
+def test_receipt_status_hydration_coerces_driver_strings_and_passes_legacy_through() -> None:
+    """``_coerce_job_status`` must both hydrate and tolerate legacy values.
+
+    The #93 two-worker race was caused by the PostgreSQL store hydrating the
+    status column as a plain ``str`` while every guard compared by identity.
+    ``_coerce_job_status`` is the fix's hinge, so both of its branches are
+    pinned directly (the read path only reaches them through a live driver,
+    which the no-services coverage producer never sees):
+
+    - a driver-shaped plain string hydrates to the ``JobStatus`` member the
+      in-memory stores produce, so identity-agnostic comparisons hold;
+    - a value written by an older generation (not a ``JobStatus`` member)
+      passes through as a plain string instead of crashing a read path.
+    """
+    from maistro_canvas.canvas.store import _coerce_job, _coerce_job_status
+
+    assert _coerce_job_status("running") is JobStatus.RUNNING
+    assert _coerce_job_status(JobStatus.DONE) is JobStatus.DONE
+
+    legacy = "queued-by-an-older-generation"
+    hydrated = _coerce_job_status(legacy)
+    assert hydrated == legacy
+    assert not isinstance(hydrated, JobStatus)
+
+    receipt = _coerce_job(
+        {
+            "id": "job-hydrated",
+            "layer_id": "l1",
+            "canvas_id": "c1",
+            "status": "running",  # exactly what the driver returns
+        }
+    )
+    assert isinstance(receipt.status, JobStatus)
+    assert receipt.status is JobStatus.RUNNING
 
 
 async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None:

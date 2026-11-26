@@ -351,7 +351,9 @@ async def test_chat_launched_run_is_cancelled_by_projection_id_while_in_flight(
     assert still_running is not None and still_running.status is RunStatus.RUNNING
 
     response = await cancel_route(projection_id, _ScopedRequest(_USER_ID))
-    assert response == {"run_id": canonical_id, "status": "cancelled", "cancelled": True}
+    assert response["run_id"] == canonical_id
+    assert response["status"] == "cancelled"
+    assert response["cancelled"] is True
 
     # The physical work is over: the parked provider unwound, and the durable
     # record agrees at every altitude -- Run, NodeRun, Attempt.

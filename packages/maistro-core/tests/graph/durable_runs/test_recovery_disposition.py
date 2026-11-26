@@ -28,7 +28,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
-from maistro.runs.model import ExecutionLease
+from maistro.runs.model import CancellationCause, ExecutionLease
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 
 
@@ -229,8 +229,91 @@ async def test_repeated_orphan_reconciliation_is_idempotent() -> None:
     assert settled is not None
     assert len(settled.attempts) == 1
     assert settled.attempts[0].status is AttemptStatus.CANCELLED
+    assert settled.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert "orphaned" in (settled.attempts[0].error or "")
     assert settled.node_runs[0].status is RunStatus.WAITING
     assert settled.status is RunStatus.WAITING
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-082826-08f0/AC-3")
+async def test_already_recovered_attempt_is_replayed_before_retry() -> None:
+    """A prior CANCELLED+RECOVERED row still parks NodeRun activity on resume."""
+    store = InMemoryDurableRunStore()
+    crashed = _crashed_record("replay-run")
+    values = crashed.attempts[0].model_dump(mode="python")
+    values["status"] = AttemptStatus.CANCELLED
+    values["finished_at"] = crashed.run.created_at
+    values["cancellation_cause"] = CancellationCause.RECOVERED
+    values["error"] = "orphaned physical Attempt recovered after process loss"
+    pre_settled = Attempt.model_validate(values)
+    await store.create(crashed.model_copy(update={"attempts": (pre_settled,)}))
+
+    record = await store.get("replay-run")
+    assert record is not None
+    await attempt_executor._reconcile_orphaned_attempts(record, store=store)
+
+    settled = await store.get("replay-run")
+    assert settled is not None
+    assert len(settled.attempts) == 1
+    assert settled.attempts[0].status is AttemptStatus.CANCELLED
+    assert settled.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert settled.node_runs[0].status is RunStatus.WAITING
+    assert settled.status is RunStatus.WAITING
+
+
+@pytest.mark.asyncio
+async def test_superseded_recovered_attempt_is_not_replayed_onto_queued_noderun() -> None:
+    """A historical CANCELLED+RECOVERED must not re-park after a newer Attempt.
+
+    After recovery the NodeRun can retry, pause for HITL, and be answered into
+    QUEUED. Replaying the superseded recovered Attempt would hit
+    ``_park_node_run``'s Running-only guard and strand every later resume.
+    """
+    store = InMemoryDurableRunStore()
+    crashed = _crashed_record("superseded-run")
+    recovered_values = crashed.attempts[0].model_dump(mode="python")
+    recovered_values["status"] = AttemptStatus.CANCELLED
+    recovered_values["finished_at"] = crashed.run.created_at
+    recovered_values["cancellation_cause"] = CancellationCause.RECOVERED
+    recovered_values["error"] = "orphaned physical Attempt recovered after process loss"
+    recovered = Attempt.model_validate(recovered_values)
+    # Current Attempt after HITL yield — not RECOVERED, so replay must skip the
+    # historical recovered row rather than re-apply it to the answered NodeRun.
+    successor = Attempt.model_validate(
+        {
+            "attempt_id": f"{crashed.run.run_id}-attempt-2",
+            "node_run_id": crashed.node_runs[0].node_run_id,
+            "ordinal": 2,
+            "status": AttemptStatus.YIELDED,
+            "created_at": crashed.run.created_at,
+            "started_at": crashed.run.created_at,
+            "finished_at": crashed.run.created_at,
+            "result": {"status": "paused"},
+        }
+    )
+    queued_node = crashed.node_runs[0].model_copy(update={"status": RunStatus.QUEUED})
+    queued_run = crashed.run.model_copy(update={"status": RunStatus.QUEUED})
+    await store.create(
+        crashed.model_copy(
+            update={
+                "run": queued_run,
+                "node_runs": (queued_node,),
+                "attempts": (recovered, successor),
+            }
+        )
+    )
+
+    record = await store.get("superseded-run")
+    assert record is not None
+    await attempt_executor._reconcile_orphaned_attempts(record, store=store)
+
+    settled = await store.get("superseded-run")
+    assert settled is not None
+    assert settled.node_runs[0].status is RunStatus.QUEUED
+    assert settled.status is RunStatus.QUEUED
+    assert settled.attempts[0].cancellation_cause is CancellationCause.RECOVERED
+    assert settled.attempts[1].status is AttemptStatus.YIELDED
 
 
 @pytest.mark.asyncio
@@ -261,6 +344,7 @@ async def test_mid_attempt_restart_on_sqlite_produces_the_documented_disposition
     ]
     assert [attempt.ordinal for attempt in recovered.attempts] == [1, 2]
     assert "orphaned" in (recovered.attempts[0].error or "")
+    assert recovered.attempts[0].cancellation_cause is CancellationCause.RECOVERED
     assert recovered.node_runs[0].status is RunStatus.COMPLETED
     assert _Work.calls == 1
 

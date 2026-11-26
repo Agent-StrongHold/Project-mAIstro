@@ -223,6 +223,23 @@ class AttemptStatus(StrEnum):
 #: service -- the dependency runs the other way.
 PAUSE_AWAITS_HUMAN = "awaits_human"
 
+#: Provenance key under which a durable Graph fork records its lineage fact
+#: (ADR-062 / ADR-082826-d9f5). It lives on the model for the same reason
+#: `PAUSE_AWAITS_HUMAN` does: the fork seam (graph layer) writes it, and the
+#: Run-store child guard (runs layer) reads it back to recognize the one
+#: child a terminal parent accepts, and the runs layer cannot import the
+#: graph layer.
+DURABLE_GRAPH_FORK_PROVENANCE = "durable_graph_fork"
+
+#: Provenance key under which a child Run records, at admission, why it is
+#: filed beneath an already-terminal parent. Same shape and same narrowing as
+#: the fork fact: the fact is identity-bound (it names the very parent this
+#: child hangs under) or the admission guard refuses the child. Shipped
+#: shapes: a control-plane operation minted after its requesting Run
+#: terminalized (a benchmark judge beneath a COMPLETED Run), and retry
+#: lineage beneath a FAILED Run.
+POST_TERMINAL_CHILD_PROVENANCE = "post_terminal_child"
+
 TERMINAL_RUN_STATUSES = frozenset(
     {
         RunStatus.COMPLETED,
@@ -523,6 +540,11 @@ class NodeRun(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     accepted_outcome: AcceptedNodeOutcome | None = None
+    #: Durable key/value provenance recorded beside the lifecycle evidence —
+    #: explore-wave thesis identity (M7-A8) lives here, not in prompt text and
+    #: not in any client-side candidate list. Written at NodeRun creation and
+    #: only ever extended by contract-checked writers afterwards.
+    provenance: dict[str, Any] = Field(default_factory=dict)
     result: Any | None = None
     error: str | None = None
 
@@ -709,7 +731,9 @@ class RunEvalScore(BaseModel):
 
 __all__ = [
     "ACCEPTED_NODE_OUTCOME_STATUSES",
+    "DURABLE_GRAPH_FORK_PROVENANCE",
     "PAUSE_AWAITS_HUMAN",
+    "POST_TERMINAL_CHILD_PROVENANCE",
     "TERMINAL_ATTEMPT_STATUSES",
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",

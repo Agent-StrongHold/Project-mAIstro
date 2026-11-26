@@ -1,0 +1,84 @@
+---
+inventory-delta:
+  packages/maistro-core/tests: +68
+---
+
+# 1864-registration-identity-parity
+
+Issue #1864 adds a statically derived registration-identity layer beside the
+existing composition guards, extending the existing suite file in the same
+directory:
+`packages/maistro-core/tests/graph/nodes/test_production_registration_universe.py`
+(+68 collected node IDs net, all under `packages/maistro-core/tests`).
+
+What moved and why:
+
+- **The identity layer** proves, per acceptance criterion, that every reachable
+  source registration expression the reachability universe ships is bound in
+  the loaded registry to the actual defining class, module, and checkout file
+  (`verify_identity_parity` checks registry membership, class name,
+  `__module__`, and the methods' compiled filenames). A fresh-process probe
+  inside the suite demonstrates the #1082 selection hole executed: a
+  core-only load fails the proof for the reachable design registrations while
+  the real production loaders pass. Negative cases cover substituted classes,
+  spoofed modules, wrong source files, and the fail-closed diagnoses for
+  registration forms the extractor refuses (dynamic arguments, qualified and
+  star-import registrar access, re-export chains, nested deferred
+  registration, ambiguous loop bindings, non-literal kinds, dynamic loop
+  iterables). Shipped positive forms are attributed exactly: decorators,
+  relative imports, aliased imports, literal loops over tuples and
+  module constants, and direct calls kept separate from loops.
+- **Review-round additions (all three verified to fail against the
+  pre-review extractor, then pass with it):**
+  (1) a registrar call hidden inside an unrelated statement call
+  (`consume(register_node(A))`) now enters the universe and fails closed —
+  previously the module silently dropped out of the scan entirely;
+  (2) the expected minimum excludes ledgered-unreachable registration
+  modules, mirroring `_import_reachable_registrations`' loading rule, so a
+  reviewed exclusion cannot contradict the module-set equality or registry
+  parity;
+  (3) the ambiguous-loop diagnosis only considers loops whose bindings
+  participate in a registration — unrelated loops reusing a target name no
+  longer fail inventory construction.
+- **No existing count moved.** `test_node_composition.py` and
+  `test_container_node_composition.py` are byte-identical to their previous
+  state — this change deliberately does not narrow the broader non-`test.*`
+  guard coverage; the file asserts the derived minimum is a subset of it
+  and reports extras separately.
+- **Provenance:** `test_production_registration_universe.py` predates this
+  change — it exists on the develop base `b1fc9a544f` with 14 collected
+  tests from prior rounds' partial work. This change extends it in place
+  (net 14 → 79; the repair round below extends the same file to 82); every
+  prior round's test continues to run unrenamed.
+- Two existing assertions in the file import the guards' own sweep
+  functions (`shipped_kinds`, `_kinds_declaring_authorities`) to prove the
+  sweeps and the reconciled universe agree — cross-file, so neither guard
+  can silently shrink without failing here.
+- **Repair round (branch head `6ef4c5c2e9`, merge of develop `5ca5a969d1`):
+  extractor fail-closed gaps found in verification, each proven to fail
+  against the pre-fix extractor and pass post-fix.**
+  (1) `ast.Match` was never traversed, so a module whose only registration
+  sits inside a module-level `match` case vanished from the site scan and
+  the expected inventory entirely (executed probe: 0 refs, empty
+  inventory, no diagnosis) — match case bodies now stay at their enclosing
+  scope like if/try bodies, while subject, patterns and guards defer; a
+  registrar reference in a match header now fails closed.
+  (2) `_reject_ambiguous_loops` computed `shadowed` as a subset of
+  `duplicated`, so the docstring's "target shadowing a module-level name"
+  clause was never enforced for a single loop (executed probe: a lone
+  shadowing registration loop was accepted); shadowing module-level string
+  constants or classes is now rejected exactly like a repeated target. No
+  production registration module regressed (the only shipped registration
+  loop target, `creative_nodes._node_cls`, neither repeats nor shadows).
+  Three tests added (+3 net). Full core CI selection at this head:
+  `pytest packages/maistro-core/tests --timeout=30 -q` → 17792 passed,
+  1302 skipped, 7 xfailed, 0 failed (6:20 wall clock); reachability and
+  disposition gates exit 0.
+
+The fresh-process probe and parity assertions execute under the existing
+core CI selection (`uv run pytest packages/maistro-core/tests --timeout=30 -q`;
+the `graph` partition of it is the suite these files live in).
+
+Collection verified via `scripts/check-suite-inventory.py --suite
+packages/maistro-core/tests` (the repair round's +3 is folded into this
+note's front-matter delta, +65 → +68).

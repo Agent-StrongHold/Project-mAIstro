@@ -469,3 +469,75 @@ class TestInstallPreSetupWindow:
         c = TestClient(app)
         r = c.get("/v1/installers-catalog")
         assert r.status_code == 401
+
+
+class TestSetupPreSetupWindow:
+    """#313: the /v1/setup/ wizard prefix is public only inside the pre-setup
+    window — the wizard runs when no account exists yet to authenticate with
+    — and reverts to normal auth once setup goes terminal. The same fail-closed
+    boundary the /v1/install/ prefix uses; the status and preset reads the SPA
+    needs on both sides of the line stay public via _PUBLIC_EXACT.
+    """
+
+    def test_setup_prefix_requires_auth_once_setup_complete(self) -> None:
+        # conftest seeds users, so setup is complete in the test app.
+        c = TestClient(app)
+        r = c.get("/v1/setup/questions")
+        assert r.status_code == 401
+        # The one-shot completion endpoint too — pre-narrowing, the handler's
+        # 409 guard was the only thing between a stranger and re-provisioning.
+        r = c.post("/v1/setup/complete", json={})
+        assert r.status_code == 401
+
+    def test_setup_prefix_public_before_setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import routes.setup as setup_routes
+
+        monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
+        c = TestClient(app)
+        r = c.get("/v1/setup/questions")
+        assert r.status_code == 200
+        assert r.json()["kind"] == "first_run_questions"
+
+    def test_setup_status_and_presets_survive_the_narrowing(self) -> None:
+        """The SPA reads these before login even on a provisioned instance —
+        they decide between wizard and login form. Never 401, pre- or
+        post-setup."""
+        c = TestClient(app)
+        for path in ("/v1/setup/status", "/v1/setup/presets"):
+            r = c.get(path)
+            assert r.status_code != 401, f"{path} must stay public: {r.status_code}"
+
+    def test_setup_prefix_fails_closed_when_setup_state_unreadable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If setup state cannot be read at all, require auth — the boundary
+        must not default to open."""
+        import routes.setup as setup_routes
+
+        def _unreadable() -> bool:
+            raise RuntimeError("setup state unavailable")
+
+        monkeypatch.setattr(setup_routes, "_is_setup_complete", _unreadable)
+        c = TestClient(app)
+        r = c.get("/v1/setup/questions")
+        assert r.status_code == 401
+
+    def test_setup_sibling_prefix_not_public_pre_setup(
+        self, monkeypatch: pytest.MonkeyPatch, temp_route
+    ) -> None:
+        """Boundary-safe matching: a sibling route that merely shares the
+        "/v1/setup" spelling gets nothing from the pre-setup window."""
+        import routes.setup as setup_routes
+
+        monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
+        temp_route("/v1/setuptools")
+        c = TestClient(app)
+        r = c.get("/v1/setuptools")
+        assert r.status_code == 401
+
+    def test_setup_prefix_not_in_boundary_prefix_list(self) -> None:
+        """Lock the narrowing in: no unguarded _PUBLIC_PREFIXES entry may
+        silently reintroduce the always-public setup window."""
+        assert "/v1/setup/" not in _PUBLIC_PREFIXES
+        assert "/v1/setup/status" in _PUBLIC_EXACT
+        assert "/v1/setup/presets" in _PUBLIC_EXACT

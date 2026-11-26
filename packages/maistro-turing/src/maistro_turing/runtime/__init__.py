@@ -44,7 +44,7 @@ class TuringConfig:
     litellm_virtual_key: str | None = None
     pools_config_path: str | None = None
     chat_port: int | None = None
-    chat_bind: str = "127.0.0.1"
+    chat_bind: str = "127.0.0.1"  # DevSkim: ignore DS162092 until 2027-12-31
     base_prompt: str | None = None
     voice_self_edit_enabled: bool = True
 

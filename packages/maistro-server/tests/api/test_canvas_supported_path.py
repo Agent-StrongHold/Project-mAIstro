@@ -428,3 +428,224 @@ class TestDurableJobLifecycle:
         assert failed is not None and failed.status == JobStatus.FAILED
         assert failed.error_message == LEASE_EXPIRED_MESSAGE
         assert await store.claim_next_pending("worker-b", lease_seconds=1) is None
+
+
+# ── 3. Generated image bytes: durable, authorized, browser-resolvable ───
+
+
+#: One deterministic PNG-tagged payload, so "the same bytes" is checkable.
+VARIANT_BYTES = (b"\x89PNG\r\n\x1a\nvariant-one", b"\x89PNG\r\n\x1a\nvariant-two")
+E2E_WS = "ws-e2e"
+
+
+class _StoringImageClient:
+    """Generates deterministic bytes through the real governed blob adapter.
+
+    The governed client's Binding → Invocation machinery is pinned in
+    ``test_canvas_runtime.py``; this double covers the part the bare-URL fake
+    skips: the bytes land in ``canvas_blobs`` through the same
+    ``CanvasImageBlobStore`` the production composition wires, and the job's
+    result paths carry the store's internal references — exactly the shape
+    ``GovernedGatewayImageClient.generate`` returns.
+    """
+
+    def __init__(self, blobs: Any, payloads: tuple[bytes, ...] = VARIANT_BYTES) -> None:
+        self._blobs = blobs
+        self._payloads = list(payloads)
+
+    async def generate(self, **kwargs: Any) -> list[ImageData]:
+        count = int(kwargs.get("count", 1))
+        width, height = int(kwargs.get("width", 8)), int(kwargs.get("height", 8))
+        images: list[ImageData] = []
+        for _ in range(count):
+            data = self._payloads.pop(0) if len(self._payloads) > 1 else self._payloads[0]
+            ref = await self._blobs.put(data, media_type="image/png")
+            images.append(ImageData(width=width, height=height, url=ref, bytes_=data))
+        return images
+
+
+class TestGeneratedImageBytesAreAuthorizedAndBrowserResolvable:
+    """The #2311 repair contract, end to end over the real store:
+
+    generate → durable ``canvas_blobs`` row (scope-stamped) → the design
+    surface presents a *URL* (never the raw reference) → an authenticated
+    Workspace member reads the exact bytes back at that URL with the stored
+    media type — including through a fresh store over the same database (the
+    process restart) — → accept_variant renders the same persisted asset,
+    while a foreign principal and a guessed id read absence.
+    """
+
+    @pytest.fixture()
+    async def workspace_scope(
+        self, store: PgCanvasStore
+    ) -> AsyncIterator[tuple[CanvasExecutor, CanvasJobRunner, Any, str]]:
+        """Executor + runner whose blob writes carry the canonical scope,
+        exactly as ``start_canvas_job_runner`` wires them; the Workspace
+        boundary the route reads is configured for the duration."""
+        from maistro.workspaces.store import InMemoryWorkspaceStore
+        from maistro_server.api.workspace_access import configure_workspace_store
+        from maistro_server.canvas_runtime import CanvasImageBlobStore
+
+        ws_store = InMemoryWorkspaceStore()
+        await ws_store.create(creator_user_id="dev", name=E2E_WS, workspace_id=E2E_WS)
+        configure_workspace_store(ws_store)
+
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root(E2E_WS)
+        blobs = CanvasImageBlobStore(store, workspace_id=E2E_WS, project_id=root.project_id)
+        executor = await _runtime(store, _StoringImageClient(blobs))
+        executor_ws = (executor, _runner(store, executor, "worker-a"), root, ws_store)
+        try:
+            yield executor_ws
+        finally:
+            configure_workspace_store(None)
+
+    async def test_generate_persist_retrieve_render_accept_over_a_restart(
+        self,
+        store: PgCanvasStore,
+        api: AsyncClient,
+        workspace_scope: tuple[CanvasExecutor, CanvasJobRunner, Any, Any],
+    ) -> None:
+        from maistro_canvas.canvas.blob_presentation import (
+            BLOB_URL_PREFIX,
+            is_blob_ref,
+        )
+
+        executor, runner, root, _ws_store = workspace_scope
+
+        # Admit through the product path and run it to completion.
+        canvas = await store.create_canvas(name="e2e cover", width=32, height=32, org_id="dev")
+        layer = await store.add_layer(canvas.id, name="sky", layer_type="background", org_id="dev")
+        job = await executor.start_job(
+            canvas_id=canvas.id,
+            layer_id=layer.id,
+            org_id="dev",
+            action="generate",
+            model_id="probe-model",
+            prompt="a dawn sky",
+            count=2,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        assert await runner.tick_once() is True
+        done = await store.get_job(job.id, org_id="dev")
+        assert done is not None and done.status == JobStatus.DONE
+        refs = done.result_paths
+        assert len(refs) == 2 and all(is_blob_ref(ref) for ref in refs)
+
+        # Durable bytes, scope-stamped: a store instance with no shared
+        # process state reads the row the governed write committed — the
+        # asset and its Runs answer to one Workspace and Project.
+        fresh = PgCanvasStore(store._engine)
+        record = await fresh.read_blob(refs[0])
+        assert record is not None
+        assert record.data == VARIANT_BYTES[0]
+        assert record.format == "image/png"
+        assert record.metadata["workspace_id"] == E2E_WS
+        assert record.metadata["project_id"] == root.project_id
+
+        # Accept the first variant: storage keeps the internal reference.
+        _done_job, accepted = await executor.accept_variant(job.id, 0, org_id="dev")
+        assert accepted.image_path == refs[0]
+
+        # The design surface presents the URL — and a boundary that regressed
+        # to serving the raw UUID-as-URL would fail this assertion.
+        design = await api.get(f"/v2/canvas/designs/{canvas.id}")
+        assert design.status_code == 200
+        serialized = design.json()["layers"][0]
+        assert serialized["image_path"] == f"{BLOB_URL_PREFIX}{refs[0]}"
+        assert serialized["image_path"] != refs[0]
+
+        # The presented URL is a real HTTP door: the accepted variant renders
+        # the exact persisted bytes, with the stored media type.
+        served = await api.get(serialized["image_path"])
+        assert served.status_code == 200
+        assert served.content == VARIANT_BYTES[0]
+        assert served.headers["content-type"] == "image/png"
+
+    async def test_accepting_the_second_variant_still_serves_its_own_bytes(
+        self,
+        store: PgCanvasStore,
+        api: AsyncClient,
+        workspace_scope: tuple[CanvasExecutor, CanvasJobRunner, Any, Any],
+    ) -> None:
+        executor, runner, _root, _ws_store = workspace_scope
+        canvas = await store.create_canvas(name="second cover", width=32, height=32, org_id="dev")
+        layer = await store.add_layer(canvas.id, name="moon", layer_type="background", org_id="dev")
+        job = await executor.start_job(
+            canvas_id=canvas.id,
+            layer_id=layer.id,
+            org_id="dev",
+            action="generate",
+            model_id="probe-model",
+            prompt="a cold moon",
+            count=2,
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        assert await runner.tick_once() is True
+
+        _done_job, accepted = await executor.accept_variant(job.id, 1, org_id="dev")
+        fresh = PgCanvasStore(store._engine)
+        done = await fresh.get_job(job.id, org_id="dev")
+        assert done is not None and done.status == JobStatus.DONE
+        # The accepted variant is its own asset, not the first one's bytes.
+        assert accepted.image_path == done.result_paths[1]
+        assert accepted.image_path != done.result_paths[0]
+
+        # Restart: a fresh store over the same database (what a PG restart
+        # leaves behind) still holds the bytes, and the still-served URL
+        # resolves to them — durability, not process-local state.
+        record = await fresh.read_blob(accepted.image_path)
+        assert record is not None and record.data == VARIANT_BYTES[1]
+        served = await api.get(f"/v2/canvas/blobs/{accepted.image_path}")
+        assert served.status_code == 200
+        assert served.content == VARIANT_BYTES[1]
+
+    async def test_a_foreign_principal_and_a_guessed_id_read_absence(
+        self,
+        store: PgCanvasStore,
+        api: AsyncClient,
+        workspace_scope: tuple[CanvasExecutor, CanvasJobRunner, Any, Any],
+    ) -> None:
+        from maistro.config.settings import Settings, get_settings
+        from maistro_server.api.canvas import router as canvas_router
+        from maistro_server.main import _wire_canvas_ability
+
+        executor, runner, _root, _ws_store = workspace_scope
+        canvas = await store.create_canvas(name="third cover", width=32, height=32, org_id="dev")
+        layer = await store.add_layer(canvas.id, name="dune", layer_type="background", org_id="dev")
+        job = await executor.start_job(
+            canvas_id=canvas.id,
+            layer_id=layer.id,
+            org_id="dev",
+            action="generate",
+            model_id="probe-model",
+            prompt="a bright dune",
+            actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+        )
+        assert await runner.tick_once() is True
+        done = await store.get_job(job.id, org_id="dev")
+        assert done is not None
+        refs = done.result_paths
+
+        # A keyed deployment whose principal is not a Workspace member: the
+        # blob reads as absent, exactly like a foreign design.
+        foreign_app = FastAPI()
+        foreign_app.include_router(canvas_router)
+        foreign_app.state.canvas_store = store
+        foreign_app.dependency_overrides[get_settings] = lambda: Settings(
+            api_keys=["stranger:stranger-secret"]
+        )
+        assert _wire_canvas_ability(foreign_app, store._engine) is True
+        transport = ASGITransport(app=foreign_app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            denied = await client.get(
+                f"/v2/canvas/blobs/{refs[0]}",
+                headers={"Authorization": "Bearer stranger-secret"},
+            )
+            assert denied.status_code == 404
+            # A guessed id: same absence — existence itself stays scoped.
+            guessed = await client.get(
+                f"/v2/canvas/blobs/{uuid.uuid4()}",
+                headers={"Authorization": "Bearer stranger-secret"},
+            )
+            assert guessed.status_code == 404

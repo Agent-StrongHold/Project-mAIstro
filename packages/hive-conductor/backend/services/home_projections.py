@@ -136,17 +136,42 @@ def _section(kind: str, items: list[dict] | None, *, reason: str | None = None) 
     return {"kind": kind, "status": "ok" if items else "empty", "items": items or []}
 
 
-def _goals() -> tuple[list[dict], str | None]:
-    """The Goal section's one honest answer, or why it cannot answer.
-
-    The only Goal rows in this backend are the `missions` store the cutover
-    retirement ledger (#1046) froze to new consumers: a retiring surface may
-    not gain any, and none exists yet, so Home reads no Goal store at all
-    rather than read one it is the last straw for. The section says so
-    instead of projecting a store the cutover is deleting (#65 owns the
-    canonical Goal/Run inspection this section will consume).
+async def _goal_items(user_id: str, workspace_id: str) -> list[dict]:
+    """Home Goals section reads the #65 Goal inspection projection — never
+    the retiring `missions` store (#1046). Empty is honest; failures surface
+    as `unavailable` via `_resolve`.
     """
-    return [], "the canonical Goal service is not available in this deployment"
+    from services import goal_inspection
+
+    views = await goal_inspection.list_goal_views(
+        user_id, limit=PROJECTION_LIMIT, workspace_id=workspace_id
+    )
+    out: list[dict] = []
+    for view in views:
+        goal_id = str(view.get("goal_id") or "")
+        if not goal_id:
+            continue
+        title = str(
+            view.get("desired_state")
+            or view.get("goal_state")
+            or view.get("execution_disposition")
+            or goal_id
+        )
+        runs = view.get("runs") if isinstance(view.get("runs"), list) else []
+        latest = max(
+            (float(r.get("started_at") or 0) for r in runs if isinstance(r, dict)),
+            default=0.0,
+        )
+        out.append(
+            _item(
+                "goal",
+                goal_id,
+                title,
+                f"/goals?goal={goal_id}",
+                latest or None,
+            )
+        )
+    return out
 
 
 async def _backlog_items(user_id: str, workspace_id: str) -> list[dict]:
@@ -282,12 +307,9 @@ async def list_projections(user_id: str, workspace_id: str) -> dict[str, Any]:
         raise WorkspaceNotVisible(workspace_id)
 
     design_items, design_reason = _design()
-    goal_items, goal_reason = _goals()
 
     sections = await asyncio.gather(
-        _resolve("goals", asyncio.sleep(0, result=goal_items))
-        if goal_reason is None
-        else asyncio.sleep(0, result=_section("goals", [], reason=goal_reason)),
+        _resolve("goals", _goal_items(user_id, workspace_id)),
         _resolve("backlog", _backlog_items(user_id, workspace_id)),
         _resolve("runs", _run_items(user_id, workspace_id)),
         _resolve("chat", _chat_sessions(user_id, workspace_id)),

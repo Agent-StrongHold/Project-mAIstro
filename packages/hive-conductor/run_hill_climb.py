@@ -13,7 +13,7 @@ import httpx
 from playwright.sync_api import sync_playwright
 
 PORT = os.environ.get("PORT", "8101")
-URL = f"http://localhost:{PORT}"
+URL = f"http://localhost:{PORT}"  # DevSkim: ignore DS162092 until 2027-12-31
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
 CSS_PATH = FRONTEND / "src/index.css"

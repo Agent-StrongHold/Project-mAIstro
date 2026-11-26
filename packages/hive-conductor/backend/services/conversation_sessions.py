@@ -7,7 +7,9 @@ maistro SessionStore (container.session_store when the engine is up; an
 in-memory twin when tests run without a Container).
 
 Unscoped legacy `stores.chat_sessions` rows are not migrated and remain
-unreachable through these APIs (AC-6).
+unreachable through these APIs (AC-6). Disposition: **quarantine in place** —
+no broad admin/membership bypass. Any future attach-or-delete migration is
+owned by the #1822 closeout follow-up (not this module's runtime path).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import stores
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.sessions.search import SessionSummary, search_sessions
 from maistro.sessions.store import InMemorySessionStore
 from services.model_store import JsonStore
 
@@ -118,7 +121,19 @@ async def create(user_id: str, workspace_id: str, title: str) -> ConversationSes
     return _write(record)
 
 
-async def list_for(user_id: str, workspace_id: str) -> list[ConversationSessionRecord]:
+async def list_for(
+    user_id: str,
+    workspace_id: str,
+    *,
+    query: str = "",
+) -> list[ConversationSessionRecord]:
+    """List this caller's Workspace sessions, optionally filtered by ADR-048 search.
+
+    Empty ``query`` keeps the product ``updated_at`` descending order. A
+    non-empty ``query`` filters title + transcript body through
+    ``maistro.sessions.search.search_sessions`` (snippet/cursor pagination
+    stay available to callers that map the page themselves).
+    """
     await _require_member(user_id, workspace_id)
     out: list[ConversationSessionRecord] = []
     for key in list(session_meta_store.keys()):
@@ -127,7 +142,38 @@ async def list_for(user_id: str, workspace_id: str) -> list[ConversationSessionR
             continue
         if record.user_id == user_id and record.workspace_id == workspace_id:
             out.append(record)
-    return sorted(out, key=lambda r: r.updated_at, reverse=True)
+
+    # Always route through search_sessions so ADR-048 stays on the product
+    # list path (disposition root: conversation_sessions / routes.chat).
+    summaries: list[SessionSummary] = []
+    store = _session_store()
+    for record in out:
+        transcript: list[dict[str, str]] = []
+        if query:
+            # Full retained transcript, not `get_history`'s model-context
+            # window: a query matching a message older than the last
+            # ``max_messages`` must still hit the session (ADR-048).
+            transcript = list(await store.transcript(record.session_id))
+        body_parts = [record.title, *(str(m.get("content", "")) for m in transcript)]
+        summaries.append(
+            SessionSummary(
+                session_id=record.session_id,
+                started_at=record.created_at,
+                message_count=len(transcript),
+                title=record.title,
+                body="\n".join(body_parts),
+            )
+        )
+    page = search_sessions(
+        summaries,
+        query=query,
+        limit=max(len(summaries), 1),
+    )
+    by_id = {record.session_id: record for record in out}
+    matched = [by_id[item.session_id] for item in page.items if item.session_id in by_id]
+    if query:
+        return matched
+    return sorted(matched, key=lambda record: record.updated_at, reverse=True)
 
 
 async def get(

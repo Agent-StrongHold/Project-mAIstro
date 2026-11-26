@@ -28,12 +28,41 @@ const SOURCE_LABEL: Record<BriefField["source"], string> = {
 };
 
 function BriefSoFar({ brief }: { brief: BriefView }) {
+  const commit = brief.commit;
+  if (commit && (commit.status === "committed" || commit.status === "already_committed")) {
+    return (
+      <aside className="brief-panel card" aria-label="Committed brief">
+        <div className="brief-panel-head">
+          <span>Committed</span>
+          <span className="brief-panel-meta">
+            {commit.status === "already_committed" ? "same commit — no duplicate" : "durable"}
+          </span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Goal</span>
+          <span className="brief-row-value">{commit.goal_id}</span>
+          <span className="brief-tag">r{commit.goal_revision}</span>
+        </div>
+        <div className="brief-row">
+          <span className="brief-row-label">Brief</span>
+          <span className="brief-row-value">{commit.brief_id}</span>
+          <span className="brief-tag">v{commit.brief_version}</span>
+        </div>
+        <a className="brief-panel-meta" href="/goals">
+          Open on the Goals board →
+        </a>
+      </aside>
+    );
+  }
   if (brief.draft) {
+    const retrying = commit && (commit.status === "failed" || commit.status === "unavailable");
     return (
       <aside className="brief-panel card" aria-label="Brief draft">
         <div className="brief-panel-head">
           <span>Draft ready</span>
-          <span className="brief-panel-meta">nothing written yet</span>
+          <span className="brief-panel-meta">
+            {retrying ? `commit ${commit.status} — say "commit it" to retry` : "nothing written yet"}
+          </span>
         </div>
         {Object.entries(brief.draft.fields).map(([key, value]) => (
           <div key={key} className={`brief-row${brief.draft?.assumed.includes(key) ? " brief-row--assumed" : ""}`}>
@@ -250,11 +279,15 @@ export default function ChatPage() {
   const [model, setModel] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  /** Bumped by Retry to re-run Workspace session hydrate (#1822 AC-7). */
+  const [sessionReloadToken, setSessionReloadToken] = useState(0);
   const [modelOpen, setModelOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const listEndRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamEpochRef = useRef(0);
+  // #1822 AC-4: blocks double-click before React re-renders `streaming`.
+  const sendInFlightRef = useRef(false);
   // Monotonic generation for session open/create requests, bumped on every
   // Workspace switch and before each drawer-triggered open/create, so a late
   // response can never commit another Workspace's transcript or selection.
@@ -347,10 +380,12 @@ export default function ChatPage() {
     setStreaming(false);
     setInput("");
     setLoadError(null);
+    // #1822 AC-3: drop the prior Workspace transcript immediately so a switch
+    // never paints Workspace A's messages while B is hydrating.
+    setSessions([]);
+    setActiveId("");
 
     if (!activeWorkspaceId) {
-      setSessions([]);
-      setActiveId("");
       setLoadingSessions(false);
       return;
     }
@@ -408,12 +443,28 @@ export default function ChatPage() {
     };
     // searchParams / setSearchParams are read only to consume ?session= once;
     // listing them would re-hydrate when the param is cleared.
-  }, [activeWorkspaceId, workspacesReady, createServerSession, openSession]);
+  }, [
+    activeWorkspaceId,
+    workspacesReady,
+    createServerSession,
+    openSession,
+    sessionReloadToken,
+  ]);
 
   const sendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming || !activeWorkspaceId || !activeId) return;
+      if (
+        !text.trim() ||
+        streaming ||
+        sendInFlightRef.current ||
+        !activeWorkspaceId ||
+        !activeId
+      ) {
+        return;
+      }
+      sendInFlightRef.current = true;
       const sessionId = activeId;
+      const turnId = generateId();
       const epoch = streamEpochRef.current;
       streamAbortRef.current?.abort();
       const abort = new AbortController();
@@ -460,6 +511,9 @@ export default function ChatPage() {
             messages: outbound,
             workspace_id: activeWorkspaceId,
             session_id: sessionId,
+            // Client turn key for #1822 AC-4; backend may use it as SessionStore
+            // idempotence when present (extra=allow on ChatCompletionRequest).
+            turn_id: turnId,
           },
           abort.signal,
         );
@@ -489,6 +543,9 @@ export default function ChatPage() {
               continue;
             }
             if (evt.type === "brief") {
+              // Same epoch gate as patchAssistant (#1822): a late brief after
+              // Workspace/session switch must not paint onto the new selection.
+              if (streamEpochRef.current !== epoch) continue;
               // The interview's state after this turn: open (summary + question),
               // drafted (the draft, nothing written), or gone (dropped).
               const view: BriefView | null = evt.interview || evt.draft ? evt : null;
@@ -539,6 +596,25 @@ export default function ChatPage() {
         }
       } catch (e: unknown) {
         if (abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          // #1822: mark the optimistic bubble interrupted on the origin session
+          // even after the epoch bump (switch/unmount). Reopening the session
+          // replaces from GET truth; late frames stay epoch-gated out.
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    status: undefined,
+                    steps: (m.steps ?? []).map((st) =>
+                      st.status === "running" ? { ...st, status: "error" } : st,
+                    ),
+                    content: m.content || "",
+                    interrupted: true,
+                  }
+                : m,
+            ),
+          }));
           return;
         }
         const message = e instanceof Error ? e.message : "stream failed";
@@ -549,6 +625,7 @@ export default function ChatPage() {
           content: `Error: ${message}`,
         }));
       } finally {
+        sendInFlightRef.current = false;
         if (streamEpochRef.current === epoch) {
           setStreaming(false);
           setTimeout(() => textareaRef.current?.focus(), 0);
@@ -712,6 +789,14 @@ export default function ChatPage() {
               <div className="empty-state" role="alert">
                 <p className="empty-title">Chat unavailable</p>
                 <p className="empty-subtitle">{loadError}</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="chat-retry-load"
+                  onClick={() => setSessionReloadToken((n) => n + 1)}
+                >
+                  Retry
+                </button>
               </div>
             )}
             {isEmpty && (
@@ -732,7 +817,9 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            {activeSession.messages.map((msg) => (
+            {!loadingSessions &&
+              !loadError &&
+              activeSession.messages.map((msg) => (
               <div key={msg.id} className={`message message--${msg.role}`}>
                 {msg.role === "assistant" && msg.reasoning && (
                   <details className="chat-reasoning">
@@ -747,6 +834,15 @@ export default function ChatPage() {
                     <span className="dot" />
                     <span className="dot" />
                     {msg.status}
+                  </div>
+                )}
+                {msg.interrupted && !msg.status && (
+                  <div
+                    className="chat-status"
+                    aria-label="Interrupted"
+                    data-testid="chat-interrupted"
+                  >
+                    Interrupted — reopen the session for persisted truth
                   </div>
                 )}
                 {msg.content && (

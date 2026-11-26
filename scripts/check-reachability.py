@@ -71,6 +71,25 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         # dispositioned unreachable for the same two-merge-rule reason as
         # admission_identity.py above.
         "packages/maistro-core/src/maistro/tasks/admission_codec.py",
+        # `packages/maistro-core/src/maistro/tasks/admission_generation.py` is an
+        # intentionally unreachable contract leaf (#1852, parent #1845): the pure
+        # replay-generation classifier `_assess`, which nothing imports by design
+        # until the separately reviewed #1845 backend integration lands the
+        # runtime consumer. Classified here for the same two-merge-rule reason as
+        # admission_identity.py (#1851) and admission_codec.py (#1893) above —
+        # the two sibling leaves of the same parent, which merged with exactly
+        # this classification.
+        #
+        # This is a source-universe classification, not an activation claim and
+        # not a ratchet edit: no caller, re-export, whitelist row, baseline row
+        # or authorization is added, quality/*.json is untouched, and the module
+        # docstring, its suite and the #1852 staging note all still state the
+        # leaf is unwired. #1852's ban on suppressions added "to make this leaf
+        # independently green" is honoured in substance — nothing here asserts
+        # the classifier runs, and every *unclassified* new module still fails
+        # this gate closed. When the #1845 integration lands the consumer, that
+        # change should prune this entry so the graph reports the module again.
+        "packages/maistro-core/src/maistro/tasks/admission_generation.py",
         # Developer utilities.
         "packages/hive-conductor/run_hill_climb.py",
         "packages/maistro-evolve/examples/builders_swebench_live.py",
@@ -148,7 +167,8 @@ _IMMUTABLE_VENDORED_TREES = frozenset(
 #: declaration stays a segment — `node_modules` — that authored code never
 #: occupies, because the next `npm ci` deletes whatever a person puts there.
 #: What lands in these trees is governed where dependencies are governed: the
-#: lockfiles, the `npm audit --audit-level=high` CI step, and Dependabot.
+#: lockfiles, the js-supply-chain job's npm audit + GuardDog + policy gate
+#: (#344), and Dependabot.
 _THIRD_PARTY_INSTALL_DIRS = frozenset({"node_modules"})
 
 
@@ -240,6 +260,14 @@ STATIC_ROOTS = (
     # invocation a third-party CI performs, so the runner is the harness's
     # in-graph root, not unreachable library debt.
     "maistro_ext_harness.cli",
+    # The in-repo cosmic-ray operator provider (PR #1994): loaded only by the
+    # stevedore entry point [cosmic_ray.operator_providers] in
+    # packages/maistro-core/pyproject.toml, inside the dev-only mutation
+    # toolchain — the maistro_registry.cli precedent for a module whose only
+    # consumer is its own entry point. It lives at maistro/ top level rather
+    # than under maistro.testing so that rooting it does not execute that
+    # package's __init__ and reclassify its test-support imports.
+    "maistro.mutation_operator_provider",
 )
 
 # Package modules reached only through runtime strings or external launchers.
@@ -253,6 +281,13 @@ DYNAMIC_ROOTS = (
     # precedent for an external launcher naming the package. __main__ imports
     # cli.main, so this root also carries the console-script surface.
     "maistro_ext_harness.__main__",
+    # The built-in Canvas worker service (#93/SPEC-203): the `maistro-canvas-worker`
+    # console script (packages/maistro-canvas pyproject [project.scripts]) that a
+    # supported deployment runs as its own process — compose service, systemd
+    # unit, Kubernetes Deployment. No in-tree module imports it, by design: a
+    # second worker process sharing the app's import graph is exactly the
+    # double-scheduler this service exists to avoid.
+    "maistro_canvas.canvas.worker_service",
 )
 
 

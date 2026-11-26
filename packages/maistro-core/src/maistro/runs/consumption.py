@@ -38,8 +38,8 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.consumer_claim import ConsumerClaimStore
 from maistro.runs.execution import AttemptExecutionService, ExecutionYielded
-from maistro.runs.lifecycle import is_reclaimed_attempt
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
+from maistro.runs.recovered_disposition import is_typed_recovered_attempt
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
 from maistro.runs.store import RunIntegrityError, RunStore
@@ -494,7 +494,7 @@ def _pause_from_attempt(node_run: NodeRun, attempt: Attempt) -> ParkedPause | No
 
 
 def _pause_behind_recovery(node_run: NodeRun, attempts: list[Attempt]) -> ParkedPause | None:
-    """The newest recorded pause, read past Attempts crash recovery reclaimed.
+    """The newest recorded pause, read past typed RECOVERED reclaim artefacts.
 
     A resumed physical try whose worker dies leaves the newest row a CANCELLED
     Attempt the recovery sweep reclaimed, and the sweep parks the NodeRun
@@ -502,12 +502,13 @@ def _pause_behind_recovery(node_run: NodeRun, attempts: list[Attempt]) -> Parked
     still the one the YIELDED Attempt before it recorded, and re-entering a
     polling node re-reads the world exactly as the first resume did -- so a
     schedule whose resume crashed is not parked forever behind its own
-    recovery artefact (#1112). Only *reclaimed* rows are looked past: a FAILED,
-    TIMED_OUT, or requested-CANCELLED Attempt still says a decision is owed to
-    whoever owns retries.
+    recovery artefact (#1112). Only typed ``RECOVERED`` rows are looked past
+    (#232 P5a): a FAILED, TIMED_OUT, requested / unknown CANCELLED, or
+    spoofed reclaim-looking error text still says a decision is owed to
+    whoever owns retries — no string-prefix look-past.
     """
     for attempt in reversed(attempts):
-        if is_reclaimed_attempt(attempt):
+        if is_typed_recovered_attempt(attempt):
             continue
         return _pause_from_attempt(node_run, attempt)
     return None

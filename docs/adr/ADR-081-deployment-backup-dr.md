@@ -28,7 +28,6 @@ history:
 
 # ADR-081: Deployment Topology, Backup, and Disaster Recovery
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Substrate:** ADR-038 (reliability taxonomy, health/readiness probes, error budgets).
 

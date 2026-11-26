@@ -32,6 +32,7 @@ on:
       - "Gate C"
       - "Registry CI"
       - "Vulture Ratchet"
+      - "mutation"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
       - "Autonomous Merge Safety"
     types: [completed]

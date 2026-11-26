@@ -5,11 +5,24 @@
 # The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
 # publishes the required Linux wheels for cp313, but not cp314. Keep the exact
 # patch version here so a moving base tag cannot silently change that contract.
+# 3.13.16 -> 3.13.18 (#2303 CI repair): grype's fresh DB flags CVE-2026-115557
+# (CRITICAL) in the 3.13.16 interpreter binary; the fix landed in 3.13.18, and
+# the in-image assertion below moves with the pin so the contract stays exact.
 # A fat builder makes a self-contained venv; the runtime copies only the venv and
 # app sources.
+#
+# Since #2304 the builder and the runtime OS layer are deliberately different
+# bases: pybuild keeps the CPython 3.13.18 pin above (it IS the contract
+# interpreter, refreshed from 3.13.16 in the #2304 container-gate round: the
+# gate's grype leg flags CVE-2026-115557, Critical, fixed in 3.13.18 — the
+# same advisory class that forced the 3.13.15 → 3.13.16 refresh in #363),
+# runtime-apt is only the Debian OS/security-patch layer and
+# moved to python:3.15.2-slim-bookworm, and the final stage grafts the
+# builder's exact CPython installation so the copied venv runs on the contract
+# interpreter without any managed download. See the stage comments below.
 # ---- frontend build ----
-# Digest-pinned (#349); node:22-alpine resolved to this index digest 2026-09-30.
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS frontend
+# Digest-pinned (#349); node:26-alpine resolved to this index digest 2026-10-25.
+FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend
 WORKDIR /build
 COPY packages/hive-conductor/frontend/package.json packages/hive-conductor/frontend/package-lock.json ./
 RUN npm ci
@@ -43,8 +56,13 @@ RUN npm run build
 # release tag ourselves with a patched Go toolchain/dependency set so the
 # runtime does not inherit vulnerabilities from an otherwise-current source
 # release. The release tag resolves to b8564ad; fail if upstream ever disagrees.
-# Digest-pinned (#349); golang:1.27.3-alpine resolved to this index digest 2026-10-22.
-FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS agebuild
+# The 1.27.3 rebuild then aged out itself: CVE-2026-97054 (net/http
+# MaxBytesReader connection handling, HIGH, fixed in go1.26.11/1.27.4) flagged
+# age-keygen's stdlib 1.27.3 in the #2375 Container scan gate (security.yml run
+# 44477475371 job 135401410021, 2026-11-19), so the builder moved to
+# 1.27.4-alpine, retiring the 2026-10-22 1.27.3 index (#1152 lineage).
+# Digest-pinned (#349); golang:1.27.4-alpine resolved to this index digest 2026-11-19.
+FROM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS agebuild
 ARG AGE_VERSION=1.3.1
 ARG AGE_COMMIT_SHORT=b8564ad
 RUN apk add --no-cache git && \
@@ -57,9 +75,19 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
 # ---- builder: self-contained venv (has shell/pip) ----
-# Digest-pinned (#349); shared with the runtime stage below so both resolve to
-# the same CPython build.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS pybuild
+# Digest-pinned (#349). This stage IS the identity contract: the CPython that
+# builds the venv is the CPython the shipped app runs on, so it keeps the
+# exact registered 3.13.18 build that coincurve 21.0.0 ships cp313 wheels for
+# and that the build smoke below asserts (refreshed from 3.13.16 in the #2304
+# container-gate round: grype flags CVE-2026-115557, Critical, fixed in
+# 3.13.18 — same patch-refresh-within-the-line policy as #363/#1152; develop
+# landed the identical refresh from the #1373 CI-repair lane). #2304
+# moved the runtime OS layer to
+# python:3.15.2-slim-bookworm (see runtime-apt); bumping this stage to match
+# would leave no interpreter satisfying the contract on the base -- uv's
+# managed-download fallback resolves an unregistered 3.13.15, which is
+# exactly the silent interpreter change the header forbids.
+FROM python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS pybuild
 WORKDIR /app
 # uv is the installer tool image — pinned to the 0.12.21 release by digest
 # (#349); a `:latest` tag could swap the installer under every build with no
@@ -127,6 +155,21 @@ RUN uv export --locked --package hive-conductor \
       ./packages/maistro-design ./packages/maistro-evolve \
  && uv pip install --python /app/venv/bin/python --no-cache "setuptools==84.2.1" \
  && uv pip check --python /app/venv/bin/python
+# Deliberate timezone database (#290). The scheduler resolves every schedule
+# zone through `zoneinfo.ZoneInfo`, INCLUDING `ZoneInfo("UTC")` — with no tz
+# database CPython raises `ZoneInfoNotFoundError` for even the UTC key, and
+# the Conductor catches scheduler startup failure and keeps serving, so a
+# zone-less image looks healthy while scheduling is silently down. The Debian
+# base happens to ship a transitive /usr/share/zoneinfo today, but nothing in
+# this file asked for it, so a base-image refresh could drop it unnoticed.
+# Pin the audited `tzdata` wheel inside the self-contained venv instead: it
+# travels with the one artifact the runtime stage copies, and the runtime
+# stage's PYTHONTZPATH below makes this wheel the ONLY source Python consults.
+# (Installed by exact pin, not from the lock export: tzdata is deliberately
+# not a runtime dependency of any workspace member, so `uv export` cannot
+# carry it — the ARG below is the auditable pin.)
+ARG TZDATA_VERSION=2026.3
+RUN uv pip install --python /app/venv/bin/python --no-cache "tzdata==${TZDATA_VERSION}"
 # Tracing is opt-in at build time, and this is the door (#668).
 #
 # `backend/adapters/telemetry_langfuse.py` speaks OTLP using the OpenTelemetry
@@ -169,7 +212,7 @@ RUN python /tmp/prune-dependency-namespaces.py \
     && rm -rf /tmp/check-dependency-namespaces.py /tmp/prune-dependency-namespaces.py
 # The image build is the first contract test: exercise the same identity import
 # and derivation that setup uses, and fail if a native wheel was not selected.
-RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 16), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:3] == (3, 13, 18), sys.version; assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; assert m.version('pynacl') == '${PYNACL_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
     if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
     fi
@@ -188,7 +231,19 @@ RUN mkdir -p /app/state_seed
 # security.yml builds this stage with `--no-cache-filter runtime-apt`. The
 # 2026-10-22 base-digest bump (#1152) additionally invalidates the previously
 # cached apt layer.
-FROM python:3.13.16-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime-apt
+#
+# #2304: this stage is the OS/security-patch layer only and carries no
+# interpreter contract, so it builds on python:3.15.2-slim-bookworm (digest
+# registered in quality/image-pins.json). The interpreter the app runs on is
+# NOT this stage's: the final stage grafts pybuild's registered CPython
+# 3.13.18 build so the shipped venv resolves.
+# Digest-pinned (#349). Moved 3.15.0 -> 3.15.2 in the #2304 container-gate
+# round: the gate's grype leg flags CVE-2026-115557 (Critical, fixed 3.15.2)
+# on the 3.15.0 CPython binary this base ships (the OS python stays in the
+# final image even though the app runs on the grafted 3.13.18 build, so the
+# binary is scanned). 3.15.2 is still Debian 12 (bookworm), so the grafted
+# binary runs against the glibc it was built against.
+FROM python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS runtime-apt
 
 # Security patches the pinned base digest froze at its 2026-10-22 build (trivy:
 # perl-base x3 CRITICAL + x4 HIGH, libpcre2 HIGH on debian 12.15, all fixed in
@@ -202,9 +257,33 @@ FROM runtime-apt
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
-    CONDUCTOR_DATA_DIR=/data \
+    # Durable state lives at /data/conductor — inside the volume Compose and
+    # the `docker run -v <vol>:/data` quickstart mount at /data, not at the
+    # mount root: `maistro security restore` swaps the data directory itself
+    # by rename, and a mount point cannot be renamed (EBUSY). See README.md,
+    # "Persistent state".
+    CONDUCTOR_DATA_DIR=/data/conductor \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Timezone source contract (#290): the pinned `tzdata` wheel inside the
+    # venv is the single zone database. Removing the wheel fails the smoke
+    # test below at build time, and a runtime gap surfaces as degraded
+    # `tz_database` health on /health, never as a silently idle scheduler.
+    PYTHONTZPATH=/app/venv/lib/python3.13/site-packages/tzdata/zoneinfo
+# #2304: the runtime OS layer (runtime-apt above) is no longer the image the
+# venv was built in, so the builder's exact CPython installation is grafted
+# in: the venv's interpreter symlinks point at /usr/local/bin/python3.13,
+# which the 3.15 base does not ship. All three paths come from the same
+# digest-pinned pybuild image (the registered 3.13.18 build), and both bases
+# are Debian 12 (bookworm), so the grafted binary runs against the glibc it
+# was built against. No managed download exists anywhere in the shipped
+# image: every interpreter byte is fixed by a ledger row.
+COPY --from=pybuild /usr/local/bin/python3.13 /usr/local/bin/python3.13
+COPY --from=pybuild /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+COPY --from=pybuild /usr/local/lib/python3.13 /usr/local/lib/python3.13
+# ldconfig registers the grafted libpython3.13.so.1.0 the same way the base
+# image registers its own (ld.so.conf.d already covers /usr/local/lib).
+RUN ldconfig
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
@@ -218,7 +297,12 @@ COPY packages/hive-conductor/dags/ /app/dags/
 COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
-COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
+# CONDUCTOR_DATA_DIR points at /data/conductor, one level INSIDE the volume
+# Compose mounts at /data: the data directory itself must not be the mount
+# root, because `maistro security restore` swaps it by rename and a mount
+# point cannot be renamed (EBUSY) — see README.md, "Persistent state".
+COPY --from=pybuild /app/state_seed /data/conductor
+RUN chown -R 65532:65532 /data
 # pip is a build-time tool, not a runtime surface: nothing in the shipped app
 # invokes it, and its vendored dependency tree (pip/_vendor/vendor.txt: msgpack
 # 1.1.2, urllib3 2.7.0, setuptools 70.3.0 -- present in both the venv's pip and
@@ -227,7 +311,30 @@ COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
 RUN rm -rf /app/venv/lib/python3.13/site-packages/pip* \
            /app/venv/bin/pip* \
            /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/lib/python3.15/site-packages/pip* \
            /usr/local/bin/pip*
+# Image smoke test (#290): the shipped runtime must resolve UTC and a real
+# region zone through the deliberate PYTHONTZPATH source, with DST-correct
+# offsets. A build that lost the tzdata wheel (or broke PYTHONTZPATH) fails
+# here instead of shipping a scheduler that silently never fires. Runs as
+# root only because it precedes the USER directive below.
+RUN python -c "import os, zoneinfo; assert os.path.isdir(os.environ['PYTHONTZPATH']), os.environ['PYTHONTZPATH']; utc = zoneinfo.ZoneInfo('UTC'); ny = zoneinfo.ZoneInfo('America/New_York'); berlin = zoneinfo.ZoneInfo('Europe/Berlin'); from datetime import datetime, timezone as tz; winter = datetime(2026, 1, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); summer = datetime(2026, 7, 15, 12, 0, tzinfo=tz.utc).astimezone(berlin).utcoffset(); assert (winter.total_seconds(), summer.total_seconds()) == (3600.0, 7200.0), (winter, summer); print('tz smoke ok: UTC/America/New_York/Europe/Berlin via', os.environ['PYTHONTZPATH'])"
+# Exercise the production cron dialect against the image's actual database,
+# not the test runner's wheel or today's season. ADR-082126-f69c requires a
+# spring gap to be skipped and a repeated fall wall time to fire only once.
+RUN python - <<'PY'
+from datetime import UTC, datetime
+from maistro.scheduling.cron import parse_cron
+
+cron = parse_cron('30 2 * * *')
+spring = cron.next_fire(datetime(2026, 3, 28, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert spring.astimezone(UTC) == datetime(2026, 3, 30, 0, 30, tzinfo=UTC), spring
+fall = cron.next_fire(datetime(2026, 10, 24, 23, tzinfo=UTC), timezone='Europe/Berlin')
+assert fall.astimezone(UTC) == datetime(2026, 10, 25, 0, 30, tzinfo=UTC), fall
+following = cron.next_fire(fall, timezone='Europe/Berlin')
+assert following.astimezone(UTC) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC), following
+print('tz cron smoke ok: spring gap skipped; fall fold fires once')
+PY
 EXPOSE 8101
 WORKDIR /app/backend
 # Keep the app nonroot even though the pinned runtime is a slim Python image.
