@@ -581,3 +581,70 @@ Progress: `{checked: 8, done: 2 (develop-sync resolution; soak-gate check-set
 pin), skipped: 0, errors: 0, next: #860 CI repair + merge → operator-designated
 immutable RC/config → exact-RC ≥4 h soak → first release-workflow run →
 external verification}`.
+
+---
+
+## Round 8 — independent re-verification at `62fd8d4f5` (fresh lane, clean tree)
+
+The dispatched round carried `checks: []` again (no `check-*.log` files in the
+job directory), so the entire battery below was executed fresh at the lane
+head `62fd8d4f503908d0d449d3b6d3d5d9e167975473` (branch `auto-89`, tree clean
+before and after; no prior-round claims taken on faith).
+
+### Battery (all green at `62fd8d4f5`)
+
+| Check | Command | Result |
+|---|---|---|
+| Promotion + guard suites | `uv run pytest tests/test_promote_release.py tests/test_release_guard.py -q` | **83 passed** |
+| Lint | `uv run ruff check .` | exit 0 |
+| Format | `uv run ruff format --check .` | exit 0 ("3678 files already formatted") |
+| Release consistency | `uv run python scripts/check-release-consistency.py` | exit 0 |
+| Promotion surface | `uv run python scripts/check-promotion-surface.py` | exit 0 |
+| Image pins | `uv run python scripts/check-image-pins.py` | exit 0 |
+| Image inventory | `uv run python scripts/check-image-inventory.py` | exit 0 |
+| Required checks | `uv run python scripts/check-required-checks.py` | exit 0 |
+| Suite inventory | `uv run python scripts/check-suite-inventory.py` | exit 0 |
+| Backlog consistency | `uv run python scripts/check-backlog-consistency.py` | exit 0 |
+| Workflow lint | actionlint **1.7.7** with shellcheck at CI's invocation (`ci.yml:1717-1726`) | exit 0 |
+
+### Mutation spot-checks at this head (in-place mutate → test → byte-restore; clean `git diff` after each)
+
+1. Removed `"multi_replica_soak"` from `REQUIRED_SOAK_CHECKS`
+   (`scripts/promote_release.py`) →
+   `test_required_soak_checks_are_pinned_not_adaptive` **fails** (1 failed,
+   4 passed — the parametrized suite goes vacuously green, which is exactly
+   the drift the pin test exists to catch).
+2. Deleted the candidate-only `if:` from the wheels build step
+   (`.github/workflows/release.yml`) →
+   `test_shipping_workflow_promotes_rc_artifacts_on_finals` **fails** — the
+   wiring test reads the real workflow YAML, not a fixture.
+3. Disabled the tree comparison in `verify_rc_tree`
+   (`scripts/release_guard.py`) →
+   `test_final_cli_rejects_changes_after_the_rc[source|configuration|executable-bit]`
+   **fail (3)** — the guard CLI tests bind to the real comparison.
+
+The three load-bearing guarantees of this lane (pinned soak coverage,
+no-rebuild-on-final wiring, RC-tree identity) are each proven to fail against
+the exact regression they name.
+
+### Sync + dependency status
+
+- `git fetch origin develop` → origin/develop is still `7926d9ab`, **already
+  an ancestor of HEAD** (`b1b00ed2b6` merged it); no conflict, no sync merge
+  needed this round.
+- Child soak lane #860 / PR #1672 (frozen snapshot `b536bf23e800`): **open**,
+  `mergeable_state: blocked`, check-run `Quality / Documentation links` =
+  **failure** (many checks queued/in-progress at capture). Unmerged; soak
+  harness still absent from this tree (`scripts/soak`, `docs/testing/soak`).
+  Cross-lane; not touchable from here.
+- `git tag -l 'v*'` → still **zero tags**; `release.yml` has never executed.
+
+### Acceptance status
+
+Unchanged in kind from round 7: the in-lane engineering surface (candidate
+evidence record, byte-verified wheel adoption, soak-bound digest adoption,
+routed-findings gate, evidence shipping as release assets) is complete,
+tested, and gate-clean; the promotion-scale criteria (first RC build, the
+≥4 h exact-RC multi-replica soak, the real final promotion, external
+verification) require release operations and the unmerged child lane, both
+outside lane authority.
