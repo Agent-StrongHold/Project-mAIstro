@@ -370,15 +370,39 @@ class TestLocalLoopCanonicalWiring:
             assert run.status is RunStatus.COMPLETED
             assert run.provenance.get("rsi_campaign_id") == "camp-local"
 
-        # The promotion reviews reported the shared contract honestly: the
-        # plain-fixture promotions carry no evaluator provenance, so the leg
-        # says skipped rather than fabricating a record.
+        # The promotion judgment is the PRE-MERGE one now (#302 conversion of
+        # the checkpoint review): this fixture's candidates are judgment-path
+        # (composite below the decisiveness floor, RLPHD cold-start), so the
+        # pre-merge judge parks them BEFORE the fast-forward — the honest
+        # report is a held candidate under flagged/, not a promotion record
+        # for a merge the reviewer's model would deny. The flags carry the
+        # same prediction metadata the checkpoint records used to carry.
+        assert result.promotions == 0
         report_dir = tmp_path / "report"
-        records = sorted((report_dir / "promotions").glob("*.json"))
-        assert records
-        shared = [json.loads(p.read_text())["decision"]["shared_contract"] for p in records]
-        assert shared
-        assert all(entry["status"] == "skipped" for entry in shared), shared
+        flagged = sorted((report_dir / "flagged").glob("*.json"))
+        assert flagged
+        # Every executed cycle was held exactly once, before its fast-forward:
+        # the baseline carries none of the flagged candidates.
+        assert len(flagged) == len(executed)
+        for p in flagged:
+            decision = json.loads(p.read_text())
+            assert decision["predicted_p"] < decision["theta"]
+            assert decision["review_path"] == "judgment"
+            import subprocess
+
+            ancestor = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "merge-base",
+                    "--is-ancestor",
+                    decision["sha"],
+                    "rsi-baseline",
+                ],
+                capture_output=True,
+            )
+            assert ancestor.returncode != 0, "a held candidate landed on the baseline"
 
     def _loop(self, tmp_path) -> LocalRsiLoop:
         return LocalRsiLoop(
