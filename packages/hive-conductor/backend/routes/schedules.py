@@ -477,8 +477,11 @@ async def run_schedule(
         fire_id = _check_fire_id(raw) if raw and raw.strip() else None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # The authenticated caller is provenance, not authority (#1201): the fire
+    # still runs on the schedule actor's canonical scope, but the Run names
+    # who asked for it, separately from the actor it consumes.
     try:
-        await fire_now(schedule_id, fire_id=fire_id)
+        await fire_now(schedule_id, fire_id=fire_id, requester_id=_actor(request))
     except ScheduleNotFireable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScheduleAdmissionUnavailable as exc:

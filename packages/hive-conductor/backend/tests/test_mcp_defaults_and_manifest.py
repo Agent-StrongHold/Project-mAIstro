@@ -21,7 +21,10 @@ def test_is_atlassian_rovo_url_positive() -> None:
     from services.mcp_defaults import is_atlassian_rovo_url
 
     assert is_atlassian_rovo_url("https://mcp.atlassian.com/v1/mcp/authv2") is True
-    assert is_atlassian_rovo_url("http://mcp.atlassian.com") is True
+    # The predicate gates where a bearer token is sent: only the canonical
+    # https/443 origin of the genuine host qualifies. Plaintext and
+    # non-standard-port variants of the same hostname are refused (#848).
+    assert is_atlassian_rovo_url("https://mcp.atlassian.com:443/v1/mcp/authv2") is True
 
 
 def test_is_atlassian_rovo_url_negative() -> None:

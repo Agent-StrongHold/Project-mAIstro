@@ -42,6 +42,37 @@ def _validate_finished_at(
         raise ValueError(f"non-terminal {subject} cannot have finished_at")
 
 
+def _validate_identity_projection(run: Run) -> None:
+    """The explicit identity facts, when present, are non-empty and coherent (#1152).
+
+    ``acting_principal_id`` is the identity accounting attributes to, so a Run
+    whose ``actor_principal_id`` projects a different acting identity is
+    internally contradictory and refused rather than silently re-projected.
+    """
+    for field_name in ("initiating_principal_id", "acting_principal_id"):
+        value = getattr(run, field_name)
+        if value is not None:
+            _require_non_empty(value, field_name)
+    if (
+        run.actor_principal_id is not None
+        and run.acting_principal_id is not None
+        and run.actor_principal_id != run.acting_principal_id
+    ):
+        raise ValueError("actor_principal_id must project acting_principal_id")
+
+
+def _project_historical_actor(run: Run) -> None:
+    """Backfill the explicit facts on rows that only carried ``actor_principal_id``.
+
+    Historical rows remain readable, while new delegated rows carry both
+    explicit facts from admission (#1152).
+    """
+    if run.acting_principal_id is None and run.actor_principal_id is not None:
+        object.__setattr__(run, "acting_principal_id", run.actor_principal_id)
+    if run.initiating_principal_id is None and run.acting_principal_id is not None:
+        object.__setattr__(run, "initiating_principal_id", run.acting_principal_id)
+
+
 # Unannotated return, deliberately: pydantic derives the serialization-mode
 # JSON schema for a model with a wrap serializer from that serializer's return
 # annotation, so ``-> dict[str, Any]`` collapses Attempt's serialization schema
@@ -303,7 +334,13 @@ class Run(BaseModel):
     parent_run_id: str | None = None
     parent_node_run_id: str | None = None
     persona_id: str | None = None
+    # ``actor_principal_id`` is retained as a read-compatible projection for
+    # older rows. New admissions populate the explicit initiating/acting facts
+    # from RunAuthorization rather than accepting caller text as accounting
+    # identity (#1152).
     actor_principal_id: str | None = None
+    initiating_principal_id: str | None = None
+    acting_principal_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
@@ -334,6 +371,8 @@ class Run(BaseModel):
         _require_non_empty(self.project_id, "project_id")
         if self.actor_principal_id is None or not self.actor_principal_id.strip():
             raise ValueError("actor_principal_id is required")
+        _validate_identity_projection(self)
+        _project_historical_actor(self)
         self._validate_scope_identity()
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")
@@ -356,6 +395,11 @@ class Run(BaseModel):
             raise ValueError("Run and Graph snapshot must belong to the same Workspace")
         if self.graph.project_id != self.project_id:
             raise ValueError("Run and Graph snapshot must belong to the same Project")
+
+    @property
+    def accounting_principal_id(self) -> str | None:
+        """The acting identity, never a separately supplied accounting id."""
+        return self.acting_principal_id or self.actor_principal_id
 
 
 class ExecutionLease(BaseModel):

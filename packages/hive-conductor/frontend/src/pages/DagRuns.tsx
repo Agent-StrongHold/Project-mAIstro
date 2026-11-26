@@ -12,7 +12,7 @@
 // duration_ms, tool result preview). Day 9 ships this read-only view;
 // Day 13 will overlay eval-judge scores on each node.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
 
 type EventType = "pm_node_started" | "pm_node_completed" | "pm_node_failed";
@@ -35,7 +35,23 @@ interface RunSummary {
 }
 
 interface RunDetail extends RunSummary {
+  status?: string;
+  canonical_run_id?: string;
   events: DagEvent[];
+  // Physical execution records are optional: projection-only historical rows
+  // have legacy events but no readable canonical NodeRun/Attempt tree.
+  node_runs?: import("../lib/goalInspection").NodeRunEvidence[];
+  artifacts?: import("../lib/goalInspection").ArtifactEvidence[];
+  // The Workspace this run executes in, from the same seam response — the
+  // Goal round trip names it (?ws=) so the Goals page opens in the scope the
+  // goal's history lives in (#65).
+  workspace_id?: string | null;
+  // The #458 Goal context a goal-driven Run records, relayed verbatim by the
+  // /v1/dag-runs seam; absent when the Run records none (#65). An inline
+  // member on purpose: the typed-client ratchet banks this page's hand-typed
+  // declarations by line, so the round-trip link adds no new one and moves
+  // no banked row.
+  goal_context?: { goal_id: string; goal_revision: string };
 }
 
 // Hard-laid topology — matches graph/pm_domain.PM_GRAPH_CONFIG.
@@ -100,6 +116,8 @@ export default function DagRuns() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   // List recent runs.
   const loadRuns = useCallback(async () => {
@@ -120,61 +138,62 @@ export default function DagRuns() {
     return () => clearInterval(i);
   }, [loadRuns]);
 
-  // Initial detail load + live SSE subscription for selectedRunId.
+  // The legacy stream does not carry canonical lifecycle/Attempt changes.
+  // Re-read the shared inspection seam on a bounded cadence and reconnect;
+  // never derive canonical status from those legacy delivery frames.
   useEffect(() => {
-    if (!selectedRunId) {
-      setDetail(null);
-      return;
-    }
+    setDetail(null);
+    setDetailError(null);
+    if (!selectedRunId) return;
     let active = true;
+    let inFlight = false;
     let es: EventSource | null = null;
-    void (async () => {
+    const handler = (ev: MessageEvent) => {
+      if (!active) return;
+      try {
+        const parsed = JSON.parse(ev.data) as DagEvent;
+        setDetail((cur) => cur ? {
+          ...cur,
+          events: [...cur.events, parsed],
+          event_count: cur.event_count + 1,
+          node_states: deriveStates([...cur.events, parsed]),
+        } : cur);
+      } catch {
+        /* malformed event, skip */
+      }
+    };
+    const refresh = async () => {
+      // Serialize reads: a slow earlier response must not overwrite newer
+      // evidence, and repeated stream notifications must not flood the API.
+      if (!active || inFlight) return;
+      inFlight = true;
       try {
         const d = await apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`);
-        if (active) setDetail(d);
-      } catch (e) {
-        if (active) setError((e as Error).message ?? "detail load failed");
-        return;
-      }
-      es = new EventSource(`/v1/dag-runs/${selectedRunId}/events`);
-      const handler = (ev: MessageEvent) => {
         if (!active) return;
-        try {
-          const parsed = JSON.parse(ev.data) as DagEvent;
-          setDetail((cur) =>
-            cur
-              ? {
-                  ...cur,
-                  events: [...cur.events, parsed],
-                  event_count: cur.event_count + 1,
-                  node_states: deriveStates([...cur.events, parsed]),
-                }
-              : cur,
-          );
-        } catch {
-          /* malformed event, skip */
+        setDetail(d);
+        setDetailError(null);
+        if (!es) {
+          es = new EventSource(`/v1/dag-runs/${selectedRunId}/events`);
+          es.addEventListener("pm_node_started", handler as EventListener);
+          es.addEventListener("pm_node_completed", handler as EventListener);
+          es.addEventListener("pm_node_failed", handler as EventListener);
+          es.addEventListener("pm_resync", refresh);
+          es.addEventListener("open", refresh);
         }
-      };
-      es.addEventListener("pm_node_started", handler as EventListener);
-      es.addEventListener("pm_node_completed", handler as EventListener);
-      es.addEventListener("pm_node_failed", handler as EventListener);
-      // The stream told us it dropped events (full queue or trimmed history):
-      // converge on durable truth by re-reading the run (#1183) instead of
-      // stitching a contiguous-looking timeline out of what survived.
-      const resync = () => {
-        if (!active) return;
-        void apiGet<RunDetail>(`/v1/dag-runs/${selectedRunId}`)
-          .then((d) => {
-            if (active) setDetail(d);
-          })
-          .catch(() => {
-            /* keep the current view; the stream keeps delivering */
-          });
-      };
-      es.addEventListener("pm_resync", resync as EventListener);
-    })();
+      } catch (e) {
+        if (active) {
+          // Retain the last snapshot, but do not present it as a fresh read.
+          setDetailError(`Run evidence may be stale. ${(e as Error).message}`);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), 10_000);
     return () => {
       active = false;
+      clearInterval(interval);
       es?.close();
     };
   }, [selectedRunId]);
@@ -193,24 +212,23 @@ export default function DagRuns() {
 
   return (
     <div style={{ padding: 16 }}>
-      <h2 style={{ marginTop: 0 }}>Live DAG Runs</h2>
+      <h2 style={{ marginTop: 0 }}>Runs</h2>
       <p style={{ color: "#6b7280", marginTop: -6 }}>
-        Live view of the bundled demo pipeline (intake → research → delivery → reporting). Each node = one
-        (role, capability) invocation. States stream over SSE from /v1/dag-runs/{`{id}`}/events. This view
-        shows that fixed pipeline only — workflows you create yourself (via Chat or the DAG Builder) run, but
-        aren't visualized here yet.
+        Inspect the canonical execution evidence for a run. The activity sketch below preserves legacy PM event
+        playback; the execution evidence panel lists the actual NodeRuns, Attempts, and recorded artifacts for
+        every canonical run the inspection seam can read.
       </p>
 
-      {error && (
-        <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", padding: 10, margin: "8px 0", borderRadius: 6 }}>
-          {error}
+      {(detailError || error) && (
+        <div role="alert" style={{ background: "#fee2e2", border: "1px solid #fca5a5", padding: 10, margin: "8px 0", borderRadius: 6 }}>
+          {detailError || error}
         </div>
       )}
 
       <div style={{ display: "flex", gap: 16, marginTop: 12 }}>
         <aside style={{ width: 220, flexShrink: 0 }}>
           <h3 style={{ marginTop: 0, fontSize: 14 }}>Recent runs</h3>
-          {runs.length === 0 && <div style={{ color: "#9ca3af" }}>No runs yet. Trigger the demo pipeline to start.</div>}
+          {runs.length === 0 && <div style={{ color: "#9ca3af" }}>No recent runs in this view.</div>}
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {runs.map((r) => (
               <li key={r.id}>
@@ -238,7 +256,94 @@ export default function DagRuns() {
         </aside>
 
         <section style={{ flex: 1 }}>
-          <svg
+          {detail && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 12,
+                marginBottom: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ fontFamily: "monospace", fontSize: 13 }}>{detail.id}</span>
+              <span aria-label="Run status">{detail.status ?? "Status not recorded"}</span>
+              {detail.canonical_run_id && detail.canonical_run_id !== detail.id && (
+                <span>Canonical Run: {detail.canonical_run_id}</span>
+              )}
+              {/* Round trip (#65): this run arrived from the Goal view's
+                  history; the recorded Goal context links straight back, and
+                  the run's own Workspace rides along as ?ws= so the Goal page
+                  opens where that goal's history lives. The strings are the
+                  seam's own — no id translation. */}
+              {detail.goal_context && (
+                <button
+                  onClick={() => {
+                    const params = new URLSearchParams({
+                      goal: detail.goal_context!.goal_id,
+                    });
+                    if (detail.workspace_id) params.set("ws", detail.workspace_id);
+                    navigate(`/goals?${params.toString()}`);
+                  }}
+                  style={{
+                    cursor: "pointer",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 6,
+                    background: "white",
+                    padding: "3px 10px",
+                    fontSize: 12,
+                  }}
+                  title="Open the Goal this run executes toward"
+                >
+                  Goal: {detail.goal_context.goal_id} · revision {detail.goal_context.goal_revision}
+                </button>
+              )}
+            </div>
+          )}
+          {detail?.node_runs && (
+            <section
+              aria-label="Canonical execution evidence"
+              style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, marginBottom: 12 }}
+            >
+              <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Execution evidence</h3>
+              {detail.node_runs.length === 0 ? (
+                <p style={{ color: "#6b7280", margin: 0, fontSize: 13 }}>No NodeRuns recorded yet.</p>
+              ) : (
+                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
+                  {detail.node_runs.map((nodeRun) => (
+                    <li key={nodeRun.node_run_id} style={{ fontSize: 12 }}>
+                      <strong>{nodeRun.node_id}</strong> · {nodeRun.status} · node run {nodeRun.node_run_id}
+                      {nodeRun.error ? ` — ${nodeRun.error}` : ""}
+                      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                        {nodeRun.attempts.map((attempt) => (
+                          <li key={attempt.attempt_id}>
+                            Attempt {attempt.ordinal}: {attempt.status} · {attempt.runtime_id} · {attempt.attempt_id}
+                            {attempt.cancellation_cause ? ` (${attempt.cancellation_cause})` : ""}
+                            {attempt.error ? ` — ${attempt.error}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {detail.artifacts && detail.artifacts.length > 0 && (
+                <>
+                  <h4 style={{ margin: "12px 0 6px", fontSize: 13 }}>Recorded artifacts</h4>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                    {detail.artifacts.map((artifact) => (
+                      <li key={artifact.artifact_id}>
+                        {artifact.request_id}: {artifact.status} · {artifact.artifact_id} · {artifact.attempt_count} attempts
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
+          )}
+          {detail && detail.events.length > 0 && <svg
+            role="img"
+            aria-label="Legacy activity sketch"
             width={width}
             height={height}
             style={{ background: "#fafafa", border: "1px solid #e5e7eb", borderRadius: 8 }}
@@ -318,7 +423,7 @@ export default function DagRuns() {
                 </g>
               );
             })}
-          </svg>
+          </svg>}
 
           {selectedNode && detail && (
             <div

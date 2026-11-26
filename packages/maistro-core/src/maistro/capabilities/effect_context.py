@@ -390,11 +390,48 @@ def _durable_context(
     )
 
 
+async def new_backend_effect_context(
+    *,
+    pg_pool: Any = None,
+    db_pool: Any = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
+) -> CapabilityEffectContext:
+    """Select one canonical effect context for the configured persistence backend (#1133).
+
+    A selection seam, not a second authority: each durable backend is composed
+    by the surviving builder above -- ``new_postgres_effect_context`` or
+    ``new_sqlite_effect_context`` opens (or accepts injected) that backend's
+    Binding, Invocation, approval, and canonical Event stores exactly once --
+    so governed effects never hold a private in-memory event authority when
+    the deployment selected a durable database. With no pool supplied, the
+    explicit in-memory composition remains for ephemeral use.
+    """
+
+    if pg_pool is not None:
+        return await new_postgres_effect_context(
+            pg_pool,
+            credentials=credentials,
+            policy_evaluator=policy_evaluator,
+        )
+    if db_pool is not None:
+        return await new_sqlite_effect_context(
+            db_pool,
+            credentials=credentials,
+            policy_evaluator=policy_evaluator,
+        )
+    return new_in_memory_effect_context(
+        policy_evaluator=policy_evaluator,
+        credentials=credentials,
+    )
+
+
 __all__ = [
     "CapabilityEffectContext",
     "binding_scope_policy",
     "configure_default_effect_context",
     "default_effect_context",
+    "new_backend_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
     "new_postgres_effect_context",

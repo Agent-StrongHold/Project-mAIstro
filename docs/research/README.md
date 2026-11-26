@@ -84,7 +84,9 @@ Every child research epic/leaf defines:
 
 | Note | Family | Epic / leaf | Disposition at this head |
 |---|---|---|---|
+| [881 — execution-lifecycle state machines](881-execution-lifecycle-state-machines.md) | M8-A1 | leaf [#881](https://github.com/Agent-StrongHold/Project-mAIstro/issues/881), epic #880 | INCUBATE |
 | [882 — invocation effect/idempotency stateful testing](882-invocation-effect-idempotency-stateful-testing.md) | M8-A2 | leaf [#882](https://github.com/Agent-StrongHold/Project-mAIstro/issues/882), epic #880 | GRADUATE |
+| [891 — direct Z3/SMT modeling of the schedule fire decision](891-z3-smt-fire-decision.md) | M8-A11 | leaf [#891](https://github.com/Agent-StrongHold/Project-mAIstro/issues/891), epic #880 | WATCH |
 | [894 — critical-zone mutation strategy](894-critical-zone-mutation-strategy.md) | M8-A14 | leaf [#894](https://github.com/Agent-StrongHold/Project-mAIstro/issues/894), epic #880 | INCUBATE |
 | [896 — coverage-guided fuzzing of parser surfaces](896-coverage-guided-fuzzing-parser-surfaces.md) | M8-A15 | leaf [#896](https://github.com/Agent-StrongHold/Project-mAIstro/issues/896), epic #880 | INCUBATE |
 | [900 — adaptive model routing, escalation, and inference economics](900-adaptive-model-routing-escalation-economics.md) | M8-B | epic [#900](https://github.com/Agent-StrongHold/Project-mAIstro/issues/900) (leaves #914–#919) | INCUBATE (family) |
@@ -120,9 +122,10 @@ Every child research epic/leaf defines:
 | [893 — stateful generated API workflows](893-stateful-api-workflows.md) | M8-A | leaf [#893](https://github.com/Agent-StrongHold/Project-mAIstro/issues/893), epic #880 | GRADUATE (this seam, this scope) |
 
 Two leaves hold a GRADUATE disposition (invocation effect/idempotency stateful testing
-#882 and stateful generated API workflows #893, each scoped to its seam); six are INCUBATE
-(critical-zone mutation #894, fuzzing leaf #896, model-routing leaves #914 and #916,
-plan-search leaf #928, and graph-pattern reuse leaf #929) and the rest are WATCH. No leaf
+#882 and stateful generated API workflows #893, each scoped to its seam); seven are INCUBATE
+(execution-lifecycle state machines #881, critical-zone mutation #894, fuzzing leaf #896,
+model-routing leaves #914 and #916, plan-search leaf #928, and graph-pattern reuse leaf
+#929) and the rest are WATCH. No leaf
 currently holds a REJECT disposition. Dispositions are owned by
 the individual notes —
 update the note first, then this table.
@@ -131,14 +134,15 @@ The initial research family, M8-A advanced software verification and assurance
 ([#880](https://github.com/Agent-StrongHold/Project-mAIstro/issues/880), leaves #881–#897), is
 tracked on GitHub with its in-repo evidence infrastructure in [`formal/`](../../formal/)
 ([INVARIANTS](../../formal/INVARIANTS.md), [README](../../formal/README.md)); its leaves that
-have produced research notes keep them in this folder ([#882](882-invocation-effect-idempotency-stateful-testing.md),
+have produced research notes keep them in this folder ([#881](881-execution-lifecycle-state-machines.md),
+[#882](882-invocation-effect-idempotency-stateful-testing.md),
 [#884](884-tla-plus-model-checking-execution-concurrency.md), [#885](885-differential-reference-model-testing.md),
 [#887](887-postgresql-concurrency-race-harness.md), [#888](888-replay-checkpoint-equivalence.md),
 [#889](889-metamorphic-testing.md), [#890](890-crosshair-symbolic-execution-pure-invariants.md),
-[#893](893-stateful-api-workflows.md),
+[#891](891-z3-smt-fire-decision.md), [#893](893-stateful-api-workflows.md),
 [#894](894-critical-zone-mutation-strategy.md), [#896](896-coverage-guided-fuzzing-parser-surfaces.md),
 [#897](897-lean-leanstral-rust-aeneas-correctness-kernel.md), [#918](918-concurrency-model-checking-tla-apalache.md));
-#882, #893, #894, #896, #918, and #897 are registered in the index above. #893's suite ships
+#881, #882, #891, #893, #894, #896, #918, and #897 are registered in the index above. #893's suite ships
 in the server test job rather than in `formal/`.
 
 ## Milestone object note

@@ -466,6 +466,9 @@ def test_the_documented_invocation_renders_the_real_stack(tmp_path: Path) -> Non
             "DB_PASSWORD": "test-db-password",
             "LITELLM_MASTER_KEY": "sk-test-litellm-key",
             "API_KEYS": '["conductor:test-token"]',
+            # #1095 made this a required interpolation too; `[]` is the
+            # documented no-admin-keys value install.sh writes for new installs.
+            "ADMIN_API_KEYS": "[]",
             # Both spellings are required interpolations now: ROUTER_API_KEY
             # for the engine, MAISTRO_ROUTER_API_KEY for the Conductor bridge
             # (#402 made it mandatory -- an empty key means the bridge never

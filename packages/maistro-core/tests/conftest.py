@@ -147,6 +147,9 @@ _PG_SCRATCH_TABLES = (
     # test principals; a leftover valid grant from a previous run would sit at
     # the top of find_valid's id DESC ordering and answer for the wrong test.
     "elevation_grants",
+    # (#845) Host delegation grants carry deterministic test principals for the
+    # same reason: a leftover valid grant would answer for the wrong test.
+    "delegation_grants",
     "handler_invocations",
     "trigger_definitions",
     "event_log",

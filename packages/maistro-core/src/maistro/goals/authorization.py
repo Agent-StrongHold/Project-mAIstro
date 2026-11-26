@@ -69,6 +69,14 @@ class ScopedGoalStore:
             parent_goal_id=parent_goal_id,
         )
 
+    async def list_goals(
+        self, workspace_id: str, *, principal_id: str, limit: int = 100, offset: int = 0
+    ) -> list[Goal]:
+        """Discover Goals without requiring physical execution evidence first."""
+        await self._require(principal_id, workspace_id, WorkspaceAction.VIEW)
+        goals = await self.goal_store.list_goals(workspace_id, limit=limit, offset=offset)
+        return [goal for goal in goals if goal.workspace_id == workspace_id]
+
     async def get_goal(self, goal_id: str, *, principal_id: str) -> Goal:
         """The Goal when this principal may view it; :class:`GoalNotVisible`
         for a missing id, a foreign id, or a blank principal — the same

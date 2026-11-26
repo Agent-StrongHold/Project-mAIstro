@@ -39,6 +39,17 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
       API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
+      # Administrator authority (#1095): without this the stack has no way to
+      # authenticate for the admin-only readiness diagnostics -- both replicas
+      # would see ADMIN_API_KEYS as unset even when set in .env. Required, like
+      # the dev stack's identical line: an empty default would hand every
+      # replica `ADMIN_API_KEYS=` (empty string), which the server cannot parse
+      # as the JSON list the field is -- Settings would crash before startup
+      # validation could run (compose-secrets also forbids non-empty defaults
+      # for secret-class vars, so `${VAR:-}` was the only alternative and it is
+      # exactly what broke). `[]` is the documented no-admin-keys value
+      # install.sh writes for new installs.
+      ADMIN_API_KEYS: ${ADMIN_API_KEYS:?Set ADMIN_API_KEYS in .env (use [] when no admin keys)}
       REQUIRE_AUTH: "true"
       # Shared only with the trusted Hive delegation bridge, never clients.
       TASK_DELEGATION_KEY: ${TASK_DELEGATION_KEY:?Set TASK_DELEGATION_KEY in .env}
@@ -131,6 +142,12 @@ services:
       # (ADR-072726-0d6b, #1165). Same grant set as the dev/pm-poc/
       # hive-standalone Conductors, kept in parity by the sentinel test.
       - MAISTRO_PERMISSION_PRESET=hive_conductor_tools
+      # Graph-node execution is a host capability, not a dispatchable tool:
+      # the node adapter's Sentinel gate authorizes "graph.node.execute"
+      # against the acting user's host role. The preset above names only
+      # dispatch_tool's executables, so without this grant the fail-closed
+      # table denies every node and no DAG can run (#60, #845).
+      - 'MAISTRO_PERMISSIONS={"graph.node.execute": ["admin", "user"]}'
       # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
       - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
       - MAISTRO_SERVICE_PRINCIPAL=${MAISTRO_SERVICE_PRINCIPAL:-conductor}

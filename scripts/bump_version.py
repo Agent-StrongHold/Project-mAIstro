@@ -209,8 +209,13 @@ _INTERPKG_SITES = [
     # different extras, in two different tables (#514), and each expression
     # carries its own bound. A single row would check one and leave the other
     # to drift -- and the drift would be invisible, since a row that matches
-    # once is a pass.
-    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[bcrypt]"),
+    # once is a pass. The first row names `[bcrypt,identity]`, not bare
+    # `[bcrypt]`: the conductor's auth wiring imports `maistro.identity`
+    # (ConductorSeed), whose bip-utils/coincurve/pynacl stack the `identity`
+    # extra declares. The row has to name the expression the file actually
+    # holds or the bound stops being checked -- silently, since "found 0" is
+    # only a failure because this list said one was expected (#348 repair).
+    _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[bcrypt,identity]"),
     _interpkg_dep("packages/hive-conductor/pyproject.toml", "maistro-core[observability]"),
 ]
 

@@ -17,6 +17,7 @@ from maistro.graph.durable_runs.executor import (
     _initial_inputs,
     _maybe_increment_synth_depth,
     _new_run,
+    _node_spec,
     _result_output,
     run_durable_graph,
 )
@@ -247,7 +248,7 @@ class TestSynthDepth:
 
         nested = await AgentSynthDagNode(max_depth=3).run(
             {"objective": "nested work"},
-            _build_ctx(updated, "n1"),
+            _build_ctx(updated, "n1", _node_spec(updated.run.graph.materialize(), "n1")),
         )
         assert nested.status == "failed"
         assert nested.error_code == "SynthDagFailed"
@@ -287,7 +288,12 @@ class TestSynthDepth:
             run_id="r-nodepth",
             blackboard_snapshot={"metadata": {"other": 1}},
         )
-        assert _build_ctx(record, "n1").metadata["synth_depth"] == 0
+        assert (
+            _build_ctx(record, "n1", _node_spec(record.run.graph.materialize(), "n1")).metadata[
+                "synth_depth"
+            ]
+            == 0
+        )
 
 
 class TestInitialInputsAndIdentity:

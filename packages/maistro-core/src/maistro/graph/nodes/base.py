@@ -88,6 +88,17 @@ class NodeContext(BaseModel):
     # Caller-provided budget hint; nodes may decline to run if exceeded.
     deadline_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: Self-reported result metadata (epic M4-I). A node's ``_execute`` may
+    #: write here -- ``quality`` for the executor's escalation gate, an
+    #: explicit ``result_state`` for plan supervision -- and ``BaseNode.run``
+    #: merges it into the *successful* NodeResult's metadata after
+    #: ``_execute`` returns. This is per-visit context: the executor builds a
+    #: fresh ``NodeContext`` for every dispatch, so a report written here
+    #: cannot leak into another visit. It is a report *about* an output, not a
+    #: side channel for outcomes: failure metadata still travels on the
+    #: raised exception (``result_metadata`` attribute) and pause metadata on
+    #: ``pause_until``.
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class NodeResult(BaseModel):
@@ -215,11 +226,18 @@ class BaseNode(Generic[InputT, OutputT]):
         try:
             output = await self._execute(validated, ctx)
             latency_ms = int((time.perf_counter() - start) * 1000)
+            # Self-reported result metadata first (epic M4-I): a node may
+            # declare where its result leaves the world (e.g. the delegation
+            # taxonomy's ACTIONABLE state). The executor owns the logical
+            # effect key, so a node cannot spoof the reconciliation boundary
+            # from its report.
+            metadata = dict(ctx.result_metadata or {})
             return NodeResult(
                 success=True,
                 output=output,
                 latency_ms=latency_ms,
                 status="completed",
+                metadata=metadata,
             )
         except _NodePaused as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
