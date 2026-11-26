@@ -90,3 +90,77 @@ Progress: `{checked: 8, done: 0, skipped: 0, errors: 0, next: exact-artifact
 promotion and operator-designated RC/config → complete soak → external checks}`.
 One independently testable source-integrity repair is complete; none of the
 eight milestone criteria is claimed fully proven.
+
+## Writer validation checkpoint — job `79e1cf64459449e486a4af0d24366a60`
+
+Starting HEAD: `3268605879822bd5b9ee9eb7fd69db2feac1bd74`, branch `auto-89`,
+clean worktree. Scope frozen to #89 and the supplied dispatch snapshot; no
+live GitHub queries or mutations. The preceding job `f642fd40c32e48f0b8475a0aca611552`
+exited with `worker_error` before executing checks, not a demonstrated source
+failure. This job supplied no driver `check-*.log` files either.
+
+Re-read repository instructions, accepted ADR-073126-c4e1 and ADR-095, the
+entire shipping workflow, release guard and adjacent tests. ADR §6 requires
+shipping the artifacts the last RC validated; ADR-095 allows a different
+promotion merge commit. The existing tree comparison correctly accommodates
+that distinction, but is not artifact/configuration-bound soak proof. No
+runtime execution, scheduling, event or authorization authority is changed.
+
+Freshly executed at the starting HEAD (not inherited verification claims):
+
+| Command | Outcome |
+|---|---|
+| `uv sync --locked --extra dev` | exit 0; 218 installed packages checked |
+| `uv run pytest tests/test_release_guard.py tests/test_check_release_consistency.py tests/test_check_image_inventory.py -x -q` | **139 passed**, 1.34s |
+| `uv run ruff check .` | exit 0 |
+| `uv run ruff format --check .` | exit 0; 3484 files formatted |
+| `uv run python scripts/check-release-consistency.py` | exit 0; released none, shipping 0.9.0, working toward 1.0.0 |
+| `uv run python scripts/check-image-inventory.py` | exit 0; 9 Dockerfiles inventoried |
+| `uv run python scripts/check-workflow-inventory.py` | exit 0; 31 workflows dispositioned |
+| `uv run python scripts/check-suite-inventory.py` | exit 0; 21 suites, 34136 unique test identities, no duplicates |
+| `git tag --list 'v*'` | no local release tags |
+| Local evidence paths | `scripts/soak` and `docs/testing/soak` absent |
+| `git diff --check` | exit 0 before this documentation-only update |
+
+Logs are retained as `validation-{sync,release-tests,gates,inventory}.log` in
+`/home/dev/maistro/jobs/79e1cf64459449e486a4af0d24366a60/`. No tests were added
+or removed; the existing inventory delta above remains unchanged.
+
+### Acceptance recheck — BLOCKED
+
+All eight issue criteria remain **UNVERIFIED end-to-end** in this attempt:
+
+1. Candidate-only artifacts: workflow checkouts/build logic inspected; no
+   designated candidate artifacts were built or supplied.
+2. Clean install/model/security/restore soak: not executed against an RC.
+3. Exact-RC sustained multi-replica/crash/fencing/pressure/duplicate-work soak:
+   not executed. Frozen dispatch (2026-11-26T16:55:15Z) records child PR #1672
+   open/unmerged at `edbc2f4e43f3d094baa7e569498a66d4c6869986`, with 75 successful,
+   3 failed and 3 skipped check-runs. Failures are Quality gate, test, and
+   Documentation links. Those are snapshot observations, not freshly run CI.
+4. Earlier-invariant finding routing: no load experiment or issue mutation
+   performed; cannot certify filing/reclassification from local unit tests.
+5. New RC after runtime/config changes: existing real-git negative cases pass
+   for committed source/config/mode drift; external configuration changes and
+   renewed applicable soak are not proven.
+6. Final/soaked-RC equivalence: mandatory latest-RC tree guard passes its tests;
+   no actual final/soaked-RC pair exists locally. More importantly,
+   `.github/workflows/release.yml:273` rebuilds wheels and `:492`/`:532` build
+   fresh images on **both** RC and final runs. The digest-preserving promotion
+   at `:678` preserves that run's scanned build, not the earlier soaked RC's
+   artifacts. Equal trees do not close this ADR §6 gap.
+7. External package/image/signature/install verification: not executed. The
+   workflow's cosign verification at `:729` is a mechanism, not evidence of
+   an externally verified release in this attempt.
+8. Machine-readable artifact/config-bound soak evidence: none supplied or
+   generated; local test/inventory logs do not substitute for it.
+
+No speculative repair was made: changing the source guard or fabricating a
+soak manifest would not address these missing operational proofs. Preserve
+this lane's existing repair; next owner must establish an exact-RC artifact
+reuse path under the sole shipping workflow, designate immutable RC/config,
+complete #860 and product soak, then perform authorized release and external
+verification. No approval, publish, tag push or integration action was taken.
+
+Checkpoint: `{checked: 8, done: 0, skipped: 0, errors: 0, next: exact-artifact
+promotion implementation and authorized RC/soak/release evidence}`.
