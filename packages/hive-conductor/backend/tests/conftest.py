@@ -498,6 +498,9 @@ def canonical_graph_spine(monkeypatch: pytest.MonkeyPatch):
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
         sentinel=sentinel,
+        # Per-cycle discovery context (#1051): the default Container owns one;
+        # the fixture models the contract with the bare no-op.
+        discovery_context=None,
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=container))
     yield container

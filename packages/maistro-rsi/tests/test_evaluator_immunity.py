@@ -569,6 +569,46 @@ def _baseline_sha(work_root: Path) -> str:
     return _git(work_root / "baseline", "rev-parse", "rsi-baseline").stdout.strip()
 
 
+class _ApprovingReview:
+    """An AdversarialReview stand-in that approves everything, so a test can
+    isolate the layer it exercises (#109) from the #302 promotion gate's
+    review requirement for sensitive-surface diffs."""
+
+    def __init__(self) -> None:
+        self.judged: list[list[str]] = []
+
+    async def review(self, diff: str, touched_paths: list[str]) -> bool:
+        self.judged.append(list(touched_paths))
+        return True
+
+
+def _approval_service(secret: str):
+    """A signed-approval service bound to whatever candidate/diff/scope the
+    gate hands it (#302) — stands in for the external approver capability
+    that existed before the run."""
+
+    def service(candidate_sha: str, diff: str, scope: str) -> dict[str, object] | None:
+        from dataclasses import asdict, replace
+
+        from maistro_rsi.promotion_gate import (
+            SignedPromotionApproval,
+            sign_promotion_approval,
+        )
+        from maistro_rsi.sensitive_paths import SENSITIVE_PATH_POLICY_VERSION
+
+        approval = SignedPromotionApproval(
+            candidate_sha=candidate_sha,
+            diff_sha256=diff,
+            scope=scope,
+            approver="governance-operator",
+            policy_version=SENSITIVE_PATH_POLICY_VERSION,
+            expires_at="2999-01-01T00:00:00+00:00",
+        )
+        return dict(asdict(replace(approval, signature=sign_promotion_approval(approval, secret))))
+
+    return service
+
+
 class TestAdversarialSelfScoringFixture:
     def test_fitness_path_rejects_before_the_mutated_oracle_runs(
         self, tmp_path: Path, monkeypatch
@@ -647,17 +687,23 @@ class TestAdversarialSelfScoringFixture:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """Counterfactual, on the bare path where the test command is the ONLY
-        oracle evidence: with the integrity check disabled the SAME candidate
-        promotes (its own diff made `exit 0` the whole verdict). The fitness
-        path has additional fail-first layers, which is exactly why the veto
-        must fire BEFORE evidence production — the last line of defense can't
-        be the first one."""
+        oracle evidence: with the integrity check disabled — and the #302
+        gate SATISFIED (approving review + a validly signed approval), so the
+        veto under test is the only thing that can stop the candidate — the
+        SAME candidate promotes (its own diff made `exit 0` the whole
+        verdict). The fitness path has additional fail-first layers, which is
+        exactly why the veto must fire BEFORE evidence production — the last
+        line of defense can't be the first one."""
         repo = _oracle_repo(tmp_path / "src")
+        secret = "evaluator-immunity-secret"
         config = LocalRsiConfig(
             repo_path=str(repo),
             test_command="exit 0",
             work_root=str(tmp_path / "work"),
             max_cycles=1,
+            adversarial_review=_ApprovingReview(),
+            approval_provider=_approval_service(secret),
+            approval_signing_secret=secret,
         )
         monkeypatch.setattr(LocalRsiLoop, "_evaluator_integrity", lambda self, cdir: ([], None))
         result = LocalRsiLoop(config, apply_patch=_make_apply(_adversarial_candidate)).run()
@@ -668,19 +714,27 @@ class TestAdversarialSelfScoringFixture:
     ) -> None:
         """Human governance path: with the override the same candidate is
         scored (and, the bare path being trivially green, promoted) — but the
-        promotion record carries the mutated paths and the trusted digest, so
-        the decision is replayable and reviewable. Never silent."""
+        override is not authority: the #302 gate still requires an approving
+        review and a signed approval bound to the real candidate/diff/scope
+        (no candidate- or config-populated boolean decides that approval is
+        required). The promotion record carries the mutated paths and the
+        trusted digest, so the decision is replayable and reviewable. Never
+        silent."""
         import json
 
         from maistro_rsi.trace_notes import read_trace_note
 
         repo = _oracle_repo(tmp_path / "src")
+        secret = "evaluator-immunity-secret"
         config = LocalRsiConfig(
             repo_path=str(repo),
             test_command="exit 0",
             work_root=str(tmp_path / "work"),
             max_cycles=1,
             allow_evaluator_mutation=True,
+            adversarial_review=_ApprovingReview(),
+            approval_provider=_approval_service(secret),
+            approval_signing_secret=secret,
         )
         result = LocalRsiLoop(config, apply_patch=_make_apply(_adversarial_candidate)).run()
 
