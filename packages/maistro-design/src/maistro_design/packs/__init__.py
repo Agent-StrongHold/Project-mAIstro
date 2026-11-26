@@ -118,11 +118,16 @@ _VULTURE_WHITELIST = (
     # M7-A9 (#985) artifact surface: the payload models are constructed by
     # pydantic validation and their fields read by tests/consumers outside
     # the src scan; `read_record` is the read-back seam of the persisted
-    # form. An unvalidated instance carries each model's required fields the
-    # way the Node entry below carries `binding_ids`.
-    ProductSpec.model_construct(job="", metrics=(), surfaces=(), non_goals=()),
+    # form. Vulture counts attribute loads only — model_construct keyword
+    # names are never counted — so each carried field name is an attribute
+    # load on a constructed instance (the scan-input repair for the
+    # exact-debt-ledger gate, #985: the previous kwargs form banked
+    # nothing). Names vulture sees used elsewhere in the scan (`job`,
+    # `metrics`, `surfaces`, `verb`, `loop`, `session`, `fail`, `n`,
+    # `text`, `spreads`) need no entry; these four do.
+    ProductSpec.model_construct(non_goals=()).non_goals,
+    BookSpread.model_construct(art="").art,
     GameLoop.model_construct(verb="", loop="", session="", fail="", feel=()).feel,
-    BookSpread.model_construct(n=1, text="", art=""),
     BookPages.model_construct(spreads=())._ordered_from_one,
     PackArtifactRecord.read,
     PackArtifactRecord.persist,

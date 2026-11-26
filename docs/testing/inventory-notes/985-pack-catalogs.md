@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +30
+  packages/maistro-design/tests: +35
 ---
 
 # #985 (M7-A9) — thick pack catalogs and artifact payload kinds
@@ -57,11 +57,23 @@ and the ontology projection keeps the manifest's weights/anchors/method.
 The two new tests pin the raw-score scale and the thickness of the
 projection itself.
 
-`packages/maistro-design/tests/test_pack_lifecycle.py` (net 0) is re-keyed
+`packages/maistro-design/tests/test_pack_lifecycle.py` (+5) is re-keyed
 to the thick catalog (configuration selects `job`/`metric`/`surface`, the
 builtin release is 2.0.0 after the defaults change, and the narrowed-catalog
 test now also proves the weight provenance rule: a narrowed override keeps
-declared weights un-renormalized while the full defaults sum to 1).
+declared weights un-renormalized while the full defaults sum to 1), and
+its `TestLegacyThinSnapshotsStillDeserialize` (review P1) pins the
+pre-2.0.0 compatibility path: a thin snapshot (no `artifact_payload_kind`
+key — impossible under the thick schema, the exact legacy marker)
+deserializes with thickness derived deterministically from the thin body
+(equal weights with the last dimension absorbing the float remainder,
+anchors named on the fixed 1-5 scale, first declared artifact kind as the
+payload kind) while identity and dimension ids ride unchanged; a migrated
+thin pack fails closed at the judged-emission schema gate (no payload
+schema shipped); tampered thin evidence is still refused before
+migration; a disabled legacy activation re-enables from its snapshot; and
+a seeded 1.0.0 record passes upgrade preflight and lands 2.0.0
+end-to-end.
 
 ## Reconciliation notes
 
