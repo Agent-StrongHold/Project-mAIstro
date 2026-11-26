@@ -728,3 +728,60 @@ dispositions and issue closures). No gates, grants or ledgers were touched;
 the retention inventory row edit is the declaration the durable-table gate
 requires of any new backend, not a grant. No GitHub actions. Accounting:
 **checked 1, done 1 (the scoped repair), skipped 0, errors 0**.
+
+---
+
+## Round addendum — merge-sync re-verification at 53441bb152 (auto-450)
+
+Prior round (job 01bb8493) committed 74cc7f08a8, advancing the three live
+migration suites' pinned chain tips 070 -> 071; it was proven on PG17/PG18 at
+that head. Two develop syncs then landed (merges 7fdd5a2483, 53441bb152).
+The follow-up repair job (62279133) died at agent start (`agent_exit: 1`,
+~19 s, no tree changes), so this round re-derived the evidence at the merged
+head **53441bb152c2e06690bf19d792c2d39ae8882ae7**. `git diff --stat
+74cc7f08a8..53441bb152` shows the syncs touched only Turing/frontend/docs
+files — no `alembic/versions/` or `tests/migrations/` paths — and the 071
+pins are intact (`test_capability_invocation_effect_index_migration.py:222`,
+`test_goal_installed_base_upgrade.py:87`, `test_legacy_principal_ownership_live.py:511`).
+
+### Re-executed CI gate evidence (first-hand, this tree, this head)
+
+- `uv run pytest tests/migrations -q` vs pgvector **PG17** (port 5434):
+  **173 passed** (263 s). Same suite vs pgvector **PG18** (port 5435):
+  **173 passed** (276 s). First PG18 attempt showed 3 failures/2 errors
+  (episodic-provenance 030 downgrade, receipts 066) that all pass in
+  isolation and on full-suite re-run — transient contention on the shared
+  container, not code; CI's own pg18 log at 267c4ccc showed only the pin
+  failures.
+- `test` job conditions (no DSN): `pytest
+  test_capability_invocation_effect_index_migration.py
+  test_goal_installed_base_upgrade.py` -> **4 passed, 6 skipped** (the live
+  legs correctly skip offline; these were the only FAILED entries in CI's
+  `test` job).
+- integration-scope: `node --test tests/ci/integration-scope.test.cjs` ->
+  **14/14 pass**; its merge-queue failure was purely the downstream
+  "postgres (pg17) is required" dependency, now green.
+- Full `tests/` tree under the CI env (`REQUIRE_AUTH=false
+  MAISTRO_DRY_RUN=1`, `--ignore=tests/tools/registry`, `--timeout=60`):
+  **6336 passed, 140 skipped, 0 failed** (542 s).
+- Vulture per-identity ledger at CI's exact args (`packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`): exit 0, **1219 == 1219**
+  (base 4f8f40352d13 -> candidate 53441bb152c2), no ledger edit made or
+  needed.
+- `scripts/check-suite-inventory.py` full: **21/21 suites match** (37225
+  node IDs) including the develop-synced Turing/formal additions;
+  `check-required-checks.py` 79 checks ok; `check-backlog-consistency.py`
+  OK (167 items). Driver battery (sync/ruff check/ruff format --check/
+  maistro-core memory suites) green per this job's `check-*.log`.
+- No test added or removed this round -> no inventory delta, no
+  inventory-notes update required.
+
+### Unresolved / recorded, not actionable in-tree
+
+- Driver-side dispatch gap ("Unable to collect required source: issues/395
+  comments") is an API-collection failure outside lane authority; #395's
+  state is unchanged in the tree.
+- Initiative checkpoints 5-9 remain owner-level dispositions per the table
+  above; nothing in this round's scope can perform them in-tree.
+
+No GitHub actions performed. Accounting: **checked 4 gates, done 4, skipped 0, errors 0**.
