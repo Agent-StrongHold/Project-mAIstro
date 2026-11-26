@@ -8,7 +8,7 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "workspace-permissions.spec.ts",
+  testMatch: ["workspace-permissions.spec.ts", "workspace-attention-elevation.spec.ts"],
   timeout: 30000,
   retries: 0,
   workers: 1,

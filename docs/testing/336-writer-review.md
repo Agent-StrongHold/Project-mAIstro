@@ -120,3 +120,63 @@ to `incoming-336-salvage.patch`, then completed:
   gate passes). Unchanged resolution: the two-merge sequence — a grant/
   ledger adoption lands on develop first — which this lane is prohibited
   from performing. Recorded as an explicit integration blocker.
+
+## Develop-sync round (2026-11-26, implement/verify worker)
+
+The worktree carried an unfinished merge of stale develop tip 7ba29c1cd0 (an
+ancestor of origin/develop 7926d9ab4d) with nine conflicted paths. It was
+completed, then origin/develop was merged on top (conflict-free delta).
+Resolution policy per file:
+
+- `middleware/auth.py`: develop's single enforcement table lives in
+  `services/authorization.py`; the `_PROTECTED_OPS` alias points at it and
+  `_required_permission` delegates to `authorization.required_permission`.
+- `services/permission_policy.py`: added develop's newer rows (DELETE+POST
+  /v1/projects -> projects.write, POST /v1/eval-judge -> eval.score) so the
+  #336-generated table equals the enforcement table byte-for-byte in content;
+  dropped the nine UI_MUTATIONS rows whose controls develop deleted
+  (Agents/MCP/Skills pages, #2273; optimizer inbox folded into Attention,
+  #2363). DAILY_USER_PERMISSIONS is derived, so the provisioned daily role
+  is now exactly the four reachable surfaces (credentials.write, dags.write,
+  schedules.write, workspaces.write) — least privilege against the reachable
+  inventory, admin break-glass unchanged and still chat-blocked.
+- Frontend conflicts (App.tsx, Credentials.tsx, Settings.tsx,
+  LlmProviders.tsx): kept both the #336 elevation affordances and develop's
+  AuthorizationContext model; explicit denial causes retained (Settings edit
+  button now gates on the same config.write predicate the save path enforces
+  and names both denial causes; LlmProviders cause line follows the
+  permission model rather than a hardcoded admin check).
+- Modify/delete pages (Agents/MCP/OptimizationInbox/Skills .tsx): accepted
+  develop's deletions; unrouted in the merged App.tsx (deep links redirect to
+  /capabilities), content recoverable at the prior head.
+- `Attention.tsx` repair: the merged optimizer decision + HITL answer doors
+  (both dags.write protected ops) posted raw with no elevation path — wired
+  through `authorizedAction`, with verbatim cause surfacing in the catch.
+
+Evidence at the final head of this round:
+
+- `uv run python scripts/check-conductor-permission-matrix.py` -> OK (51 API
+  entries, 23 UI mutations; one policy source, CI-exact invocation).
+- `uv run python scripts/check_enumerations.py` -> no new gaps;
+  `scripts/check-route-permissions.py` -> 42 declared, 0 undeclared.
+- `uv run pytest packages/hive-conductor/backend/tests/test_permission_policy.py
+  test_setup_guard.py test_registration_policy.py test_ui_auto_climb_defaults.py
+  test_workspace_restore_policy.py test_workspace_authority.py
+  test_home_routes.py -q` -> 145 passed (includes the live clean-setup
+  restore matrix: owner/editor/viewer/nonmember, admin 404 + chat 403 +
+  invite flow, elevation success/refusal/retry).
+- `tsc -p tsconfig.json --noEmit` -> clean; root `uv run ruff check .` and
+  `uv run ruff format --check .` -> clean (3679 files).
+- Playwright permissions config: 6/6 (4 archived-tab restore + 2 new
+  Attention elevation cases); control run with the wiring reverted -> 2/2
+  new cases fail as named, then restored.
+- `scripts/check-suite-inventory.py` -> 21 suites match (backend pytest node
+  counts unchanged; the +2 e2e cases are playwright, documented in the
+  inventory note).
+- Residual (unchanged class, not from this round): `RATCHET_BASE_REV=origin/
+  develop scripts/check-frontend-typed-client.py` exits 1 with 108 problems,
+  all in pre-existing lane frontend files (Elevation, PersonaWizard,
+  WorkspaceTabs, WorkspaceToolBindings, Containers, DagBuilder, Evolution,
+  RSI) — no row names a file edited this round. The two-merge grant sequence
+  recorded previously remains the integration-stage resolution; this lane
+  cannot land grants.

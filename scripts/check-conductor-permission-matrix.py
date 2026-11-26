@@ -19,6 +19,23 @@ from services.permission_policy import (  # noqa: E402
 )
 
 
+def _frontend_sources() -> list[str]:
+    """Concatenate the hand-written frontend sources the UI contract names.
+
+    The #2273 restructure moved mutation helpers out of page components into
+    lib modules (e.g. lib/attention.ts posts the optimizer proposal doors),
+    so the scan follows both .tsx pages and lib/*.ts. Generated API types
+    (src/api/) are excluded on purpose: a generated schema naming a route or
+    permission is not a shipped control, and letting it satisfy the scan
+    would mask a removed action.
+    """
+    paths = list(FRONTEND.rglob("*.tsx"))
+    lib = FRONTEND / "lib"
+    if lib.is_dir():
+        paths.extend(lib.glob("*.ts"))
+    return [path.read_text(encoding="utf-8") for path in paths]
+
+
 def main() -> int:
     expected = protected_ops_by_method()
     if expected != _PROTECTED_OPS:
@@ -27,7 +44,7 @@ def main() -> int:
         )
         return 1
 
-    frontend = "\n".join(path.read_text(encoding="utf-8") for path in FRONTEND.rglob("*.tsx"))
+    frontend = "\n".join(_frontend_sources())
     failures: list[str] = []
     for operation in UI_MUTATIONS:
         # Route parameters are represented by template expressions in TSX;

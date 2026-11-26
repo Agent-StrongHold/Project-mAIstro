@@ -57,7 +57,7 @@ def test_clean_setup_restore_requires_elevation_and_live_ownership(
     import stores
     from fastapi.testclient import TestClient
     from main import app
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount as HiveUser
     from models.workspace import Workspace
     from services.model_store import JsonStore, ModelStore
 

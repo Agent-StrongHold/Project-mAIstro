@@ -111,15 +111,17 @@ PROTECTED_OPERATIONS: tuple[ProtectedOperation, ...] = (
 # Mutations exposed by the ordinary product UI.  These are intentionally more
 # specific than the API prefixes: they are the contract the frontend uses when
 # it asks for task-scoped elevation after a 403.
+#
+# Issue #336 / #2273 reconciliation: agent, skill, and MCP mutation controls
+# are no longer advertised anywhere in the UI — the Capabilities page owns
+# slots/providers, AccountBanner names the remaining surfaces as admin-gated,
+# and the /agents /skills /mcp deep links redirect without reviving controls.
+# The API half keeps enforcing agents.* / skills.* / mcp.* for the break-glass
+# admin; the UI half must not claim actions no shipped control can trigger.
 UI_MUTATIONS: tuple[ProtectedOperation, ...] = (
     ProtectedOperation(
         "POST", "/v1/workspaces/persona-templates", "workspaces.write", "author a persona"
     ),
-    ProtectedOperation("POST", "/v1/agents", "agents.write", "create an agent"),
-    ProtectedOperation("POST", "/v1/agents/forge", "agents.write", "forge an agent"),
-    ProtectedOperation("PUT", "/v1/agents/{agent_id}", "agents.write", "edit an agent"),
-    ProtectedOperation("POST", "/v1/agents/{agent_id}/scan", "agents.write", "scan an agent"),
-    ProtectedOperation("DELETE", "/v1/agents/{agent_id}", "agents.delete", "delete an agent"),
     ProtectedOperation("POST", "/v1/schedules", "schedules.write", "create a schedule"),
     ProtectedOperation("PUT", "/v1/schedules/{schedule_id}", "schedules.write", "edit a schedule"),
     ProtectedOperation(
@@ -148,12 +150,6 @@ UI_MUTATIONS: tuple[ProtectedOperation, ...] = (
     ),
     ProtectedOperation(
         "POST", "/v1/schedules/{schedule_id}/run", "schedules.write", "run a schedule"
-    ),
-    ProtectedOperation("PATCH", "/v1/skills/{skill_id}/toggle", "skills.write", "toggle a skill"),
-    ProtectedOperation("POST", "/v1/mcp/servers", "mcp.write", "add an MCP server"),
-    ProtectedOperation("POST", "/v1/mcp/test", "mcp.write", "test MCP connections"),
-    ProtectedOperation(
-        "DELETE", "/v1/mcp/servers/{server_id}", "mcp.delete", "remove an MCP server"
     ),
     ProtectedOperation(
         "PUT", "/v1/credentials/{provider_id}", "credentials.write", "store a credential"

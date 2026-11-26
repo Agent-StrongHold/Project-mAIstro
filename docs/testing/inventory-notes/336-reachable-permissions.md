@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +4
+  packages/hive-conductor/frontend/e2e: +2
 ---
 # Issue 336 — reachable UI permissions
 
@@ -144,3 +145,34 @@ section records fresh evidence and corrects the stale test-count prose above.
   `test_workspace_mode.py` / `test_workspace_scoped_submission.py`); the
   per-role browser walk of all 31 UI mutations remains the recorded residual
   gap, intentionally covered by the API-layer suites plus the CI matrix gate.
+
+## Develop-sync round (post-merge reconciliation, 2026-11-26)
+
+Completing the preserved develop sync (7ba29c1cd0 + origin/develop 7926d9ab4d)
+required reconciling the #336 inventory with develop's UI restructure (#2273
+deleted the Agents/MCP/Skills pages; #2363 merged MessageBoard/OptimizationInbox
+into Attention):
+
+- `UI_MUTATIONS` drops the nine actions whose controls no longer ship
+  (agent create/forge/edit/scan/delete, skill toggle, MCP add/test/remove);
+  the daily role contract shrinks to the four permissions reachable UI still
+  advertises (credentials.write, dags.write, schedules.write,
+  workspaces.write). The API half keeps enforcing agents.*/skills.*/mcp.* for
+  the break-glass admin, and gained develop's /v1/projects and
+  /v1/eval-judge rows so `protected_ops_by_method()` provably equals the
+  enforcement table in `services/authorization.py`.
+- `check-conductor-permission-matrix.py` now also scans hand-written
+  `lib/*.ts` mutation modules (attention.ts posts the proposal doors) while
+  still excluding generated `src/api/` types, so removed actions cannot pass
+  on generated strings.
+- Attention's optimizer decision and HITL answer doors route through the
+  canonical elevation affordance (`authorizedAction("dags.write", ...)`), and
+  its catch blocks surface the verbatim denial/cancellation cause like
+  WorkspaceTabs.
+- New intercepted browser suite `e2e/workspace-attention-elevation.spec.ts`
+  (+2): 403 on the proposal door must open the canonical elevation dialog,
+  bind one password-backed task-scoped grant, and replay exactly the denied
+  mutation; cancellation must refuse without replaying and stay retryable.
+  Control-run: with the wiring temporarily reverted both cases fail (dialog
+  never opens; request trace stalls at one 403); repaired, 6/6 pass in the
+  permissions config alongside the archived-tab restore suite.
