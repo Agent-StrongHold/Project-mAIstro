@@ -175,3 +175,34 @@ into Attention):
   Control-run: with the wiring temporarily reverted both cases fail (dialog
   never opens; request trace stalls at one 403); repaired, 6/6 pass in the
   permissions config alongside the archived-tab restore suite.
+
+## Typed-client ratchet resolution (round of 2026-11-26, repair commit 55204762ae)
+
+The "structural conflict" recorded above is resolved on-branch without any
+grant. Reproducing CI exactly (`RATCHET_BASE_REV=origin/develop`) at head
+`6c12914ce8` showed 108 problems whose ground truth was: 37 current keys
+absent from the trusted base — 34 banked rows whose line keys the branch's
+own edits had shifted plus 3 genuinely new rows in branch-new
+`Elevation.tsx` (two hand-typed context shapes + the elevate fetch) —
+reported twice each, plus the 34 now-stale ledger rows. Because `compare()`
+keys rows by line, re-banking the shifted rows would itself be unauthorized
+new debt; the only in-lane path the gate sanctions is eliminating the debt
+and deleting the fixed rows (its docstring: "a fixed entry must be deleted
+in the change that removes the debt").
+
+So the violating rows moved out of `pages/`/`components/` into `src/lib/`
+modules (the gate's sanctioned seam for shared HTTP and wire shapes, same
+pattern as `lib/approvals.ts`): wire types per domain, RSI's resilient poll
+client, Evolution's snapshot reads (per-section silent-skip preserved), and
+the elevation call now through the shared client (refusal copy stays the
+backend's verbatim detail; gains the client's timeout/RUM instrumentation).
+38 rows were eliminated in total: the 37 keys above plus Evolution's
+snapshot fetch that still sat at its unshifted trusted line inside the same
+block. No test counts changed, so the inventory delta above is unchanged.
+
+`quality/frontend-typed-client-baseline.json` went 122 -> 87 tolerated rows
+(pure floor lowering; zero rows added; no grant touched). Gate result at the
+tested commit: `ok: 16 raw fetch and 71 hand-typed declaration(s) tolerated,
+none new`. Browser evidence re-established at the same content: permissions
+suite 6/6 (intercepted) and `setup.spec.ts` 8/8 against a real clean-setup
+backend on :8102 serving this production build.

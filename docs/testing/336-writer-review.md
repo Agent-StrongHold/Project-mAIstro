@@ -180,3 +180,76 @@ Evidence at the final head of this round:
   RSI) — no row names a file edited this round. The two-merge grant sequence
   recorded previously remains the integration-stage resolution; this lane
   cannot land grants.
+
+## Typed-client CI-repair + final-head evidence round (2026-11-26)
+
+Start: head `6c12914ce8` with one preserved external modification
+(`playwright.permissions.config.ts` gained a comment-only `devskim: ignore
+DS162092` line at 14:07 during the prior verification — salvaged, committed
+verbatim in the repair commit below).
+
+Blocking finding resolved. The prior round's #1 finding (typed-client
+ratchet exits 1 with 108 problems) was reproduced and root-caused: CI-exact
+run at `6c12914ce8` -> 108 failures = 37 current keys absent from the
+trusted base (34 banked rows whose line keys this branch's own edits
+shifted + 3 genuinely new rows in branch-new `Elevation.tsx`) reported in
+two failure classes each, plus 34 stale ledger rows. `compare()` keys rows
+by exact file:line, so re-banking shifted rows is itself unauthorized new
+debt — the documented two-merge grant path is not reachable from this lane.
+The gate's own sanctioned alternative was taken instead: eliminate the debt.
+All violating wire shapes and fetch call sites moved from `pages/` and
+`components/` into `src/lib/` modules (the seam the gate names for shared
+HTTP: lib/elevation.ts, lib/rsi.ts, lib/evolution.ts, lib/dagTypes.ts,
+lib/containers.ts, lib/workspacePersonas.ts, lib/personaWizard.ts), pages
+import from there, and `quality/frontend-typed-client-baseline.json` had
+its 38 fixed rows deleted (122 -> 87; zero rows added — a pure floor
+lowering, no grant involved, exactly the ledger operation the gate's
+docstring prescribes for removed debt).
+
+Evidence, all executed at the working-tree content of the repair commit
+`55204762ae` (parent `6c12914ce8`):
+
+- `RATCHET_BASE_REV=origin/develop uv run python scripts/check-frontend-
+  typed-client.py` -> **exit 0**, "ok: 16 raw fetch and 71 hand-typed
+  declaration(s) tolerated, none new" (was 108 problems).
+- `npx tsc -p tsconfig.json --noEmit` and `tsc -p tsconfig.node.json --
+  noEmit` -> clean; `npx vite build` -> green (production bundle, then
+  served by the throwaway backend below); `npm run lint` -> 0 errors (49
+  warnings, ceiling 96).
+- Browser, permissions config (intercepted): 6/6 — archived-tab restore
+  elevation success/refusal/cancel/retry, membership-denial surfacing, and
+  the two Attention optimizer/HITL elevation doors. This directly re-proves
+  the elevation affordance after its fetch moved to the shared client: the
+  wrong-password refusal still shows the backend's verbatim "Invalid
+  password" and stays retryable.
+- Browser, live clean setup: `e2e/setup.spec.ts` **8/8** against a real
+  throwaway backend (`uvicorn main:app` on 127.0.0.1:8102, fresh
+  CONDUCTOR_DATA_DIR, no gateway — the wizard's unverified-models
+  acknowledgement path) serving this production build. Completing-setup
+  provisions the real admin + daily accounts and lands the daily user on
+  Home. This closes the prior round's "setup 8/8 only at an earlier head"
+  gap; the per-role API matrix (owner/editor/viewer/nonmember + admin
+  break-glass) remains covered by the backend tests below.
+- `uv run pytest packages/hive-conductor/backend/tests/test_permission_
+  policy.py test_setup_guard.py test_auth_middleware.py test_workspace_
+  restore_policy.py test_workspace_authority.py test_home_routes.py -q` ->
+  **145 passed** (policy source wiring, least-privilege daily provisioning,
+  elevation success/refusal/retry, per-role restore matrix, admin 404 +
+  chat 403 + invite flow). Backend files are untouched by this round, so
+  the prior full-package run (4544 passed, 112 skipped at `6c12914ce8`)
+  stands for the rest of the package.
+- `uv run ruff check .` + `uv run ruff format --check .` -> clean (3683
+  files). `scripts/check-conductor-permission-matrix.py` -> OK 51 API / 23
+  UI; `check-route-permissions.py` -> 42 declared, 0 undeclared;
+  `check-principal-identity.py` -> 0 violations; `check_enumerations.py` ->
+  no new gaps; `check-suite-inventory.py --suite packages/hive-conductor/
+  backend/tests` -> match (no test added or removed this round, so the
+  recorded deltas are unchanged); `check-test-duplicates.py` -> ok.
+
+Known limitation retained (documented, not regressed): UI-initiated
+elevations mint synthetic `ui-*` task IDs that the backend never sees
+completed/revoked; only TTL expiry retires them (covered by
+`test_auth_routes.py`'s 15-minute default/override tests). A full
+elevation-lifecycle repair stays open for the integration stage.
+
+No closure keywords were added anywhere; the PR/issue state is untouched.
