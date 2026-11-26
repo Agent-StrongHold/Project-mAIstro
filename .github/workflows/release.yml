@@ -396,7 +396,10 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
-          retention-days: 7
+          # Final promotion adopts the RC run's dist artifact (adopt-wheels),
+          # so it must survive the full soak + approval window, like the
+          # 90-day evidence record it is verified against.
+          retention-days: 90
 
       # The candidate identity record travels with the run: candidates so the
       # images job can complete it and soak lanes can bind to it, finals so
