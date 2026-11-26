@@ -1,8 +1,10 @@
 """Durable, append-only event log (ADR-086 / SPEC-070226-b234).
 
 Events are appended before handling; a crash mid-handling replays from the
-log on restart rather than dropping the event. The log is immutable: there
-is no update or delete API.
+log on restart rather than dropping the event. The event API is append-only:
+no event is ever mutated, and the one destructive path is retention's own
+bounded ``purge_expired`` (#325), which deletes a legal-hold-aware oldest
+batch and publishes the table's stored-volume health after committing.
 
 Protocol-driven per maistro-core conventions: business logic depends on
 ``EventLogStore``; concrete implementations are in-memory (tests, homelab)
@@ -18,6 +20,11 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from maistro.observability.metrics import (
+    publish_retention_table_health,
+    retention_health_probe_due,
+    sqlite_table_sample,
+)
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
@@ -56,7 +63,7 @@ class LoggedEvent:
 
 @runtime_checkable
 class EventLogStore(Protocol):
-    """Append-only durable event log."""
+    """Append-only durable event log and its replay acknowledgements."""
 
     async def append(
         self,
@@ -91,6 +98,32 @@ class EventLogStore(Protocol):
         """
         ...
 
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        """Return the last event acknowledged by a durable consumer."""
+        ...
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        """Durably acknowledge an event, never moving a cursor backwards."""
+        ...
+
+
+def require_json_encodable_payload(payload: dict[str, Any]) -> None:
+    """Reject a payload strict JSON cannot encode (NaN/Infinity, sets, ...).
+
+    The canonical Event envelope already enforces this bound — its field-bounds
+    check serializes with ``allow_nan=False`` — and ``request_digest_v1``
+    re-serializes the logged body under the same rule at dispatch time. Append
+    must therefore be the gate: a payload that was persisted but fails the
+    digest would wedge the processing cursor forever, because the digest is
+    computed before the receipt claim, so no receipt for that event could ever
+    be claimed or settled.
+    """
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        msg = f"event payload is not strictly JSON-encodable: {exc}"
+        raise ValueError(msg) from exc
+
 
 def append_from_bus_event(event: Event) -> dict[str, Any]:
     """Map an in-memory bus :class:`~maistro.events.bus.Event` to append() kwargs."""
@@ -109,6 +142,7 @@ class InMemoryEventLog:
     def __init__(self) -> None:
         self._events: list[LoggedEvent] = []
         self._next_id = 1
+        self._replay_cursors: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
     async def append(
@@ -120,6 +154,7 @@ class InMemoryEventLog:
         payload: dict[str, Any] | None = None,
         source: str = "",
     ) -> LoggedEvent:
+        require_json_encodable_payload(payload or {})
         async with self._lock:
             event = LoggedEvent(
                 id=self._next_id,
@@ -163,6 +198,18 @@ class InMemoryEventLog:
                 break
         return result
 
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        return self._replay_cursors.get(consumer_id, 0)
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        if event_id < 0:
+            raise ValueError("event_id must be non-negative")
+        async with self._lock:
+            current = self._replay_cursors.get(consumer_id, 0)
+            acknowledged = max(current, event_id)
+            self._replay_cursors[consumer_id] = acknowledged
+            return acknowledged
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_log (
@@ -176,6 +223,11 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_type_time
     ON event_log (event_type, created_at);
+CREATE TABLE IF NOT EXISTS event_replay_cursors (
+    consumer_id TEXT PRIMARY KEY,
+    event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -184,10 +236,64 @@ class SqliteEventLog:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)
+
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_entity_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded delivery-history batch after terminal processing."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[object] = [before]
+        if legal_hold_entity_ids:
+            marks = ",".join("?" for _ in legal_hold_entity_ids)
+            hold_sql = f" AND entity_id NOT IN ({marks})"  # values remain bound
+            params.extend(legal_hold_entity_ids)
+        params.append(limit)
+        # Serialized with append on the store lock: both write through the one
+        # connection, and the purge's BEGIN IMMEDIATE must wait for an in-flight
+        # append's transaction rather than start a second one on top of it.
+        async with self._lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await self._conn.execute(
+                    "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "  # nosec B608 - hold_sql is ?-placeholders only, all values bound
+                    "WHERE created_at < ?" + hold_sql + " ORDER BY id LIMIT ?)",
+                    params,
+                )
+                await self._conn.commit()
+                await self._publish_table_health()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def _publish_table_health(self) -> None:
+        """Publish the durable delivery log's stored volume after a purge (#325).
+
+        The sweep contract's stored-volume clause: the purge counters are
+        rates and cannot show a delivery log nobody is bounding, so the
+        committed purge probes the table it governs and publishes the level.
+        Throttled per store by the publisher; a quiet purge publishes too.
+        """
+        if not retention_health_probe_due("event_log:sqlite"):
+            return
+        sample = await sqlite_table_sample(
+            self._conn, "event_log", "created_at", oldest_unit="unix_s"
+        )
+        if sample is not None:
+            publish_retention_table_health(
+                "event_log:sqlite", "sqlite", [sample], min_interval_s=0.0
+            )
 
     async def append(
         self,
@@ -199,20 +305,22 @@ class SqliteEventLog:
         source: str = "",
     ) -> LoggedEvent:
         created_at = time.time()
-        cursor = await self._conn.execute(
-            """INSERT INTO event_log
-               (event_type, entity_type, entity_id, payload, source, created_at)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                event_type,
-                entity_type,
-                entity_id,
-                json.dumps(payload or {}),
-                source,
-                created_at,
-            ),
-        )
-        await self._conn.commit()
+        require_json_encodable_payload(payload or {})
+        async with self._lock:
+            cursor = await self._conn.execute(
+                """INSERT INTO event_log
+                   (event_type, entity_type, entity_id, payload, source, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    event_type,
+                    entity_type,
+                    entity_id,
+                    json.dumps(payload or {}),
+                    source,
+                    created_at,
+                ),
+            )
+            await self._conn.commit()
         row_id = cursor.lastrowid
         assert row_id is not None  # nosec B101 - INSERT always assigns a rowid
         return LoggedEvent(
@@ -262,6 +370,29 @@ class SqliteEventLog:
         cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         return [self._row_to_event(tuple(r)) for r in rows]
+
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        cursor = await self._conn.execute(
+            "SELECT event_id FROM event_replay_cursors WHERE consumer_id = ?",
+            (consumer_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        if event_id < 0:
+            raise ValueError("event_id must be non-negative")
+        now = time.time()
+        await self._conn.execute(
+            """INSERT INTO event_replay_cursors (consumer_id, event_id, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(consumer_id) DO UPDATE SET
+                 event_id = MAX(event_replay_cursors.event_id, excluded.event_id),
+                 updated_at = excluded.updated_at""",
+            (consumer_id, event_id, now),
+        )
+        await self._conn.commit()
+        return await self.get_replay_cursor(consumer_id)
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> LoggedEvent:

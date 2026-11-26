@@ -73,9 +73,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.runs.store import RunStore
     from maistro.runtime import ExecutionRuntime
 
-# Absolute substrate backstop only (mirrors fan_out.MAX_PARALLEL_CEILING) — the
-# real width gate is `evaluate_dag_shape`, not this number. Raised well past
-# the old default-8 ceiling since a justified DAG can legitimately be large.
+# Absolute substrate backstop only — the real width gate is `evaluate_dag_shape`.
+# Kept >= ADR-052 ``MAX_PARALLEL_CEILING`` (16) without importing
+# ``maistro.orchestrator`` at module load: that package pulls durable_runs and
+# would circular-import through ``runs.store`` while graph nodes are still
+# registering (#2314 / Gate C). The live ceiling check uses a deferred import.
 _MAX_NODE_CEILING = 64
 _DEFAULT_MAX_DEPTH = 3
 
@@ -445,6 +447,21 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             verdict = await self._judge(inputs.objective, synth)
 
         synthesized_kinds = [str(n) for n in synth.graph_config.nodes]
+        # ADR-052 wave ceiling expressed as Graph fan-out width (#2314): the
+        # synthesized node set is the wave; validate against the same helper
+        # the git-based fan-out path uses so there is one parallel substrate.
+        # Deferred import: top-level ``maistro.orchestrator`` would cycle through
+        # durable_runs while ``runs.store`` is still initializing (Gate C).
+        from maistro.orchestrator.waves.fan_out import validate_fan_out_width
+        from maistro.orchestrator.waves.types import WaveSpec
+
+        validate_fan_out_width(
+            tuple(
+                WaveSpec(wave_id=f"n{i}", agent_recipe=kind, inputs={})
+                for i, kind in enumerate(synthesized_kinds)
+            ),
+            max_parallel=inputs.max_nodes,
+        )
 
         if verdict.status not in ("approved", "approved_degraded"):
             raise SynthDagFailed(_verdict_error(verdict))

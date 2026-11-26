@@ -101,9 +101,11 @@ def test_pg_isready_alone_is_not_readiness(
     # The probes went through the statement channel and it kept refusing:
     calls = [line.split("\x1f") for line in stub_docker.read_text().splitlines()]
     assert calls, "the gate never probed at all"
-    assert all("psql" in call for call in calls), (
+    assert not any("pg_isready" in call for call in calls), (
         "a probe bypassed psql; pg_isready alone is the defect under test"
     )
+    psql_calls = [call for call in calls if "psql" in call]
+    assert psql_calls, "the gate never probed psql at all"
 
 
 def test_the_failure_names_the_last_probe_exit_and_stderr(
@@ -144,9 +146,61 @@ def test_every_probe_is_select_1_against_the_target_database(
     roc._wait_ready("stub-container")
 
     calls = [line.split("\x1f") for line in stub_docker.read_text().splitlines()]
-    assert calls
-    for call in calls:
+    psql_calls = [call for call in calls if "psql" in call]
+    assert psql_calls
+    for call in psql_calls:
         assert call[0] == "exec", call
         assert "psql" in call, f"probe bypassed the statement channel: {call}"
+        # Over TCP, deliberately: the entrypoint's temporary bootstrap server
+        # answers *socket* queries (even authenticated SELECT 1s for PG_DB)
+        # until it is stopped, and never listens on TCP — so only a `-h
+        # 127.0.0.1` round-trip proves the final server is the one answering.
+        # Seen live in the coverage-gate root producer (run 39130160694):
+        # a socket-gated fixture raced the temp→final restart and every
+        # statement after "ready" died with psql exit status 2.
+        assert call[call.index("-h") + 1] == "127.0.0.1", call
         assert call[call.index("-d") + 1] == roc.PG_DB, call
         assert call[call.index("-c") + 1] == "SELECT 1", call
+
+
+#: The coverage-gate root producer (quality.yml `combine`) runs this suite with
+#: pytest-timeout's `--timeout=30`; this file's own runs have no CLI flag, so
+#: pytest-timeout's library default applies. Constant so the comparison below
+#: cannot silently drift from the producer's flag.
+PRODUCER_DEFAULT_TIMEOUT_S = 30
+
+
+def test_characterization_module_budgets_beyond_the_producers_30s_default() -> None:
+    """The characterization module must override the producers' 30s per-test
+    timeout for its own setup.
+
+    Its module-scoped fixtures pull `pgvector/pgvector:pg17` and wait two full
+    readiness cycles (source + restore containers) before the first statement
+    of the first test runs — all inside that test's setup phase, which is what
+    pytest-timeout budgets. On a cold or loaded runner the image pull alone
+    exceeded the 30s default and errored all four tests at fixture setup in
+    the Coverage gate's combine step at 625879d0 (run 43878191747, job
+    133345309671, 2026-11-16) while the parallel instance of the same job on
+    the same head passed. Without a module-level `timeout` mark, the effective
+    budget is the producer's 30s and this test fails for the intended reason.
+    """
+    timeout_marks = [m for m in roc.pytestmark if getattr(m, "name", "") == "timeout"]
+    assert timeout_marks, (
+        "test_restore_oracle_characterization carries no per-module timeout "
+        f"override: the producer's {PRODUCER_DEFAULT_TIMEOUT_S}s budget again "
+        "caps a setup that legitimately needs an image pull plus two readiness "
+        "cycles"
+    )
+    effective = min(
+        int(arg) for m in timeout_marks for arg in m.args if isinstance(arg, (int, float))
+    )
+    assert effective > PRODUCER_DEFAULT_TIMEOUT_S, (
+        f"the module's timeout override ({effective}s) does not clear the "
+        f"producer default ({PRODUCER_DEFAULT_TIMEOUT_S}s)"
+    )
+    # One image pull plus BOTH readiness cycles happen inside setup: the
+    # budget must exceed two full _wait_ready windows, not just one.
+    assert effective >= 2 * roc._READY_TIMEOUT_S, (
+        f"the module's timeout override ({effective}s) does not cover two "
+        f"readiness cycles (2 x {roc._READY_TIMEOUT_S:.0f}s) plus the pull"
+    )

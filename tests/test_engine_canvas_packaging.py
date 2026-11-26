@@ -116,20 +116,27 @@ def _docker_available() -> str | None:
 
 def test_builder_stage_copies_and_installs_maistro_canvas() -> None:
     builder = _builder_stage()
-    assert "COPY packages/maistro-canvas packages/maistro-canvas" in builder, (
+    # #348: the builder copies the whole `packages/` tree instead of three
+    # named directories, because `uv export --locked` verifies the lock
+    # against EVERY workspace member's pyproject.toml — a tree copy is what
+    # makes the lock check possible at all. Canvas is in that tree.
+    assert (
+        "COPY packages/ packages/" in builder
+        or "COPY packages/maistro-canvas packages/maistro-canvas" in builder
+    ), (
         "the builder stage no longer copies maistro-canvas; the shipped engine "
         "image would boot with /v2/canvas answering 503 forever (#1825)"
     )
-    install_start = builder.find("RUN pip install --no-cache-dir")
-    assert install_start != -1, "the builder stage lost its pip install RUN line"
+    install_start = builder.find("RUN uv export --locked")
+    assert install_start != -1, "the builder stage lost its locked export RUN line"
     install_block = builder[install_start:]
     # A RUN block runs until the first blank line; keep the search inside it so
     # a later, unrelated instruction cannot satisfy the assertion.
     block_end = install_block.find("\n\n")
     if block_end != -1:
         install_block = install_block[:block_end]
-    assert '"./packages/maistro-canvas"' in install_block, (
-        "the builder's pip install no longer includes maistro-canvas; a COPY "
+    assert "./packages/maistro-canvas" in install_block, (
+        "the builder's locked install no longer includes maistro-canvas; a COPY "
         "without the install puts source in the context but nothing in the venv"
     )
 

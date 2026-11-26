@@ -16,6 +16,15 @@ Workspace boundary — the same authority the workspace/agents routes use —
 before any metadata, event, existence signal, or stream is served. A run
 outside that boundary is indistinguishable from a run that does not exist.
 Authentication happens in AuthMiddleware; it is not authorization.
+
+The routes hold no import of the projection storage at all (#65, the
+`Conductor canonical inspection plane` parity dependency): the list, the
+detail, the retention bounds, and the SSE subscription all go through the
+inspection seam, so there is exactly one authorization door and no second
+path a future handler could take around it. The cancel control additionally
+clears the canonical mutation boundary (`RunStoreBoundary.require_run_mutation`)
+over the same store triple: read visibility admits members, never lifecycle
+writes (#1152, #2466).
 """
 
 from __future__ import annotations
@@ -26,8 +35,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
-from services.dag_run_store import get_dag_run_store
+from services.dag_run_inspection import (
+    can_inspect_run,
+    close_event_subscription,
+    event_subscription,
+    list_visible_runs,
+    retention_bounds,
+    visible_run_detail,
+)
 from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["dag-runs"])
@@ -69,43 +84,119 @@ def retention() -> dict[str, Any]:
     per-run scoping applies, exactly as before (#1174 scoped the run-bearing
     routes, not this description of the store's bounds).
     """
-    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
-
-    store = get_dag_run_store()
-    return {
-        "durable": store.is_durable,
-        "max_runs": MAX_RUNS,
-        "max_events_per_run": MAX_EVENTS_PER_RUN,
-    }
+    return retention_bounds()
 
 
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Cancel through the canonical Run/Attempt execution seam."""
+    """Cancel through the canonical Run/Attempt execution seam.
+
+    Read visibility never admits a lifecycle write (#1152, #2466): before any
+    cancellation state change or physical work, the canonical target Run is
+    resolved through the shared `RunStoreBoundary` mutation gate -- the same
+    initiator/administrator rule maistro-server's cancel route applies -- so
+    only the Run's initiating principal or a Workspace administrator gets
+    through, and a projection row cannot delegate write authority across
+    Workspaces (its canonical link is honoured only when the Run is filed in
+    the row's own Workspace, the same attribution rule the read overlay
+    applies). The gate resolves through the wired reader triple the
+    inspection reads answer from; without a wired scoped reader it degrades
+    to the embedded Workspace authority, whose refusals stay fail-closed.
+    Absent, foreign, unadministered and mismatched-link targets all answer
+    the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
+    no provider stop signal; an unreachable canonical authority answers the
+    spine-unavailable 503 instead.
+
+    The response separates two facts that used to be collapsed into
+    ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+    fence -- the authority that refuses a late provider success --
+    ``stop_confirmed`` is the physical one, and it is False whenever the
+    Attempt is live under a worker this replica cannot signal: Conductor then
+    reports ``stop_pending`` with a diagnosis instead of a stop nobody
+    observed. The mutation gate above is #2466's contract; the receipt below
+    reports truthfully about what the fence did and did not stop.
+    """
     uid = _user_id(request)
     detail = await visible_run_detail(uid, run_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="run not found")
 
     from services.engine import get_engine
+    from services.workspace_authority import EmbeddedRuntimeUnavailable, canonical_workspace_store
 
+    from maistro.runs.scoped_reads import RunNotVisible
     from maistro.runs.service import RunExecutionService
+    from maistro.runs.store_boundary import RunStoreBoundary
     from maistro.runtime import PythonExecutionRuntime
 
-    store = get_engine().run_store
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from None
+    store = getattr(engine, "run_store", None)
+    reader = getattr(engine, "run_reader", None)
     if store is None:
         raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    canonical_run_id = str(detail.get("canonical_run_id") or run_id)
     try:
-        updated = await RunExecutionService(
+        if reader is None:
+            # Degraded bridge: a run store without its wired scoped reader.
+            # There is no wired truth to diverge from, so the #2466 mutation
+            # gate runs over the embedded fallback Workspace authority; its
+            # refusals stay fail-closed 404s (a projection row naming no
+            # canonical Run is not cancellable, and must not read as 503).
+            workspace_store = await canonical_workspace_store()
+            boundary = RunStoreBoundary(store, workspace_store, workspace_store.project_store)
+        else:
+            # The mutation gate resolves the target through exactly the wired
+            # stores the inspection read above answered from: the engine
+            # bridge's reader triple -- the same objects the Container wires
+            # (and maistro-server hands `RunStoreBoundary` directly).
+            # Re-deriving a second authority when a reader IS wired -- e.g.
+            # the embedded fallback Workspace store's default Project store,
+            # which has never heard of the spine-wired Projects -- would
+            # refuse an initiator the route had just authorized to read
+            # (#2466; pinned by the cross-product parity scenario, where the
+            # gate's re-derived Project store answered RunNotVisible for the
+            # producer's own Run).
+            boundary = RunStoreBoundary(
+                reader.run_store, reader.workspace_store, reader.project_store
+            )
+        run = await boundary.require_run_mutation(canonical_run_id, principal_id=uid)
+    except RunNotVisible as exc:
+        # Absent, foreign, and initiator/admin-refused targets are the same
+        # non-disclosing 404 the read seam answers with (#1152).
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except EmbeddedRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    # Projection-to-Run association (#2466): a row filed in one Workspace
+    # cannot delegate mutation of a canonical Run filed in another, even when
+    # the caller is authorized against that Run's own Workspace -- the read
+    # seam already refuses to attribute a cross-link's lifecycle to this row,
+    # so the control route must not act on it either. The direct canonical
+    # route remains open to whoever the mutation gate admits.
+    if run.workspace_id != str(detail.get("workspace_id") or ""):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        cancellation = await RunExecutionService(
             store=store,
             runtime=PythonExecutionRuntime(),
-        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+        ).cancel_run_receipt(run.run_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return {
-        "run_id": updated.run_id,
-        "status": updated.status.value,
-        "cancelled": updated.status.value == "cancelled",
+        "run_id": cancellation.run_id,
+        "status": cancellation.run_status.value,
+        "cancelled": cancellation.fenced,
+        "stop_confirmed": cancellation.stop_confirmed,
+        "disposition": cancellation.disposition.value,
+        "cause": cancellation.cause.value,
+        "diagnosis": cancellation.diagnosis,
+        "attempts": [row.model_dump(mode="json") for row in cancellation.attempts],
     }
 
 
@@ -165,21 +256,21 @@ async def _next_authorized_event(uid: str, run_id: str, q: asyncio.Queue[Any]) -
     return True, ev
 
 
-async def _event_generator(*, uid: str, run_id: str, request: Request, store: Any):
+async def _event_generator(*, uid: str, run_id: str, request: Request):
     q: asyncio.Queue[Any] | None = None
     # Highest event seq delivered on this stream. Events carry their per-run
     # sequence number (#1183); a delivered seq that jumps past `last_seq + 1`
     # means the bounded queue dropped events, and the consumer is told.
     last_seq = 0
     try:
-        # Authorization is intentionally checked again when the stream starts.
-        # The response may have been created after the route's admission check
-        # but before this generator is first resumed. Delay subscription until
-        # this check so an abandoned response cannot leave an unauthorized
-        # live queue behind.
-        if not await can_inspect_run(uid, run_id):
+        # The subscription is taken through the inspection seam, which
+        # re-checks authorization before the queue exists: the response may
+        # have been created after the route's admission check but before this
+        # generator is first resumed, and an abandoned response must not
+        # leave an unauthorized live queue behind (#1174, via #65's seam).
+        q = await event_subscription(uid, run_id)
+        if q is None:
             return
-        q = store.subscribe(run_id)
 
         # Helpful preamble + keepalive comment so corp proxies don't kill idle
         # SSE. It contains no run data, but is emitted only while the
@@ -213,7 +304,7 @@ async def _event_generator(*, uid: str, run_id: str, request: Request, store: An
             yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
     finally:
         if q is not None:
-            store.unsubscribe(run_id, q)
+            close_event_subscription(run_id, q)
 
 
 @router.get("/{run_id}/events")
@@ -224,14 +315,14 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     uid = _user_id(request)
     # Scope authorization happens HERE, before the subscription queue exists
     # and before anything is streamed or replayed into it (#1174). An
-    # out-of-scope id gets the same 404 a missing run gets.
+    # out-of-scope id gets the same 404 a missing run gets. The generator
+    # re-checks when it actually subscribes, so the queue can outlive neither
+    # the admission decision nor a membership revocation in between.
     if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
 
-    store = get_dag_run_store()
-
     return StreamingResponse(
-        _event_generator(uid=uid, run_id=run_id, request=request, store=store),
+        _event_generator(uid=uid, run_id=run_id, request=request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

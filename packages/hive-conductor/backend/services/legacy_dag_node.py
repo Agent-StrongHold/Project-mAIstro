@@ -27,6 +27,8 @@ from maistro.capabilities.effect_context import (
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.graph.policies import DEFAULT_NODE_TIMEOUT_S, resolve_node_timeout_s
 from maistro.http import shared_client
+from services.governed_tools import hive_tool_reversibility, validate_hive_tool_arguments
+from services.safe_projection import HOST_POLICY_NODE_REFUSAL
 from services.tool_executor import ModelCall
 
 logger = logging.getLogger(__name__)
@@ -222,6 +224,10 @@ async def _tool_web_search(
 
     all_results = []
     max_r = tool_config.get("max_results", 5)
+    # Validate the entire batch before its first effect: a malformed later
+    # parent-derived query must not leave a partially executed tool batch.
+    for query in queries[:5]:
+        validate_hive_tool_arguments("web_search", {"query": query, "max_results": max_r})
     for query in queries[:5]:
         model_kwargs = {"model_call": model_call} if model_call is not None else {}
         all_results.append(await web_search(query, max_results=max_r, **model_kwargs))
@@ -234,6 +240,9 @@ async def _tool_clarify(
     from services.tool_executor import clarify
 
     questions = tool_config.get("questions", [])
+    validate_hive_tool_arguments(
+        "clarify", {"questions": questions, "context": {"input": task_desc}}
+    )
     model_kwargs = {"model_call": model_call} if model_call is not None else {}
     answers = await clarify(questions, {"input": task_desc}, **model_kwargs)
     return "\n".join(
@@ -245,10 +254,12 @@ async def _tool_clarify(
 async def _tool_browse_url(tool_config: dict[str, Any]) -> str:
     from services.tool_executor import browse_url
 
-    result = await browse_url(
-        tool_config.get("url", ""),
-        tool_config.get("task", "Extract key information"),
-    )
+    arguments = {
+        "url": tool_config.get("url", ""),
+        "task": tool_config.get("task", "Extract key information"),
+    }
+    validate_hive_tool_arguments("browse_url", arguments)
+    result = await browse_url(arguments["url"], arguments["task"])
     return json.dumps(result, indent=2)
 
 
@@ -393,6 +404,10 @@ async def _run_tool_node(
                 )
             workspace_id = str(ctx.workspace_id or "hive-standalone-compat")
             project_id = str(ctx.project_id or "hive-standalone-compat")
+            # Dispatcher membership is not a contract or an authorization
+            # grant. Use the same host registry as Agent/chat admission and
+            # refuse names with no schema before entering any provider code.
+            reversibility = hive_tool_reversibility(tool_name)
             binding = Binding(
                 workspace_id=workspace_id,
                 project_id=project_id,
@@ -430,50 +445,71 @@ async def _run_tool_node(
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=f"legacy-tool:{tool_name}",
-                request={"task": task_desc, "tool_config": node.get("tool_config", {})},
+                request={
+                    "_tool_name": tool_name,
+                    "_tool_reversibility": reversibility.value,
+                    "task": task_desc,
+                    "tool_config": node.get("tool_config", {}),
+                },
                 resolver=resolve,
                 executor=execute,
                 actor_id=str(ctx.user_id or ""),
             )
             response = str(invocation.result or "")
         else:
-            # Compatibility helper callers without a NodeContext predate the
-            # canonical execution path and have no durable effect identity.
-            # Canonical production execution always supplies NodeContext above.
-            response = await _call_tool_node(node, nid, inbound, results, task_desc)
+            # Retired (#57): executing a shipped tool effect with no canonical
+            # identity was the direct-effect bypass this issue closes. The
+            # canonical production path (LegacyConductorNode) always supplies
+            # NodeContext; a caller that cannot is refused rather than run
+            # ungoverned.
+            raise RuntimeError("governed legacy tool call requires NodeContext identity")
         results[nid] = {"role": role, "response": response, "success": True}
     except Exception as exc:
         logger.error("Tool node %s failed: %s", nid, exc)
         results[nid] = {"role": role, "response": f"Tool error: {exc}", "success": False}
 
 
-def _classify_node_execution(node: dict[str, Any], nid: str) -> str:
-    """Preserve the existing per-node isolation classification during convergence.
+def _node_reaches_the_world(config: Mapping[str, Any]) -> bool:
+    """Whether the node's own declared capabilities can change the world.
 
-    M2 #845 owns replacing request/config-declared elevation with host-authorized
-    policy. #835 removes the second graph scheduler without weakening the
-    current per-node isolation floor underneath it.
+    This is the host's reading of the DAG definition, not a caller label: the
+    capabilities a node declares are part of the plan the host admitted. A
+    node that can run shell commands, write files, or use credentials is
+    irreversible, so the host tier for it resolves to an elevation tier and it
+    runs sandboxed. A node that declares none of them is reversible and runs
+    at the inline floor.
     """
-    config = node.get("config", {})
-    tier = config.get("execution_tier", "")
     capabilities = config.get("capabilities", [])
     dangerous = any(c in ("shell", "file_write", "code_exec", "browser") for c in capabilities)
     needs_secrets = any(c in ("jira_write", "deploy", "git_push") for c in capabilities)
     needs_filesystem = any(
         c in ("code_exec", "file_write", "repo_clone", "pytest") for c in capabilities
     )
-    if tier in ("light", "safe"):
-        return "async"
-    if config.get("untrusted", False):
-        if config.get("tier_approved_by") != "admin":
-            logger.warning("node_blocked node=%s reason=untrusted_no_approval", nid)
-            return "blocked"
+    return dangerous or needs_secrets or needs_filesystem
+
+
+def _classify_node_execution(
+    node: dict[str, Any], nid: str, *, host_mode: str | None = None
+) -> str:
+    """Choose isolation without treating request/config tiers as authority.
+
+    ``host_mode`` is produced by Sentinel. Without it, compatibility callers
+    fail closed to sandbox (and untrusted nodes block); ``execution_tier`` and
+    ``tier_approved_by`` are metadata only.
+    """
+    config = node.get("config", {})
+    if config.get("untrusted", False) and host_mode != "sandbox":
+        logger.warning("node_blocked node=%s reason=host_policy_required", nid)
+        return "blocked"
+    if host_mode == "blocked":
+        logger.warning("node_blocked node=%s reason=host_policy", nid)
+        return "blocked"
+    # A host can choose a stricter mode, but a request cannot lower this floor.
+    if _node_reaches_the_world(config):
         return "sandbox"
-    if dangerous or needs_secrets or needs_filesystem or tier in ("container", "heavy"):
-        return "sandbox"
-    if not tier and not capabilities:
-        logger.info("node_default_sandbox node=%s reason=no_tier_no_capabilities", nid)
-        return "sandbox"
+    if host_mode in {"async", "sandbox"}:
+        return host_mode
+    logger.info("node_default_sandbox node=%s reason=host_policy_unavailable", nid)
     return "sandbox"
 
 
@@ -724,6 +760,9 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         effect_context: CapabilityEffectContext | None = None,
         governed_runtime: Any | None = None,
         progress: RunProgressHook | None = None,
+        sentinel: Any = None,
+        host_mode: str | None = None,
+        principal_roles: tuple[str, ...] = (),
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -737,6 +776,15 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         # and ``_llm_builder``/``_on_response`` stay compatibility fallbacks.
         self._governed_runtime = governed_runtime
         self._progress = progress
+        self._sentinel = sentinel
+        self._host_mode = host_mode
+        # Host-resolved roles for the acting principal, resolved by the runner
+        # from host records (the user store) keyed by the authenticated
+        # user id -- never from request/manifest fields. Without them the
+        # Sentinel permission gate (role intersection, fail-closed) denies
+        # every node no matter what the deployment configures, so the gate
+        # this adapter consults would be unsatisfiable rather than strict.
+        self._principal_roles = tuple(principal_roles)
 
     async def _emit_progress(self, event: dict[str, Any]) -> None:
         """Publish one live node transition; never fail the node for it.
@@ -756,9 +804,47 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
-        tier = _classify_node_execution(self._raw_node, node_id)
+        host_mode: str | None = self._host_mode
+        if self._sentinel is not None:
+            from maistro.security.sentinel.authz_types import Principal, Tier
+            from services.execution_mode import resolve_authorized_execution_mode
+
+            config = self._raw_node.get("config", {})
+            untrusted = bool(config.get("untrusted", False))
+            principal = Principal(
+                id=ctx.user_id or "anonymous",
+                kind="human",
+                roles=self._principal_roles,
+                scopes=tuple(
+                    value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
+                ),
+            )
+            host_mode = await resolve_authorized_execution_mode(
+                self._sentinel,
+                "graph.node.untrusted" if untrusted else "graph.node.execute",
+                principal,
+                args={"node_id": node_id, "artifact": self._task_desc},
+                # The host's own reading of the node decides the floor it is
+                # resolved at: a node whose declared capabilities can reach the
+                # world is irreversible (the host tier resolves to an
+                # elevation tier, so it runs sandboxed), and a node that
+                # declares none of them is reversible (the host tier resolves
+                # to the inline floor). The caller's ``execution_tier`` label
+                # is not an input to either.
+                reversibility="irreversible" if _node_reaches_the_world(config) else "reversible",
+                # An untrusted node stays blocked unless the host states a tier
+                # record for it; a trusted node takes the tier the host
+                # policy resolves (no blanket elevation default).
+                default=Tier.BLOCKED if untrusted else None,
+            )
+        tier = _classify_node_execution(self._raw_node, node_id, host_mode=host_mode)
         if tier == "blocked":
-            raise PermissionError("Execution blocked: untrusted node requires admin approval")
+            # One sentence, defined once in the #2465 public-disclosure policy:
+            # what the host raises here is exactly what the DAG receipt may
+            # disclose — host-authored, names no node id, path or provider.
+            # The projection (safe_projection.public_failure_text) matches
+            # this sentence, so editing it moves both ends together.
+            raise PermissionError(HOST_POLICY_NODE_REFUSAL)
 
         role = str(self._raw_node.get("role", "worker"))
         await self._emit_progress(

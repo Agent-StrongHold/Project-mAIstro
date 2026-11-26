@@ -70,7 +70,12 @@ from maistro.capabilities.governed_invocation import (
     InvocationDenied,
 )
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
+from maistro_server.api.workspace_access import (
+    get_workspace_store,
+    require_workspace_membership,
+    user_id,
+)
 
 router = APIRouter(prefix="/v2/canvas", tags=["canvas"])
 
@@ -158,7 +163,7 @@ async def _emit(request: Request, event: str, payload: dict[str, Any]) -> None:
         await result
 
 
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
+def _owner_id(auth: Principal | None) -> str:
     return "dev" if auth is None else auth.user_id
 
 
@@ -177,6 +182,83 @@ async def _require_design(store: Any, design_id: str, org_id: str) -> _DesignRec
 
 def _design_dict(record: _DesignRecord) -> dict[str, Any]:
     return record.to_dict()
+
+
+def _layer_presentation(layer: dict[str, Any]) -> dict[str, Any]:
+    """Map stored image references to browser-resolvable URLs (#2311).
+
+    Durable storage keeps internal ``canvas_blobs`` references; this is the
+    boundary where they become ``GET /v2/canvas/blobs/{id}`` presentation
+    paths an ``<img src>`` can actually load. The conversion is a pass-through
+    for data URLs / remote URLs / paths, so a layer written by any producer
+    serializes the same way. The raw reference never leaves the boundary as a
+    URL-shaped value.
+    """
+    from maistro_canvas.canvas.blob_presentation import to_presentation_url
+
+    for field in ("image_path", "image_url"):
+        value = layer.get(field)
+        if value is not None:
+            layer[field] = to_presentation_url(str(value))
+    return layer
+
+
+# ── Authorized blob bytes (ADR-045 presentation surface, #2311) ───────
+
+
+@router.get("/blobs/{blob_id}")
+async def get_canvas_blob(request: Request, blob_id: str, auth: RequireAuth) -> Response:
+    """Serve one generated image's bytes, authorized, at a real HTTP URL.
+
+    This is the browser-resolvable half of the governed image path: storage
+    keeps internal ``canvas_blobs`` references, and this route is the only
+    bytes door — the same ``/v2/canvas`` boundary, the same bearer
+    authentication as every other route, and the Workspace membership the
+    write-time scope stamp names. There is deliberately no unscoped variant.
+
+    Authorization anchors on the canonical scope the governed egress stamped
+    into the blob's metadata (Workspace + Project — the scope its Runs were
+    admitted in, one scope for asset and Run). A caller must hold at least a
+    VIEW membership in that Workspace: a member of a foreign Workspace, a
+    revoked member and a guessed id all read as absent (404), exactly like
+    the other scoped reads on this surface; a principal the Workspace store
+    cannot vouch for is a refusal, not a leak.
+
+    No anchor (metadata without a Workspace stamp — possible only from an
+    adapter constructed without a scope) fails closed: bytes that cannot name
+    their authority are not served.
+    """
+    store = _store(request)
+    read_blob = getattr(store, "read_blob", None)
+    if read_blob is None:
+        # A store without the whole-row read cannot authorize anything; that
+        # is a wiring gap, answered truthfully like every other missing
+        # dependency on this surface rather than as a fabricated 404.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Canvas store does not support authorized blob reads (read_blob missing)",
+        )
+    record = await read_blob(blob_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+    metadata = getattr(record, "metadata", None) or {}
+    scope_workspace = str(metadata.get("workspace_id") or "")
+    if not scope_workspace:
+        # Fail closed: no recorded scope, no authority to read under.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blob not found")
+    await require_workspace_membership(get_workspace_store(), scope_workspace, user_id(auth))
+    media_type = str(getattr(record, "format", "") or "application/octet-stream")
+    return Response(
+        content=record.data,
+        media_type=media_type,
+        headers={
+            # Byte immutability is not read authority: every load must
+            # re-run the membership check on this route, so caching (even
+            # private, even per-principal via Vary) is disallowed entirely.
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # ── Request bodies ────────────────────────────────────────────────────
@@ -231,7 +313,7 @@ async def get_design(request: Request, design_id: str, auth: RequireAuth) -> JSO
     record = await _require_design(store, design_id, _owner_id(auth))
     body = _design_dict(record)
     body["layers"] = [
-        layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer)
+        _layer_presentation(layer.to_dict() if hasattr(layer, "to_dict") else asdict(layer))
         for layer in await store.list_layers(design_id, org_id=_owner_id(auth))
         if hasattr(layer, "to_dict") or is_dataclass(layer)
     ]
@@ -358,6 +440,17 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
         except HTTPException:
             raise
         except Exception as exc:
+            code = getattr(exc, "code", None)
+            typed_status = _COMPOSITOR_LIMIT_STATUS.get(code) if isinstance(code, str) else None
+            if typed_status is not None:
+                # A #393 image-limit rejection: the caller's payload violates
+                # a server-configured cap (422) or the bounded worker timed
+                # out (504) — not a downstream provider failure, so 502 would
+                # misreport it (and the retry it invites would never help).
+                raise HTTPException(
+                    status_code=typed_status,
+                    detail={"code": code, "reason": str(exc)},
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Composite failed: {exc}",
@@ -372,6 +465,21 @@ async def _pinned_composite(request: Request, store: Any, design_id: str, org_id
                     detail=f"Composite persistence failed: {exc}",
                 ) from exc
     return composite
+
+
+# ── Typed canvas image-limit errors (#393) ────────────────────────────
+
+# The compositor's typed rejections are recognized by their stable ``code``
+# attribute — the same surface ``_map_export_error`` uses — because
+# maistro-server carries no maistro-canvas dependency. A scale/pixel-cap
+# rejection describes the caller's payload (422, matching the canvas
+# routes' own mapping in maistro_canvas.canvas.routes); a worker timeout is
+# 504. Anything unrecognized stays a downstream failure (502).
+_COMPOSITOR_LIMIT_STATUS: dict[str, int] = {
+    "LAYER_SCALE_OUT_OF_RANGE": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "LAYER_PIXEL_BUDGET_EXCEEDED": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "COMPOSITE_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
+}
 
 
 def _map_export_error(exc: Exception) -> HTTPException:
@@ -392,6 +500,12 @@ def _map_export_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail={"code": code, "reason": str(exc)},
         )
+    typed_status = _COMPOSITOR_LIMIT_STATUS.get(code) if code is not None else None
+    if typed_status is not None:
+        # A #393 image-limit rejection that reached the exporter (its encode
+        # step shares the compositor's limits): same truthful status as the
+        # composite path, so the publish/export contract is uniform.
+        return HTTPException(status_code=typed_status, detail={"code": code, "reason": str(exc)})
     invocation_id = getattr(exc, "invocation_id", None)
     if invocation_id is not None:
         # An ExportFailed-shaped error: the governed Invocation settled
@@ -587,6 +701,7 @@ __all__ = [
     "create_design",
     "delete_design",
     "export_design",
+    "get_canvas_blob",
     "get_design",
     "get_design_export",
     "list_assets",

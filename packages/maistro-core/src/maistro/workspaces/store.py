@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.workspaces.model import (
@@ -11,6 +11,9 @@ from maistro.workspaces.model import (
     WorkspaceNotFound,
     WorkspaceRole,
 )
+
+if TYPE_CHECKING:
+    from maistro.personas.store import PersonaStore
 
 
 class _WorkspaceCreateKwargs(TypedDict):
@@ -57,18 +60,45 @@ class WorkspaceStore(Protocol):
         self, workspace: Workspace, *, principal_id: str | None = None
     ) -> Workspace: ...
 
-    async def delete(self, workspace_id: str) -> None: ...
+    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None: ...
 
     async def list_for_user(self, user_id: str) -> list[Workspace]: ...
 
-    async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]: ...
+    async def list_memberships(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> list[WorkspaceMembership]: ...
 
     async def get_membership(
         self,
         workspace_id: str,
         *,
         user_id: str,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership | None: ...
+
+    async def lock_and_read_membership(
+        self,
+        conn: Any,
+        workspace_id: str,
+        *,
+        user_id: str,
+    ) -> WorkspaceMembership | None:
+        """Read one membership on a connection the caller already holds.
+
+        The durable stores answer this *after* taking the Workspace's own
+        serialization point -- PostgreSQL's ``SELECT ... FOR UPDATE`` on the
+        Workspace row, SQLite's ``BEGIN IMMEDIATE`` the caller already
+        holds -- so a caller that is about to write can ask for authority on
+        its own connection and be serialized against a concurrent
+        revocation of it (#1150). The in-memory reference has no such race:
+        it has no await between the decision and the write, so it answers
+        from its map.
+
+        ``conn`` is the connection the write will happen on. Reading the
+        membership anywhere else -- a second pooled connection, or before
+        the lock -- answers a question that may already have changed.
+        """
+        ...
 
     async def set_membership(
         self,
@@ -76,18 +106,31 @@ class WorkspaceStore(Protocol):
         *,
         user_id: str,
         role: WorkspaceRole,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership: ...
 
-    async def remove_membership(self, workspace_id: str, *, user_id: str) -> None: ...
+    async def remove_membership(
+        self, workspace_id: str, *, user_id: str, principal_id: str | None = None
+    ) -> None: ...
 
 
 class InMemoryWorkspaceStore:
     """Reference Workspace store that atomically provisions the Root Project."""
 
-    def __init__(self, *, project_store: ProjectScopeStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        project_store: ProjectScopeStore | None = None,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         self._workspaces: dict[str, Workspace] = {}
         self._memberships: dict[tuple[str, str], WorkspaceMembership] = {}
         self.project_store: ProjectScopeStore = project_store or InMemoryProjectScopeStore()
+        # Pairing is the composition point: the Project store resolves scope
+        # through this Workspace store, so binding here means a caller cannot
+        # construct the canonical pair and leave the boundary unwired (#1150).
+        self.project_store.bind_workspace_store(self)
+        self.persona_store = persona_store
 
     async def create(
         self,
@@ -150,20 +193,16 @@ class InMemoryWorkspaceStore:
         return workspace.model_copy(deep=True)
 
     async def update(self, workspace: Workspace, *, principal_id: str | None = None) -> Workspace:
-        from maistro.workspaces.authorization import WorkspaceAuthorizationDenied
-        from maistro.workspaces.store_boundary import is_blank_principal, require_workspace_view
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
 
+        await authorize_workspace_administer(self, workspace.workspace_id, principal_id)
         if workspace.workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace.workspace_id)
-        if principal_id is not None:
-            if is_blank_principal(principal_id):
-                raise WorkspaceAuthorizationDenied
-            await require_workspace_view(self, workspace.workspace_id, principal_id)
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
         self._workspaces[workspace.workspace_id] = updated
         return updated.model_copy(deep=True)
 
-    async def delete(self, workspace_id: str) -> None:
+    async def delete(self, workspace_id: str, *, principal_id: str | None = None) -> None:
         """Remove the Workspace, its memberships, and its Projects.
 
         The reference has no transaction, so it compensates the way `create`
@@ -172,7 +211,14 @@ class InMemoryWorkspaceStore:
         it was (#1121). The durable stores do both halves in one transaction
         and need no restore; the contract the conformance suite reads is the
         same.
+
+        A supplied principal must administer the Workspace (#1150). The
+        check runs before the existence lookup, so an outsider cannot tell a
+        foreign id from a missing one.
         """
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         if workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace_id)
         workspace, memberships = await self._delete_workspace_row(workspace_id)
@@ -181,11 +227,26 @@ class InMemoryWorkspaceStore:
         # optional form meant the Projects were purged in tests, where the
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
+        # The live Persona is a separate ownership boundary, so it leaves
+        # through its canonical store inside the same compensation. The
+        # snapshot goes first because the compensation contract is all-or-
+        # nothing: a Project failure mid-delete must put the Persona back, not
+        # leave a surviving Workspace without its product context. The durable
+        # stores need no snapshot — their delete joins the one transaction.
+        persona = (
+            await self.persona_store.get_for_workspace(workspace_id)
+            if self.persona_store is not None
+            else None
+        )
         try:
+            if self.persona_store is not None:
+                await self.persona_store.delete_for_workspace(workspace_id)
             await self.project_store.purge_workspace(workspace_id)
         except Exception:
             self._workspaces[workspace_id] = workspace
             self._memberships.update(memberships)
+            if persona is not None and self.persona_store is not None:
+                await self.persona_store.create(persona)
             raise
 
     async def _delete_workspace_row(
@@ -214,7 +275,12 @@ class InMemoryWorkspaceStore:
         workspaces.sort(key=lambda item: item.created_at, reverse=True)
         return workspaces
 
-    async def list_memberships(self, workspace_id: str) -> list[WorkspaceMembership]:
+    async def list_memberships(
+        self, workspace_id: str, *, principal_id: str | None = None
+    ) -> list[WorkspaceMembership]:
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         self._require_workspace(workspace_id)
         memberships = [
             membership.model_copy(deep=True)
@@ -229,7 +295,11 @@ class InMemoryWorkspaceStore:
         workspace_id: str,
         *,
         user_id: str,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership | None:
+        from maistro.workspaces.store_boundary import authorize_workspace_view
+
+        await authorize_workspace_view(self, workspace_id, principal_id)
         self._require_workspace(workspace_id)
         membership = self._memberships.get((workspace_id, user_id))
         return membership.model_copy(deep=True) if membership is not None else None
@@ -240,7 +310,11 @@ class InMemoryWorkspaceStore:
         *,
         user_id: str,
         role: WorkspaceRole,
+        principal_id: str | None = None,
     ) -> WorkspaceMembership:
+        from maistro.workspaces.store_boundary import authorize_workspace_administer
+
+        await authorize_workspace_administer(self, workspace_id, principal_id)
         self._require_workspace(workspace_id)
         existing = self._memberships.get((workspace_id, user_id))
         if (
@@ -259,7 +333,14 @@ class InMemoryWorkspaceStore:
         self._memberships[(workspace_id, user_id)] = membership
         return membership.model_copy(deep=True)
 
-    async def remove_membership(self, workspace_id: str, *, user_id: str) -> None:
+    async def remove_membership(
+        self, workspace_id: str, *, user_id: str, principal_id: str | None = None
+    ) -> None:
+        from maistro.workspaces.store_boundary import authorize_membership_removal
+
+        await authorize_membership_removal(
+            self, workspace_id, user_id=user_id, principal_id=principal_id
+        )
         self._require_workspace(workspace_id)
         key = (workspace_id, user_id)
         existing = self._memberships.get(key)
@@ -268,6 +349,22 @@ class InMemoryWorkspaceStore:
         if existing.role is WorkspaceRole.OWNER:
             self._ensure_another_owner(workspace_id, excluding_user_id=user_id)
         del self._memberships[key]
+
+    async def lock_and_read_membership(
+        self,
+        conn: Any,
+        workspace_id: str,
+        *,
+        user_id: str,
+    ) -> WorkspaceMembership | None:
+        """One membership, from the map, on the caller's connection.
+
+        The reference store is single-threaded and has no await between a
+        decision and the write it guards, so there is no window for a
+        revocation to slip through and no lock to take.
+        """
+        membership = self._memberships.get((workspace_id, user_id))
+        return membership.model_copy(deep=True) if membership is not None else None
 
     def _require_workspace(self, workspace_id: str) -> Workspace:
         workspace = self._workspaces.get(workspace_id)

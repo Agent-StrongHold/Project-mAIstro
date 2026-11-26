@@ -41,9 +41,12 @@ from maistro.graph.nodes.base import NodeContext
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import (
+    POST_TERMINAL_CHILD_PROVENANCE,
+    TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
+    CancellationCause,
     RunStatus,
 )
 from maistro.runs.store_boundary import require_admitted_actor
@@ -91,6 +94,8 @@ def _runtime() -> GovernedModelRuntime:
 def _endpoint() -> GatewayEndpoint:
     from config import get_settings
 
+    from services.secrets import effective_llm_gateway_key
+
     settings = get_settings()
     base_url = (
         os.environ.get("MAISTRO_LLM_BASE_URL")
@@ -99,18 +104,11 @@ def _endpoint() -> GatewayEndpoint:
         or settings.litellm_api_base
         or ""
     ).strip()
-    api_key = (
-        os.environ.get("MAISTRO_LLM_API_KEY")
-        or os.environ.get("LITELLM_API_KEY")
-        or os.environ.get("LITELLM_PROXY_KEY")
-        or os.environ.get("LITELLM_MASTER_KEY")
-        or (
-            settings.litellm_api_key.get_secret_value()
-            if settings.litellm_api_key is not None
-            else ""
-        )
-        or ""
-    )
+    # The one effective-key contract (#1824), not a private alias chain: the
+    # governed egress and the embedded runtime's roster clients must resolve
+    # the deployment's credential the same way, or the two doors drift onto
+    # different credentials.
+    api_key = effective_llm_gateway_key(settings) or ""
     if not base_url:
         raise ProviderActivationError("LLM gateway is not configured")
     return GatewayEndpoint(base_url=base_url, api_key=api_key)
@@ -494,16 +492,30 @@ async def mint_operation_identity(
         name=operation,
         nodes=[Node(node_id=operation, node_type="control-plane", name=operation)],
     )
+    minted_provenance: dict[str, Any] = {
+        "admission_source": "control-plane-operation",
+        "operation": operation,
+        **(provenance or {}),
+    }
+    if parent_run is not None and parent_run.status in TERMINAL_RUN_STATUSES:
+        # The Run store refuses late child admission under a terminal Run
+        # (#1621) except when the child's own provenance carries an
+        # identity-bound fact naming that parent. An operation minted after
+        # its requesting Run terminalized — a judge beneath a COMPLETED Run,
+        # a settle racing its requester's outcome — is exactly that child.
+        minted_provenance[POST_TERMINAL_CHILD_PROVENANCE] = {
+            "parent_run_id": parent_run_id,
+            "reason": (
+                f"control-plane operation {operation!r} minted after its "
+                "requesting Run terminalized"
+            ),
+        }
     run = await store.create_run(
         graph,
         parent_run_id=parent_run_id or None,
         initial_status=RunStatus.QUEUED,
         actor_principal_id=require_admitted_actor(resolved_actor),
-        provenance={
-            "admission_source": "control-plane-operation",
-            "operation": operation,
-            **(provenance or {}),
-        },
+        provenance=minted_provenance,
     )
     run = await store.transition_run(run.run_id, RunStatus.RUNNING)
     node_run = await store.create_node_run(run.run_id, node_id=operation)
@@ -533,6 +545,8 @@ async def settle_operation_identity(
     did not succeed), or ``cancelled`` (authorization refused before the work
     ran). Distinct terminal states are what make an authorization refusal
     distinguishable from an execution failure in the canonical record too.
+    Authorization-refused cancellation stamps ``cancellation_cause=REQUESTED``
+    (#2421 / #232 P3c) so recovery cannot confuse it with RECOVERED death proof.
     """
 
     store = runtime.run_store
@@ -551,6 +565,7 @@ async def settle_operation_identity(
         attempt_status,
         result=result,
         error=error,
+        cancellation_cause=(CancellationCause.REQUESTED if outcome == "cancelled" else None),
     )
     if outcome == "completed":
         attempt_result = AttemptResult.from_attempt(attempt)

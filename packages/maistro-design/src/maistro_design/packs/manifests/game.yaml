@@ -1,10 +1,13 @@
-# Domain pack: game (M7-A4, #793)
+# Domain pack: game (M7-A4, #793) — thick catalog (M7-A9, #985)
 # Loop/verbs/beat-plan exploration; Canvas plus a structured artifact tree as
 # execute backends. A game pack, not a game engine — no runtime ships here.
 pack_id: game
 # Pack release version (M9-F3, #968): the identity Workspace activations
 # are recorded against; bump it when the manifest's defaults change.
-version: 1.0.0
+# 2.0.0: the thin #793 example catalog was replaced by the thick
+# session-feel catalog (#985) — dimension ids changed, so this is a major
+# release, not a patch.
+version: 2.0.0
 name: Game Pack
 summary: >-
   Loop, verbs, and a beat plan explored before produce; canvas compositions
@@ -23,16 +26,50 @@ artifact_kinds:
   - beat_plan
   - level_layout
   - art_direction
+  - game_loop
+# The judged artifact: the readable game loop (M7-A9, #985). Not a game
+# engine and not a playable runtime — the loop spec is the judged object.
+artifact_payload_kind: game_loop
 rubric_dimensions:
-  - dimension_id: verb_clarity
-    name: Verb clarity
-    description: What the player can do is stated as clear, distinct verbs.
-  - dimension_id: onboarding_beat
-    name: Onboarding beat
-    description: The first beat teaches the loop without a manual.
-  - dimension_id: fair_challenge
-    name: Fair challenge
-    description: Difficulty rises from the loop, not from withheld information.
+  # Session-feel heuristics v1 (#985). Weights sum to exactly 1; the scale
+  # is 1–5 with the named low/high anchors below; the method defaults to
+  # model_judge — a dimension marked `human` or `deterministic` says so.
+  - dimension_id: verb
+    name: Readable verb
+    description: What the player does is one clean verb, not busywork.
+    weight: 0.22
+    low_anchor: Busywork
+    high_anchor: One clean verb
+  - dimension_id: feel
+    name: Moment-to-moment feel
+    description: Playing it second to second feels tactile, not numb.
+    weight: 0.20
+    low_anchor: Numb
+    high_anchor: Tactile
+  - dimension_id: session
+    name: Session shape
+    description: A play session closes an arc instead of ending arbitrarily.
+    weight: 0.18
+    low_anchor: Endless mush
+    high_anchor: Closed arc
+  - dimension_id: fail
+    name: Failure without spite
+    description: Failing invites another try instead of punishing one.
+    weight: 0.16
+    low_anchor: Punitive
+    high_anchor: Curious fail
+  - dimension_id: toy
+    name: Toyetic leftover
+    description: What the player is left holding is a toy they keep touching.
+    weight: 0.14
+    low_anchor: Chore
+    high_anchor: Keep touching
+  - dimension_id: teach
+    name: Taught by play
+    description: The loop teaches itself in-hand instead of by manual.
+    weight: 0.10
+    low_anchor: Manual first
+    high_anchor: Learned in-hand
 fence_points:
   - explore.accept
   - execute.park

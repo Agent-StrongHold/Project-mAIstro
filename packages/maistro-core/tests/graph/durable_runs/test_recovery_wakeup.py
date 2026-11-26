@@ -513,6 +513,97 @@ async def test_a_poisoned_due_candidate_does_not_starve_later_candidates(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_a_partially_claimed_poisoned_candidate_stays_recoverable_after_its_claim_expires(
+    monkeypatch, caplog
+) -> None:
+    """The due path's isolation must not strand a partially claimed Run (#1143).
+
+    ``resume_durable_graph`` persists its recovery claim -- ``resume_at``
+    pushed out to the claim TTL -- before anything downstream can fail, so a
+    candidate that fails *after* the claim is no longer "exactly as the scan
+    found it". Unlike the queued path (where a partial claim must raise, or
+    the Run is stranded between two scans), the due path keeps the candidate
+    durably recoverable: the due index still holds it, it is unattemptable
+    until the claim expires, and a later tick retries it. The tick must
+    isolate the failure, keep independent candidates moving, never re-attempt
+    the live claim (no double-resume), and reach the candidate again once the
+    claim has expired -- so repeated ticks can starve nobody, poisoned or not.
+    """
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    claim_ttl = timedelta(seconds=60)
+    poisoned = _record("poisoned", RunStatus.WAITING, now - timedelta(seconds=3))
+    second = _record("second", RunStatus.WAITING, now - timedelta(seconds=2))
+    store = _Store(poisoned, second)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        if run_id == "poisoned":
+            # Stand in for the real seam's claim checkpoint: ``resume_at``
+            # moves out to now + claim TTL (and the Run to RUNNING) before
+            # the candidate-local failure fires.
+            store.records[run_id] = SimpleNamespace(
+                run_id=run_id,
+                run=SimpleNamespace(status=RunStatus.RUNNING),
+                resume_at=now + claim_ttl,
+            )
+            raise RuntimeError("resolver bug after the claim")
+        # Terminal, but still carrying the resume_at the due listing
+        # contract guarantees: eligibility filters it by status, not by a
+        # null cursor key.
+        store.records[run_id] = SimpleNamespace(
+            run_id=run_id,
+            run=SimpleNamespace(status=RunStatus.COMPLETED),
+            resume_at=now - timedelta(seconds=2),
+        )
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    with caplog.at_level("ERROR", logger="maistro.graph.durable_runs.recovery"):
+        count = await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    # Tick 1: the poisoned candidate was attempted, failed after its claim,
+    # and was isolated rather than raised; the independent candidate behind it
+    # still ran, and the failure evidence names the Run and the sanitized cause.
+    assert count == 1
+    assert calls == ["poisoned", "second"]
+    assert "run_id=poisoned" in caplog.text
+    assert "RuntimeError: resolver bug after the claim" in caplog.text
+
+    # Tick 2, same moment: the poisoned candidate's claim is live, so it is
+    # not due and must not be re-attempted; the scan still advances past it.
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 0
+    )
+    assert calls == ["poisoned", "second"]
+
+    # Tick 3, after the claim expires: the poisoned candidate is due again and
+    # is retried -- isolated again on failure, never silently dropped.
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now + claim_ttl + timedelta(seconds=1),
+        )
+        == 0
+    )
+    assert calls == ["poisoned", "second", "poisoned"]
+
+
+@pytest.mark.asyncio
 async def test_a_deliberate_store_failure_aborts_the_tick_rather_than_isolating(
     monkeypatch,
 ) -> None:
@@ -1170,6 +1261,108 @@ async def test_wakeup_never_steals_a_due_continuation_owned_elsewhere(monkeypatc
         == 0
     )
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_wakeup_crosses_an_interleaved_foreign_prefix_longer_than_one_ticks_bound(
+    monkeypatch,
+) -> None:
+    """The due-path half of #1098, at the seam the issue names.
+
+    Ownership classes are interleaved (foreign/owned/foreign/owned...), then a
+    run of foreign-owned due continuations longer than one tick's inspection
+    ceiling sits ahead of the last owned one. A tick that filters ownership
+    after one unchanging globally bounded page never reaches it -- the exact
+    defect #1098 was filed against. A tick whose cursor advances per row and
+    resumes where the last one stopped reaches every owned continuation in a
+    bounded number of ticks and never attempts a foreign one.
+    """
+    from maistro.graph.durable_runs.fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation
+
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    records: list[object] = []
+    order: list[tuple[str, str]] = []
+
+    def _add(run_id: str, source: str) -> None:
+        run = _queued_run(run_id, source=source).model_copy(update={"status": RunStatus.WAITING})
+        # Strictly increasing resume_at in insertion order -- sub-second
+        # spacing so every row, including the last, is already due at `now`
+        # -- so the store's keyset ordering is exactly the scenario's ordering.
+        records.append(
+            _due_record(
+                run,
+                resume_at=now - timedelta(hours=1) + timedelta(microseconds=len(order)),
+            )
+        )
+        order.append((run_id, source))
+
+    # Interleaved ownership classes first (#1098's regression bullet): the
+    # cursor must advance past each foreign row to reach the owned one behind
+    # it, per row, not per page.
+    for index in range(3):
+        _add(f"foreign-interleaved-{index}", "some_other_consumer")
+        _add(f"owned-interleaved-{index}", "owned")
+    # Then more foreign-owned due continuations than one tick may inspect,
+    # ahead of the one owned continuation this consumer must still reach.
+    for index in range(DEFAULT_MAX_INSPECTED):
+        _add(f"foreign-prefix-{index:04d}", "some_other_consumer")
+    _add("owned-behind-the-prefix", "owned")
+
+    store = _Store(*records)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        # A resumed continuation settles; later ticks must not re-attempt it.
+        current = store.records[run_id]
+        store.records[run_id] = SimpleNamespace(
+            run_id=run_id,
+            run=current.run.model_copy(update={"status": RunStatus.COMPLETED}),
+            resume_at=current.resume_at,
+        )
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+    scan: ScanContinuation[tuple[str, str]] = ScanContinuation()
+
+    def _tick() -> int:
+        return recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+            now=now,
+            limit=1,
+            scan=scan,
+        )
+
+    # Three interleaved owned continuations, one per bounded tick, each
+    # reached only by walking past the foreign row ahead of it.
+    assert await _tick() == 1
+    assert calls == ["owned-interleaved-0"]
+    assert await _tick() == 1
+    assert calls == ["owned-interleaved-0", "owned-interleaved-1"]
+    assert await _tick() == 1
+    assert calls == [
+        "owned-interleaved-0",
+        "owned-interleaved-1",
+        "owned-interleaved-2",
+    ]
+
+    # The next tick spends its whole inspection ceiling on the foreign prefix
+    # and stops mid-store; the continuation must carry that position forward,
+    # not reset to the top and re-read the same prefix forever.
+    assert await _tick() == 0
+    assert scan.resume_after is not None, "the tick stopped at its bound mid-store"
+
+    # The tick after crosses the rest of the prefix and reaches the owned
+    # continuation behind it: bounded ticks, whatever the prefix length.
+    assert await _tick() == 1
+    assert calls[-1] == "owned-behind-the-prefix"
+
+    # No foreign continuation was ever attempted, interleaved or prefix: the
+    # ownership guard held at every position the walk inspected.
+    assert [run_id for run_id in calls if run_id.startswith("foreign-")] == []
 
 
 @pytest.mark.asyncio

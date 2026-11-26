@@ -57,7 +57,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: smoke-engine-canvas.sh <image-ref> [canvas-less-control-image]}"
-CONTROL_IMAGE="${2:-python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26}"
+CONTROL_IMAGE="${2:-python:3.13.18-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72}"
 HOST_PORT="${MAISTRO_SMOKE_PORT:-8000}"
 
 # The smoke's endpoints are plain HTTP on loopback by construction: the proof

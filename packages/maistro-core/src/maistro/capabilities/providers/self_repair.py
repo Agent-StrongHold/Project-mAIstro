@@ -1,20 +1,18 @@
 """RuleBasedRepair — the baseline self_repair provider (SPEC-188).
 
 Runs the detect→diagnose→govern→act cycle. Owns no host privilege: it reads via
-the infra_monitor slot and acts only via infra_action (which itself auto-runs
-safe tiers and routes risky ones through the approval slot). Diagnosis is the
+the infra_monitor slot and acts only via infra_action. Diagnosis is the
 explicit rule table in ``self_repair_rules``; safety is the ``SafetyGovernor``.
 
 Dispatch policy keeps run_once() non-blocking:
 - auto-run actions (reversible under autonomy=auto_safe) are awaited inline → ACTED/FAILED;
-- approval-gated actions (destructive, or reversible when not auto_safe) are launched
-  as tracked background tasks → PENDING_APPROVAL (the cycle never blocks on a human).
+- approval-gated actions admit a durable waiting-human NodeRun (#2405) →
+  PENDING_APPROVAL. The cycle never blocks on an in-process ``asyncio.Event``.
 The in-flight guard keeps a pending resource from being re-dispatched next cycle.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -42,13 +40,21 @@ Autonomy = Literal["approve_all", "auto_safe", "detect_only"]
 
 
 InfraEffectInvoker = Callable[[str, dict[str, Any], str], Awaitable[ActionResult]]
+#: Admit one approval-gated proposal as a durable waiting-human Run; return its run_id.
+ApprovalAdmittor = Callable[[RepairProposal, str], Awaitable[str]]
+#: Look up a parked approval Run's status value (e.g. ``cancelled``); ``None`` if unknown.
+ApprovalRunStatus = Callable[[str], Awaitable[str | None]]
+
+#: Durable Run statuses that settle an approval wait and release the governor.
+_TERMINAL_APPROVAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
 
 
 class RuleBasedRepair:
     """Baseline self_repair provider — rule-table diagnosis + safety governor.
 
-    Production wiring supplies an Invocation-backed invoker. The actor retains
-    no infra_action provider and cannot dispatch an effect outside that seam.
+    Production wiring supplies an Invocation-backed invoker and a durable
+    approval admittor. The actor retains no infra_action provider and cannot
+    dispatch an effect outside those seams.
     """
 
     def __init__(
@@ -56,17 +62,22 @@ class RuleBasedRepair:
         *,
         infra_monitor: InfraMonitor | None,
         effect_invoker: InfraEffectInvoker | None = None,
+        approval_admittor: ApprovalAdmittor | None = None,
+        approval_run_status: ApprovalRunStatus | None = None,
         governor: SafetyGovernor | None = None,
         autonomy: Autonomy = "auto_safe",
         max_actions_per_cycle: int = 2,
     ) -> None:
         self._monitor = infra_monitor
         self._effect_invoker = effect_invoker
+        self._approval_admittor = approval_admittor
+        self._approval_run_status = approval_run_status
         self._governor = governor or SafetyGovernor()
         self._autonomy = autonomy
         self._max_actions = max_actions_per_cycle
-        self._tasks: set[asyncio.Task[Any]] = set()
         self._last_cycle: RepairCycleResult | None = None
+        #: run_ids parked for approval this process (presentation; truth is the store).
+        self._pending_approval_runs: dict[str, str] = {}
 
     # --- CapabilityProvider ---
     @property
@@ -108,6 +119,11 @@ class RuleBasedRepair:
             self._last_cycle = RepairCycleResult(ts="", results=[])
             return self._last_cycle
 
+        # Release in_flight for waits that settled out-of-band (cancel_hitl,
+        # timeout, resume-to-completion) so later faults on that resource are
+        # not permanently suppressed (#2405 Codex P2).
+        await self._reconcile_pending_approvals()
+
         try:
             health = await self._monitor.snapshot()
         except Exception as exc:  # monitor failure → safe_noop empty cycle, never raise
@@ -126,6 +142,28 @@ class RuleBasedRepair:
 
         self._last_cycle = RepairCycleResult(ts=health.ts, results=results)
         return self._last_cycle
+
+    async def _reconcile_pending_approvals(self) -> None:
+        if not self._pending_approval_runs or self._approval_run_status is None:
+            return
+        settled: list[str] = []
+        for resource, run_id in self._pending_approval_runs.items():
+            try:
+                status = await self._approval_run_status(run_id)
+            except Exception as exc:
+                logger.warning(
+                    "self_repair: approval run status lookup failed for %s (%s): %s",
+                    resource,
+                    run_id,
+                    exc,
+                )
+                continue
+            if status is None or status not in _TERMINAL_APPROVAL_STATUSES:
+                continue
+            self._governor.record_result(resource, recovered=(status == "completed"))
+            settled.append(resource)
+        for resource in settled:
+            del self._pending_approval_runs[resource]
 
     # --- per-proposal handling ---
     async def _handle(self, proposal: RepairProposal, dispatched: int) -> tuple[RepairResult, bool]:
@@ -153,17 +191,45 @@ class RuleBasedRepair:
 
         self._governor.record_dispatch(proposal.resource)
         if self._will_gate_on_approval(proposal):
-            # Don't block the cycle on a human — dispatch and track.
-            self._dispatch_async(proposal)
-            return RepairResult(
-                proposal, RepairDecision.PENDING_APPROVAL, "awaiting approval"
-            ), True
+            return await self._admit_approval(proposal), True
         return await self._auto_run(proposal), True
 
     def _will_gate_on_approval(self, proposal: RepairProposal) -> bool:
         tier = tier_for(proposal.action or "", proposal.params)
         return tier is ActionTier.DESTRUCTIVE or (
             tier is ActionTier.REVERSIBLE and self._autonomy != "auto_safe"
+        )
+
+    async def _admit_approval(self, proposal: RepairProposal) -> RepairResult:
+        """Park the action on a durable waiting-human NodeRun (#2405).
+
+        Never awaits an in-process approval Event. Without an admittor the
+        proposal is suppressed rather than spawning a process-local waiter.
+        """
+        action = proposal.action or ""
+        effect_key = f"self_repair:{proposal.resource}:{action}:{id(proposal)}"
+        if self._approval_admittor is None:
+            self._governor.record_result(proposal.resource, recovered=False)
+            return RepairResult(
+                proposal,
+                RepairDecision.SUPPRESSED,
+                "no durable approval admittor; refusing in-process InboxApproval wait",
+            )
+        try:
+            run_id = await self._approval_admittor(proposal, effect_key)
+        except Exception as exc:
+            logger.warning(
+                "self_repair: durable approval admission failed for %s: %s",
+                proposal.resource,
+                exc,
+            )
+            self._governor.record_result(proposal.resource, recovered=False)
+            return RepairResult(proposal, RepairDecision.FAILED, str(exc))
+        self._pending_approval_runs[proposal.resource] = run_id
+        return RepairResult(
+            proposal,
+            RepairDecision.PENDING_APPROVAL,
+            f"awaiting approval run_id={run_id}",
         )
 
     async def _auto_run(self, proposal: RepairProposal) -> RepairResult:
@@ -179,24 +245,6 @@ class RuleBasedRepair:
             detail = str(exc)
         self._governor.record_result(proposal.resource, recovered=recovered)
         return RepairResult(proposal, decision, detail)
-
-    def _dispatch_async(self, proposal: RepairProposal) -> None:
-        action = proposal.action or ""
-        resource = proposal.resource
-
-        async def _run() -> None:
-            recovered = False
-            try:
-                result = await self._invoke_action(proposal)
-                recovered = bool(result.ok)
-            except Exception as exc:
-                logger.warning("self_repair: action %s on %s failed: %s", action, resource, exc)
-            finally:
-                self._governor.record_result(resource, recovered=recovered)
-
-        task = asyncio.ensure_future(_run())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
     async def _invoke_action(self, proposal: RepairProposal) -> ActionResult:
         """Admit one action through the canonical effect boundary."""

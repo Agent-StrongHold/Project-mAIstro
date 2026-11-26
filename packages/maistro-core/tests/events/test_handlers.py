@@ -367,3 +367,10 @@ class TestBuiltinHandlers:
             "ntfy",
             "log",
         }
+
+    def test_install_builtin_handlers_subscribes_every_action_type(self) -> None:
+        from maistro.events.bus import EventBus
+
+        bus = EventBus()
+        handlers.install_builtin_handlers(bus)
+        assert set(bus._handlers) == set(handlers.BUILTIN_HANDLERS)

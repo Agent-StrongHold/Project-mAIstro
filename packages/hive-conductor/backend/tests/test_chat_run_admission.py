@@ -19,6 +19,7 @@ import httpx
 import pytest
 from services import chat_runs, default_workspace, workspace_agent, workspace_authority
 
+from maistro.capabilities.invocation import InvocationStatus
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.http import override_transport
@@ -39,7 +40,14 @@ def container(monkeypatch: pytest.MonkeyPatch) -> Iterator[Container]:
     from services.engine import get_engine
 
     built = asyncio.run(
-        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+        create_container(
+            AgentConfig(
+                router_api_key="test-key",
+                database_url="memory://",
+                litellm_url="https://gateway.invalid",
+                litellm_key="test-gateway-key",
+            )
+        )
     )
     monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=built))
     chat_runs.reset_for_tests()
@@ -128,6 +136,21 @@ def _runs_in(container: Container, workspace_id: str) -> list[Any]:
     return _run(_read())
 
 
+def _invocations_for(container: Container, run_id: str) -> list[Any]:
+    """Every canonical Invocation persisted under one Run.
+
+    The compatibility client derives each call's effect identity from the
+    live correlation, so the Run id is the one stable handle a reader has —
+    the same handle the acceptance join (criterion 8) is defined over. This
+    reads the ledger; it seeds and mocks nothing.
+    """
+    store = container.capability_effects.invocation_store
+    return sorted(
+        (item for item in list(store._items.values()) if item.run_id == run_id),
+        key=lambda item: item.invocation_id,
+    )
+
+
 def _complete(client: Any, **extra: Any) -> Any:
     return client.post(
         "/v1/chat/complete",
@@ -174,6 +197,34 @@ def test_repeated_complete_turns_share_the_workspace_agent_under_distinct_runs(
         assert attempts[0].status is AttemptStatus.COMPLETED
         assert attempts[0].result["agent"] == agent_id
     assert first.json()["agent"] == agent_id
+
+
+@pytest.mark.contract("behavioral")
+def test_a_completed_turns_invocation_joins_the_runs_authenticated_actor(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    """#1084 acceptance: the same request joins actor, Run and Invocation.
+
+    The turn's governed Invocation must be correlated to the Run it was
+    admitted under and carry the actor that admission authenticated — read
+    from the persisted Run, never from request text. Before the fix the
+    Invocation recorded an empty actor while its Run carried the principal.
+    """
+    ws = _workspace()
+
+    r = _complete(authed_client, workspace_id=ws)
+
+    assert r.status_code == 200
+    run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
+    assert run.actor_principal_id == USER
+    invocations = _invocations_for(container, run.run_id)
+    assert len(invocations) == 1
+    (invocation,) = invocations
+    assert invocation.run_id == run.run_id
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    assert invocation.actor_id == run.actor_principal_id
+    assert invocation.status is InvocationStatus.COMPLETED
 
 
 @pytest.mark.contract("behavioral")
@@ -225,7 +276,9 @@ def test_session_id_is_provenance_not_a_second_run_identity(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
     ws = _workspace()
-    sid = authed_client.post("/v1/chat/sessions", json={"title": "t"}).json()["id"]
+    sid = authed_client.post("/v1/chat/sessions", json={"title": "t", "workspace_id": ws}).json()[
+        "id"
+    ]
 
     first = _complete(authed_client, workspace_id=ws, session_id=sid)
     second = _complete(authed_client, workspace_id=ws, session_id=sid)
@@ -239,26 +292,78 @@ def test_session_id_is_provenance_not_a_second_run_identity(
 
 
 @pytest.mark.contract("behavioral")
-def test_a_session_id_the_caller_does_not_own_is_not_recorded(
+def test_a_session_id_the_caller_does_not_own_is_refused_before_the_model(
     authed_client: Any, container: Container, gateway: _Gateway
 ) -> None:
-    from datetime import UTC, datetime
+    """#1822 AC-5: foreign session id on complete/stream matches missing (404)."""
+    from services import conversation_sessions
 
-    from models.schemas import ChatSession
-    from services.owned_records import Owner, owned_chat_sessions
-
-    now = datetime.now(UTC)
-    foreign = "someone-elses-session"
-    owned_chat_sessions(Owner(id="someone-else")).create(
-        foreign, ChatSession(id=foreign, title="t", messages=[], created_at=now, updated_at=now)
-    )
+    foreign_ws = _workspace(owner="someone-else", name="foreign")
+    foreign = _run(conversation_sessions.create("someone-else", foreign_ws, "t")).session_id
 
     r = _complete(authed_client, session_id=foreign)
 
-    assert r.status_code == 200
-    run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
-    assert "session_id" not in run.provenance
-    owned_chat_sessions(Owner(id="someone-else")).discard(foreign)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+    _run(conversation_sessions.delete("someone-else", foreign))
+
+
+@pytest.mark.contract("behavioral")
+def test_unknown_session_id_on_complete_matches_foreign_refusal(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    _workspace()
+    r = _complete(authed_client, session_id="00000000-0000-4000-8000-000000000000")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+
+
+@pytest.mark.contract("behavioral")
+def test_wrong_workspace_session_id_on_complete_is_refused(
+    authed_client: Any, container: Container, gateway: _Gateway
+) -> None:
+    from services import conversation_sessions
+
+    ws_a = _workspace(name="A")
+    ws_b = _workspace(name="B")
+    sid = _run(conversation_sessions.create(USER, ws_a, "t")).session_id
+
+    r = _complete(authed_client, session_id=sid, workspace_id=ws_b)
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "session not found"
+    assert gateway.requests == []
+    _run(conversation_sessions.delete(USER, sid))
+
+
+@pytest.mark.contract("behavioral")
+def test_http_refusal_inside_admit_keeps_status_not_503(
+    container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1822: HTTPException after container lookup must not become admission 503.
+
+    Foreign-session refusals raise before the try; this covers the in-try
+    handler that releases the dispatch shield and re-raises unchanged.
+    """
+    from fastapi import HTTPException
+
+    async def _refuse(_user_id: str, _workspace_id: Any) -> str:
+        raise HTTPException(status_code=403, detail="workspace membership required")
+
+    monkeypatch.setattr(chat_runs, "_turn_workspace", _refuse)
+
+    async def _turn() -> None:
+        with pytest.raises(HTTPException) as refused:
+            await chat_runs.admit_turn(  # type: ignore[arg-type]
+                _principal(), [{"role": "user", "content": "hi"}]
+            )
+        assert refused.value.status_code == 403
+        assert refused.value.detail == "workspace membership required"
+
+    _run(_turn())
 
 
 @pytest.mark.contract("behavioral")
@@ -366,6 +471,10 @@ def test_voice_intent_turn_runs_under_the_default_workspace_agent(
     assert len(node_runs) == 1 and len(attempts) == 1
     assert attempts[0].result["agent"] == f"workspace-agent:{default.id}"
     assert all("tools" not in sent for sent in gateway.requests)
+    # The voice turn's Invocation joins the same authenticated actor (#1084).
+    (invocation,) = _invocations_for(container, run.run_id)
+    assert invocation.actor_id == run.actor_principal_id == USER
+    assert invocation.status is InvocationStatus.COMPLETED
 
 
 @pytest.mark.contract("behavioral")
@@ -794,3 +903,121 @@ def test_settling_a_turn_never_turns_a_failed_sweep_into_a_failed_answer() -> No
     _run(chat_runs._settle_window(admitter, run))  # type: ignore[arg-type]
 
     assert admitter.calls == ["release:run-1", "sweep"]
+
+
+@pytest.mark.contract("behavioral")
+def test_a_turn_past_admission_without_gateway_config_fails_closed(
+    authed_client: Any, container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1084 gap 2: a missing gateway configuration must never answer a turn.
+
+    `build_llm_port` used to fall back to a success-shaped stub port once a
+    turn was already admitted, so the Run completed on a fabricated answer
+    with zero model effects. The door now fails closed: retryable 503, the
+    admitted Run closes failed, and nothing resembling a model answer ships.
+    """
+    from config import Settings
+    from services import chat_completion as chat_completion_service
+
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+    unconfigured = Settings(litellm_api_base=None, litellm_api_key=None)
+    monkeypatch.setattr(chat_completion_service, "get_settings", lambda: unconfigured)
+
+    ws = _workspace()
+    response = _complete(authed_client, workspace_id=ws)
+
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "5"
+    assert "(stub)" not in response.text
+    # The turn was admitted, so its Run exists -- terminalized failed, never
+    # completed on stub content.
+    runs = _runs_in(container, ws)
+    assert len(runs) == 1
+    assert runs[0].status is RunStatus.FAILED
+    assert not str(runs[0].result or "").strip() or "(stub)" not in str(runs[0].result)
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_skips_non_string_model_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-str assistant content must not call SessionStore (coverage #1822)."""
+    calls: list[object] = []
+
+    async def _append(*_a: object, **_k: object) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _append,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-ns"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": None}}]},
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_persist_conversation_turn_swallows_append_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transcript append failure must not undo an already-answered Run."""
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("session store unavailable")
+
+    monkeypatch.setattr(
+        "services.chat_runs.conversation_sessions.append_turn",
+        _boom,
+    )
+    turn = chat_runs.AdmittedTurn(
+        run=SimpleNamespace(run_id="run-fail"),
+        agent_id="agent-1",
+        container=None,
+        admitter=SimpleNamespace(),  # type: ignore[arg-type]
+        session_id="sess-1",
+    )
+    await chat_runs._persist_conversation_turn(
+        turn,
+        [{"role": "user", "content": "hi"}],
+        {"choices": [{"message": {"content": "ok"}}]},
+    )
+
+
+@pytest.mark.contract("behavioral")
+def test_client_turn_id_normalizes_and_rejects_invalid() -> None:
+    """#1822 AC-4: nonempty ≤128 client turn keys survive; blanks/long/non-str do not."""
+    assert chat_runs._client_turn_id(None) is None
+    assert chat_runs._client_turn_id(12) is None
+    assert chat_runs._client_turn_id("") is None
+    assert chat_runs._client_turn_id("   ") is None
+    assert chat_runs._client_turn_id("x" * 129) is None
+    assert chat_runs._client_turn_id("  turn-abc  ") == "turn-abc"
+    assert chat_runs._client_turn_id("x" * 128) == "x" * 128
+
+
+@pytest.mark.contract("behavioral")
+def test_admit_turn_records_client_turn_id(container: Container) -> None:
+    """admit_turn keeps a normalized client turn_id on the AdmittedTurn."""
+
+    async def _turn() -> str | None:
+        turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
+            _principal(),
+            [{"role": "user", "content": "hi"}],
+            turn_id="  client-turn-1  ",
+        )
+        return turn.client_turn_id
+
+    assert _run(_turn()) == "client-turn-1"

@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services.profile_store import ProfilePersistenceError, ProfileSchemaError
 from services.request_principal import require_actor_id
+from services.workspace_preferences import PreferenceValueError
 
 router = APIRouter(tags=["profile"])
 
@@ -82,12 +83,23 @@ def put_profile(body: ProfileBody, request: Request) -> dict:
     a write that reached nothing. A storage failure is a 503 here.
     """
     from services import profile_store
+    from services.workspace_preferences import AUDITED_PREFERENCE_KEYS, audit_workspace_preference
 
     user_id = _user_id(request)
     try:
         record = profile_store.save(user_id, body.preferences)
+    except PreferenceValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ProfilePersistenceError, ProfileSchemaError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    for key in AUDITED_PREFERENCE_KEYS:
+        if key in body.preferences:
+            audit_workspace_preference(
+                actor=user_id,
+                field=key,
+                value=body.preferences[key],
+                source="api",
+            )
     return _answer(record)
 
 
@@ -102,14 +114,23 @@ def patch_profile(body: ProfileFieldBody, request: Request) -> dict:
     (Codex, #699).
     """
     from services import profile_store
+    from services.workspace_preferences import audit_workspace_preference
 
     user_id = _user_id(request)
     if not body.field:
         raise HTTPException(status_code=400, detail="field is required")
     try:
         record = profile_store.set_field(user_id, body.field, body.value)
+    except PreferenceValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ProfilePersistenceError, ProfileSchemaError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    audit_workspace_preference(
+        actor=user_id,
+        field=body.field,
+        value=body.value,
+        source="api",
+    )
     return _answer(record)
 
 

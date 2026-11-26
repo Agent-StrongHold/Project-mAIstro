@@ -285,8 +285,12 @@ def save(user_id: str, values: dict[str, Any]) -> ProfileRecord:
     """Persist `values` as `user_id`'s whole profile, returning what was read back.
 
     Raises `ProfilePersistenceError` when the store did not end up holding what
-    was sent.
+    was sent. Raises ``PreferenceValueError`` (from workspace_preferences) when
+    a known Workspace preference key carries a value outside its allow-list.
     """
+    from services.workspace_preferences import validate_preferences_document
+
+    values = validate_preferences_document(values)
     with _write_lock:
         stored = load(user_id)
         written = ProfileRecord(
@@ -302,8 +306,11 @@ def save(user_id: str, values: dict[str, Any]) -> ProfileRecord:
 
 def set_field(user_id: str, field: str, value: Any) -> ProfileRecord:
     """Set one profile field, leaving the rest of the record alone."""
+    from services.workspace_preferences import validate_preference_field
+
     if not field:
         raise ValueError("a profile field must be named")
+    value = validate_preference_field(field, value)
     with _write_lock:
         values = load(user_id).preferences
         values[field] = value

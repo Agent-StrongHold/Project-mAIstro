@@ -62,3 +62,7 @@ It now parametrises over the real `MUST_DENY`, which is why the count moves by
 eighteen: the same one test, finally applied to every pattern it claims to be
 about. The module is loaded at import for that, so the parametrisation can read
 the set rather than a number.
+
+Additionally, as part of issue #348, the RSI runner's Dockerfile was updated
+to build from the resolved lockfile, ensuring exact dependency versions and
+hashes for its selected extras/platform.

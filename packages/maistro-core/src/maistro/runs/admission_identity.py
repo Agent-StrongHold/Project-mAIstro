@@ -1,9 +1,13 @@
 """Immutable root-admission identity types (#1851, parent #1845).
 
-This module is an **inactive contract leaf**. Nothing in production imports it
-yet; a later, separately reviewed integration lands the runtime consumer
-(prospective C2 classifier and backend wiring) before these types become
-reachable. It defines, and only defines, the typed vocabulary a future
+This module is an **inactive contract leaf**. No production path *consumes* the
+types yet; a later, separately reviewed integration lands the runtime consumer
+(prospective C2 classifier and backend wiring). The identity vocabulary
+(:class:`RootAdmissionEnvelope`, :class:`AdmissionRecordV2`,
+:class:`LegacyAdmissionRecord`, :class:`CanonicalJsonObject`,
+:class:`AdmissionBinding`) is published from :mod:`maistro.runs`' public
+surface, so downstream products import it from the package instead of reaching
+into the submodule. It defines, and only defines, the typed vocabulary a future
 admission backend needs so it never has to import task models into RunStore or
 guess field semantics:
 

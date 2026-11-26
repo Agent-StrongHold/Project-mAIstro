@@ -1,3 +1,138 @@
+class TestCapabilitySnapshot:
+    def test_admin_role_is_effective_without_task_elevation(self, admin_client):
+        body = admin_client.get("/v1/auth/capabilities").json()
+        assert body["role"] == "admin"
+        assert body["surfaces"]["rsi"]["effective"] is True
+        assert body["capabilities"]["config.write"]["reason"] == "admin role"
+
+    def test_zero_permission_user_gets_live_explainable_policy(self, authed_client):
+        response = authed_client.get("/v1/auth/capabilities")
+        assert response.status_code == 200
+        body = response.json()
+        assert response.headers["cache-control"] == "no-store"
+        assert body["role"] == "user"
+        from services.authorization import required_permission
+
+        assert body["surfaces"]["settings"]["permission"] == required_permission(
+            "PATCH", "/v1/settings"
+        )
+        assert body["surfaces"]["credentials"]["permission"] == required_permission(
+            "PUT", "/v1/credentials"
+        )
+        assert body["surfaces"]["integrations"]["permission"] == required_permission(
+            "POST", "/v1/mcp/servers"
+        )
+        assert body["surfaces"]["rsi"]["permission"] == required_permission("GET", "/v1/rsi/status")
+        assert body["surfaces"]["rsi"]["permission"] == "rsi.execute"
+        assert body["surfaces"]["rsi"]["effective"] is False
+        assert body["capabilities"]["rsi.execute"]["reason"] == "permission not assigned"
+
+    def test_assignment_and_task_elevation_change_effective_policy(
+        self, admin_client, authed_client
+    ):
+        import stores
+        from routes.auth import revoke_task_elevation
+
+        assignment = admin_client.patch(
+            "/v1/auth/users/user/permissions", json={"permissions": ["rsi.execute"]}
+        )
+        assert assignment.status_code == 200
+        try:
+            assigned = authed_client.get("/v1/auth/capabilities").json()
+            assert assigned["capabilities"]["rsi.execute"]["assigned"] is True
+            assert assigned["capabilities"]["rsi.execute"]["effective"] is False
+            assert assigned["capabilities"]["rsi.execute"]["can_elevate"] is True
+
+            elevated = authed_client.post(
+                "/v1/auth/elevate",
+                json={
+                    "password": "testpass",
+                    "permissions": ["rsi.execute"],
+                    "task_id": "cap-test",
+                },
+            )
+            assert elevated.status_code == 200, elevated.text
+            live = authed_client.get("/v1/auth/capabilities").json()
+            assert live["capabilities"]["rsi.execute"]["effective"] is True
+            assert "cap-test" in live["elevated_tasks"]
+
+            session_id = authed_client.cookies.get("hive_session")
+            assert session_id is not None
+            session = stores.sessions[str(session_id)]
+            stores.sessions[str(session_id)] = {
+                **session,
+                "elevated_grant_expires": {"cap-test": "2000-01-01T00:00:00+00:00"},
+            }
+            expired = authed_client.get("/v1/auth/capabilities").json()
+            assert expired["capabilities"]["rsi.execute"]["effective"] is False
+
+            re_elevated = authed_client.post(
+                "/v1/auth/elevate",
+                json={
+                    "password": "testpass",
+                    "permissions": ["rsi.execute"],
+                    "task_id": "cap-test",
+                },
+            )
+            assert re_elevated.status_code == 200, re_elevated.text
+            revoke_task_elevation(str(session_id), "cap-test")
+            revoked = authed_client.get("/v1/auth/capabilities").json()
+            assert revoked["capabilities"]["rsi.execute"]["effective"] is False
+        finally:
+            stores.users["user"] = stores.users["user"].model_copy(update={"permissions": []})
+
+
+class TestElevationTtlOverride:
+    """HIVE_ELEVATION_TTL_SECONDS may only shorten the elevation window.
+
+    The authorization browser E2E drives a real grant to its expiry through
+    this override; the clamp is the security property under test: no env
+    value can make an elevation outlive the 15-minute default.
+    """
+
+    def test_default_ttl_is_15_minutes(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.delenv("HIVE_ELEVATION_TTL_SECONDS", raising=False)
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS == 900
+
+    def test_override_shortens_and_is_honored_by_elevate(self, monkeypatch, authed_client):
+        import time
+        from datetime import datetime
+
+        from routes.auth import _elevation_ttl_seconds, revoke_task_elevation
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "2")
+
+        assert _elevation_ttl_seconds() == 2
+
+        r = authed_client.post(
+            "/v1/auth/elevate",
+            json={"password": "testpass", "permissions": [], "task_id": "ttl-probe"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        session_id = str(authed_client.cookies.get("hive_session"))
+        try:
+            until = datetime.fromisoformat(body["elevated_until"])
+            assert until.timestamp() <= time.time() + 2
+            assert "2 seconds" in body["message"]
+        finally:
+            revoke_task_elevation(session_id, "ttl-probe")
+
+    def test_override_cannot_extend_past_default(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "999999")
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS
+
+    def test_garbage_override_falls_back_to_default(self, monkeypatch):
+        from routes.auth import _ELEVATION_TTL_SECONDS, _elevation_ttl_seconds
+
+        monkeypatch.setenv("HIVE_ELEVATION_TTL_SECONDS", "not-a-number")
+        assert _elevation_ttl_seconds() == _ELEVATION_TTL_SECONDS
+
+
 class TestPermissionAssignment:
     """The grant flow that makes harness.execute/rsi.execute obtainable.
 

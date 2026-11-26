@@ -59,7 +59,17 @@ class ScopedGoalStore:
         agent_id: str,
         draft: GoalRevisionDraft,
         parent_goal_id: str | None = None,
+        goal_id: str | None = None,
     ) -> Goal:
+        """Create a Goal at revision 1 in the ``active`` state.
+
+        ``goal_id`` lets a caller that must survive a crash name the identity
+        up front (#1823's commit boundary): a two-write protocol that records
+        the id durably before its first write can resume the same Goal after
+        process death instead of minting a second one. Identity selection
+        stays an application choice, never an authorization bypass — the
+        ADMINISTER decision below is made before the id reaches the store.
+        """
         await self._require(principal_id, workspace_id, WorkspaceAction.ADMINISTER)
         return await self.goal_store.create_goal(
             workspace_id=workspace_id,
@@ -67,7 +77,16 @@ class ScopedGoalStore:
             agent_id=agent_id,
             draft=draft,
             parent_goal_id=parent_goal_id,
+            goal_id=goal_id,
         )
+
+    async def list_goals(
+        self, workspace_id: str, *, principal_id: str, limit: int = 100, offset: int = 0
+    ) -> list[Goal]:
+        """Discover Goals without requiring physical execution evidence first."""
+        await self._require(principal_id, workspace_id, WorkspaceAction.VIEW)
+        goals = await self.goal_store.list_goals(workspace_id, limit=limit, offset=offset)
+        return [goal for goal in goals if goal.workspace_id == workspace_id]
 
     async def get_goal(self, goal_id: str, *, principal_id: str) -> Goal:
         """The Goal when this principal may view it; :class:`GoalNotVisible`

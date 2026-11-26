@@ -10,6 +10,13 @@ holds, and a parked Run resuming after a human answer or a timer was admitted
 once already: the owner decision on #1182 lets it go over the ceiling rather
 than strand work somebody has answered. WAITING and PAUSED hold no slot, so a
 backlog of pending approvals cannot starve new work.
+
+The owner-decided governed baselines are the per-principal (8) and
+per-Workspace (32) ceilings. The acceptance also asks for "an explicit
+system/global ceiling where needed": that ceiling is opt-in — `system` is
+None until a deployment that needs a whole-system bound configures one, and
+because unbounded is the baseline, configuring it can only tighten admission.
+It is enforced at this same authority, never as a second counter above it.
 """
 
 from __future__ import annotations
@@ -55,6 +62,15 @@ class RunConcurrencyExceeded(Exception):
 class RunConcurrencyLimits:
     per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
     per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
+    #: Optional system-wide ceiling on active root Runs across every
+    #: Workspace and principal at once (#1182, "where needed"). None — the
+    #: default — is the owner-decided baseline of no explicit global ceiling;
+    #: any configured value can only tighten admission.
+    system: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.system is not None and self.system < 1:
+            raise ValueError(f"system ceiling must be positive, got {self.system}")
 
     @classmethod
     def configured(cls) -> RunConcurrencyLimits:
@@ -68,15 +84,22 @@ class RunConcurrencyLimits:
         return cls(
             per_principal=settings.max_active_root_runs_per_principal,
             per_workspace=settings.max_active_root_runs_per_workspace,
+            system=settings.max_active_root_runs_system,
         )
 
-    def check(self, *, workspace_active: int, principal_active: int | None) -> None:
-        """Refuse one more root Run when either ceiling is already full.
+    def check(
+        self, *, workspace_active: int, principal_active: int | None, system_active: int
+    ) -> None:
+        """Refuse one more root Run when any configured ceiling is full.
 
         `principal_active` is None for a Run with no actor principal, which
-        is bounded by its Workspace alone.
+        is bounded by its Workspace alone. `system_active` is the count of
+        active root Runs across the whole store; it only refuses when a
+        system ceiling is configured.
         """
         if principal_active is not None and principal_active >= self.per_principal:
             raise RunConcurrencyExceeded("principal", self.per_principal, principal_active)
         if workspace_active >= self.per_workspace:
             raise RunConcurrencyExceeded("workspace", self.per_workspace, workspace_active)
+        if self.system is not None and system_active >= self.system:
+            raise RunConcurrencyExceeded("system", self.system, system_active)

@@ -21,6 +21,7 @@ from middleware.auth import principal_has_permission
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
+from services.request_principal import request_principal
 from starlette.concurrency import run_in_threadpool
 
 from maistro.capabilities.authority import (
@@ -48,7 +49,14 @@ async def _provider_view(reg: Any, slot: str, name: str) -> dict[str, Any]:
     except Exception as exc:  # health probe must never break the listing
         logger.debug("healthcheck failed for %s/%s: %s", slot, name, exc)
         healthy = False
-    return {"name": name, "trust_tier": provider.trust_tier, "healthy": healthy}
+    metadata = reg.provider_trust(slot, name) if hasattr(reg, "provider_trust") else None
+    trust_tier, provenance = metadata or ("t3", "unknown")
+    return {
+        "name": name,
+        "trust_tier": trust_tier,
+        "provenance": provenance,
+        "healthy": healthy,
+    }
 
 
 async def _slot_view(reg: Any, slot: str) -> dict[str, Any]:
@@ -286,10 +294,14 @@ def resolve_approval(
 
     # HTTP callers cannot choose the audit actor. Direct provider tests may
     # omit Request, but production resolution always uses the authenticated
-    # session principal that AuthMiddleware already verified.
-    user = getattr(getattr(request, "state", None), "user", None) or {}
-    if request is not None:
-        actor = str(user.get("id") or user.get("username") or "")
+    # session principal that AuthMiddleware already verified. The canonical
+    # carrier is ``request.state.principal`` (P0.1 / AC-P1): the dict-shaped
+    # ``state.user`` this route used to read has had no writer since the
+    # middleware migrated, so the old read resolved to ``{}`` and refused
+    # every real HTTP approval with 401.
+    principal = request_principal(request) if request is not None else None
+    if principal is not None:
+        actor = principal.actor_id()
         if not actor:
             raise HTTPException(status_code=401, detail="Authentication required")
     else:
@@ -302,7 +314,8 @@ def resolve_approval(
         # elevated approval permission, so a config editor cannot self-approve.
         authorized = bool(
             actor
-            and (user.get("role") == "admin" or principal_has_permission(user, "approvals.resolve"))
+            and principal is not None
+            and principal_has_permission(principal, "approvals.resolve")
         )
         if not authorized:
             log_audit(

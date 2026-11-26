@@ -88,6 +88,19 @@ class CredentialBackedProvider:
 
         return self.credential.provider
 
+    @property
+    def extension_attribution(self) -> Any:
+        """The wrapped adapter's declared identity, when it declares one.
+
+        Delegated so a routed selection still carries the exact package
+        identity into the Invocation snapshot (M9-I1, #976): routing wraps
+        the provider for credential scope, it must not strip attribution.
+        Gateway providers expose no such attribute and read as ``None``.
+        """
+
+        declared = getattr(self.base, "extension_attribution", None)
+        return declared() if callable(declared) else declared
+
     def __repr__(self) -> str:
         # The dataclass default would embed ``credential`` — and with it the
         # api_key — into any traceback or log that reprs this provider. Only
