@@ -168,6 +168,14 @@ dev = [
     "mypy>=1.14,<3",
 ]
 
+# The in-repo cosmic-ray operator provider (PR #1994): loaded only by stevedore
+# inside the dev-only mutation toolchain (`cosmic_ray.plugins` reads this group
+# exactly as it reads cosmic-ray's own `core` provider). The module imports
+# cosmic-ray/parso, which ship in the workspace dev extra, never in a runtime
+# install — see maistro/testing/mutation_operators.py for the contract.
+[project.entry-points."cosmic_ray.operator_providers"]
+maistro = "maistro.mutation_operator_provider:MaistroMutationOperators"
+
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"

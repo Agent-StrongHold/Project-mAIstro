@@ -40,6 +40,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from coverage import CoverageData
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -56,16 +58,45 @@ class Selection:
     import_time_only: list[int] = field(default_factory=list)
 
 
-def coverage_contexts(coverage_json: dict, source: str) -> dict[int, list[str]]:
-    """Line -> context names for one file of a `coverage json --show-contexts` payload."""
-    contexts = _coverage_file_entry(coverage_json, source).get("contexts", {})
-    # A line executed at import time (module body) reports an empty-string
-    # context — it names no test, so it selects nothing.
+def coverage_contexts(data: CoverageData, source: str) -> dict[int, list[str]]:
+    """Line -> context names for one file of a coverage data file.
+
+    Contexts are read straight from the SQLite data file the traced pytest run
+    wrote, never from `coverage json --show-contexts`. With
+    `dynamic_context = test_function`, a contexts report serializes every
+    measured line of every file in scope once per test that ran it: for a
+    suite-wide selection over packages/maistro-core/tests (~19k tests) that
+    report reaches multiple gigabytes and its parse outgrows a 16GB CI runner
+    — the PR gate died exactly there (run 44700198260, ~22.5m into the report
+    step, data file already written; reproduced at PR #1994 head 9146009b97
+    with a ~4.8GB report). The data-file read is linear in the target file's
+    own rows and returns the identical names — verified line-for-line against
+    the JSON report — including the empty-string context a line executed at
+    import time reports, which names no test and so selects nothing.
+    """
+    contexts = data.contexts_by_lineno(_data_file_entry(data, source))
     return {
         int(line): [name for name in names if name]
         for line, names in contexts.items()
         if any(names)
     }
+
+
+def _data_file_entry(data: CoverageData, source: str) -> str:
+    """The path form the data file recorded for `source`; absent = explicit error.
+
+    A missing entry can never be silence: the source's rows are the whole
+    contract of this read, so — like a report without the file — a data file
+    without it fails selection loudly.
+    """
+    recorded = set(data.measured_files())
+    for candidate in (str(Path(source)), str(Path(source).resolve())):
+        if candidate in recorded:
+            return candidate
+    suffix = [path for path in recorded if path.endswith(str(Path(source)))]
+    if len(suffix) == 1:
+        return suffix[0]
+    raise ValueError(f"coverage data has no entry for {source}; was --cov scoped to it?")
 
 
 def _coverage_file_entry(coverage_json: dict, source: str) -> dict:
@@ -207,7 +238,7 @@ def select(
 
         # coverage's source selector accepts only directories or importable
         # names, so scope to the file's directory and let coverage_contexts
-        # pick out the target file's lines from the JSON report. The scope is
+        # pick out the target file's lines from the coverage data file. The scope is
         # carried ONLY by `--cov=<dir>`: pytest-cov's bare `--cov` means
         # "record everything" and would override it, tracing scratch modules a
         # test imports and deletes (the extension lifecycle proof installs one
@@ -245,6 +276,10 @@ def select(
         coverage_env = dict(env)
         coverage_env["COVERAGE_FILE"] = str(tmp_path / ".coverage")
         coverage_env["COVERAGE_RCFILE"] = str(rc)
+        # This report carries executed/missing lines only: per-test contexts
+        # are read from the data file below, because a `--show-contexts`
+        # serialization of a suite-wide run is multi-GB and its parse kills
+        # the gate (see coverage_contexts).
         # --ignore-errors is safe here precisely because the critical source
         # itself is never ignored: a report with no entry for `source` fails
         # `_coverage_file_entry` below. Only foreign files that a test measured
@@ -255,7 +290,6 @@ def select(
                 "-m",
                 "coverage",
                 "json",
-                "--show-contexts",
                 "--ignore-errors",
                 "-o",
                 str(report),
@@ -267,7 +301,9 @@ def select(
             check=True,
         )
         payload = json.loads(report.read_text(encoding="utf-8"))
-        by_line = coverage_contexts(payload, source)
+        data = CoverageData(basename=str(tmp_path / ".coverage"))
+        data.read()
+        by_line = coverage_contexts(data, source)
         executed, missing = coverage_executable_lines(payload, source)
         testable, non_executable, import_time_only = partition_changed(
             changed, executed, missing, by_line

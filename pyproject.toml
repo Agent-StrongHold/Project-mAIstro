@@ -522,6 +522,21 @@ ignore_missing_imports = true
 module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
 
+# cosmic-ray ships no py.typed marker and exists only in the dev
+# toolchain (the mutation gate's dependency, PR #1994). The single module that
+# imports it (maistro.mutation_operator_provider, loaded by the
+# cosmic_ray.operator_providers entry point) is reached by no runtime import
+# graph; this override covers the missing stubs for that dev-only surface, and
+# the disallow_subclassing_any relief below is the only way to implement
+# cosmic-ray's untyped Operator base inside a strict scan.
+[[tool.mypy.overrides]]
+module = ["cosmic_ray", "cosmic_ray.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["maistro.mutation_operator_provider"]
+disallow_subclassing_any = false
+
 # aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note
 # above: this covers missing *stubs*, not a missing install. Deliberately not
 # reaching for `types-aiobotocore` — its stubs are generated per-service and
