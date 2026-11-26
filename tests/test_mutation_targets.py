@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import fnmatch
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "mutation_targets.py"
@@ -560,3 +562,74 @@ class TestGateScriptsAreTargetable:
         targets, unresolved = module._resolve_targets(["scripts/check-ac-state.py"])
         assert unresolved == []
         assert targets == [("scripts/check-ac-state.py", Path("tests/test_check_ac_state.py"))]
+
+
+class TestPrGateBudgetCoversTheWidestMappedScope:
+    """The PR gate's job cap must fit its widest mapped test scope, or the
+    required producer dies of starvation and emits a CANCELLED instead of a
+    verdict — the exact failure that hit #1994: run 45645094537 at head
+    5de7d17254 was killed with "The job has exceeded the maximum execution
+    time of 45m0s" 25m into mutation_pr_gate.py, while select() was still
+    re-running the whole core suite under coverage for privilege.py.
+
+    Two properties, tested rather than trusted: the widening that makes the
+    budget floor load-bearing must be visible in the shipped critical list
+    (so a future de-widening re-opens the question), and the shipped budget
+    must stay above the measured floor (so no one can quietly re-starve the
+    gate the 45m cap strangled).
+    """
+
+    WORKFLOW: ClassVar[Path] = REPO / ".github" / "workflows" / "mutation.yml"
+    CRITICAL_LIST: ClassVar[Path] = REPO / "quality" / "mutation-critical-files.json"
+
+    #: Measured floor, minutes. Selection for the widest scope (whole core
+    #: suite under coverage with dynamic_context) is ~30m on CI (run
+    #: 45574782108, step 08:16:44Z->08:46:57Z); collection adds minutes; the
+    #: nightly packets get 60m each for the mutation phase itself; toolchain
+    #: overhead observed ~10m on cold runners. 150 keeps the gate finishable
+    #: with headroom. It is a floor, not an exact pin: raising it is safe,
+    #: dropping below it re-creates the starvation.
+    BUDGET_FLOOR_MINUTES: ClassVar[int] = 150
+
+    def test_at_least_one_critical_source_widens_to_a_whole_suite_directory(self, module):
+        """The documented assumption behind the floor, checked through the
+        production dispatch (mutation_critical resolves each critical source
+        with `resolve_script_tests(...) or resolve_package_tests(...)`).
+        privilege.py has no tests/maistro/test_privilege.py mirror, so
+        resolve_package_tests widens it to bare `packages/maistro-core/tests`
+        — selection then runs the whole suite under coverage before any
+        mutant executes. If a mirror (or a narrower ancestor directory that
+        still covers every changed line) ever appears, the widening
+        disappears and this fails: whoever removes it must re-measure the
+        floor rather than inherit a budget sized for a scope that no longer
+        exists."""
+        entries = json.loads(self.CRITICAL_LIST.read_text(encoding="utf-8"))["entries"]
+        widened = {
+            entry["source"]: (
+                module.resolve_script_tests(entry["source"])
+                or module.resolve_package_tests(entry["source"])
+            )
+            for entry in entries
+        }
+        suite_scopes = {
+            source: scope
+            for source, scope in widened.items()
+            if scope is not None and (REPO / scope).is_dir()
+        }
+        assert suite_scopes, (
+            "no critical source widens to a suite directory; the pr-gate budget floor no longer has a measured justification"
+        )
+
+    def test_the_pr_gate_budget_is_not_starved_below_the_measured_floor(self):
+        """Fail against the 45m cap that cancelled #1994's gate before
+        selection finished (annotation on run 45645094537). Structural and
+        machine-independent: a parsed YAML integer, not a wall clock."""
+        workflow = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        budget = workflow["jobs"]["pr-gate"]["timeout-minutes"]
+        assert isinstance(budget, int), f"pr-gate timeout-minutes must be an int, got {budget!r}"
+        assert budget >= self.BUDGET_FLOOR_MINUTES, (
+            f"pr-gate timeout-minutes={budget} is below the {self.BUDGET_FLOOR_MINUTES}m "
+            "measured floor for the widest mapped scope (whole core suite under "
+            "coverage); below it the required gate dies of starvation and emits "
+            "a CANCELLED instead of a verdict"
+        )
