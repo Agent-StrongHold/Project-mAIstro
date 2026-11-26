@@ -282,7 +282,9 @@ class SqliteBacklogItemStore:
     ) -> BacklogItem:
         require_lease(lease_seconds)
         async with self._write() as conn:
-            now = claim_now(at)  # sampled under the write lock: renewal cannot accept an expired claim
+            now = claim_now(
+                at
+            )  # sampled under the write lock: renewal cannot accept an expired claim
             current = await self._require(item_id)
             require_claim_holder(current, fence_token, now, principal_id=principal_id)
             updated = plan_renew(current, now=now, lease_seconds=lease_seconds)

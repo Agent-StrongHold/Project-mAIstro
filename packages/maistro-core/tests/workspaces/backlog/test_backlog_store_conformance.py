@@ -676,7 +676,9 @@ async def test_renew_and_release_refuse_a_non_holder_at_the_live_fence(backend) 
         item.item_id, principal_id="holder", fence_token=live_fence, lease_seconds=100
     )
     assert renewed.fence_token == live_fence
-    released = await store.release_claim(item.item_id, principal_id="holder", fence_token=live_fence)
+    released = await store.release_claim(
+        item.item_id, principal_id="holder", fence_token=live_fence
+    )
     assert released.claimant_principal_id is None
 
 

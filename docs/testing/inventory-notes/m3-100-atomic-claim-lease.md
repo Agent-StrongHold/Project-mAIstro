@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +72
+  packages/maistro-core/tests: +74
   packages/maistro-server/tests: +6
 ---
 
@@ -8,7 +8,7 @@ inventory-delta:
 
 New tests only; nothing was removed or moved.
 
-- `packages/maistro-core/tests` (+73):
+- `packages/maistro-core/tests` (+74):
   `workspaces/backlog/test_backlog_store_conformance.py` gains the claim/lease
   (#100) bodies for the same in-memory/SQLite pair: atomic claim with one
   winner under `asyncio.gather` (all four concurrent claims, both backends),
@@ -27,8 +27,10 @@ New tests only; nothing was removed or moved.
   holder refused after release + re-claim even at the right version, retiring
   a claimed item releasing the claim in the same write with deterministic
   re-eligibility, claimant/lease shape refusals, renew/release with no live
-  claim, and the SQLite-only restart test (claim survives reopen; the fence
-  continues from the stored generation).
+  claim, a non-holder refused renew/release at the live fence (review-fix
+  round: the fence is readable by every contributor, so it alone proves
+  nothing), and the SQLite-only restart test (claim survives reopen; the
+  fence continues from the stored generation).
 - `packages/maistro-server/tests` (+6): `api/test_backlog_api.py` covers the
   contributor claim cycle over HTTP (claimant/fence/lease recorded, second
   claim 409 with the current item, fence-required PATCH, renew, release, the
