@@ -174,6 +174,9 @@ UI_MUTATIONS: tuple[ProtectedOperation, ...] = (
         "PATCH", "/v1/workspaces/{workspace_id}", "workspaces.write", "archive a workspace"
     ),
     ProtectedOperation(
+        "PATCH", "/v1/workspaces/{workspace_id}", "workspaces.write", "restore a workspace"
+    ),
+    ProtectedOperation(
         "DELETE", "/v1/workspaces/{workspace_id}", "workspaces.write", "delete a workspace"
     ),
 )

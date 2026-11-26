@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet } from "../lib/api";
 import { useToast } from "./shared";
+import { useAuthorizedAction } from "./Elevation";
 import { useWorkspaces } from "../context/WorkspaceContext";
 
 type PersonaTemplateOption = {
@@ -16,6 +17,7 @@ type PersonaTemplateOption = {
  * whatever YAML files exist on disk, not a hardcoded list here. */
 export function WorkspaceTabs() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const {
     workspaces,
     activeWorkspaceId,
@@ -143,7 +145,10 @@ export function WorkspaceTabs() {
     setRestoring(id);
     setError(null);
     try {
-      await archiveWorkspace(id, true);
+      // Restore hits the same protected PATCH as archive, so it goes through
+      // the same canonical elevation affordance (#336): a fresh session gets
+      // one explicit password confirmation instead of a guaranteed 403.
+      await authorizedAction("workspaces.write", () => archiveWorkspace(id, true));
       selectWorkspace(id);
       toast(`Restored workspace "${wsName}"`, "ok");
       if (archived.length === 1) setShowArchived(false);

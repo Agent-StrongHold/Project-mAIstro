@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from middleware.auth import _PROTECTED_OPS, AuthMiddleware
 from routes.setup import _DEFAULT_DAILY_USER_PERMISSIONS
 from services.permission_policy import (
@@ -43,3 +44,92 @@ def test_elevation_is_required_after_assignment_for_each_daily_permission() -> N
 def test_admin_role_is_break_glass_without_copying_daily_permissions() -> None:
     assert ROLE_PERMISSIONS["admin"] == ("*",)
     assert AuthMiddleware(app=None)._check_permission({"role": "admin"}, "config.write")
+
+
+@pytest.mark.parametrize(
+    ("membership", "expected_status"),
+    [("owner", 200), ("editor", 403), ("viewer", 403), ("nonmember", 404)],
+)
+def test_clean_setup_restore_requires_elevation_and_live_ownership(
+    monkeypatch: pytest.MonkeyPatch, membership: str, expected_status: int
+) -> None:
+    """Real setup/login/restore APIs, never an all-permissions daily fixture."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+    from models.schemas import HiveUser
+    from models.workspace import Workspace
+    from services.model_store import JsonStore, ModelStore
+
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "sessions", JsonStore("sessions"))
+    monkeypatch.setattr(stores, "workspaces", ModelStore("workspaces", Workspace))
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    daily = TestClient(app)
+    setup = daily.post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "auto",
+            "admin_username": "review-admin",
+            "admin_password": "admin-password",
+            "user_username": "review-daily",
+            "user_password": "daily-password",
+        },
+    )
+    assert setup.status_code == 200, setup.text
+    login = daily.post(
+        "/v1/auth/login", json={"username": "review-daily", "password": "daily-password"}
+    )
+    assert login.status_code == 200, login.text
+    principal = daily.get("/v1/auth/whoami").json()["user"]
+    assert principal["role"] == "user"
+    assert principal["permissions"] == list(DAILY_USER_PERMISSIONS)
+    assert "*" not in principal["permissions"]
+    assert principal["elevated_permissions"] == []
+
+    created = daily.post(
+        "/v1/workspaces", json={"name": "Restore review", "persona_template_id": "personal"}
+    )
+    assert created.status_code == 201, created.text
+    path = f"/v1/workspaces/{created.json()['id']}"
+    denied = daily.patch(path, json={"active": False})
+    assert denied.status_code == 403
+    assert "workspaces.write" in denied.json()["detail"]
+    elevated = daily.post(
+        "/v1/auth/elevate",
+        json={
+            "password": "daily-password",
+            "permissions": ["workspaces.write"],
+            "task_id": "restore-review",
+        },
+    )
+    assert elevated.status_code == 200, elevated.text
+    archived = daily.patch(path, json={"active": False})
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["active"] is False
+
+    # The owner explicitly invites the separate break-glass account. It is
+    # not implicitly a member, and it still cannot become the chat user.
+    admin = TestClient(app)
+    assert (
+        admin.post(
+            "/v1/auth/login", json={"username": "review-admin", "password": "admin-password"}
+        ).status_code
+        == 200
+    )
+    assert admin.get(path).status_code == 404
+    assert admin.get("/v1/chat/sessions").status_code == 403
+    invited = daily.post(f"{path}/members", json={"user_id": "admin", "role": "owner"})
+    assert invited.status_code == 200, invited.text
+    if membership == "nonmember":
+        changed = admin.delete(f"{path}/members/user")
+        assert changed.status_code == 200, changed.text
+    elif membership != "owner":
+        changed = admin.post(f"{path}/members", json={"user_id": "user", "role": membership})
+        assert changed.status_code == 200, changed.text
+
+    restored = daily.patch(path, json={"active": True})
+    assert restored.status_code == expected_status, restored.text
+    visible = admin.get(path)
+    assert visible.status_code == 200
+    assert visible.json()["active"] is (membership == "owner")
