@@ -749,9 +749,17 @@ class TestToolingReachesTheTopRung:
     match the committed file, and it read `scripts/mutation_ratchet.py` as
     *reachable* the moment the baseline started storing identities (#651) —
     the defect stated as the grade it produced.
+
+    The stand-in itself has a service history: `mutation_ratchet` held this
+    role while the mutation workflow was a parked stub, and #330's restoration
+    made it genuinely reachable (the nightly invokes it by path and
+    `check_mutation_baseline.py` imports it), so the committed baseline banks
+    it no more. The stand-in moved to `mutation_filter_annotations` — still
+    invisible to the static graph, invoked only through a subprocess — so the
+    both-directions pin keeps reading the real ledger, not a hand-made set.
     """
 
-    DEAD_TOOL = "@tool/mutation_ratchet"
+    DEAD_TOOL = "@tool/mutation_filter_annotations"
     LIVE_TOOL = "@tool/check-wiring-reads"
 
     @pytest.mark.ac("ADR-082526-aef8/AC-6")

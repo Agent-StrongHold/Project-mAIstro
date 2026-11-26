@@ -59,7 +59,7 @@ def test_unbaselined_source_below_the_global_floor_now_fails(
     )
 
     assert module.main([str(rows), "--baseline", str(baseline)]) == 1
-    assert "below required 90.0%" in capsys.readouterr().err
+    assert "below required floor" in capsys.readouterr().err
 
 
 def test_unbaselined_source_clearing_the_floor_passes(
@@ -113,3 +113,58 @@ def test_baselined_source_regression_fails(
     )
 
     assert module.main([str(rows), "--baseline", str(baseline)]) == 1
+
+
+def test_skipped_rows_never_enter_the_denominator(module, tmp_path: Path) -> None:
+    """Annotation-filtered mutants were never executed, so counting them
+    inflates the denominator and flatters the kill rate — the same viability
+    adjustment scripts/mutation_viability.py applies to the gate's reports.
+    """
+    rows = tmp_path / "rows.jsonl"
+    lines = [
+        json.dumps([{"mutations": [{"module_path": "packages/example.py"}]}, outcome])
+        for outcome in [
+            {"test_outcome": "killed"},
+            {"test_outcome": "survived"},
+            {"worker_outcome": "SKIPPED"},
+            {"test_outcome": "skipped"},
+        ]
+    ]
+    rows.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert module.scores(rows) == {"packages/example.py": (1, 2)}
+
+
+def test_ci_error_annotation_strips_non_allowlisted_characters(module) -> None:
+    raw = "packages/example.py: 0.0% below required floor"
+    annotated = module._ci_error_annotation(raw)
+    assert annotated.startswith("::error::")
+    assert "packages/example.py" in annotated
+    assert "below required floor" in annotated
+    assert module._ci_error_annotation("a\nb\rc") == "::error::a?b?c"
+
+
+def test_scheduler_write_failure_is_scrubbed_for_ci(
+    module,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    real_repository_ratchet_base: None,
+) -> None:
+    """Scheduler-candidate write errors go through ``_ci_error_annotation``."""
+    rows = tmp_path / "rows.jsonl"
+    _rows(rows, "packages/example.py", killed=19, survived=1)
+    # Presence of this sibling file selects the scheduler write path.
+    rows.with_name("mutation-telemetry-all.jsonl").write_text("{}\n", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"entries": {}}\n', encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> int:
+        raise ValueError("scheduler candidate refused\nwith detail")
+
+    monkeypatch.setattr(module, "_write_scheduler_candidate", boom)
+    assert module.main([str(rows), "--baseline", str(baseline), "--write-baseline"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("::error::")
+    assert "scheduler candidate refused" in err
+    assert "\n" not in err.strip()

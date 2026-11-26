@@ -13,8 +13,8 @@ from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 
-CONDUCTOR_URL = "http://localhost:8100"
-LITELLM_URL = "http://localhost:4000"
+CONDUCTOR_URL = "http://localhost:8100"  # DevSkim: ignore DS162092 until 2027-12-31
+LITELLM_URL = "http://localhost:4000"  # DevSkim: ignore DS162092 until 2027-12-31
 LITELLM_KEY = os.environ.get("LITELLM_API_KEY", "")
 
 VISION_MODEL = "google-gemini-2.5-flash"

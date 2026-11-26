@@ -640,6 +640,7 @@ async def record_decision(
     decision: str,
     *,
     actor: str,
+    workspace_id: str = "",
 ) -> dict[str, Any]:
     """Record an accept/reject on a proposal. The decision itself flows
     back into outcome_store as a Signal #4-equivalent so the next
@@ -652,6 +653,13 @@ async def record_decision(
     (`promote_audited`) with the accepting user named as the approver. The
     payload's `apply_outcome` says what actually happened; `applied` is
     only ever true when a candidate version really promoted.
+
+    `workspace_id` is the canonical owning Workspace the caller's target
+    gate resolved (#2469) — the tenant the promotion commits into. When it
+    is supplied and contradicts the stored row's recording, the proposal is
+    refused (KeyError, the same non-disclosing answer as an unknown id): a
+    stale or forged Workspace field can never redirect a promotion to
+    another tenant.
     """
     if decision not in (DECISION_ACCEPTED, DECISION_REJECTED):
         raise ValueError(
@@ -664,6 +672,15 @@ async def record_decision(
     if payload is None:
         raise KeyError(proposal_id)
     payload = dict(payload)
+    authorized_workspace = str(workspace_id or "").strip()
+    if authorized_workspace:
+        recorded = str(payload.get("workspace_id", "") or "").strip()
+        if recorded and recorded != authorized_workspace:
+            # Aliasing row: its stored tenant contradicts the canonical one
+            # the gate authorized. Refuse without deciding, disclosing, or
+            # rehoming the proposal (#2469).
+            raise KeyError(proposal_id)
+        payload["workspace_id"] = authorized_workspace
     payload["decision"] = decision
     payload["decided_by"] = actor
     payload["decided_at"] = datetime.now(UTC).isoformat()
@@ -1038,13 +1055,64 @@ def _mutated_snapshot(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, 
     return candidate, BUILT, ""
 
 
+def proposal_rows() -> list[dict[str, Any]]:
+    """Read-only snapshot of every stored proposal row.
+
+    This is the storage seam the #2469 authorization gate reads through:
+    ``services.optimizer_scope`` must resolve proposals to their canonical
+    owning Workspace, but ``stores.optimizer_proposals`` is a retiring
+    surface (WORKSPACE-CUTOVER-PLAN section 5) whose ledger entry may not
+    gain a new importer, so the scope gate reads rows through this — the
+    module the retirement ledger already names — instead of importing the
+    projection itself. Late-bound on purpose: rows are resolved at call
+    time so per-test isolation of ``stores`` keeps working.
+    """
+    import stores
+
+    return list(stores.optimizer_proposals.values())
+
+
+def stored_proposal(proposal_id: str) -> dict[str, Any] | None:
+    """One stored proposal row, or None when absent or not a mapping.
+
+    Same #2469 storage seam as :func:`proposal_rows`, for the manual
+    decision path: the scope gate looks a proposal up by id without the
+    route ever touching the projection. A stored non-mapping payload is
+    indistinguishable from an absent id — both refuse closed.
+    """
+    import stores
+
+    payload = stores.optimizer_proposals.get(proposal_id)
+    return payload if isinstance(payload, dict) else None
+
+
+def dag_known(dag_id: str) -> bool:
+    """Whether the descriptor store holds a record for this DAG id.
+
+    The #2469 authorization gate refuses a run, a DAG-scoped list, or a
+    decision whose target DAG has no descriptor: a bare id with no record
+    would otherwise mint proposals in the caller's tenant for a target
+    that does not exist. Read here — not imported from the scope gate — so
+    the retiring ``stores.dags`` surface gains no new importer; late-bound
+    like the other seams in this module.
+    """
+    import stores
+
+    return dag_id in stores.dags
+
+
 def list_proposals(
     dag_id: str = "",
     *,
     decision: str = "",
+    workspace_id: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """List proposals, newest-first. Filter by dag_id and/or decision."""
+    """List proposals, newest-first. Filter by dag_id, decision, and/or Workspace.
+
+    Workspace filtering happens **before** the limit so one Workspace's newer
+    pending rows cannot push another Workspace's proposals out of the page.
+    """
     import stores
 
     items = list(stores.optimizer_proposals.values())
@@ -1052,5 +1120,7 @@ def list_proposals(
         items = [p for p in items if p.get("dag_id") == dag_id]
     if decision:
         items = [p for p in items if p.get("decision") == decision]
+    if workspace_id:
+        items = [p for p in items if p.get("workspace_id") == workspace_id]
     items.sort(key=lambda p: p.get("created_at", ""), reverse=True)
     return items[: max(1, min(limit, 200))]

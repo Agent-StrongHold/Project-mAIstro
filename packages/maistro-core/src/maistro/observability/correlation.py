@@ -50,6 +50,7 @@ FIELD_NAMES: tuple[str, ...] = (
     "invocation_id",
     "session_id",
     "request_id",
+    "actor_id",
 )
 
 
@@ -69,6 +70,11 @@ class ExecutionContext:
     invocation_id: str = ""
     session_id: str = ""
     request_id: str = ""
+    #: The principal the execution acts for (#2464): the Run's acting principal,
+    # so a governed effect filed under this context attributes quota and audit
+    # to the same identity the Run was admitted for. Blank means the caller
+    # had no principal to name — quota treats that as "system".
+    actor_id: str = ""
 
     def merged(self, **ids: str | None) -> ExecutionContext:
         """Return this context with the non-blank `ids` overlaid.

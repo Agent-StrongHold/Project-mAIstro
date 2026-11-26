@@ -59,8 +59,8 @@ export default function WorkItems() {
         title="Jira drafts"
         subtitle="Gated Jira hierarchy — clarify, edit, then confirm to post (never auto-created)"
         actions={
-          <Link to="/agents" className="btn" style={{ fontSize: 12, padding: "2px 8px" }}>
-            ← Program
+          <Link to="/capabilities" className="btn" style={{ fontSize: 12, padding: "2px 8px" }}>
+            ← Capabilities
           </Link>
         }
       />

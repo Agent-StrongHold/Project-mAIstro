@@ -163,14 +163,34 @@ def _actor(request: Request) -> str:
     return actor
 
 
+async def _canonical_projection(schedule_id: str) -> Schedule | None:
+    """The row canonical truth projects, or None when truth has none (#2467).
+
+    GET/PUT/DELETE must obey canonical schedule definition truth after a
+    restart, so the row a route serves is the canonical row repaired from —
+    not the Hive copy a crash may have left stale. A configured-but-
+    unreadable canonical authority is a 503: falling back to the stale Hive
+    row would silently serve an outdated enabled flag, exactly what #2467
+    forbids.
+    """
+    from services.scheduler import ScheduleAdmissionUnavailable, canonical_projection
+
+    try:
+        return await canonical_projection(schedule_id)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 async def _visible_schedule(request: Request, schedule_id: str) -> Schedule:
     """The row, if the caller is a member of its Workspace; else one 404.
 
     Missing, ownerless and foreign rows share the refusal so this route is
-    not an existence oracle for other Workspaces' schedules.
+    not an existence oracle for other Workspaces' schedules. The row read
+    here is canonical truth projected (#2467), so a definition edit or
+    delete that committed before a crash is what every route answers with.
     """
     actor = _actor(request)
-    schedule = stores.schedules.get(schedule_id)
+    schedule = await _canonical_projection(schedule_id)
     if schedule is None or not await workspace_authority.is_member(actor, schedule.workspace_id):
         raise HTTPException(status_code=404, detail="schedule not found")
     # Re-read after the await: a concurrent delete or fire may have landed,
@@ -328,26 +348,58 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         created_at=t,
         updated_at=t,
     )
-    await _write_canonical(schedule)
+    # The create spans two writes with no shared commit (canonical store,
+    # then the Hive projection). The durable pending marker (#2467) is what
+    # lets a crash between them be *resolved* at restart — projection rebuilt
+    # from the committed canonical row, or the create closed as
+    # never-committed — instead of leaving an enabled orphan schedule that
+    # only the canonical due() can see.
+    from services.schedule_projection import clear_pending_create, mark_pending_create
+
+    def _close_marker() -> None:
+        try:
+            clear_pending_create(sid)
+        except Exception:
+            logger.warning("Failed to clear the pending-create marker for schedule %s", sid)
+
+    mark_pending_create(sid)
+    try:
+        await _write_canonical(schedule)
+    except Exception:
+        # The canonical put itself failed: nothing was committed, so the
+        # window closed empty.
+        _close_marker()
+        raise
     try:
         stores.schedules[sid] = schedule
     except Exception:
         # The canonical write above already committed (Codex, #1199): a
         # failed second write must not leave an enabled canonical row behind
         # that no Hive-keyed route can reach -- creation failed, so there is
-        # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
-        # only ever adds rows, never removes one. Best-effort compensation;
-        # its own failure is logged and swallowed so the caller sees the real
-        # failure below, not this cleanup's.
+        # no Hive row for GET/PUT/DELETE to find it by. Best-effort
+        # compensation; its own failure is logged and swallowed so the caller
+        # sees the real failure below, not this cleanup's.
         from services.scheduler import delete_canonical_definition
 
         try:
             await delete_canonical_definition(sid)
+            # Compensated: the create never committed canonically, so the
+            # window closed empty and the marker goes with it.
+            _close_marker()
         except Exception:
+            # The compensation itself died with the process-equivalent
+            # failure: the canonical row is committed and unprojected — the
+            # crash state, reached without a crash. The marker STANDS so the
+            # next startup resolves it (#2467), rebuilding the projection
+            # from the committed row.
             logger.warning(
-                "Failed to compensate canonical schedule %s after a failed Hive write", sid
+                "Failed to compensate canonical schedule %s after a failed Hive write; "
+                "its pending-create marker stays so startup reconciliation resolves "
+                "the committed-but-unprojected row",
+                sid,
             )
         raise
+    _close_marker()
     return schedule
 
 
@@ -403,7 +455,28 @@ async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: R
         # Re-read after the await: a tick may have projected newer cursors.
         latest = stores.schedules.get(schedule_id) or current
         updated: Schedule = latest.model_copy(update=updates)
-        stores.schedules[schedule_id] = updated
+        try:
+            stores.schedules[schedule_id] = updated
+        except Exception as exc:
+            # The canonical write above already committed (#2467): the edit is
+            # authoritative even though its projection write failed, so this
+            # is a degraded acknowledgment, not a rollback — compensating
+            # would revert an acknowledged definition because a response-only
+            # row hiccupped. The client is told the canonical update persisted
+            # and the projection is behind; the next read (or startup) repairs
+            # the projection from canonical truth.
+            logger.warning(
+                "Canonical schedule %s updated but its Hive projection write failed; "
+                "projection repair pending",
+                schedule_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"schedule {schedule_id} canonical update persisted; its Hive projection "
+                    "write failed, so the served row is stale until repair"
+                ),
+            ) from exc
     return updated
 
 
@@ -419,11 +492,32 @@ async def _delete_canonical(schedule_id: str) -> None:
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
+    from services.schedule_projection import record_tombstone
     from services.scheduler import definition_lock
 
     async with definition_lock(schedule_id):
         await _delete_canonical(schedule_id)
-        stores.schedules.pop(schedule_id, None)
+        # Canonical deletion is authoritative. Persist the tombstone before
+        # removing the Hive projection so restart cannot resurrect a stale row.
+        try:
+            record_tombstone(schedule_id)
+        except Exception:
+            logger.warning("Failed to record the deletion tombstone for schedule %s", schedule_id)
+        try:
+            stores.schedules.pop(schedule_id, None)
+        except Exception as exc:
+            logger.warning(
+                "Canonical schedule %s deleted but its Hive projection removal failed; "
+                "projection repair pending",
+                schedule_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"schedule {schedule_id} canonical deletion persisted; its Hive projection "
+                    "removal failed, so the served row is stale until repair"
+                ),
+            ) from exc
 
 
 class ManualFireBody(BaseModel):

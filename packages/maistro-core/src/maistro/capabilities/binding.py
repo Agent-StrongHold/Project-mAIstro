@@ -124,6 +124,19 @@ class ResolvedBinding(BaseModel):
                 f"Binding pins provider {binding.provider_name!r}, "
                 f"but resolver selected {provider.name!r}"
             )
+        config = dict(binding.config)
+        # Attribution from the adapter that actually resolved (M9-I1, #976):
+        # a host may register declaring models onto an existing Binding via
+        # ``register_adapter_models()`` without the bootstrap ever writing the
+        # identity into ``Binding.config``, so the snapshot captures the
+        # identity the resolved adapter itself declares. The resolved adapter
+        # is the authority; for a bootstrapped wiring it names the same
+        # package the config already carries.
+        declared = getattr(provider, "extension_attribution", None)
+        if callable(declared):
+            declared = declared()
+        if declared is not None:
+            config["extension_attribution"] = declared.to_payload()
         return cls(
             binding_id=binding.binding_id,
             workspace_id=binding.workspace_id,
@@ -138,7 +151,7 @@ class ResolvedBinding(BaseModel):
             # an already-resolved Binding, which carries `enabled` rather than
             # `disabled`; that state is the same kill-switch, already read.
             enabled=getattr(binding, "enabled", not getattr(binding, "disabled", False)),
-            config=binding.config,
+            config=config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,
         )

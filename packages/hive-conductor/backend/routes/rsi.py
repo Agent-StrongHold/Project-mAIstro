@@ -8,6 +8,7 @@ Greenfield mode (entry B, benchmark tournament) is scaffolded.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from services import rsi_execution_policy
 
 router = APIRouter(tags=["rsi"])
+logger = logging.getLogger(__name__)
 
 
 class StartRunBody(BaseModel):
@@ -110,7 +112,13 @@ def rsi_test_profiles() -> dict:
     try:
         profiles = rsi_execution_policy.test_profiles()
     except rsi_execution_policy.RsiPolicyError as refusal:
-        raise HTTPException(status_code=500, detail=str(refusal)) from refusal
+        # Kind only — policy messages can name paths/hosts (CodeQL
+        # py/stack-trace-exposure). Full detail stays in the server log.
+        logger.warning("rsi test-profiles policy refused: %s", refusal)
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(refusal).__name__}: test profiles unavailable; see server logs",
+        ) from refusal
     return {"profiles": [{"name": p.name, "argv": list(p.argv)} for p in profiles]}
 
 
@@ -188,7 +196,13 @@ async def start_run(body: StartRunBody) -> dict:
         profile = rsi_execution_policy.resolve_test_profile(body.test_profile)
         isolation = rsi_execution_policy.require_isolation()
     except rsi_execution_policy.RsiPolicyError as refusal:
-        raise HTTPException(status_code=400, detail=str(refusal)) from refusal
+        # Kind only — policy messages can name paths/hosts (CodeQL
+        # py/stack-trace-exposure). Full detail stays in the server log.
+        logger.warning("rsi start-run policy refused: %s", refusal)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{type(refusal).__name__}: run refused; see server logs",
+        ) from refusal
 
     config = {
         "repo_path": str(repo),
@@ -310,12 +324,23 @@ def _review_http_error(sha: str, exc: Exception) -> HTTPException:
       or pre-schema file) → 409 — refused, not half-applied: a decision made
       on evidence the reviewer cannot parse would be undeterministic.
     """
+    # Kind-only public text (CodeQL py/stack-trace-exposure). Exception
+    # messages can name paths or review metadata contents; keep them in logs.
     if isinstance(exc, FileNotFoundError):
-        return HTTPException(status_code=404, detail=str(exc))
+        return HTTPException(
+            status_code=404,
+            detail=f"{type(exc).__name__}: review not found; see server logs",
+        )
     if isinstance(exc, ValueError):
-        return HTTPException(status_code=400, detail=str(exc))
+        return HTTPException(
+            status_code=400,
+            detail=f"{type(exc).__name__}: review decision refused; see server logs",
+        )
     return HTTPException(
-        status_code=409, detail=f"review metadata unreadable for {sha[:12]}: {exc}"
+        status_code=409,
+        detail=(
+            f"{type(exc).__name__}: review metadata unreadable for {sha[:12]}; see server logs"
+        ),
     )
 
 

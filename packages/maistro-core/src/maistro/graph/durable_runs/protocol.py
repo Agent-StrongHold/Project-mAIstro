@@ -130,6 +130,17 @@ class DurableRunStore(Protocol):
         """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Wake a system-owned remote or harness completion pause."""
+        ...
+
     async def timeout_hitl(
         self,
         run_id: str,
@@ -152,6 +163,50 @@ class DurableRunStore(Protocol):
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
+        ...
+
+    async def park_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        note: str = "",
+    ) -> DurableRunRecord:
+        """Record a park decision on a waiting fence; the Run stays waiting."""
+        ...
+
+    async def redirect_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        target: str,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        new_goal_revision: int | None = None,
+        new_rubric_revision: int | None = None,
+        new_brief_version: int | None = None,
+    ) -> DurableRunRecord:
+        """Record a targeted redirect and resolve the waiting fence toward it."""
+        ...
+
+    async def accept_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        gate_passed: bool,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+        failing_dimensions: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> DurableRunRecord:
+        """Record an accept; a failing gate carries recorded rationale."""
         ...
 
 

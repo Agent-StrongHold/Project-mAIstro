@@ -37,19 +37,21 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **19** |
-| `main` | yes | **1** | no | no | no | **32** |
+| `develop` | yes | **0** | yes | no | no | **21** |
+| `main` | yes | **1** | no | no | no | **35** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
-| `Analyze (actions)` | ○ | ● |
-| `Analyze (javascript-typescript)` | ○ | ● |
-| `Analyze (python)` | ○ | ● |
+| `Analyze (actions)` | adv | ● |
+| `Analyze (javascript-typescript)` | adv | ● |
+| `Analyze (python)` | adv | ● |
 | `Compliance registry` | ● | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
+| `JS supply chain (npm audit + GuardDog + policy gate)` | ● | ● |
+| `Mutation gate (changed critical lines)` | ○ | ○ |
 | `Quality / Acceptance state` | adv | adv |
 | `Quality / Agent store writes` | adv | adv |
 | `Quality / Architecture fitness` | adv | adv |
@@ -104,6 +106,7 @@ is also required live on both branches; because it is produced by
 | `durable-events` | adv | ● |
 | `exact-debt-ledger` | ● | ● |
 | `formal-conformance` | ● | ● |
+| `hive-conductor-compose-durability` | adv | ● |
 | `hive-conductor-e2e` | adv | ● |
 | `hive-conductor-e2e-ui` | adv | ● |
 | `integration-scope` | ● | adv |
@@ -112,6 +115,7 @@ is also required live on both branches; because it is produced by
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `sandbox-conformance` | ● | ● |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |

@@ -33,15 +33,19 @@ This helper reconciles three independent views into one universe:
 
 The imports happen when this module is imported, so no unrelated test
 module's registration (or absence of one) can change what the sweeps prove.
+
+The statically derived *identity* layer lives in
+:mod:`_registration_inventory` (#1864): which kind each reachable
+registration expression binds, to which class, in which defining module and
+checkout file — plus the fail-closed diagnoses for registration forms that
+inventory cannot attribute. This module is the loading half: it imports the
+reachable registration modules and reconciles the three module-level views.
 """
 
 from __future__ import annotations
 
-import ast
 import importlib
-import importlib.util
 import json
-import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,116 +53,13 @@ from typing import Final
 
 from maistro.graph.nodes import get_node, list_kinds
 
+from ._registration_inventory import scan_registration_modules
+
 #: tests/graph/nodes/_production_registration.py -> the repository root.
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[5]
 
-_REACHABILITY_SCRIPT: Final[Path] = _REPO_ROOT / "scripts" / "check-reachability.py"
 _REACHABILITY_BASELINE: Final[Path] = _REPO_ROOT / "quality" / "reachability-baseline.json"
 _REACHABILITY_DISPOSITIONS: Final[Path] = _REPO_ROOT / "quality" / "reachability-dispositions.json"
-
-
-_reachability_module_cache: dict[str, object] = {}
-
-
-def _load_reachability_module() -> object:
-    """Import `scripts/check-reachability.py` for its source-universe rules.
-
-    The script is repository machinery, not per-tree data: even a synthetic
-    tree under test is classified by the real rules, the way
-    `tests/test_reachability_source_universe.py` runs the real script against
-    tmp trees. A distinct module name keeps this copy out of the reachability
-    suite's own when one session collects both.
-    """
-    cached = _reachability_module_cache.get("module")
-    if cached is not None:
-        return cached
-    script = _REPO_ROOT / "scripts" / "check-reachability.py"
-    spec = importlib.util.spec_from_file_location("_composition_reachability", script)
-    if spec is None or spec.loader is None:  # pragma: no cover - load mechanism
-        raise RuntimeError(f"cannot load reachability script at {script}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    _reachability_module_cache["module"] = module
-    return module
-
-
-def _registration_site(path: Path) -> bool:
-    """Whether the file's code actually registers a node kind.
-
-    AST-based so the many prose mentions of `register_node` in docstrings and
-    comments (the registry's own module docstring included) never fabricate a
-    registration module.
-    """
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except SyntaxError:  # pragma: no cover - production source parses
-        return False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "register_node":
-                return True
-            if isinstance(func, ast.Attribute) and func.attr == "register_node":
-                return True
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            for decorator in node.decorator_list:
-                if isinstance(decorator, ast.Name) and decorator.id == "register_node":
-                    return True
-                if isinstance(decorator, ast.Attribute) and decorator.attr == "register_node":
-                    return True
-    return False
-
-
-def _dotted_module(path: Path, root: Path) -> str | None:
-    """The importable name of a file under a packaged `src` root, or `None`.
-
-    `packages/<dist>/src/a/b/mod.py` becomes `a.b.mod`; a package
-    `__init__.py` maps to its package. `None` means the registration site
-    sits outside every packaged src root — the caller must fail loudly
-    rather than silently sweep less.
-    """
-    parts = path.relative_to(root).parts
-    if "src" not in parts:
-        return None
-    segments = list(parts[parts.index("src") + 1 :])
-    if not segments:
-        return None
-    if segments[-1] == "__init__.py":
-        segments = segments[:-1]
-    else:
-        segments[-1] = segments[-1][: -len(".py")]
-    if not segments:
-        return None
-    return ".".join(segments)
-
-
-def scan_registration_modules(root: Path = _REPO_ROOT) -> dict[str, Path]:
-    """Every production source file that registers node kinds, by import name.
-
-    Test-shaped files are already outside the universe: the reachability
-    classification this builds on excludes `tests/` trees and `test_*`
-    modules, which is exactly the rule that keeps fixture registrations from
-    satisfying the production proof.
-    """
-    reachability = _load_reachability_module()
-    modules: dict[str, Path] = {}
-    outside_src: list[Path] = []
-    for path in sorted(reachability._all_package_python_files(root)):
-        if not _registration_site(path):
-            continue
-        dotted = _dotted_module(path, root)
-        if dotted is None:
-            outside_src.append(path)
-            continue
-        modules[dotted] = path
-    if outside_src:
-        raise RuntimeError(
-            "node registration outside a packaged src root cannot be swept by dotted "
-            "import name; load it through the catalog sweep or extend this guard's "
-            "mapping: " + ", ".join(str(p.relative_to(root)) for p in outside_src)
-        )
-    return modules
 
 
 def unreachable_identities(root: Path = _REPO_ROOT) -> frozenset[str]:

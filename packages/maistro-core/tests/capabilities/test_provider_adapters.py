@@ -25,6 +25,12 @@ Acceptance coverage, each test naming the criterion it pins:
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -75,6 +81,7 @@ from maistro.capabilities.providers.llm_gateway import (
 )
 from maistro.capabilities.types import Unavailable
 from maistro.credentials.types import CredentialRecord
+from maistro.extensions.attribution import attribution_from_payload
 from maistro.providers.errors import ModelNotFoundError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -1725,3 +1732,652 @@ async def test_create_container_accepts_a_host_registered_adapter_catalog() -> N
     finally:
         await container.aclose()
         reset_default_adapter_catalog()
+
+
+# --- Extension attribution (M9-I1, #976): identity through canonical evidence
+
+
+def _declaring_spec() -> ProviderAdapterSpec:
+    """The Acme adapter declaring its package identity (M9-I1)."""
+
+    return _spec(
+        version="2.3.1",
+        publisher="acme",
+        package_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
+async def test_governed_call_records_declared_identity_in_invocation_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The durable Invocation evidence names the exact package that ran."""
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    provider = catalog.resolve_provider("acme-mini", None)
+    assert provider is not None
+    attribution = provider.extension_attribution
+    assert attribution is not None
+    assert attribution.version == "2.3.1"
+    assert attribution.publisher == "acme"
+
+    result = await _egress(effects, catalog, store).complete(
+        # the Binding snapshot is what an operator wired: identity declared,
+        # nested under the dedicated attribution key (as bootstrap writes it)
+        binding=_binding(
+            config={
+                "adapter_id": "acme.models",
+                "extension_attribution": attribution.to_payload(),
+            }
+        ),
+        run_id="run-9",
+        node_run_id="nr-9",
+        attempt_id="att-9",
+        effect_key="test:attribution",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    # canonical caller linkage sits beside the extension identity
+    assert stored.run_id == "run-9"
+    assert stored.node_run_id == "nr-9"
+    assert stored.attempt_id == "att-9"
+    assert stored.workspace_id == "ws1"
+    payload = stored.binding.config["extension_attribution"]
+    decoded = attribution_from_payload(payload)
+    assert decoded == attribution
+    # decode joins the declared identity, not a weaker name-only claim
+    assert decoded.package_sha256 == "a" * 64
+    assert decoded.manifest_sha256 == "b" * 64
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
+async def test_adapter_errors_name_the_declared_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _CapturedGateway(_acme_response(), status=401)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    with pytest.raises(LlmAuthError) as excinfo:
+        await _egress(effects, catalog, store).complete(
+            binding=_binding(),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:identity-error",
+            request=ModelChatRequest(
+                model="acme-mini", messages=[{"role": "user", "content": "h"}]
+            ),
+        )
+    message = str(excinfo.value)
+    assert "acme.models" in message
+    assert "2.3.1" in message
+    assert "'acme'" in message
+    # the canonical taxonomy is untouched: the status still classifies
+    assert excinfo.value.status_code == 401  # type: ignore[attr-defined]
+
+
+async def test_undeclared_adapter_errors_keep_the_legacy_message_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _CapturedGateway(_acme_response(), status=401)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    effects = _effects()
+
+    with pytest.raises(LlmAuthError) as excinfo:
+        await _egress(effects, catalog, store).complete(
+            binding=_binding(),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:legacy-error",
+            request=ModelChatRequest(
+                model="acme-mini", messages=[{"role": "user", "content": "h"}]
+            ),
+        )
+    message = str(excinfo.value)
+    assert "acme.models" in message
+    assert "publisher" not in message  # no identity claimed that was not declared
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
+async def test_adapter_call_log_names_the_declared_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    with caplog.at_level(logging.INFO, logger="maistro.capabilities.providers.llm_gateway"):
+        await _egress(effects, catalog, store).complete(
+            binding=_binding(),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:identity-log",
+            request=ModelChatRequest(
+                model="acme-mini", messages=[{"role": "user", "content": "h"}]
+            ),
+        )
+
+    records = [r for r in caplog.records if r.name == "maistro.capabilities.providers.llm_gateway"]
+    assert records, "the adapter call must log one attribution line"
+    record = records[-1]
+    # identity fields, not payload or credential material
+    assert record.extension_id == "acme.models"  # type: ignore[attr-defined]
+    assert record.extension_version == "2.3.1"  # type: ignore[attr-defined]
+    assert record.extension_publisher == "acme"  # type: ignore[attr-defined]
+    # The configured output renders the identity: stdlib logging emits
+    # ``%(message)s`` and ``CorrelatingFormatter`` appends only the
+    # execution-context ids, so the fields must be in the message itself.
+    from maistro.observability.correlation import CorrelatingFormatter
+
+    rendered = CorrelatingFormatter(logging.Formatter("%(message)s")).format(record)
+    assert "extension_id=acme.models" in rendered
+    assert "extension_version=2.3.1" in rendered
+    assert "extension_publisher=acme" in rendered
+    assert "extension_package_sha256=" + "a" * 64 in rendered
+    assert "extension_manifest_sha256=" + "b" * 64 in rendered
+    flat = record.getMessage() + str(record.__dict__)
+    assert "resolved-acme-secret" not in flat
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
+async def test_programmatic_registration_leaves_full_attribution_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declaring adapter registered onto an existing Binding still attributes.
+
+    ``register_adapter_models()`` → ``complete()`` never runs the bootstrap
+    that copies the identity into ``Binding.config``, so the evidence must
+    come from the resolved adapter itself: the Invocation snapshot names the
+    package and the terminal audit event carries it in ``provenance``.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    result = await _egress(effects, catalog, store).complete(
+        binding=_binding(),  # non-bootstrapped: config names no attribution
+        run_id="run-prog",
+        node_run_id="nr-prog",
+        attempt_id="att-prog",
+        effect_key="test:programmatic-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    # the snapshot carries the identity of the adapter that actually resolved
+    decoded = attribution_from_payload(stored.binding.config["extension_attribution"])
+    assert decoded.extension_id == "acme.models"
+    assert decoded.version == "2.3.1"
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    event = terminal[-1]
+    assert event.invocation_id == stored.invocation_id
+    from_payload = attribution_from_payload(event.provenance["extension"])
+    assert from_payload.extension_id == "acme.models"
+    assert from_payload.publisher == "acme"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-4")
+async def test_malformed_attribution_fails_soft_and_never_breaks_the_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A payload this build cannot decode is omitted from the event, loudly.
+
+    Telemetry enrichment must never break the effect ledger (M9-I1, #976): a
+    Binding snapshot carrying an attribution payload a newer writer produced
+    (a foreign format tag, say) still completes its effect, the durable
+    Invocation row keeps the payload verbatim — evidence is never silently
+    rewritten — and the terminal audit event simply claims no extension
+    identity, with a warning naming the binding in telemetry.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))  # declares nothing
+    effects = _effects()
+
+    future = {
+        "format": "extension-attribution:v999",
+        "extension_id": "acme.models",
+        "version": "2.3.1",
+        "publisher": "acme",
+        "package_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+    }
+    result = await _egress(effects, catalog, store).complete(
+        binding=_binding(config={"adapter_id": "acme.models", "extension_attribution": future}),
+        run_id="run-future",
+        node_run_id="nr-future",
+        attempt_id="att-future",
+        effect_key="test:future-format",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    # the effect itself completed: fail-soft telemetry, not a failed Invocation
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    assert stored.status is InvocationStatus.COMPLETED
+    # the durable snapshot keeps the payload verbatim — never rewritten
+    assert stored.binding.config["extension_attribution"] == future
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    assert terminal[-1].invocation_id == stored.invocation_id
+    # the live terminal event omits the fragment instead of failing
+    assert "extension" not in terminal[-1].provenance
+    # and the omission is loud: a warning naming the binding
+    warnings = [r for r in caplog.records if r.name == "maistro.capabilities.governed_invocation"]
+    assert warnings
+    assert "malformed extension attribution" in warnings[-1].getMessage()
+    assert stored.binding.binding_id in warnings[-1].getMessage()
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-2")
+async def test_undeclared_adapter_log_claims_no_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    effects = _effects()
+
+    with caplog.at_level(logging.INFO, logger="maistro.capabilities.providers.llm_gateway"):
+        await _egress(effects, catalog, store).complete(
+            binding=_binding(),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:legacy-log",
+            request=ModelChatRequest(
+                model="acme-mini", messages=[{"role": "user", "content": "h"}]
+            ),
+        )
+
+    records = [r for r in caplog.records if r.name == "maistro.capabilities.providers.llm_gateway"]
+    assert records
+    record = records[-1]
+    assert record.adapter_id == "acme.models"  # type: ignore[attr-defined]
+    assert not hasattr(record, "extension_version")
+    # and the rendered line claims no undeclared identity either
+    from maistro.observability.correlation import CorrelatingFormatter
+
+    rendered = CorrelatingFormatter(logging.Formatter("%(message)s")).format(record)
+    assert "extension_" not in rendered
+
+
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
+async def test_bootstrap_snapshots_declared_identity_into_the_binding() -> None:
+    """Wiring a declaring adapter pins its identity into the Binding snapshot."""
+
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config()]), effects, store, catalog
+    )
+
+    binding = loaded[0]
+    assert binding.config["adapter_id"] == "acme.models"
+    decoded = attribution_from_payload(binding.config["extension_attribution"])
+    assert decoded.extension_id == "acme.models"
+    assert decoded.version == "2.3.1"
+    assert decoded.publisher == "acme"
+    assert decoded.package_sha256 == "a" * 64
+    # a legacy (non-declaring) adapter keeps the pre-#976 config shape
+    legacy_catalog, legacy_store = await _catalog_with(AcmeAdapter(_spec()))
+    legacy_effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
+    legacy = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config(binding_id="binding-legacy")]),
+        legacy_effects,
+        legacy_store,
+        legacy_catalog,
+    )
+    assert legacy[0].config == {"adapter_id": "acme.models"}
+
+
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
+async def test_end_to_end_reference_proof_bootstrap_to_decoded_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end correlation proof: wire, invoke, then decode cold.
+
+    The chain the issue demands: an operator wires a declaring adapter, one
+    governed call runs under canonical Run/NodeRun/Attempt ids, the Invocation
+    persists the Binding snapshot carrying the extension attribution — and a
+    reader that holds only the stored Invocation, with the extension long
+    since removed, still decodes the exact package identity that caused the
+    effect. No registry, no catalog, no installed package consulted.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config()]), effects, store, catalog
+    )
+    binding = loaded[0]
+
+    result = await _egress(effects, catalog, store).complete(
+        binding=binding,
+        run_id="run-e2e",
+        node_run_id="nr-e2e",
+        attempt_id="att-e2e",
+        effect_key="test:e2e-proof",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+    assert result.usage is not None  # the canonical effect actually happened
+
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    # historical read: decode the attribution from durable evidence alone
+    decoded = attribution_from_payload(stored.binding.config["extension_attribution"])
+    assert decoded.describe() == "acme.models 2.3.1 (publisher 'acme', package aaaaaaaaaaaa\u2026)"
+    # the canonical caller identity on the same row attributes *who* ran it
+    assert (stored.workspace_id, stored.run_id, stored.attempt_id) == ("ws1", "run-e2e", "att-e2e")
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-102426-976a/AC-1")
+async def test_terminal_invocation_event_carries_the_extension_in_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical audit event of an extension-mediated effect names the package.
+
+    The attribution rides in the envelope's ``provenance`` (under the fixed
+    ``extension`` key), beside the canonical correlation fields — never in
+    them — so event evidence is traceable to the exact package without a
+    registry lookup and without a parallel correlation identity.
+    """
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_declaring_spec()))
+    effects = _effects()
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim([_adapter_config()]), effects, store, catalog
+    )
+    await _egress(effects, catalog, store).complete(
+        binding=loaded[0],
+        run_id="run-ev",
+        node_run_id="nr-ev",
+        attempt_id="att-ev",
+        effect_key="test:event-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal, [e.type for e in events]
+    event = terminal[-1]
+    # canonical correlation fields are untouched and remain the authority
+    assert event.run_id == "run-ev"
+    assert event.correlation_id == "run-ev"
+    assert event.invocation_id != ""
+    assert not hasattr(event, "extension_id") and "extension_id" not in event.__dict__
+    # the extension identity is provenance, decoded fail-closed
+    decoded = attribution_from_payload(event.provenance["extension"])
+    assert decoded.extension_id == "acme.models"
+    assert decoded.version == "2.3.1"
+    assert decoded.publisher == "acme"
+
+
+@pytest.mark.ac("SPEC-102426-976a/AC-3")
+async def test_undeclared_binding_emits_no_extension_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy binding claims no identity it never declared."""
+
+    captured = _CapturedGateway(_acme_response())
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    catalog, store = await _catalog_with(AcmeAdapter(_spec()))
+    effects = _effects()
+
+    await _egress(effects, catalog, store).complete(
+        binding=_binding(),
+        run_id="run-legacy",
+        node_run_id="nr-legacy",
+        attempt_id="att-legacy",
+        effect_key="test:no-provenance",
+        request=ModelChatRequest(model="acme-mini", messages=[{"role": "user", "content": "h"}]),
+    )
+
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal
+    assert "extension" not in terminal[-1].provenance
+
+
+# --- The shipped reference extension proves the correlation (M9-I1, #976) ---
+
+#: The shipped reference gallery adapter package (M9-J2, #980). This is a
+#: real out-of-tree package in the checkout, not a fabricated stand-in: the
+#: proof below binds the identity of an actual published extension.
+_GALLERY_ADAPTER_DIR = (
+    Path(__file__).resolve().parents[4]
+    / "extensions"
+    / "reference-gallery"
+    / "packages"
+    / "gallery-model-adapter"
+)
+
+#: The canonical chat-completions body the gallery adapter's normalizers
+#: pass through unchanged (it is an OpenAI-compatible provider).
+_GALLERY_RESPONSE: dict[str, object] = {
+    "model": "gallery-chat-fast-2026-01",
+    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+}
+
+
+def _gallery_plugin() -> Any:
+    """Load the shipped gallery adapter's entrypoint module by path.
+
+    The package is out-of-tree and is not installed into this environment;
+    it ships plain data plus pure functions, so loading the entrypoint module
+    the manifest names is exactly what a host does with the artifact it
+    installed.
+    """
+    plugin = _GALLERY_ADAPTER_DIR / "src" / "gallery_model_adapter" / "plugin.py"
+    spec = importlib.util.spec_from_file_location("gallery_model_adapter_plugin", plugin)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _gallery_manifest() -> dict[str, Any]:
+    """The shipped publisher manifest of the reference gallery adapter."""
+    raw = (_GALLERY_ADAPTER_DIR / "manifest.json").read_bytes()
+    manifest = json.loads(raw.decode("utf-8"))
+    assert isinstance(manifest, dict)
+    return manifest
+
+
+def _gallery_package_sha256(out_dir: Path) -> str:
+    """The digest of the artifact a host installed: the package's own wheel.
+
+    Built with ``uv build`` exactly as the gallery's publish tool builds it,
+    so the digest recorded in the evidence is the digest of the real
+    published artifact rather than a value invented by the test.
+    """
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+        cwd=_GALLERY_ADAPTER_DIR,
+        check=True,
+        capture_output=True,
+    )
+    wheels = sorted(out_dir.glob("*.whl"))
+    assert len(wheels) == 1, wheels
+    return hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+
+
+class _GalleryAdapter(ReferenceChatAdapter):
+    """The host's wrapper of the shipped gallery adapter's plain data.
+
+    The package ships data and pure functions; the host binds them to the
+    SDK protocol. Nothing here re-implements the package's behavior — every
+    hook delegates to the shipped module.
+    """
+
+    def __init__(self, spec: ProviderAdapterSpec, plugin: Any) -> None:
+        super().__init__(spec)
+        self._plugin = plugin
+
+    def normalize_request(self, model: str, request: ModelChatRequest) -> dict[str, object]:
+        return dict(self._plugin.normalize_request(model, request))
+
+    def normalize_response(self, payload: Mapping[str, object]) -> dict[str, object]:
+        return dict(self._plugin.normalize_response(payload))
+
+    def usage_from(self, payload: Mapping[str, object]) -> tuple[int, int] | None:
+        return self._plugin.usage_from(payload)
+
+    def error_kind_for(self, status: int) -> str:
+        return self._plugin.error_kind_for(status)
+
+    def health_from(self, payload: Mapping[str, object]) -> bool:
+        return bool(self._plugin.health_from(payload))
+
+
+@pytest.mark.ac("SPEC-102426-976a/AC-6")
+async def test_shipped_reference_extension_correlates_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The shipped reference extension proves the correlation end to end.
+
+    The chain the issue asks for, run against a real out-of-tree package
+    instead of a fabricated one: the host installs the shipped gallery
+    adapter, binds the *exact* identity of the installed artifact (manifest
+    id, version, publisher, and the digests of the manifest and the wheel it
+    published), wires it through the canonical provider-adapter bootstrap,
+    and one governed call runs under canonical Run/NodeRun/Attempt ids. The
+    terminal audit event then names the extension package beside the
+    canonical correlation fields — never inside them — and the stored
+    Invocation still decodes the exact package identity with the extension
+    long since gone.
+    """
+    plugin = _gallery_plugin()
+    manifest = _gallery_manifest()
+    package_sha256 = _gallery_package_sha256(tmp_path)
+    manifest_sha256 = hashlib.sha256(
+        (_GALLERY_ADAPTER_DIR / "manifest.json").read_bytes()
+    ).hexdigest()
+
+    # The host binds the installed package's identity to the adapter it
+    # provides; the adapter's own data is the shipped spec, unchanged.
+    spec = ProviderAdapterSpec.model_validate(
+        {
+            **plugin.SPEC,
+            "extension_id": manifest["id"],
+            "version": manifest["version"],
+            "publisher": manifest["publisher"],
+            "package_sha256": package_sha256,
+            "manifest_sha256": manifest_sha256,
+        }
+    )
+    catalog, store = await _catalog_with(_GalleryAdapter(spec, plugin))
+    effects = _effects(
+        provider="gallery-provider",
+        key_id="gallery-provider-key",
+        api_key="resolved-gallery-secret",
+    )
+
+    loaded = await bootstrap_provider_adapters(
+        _ConfigShim(
+            [
+                _adapter_config(
+                    adapter_id="gallery-model-adapter",
+                    binding_id="binding-gallery",
+                )
+            ]
+        ),
+        effects,
+        store,
+        catalog,
+    )
+    binding = loaded[0]
+
+    # The Binding snapshot names the exact installed package.
+    decoded = attribution_from_payload(binding.config["extension_attribution"])
+    assert decoded.extension_id == "gallery.model_adapter"
+    assert decoded.version == "1.0.0"
+    assert decoded.publisher == "gallery"
+    assert decoded.package_sha256 == package_sha256
+    assert decoded.manifest_sha256 == manifest_sha256
+
+    captured = _CapturedGateway(_GALLERY_RESPONSE)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: captured.client())
+    result = await _egress(effects, catalog, store).complete(
+        binding=binding,
+        run_id="run-gallery",
+        node_run_id="nr-gallery",
+        attempt_id="att-gallery",
+        effect_key="test:gallery-proof",
+        request=ModelChatRequest(
+            model="gallery-chat-fast",
+            messages=[{"role": "user", "content": "h"}],
+        ),
+    )
+    assert result.usage is not None  # the canonical effect actually happened
+
+    # Durable evidence: the stored Invocation decodes the identity alone.
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    cold = attribution_from_payload(stored.binding.config["extension_attribution"])
+    assert cold.extension_id == "gallery.model_adapter"
+    assert cold.package_sha256 == package_sha256
+
+    # The canonical audit event carries the identity as provenance, beside
+    # (never inside) the canonical correlation fields.
+    events = await effects.event_store.list_stream("workspace:ws1")
+    terminal = [e for e in events if e.type == "capability.invocation.completed"]
+    assert terminal, [e.type for e in events]
+    event = terminal[-1]
+    assert event.run_id == "run-gallery"
+    assert event.correlation_id == "run-gallery"
+    assert event.invocation_id == result.invocation_id
+    assert "extension_id" not in event.__dict__
+    event_decoded = attribution_from_payload(event.provenance["extension"])
+    assert event_decoded.extension_id == "gallery.model_adapter"
+    assert event_decoded.publisher == "gallery"
+    assert event_decoded.package_sha256 == package_sha256
+
+    # The credential the transport resolved never reached the evidence.
+    flat = str(event.provenance) + str(stored.binding.config)
+    assert "resolved-gallery-secret" not in flat

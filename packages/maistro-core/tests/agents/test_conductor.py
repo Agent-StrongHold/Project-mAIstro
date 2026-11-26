@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
@@ -30,6 +31,15 @@ from maistro.agents.conductor import (
     run_task,
 )
 from maistro.agents.types import ConductorOutput, LLMProviderError
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    configure_default_effect_context,
+    default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
+)
+from maistro.capabilities.invocation import InvocationStatus
+from maistro.capabilities.model_chat import model_execution_context
 from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
 from maistro.providers.errors import ModelNotFoundError
@@ -238,36 +248,46 @@ class TestCallGateway:
 
 
 @pytest.fixture
-def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
-    """Isolate the conductor's ungoverned-fallback recording from the
-    process-wide default usage log singleton — and from the process default
-    quota ledger, which container-creating tests elsewhere in the same
-    process register via the composition root."""
+def fallback_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[InMemoryUsageLog, InMemoryQuotaTracker]]:
+    """A canonical effect context the conductor's governed fallback composes
+    over, with its own usage log and quota ledger (#718).
+
+    The fallback builds its client from the process default effect context,
+    so the test publishes an isolated one rather than mutating the process
+    singleton. The credential the fallback registers rides the same context,
+    so the call acquires the caller's own gateway secret and lands on this
+    ledger — never invisible, and never a fabricated identity.
+    """
     log = InMemoryUsageLog()
-    monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
-    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: None)
-    return log
-
-
-@pytest.fixture
-def fallback_quota_tracker(monkeypatch: pytest.MonkeyPatch) -> InMemoryQuotaTracker:
-    """Register an isolated quota ledger as the conductor module's process
-    default, for tests of the fallback's ledger evidence (#718)."""
     tracker = InMemoryQuotaTracker()
-    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: tracker)
-    return tracker
+    effects = new_effect_context(
+        policy_evaluator=binding_scope_policy,
+        quota_tracker=tracker,
+        usage_log=log,
+    )
+    configure_default_effect_context(effects)
+    try:
+        yield log, tracker
+    finally:
+        release_default_effect_context(effects)
 
 
-class TestUngovernedFallbackUsageEvidence:
-    """#718: the raw-gateway fallback crosses no canonical Invocation, so it
-    must leave its own usage evidence — reported tokens when the gateway said
-    them, an explicit unreported marker when it did not. Never invisible, and
-    never a fabricated Invocation identity."""
+class TestGovernedFallbackLedger:
+    """#718: a caller that holds no egress still crosses the canonical
+    Invocation. The fallback composes a governed client from the call's own
+    endpoint, so the call is admitted, recorded, and reconciled here — never
+    a raw HTTP call with a fabricated identity, and never invisible usage."""
 
     @pytest.mark.asyncio
-    async def test_reported_usage_is_recorded_with_provenance(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    async def test_reported_usage_is_recorded_on_the_canonical_ledger(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_ledger: tuple[InMemoryUsageLog, InMemoryQuotaTracker],
     ) -> None:
+        log, tracker = fallback_ledger
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -279,19 +299,49 @@ class TestUngovernedFallbackUsageEvidence:
 
         _patched_client(monkeypatch, handler)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+        with model_execution_context(
+            run_id="run-fallback",
+            node_run_id="node-fallback",
+            attempt_id="attempt-fallback",
+            correlation_id="corr-fallback",
+            effect_key="fallback:call",
+        ):
+            result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
 
-        (event,) = fallback_usage_log.events_for("m")
+        assert result == '{"success": true}'
+
+        (event,) = log.events_for("m")
         assert event.input_tokens == 5
         assert event.output_tokens == 7
         assert event.provider == "m"
         assert event.usage_reported is True
-        assert event.invocation_id is None  # identity is never invented here
+        assert event.invocation_id is not None  # the real identity, not invented
+
+        invocation = await default_effect_context().invocation_store.get(event.invocation_id)
+        assert invocation is not None
+        assert invocation.status is InvocationStatus.COMPLETED
+        assert invocation.usage is not None
+        assert invocation.usage.input_units == 5
+        assert invocation.usage.output_units == 7
+        assert invocation.run_id == "run-fallback"
+        assert invocation.node_run_id == "node-fallback"
+
+        (row,) = await tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["input_tokens"] == 5
+        assert row["output_tokens"] == 7
+        assert row["total_tokens"] == 12
+        assert row["request_count"] == 1
+        assert "usage_complete" not in row  # reported evidence, complete
 
     @pytest.mark.asyncio
     async def test_missing_usage_is_an_unreported_marker_not_a_zero(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_ledger: tuple[InMemoryUsageLog, InMemoryQuotaTracker],
     ) -> None:
+        log, tracker = fallback_ledger
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
@@ -301,17 +351,31 @@ class TestUngovernedFallbackUsageEvidence:
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
         await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
 
-        (event,) = fallback_usage_log.events_for("m")
+        (event,) = log.events_for("m")
         assert event.input_tokens == 0
         assert event.output_tokens == 0
         assert event.usage_reported is False
 
+        invocation = await default_effect_context().invocation_store.get(event.invocation_id)
+        assert invocation is not None
+        assert invocation.usage is None
+
+        (row,) = await tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["total_tokens"] == 0
+        assert row["unreported_count"] == 1
+        assert row["usage_complete"] is False
+        assert await tracker.get_usage_pct("m", "monthly", 100) is None
+
     @pytest.mark.asyncio
-    async def test_governed_egress_leaves_no_fallback_evidence(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    async def test_governed_egress_leaves_no_fallback_ledger_entry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_ledger: tuple[InMemoryUsageLog, InMemoryQuotaTracker],
     ) -> None:
-        """The canonical path owns recording; the fallback must stay silent
-        when an egress crossed the Invocation authority."""
+        """The canonical path owns the ledger; the fallback must not compose a
+        second governed client when an egress was supplied."""
+        log, _ = fallback_ledger
 
         class _Egress:
             async def complete(self, **kwargs: Any) -> Any:
@@ -326,15 +390,18 @@ class TestUngovernedFallbackUsageEvidence:
             governed_egress=_Egress(),  # type: ignore[arg-type]
         )
 
-        assert fallback_usage_log.events_for("m") == ()
+        assert log.events_for("m") == ()
 
     @pytest.mark.asyncio
-    async def test_run_task_raw_path_records_usage_evidence(
-        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    async def test_run_task_fallback_records_usage_evidence(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_ledger: tuple[InMemoryUsageLog, InMemoryQuotaTracker],
     ) -> None:
         """The ordinary entry point (``run_task`` without an egress) is the
-        call class the fallback evidence exists for."""
+        call class the governed fallback exists for."""
         monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
+        log, _ = fallback_ledger
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -348,62 +415,40 @@ class TestUngovernedFallbackUsageEvidence:
             )
 
         _patched_client(monkeypatch, handler)
-        with patch(
-            "maistro.agents.conductor.resolve_model",
-            return_value=("m", "http://gw", False),
+        with (
+            patch(
+                "maistro.agents.conductor.resolve_model",
+                return_value=("m", "http://gw", False),
+            ),
+            model_execution_context(
+                run_id="run-task",
+                node_run_id="node-task",
+                attempt_id="attempt-task",
+            ),
         ):
             task = TaskCreate(description="Implement feature")
             result = await run_task(task)
 
         assert result.success is True
-        (event,) = fallback_usage_log.events_for("m")
+        (event,) = log.events_for("m")
         assert event.input_tokens == 3
         assert event.output_tokens == 4
         assert event.usage_reported is True
+        invocation = await default_effect_context().invocation_store.get(event.invocation_id)
+        assert invocation is not None
+        assert invocation.usage is not None
+        assert invocation.run_id == "run-task"
 
     @pytest.mark.asyncio
-    async def test_registered_ledger_receives_reported_fallback_usage(
+    async def test_fallback_identity_is_derived_not_fabricated(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-        fallback_quota_tracker: InMemoryQuotaTracker,
+        fallback_ledger: tuple[InMemoryUsageLog, InMemoryQuotaTracker],
     ) -> None:
-        """#718: when the process registered a quota ledger (the Container
-        composition root does), the raw fallback's reported tokens reach it
-        too — the call class can no longer be absent from the ledger a
-        process actually carries."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        (row,) = await fallback_quota_tracker.get_all_usage()
-        assert row["provider"] == "m"
-        assert row["input_tokens"] == 5
-        assert row["output_tokens"] == 7
-        assert row["total_tokens"] == 12
-        assert row["request_count"] == 1
-        assert "usage_complete" not in row  # reported evidence, complete
-
-    @pytest.mark.asyncio
-    async def test_registered_ledger_gets_unreported_marker_not_zero(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-        fallback_quota_tracker: InMemoryQuotaTracker,
-    ) -> None:
-        """A fallback call whose gateway reported no usage marks the ledger
-        incomplete — never a measured zero — so the provider's percentage
-        presents as unknown (#718)."""
+        """A caller that holds no execution context gets a unique,
+        correlation-scoped identity — never the fabricated placeholder tuples
+        the raw path used, and never an empty run_id."""
+        log, _ = fallback_ledger
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -412,49 +457,15 @@ class TestUngovernedFallbackUsageEvidence:
 
         _patched_client(monkeypatch, handler)
         call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+        with model_execution_context(correlation_id="corr-only"):
+            await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
 
-        (row,) = await fallback_quota_tracker.get_all_usage()
-        assert row["provider"] == "m"
-        assert row["total_tokens"] == 0
-        assert row["unreported_count"] == 1
-        assert row["usage_complete"] is False
-        assert await fallback_quota_tracker.get_usage_pct("m", "monthly", 100) is None
-
-    @pytest.mark.asyncio
-    async def test_failing_ledger_does_not_take_down_the_fallback_call(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        fallback_usage_log: InMemoryUsageLog,
-    ) -> None:
-        """The ledger write is isolated: a ledger that blows up must not
-        crash a provider call that already succeeded — evidence stays on the
-        usage log and the failure is surfaced, not raised."""
-
-        class ExplodingTracker:
-            async def record_usage(self, *args: object, **kwargs: object) -> dict[str, object]:
-                raise RuntimeError("ledger unavailable")
-
-        monkeypatch.setattr(
-            "maistro.agents.conductor.get_default_quota_tracker", lambda: ExplodingTracker()
-        )
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"message": {"content": '{"success": true}'}}],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-                },
-            )
-
-        _patched_client(monkeypatch, handler)
-        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
-        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
-
-        assert result == '{"success": true}'
-        (event,) = fallback_usage_log.events_for("m")
-        assert event.usage_reported is True
+        (event,) = log.events_for("m")
+        invocation = await default_effect_context().invocation_store.get(event.invocation_id)
+        assert invocation is not None
+        assert invocation.run_id == "corr-only"
+        assert invocation.node_run_id
+        assert invocation.attempt_id
 
 
 class TestIsRetryable:
@@ -922,6 +933,87 @@ class TestRunTaskLive:
             result = await run_task(task, on_response=on_response)
         assert result.success is True
         assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
+
+
+class TestGovernedIdentityDerivation:
+    """A governed completion without an explicit tuple consumes the ambient
+    canonical identity the Attempt executor bound — never a fixed stand-in
+    and never an all-blank tuple (#1084)."""
+
+    async def test_identity_is_derived_from_the_bound_execution_context(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+        from maistro.observability.correlation import bind_execution_context
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+        captured: dict[str, object] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    body={"model": "m", "choices": [{"message": {"content": "ok"}}]}
+                )
+
+        with bind_execution_context(
+            run_id="run-persisted",
+            node_run_id="node-persisted",
+            attempt_id="attempt-persisted",
+        ):
+            content = await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                None,
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+        assert content == "ok"
+        assert captured["run_id"] == "run-persisted"
+        assert captured["node_run_id"] == "node-persisted"
+        assert captured["attempt_id"] == "attempt-persisted"
+        # The effect key stays the conductor's deterministic per-invocation
+        # identity, so an Attempt retry addresses its own Invocation.
+        assert captured["effect_key"] == "conductor-llm-1"
+
+    async def test_no_ambient_context_still_yields_a_unique_recorded_identity(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+        from maistro.observability.correlation import detached_execution_context
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+        captured: dict[str, object] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    body={"model": "m", "choices": [{"message": {"content": "ok"}}]}
+                )
+
+        with detached_execution_context():
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                None,
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+        # Never empty: an all-blank tuple would be the run_id:null best-effort
+        # path the owner decision forbids.
+        assert captured["run_id"]
+        assert captured["node_run_id"]
+        assert captured["attempt_id"]
+        assert captured["run_id"] != captured["node_run_id"]
 
 
 class TestGovernedCompletionGuards:

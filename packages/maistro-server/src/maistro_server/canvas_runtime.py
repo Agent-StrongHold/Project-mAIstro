@@ -1,0 +1,558 @@
+"""Server-composed Canvas job runner — ADR-045 / #2311 runner START.
+
+The issue's runner obligation is that ``CanvasJobRunner`` is *started in the
+default composition*, not only constructible: the shipped maistro-server
+process (the ``maistro-engine`` container of the default compose stack) must
+own a live claim/lease/reap loop over the same durable ``generation_jobs``
+queue the HTTP boundary writes to, so admitted jobs have a reachable consumer
+with no external runner and no browser open (#93's product contract, now
+satisfied in-process the way ``bind_canvas_runner_lifecycle`` satisfies it for
+the legacy canvas router).
+
+Construction goes through :func:`maistro_canvas.canvas.composition.
+build_canvas_runtime` — the package-owned seam that makes a runner without the
+canonical Run/NodeRun/Attempt binding unrepresentable. The canonical scope
+comes from the Container's chat admission scope (the Workspace's Root
+Project), never from Canvas org ids.
+
+The image provider is the governed egress, replacing the retired
+``canvas/tool.py`` direct LiteLLM POST (the unowned image-generation bypass
+under the #56 umbrella): every ``generate`` crosses the Binding → Invocation
+→ approved-provider boundary, records usage, and stores image bytes in the
+Canvas-owned ``canvas_blobs`` table with the durable Invocation row holding
+only content references (#286's no-unowned-bypass exit rule).
+
+Truthfulness rules this module holds:
+
+- No store or no durable PostgreSQL spine → the runner is not started and the
+  log says why (an in-process spine cannot see admitted Runs; the worker
+  service refuses the same situation for the same reason).
+- ``refine`` is unsupported: the governed gateway exposes no image-edits
+  endpoint, and faking one would be exactly the unowned bypass this module
+  replaces. It raises with a message naming the gap.
+- The default draft model comes from ``MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL``.
+  Unset, the registry refuses to guess: ``get_default_draft()`` raises naming
+  the variable. The gateway's model list backs ``is_registered``; a list that
+  could not be fetched leaves the registry empty and admissions fail closed.
+- ``seed`` / ``negative_prompt`` / conditioning args (``world_style``,
+  ``render_style``, ``asset_sheet``) are not yet part of the governed image
+  request contract; they are ignored here rather than smuggled around the
+  boundary. Widening the contract is core-capability work, not Canvas's.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import socket
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.image_generation import (
+    IMAGE_GENERATE_CAPABILITY,
+    ImageGenerationEgress,
+    ImageGenerationRequest,
+)
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    GatewayEndpoint,
+)
+from maistro.http import shared_client
+from maistro.observability.correlation import current_execution_context
+from maistro.security.warden.detector import Warden
+
+if TYPE_CHECKING:
+    from maistro_canvas.protocols import ImageData
+    from maistro_canvas.types import ModelInfo
+
+logger = structlog.get_logger()
+
+#: The image-generation Binding family this composition registers: authorizes
+#: ``image.generate`` through the deployment's default gateway credential, in
+#: the admission scope the runner executes under (#2464). It pins no provider —
+#: the request (the job's model, or the registry default) names the model, and
+#: an unregistered model is refused rather than guessed. The durable identity
+#: is scope-qualified (see :func:`canvas_image_binding_id`); this constant is
+#: the family every such id derives from.
+CANVAS_IMAGE_BINDING_ID = "canvas-image-gateway"
+
+
+def canvas_image_binding_id(workspace_id: str, project_id: str) -> str:
+    """The image Binding id the given admission scope registers under (#2464).
+
+    The scope is part of the identity, not just two columns beside it: a
+    restart over the same database derives the same id and reuses the first
+    boot's immutable record, and a second deployment serving a different
+    Workspace/Project over the same database registers beside — never over —
+    the first one's authorization, so no tenant's effects can be attributed
+    through another tenant's Binding.
+
+    Both parts are length-prefixed before the join (the same injective
+    framing ``admission_scope_key`` uses), then digested, so the
+    ``(workspace_id, project_id) -> id`` mapping is injective no matter what
+    characters either part contains. The readable prefix keeps the id
+    recognizable in logs and in ``capability_bindings``.
+    """
+    framed = "\x1f".join(f"{len(part)}:{part}" for part in (workspace_id, project_id))
+    digest = hashlib.sha256(framed.encode()).hexdigest()[:12]
+    return f"{CANVAS_IMAGE_BINDING_ID}@{workspace_id}/{project_id}/{digest}"
+
+
+#: How long shutdown waits for the poll loop to notice ``stop()`` before
+#: cancelling the task outright (mirrors the composition seam's bound).
+SHUTDOWN_GRACE_SECONDS = 10.0
+
+_DEFAULT_DRAFT_MODEL_ENV = "MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL"
+
+
+class CanvasImageBlobStore:
+    """``ImageBlobStore`` over the Canvas store's durable ``canvas_blobs``.
+
+    ``maistro.capabilities.image_generation`` leaves the durable home for
+    generated bytes to the package that owns the table; maistro-canvas owns
+    ``canvas_blobs``, and this adapter is the server's bridge onto it. Writes
+    commit before the reference is returned, so an Invocation row never names
+    bytes that are not yet as durable as it is.
+
+    Each write is stamped with the canonical scope the calling runtime was
+    composed under (``workspace_id`` / ``project_id`` — the same
+    Workspace/Project every Canvas Run of this composition is admitted in).
+    The stamp is what makes the stored bytes authorizable later: the
+    ``/v2/canvas/blobs/{id}`` presentation route reads it as the Workspace
+    whose membership it must enforce (#2311), so bytes and the Runs that
+    produced them answer to one Workspace and Project. An unscoped write is
+    possible only by constructing the adapter without a scope, and a blob so
+    written can never be served — the route fails closed on the missing
+    anchor.
+    """
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        workspace_id: str = "",
+        project_id: str = "",
+    ) -> None:
+        self._store = store
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+
+    async def put(self, data: bytes, *, media_type: str) -> str:
+        metadata: dict[str, str] = {"source": "governed-image-egress"}
+        if self._workspace_id:
+            metadata["workspace_id"] = self._workspace_id
+        if self._project_id:
+            metadata["project_id"] = self._project_id
+        ref: str = await self._store.store_blob(data, format=media_type, metadata=metadata)
+        return ref
+
+    async def get(self, ref: str) -> bytes | None:
+        data: bytes | None = await self._store.get_blob(ref)
+        return data
+
+
+class GovernedGatewayImageClient:
+    """``ImageGenClient`` whose physical egress is the governed image boundary.
+
+    Replaces the retired ``canvas/tool.py`` LiteLLM POST. ``generate`` reads
+    the canonical execution context the Canvas executor already runs under
+    (run/node_run/attempt correlation bound by the canonical Runtime), so the
+    Invocation row lands on the exact Attempt whose provider work it was.
+    """
+
+    def __init__(
+        self,
+        effects: Any,
+        *,
+        endpoint: GatewayEndpoint,
+        blobs: CanvasImageBlobStore,
+        workspace_id: str,
+        project_id: str,
+        binding_id: str,
+    ) -> None:
+        """Bind the client to one authorized execution scope.
+
+        ``workspace_id``/``project_id`` are the scope the composition verified
+        admission for — the same values the runner's canonical execution and
+        the registered Binding carry (#2464). They are required rather than
+        defaulted so a client cannot exist without a scope to resolve its
+        Binding against; there is no representable unscoped instance.
+        """
+        if not workspace_id.strip():
+            raise ValueError("workspace_id must be a non-empty string")
+        if not project_id.strip():
+            raise ValueError("project_id must be a non-empty string")
+        self._effects = effects
+        self._binding_id = binding_id
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        self._egress = ImageGenerationEgress(effects, endpoint=endpoint, blobs=blobs)
+
+    async def generate(
+        self,
+        *,
+        model_id: str,
+        prompt: str,
+        width: int,
+        height: int,
+        count: int = 1,
+        seed: int | None = None,
+        negative_prompt: str = "",
+        world_style: Any = None,
+        render_style: Any = None,
+        asset_sheet: Any = None,
+    ) -> list[ImageData]:
+        del seed, negative_prompt, world_style, render_style, asset_sheet  # documented above
+        context = current_execution_context()
+        if not (context.run_id and context.node_run_id and context.attempt_id):
+            msg = (
+                "governed image generation requires canonical execution context "
+                "(run_id/node_run_id/attempt_id); the Canvas executor binds it around "
+                "every stage, so its absence means this client was called outside "
+                "canonical execution"
+            )
+            raise RuntimeError(msg)
+        # Resolve, never bare-get (#2464): the Binding authorizes only in the
+        # scope the executing Run belongs to. The ambient context carries that
+        # durable scope (the Canvas executor binds it from the Run row); where
+        # it names none, the composition's admission scope stands in. A
+        # Binding registered in a different scope — a cross-tenant claim, or a
+        # stale row from a moved deployment — fails closed here, before any
+        # provider dispatch and before any Invocation row exists.
+        binding = await self._effects.bindings.resolve(
+            self._binding_id,
+            workspace_id=context.workspace_id or self._workspace_id,
+            project_id=context.project_id or self._project_id,
+            node_id=context.node_run_id,
+            capability=IMAGE_GENERATE_CAPABILITY,
+        )
+        # Stable across retries of the same stage (same NodeRun), distinct per
+        # stage, model, prompt and size — the Invocation dedup replays a
+        # completed effect instead of re-billing it.
+        effect_key = (
+            "canvas-image:"
+            + hashlib.sha256(
+                f"{context.run_id}|{context.node_run_id}|{model_id}|{prompt}|{width}x{height}|{count}".encode()
+            ).hexdigest()[:24]
+        )
+        request = ImageGenerationRequest(
+            model=model_id,
+            prompt=prompt,
+            size=f"{width}x{height}",
+            n=count,
+        )
+        result = await self._egress.generate(
+            binding=binding,
+            run_id=context.run_id,
+            node_run_id=context.node_run_id,
+            attempt_id=context.attempt_id,
+            effect_key=effect_key,
+            request=request,
+            # The executing Run's acting principal (#2464): quota and audit
+            # attribute this physical effect to the identity the Run was
+            # admitted for, not to the worker process (blank reads "system").
+            actor_id=context.actor_id,
+        )
+        from maistro_canvas.protocols import ImageData
+
+        return [
+            ImageData(url=ref, bytes_=data, width=width, height=height)
+            for data, ref in zip(result.images, result.refs, strict=False)
+        ]
+
+    async def refine(
+        self,
+        *,
+        model_id: str,
+        source_url: str,
+        prompt: str,
+        region: str = "full",
+        strength: float = 0.6,
+    ) -> ImageData:
+        del model_id, source_url, prompt, region, strength
+        msg = (
+            "image refine is not supported by the governed gateway egress: the "
+            "gateway exposes no image-edits endpoint, and routing around the "
+            "boundary would recreate the unowned bypass this client replaced "
+            "(#56). Refine remains available to deployments that supply an "
+            "adapter through maistro-canvas-worker."
+        )
+        raise RuntimeError(msg)
+
+    async def list_image_models(self) -> list[ModelInfo]:
+        return []
+
+
+class GatewayModelRegistry:
+    """Canvas model registry backed by the deployment gateway's model list.
+
+    ``is_registered`` answers from the gateway's ``/v1/models`` list fetched
+    once at runner start; a fetch that failed leaves the registry empty and
+    admissions fail closed (``UnknownModelError``), which is the truthful
+    answer for a gateway this deployment could not enumerate. The default
+    draft model is ``MAISTRO_CANVAS_DEFAULT_DRAFT_MODEL``; unset, nothing is
+    guessed — ``get_default_draft()`` raises naming the variable.
+    """
+
+    def __init__(self, models: tuple[str, ...], default_draft: str | None) -> None:
+        self._models = frozenset(models)
+        self._default_draft = default_draft
+
+    @property
+    def default_draft(self) -> str | None:
+        """The configured default, or None when the environment named none."""
+        return self._default_draft
+
+    @classmethod
+    async def from_gateway(
+        cls, endpoint: GatewayEndpoint, *, env: Mapping[str, str] | None = None
+    ) -> GatewayModelRegistry:
+        resolved = os.environ if env is None else env
+        default_draft = resolved.get(_DEFAULT_DRAFT_MODEL_ENV, "").strip() or None
+        models = await _fetch_gateway_models(endpoint)
+        if default_draft is None:
+            logger.warning(
+                "canvas_model_registry_default_unset",
+                detail=(
+                    f"{_DEFAULT_DRAFT_MODEL_ENV} is not set; model-default admissions "
+                    "will fail with a configuration error naming the variable"
+                ),
+            )
+        if not models:
+            logger.warning(
+                "canvas_model_registry_empty",
+                detail="the gateway model list could not be fetched; admissions fail closed",
+            )
+        return cls(tuple(models), default_draft)
+
+    def is_registered(self, model_id: str) -> bool:
+        return model_id in self._models
+
+    def get_default_draft(self) -> str:
+        if self._default_draft is None:
+            msg = (
+                f"no default draft image model configured: set "
+                f"{_DEFAULT_DRAFT_MODEL_ENV} to the gateway image model admissions "
+                "should use when the request names none"
+            )
+            raise RuntimeError(msg)
+        return self._default_draft
+
+
+class WardenPromptScan:
+    """The Canvas warden protocol over the canonical Warden threat detector.
+
+    The executor's contract is a verdict string; the detector's is a
+    :class:`WardenVerdict`. Any non-clean verdict maps to ``BLOCK`` — the
+    strictest reading, matching the Gate's user-input threshold, because a
+    generation prompt is untrusted user content reaching a paid external
+    provider.
+    """
+
+    def __init__(self, warden: Warden | None = None) -> None:
+        self._warden = warden if warden is not None else Warden()
+
+    async def scan_prompt(self, prompt: str) -> str:
+        verdict = await self._warden.scan(prompt, "canvas_prompt")
+        return "ALLOW" if verdict.clean else "BLOCK"
+
+
+async def _fetch_gateway_models(endpoint: GatewayEndpoint) -> tuple[str, ...]:
+    """The gateway's model ids, or () when the list cannot be read."""
+    base = endpoint.base_url.rstrip("/")
+    url = base if base.endswith("/v1") else f"{base}/v1"
+    try:
+        async with shared_client(timeout=10.0) as client:
+            response = await client.get(
+                f"{url}/models",
+                headers={"Authorization": f"Bearer {endpoint.api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            logger.warning("canvas_gateway_models_unreadable", detail="unexpected payload shape")
+            return ()
+        return tuple(
+            item["id"]
+            for item in data
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        )
+    except Exception:
+        logger.warning("canvas_gateway_models_fetch_failed", exc_info=True)
+        return ()
+
+
+@dataclass
+class CanvasRunnerHandle:
+    """The started runner and the task carrying its poll loop."""
+
+    runtime: Any
+    task: asyncio.Task[None]
+
+
+async def start_canvas_job_runner(
+    *,
+    store: Any,
+    container: Any,
+    endpoint: GatewayEndpoint,
+    workspace_id: str,
+    worker_id: str | None = None,
+) -> CanvasRunnerHandle:
+    """Compose and start the Canvas runtime's worker on this process's loop.
+
+    Registers the image-generation Binding (read-first: a restart against
+    the same database reuses the persisted record instead of colliding with
+    the store's immutability rule), builds the adapters, constructs the
+    runtime through the package-owned composition seam, and starts the
+    runner. The caller owns shutdown via :func:`stop_canvas_job_runner`.
+    """
+    from maistro_canvas.canvas.composition import build_canvas_runtime
+
+    effects = container.capability_effects
+    # The admission scope is the authorized execution scope (#2464): the same
+    # values the Container's chat admission binds Runs into, which the runner
+    # below executes under. Registration used to build the Binding from the
+    # caller's settings value plus a fabricated ``project_id="default"``, so
+    # every Invocation a Canvas generate filed under it carried a scope no
+    # admitted Run belongs to. A settings value that disagrees with the wired
+    # admitter is a deployment fault, refused before anything registers.
+    admission_workspace, project_id = await container.chat_admitter.admission_scope()
+    if workspace_id != admission_workspace:
+        raise RuntimeError(
+            f"Canvas runner settings name Workspace {workspace_id!r} but the "
+            f"container's chat admission authorizes {admission_workspace!r}; the "
+            "image Binding must register in the scope Runs are actually admitted "
+            "into, so refusing to start under a scope the spine does not own"
+        )
+    binding_id = canvas_image_binding_id(admission_workspace, project_id)
+    binding = Binding(
+        binding_id=binding_id,
+        workspace_id=admission_workspace,
+        project_id=project_id,
+        capability=IMAGE_GENERATE_CAPABILITY,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+    )
+    # The binding id is fixed, so every boot after the first finds the row
+    # the previous boot wrote. A fresh Binding carries a fresh `created_at`,
+    # and the store treats any differing re-registration of the same id as
+    # an immutability violation — which crashed startup inside compose's
+    # `restart: unless-stopped` loop on the first container restart. Read
+    # first: absent → register; present → the persisted row is the authority
+    # (an operator kill-switch disabling it stays honored, `created_at`
+    # stays theirs), but a persisted record whose authorization shape no
+    # longer matches what this composition registers is a deployment fault
+    # — the id names a contract, and a changed contract needs a new id — so
+    # surface it and refuse to start under a stale authority.
+    # A pre-#2464 row under the bare family id is simply never consulted: the
+    # scope-qualified id makes the changed contract a new identity, exactly
+    # what the immutability rule demands, and the stale authorization stays in
+    # the store resolving nothing.
+    persisted = await effects.bindings.get(binding_id)
+    if persisted is None:
+        persisted = await effects.bindings.put(binding)
+    elif (
+        persisted.workspace_id != binding.workspace_id
+        or persisted.project_id != binding.project_id
+        or persisted.capability != binding.capability
+        or persisted.credential_refs != binding.credential_refs
+    ):
+        raise RuntimeError(
+            f"Canvas image binding {binding_id!r} is already "
+            "registered with a different authorization shape "
+            f"(capability={persisted.capability!r}, "
+            f"credential_refs={list(persisted.credential_refs)!r}, "
+            f"workspace_id={persisted.workspace_id!r}, "
+            f"project_id={persisted.project_id!r}); the binding id is "
+            "immutable — register the changed contract under a new id"
+        )
+    registry = await GatewayModelRegistry.from_gateway(endpoint)
+    image_client = GovernedGatewayImageClient(
+        effects,
+        endpoint=endpoint,
+        # The blob writes carry the same canonical scope build_canvas_runtime
+        # binds below — the Workspace/Project every admitted Run lives in —
+        # so the durable bytes and the Runs that produced them are
+        # authorizable against one scope (#2311, with #2464 owning the
+        # Invocation row's own scope fidelity).
+        blobs=CanvasImageBlobStore(store, workspace_id=admission_workspace, project_id=project_id),
+        workspace_id=admission_workspace,
+        project_id=project_id,
+        binding_id=binding_id,
+    )
+    resolved_worker_id = worker_id or f"canvas-server-runner-{socket.gethostname()}-{os.getpid()}"
+    runtime = build_canvas_runtime(
+        store=store,
+        image_client=image_client,
+        model_registry=registry,
+        warden=WardenPromptScan(),
+        run_store=container.run_store,
+        workspace_id=admission_workspace,
+        project_id=project_id,
+        worker_id=resolved_worker_id,
+    )
+    task = asyncio.create_task(runtime.runner.start(), name="canvas-job-runner")
+    await logger.ainfo(
+        "canvas_runner_started",
+        worker=resolved_worker_id,
+        workspace_id=admission_workspace,
+        project_id=project_id,
+        binding=binding_id,
+        default_draft_model_configured=registry.default_draft is not None,
+    )
+    return CanvasRunnerHandle(runtime=runtime, task=task)
+
+
+async def stop_canvas_job_runner(handle: CanvasRunnerHandle) -> None:
+    """Stop the runner boundedly, mirroring the composition seam's shutdown.
+
+    ``stop()`` only flips the poll-loop flag; it cannot interrupt a
+    ``tick_once`` blocked inside a provider call, so shutdown gives the loop
+    ``SHUTDOWN_GRACE_SECONDS`` to return on its own, then cancels, then waits
+    one more grace window before abandoning the task with an error log — the
+    same non-cancelling-then-cancelling ladder ``bind_canvas_runner_lifecycle``
+    uses, because a provider coroutine that swallows ``CancelledError`` would
+    otherwise hang application shutdown forever.
+    """
+    handle.runtime.runner.stop()
+    current = handle.task
+    done, _pending = await asyncio.wait({current}, timeout=SHUTDOWN_GRACE_SECONDS)
+    if not done:
+        logger.warning(
+            "canvas_runner_shutdown_timeout timeout=%s; cancelling stuck tick",
+            SHUTDOWN_GRACE_SECONDS,
+        )
+        current.cancel()
+        done, _pending = await asyncio.wait({current}, timeout=SHUTDOWN_GRACE_SECONDS)
+        if not done:
+            logger.error("canvas_runner_shutdown_abandoned; runner task ignored cancellation")
+            current.add_done_callback(_consume_runner_outcome)
+            return
+    _consume_runner_outcome(current)
+
+
+def _consume_runner_outcome(task: asyncio.Task[None]) -> None:
+    """Retrieve a finished runner task's outcome, logging an unexpected error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("canvas_runner_exited_with_error", exc_info=exc)
+
+
+__all__ = [
+    "CANVAS_IMAGE_BINDING_ID",
+    "CanvasImageBlobStore",
+    "CanvasRunnerHandle",
+    "GatewayModelRegistry",
+    "GovernedGatewayImageClient",
+    "WardenPromptScan",
+    "canvas_image_binding_id",
+    "start_canvas_job_runner",
+    "stop_canvas_job_runner",
+]
