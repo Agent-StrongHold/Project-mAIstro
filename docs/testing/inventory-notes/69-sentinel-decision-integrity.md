@@ -93,7 +93,8 @@ mypy battery passes (908 source files).
 - Live PostgreSQL (pgvector/pg18 `maistro-pg-test` at 127.0.0.1:5433, private
   database `auto69_job_5f6f` dropped and recreated): `alembic upgrade head`
   runs 001→064 as a single linear chain ending at this lane's
-  `064_sentinel_decision_integrity`. With `MAISTRO_TEST_PG_DSN` set,
+  `064_sentinel_decision_integrity` — accurate at that head; the develop sync
+  that followed made the numbering collide (see round 2). With `MAISTRO_TEST_PG_DSN` set,
   `test_pg_audit.py` + `test_integrity.py` give 73 passed / 0 skipped,
   including `test_real_pg_decisions_preserve_both_proofs_and_reject_all_mutations`
   (real allowed+denied `Sentinel.authorize`, reload, pinned-keyring VERIFIED,
@@ -109,3 +110,53 @@ mypy battery passes (908 source files).
   contract-markers, backlog-consistency, vulture-baseline, reachability and
   promotion-surface gates all green. No test cases were added or removed this
   round, so the recorded delta stays +58.
+
+## Repair round 2 (2026-11-26, head b3b94e5e51 + this commit)
+
+The previous round's two claims did not survive re-verification against the
+post-merge tree; both were real defects and were repaired in source (no
+quality-ledger edits; `quality/` still matches origin/develop exactly):
+
+- **Vulture ratchet red against the trusted base.** The CI invocation
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) failed with two NEW identities — the test-only
+  `DecisionSigner.verification_history` and `Sentinel.verification_keyring`
+  properties — and one recorded identity no longer found:
+  `types/security.py::repair_action` was flipped to "used" by the envelope's
+  `getattr(violation, "repair_action", ...)` read (vulture counts getattr
+  strings as uses). Repaired without banking anything: the signed violations
+  envelope now serializes via `dataclasses.asdict`, which covers every
+  Violation field (including future ones) without naming `repair_action`, so
+  the ledger row stays valid while the field stays inside the signature —
+  canonical bytes are unchanged (`sort_keys=True` orders the same key set).
+  `DecisionSigner.keyring` now derives from `verification_history`, and
+  `create_container` publishes the Sentinel verification-key reference set
+  (ids only) at composition time — the out-of-band pinning record ADR-073's
+  amendment describes. Both properties now have production callers; the gate
+  passes with the ledger untouched.
+- **Duplicate Alembic revision `064`.** The develop sync at b3b94e5e51 landed
+  develop's `064_canonical_personas` … `070_evolve_domain_publications`, while
+  this lane's migration still claimed revision `064` off `063` (written when
+  develop ended at 063). `alembic heads` showed two heads and `upgrade head`
+  was ambiguous. Renumbered to `071_sentinel_decision_integrity`
+  (`down_revision = "070"`); `alembic history` is a single linear chain.
+
+Re-validation evidence (all commands run fresh on this round's tree):
+
+- Live PostgreSQL (pgvector/pg18 `maistro-pg-test` at 127.0.0.1:5433, private
+  database `auto69_job_7e217c` dropped and recreated): `alembic upgrade head`
+  runs 001→071 linearly; with `MAISTRO_TEST_PG_DSN` set, `test_pg_audit.py` +
+  `test_integrity.py` give 79 passed / 0 skipped, including
+  `test_real_pg_decisions_preserve_both_proofs_and_reject_all_mutations`
+  (real allowed+denied `Sentinel.authorize`, reload, pinned-keyring VERIFIED,
+  every protected-field mutation rejected, secret non-retention against raw
+  PG rows) and `test_real_postgres_two_org_scope_and_schema`.
+- Targeted battery (security + persistence audit + container wiring):
+  1633 passed / 31 skipped (unchanged counts; no cases added or removed, so
+  the recorded delta stays +58).
+- `ruff check .` and `ruff format --check .` clean; full AGENTS.md mypy
+  battery green (966 files); suite-inventory, security-inventory,
+  doc-links, wiring-reads, contract-markers, test-duplicates,
+  durable-table-inventory, adr-index, adr-status-language, backlog-
+  consistency, vulture-baseline (CI args), reachability, promotion-surface
+  and radon-baseline gates all green.

@@ -2968,6 +2968,12 @@ async def create_container(
         ) = await _wire_durable_events(pg_pool, db_pool)
         handler_caller = HTTPHandlerCaller(handler_invocation_store)
         sentinel.attach_event_log(durable_event_log)
+        # Publish the decision verification-key references at composition time
+        # (ids only, never key bytes): this startup line is the out-of-band
+        # record operators pin verifiers against (ADR-073 amendment, #69).
+        logger.info(
+            "Sentinel decision verification keyring: %s", sorted(sentinel.verification_keyring)
+        )
 
         event_bus = EventBus()
 

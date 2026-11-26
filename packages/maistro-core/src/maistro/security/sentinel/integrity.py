@@ -29,6 +29,7 @@ import base64
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -88,17 +89,11 @@ def canonical_decision_payload(record: Any) -> bytes:
     are explicit fields rather than incidental string formatting.
     """
 
-    violations = []
-    for violation in getattr(record, "violations", ()) or ():
-        violations.append(
-            {
-                "boundary": getattr(violation, "boundary", ""),
-                "rule": getattr(violation, "rule", ""),
-                "severity": getattr(violation, "severity", ""),
-                "detail": getattr(violation, "detail", ""),
-                "repair_action": getattr(violation, "repair_action", None),
-            }
-        )
+    # ``asdict`` serializes every Violation field, so a field added to the
+    # record later is signed the moment it exists instead of silently riding
+    # outside the signature; the durable stores serialize violations the same
+    # way, keeping the signed bytes reconstructible from a reloaded row.
+    violations = [asdict(violation) for violation in getattr(record, "violations", ()) or ()]
     payload = {
         "schema": 1,
         "timestamp": _timestamp(getattr(record, "timestamp", "")),
@@ -159,11 +154,13 @@ class DecisionSigner:
     def keyring(self) -> dict[str, str]:
         """The publishable verification-key reference set (never private material).
 
-        A deployment exposes this to verifiers out of band; a verifier that
-        passes it as ``trusted_keys`` gets the tamper-evidence ADR-073 asks for,
-        including across a restart of the signing process.
+        Derived from the rotation history so the active key and every retired
+        key that can still verify older records appear by construction. A
+        deployment exposes this to verifiers out of band; a verifier that
+        passes it as ``trusted_keys`` gets the tamper-evidence ADR-073 asks
+        for, including across a restart of the signing process.
         """
-        return {key_id: _b64(public_key) for key_id, public_key in self._public_keys.items()}
+        return {key.key_id: key.public_key for key in self.verification_history}
 
     @property
     def verification_history(self) -> tuple[VerificationKey, ...]:

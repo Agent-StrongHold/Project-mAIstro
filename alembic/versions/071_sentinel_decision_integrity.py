@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "064"
-down_revision = "063"
+revision = "071"
+down_revision = "070"
 branch_labels = None
 depends_on = None
 
