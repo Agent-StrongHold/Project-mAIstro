@@ -43,9 +43,11 @@ export interface BriefWrittenItem {
 }
 
 /** The durable commit result (#1823): present on commit turns, truthfully
- * naming what was written (or why the commit could not be). */
+ * naming what was written (or why the commit could not be). ``refused`` is
+ * the boundary's typed rejection (authorization, a draft the gate no longer
+ * accepts) — nothing was written and the draft stays open. */
 export interface BriefCommit {
-  status: "committed" | "already_committed" | "unavailable" | "failed";
+  status: "committed" | "already_committed" | "unavailable" | "failed" | "refused";
   recovered?: boolean;
   goal_id?: string;
   goal_revision?: number;
