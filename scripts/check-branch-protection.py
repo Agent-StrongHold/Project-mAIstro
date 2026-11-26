@@ -548,21 +548,32 @@ def _head_report(token: str, head_sha: str) -> dict[str, str]:
     """Per-context state GitHub last reported on one PR head SHA.
 
     A context with any `success` report passes; several runs of one name are
-    folded so a re-run's green outranks an earlier red.
+    folded so a re-run's green outranks an earlier red. The check-run endpoint
+    pages at 100 runs, so every page is walked before classification: a green
+    required check on a later page is a satisfied context, not a
+    never-reported freeze (the commit-status endpoint cannot recover runs the
+    first page omitted).
     """
     report: dict[str, str] = {}
-    runs = _get(
-        f"https://api.github.com/repos/{REPO}/commits/{head_sha}/check-runs?per_page=100",
-        token,
-    )
-    for run in runs.get("check_runs") or []:
-        name = run.get("name") or ""
-        if run.get("status") == "completed":
-            conclusion = run.get("conclusion") or ""
-            if conclusion == "success" or report.get(name) != "success":
-                report[name] = conclusion
-        else:
-            report.setdefault(name, run.get("status") or "in_progress")
+    page = 1
+    while True:
+        runs = _get(
+            f"https://api.github.com/repos/{REPO}/commits/{head_sha}/check-runs"
+            f"?per_page=100&page={page}",
+            token,
+        )
+        page_runs = runs.get("check_runs") or []
+        for run in page_runs:
+            name = run.get("name") or ""
+            if run.get("status") == "completed":
+                conclusion = run.get("conclusion") or ""
+                if conclusion == "success" or report.get(name) != "success":
+                    report[name] = conclusion
+            else:
+                report.setdefault(name, run.get("status") or "in_progress")
+        if len(page_runs) < 100:
+            break
+        page += 1
     combined = _get(f"https://api.github.com/repos/{REPO}/commits/{head_sha}/status", token)
     for status in combined.get("statuses") or []:
         name = status.get("context") or ""

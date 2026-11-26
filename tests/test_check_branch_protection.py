@@ -944,3 +944,55 @@ class TestApplyFreezeGuard:
         assert gate._classify("test", report) == "reports 'failure'"
         report["test"] = "success"
         assert gate._classify("test", report) is None
+
+    def test_head_report_walks_every_check_run_page(self, gate, monkeypatch):
+        """A green newly required check beyond the first 100 check runs is a
+        satisfied context: classification must see page 2, or the apply would
+        freeze a healthy PR on a false never-reported."""
+        page_one = [
+            {"name": f"filler-{i}", "status": "completed", "conclusion": "neutral"}
+            for i in range(100)
+        ]
+        page_two = [
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "tail", "status": "completed", "conclusion": "failure"},
+        ]
+        seen_urls: list[str] = []
+
+        def fake_get(url: str, token: str):
+            assert token == "t"
+            if "/check-runs?" in url:
+                seen_urls.append(url)
+                return {"check_runs": page_one if url.endswith("page=1") else page_two}
+            if url.endswith("/status"):
+                return {"statuses": []}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        monkeypatch.setattr(gate, "_get", fake_get)
+        report = gate._head_report("t", "sha-big")
+        assert any(u.endswith("page=1") for u in seen_urls) and any(
+            u.endswith("page=2") for u in seen_urls
+        )
+        assert report["test"] == "success"
+        assert report["tail"] == "failure"
+        assert gate._classify("test", report) is None
+
+    def test_a_short_final_page_stops_the_walk(self, gate, monkeypatch):
+        """Pagination ends at the first short page, not on a blind page 2."""
+        page_one = [
+            {"name": f"filler-{i}", "status": "completed", "conclusion": "neutral"}
+            for i in range(99)
+        ]
+        seen_urls: list[str] = []
+
+        def fake_get(url: str, token: str):
+            if "/check-runs?" in url:
+                seen_urls.append(url)
+                return {"check_runs": page_one}
+            if url.endswith("/status"):
+                return {"statuses": []}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        monkeypatch.setattr(gate, "_get", fake_get)
+        gate._head_report("t", "sha-small")
+        assert len([u for u in seen_urls if "/check-runs?" in u]) == 1
