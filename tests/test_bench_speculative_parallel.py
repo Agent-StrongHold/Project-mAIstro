@@ -215,8 +215,11 @@ class TestSerialCascade:
         assert failed.state == "failed"
         assert failed.billed_input == failed.input_units
         assert failed.billed_output == 0.0
-        # A 503 is a generic provider exception: UNKNOWN, not COMPLETED.
-        assert counts["unknown"] == 1
+        # A 503 response is a received refusal: the gateway raises LlmHttpError,
+        # an EffectNotApplied, so the Invocation terminalizes FAILED (retryable,
+        # proven no-effect) — not UNKNOWN, and never COMPLETED.
+        assert counts["failed"] == 1
+        assert counts["unknown"] == 0
         assert counts["completed"] == 1
 
 
@@ -315,7 +318,12 @@ class TestLedgerHonesty:
         )
         assert summary.physical_calls == 6
         assert summary.invocations_recorded == 6
-        assert summary.invocations_completed + summary.invocations_unknown == 6
+        # Every physical call terminalizes into exactly one truthful class:
+        # completed, unknown (no proven outcome), or failed (received refusal).
+        assert (
+            summary.invocations_completed + summary.invocations_unknown + summary.invocations_failed
+            == 6
+        )
 
     async def test_refuses_a_physical_call_without_an_invocation(self) -> None:
         class _EmptyStore:
@@ -363,7 +371,13 @@ class TestLedgerHonesty:
         counts = await bench.count_invocations(
             effects, {QUICK: bench._binding(QUICK)}, [record], "lbl"
         )
-        assert counts == {"completed": 0, "unknown": 0, "other": 1, "recorded": 1}
+        assert counts == {
+            "completed": 0,
+            "unknown": 0,
+            "failed": 0,
+            "other": 1,
+            "recorded": 1,
+        }
 
     async def test_refuses_a_merged_duplicate_invocation(self) -> None:
         class _DupStore:

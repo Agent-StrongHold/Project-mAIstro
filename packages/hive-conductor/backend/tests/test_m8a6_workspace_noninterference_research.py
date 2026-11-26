@@ -196,7 +196,7 @@ def _projection(client: Any, workspace_id: str) -> dict[str, Any]:
     agents = client.get(f"/v1/agents?workspace_id={workspace_id}")
     entries = client.get("/v1/memory/entries")
     namespaces = client.get("/v1/memory/namespaces")
-    chats = client.get("/v1/chat/sessions")
+    chats = client.get(f"/v1/chat/sessions?workspace_id={workspace_id}")
     for response in (listed, detail, schedules, agents, entries, namespaces, chats):
         assert response.status_code == 200, (
             f"projection read degraded: {response.request.url} -> "
@@ -414,7 +414,10 @@ def _op_delete_memory_a(h: Harness) -> None:
 
 
 def _op_create_chat_session_a(h: Harness) -> None:
-    r = h.alice.post("/v1/chat/sessions", json={"title": f"m8a6-session-{h.mutations}"})
+    r = h.alice.post(
+        "/v1/chat/sessions",
+        json={"title": f"m8a6-session-{h.mutations}", "workspace_id": h.ws_a.id},
+    )
     assert r.status_code == 200, r.text
     h.chat_ids.append(r.json()["id"])
     h.mutations += 1
@@ -464,7 +467,7 @@ def _assert_a_payload_excludes_b(h: Harness, path: str, payload: Any) -> None:
         assert all(e.get("namespace") != "m8a6-b" for e in payload), "B memory namespace leaked"
     elif path == "/v1/memory/namespaces":
         assert all(n["name"] != "m8a6-b" for n in payload), "B memory namespace leaked"
-    elif path == "/v1/chat/sessions":
+    elif path.startswith("/v1/chat/sessions"):
         assert all(s["id"] != f"chat-seed-{_BOB}" for s in payload), "B chat session leaked"
 
 
@@ -481,7 +484,7 @@ def _op_query_as_a(h: Harness) -> None:
         f"/v1/agents?workspace_id={h.ws_a.id}",
         "/v1/memory/entries",
         "/v1/memory/namespaces",
-        "/v1/chat/sessions",
+        f"/v1/chat/sessions?workspace_id={h.ws_a.id}",
     ):
         r = h.alice.get(path)
         assert r.status_code == 200, f"{path} -> {r.status_code} {r.text}"
@@ -611,10 +614,10 @@ def parties():
         ws_b=Workspace(**created_b.json()),
     )
 
-    # Warm the lazily-seeding readers (chat sessions seed per owner on first
-    # read) so the baseline is taken after the warm-up, not perturbed by it.
-    assert alice.get("/v1/chat/sessions").status_code == 200
-    assert bob.get("/v1/chat/sessions").status_code == 200
+    # Warm Workspace-scoped chat list and memory namespaces so the baseline
+    # is taken after first-read side effects, not perturbed by them.
+    assert alice.get(f"/v1/chat/sessions?workspace_id={h.ws_a.id}").status_code == 200
+    assert bob.get(f"/v1/chat/sessions?workspace_id={h.ws_b.id}").status_code == 200
     assert alice.get("/v1/memory/namespaces").status_code == 200
     assert bob.get("/v1/memory/namespaces").status_code == 200
 
@@ -652,8 +655,11 @@ def _cleanup(h: Harness) -> None:
         stores.memory_entries.pop(eid, None)
     for eid in h.bob_memory_ids:
         stores.memory_entries.pop(eid, None)
+    from services import conversation_sessions
+
     for cid in h.chat_ids:
         stores.chat_sessions.pop(cid, None)
+        conversation_sessions.session_meta_store.pop(cid, None)
     for fid in h.feedback_ids:
         stores.persona_feedback.pop(fid, None)
     for ws in (h.ws_a, h.ws_b):
@@ -1031,27 +1037,32 @@ def test_persona_feedback_aggregates_across_workspaces_of_one_persona(parties) -
         assert h.alice.delete(f"/v1/workspaces/{twin_a['id']}").status_code == 204
 
 
-def test_chat_listing_seeds_reader_state_on_first_read(parties) -> None:
-    """The false-positive source the harness must warm up around: the first
-    chat-session listing for a principal seeds their starter session, so a
-    naive first-read baseline changes between baseline capture and the next
-    read without any A-side operation running."""
+def test_chat_listing_is_stable_for_an_empty_workspace(parties) -> None:
+    """Workspace-scoped list (#1822) does not seed a Welcome transcript; an
+    empty Workspace stays empty across reads so the harness baseline is stable
+    without a warm-up seed row."""
     import stores
     from main import app
+    from services import workspace_authority
 
     username = "m8a6-dave"
     dave = _mint_principal(app, username)
     try:
-        first = dave.get("/v1/chat/sessions")
-        assert first.status_code == 200
-        seeded = {s["id"] for s in first.json()}
-        assert f"chat-seed-{username}" in stores.chat_sessions, (
-            "expected the lazy starter-session seed on first read"
+        ws = asyncio.run(
+            workspace_authority.create_workspace(
+                creator_user_id=username,
+                name="dave ws",
+                persona_template_id="personal",
+                checklist=[],
+                theme_id="default",
+                voice_tone_override=None,
+            )
         )
-        assert f"chat-seed-{username}" in seeded
-        second = dave.get("/v1/chat/sessions")
+        first = dave.get(f"/v1/chat/sessions?workspace_id={ws.id}")
+        assert first.status_code == 200
+        assert first.json() == []
+        second = dave.get(f"/v1/chat/sessions?workspace_id={ws.id}")
         assert second.status_code == 200
-        assert {s["id"] for s in second.json()} == seeded, "warm state must be stable"
+        assert second.json() == []
     finally:
         stores.users.pop(username, None)
-        stores.chat_sessions.pop(f"chat-seed-{username}", None)

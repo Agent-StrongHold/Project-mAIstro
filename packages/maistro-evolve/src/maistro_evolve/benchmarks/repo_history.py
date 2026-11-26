@@ -78,7 +78,7 @@ _CORPUS = Path(__file__).parent / "corpora" / "repo_history_tasks.json"
 # SENSITIVE_PATH_PATTERNS) and makes every refresh a visible code change.
 #
 # Regenerate with `python3 scripts/generate_repo_tasks.py`; it prints the digest.
-_CORPUS_SHA256 = "34b73f2dd46731453c12550988c23b3eb375a1c46e9bbc5320b1e0da94d36e14"
+_CORPUS_SHA256 = "34b73f2dd46731453c12550988c23b3eb375a1c46e9bbc5320b1e0da94d36e14"  # DevSkim: ignore DS173237 until 2027-12-31
 
 # Training cutoffs for models this repo scores against. Deliberately explicit
 # and deliberately incomplete: adding a model is a decision someone makes on
@@ -243,3 +243,18 @@ def corpus_metadata() -> dict[str, Any]:
         "fidelity": "real",
         "contamination_defence": "chronological (post-cutoff commits)",
     }
+
+
+# Vulture scan input, hosted in this reachable module the same way
+# packages/maistro-design/src/maistro_design/packs/__init__.py hosts its
+# contract names: ``RepoTask.repo_state`` is an annotation-only dataclass
+# field (a class-object reference would not resolve), so it is named through
+# this module variable instead. The field is corpus-schema surface — the
+# loader projects it from the digest-pinned corpus rows and the corpus
+# round-trip tests read it back — the same reviewed declarative posture as
+# its banked siblings (issue_text/gold_patch/test_patch in
+# quality/vulture-baseline.json). It became scanner-visible only when #847
+# removed an unrelated local variable of the same name from maistro-core.
+repo_state = "repo_state"
+
+_VULTURE_REFERENCES = (repo_state,)

@@ -23,9 +23,9 @@ type ModelCheck = "pending" | "ok" | "failed";
 
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
-  { id: "crypto_trading", name: "Crypto Trading", desc: "CoinSwarm integration, exchange WebSockets, evolutionary strategies", requires: ["crypto_identity"] },
+  { id: "crypto_trading", name: "Crypto Trading", desc: "Not mounted in Workspaces v1.0 (#2320) — CoinSwarm bridge retired; keep key for schema only", requires: ["crypto_identity"] },
   { id: "lightning", name: "Lightning Federation", desc: "LND node, Lightning Address, conductor-to-conductor payments (ADR-027)", requires: ["crypto_identity"] },
-  { id: "home_automation", name: "Home Automation", desc: "Home Assistant MCP control, IoT device management", requires: [] },
+  { id: "home_automation", name: "Home Automation", desc: "Not mounted in Workspaces v1.0 (#2320) — HA bridge retired; use Capabilities MCP instead", requires: [] },
   { id: "browser_agent", name: "Browser Agent", desc: "Camoufox browser automation, email reader, web scraping", requires: [] },
   { id: "red_team", name: "Red Team + Stress Rehearsal", desc: "Weekly self-hardening security scans, chaos testing", requires: [] },
   { id: "dream_loop", name: "Dream Loop", desc: "Idle-time memory consolidation, autonomous learning cycles", requires: [] },

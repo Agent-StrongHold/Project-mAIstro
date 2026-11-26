@@ -34,7 +34,7 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.runs.store_boundary import RunStoreBoundary
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
-from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL, TaskAttemptExecutor
 from maistro.tasks.http_contract import (
     IDEMPOTENCY_KEY_HEADER,
     WORKSPACE_ID_HEADER,
@@ -45,6 +45,10 @@ from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, get_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
+from maistro_server.abandoned_attempt_recovery import (
+    start_abandoned_attempt_recovery,
+    stop_abandoned_attempt_recovery,
+)
 from maistro_server.api import (
     a2a,
     canvas,
@@ -179,6 +183,37 @@ def _validate_startup(settings: Settings) -> None:
         )
 
 
+def _wire_canvas_assetinstance(app: FastAPI) -> bool:
+    """Mount the ADR-044 AssetInstance surface on the process (#2311 CONNECT).
+
+    LayerRecord ``canvas_store`` stays the design/persistence path (#851). This
+    binds ``AssetTool`` plus the asset ``/v2/canvas`` router (definitions,
+    instances, sheets, plan) so ``asset_*`` modules are process-reachable from
+    ``maistro_server.main``. Idempotent: an already-mounted surface is kept.
+    """
+    if getattr(app.state, "canvas_asset_tool", None) is not None:
+        return True
+    try:
+        from maistro_canvas.canvas.composition import build_asset_instance_surface
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        logger.error(
+            "canvas_assetinstance_unavailable",
+            detail=f"maistro-canvas AssetInstance surface missing ({exc})",
+        )
+        return False
+    surface = build_asset_instance_surface()
+    app.state.canvas_asset_tool = surface.tool
+    if not getattr(app.state, "canvas_asset_router_mounted", False):
+        app.include_router(surface.router)
+        app.state.canvas_asset_router_mounted = True
+    logger.info(
+        "canvas_assetinstance_wired",
+        backend="in_memory",
+        postgres_store=surface.postgres_store_cls.__name__,
+    )
+    return True
+
+
 def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     """Bind the shipped Canvas store to ``app.state.canvas_store`` (#851).
 
@@ -198,9 +233,14 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
     An already-injected store is never replaced — deployments and tests that
     compose their own keep theirs.
 
+    When a store is (or becomes) present, also CONNECT the ADR-044
+    AssetInstance surface (#2311) so asset modules are process-reachable
+    alongside the LayerRecord path without deleting it.
+
     Returns whether a store is (now) present.
     """
     if getattr(app.state, "canvas_store", None) is not None:
+        _wire_canvas_assetinstance(app)
         return True
     if engine is None:
         logger.info(
@@ -218,6 +258,7 @@ def _wire_canvas_ability(app: FastAPI, engine: Any) -> bool:
         return False
     app.state.canvas_store = PgCanvasStore(engine)
     logger.info("canvas_store_wired", backend="postgresql")
+    _wire_canvas_assetinstance(app)
     return True
 
 
@@ -271,6 +312,81 @@ def _gateway_credential(settings: Settings) -> str:
     two doors cannot disagree (and neither value is ever logged).
     """
     return os.getenv("LITELLM_API_KEY") or settings.litellm.master_key
+
+
+async def _stop_canvas_job_runner(handle: Any) -> None:
+    """Stop the Canvas runner boundedly, or no-op when none was started."""
+    if handle is None:
+        return
+    from maistro_server.canvas_runtime import stop_canvas_job_runner
+
+    await stop_canvas_job_runner(handle)
+
+
+async def _start_canvas_job_runner(
+    app: FastAPI, settings: Settings, container: Any, spine_pool: Any
+) -> Any:
+    """Start the Canvas job runner on this process, or skip truthfully (#2311).
+
+    Start conditions are exactly the two the issue's composition owes: a
+    wired Canvas store (PostgreSQL configured — the same resolver the spine
+    reads) and a durable spine (``spine_pool`` is not None). Anything else is
+    a logged skip, not a degraded start: a runner claiming against an
+    in-process spine cannot see admitted Runs, and the worker service refuses
+    the same situation for the same reason.
+
+    An explicit opt-out precedes all of that: a deployment running the
+    supported ``maistro-canvas-worker`` service sets
+    ``CANVAS_SERVER_CONSUMER_ENABLED=false`` so this process never competes
+    for the shared ``generation_jobs`` queue. The server's governed image
+    egress cannot execute ``refine``, so a claim it wins against the external
+    worker would burn the job's attempts and terminalize it as failed —
+    supplying the external adapter alone does not prevent that race.
+
+    Returns the runner handle for the lifespan's shutdown, or None.
+    """
+    if not settings.canvas_server_consumer_enabled:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="disabled by configuration (CANVAS_SERVER_CONSUMER_ENABLED=false); "
+            "an externally managed maistro-canvas-worker owns the queue",
+        )
+        return None
+    store = getattr(app.state, "canvas_store", None)
+    if spine_pool is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no durable PostgreSQL spine; Canvas jobs cannot be claimed in-process",
+        )
+        return None
+    if store is None:
+        await logger.ainfo(
+            "canvas_runner_not_started",
+            detail="no Canvas store wired; /v2/canvas answers 503",
+        )
+        return None
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro_server.canvas_runtime import start_canvas_job_runner
+
+    try:
+        return await start_canvas_job_runner(
+            store=store,
+            container=container,
+            endpoint=GatewayEndpoint(
+                base_url=settings.litellm.base_url,
+                api_key=_gateway_credential(settings),
+            ),
+            workspace_id=settings.workspace_id,
+        )
+    except ImportError as exc:  # pragma: no cover - shipped envs always have it
+        # Same contract as `_wire_canvas_ability`: a leaner environment
+        # without maistro-canvas keeps a truthful no-runner log rather than
+        # failing startup — the Canvas surface there already answers 503.
+        await logger.awarning(
+            "canvas_runner_not_started",
+            detail=f"maistro-canvas is not installed ({exc})",
+        )
+        return None
 
 
 def _agents_dir() -> str:
@@ -611,9 +727,21 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).
-        attempts=TaskAttemptExecutor(run_store),
+        # The TTL is collectable because this lifespan also ticks
+        # `recover_abandoned_attempts` (#232). Without the tick a leased
+        # Attempt whose worker died would stay RUNNING forever.
+        attempts=TaskAttemptExecutor(run_store, lease_ttl=DEFAULT_TASK_LEASE_TTL),
     )
     await _runner.start()
+    start_abandoned_attempt_recovery(container)
+    # ADR-045 / #2311: start CanvasJobRunner in the default composition. The
+    # shipped server process owns a live claim/lease/reap loop over the same
+    # durable generation_jobs queue the Canvas surfaces write to, so admitted
+    # jobs have a reachable consumer with no external runner. Truthful skip
+    # (logged) when the deployment has no durable spine or no Canvas store —
+    # an in-process spine cannot see admitted Runs, the same refusal the
+    # maistro-canvas-worker service makes for the same reason.
+    canvas_runner = await _start_canvas_job_runner(app, settings, container, spine_pool)
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
     # No signal handler is installed here. Uvicorn owns SIGTERM/SIGINT for the
@@ -630,12 +758,19 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Stop before draining the runner and dropping the spine, so a tick
+        # cannot reclaim against a store this process is tearing down.
+        await stop_abandoned_attempt_recovery()
         # Graceful shutdown: drain tasks → flush quota snapshots → cleanup.
         # Reached via Uvicorn's SIGTERM/SIGINT handling — the drain is bounded
         # (`SHUTDOWN_DRAIN_TIMEOUT`), tasks the deadline cancels are marked
         # FAILED, and shutdown continues to process exit either way.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        # The Canvas runner stops before the container closes: its poll loop
+        # holds no provider calls while idle, and a stuck tick gets the same
+        # bounded cancel-and-abandon ladder the composition seam uses.
+        await _stop_canvas_job_runner(canvas_runner)
         container = getattr(app.state, "container", None)
         if container is not None:
             try:

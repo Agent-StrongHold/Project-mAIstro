@@ -274,6 +274,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Capabilities
+         * @description Return the live effective policy used by the HTTP authorization gate.
+         *
+         *     This is intentionally a fresh, no-store projection. The frontend may use it
+         *     for convenience, but it cannot grant access: AuthMiddleware evaluates the
+         *     same policy again on every request.
+         */
+        get: operations["capabilities_v1_auth_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/elevate": {
         parameters: {
             query?: never;
@@ -1349,6 +1373,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/dag-metrics/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retention
+         * @description State the observation bound and whether this deployment persists it.
+         *
+         *     Observations are a query projection, not an execution ledger. The oldest
+         *     rows are deleted automatically when the bound is reached; this API has no
+         *     ad-hoc deletion operation because canonical Run retention owns execution
+         *     deletion and replaying a completion can rebuild a projection row.
+         */
+        get: operations["retention_v1_dag_metrics_retention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/dag-runs": {
         parameters: {
             query?: never;
@@ -1431,6 +1480,31 @@ export interface paths {
         /**
          * Cancel Run
          * @description Cancel through the canonical Run/Attempt execution seam.
+         *
+         *     Read visibility never admits a lifecycle write (#1152, #2466): before any
+         *     cancellation state change or physical work, the canonical target Run is
+         *     resolved through the shared `RunStoreBoundary` mutation gate -- the same
+         *     initiator/administrator rule maistro-server's cancel route applies -- so
+         *     only the Run's initiating principal or a Workspace administrator gets
+         *     through, and a projection row cannot delegate write authority across
+         *     Workspaces (its canonical link is honoured only when the Run is filed in
+         *     the row's own Workspace, the same attribution rule the read overlay
+         *     applies). The gate resolves through the wired reader triple the
+         *     inspection reads answer from; without a wired scoped reader it degrades
+         *     to the embedded Workspace authority, whose refusals stay fail-closed.
+         *     Absent, foreign, unadministered and mismatched-link targets all answer
+         *     the seam's one non-disclosing 404 with no Run/NodeRun/Attempt write and
+         *     no provider stop signal; an unreachable canonical authority answers the
+         *     spine-unavailable 503 instead.
+         *
+         *     The response separates two facts that used to be collapsed into
+         *     ``cancelled`` (#1242). ``cancelled``/``status`` are the canonical logical
+         *     fence -- the authority that refuses a late provider success --
+         *     ``stop_confirmed`` is the physical one, and it is False whenever the
+         *     Attempt is live under a worker this replica cannot signal: Conductor then
+         *     reports ``stop_pending`` with a diagnosis instead of a stop nobody
+         *     observed. The mutation gate above is #2466's contract; the receipt below
+         *     reports truthfully about what the fence did and did not stop.
          */
         post: operations["cancel_run_v1_dag_runs__run_id__cancel_post"];
         delete?: never;
@@ -2132,15 +2206,17 @@ export interface paths {
         put?: never;
         /**
          * Trigger Score
-         * @description Score the run captured in dag_run_store. For Phase 5 we score off
-         *     the dag_run_store's run-record-shaped summary (DurableRunRecord
-         *     integration lands when the executor publishes the durable record
-         *     into dag_run_store; until then, this endpoint accepts whatever
-         *     dag_run_store returns and gracefully scores it).
+         * @description Score a terminal canonical Run.
          *
-         *     Scoped like every other run reader (#1174): the projection is read
-         *     through the inspection service, so an out-of-scope run gets the same
-         *     404 a missing one gets — and is never scored.
+         *     Read visibility never admits a scoring effect (#2470): the POST first
+         *     resolves the canonical target through the mutation gate (initiator or
+         *     Workspace administrator — membership alone refuses like a missing run),
+         *     then requires terminality, then honors the evidence contract — an
+         *     existing valid verdict IS the score and is returned verbatim without a
+         *     second model effect. Only then does the governed scorer run, writing the
+         *     verdict under the canonical Run id with its canonical actor/scope
+         *     provenance; a successful score is audited. Every refusal above happens
+         *     before any model call, verdict write, proposal, usage or audit mutation.
          */
         post: operations["trigger_score_v1_eval_judge__run_id__post"];
         delete?: never;
@@ -2486,6 +2562,10 @@ export interface paths {
          *     not to re-decide the answer — the store is called regardless and its verdict
          *     is final, so a race between the read and the call surfaces as its error
          *     rather than as a wrong code.
+         *
+         *     Capability-approval pauses additionally settle the selected DurableApproval
+         *     before the Graph answer is queued (#55 / #1192): resolve, then
+         *     ``submit_hitl_answer``. Ordinary human pauses are unchanged.
          */
         post: operations["answer_human_work_v1_hitl__run_id___node_id__answer_post"];
         delete?: never;
@@ -2932,7 +3012,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List All Proposals */
+        /**
+         * List All Proposals
+         * @description Proposals across the caller's Workspace universe, newest first.
+         *
+         *     Membership scopes before the page limit, so a foreign tenant's newer
+         *     pending rows cannot push the caller's own proposals out of the page.
+         */
         get: operations["list_all_proposals_v1_optimizer_proposals_get"];
         put?: never;
         post?: never;
@@ -2983,7 +3069,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List For Dag */
+        /**
+         * List For Dag
+         * @description One DAG's proposals, scoped to the caller's canonical Workspaces.
+         *
+         *     Authentication happens in AuthMiddleware; it is not authorization
+         *     (#2469). A DAG claimed by another tenant shares the non-disclosing 404
+         *     with an unknown one, so the list cannot become a tenant oracle.
+         */
         get: operations["list_for_dag_v1_optimizer__dag_id__proposals_get"];
         put?: never;
         post?: never;
@@ -3231,6 +3324,114 @@ export interface paths {
          * @description Proactive fleet tick — queue autonomous agent work only.
          */
         post: operations["post_pulse_v1_program_pulse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Projects */
+        get: operations["list_projects_v1_projects_get"];
+        put?: never;
+        /** Create Project */
+        post: operations["create_project_v1_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/webhooks/external-build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** External Build Webhook */
+        post: operations["external_build_webhook_v1_projects_webhooks_external_build_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project */
+        get: operations["get_project_v1_projects__project_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Project */
+        delete: operations["delete_project_v1_projects__project_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/deploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Trigger Deploy */
+        post: operations["trigger_deploy_v1_projects__project_id__deploy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Project Events
+         * @description SSE endpoint — streams pipeline events from Redis pub/sub.
+         */
+        get: operations["project_events_v1_projects__project_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Scan */
+        get: operations["get_scan_v1_projects__project_id__scan_get"];
+        put?: never;
+        /** Trigger Scan */
+        post: operations["trigger_scan_v1_projects__project_id__scan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4747,6 +4948,33 @@ export interface paths {
         patch: operations["update_workspace_v1_workspaces__workspace_id__patch"];
         trace?: never;
     };
+    "/v1/workspaces/{workspace_id}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workspace Agent
+         * @description Read the Workspace Agent's stable id and current persona (#2277).
+         */
+        get: operations["get_workspace_agent_v1_workspaces__workspace_id__agent_get"];
+        /**
+         * Put Workspace Agent Persona
+         * @description Swap the Workspace Agent's persona without changing its id (#2277).
+         *
+         *     Same durable write as the Agent tool `set_workspace_agent_persona` —
+         *     `services.workspace_agent.set_workspace_agent_persona` is the one door.
+         */
+        put: operations["put_workspace_agent_persona_v1_workspaces__workspace_id__agent_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/workspaces/{workspace_id}/attention": {
         parameters: {
             query?: never;
@@ -4759,6 +4987,30 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspace_id}/attention/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Workspace Attention
+         * @description Defer/dismiss one Attention source id for this Workspace (#1049).
+         */
+        post: operations["dismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_post"];
+        /**
+         * Undismiss Workspace Attention
+         * @description Clear a defer/dismiss preference so the item can surface again.
+         */
+        delete: operations["undismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5214,6 +5466,19 @@ export interface components {
              */
             allowed_tools: string[];
         };
+        /** AttentionDismissBody */
+        AttentionDismissBody: {
+            /**
+             * Action
+             * @default dismiss
+             * @enum {string}
+             */
+            action: "dismiss" | "defer";
+            /** Sourceid */
+            sourceId: string;
+            /** Sourcekind */
+            sourceKind: string;
+        };
         /**
          * AuditEntry
          * @description One audit row exactly as ``/v1/audit`` serves it.
@@ -5606,6 +5871,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /** ChatSessionSummary */
         ChatSessionSummary: {
@@ -5625,6 +5892,8 @@ export interface components {
              * @default
              */
             user_id: string;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /**
          * ClaimRule
@@ -5940,6 +6209,8 @@ export interface components {
              * @default New chat
              */
             title: string;
+            /** Workspace Id */
+            workspace_id: string;
         };
         /** CreateSkillBody */
         CreateSkillBody: {
@@ -6100,6 +6371,19 @@ export interface components {
             workspace: components["schemas"]["Workspace"];
             /** Workspace Agent Id */
             workspace_agent_id: string;
+        };
+        /** DeployTrigger */
+        DeployTrigger: {
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /**
+             * Skip Scan
+             * @default false
+             */
+            skip_scan: boolean;
         };
         /**
          * DesignSystemSnapshot
@@ -6424,8 +6708,21 @@ export interface components {
              */
             size: string;
         };
-        /** HumanAnswer */
+        /**
+         * HumanAnswer
+         * @description Answer body for a paused node.
+         *
+         *     Ordinary human pauses accept free-form extras. Capability-approval pauses
+         *     (``awaiting_human_approval``) additionally require a strict boolean
+         *     ``approved`` and ``expected_approval_request_id`` matching the
+         *     server-stamped pause receipt (#55 / #1192).
+         */
         HumanAnswer: {
+            /** Approved */
+            approved?: boolean | null;
+            /** Expected Approval Request Id */
+            expected_approval_request_id?: string | null;
+        } & {
             [key: string]: unknown;
         };
         /** InterviewAnswerBody */
@@ -6910,6 +7207,23 @@ export interface components {
             /** Value */
             value?: unknown;
         };
+        /** ProjectCreate */
+        ProjectCreate: {
+            /**
+             * Branch
+             * @default main
+             */
+            branch: string;
+            /**
+             * Dockerfile Path
+             * @default Dockerfile
+             */
+            dockerfile_path: string;
+            /** Name */
+            name?: string | null;
+            /** Repo Url */
+            repo_url: string;
+        };
         /** PulseBody */
         PulseBody: {
             /**
@@ -6943,6 +7257,11 @@ export interface components {
             };
             /** Ready */
             ready: boolean;
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
         };
         /** RegionPinBody */
         RegionPinBody: {
@@ -7129,6 +7448,11 @@ export interface components {
         SetCredentialBody: {
             /** Secret */
             secret: string;
+        };
+        /** SetWorkspaceAgentPersonaBody */
+        SetWorkspaceAgentPersonaBody: {
+            /** Persona Template Id */
+            persona_template_id: string;
         };
         /** SettingsModel */
         SettingsModel: {
@@ -7697,6 +8021,23 @@ export interface components {
             /** Voice Tone Override */
             voice_tone_override?: string | null;
         };
+        /**
+         * WorkspaceAgentPersonaResponse
+         * @description The one Workspace Agent's identity + current persona (#2277 / #1037).
+         */
+        WorkspaceAgentPersonaResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Persona Template Id */
+            persona_template_id: string;
+            /** Workspace Agent Id */
+            workspace_agent_id: string;
+            /** Workspace Id */
+            workspace_id: string;
+        };
         /** WorkspaceFeedbackBody */
         WorkspaceFeedbackBody: {
             /**
@@ -8213,6 +8554,39 @@ export interface operations {
                 entry_id: string;
             };
             cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    capabilities_v1_auth_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                hive_session?: string | null;
+            };
         };
         requestBody?: never;
         responses: {
@@ -9501,7 +9875,9 @@ export interface operations {
     };
     list_sessions_v1_chat_sessions_get: {
         parameters: {
-            query?: never;
+            query: {
+                workspace_id: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9515,6 +9891,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatSessionSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -10388,6 +10773,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retention_v1_dag_metrics_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -13216,6 +13623,7 @@ export interface operations {
                 apply_auto?: boolean;
                 validate?: boolean;
                 workspace_id?: string | null;
+                project_id?: string | null;
             };
             header?: never;
             path: {
@@ -13698,6 +14106,267 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_projects_v1_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    create_project_v1_projects_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    external_build_webhook_v1_projects_webhooks_external_build_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_project_v1_projects__project_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_project_v1_projects__project_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_deploy_v1_projects__project_id__deploy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployTrigger"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_events_v1_projects__project_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_scan_v1_projects__project_id__scan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_scan_v1_projects__project_id__scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -16453,9 +17122,148 @@ export interface operations {
             };
         };
     };
+    get_workspace_agent_v1_workspaces__workspace_id__agent_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAgentPersonaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_workspace_agent_persona_v1_workspaces__workspace_id__agent_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetWorkspaceAgentPersonaBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAgentPersonaResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_workspace_attention_v1_workspaces__workspace_id__attention_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttentionDismissBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undismiss_workspace_attention_v1_workspaces__workspace_id__attention_dismiss_delete: {
+        parameters: {
+            query: {
+                sourceKind: string;
+                sourceId: string;
+            };
             header?: never;
             path: {
                 workspace_id: string;

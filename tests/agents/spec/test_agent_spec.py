@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from maistro.agents.spec.agent_spec import (
-    DEFAULT_TOOLS,
     RECOVERABLE_ERRORS,
     AgentOutput,
     AgentRole,
@@ -35,16 +34,6 @@ class TestAgentSpec:
         b = _minimal_spec()
         assert a.agent_id != b.agent_id
 
-    def test_defaults_fills_tools_allowed(self) -> None:
-        spec = _minimal_spec(role=AgentRole.CODER)
-        spec = spec.with_defaults()
-        assert "file_ops.write" in spec.tools_allowed
-
-    def test_defaults_does_not_overwrite_explicit_tools(self) -> None:
-        spec = _minimal_spec(tools_allowed=["custom.tool"])
-        spec = spec.with_defaults()
-        assert spec.tools_allowed == ["custom.tool"]
-
     def test_defaults_fills_prompt_name(self) -> None:
         spec = _minimal_spec(role=AgentRole.PLANNER)
         spec = spec.with_defaults()
@@ -71,9 +60,10 @@ class TestAgentSpec:
         assert restored.role == spec.role
         assert restored.task_id == spec.task_id
 
-    def test_all_roles_have_default_tools(self) -> None:
-        for role in AgentRole:
-            assert role in DEFAULT_TOOLS
+    def test_no_security_enforcement_fields(self) -> None:
+        """#847: the unused tools_allowed/write_scopes declarations are gone."""
+        assert "tools_allowed" not in AgentSpec.model_fields
+        assert "write_scopes" not in AgentSpec.model_fields
 
 
 class TestAgentOutput:

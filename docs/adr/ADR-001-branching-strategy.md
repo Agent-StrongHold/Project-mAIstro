@@ -30,7 +30,6 @@ history:
 
 > **Superseded by [ADR-095](ADR-095-four-tier-branch-model.md) (2026-05-29).** The model is now four-tier — `feat/* → develop → integration → main` — with enforced branch protection and CI gates. The `integration`-as-default-base and `research/<tranche>` staging below are historical.
 
-**Status:** Superseded
 **Date:** 2026-04-26
 **Tranche:** T0
 **Depends on:** —

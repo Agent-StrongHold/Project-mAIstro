@@ -70,20 +70,20 @@ _DATA_DIR = Path(__file__).parent / "third_party" / "bfcl" / "data"
 # not the score we think it is.
 _CATEGORY_SHA256: dict[str, tuple[str, str]] = {
     "simple_python": (
-        "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991",
-        "90cd5bc653690ee8e459b5b3f3fc9458606f7f3fcbf795bb51b7dc581f8c86dc",
+        "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991",  # DevSkim: ignore DS173237 until 2027-12-31
+        "90cd5bc653690ee8e459b5b3f3fc9458606f7f3fcbf795bb51b7dc581f8c86dc",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     "multiple": (
-        "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a",
-        "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047",
+        "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a",  # DevSkim: ignore DS173237 until 2027-12-31
+        "244e00ce9395df948bcafc7bee64e8f9c87ef70887587d83cae45b13699f3047",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     "parallel": (
-        "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84",
-        "8a6aa19c1adddc6a5a2f7e40f9dbf30cc7e95815e7b830c90589ab318229e0f0",
+        "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84",  # DevSkim: ignore DS173237 until 2027-12-31
+        "8a6aa19c1adddc6a5a2f7e40f9dbf30cc7e95815e7b830c90589ab318229e0f0",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
     "parallel_multiple": (
-        "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579",
-        "5ebf24f458c1f16300c05505d83d6f0a1b68b79be273a033febd0d4f840507e3",
+        "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579",  # DevSkim: ignore DS173237 until 2027-12-31
+        "5ebf24f458c1f16300c05505d83d6f0a1b68b79be273a033febd0d4f840507e3",  # DevSkim: ignore DS173237 until 2027-12-31
     ),
 }
 

@@ -409,7 +409,7 @@ def test_mutation_entry_validation_edges(tmp_path: Path) -> None:
         {"entries": {"trusted": {"kill_rate": 0.9}}},
         {"entries": {"new": {"kill_rate": 0.8}}},
     )
-    assert any("removed a trusted source floor" in failure for failure in failures)
+    assert any("removed a reviewed source floor" in failure for failure in failures)
     assert any("must equal measured" in failure for failure in failures)
 
     external = tmp_path / "external.json"

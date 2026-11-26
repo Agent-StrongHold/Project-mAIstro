@@ -755,35 +755,56 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
     """
     from maistro.agents.factory import _render_preamble, instantiate_agent
     from maistro.types.agent import AgentIdentity
+    from services.tool_binding import binding_prompt_fragment, binding_tools_override
 
     config = defn.config if isinstance(defn.config, dict) else {}
     name = defn.name
+    spawn = name.rsplit(".", 1)[-1]
+    # #2276: Workspace sticky bindings win at runtime construction — the same
+    # authority `agent_invocation` consults — so UI/API-saved bindings hit one
+    # dispatch path without rematerializing the durable row.
+    override = binding_tools_override(defn.workspace_id, spawn)
+    tools = tuple(override) if override is not None else tuple(defn.capabilities or ())
     identity = AgentIdentity(
         name=name,
         description=defn.description or "",
         soul_prompt_name=f"agent.{name}.soul",
         model=defn.model or "auto",
-        tools=tuple(defn.capabilities or ()),
+        tools=tools,
         reasoning_strategy=str(config.get("strategy") or "direct"),
     )
-    full_soul = _render_preamble(
-        source.preamble,
-        {
-            "name": name,
-            "description": identity.description,
-            "capabilities": ", ".join(identity.tools),
-        },
-    ) + str(config.get("soul") or identity.description)
+    fragment = binding_prompt_fragment(defn.workspace_id, spawn)
+    soul_body = str(config.get("soul") or identity.description)
+    if fragment:
+        soul_body = f"{soul_body}\n\n{fragment}"
+    full_soul = (
+        _render_preamble(
+            source.preamble,
+            {
+                "name": name,
+                "description": identity.description,
+                "capabilities": ", ".join(identity.tools),
+            },
+        )
+        + soul_body
+    )
     container = source.container
     await container.prompt_manager.upsert(
         identity.soul_prompt_name,
         full_soul,
         label="production",
     )
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    llm = source.llm
+    # Later-materialized Agents retain definition-Workspace restriction while
+    # sharing the bridge's one AdmittedModelCalls helper with the boot roster.
+    if isinstance(llm, GovernedLLMClient):
+        llm = GovernedLLMClient(llm._calls, workspace_id=defn.workspace_id)
     return instantiate_agent(
         identity,
         agent_resolver=container.agents.get,
-        llm=source.llm,
+        llm=llm,
         context_builder=container.context_builder,
         prompt_manager=container.prompt_manager,
         warden=container.warden,

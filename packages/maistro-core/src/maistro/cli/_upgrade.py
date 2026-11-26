@@ -246,7 +246,10 @@ def _run(cmd: _Cmd) -> _Outcome:
         if outcome.ok or outcome.missing is not None or attempt == attempts:
             return outcome
         time.sleep(cmd.retry_delay)
-    return outcome  # pragma: no cover - loop always returns
+    # Unreachable: `attempts` is at least 1 and the final attempt returns
+    # inside the loop. Raise rather than return so a broken invariant is loud
+    # (and so `outcome` is never read unbound).
+    raise AssertionError("retry loop exited without an outcome")  # pragma: no cover
 
 
 def _coerce(value: bytes | str | None) -> str:
@@ -557,11 +560,14 @@ class _Upgrade:
     def _health_probe(self) -> _Cmd:
         """Bounded readiness poll, matching the installer's post-up wait."""
         port = _read_env_port(self.root)
-        # devskim: ignore DS162092 -- loopback readiness probe of the local
-        # install being upgraded; 127.0.0.1 is the design here, not debug
-        # residue (bounded poll, see _HEALTH_ATTEMPTS).
+        # Loopback readiness probe of the local install being upgraded
+        # (bounded poll, see _HEALTH_ATTEMPTS).
         return _Cmd(
-            ["curl", "-fsSL", f"http://127.0.0.1:{port}/health/ready"],
+            [
+                "curl",
+                "-fsSL",
+                f"http://127.0.0.1:{port}/health/ready",  # DevSkim: ignore DS162092 until 2027-12-31
+            ],
             cwd=str(self.root),
             retries=_HEALTH_ATTEMPTS,
             retry_delay=_HEALTH_RETRY_DELAY_S,
