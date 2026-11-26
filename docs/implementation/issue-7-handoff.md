@@ -949,3 +949,84 @@ inventory notes), so no new inventory delta arises; the merged baseline was
 verified to match collection exactly (21/21 suites above).
 
 Progress: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "compose #805 policy semantics (row 8 decide-half); verify the #804 Design-Studio consumption tail (row 18); obtain operator release/live evidence (rows 2/3/5, row 17 live half)"}`.
+
+## Round 14 — bounded exact-debt-ledger repair investigation
+
+Job `8a92fbf73dc240a0873dc95d69c57849`; starting HEAD
+`cc0b03ac52bf295eb14052cb4689bb4496d56f49`; declared develop base
+`8d8f10616fb7ae984a02bf84553489470d03c726`. Both refs resolve locally.
+Initial status/diff were empty; all prior committed work is preserved.
+Frozen item: the explicitly dispatched Vulture CI repair, not a new
+milestone-wide implementation. Earlier runtime/no-artifact cycles are
+addressed by bounding this round and committing its actual result.
+
+**The alleged gate failure does not reproduce.** The exact required scan
+passes with Vulture 2.16: **1219 reviewed identities = 1219 findings**, zero
+unclassified and zero never-allowlist findings. The ledger has no diff from
+the supplied base. No unbanked or stale identity was reported, so there is
+no evidence-backed source fix or ledger amendment to make. Do not add
+speculative ledger entries or change gates to manufacture a repair.
+
+Repository instructions, quality-gate documentation, the actual
+`vulture-ratchet.yml` owner, scanner implementation and adjacent ownership
+tests were inspected. Accepted ADR-080 and ADR-082226-5104 preserve memory
+consent, PostgreSQL authority, isolated disposable working projections and
+ordinary-Run consolidation. No authority, policy, source, test or ledger is
+changed by this round. No test additions means no inventory delta note is
+needed. This section is an evidence handoff, not a behavioral repair.
+
+### Fresh validation
+
+All commands below exited 0. Logs are `worker-*.log` in the job directory.
+No `check-*.log` exists in this job directory; the five logs referenced by
+the supplied previous result were read separately as historical evidence,
+not substituted for these executions.
+
+| Executed command | Observed result |
+| --- | --- |
+| `uv sync --locked --extra dev` | 466 resolved, 218 checked |
+| `uv run ruff check .` | all checks passed |
+| `uv run ruff format --check .` | 3698 files already formatted |
+| `uv run pytest tests/test_ci_vulture_ownership.py packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -x -q` | **141 passed**, one dependency warning |
+| `uv run python scripts/check-ratchet-provenance.py` | 55 quality JSON consumers have explicit provenance |
+| `uv run python scripts/check-shipped-surface-truth.py` | matrix complete |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | 1219 reviewed = 1219 findings |
+| `uv run python scripts/check-release-consistency.py` | released none, shipping 0.9.0, target 1.0.0 |
+| `uv run python scripts/check-contract-markers.py` | claims evidenced or recorded; **not** proof of all milestone acceptance |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | 4757 collected IDs match; no duplicate evidence; collection is not execution |
+
+The provenance, shipped-surface, Vulture, release-consistency, contract-marker
+and inventory commands explicitly used
+`RATCHET_BASE_REV=8d8f10616fb7ae984a02bf84553489470d03c726`.
+Existing pytest deprecations and two AST escape-sequence warnings remain.
+
+### Acceptance boundary (this round only)
+
+| Issue #7 exit row | Fresh evidence or explicit unverified boundary |
+| --- | --- |
+| 1 metadata | Release-consistency command passes; no released version is claimed. |
+| 2 release workflow | UNVERIFIED. `release.yml:23–24` still says never exercised; local `git tag -l 'v*'` count is 0. Neither is proof of remote execution history. |
+| 3 clean-machine/live-model E2E | UNVERIFIED; dependency sync and local doubles do not prove this. |
+| 4 backup/restore/escrow | UNVERIFIED this round; earlier deterministic tests are not a fresh deployed drill. |
+| 5 RC soak/byte-equivalent promotion | UNVERIFIED; no operator artifacts supplied or created. |
+| 6 all KNOWN-GAPS dispositions | UNVERIFIED beyond structural contract-marker validation; all dispositions were not individually audited this round. |
+| 7 durable backlog cutover or accepted release deferral | UNVERIFIED this round; no owner acceptance inferred from prose. |
+| 8 operational persistent Agent | NOT MET in inspected composition: `container.py:1426–1427` returns 0 without a policy; production `packages/*/src` search found no `goal_reconciliation_policy=` assignment. Cadence tests prove ticks with injected policy, not an operational decision policy. |
+| 9 evidence-backed Goal truth | UNVERIFIED this round; cadence execution does not establish the entire completion contract. |
+| 10 canonical inspection | UNVERIFIED this round; inventory collection is not behavioral proof. |
+| 11 isolated Ladybug projection | UNVERIFIED this round; ADR names Ladybug, not an interchangeable dictionary test double. |
+| 12 Dreaming-to-user-fact-to-recall | NOT MET in inspected core composition: production `packages/*/src` hits for `promote_evidence` are definition, import/export and documentation only. Design tests promote facts in fixtures, not through production Dreaming. |
+| 13 private memory boundaries | PARTIAL: executed Design tests reject foreign/irrelevant/sensitive facts; complete private/domain-memory contract UNVERIFIED. |
+| 14 optional pinned Home | UNVERIFIED this round. |
+| 15 adaptive restore/settings | UNVERIFIED this round. |
+| 16 durable Attention ordering/escalation | UNVERIFIED beyond Design's shared projection composition tests. |
+| 17 overnight discovery | UNVERIFIED this round; no deployed overnight/live-model evidence. |
+| 18 Design shared surfaces | PARTIAL: executed real chat-route tests consume shared user-model/Attention seams; fixture-injected services and facts do not establish operational persistent-Agent/Dreaming composition. |
+| 19 Entra group-gated JIT | Deterministic production-path tests pass in the focused batch, including fail-closed pagination and disabled-JIT refusal; live tenant behavior UNVERIFIED. |
+
+**Verdict: NEEDS-REPAIR for issue #7, not a reproduced Vulture defect.**
+No GitHub mutations, remote enumeration, release actions, new tests or quality
+ledger edits. The local evidence commit is a handoff only. Remaining work is
+policy/producer composition and operator acceptance evidence, not scanner
+bookkeeping. Gate item checkpoint:
+`{checked: 1, done: 1, skipped: 0, errors: 0, next: "resolve milestone production-policy/producer gaps and obtain operator evidence in separately bounded work"}`.
