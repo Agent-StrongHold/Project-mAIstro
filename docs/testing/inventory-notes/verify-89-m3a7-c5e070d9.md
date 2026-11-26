@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  tests/: +1
   packages/maistro-core/tests: +0
   packages/maistro-server/tests: +0
 ---
@@ -496,3 +497,87 @@ vs the issue's eight criteria is unchanged from round 6: 2 PARTIAL
 Progress: `{checked: 8, done: 0 (no new repairable gap), skipped: 0, errors:
 0, next: #860 CI repair + merge → operator-designated immutable RC/config →
 exact-RC ≥4 h soak → exercised release pipeline → external verification}`.
+## Re-verification + repair addendum — 2026-11-26 round 8 (job `da9e1dd77e0f4`)
+
+Round 8 inherited two inputs: the implement round's promotion machinery at
+`fc86f63873` (job `ea5c1ec3`, verdict MERGE-READY as a writer handoff) and a
+**preserved develop-sync merge conflict** in `.github/workflows/release.yml`
+(the previous round's block). This job's `manifest.json` again carries
+`checks: []` — no `check-*.log` files exist — so every check below was
+executed in this worktree. GitHub evidence is from the frozen
+`dispatch-context.json` (captured 2026-11-26T17:59Z, `complete_for_scope:
+true`, 35 sources); zero live API calls, zero GitHub mutations.
+
+### Previous block resolved: develop sync (commits `2e66978455`, `b1b00ed2b6`)
+
+The worktree arrived mid-merge (MERGE_HEAD `b6879c417f` = the develop tip the
+merge was started from) with exactly one conflicted file, two identical-shaped
+hunks: develop bumped `docker/build-push-action` `v7` → `v7.4.0` in the two
+image-build steps; auto-89 had gated those same steps to candidates with
+`if: needs.guard.outputs.prerelease == 'true'`. Resolution keeps both (gate +
+pinned version). `origin/develop` advanced one commit past MERGE_HEAD during
+the round (to `7926d9ab`, this lane's declared base: react-dom e2e bump), and
+was merged cleanly on top. After both merges `git merge-base --is-ancestor
+origin/develop HEAD` holds: the branch now contains the develop base. The
+resolved `release.yml` parses as YAML, carries zero conflict markers, and the
+promotion wiring test (`test_shipping_workflow_promotes_rc_artifacts_on_finals`)
+passes unchanged — it asserts both build steps keep the candidate-only gate.
+
+### Fresh deterministic checks (all at `b1b00ed2b6` + this round's repair)
+
+Environment: `uv sync --locked --extra dev` re-run against the merged
+lockfile before trusting any exit code (develop changed `uv.lock`).
+
+| Check | Command | Result |
+|---|---|---|
+| Promotion + guard suites | `uv run pytest tests/test_promote_release.py tests/test_release_guard.py -q` | **83 passed** (82 prior + 1 new pin) |
+| Lint | `uv run ruff check .` | exit 0 — "All checks passed!" |
+| Format | `uv run ruff format --check .` | exit 0 — "3678 files already formatted" |
+| Suite inventory | `uv run python scripts/check-suite-inventory.py` (**CI's exact invocation**) | exit 0 — "ok: 21 suite(s) match the recorded inventory" |
+| Release consistency | `uv run python scripts/check-release-consistency.py` | exit 0 — "ok: released none, shipping 0.9.0, working toward 1.0.0" |
+| Promotion surface | `uv run python scripts/check-promotion-surface.py` | exit 0 — "promotion surface: ok" |
+| Image pins | `uv run python scripts/check-image-pins.py` | exit 0 — "11 pinned base/tool image(s) … all registered" |
+| Image inventory | `uv run python scripts/check-image-inventory.py` | exit 0 — "every shipped image names live jobs" |
+| Required checks | `uv run python scripts/check-required-checks.py` | exit 0 — "79 PR checks match docs/ci/REQUIRED-CHECKS.md" |
+| Workflow lint | actionlint 1.7.7 + shellcheck 0.10.0, CI's exact invocation (`ci.yml:1717-1726`), binaries installed to /tmp the same way CI installs them | exit 0 over the whole workflows tree, incl. the conflict resolution |
+
+### New finding + in-round repair: the soak-gate check set was adaptive, not pinned
+
+Mutation experiment (disposable scratch checkout at the merged head, removed
+afterwards): dropping `"multi_replica_soak"` from `REQUIRED_SOAK_CHECKS`
+(`promote_release.py:139-145`) left **all 44 promotion tests passing** — both
+`test_valid_evidence_passes`' helper and
+`test_every_required_soak_check_gates_promotion` iterate the tuple
+dynamically (`tests/test_promote_release.py:104,238`), so removing a required
+check weakens the final-promotion gate invisibly. That is precisely the
+regression issue #89's criteria 2-3 forbid (soak must include clean install,
+real model, security hot path, backup/restore, and the #860 multi-replica
+soak).
+
+Repair (this round, `tests/test_promote_release.py`):
+`test_required_soak_checks_are_pinned_not_adaptive` asserts the exact
+five-element set with a diff in the failure message. Binding proven in the
+mutated scratch: **1 failed, 44 passed** — the new test fails against
+exactly the drift it names, everything else stays green.
+
+### Acceptance status (unchanged in kind)
+
+The in-lane engineering surface for byte-equivalent promotion is complete,
+tested, and gate-clean, and the lane branch is now synced onto the declared
+develop base. The issue's promotion-scale criteria remain outside lane
+authority, unchanged since rounds 1-7: `git tag -l 'v*'` → **0 tags** (no RC
+exists); `scripts/soak` / `docs/testing/soak` → **absent from this tree**;
+`release.yml:23-27` still self-declares the workflow has never run; child
+soak lane #860 / PR #1672 is open, unmerged, and per the frozen snapshot
+carries failing check-runs on `edbc2f4e43f3`; the first real `release.yml`
+run, the ≥4 h exact-RC soak, and external package/image/signature/install
+verification are release operations lanes are prohibited from performing.
+
+**Verdict: BLOCKED for issue acceptance** (program-level operations pending);
+the lane's own deliverable — sync resolved, promotion machinery validated,
+gate-pin repair landed — is handed off for integration review.
+
+Progress: `{checked: 8, done: 2 (develop-sync resolution; soak-gate check-set
+pin), skipped: 0, errors: 0, next: #860 CI repair + merge → operator-designated
+immutable RC/config → exact-RC ≥4 h soak → first release-workflow run →
+external verification}`.

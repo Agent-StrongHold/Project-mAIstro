@@ -244,6 +244,32 @@ def test_every_required_soak_check_gates_promotion(promote_mod, mutation, fragme
         )
 
 
+def test_required_soak_checks_are_pinned_not_adaptive(promote_mod):
+    """The gate demands exactly the soak coverage #89 pins — by name.
+
+    `test_every_required_soak_check_gates_promotion` iterates
+    REQUIRED_SOAK_CHECKS, so it passes vacuously if a check is dropped from
+    the tuple: dropping `multi_replica_soak` today keeps all 44 promotion
+    tests green while the final promotion stops demanding the #860 soak.
+    This test pins the set itself (issue #89 acceptance: clean install,
+    real-model execution, security hot path, backup/restore; #860:
+    sustained multi-replica soak).
+    """
+
+    expected = {
+        "clean_install",
+        "real_model",
+        "security_hot_path",
+        "backup_restore",
+        "multi_replica_soak",
+    }
+    actual = set(promote_mod.REQUIRED_SOAK_CHECKS)
+    assert actual == expected, (
+        "REQUIRED_SOAK_CHECKS drifted from the soak coverage issue #89 pins: "
+        f"missing={sorted(expected - actual)} unexpected={sorted(actual - expected)}"
+    )
+
+
 def test_invalidated_invariant_must_be_routed_before_promotion(promote_mod):
     evidence = make_evidence(
         images={"maistro-engine": ENGINE_DIGEST, "hive-conductor": CONDUCTOR_DIGEST}
