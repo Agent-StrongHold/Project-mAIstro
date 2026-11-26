@@ -707,7 +707,7 @@ class Sentinel:
             await self._event_log.append(
                 "policy.decision",
                 entity_type="policy_decision",
-                entity_id=entry.action or entry.tool_name,
+                entity_id=entry.action or entry.tool_name or "",
                 source="maistro.security.sentinel",
                 payload={
                     "policy_id": _POLICY_ID,

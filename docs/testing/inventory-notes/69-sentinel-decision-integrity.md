@@ -79,3 +79,33 @@ action and separate proofs; no test cases were removed. The seed validation
 case also rejects a correctly sized seed with invalid base64 trailing bytes.
 
 Repair validation results are recorded in `repair-69-handoff.md`.
+
+## Revalidation (2026-11-26, post-merge head a3d5bb0a03)
+
+The two items the repair handoff left pending are now discharged, and the
+undcommitted `entity_id or ""` guard on the `policy.decision` event append is
+confirmed load-bearing: with the HEAD variant (`entry.action or entry.tool_name`),
+`uv run mypy` fails on `policy.py:710` — `Argument "entity_id" to "append" of
+"EventLogStore" has incompatible type "str | None"; expected "str"` — because
+`AuditEntry.tool_name` is `str | None`. With the guard the whole AGENTS.md
+mypy battery passes (908 source files).
+
+- Live PostgreSQL (pgvector/pg18 `maistro-pg-test` at 127.0.0.1:5433, private
+  database `auto69_job_5f6f` dropped and recreated): `alembic upgrade head`
+  runs 001→064 as a single linear chain ending at this lane's
+  `064_sentinel_decision_integrity`. With `MAISTRO_TEST_PG_DSN` set,
+  `test_pg_audit.py` + `test_integrity.py` give 73 passed / 0 skipped,
+  including `test_real_pg_decisions_preserve_both_proofs_and_reject_all_mutations`
+  (real allowed+denied `Sentinel.authorize`, reload, pinned-keyring VERIFIED,
+  every `PROTECTED_FIELDS` mutation rejected, secret non-retention asserted
+  against the raw PG rows) and
+  `test_real_postgres_two_org_scope_and_schema`.
+- Radon re-run after the merge checkpoint (the other pending item):
+  `scripts/check-radon-baseline.py` green — 134 reviewed C-or-worse blocks
+  match the scan.
+- Full battery unchanged: targeted pytest (security + persistence audit +
+  container wiring) 1540 passed / 28 skipped; ruff check and format clean;
+  suite-inventory, security-inventory, doc-links, wiring-reads,
+  contract-markers, backlog-consistency, vulture-baseline, reachability and
+  promotion-surface gates all green. No test cases were added or removed this
+  round, so the recorded delta stays +58.
