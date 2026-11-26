@@ -495,6 +495,9 @@ def test_adopt_wheels_fails_closed_on_tampered_bytes(
     promote_mod, tmp_path, monkeypatch, github_env
 ):
     evidence = make_evidence()
+    # Reach byte verification instead of rejecting the fixture's synthetic
+    # tree before the tampered dist is downloaded.
+    pin_current_tree(monkeypatch, promote_mod, evidence["tree"])
     install_rc_run(
         monkeypatch,
         promote_mod,
@@ -520,6 +523,7 @@ def test_adopt_wheels_fails_closed_on_tampered_bytes(
         )
         == 1
     )
+    assert (tmp_path / "dist" / WHEEL_NAME).read_bytes() == b"rebuilt-not-identical"
     assert not (tmp_path / "evidence.json").exists()
 
 
