@@ -129,3 +129,36 @@ DB-less (in-memory stores, the `docker-compose.test.yml` hive env: no
   showed the real page against that real server: all four surfaces report
   `unavailable` with `HTTP 404 from /v1/goals` visible, the start control
   stays disabled past a 2.5 s wait, and zero mint POSTs fire.
+
+## Verification round (independent re-run on the CI compose image)
+
+Re-proven on this tree's `hive-conductor-e2e-ui` artifact path: the `hive`
+compose service built from this worktree (repo-root context, so the served SPA
+is this tree's frontend, compiled by the same Dockerfile CI uses), published to
+a host port away from a pre-existing local 8101 listener of unknown provenance:
+
+- `uv run pytest packages/hive-conductor/backend/tests/test_design_loop_start_contract.py -q`
+  → `3 passed`; repo-wide `uv run ruff check .` clean; format clean on the
+  test file; `tsc -p tsconfig.json --noEmit` and `tsconfig.node.json` clean.
+- `scripts/check-frontend-api-routes.py` → ok (177 call sites / 257 routes);
+  `check-shipped-surface-truth.py` complete; `check-suite-inventory.py` ok
+  (21 suites); `git diff --numstat origin/develop -- quality/` empty (no
+  ledger drift).
+- Against that container-served build, `HIVE_BASE_URL` pointed at the
+  published port: `design-studio-loop-start.spec.ts` → `3 passed`; regression
+  `design-studio-truthfulness.spec.ts` + `design-studio-keyboard.spec.ts` →
+  `11 passed`.
+- Negative controls re-proven in a fresh synthetic tree outside the repo with
+  the real scanner module: the clean copy passes, then each injected shape is
+  caught by name — a `DesignRun` type declaration in `pages/DesignRun.tsx`, a
+  `hive_design_loop` `localStorage.setItem`, an object-literal
+  `[{ path: '/book' }]` in `App.tsx`, and a `pages/Atelier.tsx` page.
+- Harness truth at this base (OpenAPI, 250 paths): `/v1/design/packs` IS
+  mounted (#793 shipped) — the other three are not. An ad-hoc no-interception
+  journey against that real server reproduced the honest mixed state exactly:
+  1 `ready` (packs) + 3 `unavailable` rows each carrying `HTTP 404 from
+  /v1/goals` / `/v1/creative-briefs` / `/v1/runs`, the start control disabled
+  immediately and still disabled after a 2.5 s wait, the state line saying
+  "Nothing is simulated", zero mint POSTs, and in-session `GET`s returning
+  `404` on all three missing surfaces. This is the issue's own fallback
+  behavior proven live, not a stub artifact.
