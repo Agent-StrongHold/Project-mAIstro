@@ -483,6 +483,253 @@ async def test_concurrent_identical_commits_produce_one_pair(stack) -> None:
     assert await _brief_rows(stack) == [(first.brief_id, 1)]
 
 
+class _SlowGoalCreate:
+    """A goal seam whose ``create_goal`` yields long enough that a follower's
+    takeover window expires while the driver's insert is still in flight —
+    the mid-protocol takeover the staleness heuristic cannot tell apart from
+    process death."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create_goal(self, *args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(self._delay)
+        return await self._inner.create_goal(*args, **kwargs)
+
+
+class _SlowBriefCreate:
+    """A brief store whose ``create`` yields past a follower's takeover
+    window before it writes."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create(self, brief: Any) -> Any:
+        await asyncio.sleep(self._delay)
+        return await self._inner.create(brief)
+
+
+class _SlowAppendRevision:
+    """A goal seam whose ``append_revision`` yields past a follower's takeover
+    window before it compares-and-sets."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def append_revision(self, *args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(self._delay)
+        return await self._inner.append_revision(*args, **kwargs)
+
+
+async def test_a_mid_protocol_takeover_at_the_goal_insert_still_produces_one_pair(
+    stack,
+) -> None:
+    """The takeover heuristic resolves 'slow driver' and 'dead driver' the
+    same way, so a follower can resume a record whose driver is still
+    mid-write. Both then race the same pre-minted goal insert; the loser of
+    the unique constraint must adopt the winner's row and converge on the
+    one pair, not fail the logical commit (the takeover costs a
+    duplicate-skip check, not a failed commit)."""
+    draft = _final_draft(subject="takeover at the goal insert")
+    driver = _commit(
+        stack,
+        draft,
+        goal_reader=_SlowGoalCreate(stack.goal_reader, 1.0),
+        takeover_after=0.2,
+    )
+    follower = _commit(stack, draft, takeover_after=0.2)
+    first, second = await asyncio.gather(driver, follower)
+    statuses = {first.status, second.status}
+    assert statuses <= {"committed", "already_committed"}, (first, second)
+    assert "committed" in statuses
+    assert {first.goal_id, second.goal_id} == {first.goal_id}
+    assert {first.brief_id, second.brief_id} == {first.brief_id}
+    goals = await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER)
+    assert len(goals) == 1
+    assert await _brief_rows(stack) == [(first.brief_id, 1)]
+
+
+async def test_a_mid_protocol_takeover_at_the_brief_insert_still_produces_one_pair(
+    stack,
+) -> None:
+    """The brief-first write has the same window: a follower that takes the
+    record over while the driver's brief insert is in flight writes the twin
+    row first, and the driver's insert loses the unique constraint. The
+    loser adopts the winner's brief; one pair, one logical commit."""
+    draft = _final_draft(subject="takeover at the brief insert")
+    driver = _commit(
+        stack,
+        draft,
+        brief_store=_SlowBriefCreate(stack.brief_store, 1.0),
+        takeover_after=0.2,
+    )
+    follower = _commit(stack, draft, takeover_after=0.2)
+    first, second = await asyncio.gather(driver, follower)
+    statuses = {first.status, second.status}
+    assert statuses <= {"committed", "already_committed"}, (first, second)
+    assert "committed" in statuses
+    assert {first.goal_id, second.goal_id} == {first.goal_id}
+    assert {first.brief_id, second.brief_id} == {first.brief_id}
+    goals = await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER)
+    assert len(goals) == 1
+    assert await _brief_rows(stack) == [(first.brief_id, 1)]
+
+
+async def test_a_mid_protocol_takeover_at_the_revision_append_converges_on_one_tail(
+    stack,
+) -> None:
+    """The same takeover race at AC-7's compare-and-set: the twin append
+    wins the tail this commit was about to mint. The loser re-reads and
+    adopts that tail only when it is exactly the successor its own CAS would
+    have produced — a stale writer still loses cleanly, a twin converges."""
+    from services.brief_commit import commit_draft
+
+    first = await _commit(stack, _final_draft(subject="takeover at the append"))
+    revised = _final_draft(fields={**_final_draft()["fields"], "subject": "the wipe tutorial"})
+    revises = {
+        "goal_id": first.goal_id,
+        "expected_revision": 1,
+        "lineage_id": first.lineage_id,
+        "revise_goal": True,
+    }
+    driver = commit_draft(
+        _USER,
+        stack.workspace.id,
+        revised,
+        confirmed=True,
+        revises=revises,
+        goal_reader=_SlowAppendRevision(stack.goal_reader, 1.0),
+        project_store=stack.projects,
+        brief_store=stack.brief_store,
+        takeover_after=0.2,
+    )
+    follower = commit_draft(
+        _USER,
+        stack.workspace.id,
+        revised,
+        confirmed=True,
+        revises=dict(revises),
+        goal_reader=stack.goal_reader,
+        project_store=stack.projects,
+        brief_store=stack.brief_store,
+        takeover_after=0.2,
+    )
+    outcomes = await asyncio.gather(driver, follower)
+    assert {o.status for o in outcomes} <= {"committed", "already_committed"}, outcomes
+    assert {o.goal_revision for o in outcomes} == {2}, outcomes
+    assert {o.brief_version for o in outcomes} == {2}, outcomes
+
+    goal = await stack.goal_reader.get_goal(first.goal_id, principal_id=_USER)
+    assert goal.current_revision == 2
+    revisions = await stack.goal_reader.list_goal_revisions(first.goal_id, principal_id=_USER)
+    assert [r.revision for r in revisions] == [1, 2]
+    versions = await stack.brief_store.list_versions(
+        first.lineage_id, workspace_id=stack.workspace.id
+    )
+    assert [v.version for v in versions] == [1, 2]
+
+
+class _ForeignVersionWinner:
+    """A brief store whose ``create`` always loses the version race to a
+    foreign writer: the unique conflict fires, but no row exists under THIS
+    record's pre-minted brief id — a genuine conflict, not a twin to adopt."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create(self, brief: Any) -> Any:
+        from maistro_design.brief import BriefVersionConflictError
+
+        raise BriefVersionConflictError(
+            f"creative brief lineage {brief.lineage_id!r} already has version {brief.version}"
+        )
+
+
+async def test_a_foreign_version_conflict_fails_the_commit_and_stays_retryable(
+    stack,
+) -> None:
+    """A version conflict that is not our twin (the conflicting row carries
+    a different brief id, so the identity re-read misses) is a genuine
+    failure: the record reports it, nothing was written, and the same
+    confirmation safely retries the same pre-minted pair."""
+    from services.brief_commit import _get_record, commit_key
+
+    draft = _final_draft(subject="foreign version winner")
+    outcome = await _commit(stack, draft, brief_store=_ForeignVersionWinner(stack.brief_store))
+    assert outcome.status == "failed"
+    assert await stack.goal_reader.list_goals(stack.workspace.id, principal_id=_USER) == []
+    assert await _brief_rows(stack) == [], "the conflict wrote nothing"
+
+    retry = await _commit(stack, draft)
+    assert retry.status == "committed", retry
+    record = _get_record(commit_key(_USER, stack.workspace.id, draft))
+    assert (retry.goal_id, retry.brief_id) == (record["goal_id"], record["brief_id"])
+    assert await _brief_rows(stack) == [(retry.brief_id, 1)]
+
+
+async def test_a_foreign_version_conflict_at_a_revision_keeps_the_lineage_retryable(
+    stack,
+) -> None:
+    """The same distinction at AC-7: the append is canonical the moment it
+    lands, so a foreign version conflict on the brief half leaves the Goal
+    revised, the brief stranded — and the record retryable into exactly the
+    recorded pair."""
+    from services.brief_commit import commit_draft
+
+    first = await _commit(stack, _final_draft(subject="foreign conflict revise"))
+    revised = _final_draft(fields={**_final_draft()["fields"], "subject": "the wipe tutorial"})
+    revises = {
+        "goal_id": first.goal_id,
+        "expected_revision": 1,
+        "lineage_id": first.lineage_id,
+        "revise_goal": True,
+    }
+
+    async def _revise(brief_store: Any) -> Any:
+        return await commit_draft(
+            _USER,
+            stack.workspace.id,
+            revised,
+            confirmed=True,
+            revises=dict(revises),
+            goal_reader=stack.goal_reader,
+            project_store=stack.projects,
+            brief_store=brief_store,
+        )
+
+    outcome = await _revise(_ForeignVersionWinner(stack.brief_store))
+    assert outcome.status == "failed"
+    goal = await stack.goal_reader.get_goal(first.goal_id, principal_id=_USER)
+    assert goal.current_revision == 2, "the append is canonical the moment it lands"
+    versions = await stack.brief_store.list_versions(
+        first.lineage_id, workspace_id=stack.workspace.id
+    )
+    assert [v.version for v in versions] == [1], "the conflicting brief wrote nothing"
+
+    resumed = await _revise(stack.brief_store)
+    assert resumed.status == "committed", resumed
+    assert (resumed.goal_revision, resumed.brief_version) == (2, 2)
+    versions = await stack.brief_store.list_versions(
+        first.lineage_id, workspace_id=stack.workspace.id
+    )
+    assert [v.version for v in versions] == [1, 2]
+
+
 # ---------------------------------------------------------------------------
 # AC-4: crash recovery at every boundary
 # ---------------------------------------------------------------------------

@@ -84,6 +84,8 @@ dev = [
     "vulture>=2.14",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
+    # defusedxml (a maistro-core runtime dep) ships no py.typed marker.
+    "types-defusedxml>=0.7",
     "questionary>=2.0",
     "aiosqlite>=0.20",
     # The reference extension (#951), installed editable so its own suite
@@ -211,6 +213,8 @@ dev = [
     "pytest-bdd>=8.0.0,<10",
     "types-PyYAML>=6.0",
     "types-regex>=2024.5.15",
+    # defusedxml (a maistro-core runtime dep) ships no py.typed marker.
+    "types-defusedxml>=0.7",
     "questionary>=2.0",
     "aiosqlite>=0.20",
     # A real in-process S3 server for the archive conformance suite
