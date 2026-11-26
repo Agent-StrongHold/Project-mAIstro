@@ -477,3 +477,59 @@ for #450 is initiative-level acceptance — per-epic dispositions (checkpoints
 5–7), the ten epic closures/reclassifications and #8 closure (checkpoints 8–9)
 — all outside a bounded implementation lane's authority. Final accounting:
 **checked 1, done 1 (sync + re-verified handoff), skipped 0, errors 0**.
+
+## Addendum 6 — implement round a9f1e80d (2026-11-26): residual classified as
+### owner-only; lane terminal state BLOCKED
+
+Dispatched to resolve the standing NEEDS-DEEP-REVIEW from round `2db7ab28`.
+No new failure was reproduced; this round re-proved the substantive evidence
+first-hand and classified the entire residual precisely.
+
+**First-hand validation battery at head `044500cd6e`** (this job supplied no
+`check-*.log`; `checks: []` in the manifest — nothing assumed):
+- `uv run ruff check .` → all checks passed; `ruff format --check .` → 3676
+  files already formatted.
+- `pytest tests/test_check_api_route_contracts.py -q` → **64 passed** (the
+  #389 route-inventory gate's own suite).
+- `uv run python scripts/check-api-route-contracts.py` → **OK (306 handlers
+  scanned, 15 audited routes registered, 0 canned)** — the #389 DoD line
+  "route inventory is CI-checked for placeholder patterns" is live at
+  `.github/workflows/ci.yml:201`.
+- `pytest packages/maistro-core/tests/memory/working
+  packages/maistro-core/tests/memory/working_graph -q` → **94 passed** (the
+  #105 working-memory substrate: isolation, hydration/provenance, manager,
+  rebuild/degradation, wiring, context layers). The port ships honestly per
+  ADR-082226-5104 §5 (`working_graph/backend.py`: LadybugDB distribution not
+  installable in this environment; port + embedded reference backend, no
+  second graph stack).
+- `pytest packages/hive-conductor/backend/tests/test_memory_routes.py
+  packages/hive-conductor/backend/tests/test_quotas.py -q` → **46 passed**
+  (distinct `ok`/`no_data`/`unavailable`/`error` states, canonical durable
+  owners, seeded non-empty proof — the #389 acceptance surface).
+- `scripts/check-suite-inventory.py` → 21 suites match; `check-backlog-
+  consistency.py` → OK (167).
+
+**Checkpoint state re-derived from this round's own fresher capture**
+(`dispatch-context.json`, 2026-11-26T18:05Z, 125 sources — identical counts
+to Addendum 5's 17:43Z capture): ten epics #21–#26/#104–#107 **open**, #8
+**open**, #389 the only open direct EVENTUALLY leaf (20/21 closed), all
+nested M4 leaves (#110–#121, #301, #384, #852–#861) **closed**. Bodies
+re-read: #21/#22/#23/#24/#26/#104/#106/#107 have **zero** unchecked items;
+#8's single unchecked item is `#450` itself (pure hierarchy cascade); #389's
+acceptance is substantively in-tree (gate green above) and awaits closure;
+#25 carries two Turing/M5-scoped leaves (#783, #822) and #105 five prose
+items whose substrate (working-graph port, durable-store test coverage:
+`test_dag_run_history_durability.py`, `test_durable_node_metrics.py`,
+`test_settings_durability.py`, et al.) is present and green.
+
+**Determination.** Seven rounds have produced no reproducible source, test,
+or gate failure, and every acceptance item provable inside a worktree is now
+proven first-hand at the synced head. The unmet checkpoints (7 partially,
+8, 9) consist solely of GitHub issue closures/reclassifications — mutations
+this campaign explicitly prohibits for lanes ("NEVER … close issues"). No
+repair exists to perform; another deep-review round would re-derive this
+same table. Verdict: **BLOCKED** — lane work is complete and committed;
+residual = owner dispositions of #389, the ten epics, and #8 (which closes
+only after #450 itself). No tests were added; no inventory-note delta
+applies. Final accounting: **checked 1, done 1 (validation re-proven +
+residual classified), skipped 0, errors 0**.
