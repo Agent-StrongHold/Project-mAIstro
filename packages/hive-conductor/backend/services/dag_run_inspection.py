@@ -57,6 +57,7 @@ path is closeout-reviewed policy, and its boundaries are load-bearing:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any
@@ -406,6 +407,30 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     return visible[: max(0, limit)]
 
 
+def _canonical_template_id(run: Any) -> str:
+    """The DAG identity a canonical Run executed, from its own snapshot.
+
+    ``dag_id`` on the projection shape is a projection-only field: a Run
+    admitted by the scheduler and executed by the Container consumer has no
+    projection row to fill it, so the summary resolves the template identity
+    from the Graph snapshot's ``source_template`` -- the template id the
+    admitter instantiated. A hand-built or pre-provenance Graph honestly
+    resolves to empty, like the event-history fields below.
+    """
+    snapshot = getattr(run, "graph", None)
+    raw = getattr(snapshot, "definition_json", "") if snapshot is not None else ""
+    if not raw:
+        return ""
+    try:
+        definition = json.loads(raw)
+    except ValueError:
+        return ""
+    source = definition.get("source_template")
+    if not isinstance(source, dict):
+        return ""
+    return str(source.get("template_id") or "")
+
+
 def _canonical_only_detail(run: Any) -> dict[str, Any]:
     """Detail served straight from a canonical Run with no projection row.
 
@@ -413,7 +438,9 @@ def _canonical_only_detail(run: Any) -> dict[str, Any]:
     the scoped reader just authorized -- canonical identity, lifecycle and
     result, with the event-history fields honestly empty: this store holds
     no event history for a run it never recorded, and inspection names that
-    gap rather than filling it with fabricated events (#1036).
+    gap rather than filling it with fabricated events (#1036). ``dag_id`` is
+    not event history: it is resolved from the Run's own Graph snapshot so
+    schedule-admitted Runs carry their template identity like any row.
     """
     creative = _creative_run_provenance(run)
     goal_context = _goal_context_identity(run)
@@ -421,7 +448,7 @@ def _canonical_only_detail(run: Any) -> dict[str, Any]:
         "id": run.run_id,
         "canonical_run_id": run.run_id,
         "user_id": str(run.actor_principal_id or ""),
-        "dag_id": "",
+        "dag_id": _canonical_template_id(run),
         "status": run.status.value,
         "result": run.result,
         "error": run.error,

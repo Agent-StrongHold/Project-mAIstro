@@ -40,6 +40,7 @@ import subprocess
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -243,6 +244,60 @@ class TestDeclaredFloors:
         assert len(declared) >= 10 and gate.FLOOR_DEPENDENCY in declared
         for name, requirement in declared.items():
             assert gate.derive_floor(requirement), name
+
+    #: Core hard dependencies deliberately NOT restated in the conductor's
+    #: no-lockfile requirements file, because they are soft imports: imported
+    #: under ``try/except ImportError`` so a missing install degrades instead
+    #: of failing. Today that is exactly one entry — pgvector, guarded at
+    #: ``maistro/memory/store.py`` (``Vector = None`` fallback). A name added
+    #: here must have a try/except import guard in core; the assert below
+    #: checks the declared requirement still exists, not that the guard does —
+    #: the pointer in this comment is the review anchor.
+    SOFT_IMPORT_ALLOWLIST: ClassVar[set[str]] = {"pgvector"}
+
+    def test_every_core_hard_dep_is_restated_in_the_conductor_ci_requirements(self, gate):
+        """#1051 repair round: the CI backend step installs ONLY
+        packages/hive-conductor/backend/requirements.txt into the system
+        interpreter and then collects ``packages/hive-conductor/backend/tests``,
+        which import maistro-core from SOURCE through the root pytest
+        pythonpath. Every third-party module core imports unconditionally is
+        therefore a hard install requirement of that file — restating them is
+        the contract the file's own comments state (#839, regex, asyncpg).
+
+        defusedxml became a core hard dependency (discovery feed parsing,
+        imported unconditionally by
+        ``maistro.capabilities.providers.discovery_source``, which
+        ``maistro.graph``'s node-module sweep pulls into every graph import)
+        without being restated: 93 collection errors with
+        ``ModuleNotFoundError: No module named 'defusedxml'`` on CI while
+        every workspace-environment gate stayed green, because only this
+        surface installs without the lockfile. This test pins the contract
+        statically, so the next core hard dep fails here at PR time instead
+        of failing a runner.
+        """
+        declared = gate.declared_dependencies(ROOT / "packages/maistro-core")
+        text = (ROOT / "packages/hive-conductor/backend/requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        restated: set[str] = set()
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            name = re.split(r"[><=!~\[;\s]", line.split(";", 1)[0])[0]
+            restated.add(name.strip().lower().replace("_", "-"))
+        missing = sorted(
+            declared_name
+            for declared_name in declared
+            if declared_name.lower().replace("_", "-") not in restated
+            and declared_name.lower().replace("_", "-") not in self.SOFT_IMPORT_ALLOWLIST
+        )
+        assert not missing, (
+            "core hard dependencies not restated in hive-conductor's no-lockfile "
+            "requirements.txt (the CI backend step installs only that file while "
+            "importing core from source — soft imports must join the "
+            f"SOFT_IMPORT_ALLOWLIST with a guard pointer): {missing}"
+        )
 
     def test_the_pydantic_floor_is_never_below_what_pydantic_settings_installs(self, gate):
         """`lowest-direct` installs the lowest COMPATIBLE pydantic, and

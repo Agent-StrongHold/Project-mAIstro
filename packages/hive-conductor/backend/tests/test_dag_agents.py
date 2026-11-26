@@ -152,6 +152,9 @@ class _StubContainer:
         self.harness_adapters = {}
         self.provider_registry = InMemoryProviderRegistry()
         self.llm_router = CostAwareRouter(self.provider_registry)
+        # Per-cycle discovery context (#1051): the stub wires none, which is
+        # exactly what the real Container's bare default contributes.
+        self.discovery_context = None
 
 
 def _with_container(monkeypatch, container) -> None:
