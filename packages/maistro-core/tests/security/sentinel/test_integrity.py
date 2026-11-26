@@ -132,8 +132,8 @@ def signed_entry() -> tuple[DecisionSigner, AuditEntry]:
         policy_snapshot='{"permission_table":{"deploy":["admin"]}}',
         payload='{"authorized":false}',
     )
-    entry.inputs_hash = hash_args({"path": "/srv/app"})
-    entry.integrity = signer.sign(entry)
+    entry = replace(entry, inputs_hash=hash_args({"path": "/srv/app"}))
+    entry = replace(entry, integrity=signer.sign(entry))
     return signer, entry
 
 
@@ -272,7 +272,7 @@ def test_key_swap_forgery_fails_under_a_pinned_keyring(
     signer, entry = signed_entry
     attacker = DecisionSigner()
     forged = _tamper(entry, "user_id")
-    forged.integrity = attacker.sign(forged)
+    forged = replace(forged, integrity=attacker.sign(forged))
 
     assert verify_decision(forged), "embedded verification is corruption-detection only"
     assert inspect_decision(forged, trusted_keys=signer.keyring) is IntegrityStatus.UNKNOWN_KEY
@@ -302,7 +302,7 @@ def test_unsigned_record_cannot_be_presented_as_signed(
     signer, entry = signed_entry
     unsigned = replace(entry, integrity=None)
     attacker = DecisionSigner()
-    unsigned.integrity = attacker.sign(unsigned)
+    unsigned = replace(unsigned, integrity=attacker.sign(unsigned))
     assert verify_decision(unsigned), "self-authenticated forgery"
     assert inspect_decision(unsigned, trusted_keys=signer.keyring) is IntegrityStatus.UNKNOWN_KEY
 
@@ -318,7 +318,7 @@ def test_rotation_keeps_retired_keys_verifiable(
     assert signer.verify(old_entry)
 
     new_entry = replace(old_entry, payload='{"authorized":true}')
-    new_entry.integrity = signer.sign(new_entry)
+    new_entry = replace(new_entry, integrity=signer.sign(new_entry))
     assert new_entry.integrity.key_id == new_key_id
     assert signer.verify(new_entry)
     assert verify_decision(new_entry, trusted_keys=signer.keyring)
@@ -470,7 +470,7 @@ def test_signer_from_seed_is_stable_across_processes() -> None:
 
 
 def test_signer_from_seed_rejects_bad_material_without_echoing_it() -> None:
-    for bad in ("not-base64!", _b64(b"short"), ""):
+    for bad in ("not-base64!", _b64(b"short"), "", _b64(bytes(32)) + "!"):
         with pytest.raises(ValueError) as caught:
             DecisionSigner.from_seed_b64(bad)
         assert bad not in str(caught.value) or bad == ""
@@ -630,7 +630,7 @@ async def test_store_survives_rotation_and_holds_no_private_material() -> None:
         await cursor.close()
         assert not any("private" in c for c in columns)
         assert {
-            "signature",
+            "decision_signature",
             "signature_key_id",
             "signature_algorithm",
             "signature_public_key",
@@ -701,3 +701,78 @@ def test_verification_material_type_is_one_type_across_import_paths() -> None:
     from maistro.types.security import DecisionSignature as TypesTwin
 
     assert Leaf is DecisionSignature is Package is TypesTwin
+
+
+def test_reinstalling_the_active_key_does_not_destroy_the_signer() -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.generate()
+    signer = DecisionSigner(key)
+    original = signer.active_key_id
+    assert signer.rotate(key) == original
+    entry = AuditEntry(user_id="u1")
+    assert signer.verify(replace(entry, integrity=signer.sign(entry)))
+    assert len(signer.verification_history) == 1
+
+
+@pytest.mark.parametrize("invalid", ("depth", "cycle", "non_json"))
+@pytest.mark.asyncio
+async def test_rejected_arguments_do_not_crash_decision_signing(invalid: str) -> None:
+    """The audit hash must not defeat the resource gate it is documenting."""
+    if invalid == "non_json":
+        args = {"value": object()}
+    elif invalid == "cycle":
+        args = {}
+        args["self"] = args
+    else:
+        args = {}
+        for _ in range(1200):
+            args = {"nested": args}
+    audit = _Audit()
+    sentinel = _sentinel(audit)
+    decision = await sentinel.pre_call(
+        "deploy", args, AuthContext(user_id="u1", roles=frozenset({"admin"})), {}
+    )
+    assert not decision.allowed
+    record = audit.entries[0]
+    assert record.verdict == "denied" and record.violations
+    assert record.inputs_hash == ""  # explicitly unavailable, not a fake digest
+    assert verify_decision(record, trusted_keys=sentinel.verification_keyring)
+
+
+@pytest.mark.parametrize("missing", ("key_id", "public_key", "signature"))
+def test_missing_verification_material_never_verifies(signed_entry, missing: str) -> None:
+    signer, entry = signed_entry
+    damaged = replace(entry, integrity=replace(entry.integrity, **{missing: ""}))
+    assert not verify_decision(damaged, trusted_keys=signer.keyring)
+
+
+@pytest.mark.asyncio
+async def test_real_pg_decisions_preserve_both_proofs_and_reject_all_mutations(pg_pool) -> None:
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.persistence.pg_audit import PgAuditLog
+
+    durable = PgAuditLog(pg_pool)
+    signer = DecisionSigner()
+    sentinel = Sentinel(
+        warden=_CleanWarden(),
+        permission_table={"deploy": frozenset({"admin"})},
+        audit_log=durable,
+        integrity_signer=signer,
+    )
+    allowed = await sentinel.authorize(
+        "deploy", Principal("owner", "human", ("admin",)), args={"token": "never-store-this"}
+    )
+    denied = await sentinel.authorize("deploy", Principal("guest", "human", ("user",)))
+    assert allowed.authorized and not denied.authorized
+    stored = await durable.get_entries()
+    assert {row.verdict for row in stored} == {"allowed", "denied"}
+    for row in stored:
+        assert durable.verify(row), "the pre-existing store proof must still verify"
+        assert inspect_decision(row, trusted_keys=signer.keyring) is IntegrityStatus.VERIFIED
+        for field in PROTECTED_FIELDS:
+            assert not verify_decision(_tamper(row, field), trusted_keys=signer.keyring), field
+    async with pg_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT row_to_json(audit_log)::text AS evidence FROM audit_log")
+    assert "never-store-this" not in str(rows)

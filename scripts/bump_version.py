@@ -138,7 +138,7 @@ def _app_literal(rel_path: str, pattern: re.Pattern[str]) -> Site:
     return Site(ROOT / rel_path, pattern, f"app version literal:{rel_path}")
 
 
-# Every [project] `version = "..."` line — root workspace meta-package, all 9
+# Every [project] `version = "..."` line — root workspace meta-package, all 10
 # library packages, and hive-conductor. The app is not in the publish set, but
 # it has carried a pyproject.toml since it was enrolled in the workspace lock
 # and the wheel-imports loop, and the wheel it builds declares a version like
@@ -155,6 +155,8 @@ _PYPROJECT_SITES = [
     _pyproject("packages/maistro-rsi/pyproject.toml"),
     _pyproject("packages/maistro-design/pyproject.toml"),
     _pyproject("packages/maistro-bootstrap/pyproject.toml"),
+    _pyproject("packages/maistro-ext-harness/pyproject.toml"),
+    _pyproject("packages/maistro-ext-sdk/pyproject.toml"),
     _pyproject("packages/hive-conductor/pyproject.toml"),
 ]
 
@@ -175,7 +177,9 @@ _VERSION_FALLBACK_SITES = [
     _version_fallback("packages/maistro-rsi/src/maistro_rsi/__init__.py"),
     _version_fallback("packages/maistro-design/src/maistro_design/__init__.py"),
     _version_fallback("packages/maistro-bootstrap/src/maistro_bootstrap/__init__.py"),
+    _version_fallback("packages/maistro-ext-sdk/src/maistro_ext_sdk/__init__.py"),
     _version_fallback("packages/maistro-registry/src/maistro_registry/__init__.py"),
+    _version_fallback("packages/maistro-ext-harness/src/maistro_ext_harness/__init__.py"),
 ]
 
 # Inter-package dependency LOWER bounds only — adding the `<2` upper bound is
@@ -194,6 +198,13 @@ _INTERPKG_SITES = [
     _interpkg_dep("packages/maistro-rsi/pyproject.toml", "maistro-bootstrap"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-core"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-canvas"),
+    # Sibling lower bounds introduced with the central SSRF outbound guard:
+    # bootstrap, evolve, and registry all import `maistro.http` /
+    # `maistro.security.outbound`, so each must track the lockstep core
+    # version or the bumper (and --check) would leave these bounds stale.
+    _interpkg_dep("packages/maistro-bootstrap/pyproject.toml", "maistro-core"),
+    _interpkg_dep("packages/maistro-evolve/pyproject.toml", "maistro-core"),
+    _interpkg_dep("packages/maistro-registry/pyproject.toml", "maistro-core"),
     # Two rows, not one: hive-conductor names `maistro-core` twice under two
     # different extras, in two different tables (#514), and each expression
     # carries its own bound. A single row would check one and leave the other

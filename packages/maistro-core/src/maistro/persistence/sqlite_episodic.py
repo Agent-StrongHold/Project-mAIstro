@@ -17,6 +17,7 @@ from maistro.memory.episodic.ranking import rank
 from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
+from maistro.memory.exposure import Actor, MemoryExposureMode, require_write_authority
 from maistro.memory.scopes import build_scope_filter, scope_predicate
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.episodic_rows import (
@@ -25,6 +26,7 @@ from maistro.persistence.episodic_rows import (
     from_row,
     to_row,
 )
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 if TYPE_CHECKING:
@@ -106,10 +108,18 @@ def _mapped(cursor: Any, row: Any) -> dict[str, Any]:
 
 
 class SqliteEpisodicStore:
-    """SQLite-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`."""
+    """SQLite-backed episodic store: `EpisodicStore` + `DecayableEpisodicStore`.
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    Same ADR-057 write-authority gate as the PostgreSQL twin: no declared mode
+    refuses every write; ``SYSTEM_MANAGED`` denies agent-actor writes before
+    any SQL runs.
+    """
+
+    def __init__(
+        self, conn: aiosqlite.Connection, exposure_mode: MemoryExposureMode | None = None
+    ) -> None:
         self._conn = conn
+        self._exposure_mode = exposure_mode
 
     async def ensure_schema(self) -> None:
         """Create the table, and upgrade one created before the record's fields.
@@ -119,39 +129,45 @@ class SqliteEpisodicStore:
         uses, and for the same reason: `ALTER TABLE ... ADD COLUMN` with a
         constant default is metadata-only, so this is cheap.
         """
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(episodic_memories)")
-        present = {row[1] for row in await cursor.fetchall()}
-        for column, ddl in (
-            ("project_id", "TEXT NOT NULL DEFAULT ''"),
-            ("decay_rate", "REAL NOT NULL DEFAULT 0.01"),
-            ("shared", "INTEGER NOT NULL DEFAULT 0"),
-            ("flagged_for_review", "INTEGER NOT NULL DEFAULT 0"),
-            # Nullable, matching the PostgreSQL column and migration 026's
-            # shape for the other record kinds: an empty-string default would
-            # make every pre-#64 row claim a Run with an empty id (#64).
-            ("run_id", "TEXT"),
-            ("node_run_id", "TEXT"),
-            ("attempt_id", "TEXT"),
-        ):
-            if column not in present:
-                await self._conn.execute(f"ALTER TABLE episodic_memories ADD COLUMN {column} {ddl}")
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodic_scope_weight "
-            "ON episodic_memories (org_id, scope, weight DESC)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(episodic_memories)")
+            present = {row[1] for row in await cursor.fetchall()}
+            for column, ddl in (
+                ("project_id", "TEXT NOT NULL DEFAULT ''"),
+                ("decay_rate", "REAL NOT NULL DEFAULT 0.01"),
+                ("shared", "INTEGER NOT NULL DEFAULT 0"),
+                ("flagged_for_review", "INTEGER NOT NULL DEFAULT 0"),
+                # Nullable, matching the PostgreSQL column and migration 026's
+                # shape for the other record kinds: an empty-string default would
+                # make every pre-#64 row claim a Run with an empty id (#64).
+                ("run_id", "TEXT"),
+                ("node_run_id", "TEXT"),
+                ("attempt_id", "TEXT"),
+            ):
+                if column not in present:
+                    await self._conn.execute(
+                        f"ALTER TABLE episodic_memories ADD COLUMN {column} {ddl}"
+                    )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodic_scope_weight "
+                "ON episodic_memories (org_id, scope, weight DESC)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
+            )
 
-    async def store(self, memory: EpisodicMemory) -> str:
+    async def store(self, memory: EpisodicMemory, *, actor: Actor = Actor.AGENT) -> str:
         """Store a memory, naming the execution that produced it.
 
         Upsert, as in PostgreSQL. The producer is resolved before the write by
         the same rule every provenance-bearing store uses: caller first,
         ambient context second, none stored as NULL (#64).
+
+        The write-authority gate is the first statement (ADR-057): a denial
+        executes no SQL and commits nothing.
         """
+        require_write_authority(self._exposure_mode, "write", actor, subject=type(self).__name__)
         provenance = observed_provenance(
             run_id=memory.run_id,
             node_run_id=memory.node_run_id,
@@ -266,6 +282,16 @@ class SqliteEpisodicStore:
                 itertools.repeat("?"),
             )
             clauses.append(f"({predicate})")
+            params.extend(scope_params)
+        else:
+            # Project-only recall skips the hierarchy, but still compiles the
+            # no-caller global clause so an org-bound global is not a wildcard
+            # (#1247). Non-global rows stay visible for changelog recall.
+            predicate, scope_params = scope_predicate(
+                build_scope_filter(),
+                itertools.repeat("?"),
+            )
+            clauses.append(f"(scope != 'global' OR {predicate})")
             params.extend(scope_params)
         clauses.append("weight >= ?")
         params.append(min_weight)

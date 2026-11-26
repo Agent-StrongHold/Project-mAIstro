@@ -38,7 +38,7 @@ function priorityBadge(p: MessagePriority) {
   const c = PRIORITY_COLORS[p];
   return (
     <span style={{
-      padding: "2px 8px", borderRadius: 3, fontSize: 8,
+      padding: "2px 8px", borderRadius: 3, fontSize: 12,
       fontFamily: "var(--mono)", fontWeight: 600,
       background: c.bg, color: c.fg,
     }}>
@@ -50,7 +50,7 @@ function priorityBadge(p: MessagePriority) {
 function categoryBadge(cat: string) {
   return (
     <span style={{
-      padding: "2px 8px", borderRadius: 3, fontSize: 8,
+      padding: "2px 8px", borderRadius: 3, fontSize: 12,
       fontFamily: "var(--mono)", fontWeight: 500,
       background: "rgba(91,143,179,0.12)", color: "#3a6a9a",
     }}>
@@ -195,7 +195,7 @@ export default function MessageBoard() {
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "var(--pencil)" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "var(--pencil)" }}>
                   Messages
                 </span>
                 {unreadCount > 0 && (
@@ -203,7 +203,7 @@ export default function MessageBoard() {
                     background: "var(--accent)", color: "var(--paper)",
                     borderRadius: "50%", width: 20, height: 20,
                     display: "inline-flex", alignItems: "center", justifyContent: "center",
-                    fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700,
+                    fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700,
                   }}>
                     {formatTokens(unreadCount)}
                   </span>
@@ -215,7 +215,7 @@ export default function MessageBoard() {
                 style={{
                   background: "none", border: "1px solid var(--rule)", borderRadius: 3,
                   padding: "3px 8px", cursor: unreadCount > 0 ? "pointer" : "default",
-                  fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)",
+                  fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)",
                   opacity: unreadCount > 0 ? 1 : 0.4,
                 }}
               >
@@ -232,7 +232,7 @@ export default function MessageBoard() {
                     color: filterTab === i ? "var(--paper)" : "var(--pencil)",
                     border: filterTab === i ? "1px solid var(--accent)" : "1px solid var(--rule)",
                     borderRadius: 3, padding: "2px 8px", cursor: "pointer",
-                    fontFamily: "var(--mono)", fontSize: 8, fontWeight: filterTab === i ? 600 : 400,
+                    fontFamily: "var(--mono)", fontSize: 12, fontWeight: filterTab === i ? 600 : 400,
                   }}
                 >
                   {tab}
@@ -267,7 +267,7 @@ export default function MessageBoard() {
                         }} />
                       )}
                       <span style={{
-                        fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)",
+                        fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)",
                         fontWeight: msg.read ? 400 : 700,
                       }}>
                         {msg.from_agent}
@@ -285,7 +285,7 @@ export default function MessageBoard() {
                     {msg.subject}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
                       {relativeTime(msg.created_at)}
                     </span>
                     {categoryBadge(msg.category)}
@@ -309,7 +309,7 @@ export default function MessageBoard() {
                       onClick={handleMarkRead}
                       style={{
                         padding: "5px 14px", borderRadius: 4, cursor: "pointer",
-                        fontFamily: "var(--mono)", fontSize: 10,
+                        fontFamily: "var(--mono)", fontSize: 12,
                         border: "1.3px solid var(--accent)",
                         background: "var(--accent)", color: "var(--paper)",
                       }}
@@ -321,7 +321,7 @@ export default function MessageBoard() {
                     onClick={() => setDeleteId(selected.id)}
                     style={{
                       padding: "5px 14px", borderRadius: 4, cursor: "pointer",
-                      fontFamily: "var(--mono)", fontSize: 10,
+                      fontFamily: "var(--mono)", fontSize: 12,
                       border: "1.3px solid #c4452a",
                       background: "transparent", color: "#c4452a",
                     }}
@@ -332,12 +332,12 @@ export default function MessageBoard() {
               </div>
 
               <Card>
-                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 16px", marginBottom: 16, fontFamily: "var(--mono)", fontSize: 10 }}>
-                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>From</span>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 16px", marginBottom: 16, fontFamily: "var(--mono)", fontSize: 12 }}>
+                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>From</span>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontWeight: 600 }}>{selected.from_agent}</span>
                     <span style={{
-                      padding: "1px 6px", borderRadius: 3, fontSize: 7,
+                      padding: "1px 6px", borderRadius: 3, fontSize: 12,
                       background: "rgba(139,92,246,0.12)", color: "#8b5cf6",
                       fontFamily: "var(--mono)", fontWeight: 600,
                     }}>
@@ -345,23 +345,23 @@ export default function MessageBoard() {
                     </span>
                   </div>
 
-                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>To</span>
+                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>To</span>
                   <span style={{ fontWeight: 500 }}>{selected.to}</span>
 
-                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Time</span>
+                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Time</span>
                   <span title={formatTimestamp(selected.created_at)}>{formatTimestamp(selected.created_at)}</span>
 
-                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Priority</span>
+                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Priority</span>
                   <div>{priorityBadge(selected.priority)}</div>
 
-                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Category</span>
+                  <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Category</span>
                   <div>{categoryBadge(selected.category)}</div>
                 </div>
               </Card>
 
               <Card>
                 <div style={{
-                  fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.6,
+                  fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.6,
                   whiteSpace: "pre-wrap" as const, color: "var(--ink)",
                 }}>
                   {selected.body}

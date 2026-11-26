@@ -333,6 +333,49 @@ def test_audit_pip_report_blocks_unknown_advisory_and_accepts_allowlisted(gate, 
     assert gate.audit_pip_report(str(report)) == 0
 
 
+def test_audit_pip_report_treats_empty_report_as_infrastructure_failure(
+    gate, tmp_path, capsys
+) -> None:
+    """A crashed pip-audit leaves an empty redirect target behind (the 2026-10-01
+    security-gate red: PyPI read timeout -> empty pip-audit.json -> JSONDecodeError
+    traceback). The gate must fail closed with a retry diagnosis, never read that
+    as a clean audit."""
+    report = tmp_path / "pip-audit.json"
+    report.write_text("")
+
+    assert gate.audit_pip_report(str(report)) == 3
+    captured = capsys.readouterr()
+    assert "::error::" in captured.out
+    assert "retry" in captured.out
+
+
+def test_audit_pip_report_treats_truncated_report_as_infrastructure_failure(gate, tmp_path) -> None:
+    report = tmp_path / "pip-audit.json"
+    report.write_text('{"dependencies": [{"name": "demo"')
+
+    assert gate.audit_pip_report(str(report)) == 3
+
+
+def test_audit_pip_report_missing_report_is_infrastructure_failure(gate, tmp_path) -> None:
+    assert gate.audit_pip_report(str(tmp_path / "does-not-exist.json")) == 3
+
+
+def test_main_propagates_infrastructure_failure_without_running_dependency_gate(
+    gate, tmp_path, monkeypatch
+) -> None:
+    report = tmp_path / "pip-audit.json"
+    report.write_text("")
+    monkeypatch.setattr(
+        gate,
+        "audit_direct_dependencies",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("dependency usage gate must not run when the audit report is unusable")
+        ),
+    )
+
+    assert gate.main(["pip_audit_gate.py", str(report)]) == 3
+
+
 def test_main_validates_arguments_and_sequences_both_gates(gate, monkeypatch) -> None:
     assert gate.main(["pip_audit_gate.py"]) == 2
 

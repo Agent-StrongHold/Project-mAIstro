@@ -240,11 +240,19 @@ class TestCLI:
         assert "coming soon" in result.output.lower()
 
     def test_upgrade_no_git(self) -> None:
+        """#353: with no external tools runnable, upgrade fails without success."""
         from maistro.cli import app
 
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        # Patch the driver's subprocess boundary (the module-level alias, not
+        # subprocess.run itself, which the alias froze at import time).
+        with patch("maistro.cli._upgrade._RUN_SUBPROCESS", side_effect=FileNotFoundError):
             result = runner.invoke(app, ["upgrade"])
-            assert "git not found" in result.output.lower()
+            assert result.exit_code != 0
+            assert "upgrade complete" not in result.output.lower()
+            # The failure names the missing tool (or is a clean preflight abort
+            # when ambient install metadata is unusable) — never a silent pass.
+            out = result.output.lower()
+            assert "not found" in out or "preflight failed" in out
 
 
 # ── Container types tests ────────────────────────────────────────────────────

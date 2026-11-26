@@ -148,11 +148,12 @@ def test_delete_server_missing_404(admin_client: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_scan_server_found(admin_client: Any) -> None:
+def test_scan_server_found_is_explicitly_unsupported(admin_client: Any) -> None:
+    """A real server gets an honest refusal, not a fabricated 'clean' (#389)."""
     stores.mcp_servers["s1"] = _make_server()
     r = admin_client.post("/v1/mcp/servers/s1/scan")
-    assert r.status_code == 200
-    assert r.json() == {"findings": [], "status": "clean"}
+    assert r.status_code == 501
+    assert "not implemented" in r.json()["detail"]
 
 
 def test_scan_server_missing_404(admin_client: Any) -> None:
@@ -231,10 +232,11 @@ def test_list_tools_empty(admin_client: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_discover_tools(admin_client: Any) -> None:
+def test_discover_tools_is_explicitly_unsupported(admin_client: Any) -> None:
+    """No discovery is wired; the fake 'scanning' status is gone (#389)."""
     r = admin_client.post("/v1/mcp/discover", json={"url": "http://x"})
-    assert r.status_code == 200
-    assert r.json() == {"tools": [], "status": "scanning"}
+    assert r.status_code == 501
+    assert "/v1/mcp/test" in r.json()["detail"]
 
 
 # --------------------------------------------------------------------------- #

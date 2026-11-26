@@ -30,6 +30,11 @@ from models.schemas import ChatCompletionRequest
 from pydantic import ValidationError
 from routes import chat, voice
 
+from maistro.identity import Principal
+
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 
 class RecordingLLM:
     def __init__(self, content: str = "the kitchen light is on") -> None:
@@ -42,8 +47,8 @@ class RecordingLLM:
 
 
 class FakeRequest:
-    def __init__(self) -> None:
-        self.state = SimpleNamespace(user={"id": "user-1"})
+    def __init__(self, user_id: str = "user-1") -> None:
+        self.state = SimpleNamespace(principal=Principal(user_id=user_id))
 
 
 def _utterance(**kw: str) -> voice.VoiceIntentBody:
@@ -53,7 +58,12 @@ def _utterance(**kw: str) -> voice.VoiceIntentBody:
 class TestTheResponseSaysOnlyWhatTheRouteCanEstablish:
     @pytest.mark.ac("ADR-082826-51b9/AC-1")
     def test_no_field_survives_that_the_route_cannot_fill(self) -> None:
-        assert set(voice.VoiceIntentResponse.model_fields) == {"understood", "intent", "reply"}
+        assert set(voice.VoiceIntentResponse.model_fields) == {
+            "understood",
+            "intent",
+            "reply",
+            "run_id",
+        }
 
     @pytest.mark.ac("ADR-082826-51b9/AC-1")
     def test_actions_taken_is_gone_rather_than_permanently_empty(self) -> None:

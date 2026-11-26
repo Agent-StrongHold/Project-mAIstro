@@ -1,0 +1,32 @@
+{
+  "issue": 1611,
+  "event_type": "run.recovery_disposition",
+  "command": "uv run pytest packages/maistro-core/tests/runs/test_recovery_evidence_pack.py -q",
+  "scenarios": [
+    {
+      "id": "kill-mid-attempt",
+      "expected_disposition": "recovered_and_parked",
+      "status": "contract-green"
+    },
+    {
+      "id": "dual-worker-fence",
+      "expected_disposition": "StaleExecutionFence",
+      "status": "contract-green"
+    },
+    {
+      "id": "version-skew-resume",
+      "expected_disposition": "stable-event-id",
+      "status": "contract-green"
+    },
+    {
+      "id": "mixed-queue-restart",
+      "expected_disposition": "no-silent-success",
+      "status": "contract-green"
+    },
+    {
+      "id": "crash-loop-replay",
+      "expected_disposition": "idempotent-event-id",
+      "status": "contract-green"
+    }
+  ]
+}

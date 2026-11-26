@@ -26,6 +26,7 @@ contracts:
   - boundary
 tests:
   - packages/maistro-design/tests/test_project_scope.py
+  - packages/hive-conductor/backend/tests/test_design_scope.py
   - tests/migrations/test_migration_chain.py
 source:
   - alembic/versions/024_design_project_scope.py
@@ -114,6 +115,10 @@ module that would not be the one under test:
 <!-- ac-state: unproven AC-6 - proven by packages/maistro-design/tests/test_project_scope.py
      reading the Conductor route's own signatures; the anchor would have to name
      maistro_design, which is not where the route lives -->
+<!-- ac-state: unproven AC-7 - proven by packages/hive-conductor/backend/tests/test_design_scope.py
+     exercising the Conductor render routes directly; like AC-6 the anchor would
+     have to name a flat-backend route module the reachability graph cannot
+     anchor -->
 
 ```gherkin
 Feature: A design project's scope is writable on a clean database and enforced on every read
@@ -159,4 +164,13 @@ Feature: A design project's scope is writable on a clean database and enforced o
     When a project is fetched or rendered
     Then the store call carries the scope the request resolved
     And that scope comes from the request when the deployment sets one
+
+  @AC-7
+  Scenario: Rendering is reported unavailable and cannot be probed
+    Given the Conductor's design render routes
+    When a render job is created or polled
+    Then creation reports 501 with no pending job, worker, or artifact URL minted
+    And polling reports 501 with no made-up job state or output path
+    And creation without a configured store reports 503 before any ownership probe
+    And the ownership check still runs so a disabled capability is not an id probe
 ```

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   ConfirmDialog,
   EmptyState,
@@ -69,7 +71,7 @@ const inp = {
   width: "100%",
   padding: "6px 10px",
   fontFamily: "var(--mono)" as const,
-  fontSize: 10,
+  fontSize: 12,
   background: "var(--paper-2, #f5f5f0)",
   border: "1.3px solid var(--rule)",
   borderRadius: 4,
@@ -79,7 +81,7 @@ const inp = {
 
 const lbl = {
   fontFamily: "var(--mono)" as const,
-  fontSize: 9,
+  fontSize: 12,
   color: "var(--pencil)",
   textTransform: "uppercase" as const,
   marginBottom: 3,
@@ -91,8 +93,15 @@ const btn = {
   borderRadius: 4,
   cursor: "pointer" as const,
   fontFamily: "var(--mono)" as const,
-  fontSize: 10,
+  fontSize: 12,
   border: "1.3px solid",
+};
+
+// Canonical Run statuses the run socket can end on that are not success.
+const RUN_FAILURE_LABELS: Record<string, string> = {
+  failed: "Failed",
+  cancelled: "Cancelled",
+  timed_out: "Timed out",
 };
 
 function nodePos(node: DAGNode): { x: number; y: number } {
@@ -123,8 +132,28 @@ function fmtRelative(iso: string): string {
   return `${days}d ago`;
 }
 
+// One in-flight Run socket plus the flags the unmount cleanup reads (#355).
+// `started` mirrors the backend `started` frame — the point after which
+// `execute_dag` runs (and the projection is recorded) regardless of this
+// socket; `settled` marks a terminal/parked/error frame; `detach` asks the
+// handlers to close the socket at the next safe point.
+type LiveRun = { ws: WebSocket; started: boolean; settled: boolean; detach: boolean };
+
+// Strips the handlers, then closes. Nulling the handlers first keeps our own
+// close() from re-entering them.
+function detachLiveRun(run: LiveRun): void {
+  run.detach = false;
+  run.ws.onmessage = null;
+  run.ws.onerror = null;
+  run.ws.onclose = null;
+  if (run.ws.readyState === WebSocket.CONNECTING || run.ws.readyState === WebSocket.OPEN) {
+    run.ws.close();
+  }
+}
+
 export default function DagBuilder() {
   const toast = useToast();
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [dags, setDags] = useState<DAGFile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dag, setDag] = useState<DAGFile | null>(null);
@@ -146,37 +175,68 @@ export default function DagBuilder() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editAgentId, setEditAgentId] = useState<string>("");
   const [addEdgeTarget, setAddEdgeTarget] = useState<string | null>(null);
-  const [execState, setExecState] = useState<{ running: boolean; nodeId: string | null; log: string[] }>({ running: false, nodeId: null, log: [] });
+  const [execState, setExecState] = useState<{ running: boolean; nodeId: string | null; runId: string | null; log: string[] }>({ running: false, nodeId: null, runId: null, log: [] });
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ nodeId: string; offX: number; offY: number } | null>(null);
+  // The live Run, kept in a ref so the unmount cleanup below can detach its
+  // socket (#355): navigating during a Run used to leave the connection — and
+  // its setExecState/toast handlers — alive against the unmounted tree.
+  const liveRunRef = useRef<LiveRun | null>(null);
 
-  const loadDags = useCallback(async () => {
-    try {
-      setLoading(true);
-      setDags(await apiGet<DAGFile[]>("/v1/dags"));
-    } catch {
-      toast("Failed to load DAGs", "error");
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  const loadAgents = useCallback(async () => {
-    try {
-      setAgents(await apiGet<Agent[]>("/v1/agents"));
-    } catch (e) {
-      // Swallowing this left the node-type picker empty with no explanation:
-      // the builder renders fine, offers no agents, and looks like the fleet
-      // is empty rather than unreachable.
-      toast(`Could not load agents: ${e instanceof Error ? e.message : String(e)}`, "error");
-    }
-  }, [toast]);
-
+  // Unmount detaches the Run socket and strips its handlers, so nothing fires
+  // a state update after the tree is gone — but only once the backend has
+  // acknowledged the Run. `routes/ws._stream_canonical_run` sends the
+  // generator's `started` frame first, and `execute_dag` only runs (and the
+  // projection is only recorded) when that generator is resumed on the next
+  // pull, so closing a CONNECTING socket or racing the `started` frame would
+  // silently cancel the requested Run. Until the ack or a terminal frame
+  // arrives, cleanup just marks `detach` and the handlers close the socket at
+  // that safe point.
   useEffect(() => {
-    loadDags();
-    loadAgents();
-    apiGet<{ models: string[] }>("/v1/settings/models").then((r) => setAvailableModels(r.models)).catch(() => {});
-  }, [loadDags, loadAgents]);
+    return () => {
+      const run = liveRunRef.current;
+      if (!run) return;
+      if (run.started || run.settled) {
+        detachLiveRun(run);
+        liveRunRef.current = null;
+      } else {
+        run.detach = true;
+      }
+    };
+  }, []);
+
+  // The mount-scoped loads each carry a cleanup closure (#355), so a response
+  // that lands after unmount updates nothing. addToast is a stable identity,
+  // so this still runs exactly once per mount.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        setLoading(true);
+        const list = await apiGet<DAGFile[]>("/v1/dags");
+        if (!cancelled) setDags(list);
+      } catch {
+        if (!cancelled) toast("Failed to load DAGs", "error");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    void (async () => {
+      try {
+        const list = await apiGet<Agent[]>("/v1/agents");
+        if (!cancelled) setAgents(list);
+      } catch (e) {
+        // Swallowing this left the node-type picker empty with no explanation:
+        // the builder renders fine, offers no agents, and looks like the fleet
+        // is empty rather than unreachable.
+        if (!cancelled) toast(`Could not load agents: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    })();
+    void apiGet<{ models: string[] }>("/v1/settings/models")
+      .then((r) => { if (!cancelled) setAvailableModels(r.models); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [toast]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -313,42 +373,104 @@ export default function DagBuilder() {
 
   const handleRun = useCallback(() => {
     if (!dag) return;
+    if (!workspacesReady || !activeWorkspaceId) {
+      toast("Select a Workspace before running a DAG", "error");
+      return;
+    }
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run`;
+    const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
+    // One Run at a time: retire a socket a previous run could have left
+    // behind before opening a fresh one, so subscriptions never stack (#355).
+    const previous = liveRunRef.current;
+    if (previous) detachLiveRun(previous);
     const ws = new WebSocket(wsUrl);
-    setExecState({ running: true, nodeId: null, log: ["Connecting..."] });
+    const run: LiveRun = { ws, started: false, settled: false, detach: false };
+    liveRunRef.current = run;
+    // Set once the socket reports a terminal or parked Run (or an error), so
+    // an unmount after this point closes the socket instead of deferring to
+    // the handlers. Returns whether the Run was orphaned by an unmount.
+    const settle = (): boolean => {
+      const orphaned = run.detach;
+      run.settled = true;
+      if (orphaned) detachLiveRun(run);
+      return orphaned;
+    };
+    setExecState({ running: true, nodeId: null, runId: null, log: ["Connecting..."] });
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.error) {
+        if (data.error && !data.status) {
+          if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, `Error: ${data.error}`] }));
           return;
         }
-        if (data.status === "started") {
+        if (typeof data.run_id === "string" && data.run_id) {
+          const runId: string = data.run_id;
+          if (!run.detach) {
+            setExecState((prev) => (prev.runId === runId ? prev : { ...prev, runId, log: [...prev.log, `Run ${runId}`] }));
+          }
+        }
+        const status: string = data.status;
+        if (status === "started") {
+          // The backend's ack: `execute_dag` now runs (and the projection is
+          // recorded) server-side even if this socket goes away.
+          run.started = true;
+          if (run.detach) {
+            detachLiveRun(run);
+            return;
+          }
           setExecState((prev) => ({ ...prev, log: [...prev.log, `Started (${data.node_count} nodes)`] }));
-        } else if (data.status === "node_complete") {
+        } else if (status === "node_complete") {
           setExecState((prev) => ({
             ...prev,
             nodeId: data.node_id,
             log: [...prev.log, `${data.role} (${data.node_id.slice(0, 8)}): ${data.success ? "OK" : "FAIL"}`],
           }));
-        } else if (data.status === "completed") {
+        } else if (status === "completed") {
+          if (settle()) return;
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Completed in ${data.cycles} cycles`] }));
           toast("DAG execution completed");
-        } else if (data.status === "failed") {
-          setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, `Failed: ${data.error}`] }));
-          toast("DAG execution failed", "error");
+        } else if (status === "heartbeat") {
+          // Alive-idle marker (#1183): the Run is still executing with nothing
+          // new to report. No state change — the point of the frame is that
+          // silence with a live socket is distinguishable from a dead one.
+          return;
+        } else if (status in RUN_FAILURE_LABELS) {
+          if (settle()) return;
+          const label = RUN_FAILURE_LABELS[status];
+          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, data.error ? `${label}: ${data.error}` : label] }));
+          toast(`DAG run ${label.toLowerCase()}`, "error");
+        } else if (status === "waiting" || status === "paused") {
+          if (settle()) return;
+          // A parked Run projects its unfinished nodes as success:false; they
+          // have not failed, so relabel them rather than report FAIL.
+          setExecState((prev) => ({
+            ...prev,
+            running: false,
+            nodeId: null,
+            log: [...prev.log.map((line) => line.replace(/: FAIL$/, ": not finished")), `Parked (${status}): the Run has not finished`],
+          }));
+          toast(`DAG run ${status}`, "warn");
+        } else if (status) {
+          if (settle()) return;
+          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Run ${status}: not finished`] }));
         }
       } catch { /* ignore parse errors */ }
     };
     ws.onerror = () => {
+      if (run.settled) return;
+      if (settle()) return;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection error"] }));
       toast("WebSocket error", "error");
     };
     ws.onclose = () => {
-      setExecState((prev) => prev.running ? { ...prev, running: false, log: [...prev.log, "Connection closed"] } : prev);
+      if (liveRunRef.current === run) liveRunRef.current = null;
+      if (run.settled) return;
+      run.settled = true;
+      if (run.detach) return;
+      setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection closed before the Run reported a final state"] }));
     };
-  }, [dag, toast]);
+  }, [activeWorkspaceId, dag, toast, workspacesReady]);
 
   const handleActivate = useCallback(async () => {
     if (!dag) return;
@@ -515,7 +637,7 @@ export default function DagBuilder() {
         </text>
         <text
           x={pos.x + 30} y={pos.y + 38}
-          style={{ fontFamily: "var(--mono)", fontSize: 8, fill: "var(--pencil)" }}
+          style={{ fontFamily: "var(--mono)", fontSize: 12, fill: "var(--pencil)" }}
         >
           {node.model || "no model"}
         </text>
@@ -542,12 +664,12 @@ export default function DagBuilder() {
               display: "flex", justifyContent: "space-between", alignItems: "center",
               padding: "10px 12px", borderBottom: "1.3px solid var(--rule)",
             }}>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--pencil)" }}>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--pencil)" }}>
                 DAG PIPELINES
               </span>
               <button
                 onClick={() => setShowCreate(true)}
-                style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", fontSize: 9, padding: "3px 10px" }}
+                style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", fontSize: 12, padding: "3px 10px" }}
               >
                 New +
               </button>
@@ -564,7 +686,7 @@ export default function DagBuilder() {
                       padding: "10px 12px", cursor: "pointer",
                       borderBottom: "1px solid var(--rule)",
                       borderLeft: selectedId === d.id ? "3px solid var(--accent)" : "3px solid transparent",
-                      background: selectedId === d.id ? "rgba(var(--accent-rgb, 212,160,23),0.06)" : "transparent",
+                      background: selectedId === d.id ? "var(--accent-soft)" : "transparent",
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -573,7 +695,7 @@ export default function DagBuilder() {
                       </span>
                       <Hex variant={statusVariant(d.status)}>{d.status}</Hex>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
                       <span>{d.nodes.length} nodes</span>
                       <span>{fmtRelative(d.updated_at)}</span>
                     </div>
@@ -617,10 +739,13 @@ export default function DagBuilder() {
                     {execState.running ? "\u23F3 Running..." : "\u25B6 Run DAG"}
                   </button>
                   {execState.log.length > 0 && (
-                    <div style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 9 }}>
+                    <div role="log" aria-label="DAG execution log" style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {execState.log.map((line, i) => (
-                        <div key={i} style={{ color: line.startsWith("Error") || line.startsWith("Failed") ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
+                        <div key={i} style={{ color: /^(Error|Failed|Cancelled|Timed out|Connection)/.test(line) ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
                       ))}
+                      {execState.runId && (
+                        <Link to={`/dag-runs?run=${encodeURIComponent(execState.runId)}`}>View in DAG Runs</Link>
+                      )}
                     </div>
                   )}
                   {dag.status !== "active" && (
@@ -690,7 +815,7 @@ export default function DagBuilder() {
                         display: "flex", justifyContent: "space-between", alignItems: "center",
                         padding: "6px 12px", borderBottom: "1px solid var(--rule)",
                       }}>
-                        <span style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700, color: "var(--pencil)", textTransform: "uppercase" }}>
+                        <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, color: "var(--pencil)", textTransform: "uppercase" }}>
                           Node Properties \u2014 {node.name}
                         </span>
                         <button
@@ -732,7 +857,7 @@ export default function DagBuilder() {
                                 <label key={s} style={{
                                   display: "inline-flex", alignItems: "center", gap: 3,
                                   padding: "3px 8px", borderRadius: 3, cursor: "pointer",
-                                  fontFamily: "var(--mono)", fontSize: 9,
+                                  fontFamily: "var(--mono)", fontSize: 12,
                                   background: editStrategy === s ? "var(--accent)" : "var(--paper-2, #f5f5f0)",
                                   color: editStrategy === s ? "var(--paper)" : "var(--ink)",
                                   border: `1px solid ${editStrategy === s ? "var(--accent)" : "var(--rule)"}`,
@@ -797,7 +922,7 @@ export default function DagBuilder() {
                                         onClick={() => handleAddEdge(n.id)}
                                         style={{
                                           padding: "6px 10px", cursor: "pointer",
-                                          fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)",
+                                          fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)",
                                           borderBottom: "1px solid var(--rule)",
                                         }}
                                         onMouseEnter={(e) => (e.currentTarget.style.background = "var(--paper-2, #f5f5f0)")}
@@ -822,7 +947,7 @@ export default function DagBuilder() {
                     style={{
                       height: 28, borderTop: "1.3px solid var(--rule)", background: "var(--paper)",
                       display: "flex", alignItems: "center", justifyContent: "center",
-                      cursor: "pointer", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)",
+                      cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)",
                     }}
                   >
                     {"\u25B2 Show Properties"}

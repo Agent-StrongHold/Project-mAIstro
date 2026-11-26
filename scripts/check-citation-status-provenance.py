@@ -10,9 +10,25 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-citation-status.py"
+# Keep the dynamically loaded checker visible to the tooling reachability graph.
+CHECKER_TOOL = "check-citation-status"
 PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "citation-status"
 METRIC_DEFINITION_VERSION = "1"
+
+#: Bounded analyzer implementation manifest (#319): this adapter plus the
+#: delegated checker and the registry modules that checker imports (citations,
+#: schema, validator -> parser). Only first-party measurement source is
+#: listed; Pydantic underneath schema.py is external dependency metadata, not
+#: this scanner's implementation identity.
+ANALYZER_MANIFEST = (
+    "scripts/check-citation-status-provenance.py",
+    "scripts/check-citation-status.py",
+    "packages/maistro-registry/src/maistro_registry/citations.py",
+    "packages/maistro-registry/src/maistro_registry/schema.py",
+    "packages/maistro-registry/src/maistro_registry/validator.py",
+    "packages/maistro-registry/src/maistro_registry/parser.py",
+)
 
 
 def _load(path: Path, name: str) -> ModuleType:
@@ -32,6 +48,14 @@ def _load(path: Path, name: str) -> ModuleType:
     return module
 
 
+def _tool_version(prov: ModuleType) -> str:
+    """Implementation identity of the analyzers that reached this verdict (#319)."""
+    version: str = prov.bundled_implementation_fingerprint(
+        Path(__file__).resolve().parents[1], ANALYZER_MANIFEST
+    )
+    return version
+
+
 def _identity(problem: object) -> str:
     return f"{problem.source}.{problem.field_name} -> {problem.target}"
 
@@ -44,15 +68,19 @@ def _known(payload: object) -> set[str]:
 
 
 def main() -> int:
-    checker = _load(CHECKER, "_citation_status_under_provenance")
+    checker = _load(CHECKER, CHECKER_TOOL)
     prov = _load(PROVENANCE, "_ratchet_provenance")
 
     corpus = checker._corpus()
-    problems = checker.check_citations(corpus)
+    problems = [
+        *checker.check_citations(corpus),
+        *checker._matrix_problems(corpus),
+    ]
     current = {_identity(problem) for problem in problems}
     candidate = set(checker._load_baseline().entries)
 
     try:
+        tool_version = _tool_version(prov)
         trusted_ref = prov.resolve_baseline(checker.LEDGER, root=ROOT)
         trusted = _known(trusted_ref.loads(default={"known": []}))
         prov.require_measurement(corpus, ratchet=RATCHET, what="governance documents")
@@ -71,6 +99,7 @@ def main() -> int:
             ratchet=RATCHET,
             baseline=trusted_ref,
             tool="registry governing-citation scan",
+            tool_version=tool_version,
             metric_definition_version=METRIC_DEFINITION_VERSION,
             old_value=f"{len(trusted)} reviewed citation exception(s)",
             new_value=f"{len(current)} current citation exception(s)",

@@ -66,6 +66,25 @@ async def test_registry_with_no_provider_hides_web_skills_from_listing() -> None
 # --- F3: unimplemented render backend is a clean 501, not a 500 -------------
 
 
+async def test_renderers_reject_hostile_markup_before_backend_dispatch() -> None:
+    """The server-side sink must use the same output scan as Design artifacts."""
+    from services.design_render import DesignRenderService
+
+    from maistro_design.types import TrustBannedError
+
+    svc = DesignRenderService()
+    hostile = '<svg><image href="data:text/html,<script>alert(1)</script>" /></svg>'
+    # Every sink enforces the boundary before any backend import runs, so a
+    # hostile payload is rejected even on a deployment without the optional
+    # document backends installed.
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_pdf(hostile, {})
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_pptx(hostile, {})
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_docx(hostile, {})
+
+
 async def test_render_to_png_raises_501_not_notimplementederror() -> None:
     """PNG rendering is not built yet — say so with 501, not a crash-shaped 500.
 
@@ -79,7 +98,9 @@ async def test_render_to_png_raises_501_not_notimplementederror() -> None:
 
     svc = DesignRenderService()
     with pytest.raises(HTTPException) as exc_info:
-        await svc.render_to_png("<html>hi</html>", {})
+        # Fragment markup the shared output boundary passes (a raw <html>
+        # wrapper is renderer-blocked active-element).
+        await svc.render_to_png("<section>hi</section>", {})
 
     assert exc_info.value.status_code == 501
     assert "PNG rendering is not implemented" in str(exc_info.value.detail)

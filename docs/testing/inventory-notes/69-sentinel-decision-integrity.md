@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +49
+  packages/maistro-core/tests: +58
 ---
 
 Coverage for tamper-evident Sentinel decisions (issue #69, ADR-073). The delta
@@ -57,7 +57,25 @@ public verification material are written and rebuilt on read, a signed decision
 is re-verified from a row reconstructed from the emitted INSERT's own column
 list, and an unsigned history row reloads with no verification material.
 
-Verified against a live `pgvector/pgvector:pg18` database separately: the full
-001→036 chain, `036` down/up reversible, and allowed plus denied decisions
-written by `Sentinel` itself, reloaded, verified in both modes, and rejected
-after each protected-field mutation.
+## Develop merge repair (2026-11-26)
+
+The original verification claim for migration 036 is historical, not evidence
+for this repair. Develop now owns migrations through 063; this lane appends
+064 and retains the pre-existing store proof in `signature`, separately from
+`decision_signature`. The frozen canonical AuditEntry replaces the former
+mutable twin. New tests (+9 node IDs) cover:
+
+- reinstalling the active signing key without deleting it;
+- depth/cyclic/non-JSON arguments refused without audit hashing defeating the
+  existing resource limit (3 IDs); rejected arguments have no available digest;
+- missing key reference, public key or signature fails pinned verification (3 IDs);
+- live PostgreSQL allowed/denied decisions, both proofs, every protected-field
+  mutation, and secret non-retention;
+- real SQLite file-backed container restart, both tool-call verdicts, scoped
+  audit reads and canonical event correlation, using independently pinned keys.
+
+Existing SQLite metadata and PG INSERT/schema assertions now reflect the retained
+action and separate proofs; no test cases were removed. The seed validation
+case also rejects a correctly sized seed with invalid base64 trailing bytes.
+
+Repair validation results are recorded in `repair-69-handoff.md`.

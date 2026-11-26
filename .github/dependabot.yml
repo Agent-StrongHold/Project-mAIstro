@@ -4,6 +4,16 @@
 #   major             -> routed to M6 for human decision — never silent
 # NOTE: Dependabot's native auto-merge key was removed — its schema rejected it;
 # the delivery fleet performs the merge step with recorded evidence instead.
+#
+# Docker entries (#349): every Dockerfile is digest-pinned, so Dependabot's
+# docker ecosystem raises the refresh PRs — it updates the @sha256 digest (and
+# the version tag annotation alongside it) when the upstream tag moves. The PR
+# then carries the evidence the pin policy demands through the ordinary gates:
+# the changelog/release links in Dependabot's PR body, a full rebuild + smoke
+# via ci.yml's docker-build, and a vulnerability scan via security.yml's
+# containers job. A digest bump without the matching quality/image-pins.json
+# update fails check-image-pins (quality.yml), so base updates stay reviewable.
+# Directories are listed individually — Dependabot does not recurse.
 version: 2
 updates:
   - package-ecosystem: uv
@@ -22,4 +32,34 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /packages/hive-conductor
+    schedule:
+      interval: weekly
+      day: saturday
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /packages/hive-conductor/tests
+    schedule:
+      interval: weekly
+      day: saturday
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /deploy/sbx/template
+    schedule:
+      interval: weekly
+      day: saturday
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /templates/autonoetic
+    schedule:
+      interval: weekly
+      day: saturday
     open-pull-requests-limit: 5

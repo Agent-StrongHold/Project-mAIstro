@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from maistro.observability.metrics import maistro_security_block_total
@@ -36,11 +36,22 @@ logger = logging.getLogger("maistro.sentinel")
 if TYPE_CHECKING:
     from maistro.events.durable_log import EventLogStore
     from maistro.security._types import AuditLog, AuthContext, PermissionTable
-    from maistro.security.warden.detector import Warden
+    from maistro.security.warden.detector import Warden, WardenContext
 
 #: Stable identifier for the Sentinel policy in the ADR-037 event contract.
 #: The snapshot (not this label) is what carries the tunables a decision read.
 _POLICY_ID = "maistro.sentinel"
+
+
+def _bounded_inputs_hash(args: dict[str, Any] | None, limits: ToolArgumentLimits) -> str:
+    """Never serialize a rejected JSON bomb merely to produce audit evidence.
+
+    Empty means unavailable (absent, non-JSON, or over the resource ceiling),
+    not a digest of rejected arguments. The signed violation explains the refusal.
+    """
+    if args is None or check_argument_limits(args, limits=limits) is not None:
+        return ""
+    return hash_args(args)
 
 
 def check_permission(
@@ -223,7 +234,7 @@ class Sentinel:
         # The signed contract names the inputs the decision was taken on, so a
         # later reader can tell whether a record covers *this* call or a
         # different one. Hashed, never raw: args can carry secrets.
-        inputs_hash = hash_args(args) if args else ""
+        inputs_hash = _bounded_inputs_hash(args, self._argument_limits)
 
         denial_reason = await self._permission_denial_reason(action, principal, table)
         if denial_reason is not None:
@@ -333,6 +344,8 @@ class Sentinel:
                     "approver_scope": decision.approver_scope,
                     "within_budget": decision.within_budget,
                     "reason": decision.reason,
+                    "rlphd": asdict(decision.rlphd) if decision.rlphd is not None else None,
+                    "principal": asdict(principal),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -438,13 +451,13 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
-                team_id=auth.team_id,
                 org_id=auth.org_id,
+                team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
                 policy_snapshot=self._policy_snapshot(table),
-                inputs_hash=hash_args(args),
+                inputs_hash=_bounded_inputs_hash(args, self._argument_limits),
             )
             return verdict
 
@@ -455,14 +468,14 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
-                team_id=auth.team_id,
                 org_id=auth.org_id,
+                team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
                 detail=limit_violation.detail,
                 policy_snapshot=self._policy_snapshot(table),
-                inputs_hash=hash_args(args),
+                inputs_hash="",
             )
             return verdict
 
@@ -480,8 +493,8 @@ class Sentinel:
         await self._log_audit(
             boundary="pre_call",
             user_id=auth.user_id,
-            team_id=auth.team_id,
             org_id=auth.org_id,
+            team_id=auth.team_id,
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
             violations=tuple(violations),
@@ -498,9 +511,11 @@ class Sentinel:
         tool_name: str,
         result: str,
         auth: AuthContext,
+        *,
+        context: list[WardenContext] | None = None,
     ) -> str:
-        """Return the sanitized tool result, or the established refusal text."""
-        outcome = await self.process_output(tool_name, result, auth)
+        """Return sanitized output after scanning its bounded prior context."""
+        outcome = await self.process_output(tool_name, result, auth, context=context)
         if outcome.blocked:
             return "[Tool result blocked by Warden -- contained injection attempt]"
         return outcome.sanitized_text
@@ -510,6 +525,8 @@ class Sentinel:
         tool_name: str,
         result: str,
         auth: AuthContext,
+        *,
+        context: list[WardenContext] | None = None,
     ) -> GateResult:
         """Apply the post-call policy and return its structured security outcome.
 
@@ -523,7 +540,8 @@ class Sentinel:
 
         # SECURITY-REVIEW: agent/tool output is untrusted until Warden and PII
         # processing complete; do not log or persist ``result`` before this gate.
-        warden_verdict = await self._warden.scan(processed, "tool_result")
+        scan_kwargs = {"context": context} if context else {}
+        warden_verdict = await self._warden.scan(processed, "tool_result", **scan_kwargs)
         if not warden_verdict.clean:
             violations.append(
                 Violation(
@@ -541,6 +559,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="post_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="flagged",
@@ -570,6 +589,7 @@ class Sentinel:
         await self._log_audit(
             boundary="post_call",
             user_id=auth.user_id,
+            org_id=auth.org_id,
             team_id=auth.team_id,
             tool_name=tool_name,
             verdict="clean" if not violations else "flagged",
@@ -629,8 +649,8 @@ class Sentinel:
         *,
         boundary: str,
         user_id: str,
-        team_id: str = "",
         org_id: str = "",
+        team_id: str = "",
         tool_name: str,
         verdict: str,
         violations: tuple[Violation, ...] = (),
@@ -661,7 +681,7 @@ class Sentinel:
         )
         # Sign before handing the record to any audit implementation. This
         # keeps the guarantee independent of whether storage is durable.
-        entry.integrity = self._integrity_signer.sign(entry)
+        entry = replace(entry, integrity=self._integrity_signer.sign(entry))
         if self._audit_log is not None:
             try:
                 await self._audit_log.log(entry)

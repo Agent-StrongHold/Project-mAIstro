@@ -13,14 +13,21 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
+from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
+from maistro.runs.model import Attempt
 from maistro.runs.service import RunExecutionService
+from maistro.runs.sources import ADMISSION_SOURCE
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
+from maistro.tasks.admission import TASK_ID_KEY, TASK_QUEUE_SOURCE
+from maistro.tasks.http_contract import DELEGATION_HEADER
+from maistro.tasks.models import TaskStatus
+from maistro.tasks.queue import get_task_queue
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
-from maistro_server.api.schemas import NodeRunSummary, RunSummary
+from maistro_server.api.delegation import resolve_delegated_identity
+from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -40,13 +47,6 @@ def get_run_store() -> RunStore:
             detail="No Run store is configured",
         )
     return _run_store
-
-
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
-    """Mirrors `tasks._owner_id`: "dev" only where auth is disabled entirely."""
-    if auth is None:
-        return "dev"
-    return auth.user_id
 
 
 async def _require_visible_run(store: RunStore, run_id: str, owner: str) -> Any:
@@ -71,9 +71,11 @@ async def get_run(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> RunSummary:
     """The canonical execution state behind a submitted task."""
-    run = await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    run = await _require_visible_run(store, run_id, owner)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
@@ -93,13 +95,34 @@ async def cancel_run(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> RunSummary:
     """Request cancellation through the canonical physical execution seam."""
-    await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    await _require_visible_run(store, run_id, owner)
     run = await RunExecutionService(
         store=store,
         runtime=PythonExecutionRuntime(),
     ).cancel_run(run_id)
+    if run.provenance.get(ADMISSION_SOURCE) == TASK_QUEUE_SOURCE:
+        task_id = run.provenance.get(TASK_ID_KEY)
+        if isinstance(task_id, str) and task_id:
+            # If cancellation won, the Run is already CANCELLED: the admitter
+            # accepts that redundant transition and update_status terminalizes
+            # the live receipt through its ordinary path (metrics, persistence).
+            # If completion won first, refusal reconciliation projects that
+            # canonical winner instead. The
+            # wall-clock stamps that path writes are then overwritten with the
+            # canonical Run's own truth — the receipt is a projection, so it
+            # carries the Run's finish time and outcome, not the clock.
+            queue = get_task_queue()
+            receipt = queue.get(task_id)
+            # Provenance alone is not reciprocal identity. An inconsistent
+            # task_id must never transition a different canonical Run through
+            # its local receipt, even when the source marker is task_queue.
+            if receipt is not None and receipt.run_id == run.run_id:
+                await queue.update_status(task_id, TaskStatus.CANCELLED)
+                queue.settle_terminal_receipt(task_id, run=run)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
@@ -119,6 +142,7 @@ async def list_node_runs(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> list[NodeRunSummary]:
     """Per-node execution state under a Run.
 
@@ -128,7 +152,8 @@ async def list_node_runs(
     Still empty for a Run whose work has not been picked up, which is the true
     answer rather than an advertised gap.
     """
-    await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    await _require_visible_run(store, run_id, owner)
     return [
         NodeRunSummary(
             node_run_id=node_run.node_run_id,
@@ -136,6 +161,30 @@ async def list_node_runs(
             status=node_run.status.value,
             created_at=node_run.created_at,
             finished_at=node_run.finished_at,
+            attempts=[
+                _attempt_summary(attempt)
+                for attempt in await store.list_attempts(node_run.node_run_id)
+            ],
         )
         for node_run in await store.list_node_runs(run_id)
     ]
+
+
+def _attempt_summary(attempt: Attempt) -> AttemptSummary:
+    # Only a chat Attempt's result is dispatch evidence; elsewhere it is a node's
+    # own output, whose "agent" key would say nothing about who ran it.
+    agent = (
+        attempt.result.get(ATTEMPT_AGENT_KEY)
+        if attempt.executor_id == CHAT_EXECUTOR_ID and isinstance(attempt.result, dict)
+        else None
+    )
+    return AttemptSummary(
+        attempt_id=attempt.attempt_id,
+        ordinal=attempt.ordinal,
+        status=attempt.status.value,
+        executor_id=attempt.executor_id,
+        created_at=attempt.created_at,
+        started_at=attempt.started_at,
+        finished_at=attempt.finished_at,
+        agent=agent if isinstance(agent, str) and agent else None,
+    )

@@ -143,9 +143,14 @@ class CredentialRouter:
     ) -> None:
         """Register a credential in one Workspace/Project scope.
 
-        Re-registering the same ``key_id`` in the same scope replaces the prior
-        record rather than duplicating it, so an operator refresh of a key is
-        idempotent.
+        Re-registering the same ``key_id`` in the same scope refreshes the
+        prior record in place rather than duplicating it, so an operator
+        refresh of a key is idempotent -- and, unlike a remove-then-add, it
+        does not discard the ``blocked``/``cooldown_until``/error-counter
+        health state :meth:`CredentialPool.record_failure` already tracked
+        for that credential. Consecutive control-plane calls that
+        re-register the same key (#1079 Finding 2) must not silently reset
+        a backoff decision `record_outcome` already made.
         """
 
         scope = (workspace_id, project_id, record.provider)
@@ -153,8 +158,7 @@ class CredentialRouter:
         if pool is None:
             pool = CredentialPool(provider=record.provider, strategy=self._strategy)
             self._pools[scope] = pool
-        pool.remove(record.key_id)
-        pool.add(record)
+        pool.upsert(record)
 
     def pool_for(
         self,

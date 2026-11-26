@@ -236,3 +236,27 @@ class TestRetiredUserFacingClaims:
             if entry.issue == "388":
                 assert entry.replacement, entry.id
                 assert entry.citation_markers, entry.id
+
+
+class TestRetiredRunGraphImport:
+    """#1154 retired the pre-durable `run_graph` wrapper. The scan is line-based,
+    so a formatted import that splits the name onto its own line must still be
+    caught, while the surviving `HarnessEnvironment.run_graph` fixture method and
+    lines that record the retirement stay clean."""
+
+    def _ids(self, check, entries, text: str) -> list[str]:
+        return [f.entry.id for f in _scan(check, entries, text)]
+
+    def test_a_single_line_import_is_reported(self, check, entries) -> None:
+        text = "from maistro.graph.executor import run_graph"
+        assert self._ids(check, entries, text) == ["pre-durable-run-graph"]
+
+    def test_a_multiline_import_is_reported(self, check, entries) -> None:
+        text = "from maistro.graph.executor import (\n    run_graph,\n)\n"
+        assert self._ids(check, entries, text) == ["pre-durable-run-graph"]
+
+    def test_the_harness_fixture_method_passes(self, check, entries) -> None:
+        assert not _scan(check, entries, "await env.run_graph(task)")
+
+    def test_a_line_recording_the_retirement_passes(self, check, entries) -> None:
+        assert not _scan(check, entries, "    run_graph,  # retired (#1154)")

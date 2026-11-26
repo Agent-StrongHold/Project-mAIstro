@@ -56,6 +56,18 @@ def _rule_is_uppercase(response: str, rule: dict[str, Any]) -> float:
     return 1.0 if all(c.isupper() for c in letters) else 0.0
 
 
+def _rule_json_field(response: str, rule: dict[str, Any]) -> float:
+    """Required field must be present (and non-null unless a value is given).
+
+    #852: the old handler hardcoded ``expected=None``, which rewarded the
+    field being absent — ``json_field_match('{"other": 1}', 'benefits', None)``
+    scored 1.0. The bidirectional contract now lives in ``json_field_match``.
+    """
+    if "value" in rule:
+        return json_field_match(response, rule["field"], rule["value"])
+    return json_field_match(response, rule["field"])
+
+
 def _rule_min_occurrences(response: str, rule: dict[str, Any]) -> float:
     actual = response.count(rule["value"])
     count = rule["count"]
@@ -76,7 +88,7 @@ _RULE_HANDLERS: dict[str, Callable[[str, dict[str, Any]], float]] = {
     "ends_with": lambda response, rule: ends_with(response, rule["value"]),
     "exact_match": lambda response, rule: exact_match(response, rule["value"]),
     "valid_json": lambda response, rule: is_valid_json(response),
-    "json_field": lambda response, rule: json_field_match(response, rule["field"], None),
+    "json_field": _rule_json_field,
     "sentence_count": _rule_sentence_count,
     "min_word_count": _rule_min_word_count,
     "max_word_count": _rule_max_word_count,
@@ -89,7 +101,10 @@ _RULE_HANDLERS: dict[str, Callable[[str, dict[str, Any]], float]] = {
 def _evaluate_rule(response: str, rule: dict[str, Any]) -> float:
     handler = _RULE_HANDLERS.get(rule["type"])
     if handler is None:
-        return 0.5
+        # Fail closed (#852): an unrecognized rule type is a policy error, not
+        # a half-credit. The old 0.5 default let unknown rules satisfy a gate
+        # without any predicate ever being evaluated.
+        return 0.0
     return handler(response, rule)
 
 
@@ -97,11 +112,20 @@ _MAX_FAILURE_TRACES = 5
 
 
 def _failed_rule_descriptions(response: str, rules: list[dict[str, Any]]) -> list[str]:
+    """Rule types that failed, with literal rule values redacted (#852).
+
+    These descriptions feed reflection metadata consumed by the optimizer
+    loop; echoing ``contains='secret-word'`` would hand the literal rubric to
+    the candidate's own prompt evolution. The rule TYPE (and field name for
+    structural rules) is enough signal to reflect on.
+    """
     failed: list[str] = []
     for rule in rules:
         if _evaluate_rule(response, rule) < 1.0:
-            detail = rule.get("value", rule.get("values", rule.get("field", "")))
-            failed.append(f"{rule['type']}={detail!r}" if detail != "" else rule["type"])
+            if "field" in rule:
+                failed.append(f"{rule['type']}(field={rule['field']!r})=<redacted>")
+            else:
+                failed.append(f"{rule['type']}=<redacted>")
     return failed
 
 

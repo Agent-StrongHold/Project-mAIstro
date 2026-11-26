@@ -1,0 +1,61 @@
+{
+  "benchmark": "working-memory-projection",
+  "issue": "301",
+  "adr": "ADR-082226-5104",
+  "records_per_workspace": 100,
+  "queries_per_point": 200,
+  "embedder": "hash-bag-of-words-64 (deterministic, offline)",
+  "results": [
+    {
+      "workspaces": 1,
+      "records_per_workspace": 100,
+      "rss_delta_kb": 404,
+      "rss_peak_kb": 0,
+      "hydration_seconds": 0.0126,
+      "hydration_per_record_ms": 0.1257,
+      "bm25_p50_ms": 0.204,
+      "bm25_p95_ms": 0.4013,
+      "hybrid_p50_ms": 1.338,
+      "hybrid_p95_ms": 2.4817,
+      "traverse_p50_ms": 0.0065,
+      "traverse_p95_ms": 0.0175,
+      "total_records": 100,
+      "total_entities": 1,
+      "total_relations": 0
+    },
+    {
+      "workspaces": 10,
+      "records_per_workspace": 100,
+      "rss_delta_kb": 4424,
+      "rss_peak_kb": 4172,
+      "hydration_seconds": 0.0611,
+      "hydration_per_record_ms": 0.0611,
+      "bm25_p50_ms": 0.195,
+      "bm25_p95_ms": 0.2791,
+      "hybrid_p50_ms": 1.2988,
+      "hybrid_p95_ms": 1.6548,
+      "traverse_p50_ms": 0.0052,
+      "traverse_p95_ms": 0.0124,
+      "total_records": 1000,
+      "total_entities": 10,
+      "total_relations": 0
+    },
+    {
+      "workspaces": 100,
+      "records_per_workspace": 100,
+      "rss_delta_kb": 46800,
+      "rss_peak_kb": 46880,
+      "hydration_seconds": 0.9337,
+      "hydration_per_record_ms": 0.0934,
+      "bm25_p50_ms": 0.2026,
+      "bm25_p95_ms": 0.3623,
+      "hybrid_p50_ms": 1.3287,
+      "hybrid_p95_ms": 2.8944,
+      "traverse_p50_ms": 0.0064,
+      "traverse_p95_ms": 0.0176,
+      "total_records": 10000,
+      "total_entities": 100,
+      "total_relations": 0
+    }
+  ]
+}

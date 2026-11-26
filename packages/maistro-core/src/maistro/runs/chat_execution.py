@@ -35,6 +35,22 @@ transcript lives in `maistro.sessions` (ADR-082326-c126). The Attempt reuses it
 rather than inventing a second, larger copy — the physical record of a turn
 should not be able to hold more of the conversation than the logical one.
 
+**A recording failure after the dispatch is not a licence to dispatch again
+(#1108).** Half the spine writes happen *after* the model has answered — the
+Attempt's COMPLETED transition, the NodeRun and Run reconciliation behind it —
+and a failure from any of them used to look, to the caller, exactly like one
+raised before the turn ever reached the model. The caller's fallback
+was a fresh dispatch, so a store hiccup while persisting an answer cost a second
+model call, a second set of agent side effects, and a second assistant message
+while the first answer's evidence sat on disk. `execute` now says which side of
+the dispatch the spine failed on: `ChatDispatchUnrecorded` carries the answer
+that already exists, so the caller can hand it back without asking again, and
+the durable Attempt is left exactly where the lease sweep and the reconciler
+read it. That holds for *any* spine failure, not only `RunIntegrityError`: the
+PostgreSQL and SQLite stores wrap integrity violations and nothing else, so a
+dropped connection or a locked database arrives as the driver's own exception,
+and it is no less after the dispatch for being unwrapped.
+
 What it deliberately does not do is rewrite the Run's `agent_selection`
 provenance. That marker means "no agent was resolvable at *admission* time",
 which stays true however the turn goes; the question a reader actually has —
@@ -45,15 +61,16 @@ own history disagree with itself.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from maistro.runs.chat_admission import chat_turn_outcome
-from maistro.runs.model import NodeRun
+from maistro.runs.model import NodeRun, RunStatus
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
-from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime, RuntimeDeadlineExceeded
 
 #: `executor_id` recorded on every Attempt a chat turn drives, the way
 #: `TASK_EXECUTOR_ID` names the task runner. It answers "what kind of work was
@@ -86,6 +103,70 @@ ChatDispatch = Callable[[], Awaitable[dict[str, Any]]]
 #: runs `Container.recover_abandoned_attempts` on its tick — the collector the
 #: same ADR names — gets reclaiming chat Attempts with no further wiring.
 DEFAULT_CHAT_LEASE_TTL = timedelta(seconds=30)
+
+
+class ChatDispatchUnrecorded(RunIntegrityError):
+    """The turn was answered, and the spine could not record that it was (#1108).
+
+    Raised in place of any spine failure — a `RunIntegrityError` or a raw
+    driver error alike — that surfaced *after* the dispatch was awaited: the Attempt's COMPLETED write,
+    or the NodeRun/Run reconciliation that follows it. It carries the answer
+    so the caller can return it without a second dispatch — the model already
+    did the work, and the durable record is a recovery matter, not a reason
+    to do the work twice. The original store failure is the `__cause__`.
+    """
+
+    def __init__(self, run_id: str, *, response: dict[str, Any]) -> None:
+        self.run_id = run_id
+        self.response = response
+        super().__init__(
+            f"chat Run {run_id!r} was answered but its Attempt could not be recorded; "
+            "the answer must not be dispatched again"
+        )
+
+
+class _TurnDispatch:
+    """One dispatch, and what became of it.
+
+    Read back by `execute` when the spine fails around it: whether the model
+    was reached at all, what it answered, or what it raised — the three facts
+    that decide whether the failure is safe to retry.
+    """
+
+    def __init__(self, dispatch: ChatDispatch) -> None:
+        self._dispatch = dispatch
+        self.started = False
+        self.response: dict[str, Any] | None = None
+        self.error: BaseException | None = None
+
+    async def run(self, _work_item: Any, _context: Any) -> dict[str, Any]:
+        self.started = True
+        try:
+            response = await self._dispatch()
+        except BaseException as exc:
+            self.error = exc
+            raise
+        self.response = response
+        return attempt_result(response)
+
+
+def _deadline_behind(exc: BaseException) -> RuntimeDeadlineExceeded | None:
+    """The runtime deadline `exc` is, or was raised while handling, if any."""
+    # Both links, not `__cause__ or __context__`: a store error raised `from`
+    # its driver error still carries the deadline it interrupted as context.
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        if isinstance(current, RuntimeDeadlineExceeded):
+            return current
+        seen.add(id(current))
+        pending.extend(
+            link for link in (current.__context__, current.__cause__) if link is not None
+        )
+    return None
 
 
 def attempt_result(response: dict[str, Any]) -> dict[str, Any]:
@@ -162,16 +243,23 @@ class ChatAttemptExecutor:
         """Route one turn, leaving a NodeRun and an Attempt behind.
 
         Returns the Conduit's response unchanged. Re-raises whatever the
-        dispatch raised, after the Attempt has recorded the failure.
+        dispatch raised, after the Attempt has recorded the failure — and still
+        re-raises it when recording the failure failed as well, because the
+        dispatch's own exception is the one the endpoint maps to a status code.
+
+        Any spine failure is re-raised as `ChatDispatchUnrecorded` when it
+        surfaced after the dispatch was awaited (#1108), so a caller can tell a turn that never reached the
+        model from one whose answer exists and merely went unrecorded — and
+        never asks the model again for the latter. Before the dispatch it is
+        re-raised as it is: nothing physical happened, and the caller's own
+        rule for that case still applies. The same is true of the dispatch's
+        own exception when the spine recorded it: it is already the failure
+        the caller maps. `CancelledError` is a `BaseException` and passes
+        through untouched — cancellation is the Run fence's to reconcile.
         """
         node_id = await self._node_id(run_id)
         existing = await self._node_run_for(run_id, node_id)
-        captured: list[dict[str, Any]] = []
-
-        async def _run(_work_item: Any, _context: Any) -> dict[str, Any]:
-            response = await dispatch()
-            captured.append(response)
-            return attempt_result(response)
+        turn = _TurnDispatch(dispatch)
 
         # The work item is the turn itself. Bounded by the same rule the
         # Attempt's result is: the messages are what the turn *was*, and the
@@ -179,32 +267,85 @@ class ChatAttemptExecutor:
         # of the request rather than a second transcript of it.
         work_item = {"messages": len(messages)}
         context = {"run_id": run_id, "node_id": node_id}
-        if existing is None:
-            await self._service.execute_node(
-                run_id,
-                node_id,
-                work_item,
-                context,
-                executor=_run,
-                executor_id=CHAT_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-            )
-        else:
-            # A re-run of the same turn is a second Attempt under the same
-            # logical NodeRun, not a second NodeRun. Creating another NodeRun
-            # would say the Run grew a node, which is false: the Graph has one,
-            # and it was tried twice.
-            await self._service.retry_node(
-                existing.node_run_id,
-                work_item,
-                context,
-                executor=_run,
-                executor_id=CHAT_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-            )
-        if not captured:  # pragma: no cover - unreachable: _run always fills it
+        try:
+            if existing is None:
+                await self._service.execute_node(
+                    run_id,
+                    node_id,
+                    work_item,
+                    context,
+                    executor=turn.run,
+                    executor_id=CHAT_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                )
+            else:
+                # A re-run of the same turn is a second Attempt under the same
+                # logical NodeRun, not a second NodeRun. Creating another
+                # NodeRun would say the Run grew a node, which is false: the
+                # Graph has one, and it was tried twice.
+                await self._service.retry_node(
+                    existing.node_run_id,
+                    work_item,
+                    context,
+                    executor=turn.run,
+                    executor_id=CHAT_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                )
+        except Exception as exc:
+            await self._raise_spine_failure(run_id, turn, exc)
+        if turn.response is None:  # pragma: no cover - unreachable: run always fills it
             raise RunIntegrityError("chat Attempt completed without capturing its response")
-        return captured[0]
+        return turn.response
+
+    async def _raise_spine_failure(
+        self, run_id: str, turn: _TurnDispatch, exc: Exception
+    ) -> NoReturn:
+        """Raise what a spine failure means for the caller, by which side of the dispatch it hit."""
+        if not turn.started or exc is turn.error:
+            raise exc
+        deadline = _deadline_behind(exc)
+        if deadline is not None and not isinstance(turn.error, Exception):
+            # The deadline is the outcome — whether the dispatch was cut off
+            # or caught the cancellation and answered late, and whether or not
+            # its TIMED_OUT record then landed (a failed write surfaces as the
+            # store's error, with the deadline behind it). A late answer is not
+            # an unrecorded one, and substituting the `CancelledError` the
+            # dispatch saw would disguise a timeout as a client disconnect.
+            if deadline is exc:
+                raise exc
+            # A fresh deadline, so the recording failure is its explicit cause:
+            # the runtime's own deadline already has one (`from` the
+            # cancellation), and tracebacks hide a context behind a cause.
+            raise RuntimeDeadlineExceeded(deadline.execution_id) from exc
+        if turn.error is not None:
+            # The dispatch failed, or was cancelled, and then the spine could
+            # not record that it did. The failure the caller can act on is the
+            # dispatch's; the store's is chained behind it. A bare store error
+            # must never escape here, because the caller would read it as
+            # pre-dispatch and ask the model again.
+            raise turn.error from exc
+        if turn.response is None:
+            raise exc
+        if await self._run_is_cancelled(run_id):
+            # The durable Run is the stale-completion fence: an answer that
+            # arrived after it closed is not published, however the spine
+            # failed on the way to saying so.
+            raise asyncio.CancelledError from exc
+        raise ChatDispatchUnrecorded(run_id, response=turn.response) from exc
+
+    async def _run_is_cancelled(self, run_id: str) -> bool:
+        """Whether the Run's fence reads CANCELLED, or False when it cannot be read.
+
+        Unreadable is not proof of cancellation. The owner decision on #1108
+        is that a post-dispatch spine failure hands back the answer and leaves
+        the Run open for recovery, never a second dispatch — and a store that
+        cannot be read is the same failure, not a new reason to discard it.
+        """
+        try:
+            run = await self._runs.get_run(run_id)
+        except Exception:
+            return False
+        return run is not None and run.status is RunStatus.CANCELLED
 
     async def _node_id(self, run_id: str) -> str:
         run = await self._runs.get_run(run_id)
@@ -228,5 +369,6 @@ __all__ = [
     "DEFAULT_CHAT_LEASE_TTL",
     "ChatAttemptExecutor",
     "ChatDispatch",
+    "ChatDispatchUnrecorded",
     "attempt_result",
 ]

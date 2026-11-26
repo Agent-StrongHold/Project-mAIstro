@@ -58,6 +58,12 @@ class TestIsSecretKeyName:
             "clientToken",
             "userPassword",
             "sshKey",
+            # An identifier prefix never outranks a strong family segment,
+            # and only softens a `key` it immediately precedes.
+            "effect_secret_key",
+            "effect_token_key",
+            "access_key",
+            "master_key",
         ],
     )
     def test_sensitive_names(self, name: str) -> None:
@@ -77,6 +83,19 @@ class TestIsSecretKeyName:
             "awsAccessKeyId",
             "keyArn",
             "tokenId",
+            # A `key` that names what it identifies is a lookup/correlation
+            # identifier, not credential material (#1164 review): the canonical
+            # capability events carry `effect_key` so audit and replay can join
+            # them, and redacting it destroyed the join while protecting nothing.
+            "effect_key",
+            "idempotency_key",
+            "cache_key",
+            "partition_key",
+            "primary_key",
+            "parent_key",
+            "issue_key",
+            "effectKey",
+            "idempotencyKey",
             "tokenizer",
             "secretary",
             "monkey",
@@ -106,8 +125,15 @@ class TestLooksLikeAwsSecretAccessKey:
     @pytest.mark.parametrize(
         "candidate",
         [
-            "a1b2c3d4e5f6a7b8c9d0" + "e1f2a3b4c5d6e7f8a9b0",  # git SHA: single-case hex
-            "A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0",  # single-case hex, upper
+            # Fixtures, not secrets: synthetic git SHAs (single-case hex).
+            (
+                "a1b2c3d4e5f6a7b8c9d0"  # DevSkim: ignore DS173237 until 2027-12-31
+                + "e1f2a3b4c5d6e7f8a9b0"
+            ),
+            (
+                "A1B2C3D4E5F6A7B8C9D0"  # fixture, not a secret (upper hex SHA)
+                + "E1F2A3B4C5D6E7F8A9B0"
+            ),
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE",  # 39 chars
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYY",  # 41 chars
             "AKIA" + "IOSFODNN7EXAMPLE",  # 20-char access key ID

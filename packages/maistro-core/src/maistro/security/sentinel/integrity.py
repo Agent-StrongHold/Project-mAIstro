@@ -69,7 +69,7 @@ def _b64(value: bytes) -> str:
 
 
 def _unb64(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
 
 
 def _timestamp(value: Any) -> str:
@@ -190,7 +190,7 @@ class DecisionSigner:
         # Retain retired public material for verification, never retired private
         # material. This is both the rotation boundary and the secret-retention
         # guarantee for an in-process signer.
-        if previous_key_id:
+        if previous_key_id and previous_key_id != key_id:
             self._private_keys.pop(previous_key_id, None)
         return key_id
 

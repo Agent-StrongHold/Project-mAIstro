@@ -46,7 +46,17 @@ discipline has been exercised in practice.
 
 ## Decision
 
-Two separate Alembic setups exist:
+Two separate Alembic setups existed at the time this SPEC was written. The
+second tree is now **retired** (#851): `packages/maistro-canvas/frontend/alembic/`
+was removed from the repository on 2026-09-28. Its only schema contribution —
+the SPEC-203 job lease/retry columns on `generation_jobs` and the
+`ix_generation_jobs_pending` partial index — is created by the authoritative
+root chain since revision `044` (`044_canvas_store_tables.py`), which also
+creates every other table the Canvas store touches. No schema requirement may
+depend on running a second, hidden Alembic environment; a clean install or
+upgrade runs the root `alembic upgrade head` and nothing else.
+
+The trees as they were:
 
 - Root: `/home/user/maistro-engine/alembic/`, versions
   `001_initial_memory_schema.py`, `002_canvas_asset_039.py`.

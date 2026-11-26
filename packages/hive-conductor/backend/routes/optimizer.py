@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from services.dag_execution_scope import DagWorkspaceSelectionError, authorize_hive_dag_scope
 from services.optimizer import (
     DECISION_ACCEPTED,
     DECISION_REJECTED,
@@ -30,16 +31,13 @@ from services.optimizer import (
     record_decision,
     run_optimizer,
 )
+from services.request_principal import require_actor_id
 
 router = APIRouter(tags=["optimizer"])
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    uid = str(user.get("id") or "")
-    if not uid:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return uid
+    return require_actor_id(request)
 
 
 @router.post("/{dag_id}/run")
@@ -48,6 +46,7 @@ async def trigger_optimizer(
     request: Request,
     apply_auto: bool = False,
     validate: bool = True,
+    workspace_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Run optimizer. When validate=True (default), proposals are tested
     against the actual DAG before being surfaced. Only strictly-improving
@@ -56,12 +55,22 @@ async def trigger_optimizer(
     org_id = str(getattr(request.state, "org_id", "") or "")
     project_id = str(getattr(request.state, "project_id", "") or "")
     try:
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id or "", user_id=actor)
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
+    try:
         result = await run_optimizer(
             dag_id,
             actor=actor,
             apply_auto=apply_auto,
             org_id=org_id,
             project_id=project_id,
+            # The Workspace this request was authorized against: proposals
+            # carry it so candidate registration lands in the authorizing
+            # tenant, not the configured default (#861 review).
+            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -78,7 +87,7 @@ async def trigger_optimizer(
 
             # Run current DAG to get REAL baseline score (not historical)
             try:
-                baseline_result = await execute_dag(dict(dag_data))
+                baseline_result = await execute_dag(dict(dag_data), scope=scope)
                 task = dag_data.get("description", dag_data.get("name", ""))
                 baseline_eval = await evaluate_dag_run(baseline_result, task)
                 baseline = float(baseline_eval.get("total", 0))
@@ -89,12 +98,13 @@ async def trigger_optimizer(
                 dict(dag_data),
                 result["proposals"],
                 baseline,
+                scope=scope,
             )
             # Also test model variants
             from services.validation_gate import hill_climb_models, hill_climb_params
 
-            model_improvements = await hill_climb_models(dict(dag_data), baseline)
-            param_improvements = await hill_climb_params(dict(dag_data), baseline)
+            model_improvements = await hill_climb_models(dict(dag_data), baseline, scope=scope)
+            param_improvements = await hill_climb_params(dict(dag_data), baseline, scope=scope)
             validated.extend(model_improvements)
             validated.extend(param_improvements)
 
@@ -124,10 +134,12 @@ def list_all_proposals(
 
 
 @router.post("/proposals/{proposal_id}/accept")
-def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
+async def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     actor = _user_id(request)
     try:
-        return record_decision(proposal_id, DECISION_ACCEPTED, actor=actor)
+        # record_decision awaits the candidate/promotion commit; the response
+        # carries the truthful apply_outcome (#861).
+        return await record_decision(proposal_id, DECISION_ACCEPTED, actor=actor)
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found") from None
     except ValueError as exc:
@@ -135,10 +147,10 @@ def accept_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/proposals/{proposal_id}/reject")
-def reject_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
+async def reject_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     actor = _user_id(request)
     try:
-        return record_decision(proposal_id, DECISION_REJECTED, actor=actor)
+        return await record_decision(proposal_id, DECISION_REJECTED, actor=actor)
     except KeyError:
         raise HTTPException(status_code=404, detail="proposal not found") from None
     except ValueError as exc:

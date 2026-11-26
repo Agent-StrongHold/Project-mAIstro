@@ -1,0 +1,548 @@
+{
+  "baseline": "6c739f054f99db5547c1e12d96ea6c6467232a7d",
+  "removed_duplicate": "credential authority (reachable stores are classified and scoped)",
+  "jobs": {
+    "quality-ruff": {
+      "name": "Quality / Ruff",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "ruff lint (full ruleset)",
+          "sha256": "f87e7af0bd8a6099b3648f9cb9e71e8d29cfab5b906b3ab0cfe132ec902989b0"
+        },
+        {
+          "name": "ruff format check",
+          "sha256": "b474f13112572f237fa3962543598c894d56177fb40db8f5513824728ab1e431"
+        }
+      ]
+    },
+    "quality-radon": {
+      "name": "Quality / Radon",
+      "tools": "radon",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "radon CC ratchet (new/regressed hotspots vs quality/radon-baseline.json)",
+          "sha256": "a03ed1647f4e477b859b8ce7fd93c3dbcfe6004dabe78f0adf054fe31476a379"
+        },
+        {
+          "name": "radon CC (report; the ratchet above is the gate)",
+          "sha256": "98457da35f97faaac9d3dc52d1472d42c49ae0046b7d427c8f518405c0e3c835"
+        }
+      ]
+    },
+    "quality-version": {
+      "name": "Quality / Version consistency",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "version consistency check (VERSION vs. every version site)",
+          "sha256": "88d94bd7a9723363be2e63d2b39bc1c6cc2e46267f7501a687f10ac4375bf8a3"
+        }
+      ]
+    },
+    "quality-release": {
+      "name": "Quality / Release consistency",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "release consistency (VERSION, CHANGELOG, README and tags tell one story)",
+          "sha256": "c5fea4dcd7f8acfbbd80681a5037b87fb9cf79dbaa5e835b59f67e2dd5c6a4d4"
+        }
+      ]
+    },
+    "quality-doc-links": {
+      "name": "Quality / Documentation links",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "doc links (every relative markdown link resolves)",
+          "sha256": "8848f27a0e9babe998a40a0da3715c94ac9bbaae65dee2ca6fb1816eda5ce996"
+        }
+      ]
+    },
+    "quality-enumerations": {
+      "name": "Quality / Enumeration coverage",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "enumeration coverage (derived control lists \u2014 ratchet)",
+          "sha256": "ec68bc63673dd0dae83ddf763d099bb6154acf7c947aaa0201c46c221f1c24c1"
+        }
+      ]
+    },
+    "quality-retirement": {
+      "name": "Quality / Workspace retirement",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "workspace retirement (retiring Conductor surfaces gain no importers \u2014 ratchet)",
+          "sha256": "9d2b94b1c26f0d81ca2ad2f686786ead8d27ec58d740683e9e734e65ce5c9ad0"
+        }
+      ]
+    },
+    "quality-route-permissions": {
+      "name": "Quality / Route permissions",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "route permissions (every authenticated prefix declared \u2014 ratchet)",
+          "sha256": "f99d1902ce4410c4906e1df6ec218db9ac92ec64c8be8f9460e9032cb4e30cc2"
+        }
+      ]
+    },
+    "quality-principal": {
+      "name": "Quality / Principal identity",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "principal identity (one HTTP principal surface \u2014 ratchet)",
+          "sha256": "d81acb5d2f6b3c6d3bcca97172067ed6d91811ecda18453e98f3d836ec075580"
+        }
+      ]
+    },
+    "quality-frontend": {
+      "name": "Quality / Frontend typed client",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "frontend typed client (raw fetch + hand-typed entities \u2014 ratchet)",
+          "sha256": "b26756848abae3e55f4f7bf5c72c91be24a80cdbd188a821c56ec52c0ffff03f"
+        }
+      ]
+    },
+    "quality-ifeval": {
+      "name": "Quality / IFEval provenance",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "vendored benchmark provenance (IFEval grader + corpus)",
+          "sha256": "87391e9cd9cd55bf4541fe1cf84b8bad26c46d94beb43cfe8db8d7b4b21b5b0f"
+        }
+      ]
+    },
+    "quality-bfcl": {
+      "name": "Quality / BFCL provenance",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "vendored benchmark provenance (BFCL checker + corpus)",
+          "sha256": "2babc1300cc93d1d2f7c644bb6e7219fb9cbca920af40d466e5bd3e1b9e2f147"
+        }
+      ]
+    },
+    "quality-xenon": {
+      "name": "Quality / Xenon",
+      "tools": "xenon",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "xenon (per-function \u2264 B; per-module \u2264 B; project avg \u2264 A \u2014 ratchet)",
+          "sha256": "782fe4e3e33516b091051c03bb8beed562ad9296949e74dc87f846088fcb3a69"
+        }
+      ]
+    },
+    "quality-vulture": {
+      "name": "Quality / Vulture",
+      "tools": "vulture",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "vulture (dead-code; confidence \u2265 60 \u2014 per-identity ledger)",
+          "sha256": "c6bdf3569718a2577fa947caa279fd21c28ca9757e9ac25c861a12f89e19d9d2"
+        }
+      ]
+    },
+    "quality-reachability": {
+      "name": "Quality / Reachability",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "reachability ratchet (built-but-never-wired modules)",
+          "sha256": "90d243f4deece68be9cbb1bf52346e78e10920cd82e2f297a8a3ed1a0cb0e046"
+        }
+      ]
+    },
+    "quality-proof-envelope": {
+      "name": "Quality / Installed proof CLI",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "installed proof envelope validator fails closed via CLI (#1878)",
+          "sha256": "a24b54443bcd0aab6ad5120c3760496bc7a4bf1245e827ffc6cb8f43b21abce0"
+        }
+      ]
+    },
+    "quality-model-proof": {
+      "name": "Quality / Selected model-call CLI",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "selected model-call validator fails closed via CLI (#1879)",
+          "sha256": "108df78144ee35a33cdaf4a5c6cf5d1b57798e76855c6b88cf7cf3afbd8dfe2a"
+        }
+      ]
+    },
+    "quality-credentials": {
+      "name": "Quality / Credential authority",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "credential authority (reachable stores are classified and scoped)",
+          "sha256": "769268335764b5cc16e3c279fd2749ec540e0731b861d0813dc9ceb72b99bc3c"
+        }
+      ]
+    },
+    "quality-wiring": {
+      "name": "Quality / Wiring reads",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "wiring reads ratchet (DI attributes nothing reads back)",
+          "sha256": "1707076facef72caacb2016671edc3a7fa160ebb0fff8a6bdbe598723fe181bb"
+        }
+      ]
+    },
+    "quality-agent-writes": {
+      "name": "Quality / Agent store writes",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "agent store write path (one writer for stores.agents)",
+          "sha256": "a120db14c81b95fab3a11e00ab7e8ba9adce0c5f6ddc8fa270d81a07d1ccd691"
+        }
+      ]
+    },
+    "quality-contract-markers": {
+      "name": "Quality / Contract markers",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "contract marker ledger (ADR-032's cross-check, enforced)",
+          "sha256": "00d0699f6ec9f71935958731c4a4be556ed2b99bc2bcaf1a22d83aa0a3e43b5a"
+        }
+      ]
+    },
+    "quality-convergence": {
+      "name": "Quality / Convergence matrix",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "convergence matrix (subsystem ownership stays current)",
+          "sha256": "bf82daf817274140ca0da7d1467813210c95b9f7d9b8d61aa374514e97bbbcca"
+        }
+      ]
+    },
+    "quality-dispositions": {
+      "name": "Quality / Reachability dispositions",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "reachability dispositions (every unreachable module has an owner)",
+          "sha256": "28b01b77ed15f95d74149bdd28f78260b7a4306f547388b0004d84870b424e57"
+        }
+      ]
+    },
+    "quality-security-inventory": {
+      "name": "Quality / Security inventory",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "security inventory (SECURITY.md's checkable claims match the code)",
+          "sha256": "7a3e402c90666ac0766eff7f75967897369d544250e6bc1db6da2abe112a8936"
+        }
+      ]
+    },
+    "quality-image-inventory": {
+      "name": "Quality / Image inventory",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "image inventory (every Dockerfile is dispositioned; shipped ones name live jobs)",
+          "sha256": "5785f48bc46fb0773f3f0fc0470e189f6e0affd53acaa36e3da0af0fb9933561"
+        }
+      ]
+    },
+    "quality-image-pins": {
+      "name": "Quality / Image pins",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "image pins (release bases digest-pinned; no mutable :latest anywhere)",
+          "sha256": "7e6cb0c1ccc4d172dc1b2b118bc1b1d448790a4b9f0e2530bc2810826a1e1ef8"
+        }
+      ]
+    },
+    "quality-workflow-inventory": {
+      "name": "Quality / Workflow inventory",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "workflow inventory (every workflow dispositioned; references live; swallows reasoned)",
+          "sha256": "d39dba7052ce203e2cfc89ee02f222c4dd628e26015dcf8971602d1c6b8dd720"
+        }
+      ]
+    },
+    "quality-backlog": {
+      "name": "Quality / Backlog consistency",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "backlog consistency (legends match usage; citations resolve)",
+          "sha256": "1fa19984230aa436d240955ef0887a3d9ef7f9a7c95da7ef2cd3944d1249833b"
+        }
+      ]
+    },
+    "quality-acceptance": {
+      "name": "Quality / Acceptance state",
+      "tools": "pytest-timeout",
+      "postgres": true,
+      "age": true,
+      "steps": [
+        {
+          "name": "Apply migrations",
+          "sha256": "c5e0113b13363f3a4120711ceb94278b8329e17f544291f4c57c3f54a8ea32f3"
+        },
+        {
+          "name": "acceptance-state ratchet + mandate",
+          "sha256": "ebbdc777f6f9aa4f9618a894cdd5cdb87c8281eb0831b2bd90350dd3f4d03e3c"
+        }
+      ]
+    },
+    "quality-mypy": {
+      "name": "Quality / Mypy strict",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "mypy --strict",
+          "sha256": "60f2c49896ccf92b6de460d566980fc1f7df55c6407d6604bee7e5c585fd4608"
+        }
+      ]
+    },
+    "quality-pyright": {
+      "name": "Quality / Pyright",
+      "tools": "pyright",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "pyright (type cross-check \u2014 ratchet)",
+          "sha256": "a55e1623ab18e82ea427bd8abf605faf6441ef609869a06f23c9c18e3e0c7323"
+        }
+      ]
+    },
+    "quality-hypothesis": {
+      "name": "Quality / Hypothesis",
+      "tools": "pytest-timeout",
+      "postgres": true,
+      "age": false,
+      "steps": [
+        {
+          "name": "Apply migrations",
+          "sha256": "c5e0113b13363f3a4120711ceb94278b8329e17f544291f4c57c3f54a8ea32f3"
+        },
+        {
+          "name": "Hypothesis property tests (formal/)",
+          "sha256": "131115d13f115a9126b62f56bdde9b5875873df1b1c702e39b8dad08849f1f9f"
+        }
+      ]
+    },
+    "quality-lifecycles": {
+      "name": "Quality / Execution lifecycles",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "execution lifecycles (no unclassified second spine)",
+          "sha256": "b0d79e4ec178a906c68eaffd3db6cafa4ff803463a936a8c4561433c9613d56e"
+        }
+      ]
+    },
+    "quality-model-egress": {
+      "name": "Quality / Model egress",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "model egress (the direct-caller set may only shrink)",
+          "sha256": "cfbc00eefcffaea0e69d5c4b490eb3db0e3764df4e3dbea156f83befcfd1b855"
+        }
+      ]
+    },
+    "quality-harness-egress": {
+      "name": "Quality / Foreign-harness egress",
+      "tools": "",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "foreign-harness egress (OpenClaw/Pi transport stays inside the Provider boundary)",
+          "sha256": "8f406f8ad30200bbf6ccafc08a438549848f0b69f4852b3ed85f3b876ae1955a"
+        }
+      ]
+    },
+    "quality-fitness": {
+      "name": "Quality / Architecture fitness",
+      "tools": "pytest-timeout",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "Architecture fitness functions",
+          "sha256": "465d2d248ce5f9b554bfbd85ed7e8bdca25642297a242d48f1e7ba0bad52c34f"
+        }
+      ]
+    },
+    "quality-interrogate": {
+      "name": "Quality / Docstring coverage",
+      "tools": "interrogate",
+      "postgres": false,
+      "age": false,
+      "steps": [
+        {
+          "name": "interrogate (docstring coverage ratchet)",
+          "sha256": "d3d74e7535bdfc14ead644c4f43ae7d4e9258991b34e3fbff52480402e69fd82"
+        }
+      ]
+    }
+  },
+  "workflow": {
+    "name": "quality",
+    "permissions": {
+      "contents": "read"
+    },
+    "triggers": {
+      "pull_request": null,
+      "merge_group": {
+        "types": [
+          "checks_requested"
+        ]
+      },
+      "push": {
+        "branches": [
+          "main",
+          "integration",
+          "develop",
+          "feat/*",
+          "bug/*",
+          "fix/*",
+          "idea/*",
+          "doc/*",
+          "docs/*",
+          "chore/*"
+        ]
+      }
+    },
+    "concurrency": {
+      "group": "quality-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}",
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
+    }
+  },
+  "setup_steps": [
+    {
+      "uses": "actions/checkout@v7",
+      "with": {
+        "fetch-depth": 0
+      }
+    },
+    {
+      "name": "Install uv",
+      "uses": "./.github/actions/setup-uv"
+    },
+    {
+      "name": "Setup Python 3.12",
+      "run": "uv python install 3.12"
+    },
+    {
+      "name": "uv sync (full dev deps)",
+      "run": "uv sync --locked --all-extras"
+    },
+    {
+      "name": "install maistro-evolve",
+      "run": "uv pip install -e packages/maistro-evolve"
+    }
+  ],
+  "ratchet_base_rev": "${{ github.event_name == 'pull_request'\n    && format('origin/{0}', github.base_ref)\n    || github.event_name == 'merge_group'\n    && github.event.merge_group.base_sha\n    || github.ref == 'refs/heads/develop'\n    && github.event.before\n    || github.ref == 'refs/heads/integration'\n    && github.event.before\n    || github.ref == 'refs/heads/main'\n    && github.event.before\n    || 'origin/develop' }}",
+  "postgres_services": {
+    "postgres": {
+      "image": "pgvector/pgvector:pg18",
+      "env": {
+        "POSTGRES_USER": "maistro",
+        "POSTGRES_PASSWORD": "maistro",
+        "POSTGRES_DB": "maistro_test"
+      },
+      "ports": [
+        "5432:5432"
+      ],
+      "options": "--health-cmd \"pg_isready -U maistro -d maistro_test\" --health-interval 5s --health-timeout 5s --health-retries 10"
+    }
+  },
+  "postgres_env": {
+    "MAISTRO_TEST_PG_DSN": "postgresql://maistro:maistro@127.0.0.1:5432/maistro_test",
+    "DATABASE_URL": "postgresql://maistro:maistro@127.0.0.1:5432/maistro_test"
+  },
+  "age_step_sha256": "0d31883f5ff7314c52dbfafb7334dcdfbe07190894cd2b96234b6209ab163875",
+  "coverage_jobs": {
+    "coverage-unit": "81c343adca11aa9e82f74aa6c891a4707a9e6a64109194f83fe274c23a0cbe9e",
+    "coverage-archive": "c2e6d0aecd422d0456f6e8c42aa00afd6797099d1cef810f1fc725b61f688a09",
+    "coverage-postgres": "d33511e80bf29e66ba9f798b142696267f5b34c8dc8d967dc502397456bc4be5",
+    "coverage-gate": "7211a89d2b91b3de6d79187c0ae4a1a7f1a96087e3310e5859a602abd89e1cf2"
+  }
+}

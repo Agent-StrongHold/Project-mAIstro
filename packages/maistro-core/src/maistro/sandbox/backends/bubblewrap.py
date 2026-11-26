@@ -26,16 +26,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import resource
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from uuid import uuid4
 
+from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.sandbox.paths import authorized_host_mounts, read_beneath, write_beneath
+from maistro.sandbox.protocol import (
+    OUTPUT_LIMIT_EXIT_CODE,
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+)
 
 logger = logging.getLogger("maistro.sandbox.bubblewrap")
 
@@ -133,7 +141,13 @@ class BubblewrapSandboxBackend:
     #: another, so a scoped grant is refused rather than approximated (#77).
     supports_scoped_egress = False
 
-    def __init__(self, *, root: Path | None = None, bwrap: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        bwrap: str | None = None,
+        allowed_writable_roots: Iterable[str | Path] = (),
+    ) -> None:
         resolved = bwrap or shutil.which(BUBBLEWRAP_BINARY)
         if resolved is None:
             raise BubblewrapUnavailableError(
@@ -142,7 +156,14 @@ class BubblewrapSandboxBackend:
             )
         self._bwrap = resolved
         self._root = root
-        self._instances: dict[str, tuple[SandboxConfig, Path]] = {}
+        # These are host-owned capabilities supplied by deployment code. The
+        # backend root is also a capability: it is where its ephemeral workdir
+        # is created, never an arbitrary path chosen by sandboxed code.
+        self._allowed_writable_roots = tuple(allowed_writable_roots)
+        if root is not None:
+            self._allowed_writable_roots += (root,)
+        self._instances: dict[str, tuple[SandboxConfig, Path, int]] = {}
+        self._file_locks: dict[str, asyncio.Lock] = {}
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -157,7 +178,21 @@ class BubblewrapSandboxBackend:
             sandbox_id=sid,
         )
         workdir = await asyncio.to_thread(self._make_workdir, sid)
-        self._instances[sid] = (config, workdir)
+        try:
+            workdir_fd = await asyncio.to_thread(self._open_workdir, workdir)
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, workdir, True)
+            raise
+        try:
+            # Authorize mounts before returning a live instance. No arbitrary
+            # caller path can reach the eventual bwrap command line.
+            self._authorized_mounts(config)
+        except BaseException:
+            os.close(workdir_fd)
+            await asyncio.to_thread(shutil.rmtree, workdir, True)
+            raise
+        self._instances[sid] = (config, workdir, workdir_fd)
+        self._file_locks[sid] = asyncio.Lock()
         logger.info(
             "sandbox_spawned id=%s tier=%s egress=%s",
             sid,
@@ -180,13 +215,26 @@ class BubblewrapSandboxBackend:
         parent.mkdir(parents=True, exist_ok=True)
         return Path(tempfile.mkdtemp(prefix=f"{sid}-", dir=str(parent)))
 
+    @staticmethod
+    def _open_workdir(workdir: Path) -> int:
+        return os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
     async def destroy(self, instance: SandboxInstance) -> None:
         """Idempotent, as the protocol requires."""
-        entry = self._instances.pop(instance.id, None)
-        if entry is None:
+        lock = self._file_locks.get(instance.id)
+        if lock is None:
             return
-        _config, workdir = entry
-        await asyncio.to_thread(shutil.rmtree, workdir, True)
+        async with lock:
+            entry = self._instances.pop(instance.id, None)
+            if entry is None:
+                self._file_locks.pop(instance.id, None)
+                return
+            _config, workdir, workdir_fd = entry
+            # File transfers hold the same lock, so teardown cannot remove the
+            # workdir while a descriptor-relative transfer is in progress.
+            os.close(workdir_fd)
+            await asyncio.to_thread(shutil.rmtree, workdir, True)
+            self._file_locks.pop(instance.id, None)
         logger.info("sandbox_destroyed id=%s", instance.id)
 
     # --- execution ---------------------------------------------------------
@@ -224,8 +272,14 @@ class BubblewrapSandboxBackend:
         # The sandbox's writable surface is exactly its own workdir, mounted at
         # a fixed path so a command does not need to know the host layout.
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
-        for extra in config.writable_paths:
-            argv += ["--bind", extra, extra]
+        for index, extra in enumerate(self._authorized_mounts(config)):
+            # Expose a stable guest name, not the host pathname. The source is
+            # canonicalized under an explicit host-owned root first (#1198).
+            argv += ["--bind", str(extra), f"/work-extra-{index}"]
+        for ro in config.read_paths:
+            # Read-only host exposure from a host-owned profile (#2014); never
+            # a writable bind, so it cannot widen the sandbox's write surface.
+            argv += ["--ro-bind", ro, ro]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants
@@ -250,77 +304,80 @@ class BubblewrapSandboxBackend:
     async def exec(
         self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
     ) -> ExecResult:
-        config, workdir = self._require(instance)
-        argv = self.build_argv(config, workdir, command)
-        start = time.monotonic()
+        # Execution, host file transfer, and teardown share ownership of the
+        # workdir. This prevents destroy from removing it while bwrap or an fd
+        # relative transfer is still using it.
+        lock = self._file_lock(instance)
+        async with lock:
+            config, workdir, _workdir_fd = self._require(instance)
+            argv = self.build_argv(config, workdir, command)
+            start = time.monotonic()
 
-        limits = resource_limits(config)
+            limits = resource_limits(config)
 
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Between fork and exec, so the limits are on `bwrap` and inherited
-            # by everything inside the sandbox. The same hook the capability
-            # probe runs under, so detection and spawn cannot disagree (#1235).
-            preexec_fn=preexec_for(limits),
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
-        except TimeoutError:
-            # `--die-with-parent` makes the kill reach the whole sandbox rather
-            # than only the `bwrap` process, so a timeout cannot leave the
-            # sandboxed work running unsupervised.
-            process.kill()
-            await process.wait()
-            return ExecResult(
-                exit_code=TIMEOUT_EXIT_CODE,
-                stdout="",
-                stderr=f"sandbox timed out after {timeout_s}s",
-                duration_ms=int((time.monotonic() - start) * 1000),
-                timed_out=True,
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # Between fork and exec, so the limits are on `bwrap` and inherited
+                # by everything inside the sandbox. The same hook the capability
+                # probe runs under, so detection and spawn cannot disagree (#1235).
+                preexec_fn=preexec_for(limits),
+                start_new_session=True,
             )
-
-        return ExecResult(
-            exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            duration_ms=int((time.monotonic() - start) * 1000),
-        )
+            captured = await capture_process(
+                process,
+                timeout_s=timeout_s,
+                max_stdout_bytes=config.max_stdout_bytes,
+                max_stderr_bytes=config.max_stderr_bytes,
+            )
+            # `--die-with-parent` plus capture_process's process-group kill makes
+            # both timeout and output overflow terminate the complete workload.
+            exit_code = process.returncode if process.returncode is not None else -1
+            if captured.timed_out:
+                exit_code = TIMEOUT_EXIT_CODE
+            elif captured.output_limit_exceeded:
+                exit_code = OUTPUT_LIMIT_EXIT_CODE
+            return ExecResult(
+                exit_code=exit_code,
+                stdout=captured.stdout.decode(errors="replace"),
+                stderr=captured.stderr.decode(errors="replace"),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                timed_out=captured.timed_out,
+                output_limit_exceeded=captured.output_limit_exceeded,
+                stdout_truncated=captured.stdout_truncated,
+                stderr_truncated=captured.stderr_truncated,
+                stdout_bytes_retained=len(captured.stdout),
+                stderr_bytes_retained=len(captured.stderr),
+            )
 
     # --- files -------------------------------------------------------------
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
-        target = self._resolve(instance, path)
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, content)
+        lock = self._file_lock(instance)
+        async with lock:
+            _config, _workdir, workdir_fd = self._require(instance)
+            await asyncio.to_thread(write_beneath, workdir_fd, path, content)
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
-        target = self._resolve(instance, path)
-        return await asyncio.to_thread(target.read_bytes)
+        lock = self._file_lock(instance)
+        async with lock:
+            _config, _workdir, workdir_fd = self._require(instance)
+            return await asyncio.to_thread(read_beneath, workdir_fd, path)
 
-    def _resolve(self, instance: SandboxInstance, path: str) -> Path:
-        """Map a sandbox path onto the host, refusing to escape the workdir.
+    def _authorized_mounts(self, config: SandboxConfig) -> tuple[Path, ...]:
+        return authorized_host_mounts(
+            config.writable_paths,
+            allowed_roots=self._allowed_writable_roots,
+        )
 
-        The file operations run on the *host* side — they are how a caller gets
-        work in and results out — so a sandbox path of `../../etc/passwd` would
-        otherwise be a host write with no sandbox involved at all.
-        """
-        _config, workdir = self._require(instance)
-        relative = Path(path)
-        if relative.is_absolute():
-            try:
-                relative = relative.relative_to("/work")
-            except ValueError:
-                raise ValueError(
-                    f"path {path!r} is outside the sandbox; writable root is '/work'"
-                ) from None
-        resolved = (workdir / relative).resolve()
-        if not resolved.is_relative_to(workdir.resolve()):
-            raise ValueError(f"path {path!r} escapes the sandbox workdir")
-        return resolved
+    def _file_lock(self, instance: SandboxInstance) -> asyncio.Lock:
+        lock = self._file_locks.get(instance.id)
+        if lock is None:
+            raise KeyError(f"no live sandbox {instance.id!r}; it was destroyed or never spawned")
+        return lock
 
-    def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path]:
+    def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path, int]:
         entry = self._instances.get(instance.id)
         if entry is None:
             raise KeyError(f"no live sandbox {instance.id!r}; it was destroyed or never spawned")
@@ -328,6 +385,7 @@ class BubblewrapSandboxBackend:
 
 
 __all__ = [
+    "OUTPUT_LIMIT_EXIT_CODE",
     "TIMEOUT_EXIT_CODE",
     "BubblewrapSandboxBackend",
     "BubblewrapUnavailableError",

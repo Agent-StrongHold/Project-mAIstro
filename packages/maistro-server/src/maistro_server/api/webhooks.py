@@ -28,6 +28,7 @@ _HTTP_423_LOCKED = 423
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+_SYSTEM_PRINCIPAL = "system"
 
 _REPO_FULL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -159,7 +160,12 @@ async def github_webhook(
             description=wrapped,
             workspace=_repo_workspace(repo),
         )
-        result = await queue.submit(task)
+        result = await queue.submit(
+            task,
+            user_id=_SYSTEM_PRINCIPAL,
+            service_principal_id="github-webhook",
+            actor_kind="system",
+        )
         return WebhookAccepted(task_id=result.task_id, action="pr_review_queued")
 
     # Handle issue events
@@ -191,7 +197,12 @@ async def github_webhook(
             description=wrapped,
             workspace=_repo_workspace(repo),
         )
-        result = await queue.submit(task)
+        result = await queue.submit(
+            task,
+            user_id=_SYSTEM_PRINCIPAL,
+            service_principal_id="github-webhook",
+            actor_kind="system",
+        )
         return WebhookAccepted(task_id=result.task_id, action="issue_task_queued")
 
     return WebhookIgnored(status="ignored", event=event, action=action)
@@ -246,7 +257,12 @@ async def ci_webhook(
             workspace=_repo_workspace(payload.repository),
             branch=payload.branch,
         )
-        result = await queue.submit(task)
+        result = await queue.submit(
+            task,
+            user_id=_SYSTEM_PRINCIPAL,
+            service_principal_id="ci-webhook",
+            actor_kind="system",
+        )
         return WebhookAccepted(task_id=result.task_id, action="ci_fix_queued")
 
     return CIWebhookIgnored(status="ignored", ci_status=payload.status)

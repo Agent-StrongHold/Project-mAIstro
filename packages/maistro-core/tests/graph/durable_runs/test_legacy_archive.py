@@ -21,6 +21,9 @@ system of record this issue removes. So it reproduces and refuses to resume.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -216,6 +219,34 @@ def test_an_operator_can_reproduce_one_archived_run(archived: ArchivedGraphRun) 
 
 def test_the_commands_say_so_rather_than_failing_on_an_unknown_run() -> None:
     assert "No archived run" in _cli("archive", "show", str(FIXTURE), "no-such-run")
+
+
+def test_reproduce_preserves_an_existing_actor_principal_id() -> None:
+    from maistro.graph.durable_runs.legacy_archive import _reproduce
+
+    conn = sqlite3.connect(FIXTURE)
+    try:
+        row = conn.execute("SELECT record_json FROM durable_graph_runs LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    payload = json.loads(row[0])
+    payload["run"]["actor_principal_id"] = "known-legacy-actor"
+    archived = _reproduce(payload)
+    assert archived.run.actor_principal_id == "known-legacy-actor"
+
+
+def test_reproduce_fills_a_missing_actor_principal_id() -> None:
+    from maistro.graph.durable_runs.legacy_archive import _reproduce
+
+    conn = sqlite3.connect(FIXTURE)
+    try:
+        row = conn.execute("SELECT record_json FROM durable_graph_runs LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    payload = deepcopy(json.loads(row[0]))
+    payload["run"]["actor_principal_id"] = None
+    archived = _reproduce(payload)
+    assert archived.run.actor_principal_id == "legacy-unknown-actor"
 
 
 def test_listing_an_empty_archive_says_it_is_empty(tmp_path: Path) -> None:

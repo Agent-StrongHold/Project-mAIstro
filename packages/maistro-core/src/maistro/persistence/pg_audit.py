@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.security.sentinel.integrity import DecisionSignature
-from maistro.types.security import AuditEntry, Violation
+from maistro.persistence.audit_pages import AuditPage, make_page, page_query
+from maistro.persistence.decision_evidence import DECISION_COLUMNS, decision_fields, decision_values
+from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
+from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
     import asyncpg
+
+logger = logging.getLogger("maistro.persistence.audit")
 
 
 _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
     {
         "user_id",
         "agent_id",
+        "org_id",
     }
 )
 
@@ -24,8 +29,32 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 class PgAuditLog:
     """PostgreSQL-backed immutable audit log."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, signer: AuditSigner | None = None) -> None:
         self._pool = pool
+        self.signer = signer or AuditSigner.from_environment()
+        if self.signer.ephemeral:
+            logger.warning(
+                "audit_log signing key is process-generated (%s is unset): decisions written "
+                "to this durable store will not verify after this process exits",
+                SIGNING_KEY_ENV,
+            )
+
+    async def ensure_schema(self) -> None:
+        """Add proof columns to databases created before signed audit records."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
+            )
+            for name, definition in DECISION_COLUMNS.items():
+                await conn.execute(
+                    f"ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS {name} {definition}"
+                )
 
     @staticmethod
     def _signed_timestamp(entry: AuditEntry) -> datetime:
@@ -42,50 +71,57 @@ class PgAuditLog:
         return timestamp
 
     async def log(self, entry: AuditEntry) -> None:
-        """Record an audit entry."""
+        """Sign and record an audit entry."""
+        signed = self.signer.sign(entry)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO audit_log
                    (boundary, user_id, org_id, team_id, agent_id,
-                    tool_name, verdict, detail, trace_id, request_id, action,
-                    principal_id, policy_snapshot, payload, signature,
+                    tool_name, verdict, detail, trace_id, request_id,
+                    action, principal_id, policy_snapshot, payload, decision_signature,
                     signature_key_id, signature_algorithm, signature_public_key, violations,
-                    inputs_hash, timestamp)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)""",
+                    inputs_hash, signature, signing_key_id, proof_type, timestamp)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                           $19,$20,$21,$22,$23,$24)""",
                 entry.boundary,
                 entry.user_id,
-                getattr(entry, "org_id", ""),
+                getattr(entry, "org_id", "") or "",
                 getattr(entry, "team_id", ""),
                 entry.agent_id,
                 getattr(entry, "tool_name", "") or "",
                 entry.verdict,
                 entry.detail,
-                getattr(entry, "trace_id", ""),
-                getattr(entry, "request_id", ""),
-                getattr(entry, "action", ""),
-                getattr(entry, "principal_id", "") or entry.user_id,
-                getattr(entry, "policy_snapshot", ""),
-                getattr(entry, "payload", ""),
-                getattr(getattr(entry, "integrity", None), "signature", None),
-                getattr(getattr(entry, "integrity", None), "key_id", None),
-                getattr(getattr(entry, "integrity", None), "algorithm", None),
-                getattr(getattr(entry, "integrity", None), "public_key", None),
-                json.dumps(
-                    [
-                        {
-                            "boundary": v.boundary,
-                            "rule": v.rule,
-                            "severity": v.severity,
-                            "detail": v.detail,
-                            "repair_action": v.repair_action,
-                        }
-                        for v in getattr(entry, "violations", ())
-                    ],
-                    sort_keys=True,
-                ),
-                getattr(entry, "inputs_hash", ""),
-                self._signed_timestamp(entry),
+                getattr(signed, "trace_id", ""),
+                getattr(signed, "request_id", ""),
+                *decision_values(signed),
+                signed.signature,
+                signed.signing_key_id,
+                signed.proof_type,
+                self._signed_timestamp(signed),
             )
+
+    async def get_page(
+        self,
+        *,
+        org_id: str = "",
+        user_id: str | None = None,
+        boundary: str | None = None,
+        denied: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> AuditPage:
+        query, params = page_query(
+            org_id=org_id,
+            user_id=user_id,
+            boundary=boundary,
+            denied=denied,
+            limit=limit,
+            cursor=cursor,
+            postgres=True,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return make_page(rows, limit)
 
     async def get_entries(
         self,
@@ -95,7 +131,16 @@ class PgAuditLog:
         org_id: str = "",
         limit: int = 100,
     ) -> list[AuditEntry]:
-        """Retrieve audit entries with optional filtering."""
+        """Retrieve audit entries with optional filtering.
+
+        ``org_id`` is always an exact SQL predicate. The empty string is the
+        explicit system/unscoped scope and therefore reads only system rows;
+        this adapter never turns an omitted scope into an all-organization
+        read. A caller that needs a tenant read must pass its non-empty org id.
+        """
+        if org_id is None:
+            raise ValueError("org_id cannot be None; pass '' for an unscoped read")
+
         conditions: list[str] = []
         params: list[Any] = []
         idx = 1
@@ -105,6 +150,7 @@ class PgAuditLog:
             filters.append(("user_id", user_id))
         if agent_id:
             filters.append(("agent_id", agent_id))
+        filters.append(("org_id", org_id))
 
         for col, value in filters:
             if col not in _ALLOWED_FILTER_COLUMNS:
@@ -133,27 +179,14 @@ class PgAuditLog:
                 detail=r.get("detail", ""),
                 trace_id=r.get("trace_id", ""),
                 request_id=r.get("request_id", ""),
-                action=r.get("action", ""),
-                principal_id=r.get("principal_id", ""),
-                policy_snapshot=r.get("policy_snapshot", ""),
-                payload=r.get("payload", ""),
-                inputs_hash=r.get("inputs_hash", ""),
-                integrity=(
-                    DecisionSignature(
-                        key_id=r["signature_key_id"],
-                        algorithm=r["signature_algorithm"],
-                        signature=r["signature"],
-                        public_key=r["signature_public_key"],
-                    )
-                    if r.get("signature")
-                    and r.get("signature_key_id")
-                    and r.get("signature_algorithm")
-                    and r.get("signature_public_key")
-                    else None
-                ),
-                violations=tuple(
-                    Violation(**item) for item in json.loads(r.get("violations", "[]") or "[]")
-                ),
+                signature=r.get("signature", ""),
+                signing_key_id=r.get("signing_key_id", ""),
+                proof_type=r.get("proof_type", ""),
+                **decision_fields(r),
             )
             for r in rows
         ]
+
+    def verify(self, entry: AuditEntry) -> bool:
+        """Verify a row returned by this store against its configured key."""
+        return self.signer.verify(entry)

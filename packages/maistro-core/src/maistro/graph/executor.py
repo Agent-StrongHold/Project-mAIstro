@@ -1,17 +1,29 @@
+"""P1 resilience for node execution (ADR-066 / SPEC-070226-af02).
+
+This module used to also export ``run_graph`` -- the pre-durable executor that
+built an ephemeral :class:`~maistro.graph.run.GraphRun` and started it. That
+API is retired (#1154): it carried no canonical Run/NodeRun/Attempt evidence
+and no restart recovery, so a caller reaching it executed physical Graph work
+that no recovery path could ever re-derive. Canonical durable execution lives
+in :mod:`maistro.graph.durable_runs`, which does not import
+:class:`~maistro.graph.run.GraphRun` at all -- the two executors never shared
+code, only a name. `GraphRun` stays in its own module as Graph-domain
+traversal for the test harness that drives it, but it is not an execution
+authority and nothing re-exports it as one.
+
+Removing the wrapper leaves this module and :mod:`maistro.graph.run` reachable
+only from tests, which is the truthful end state of the retirement rather than
+a gap: both are dispositioned accordingly rather than being kept artificially
+reachable by a re-export nothing needed.
+"""
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from maistro.graph.events import GraphEvent
-from maistro.graph.node import NodeExecutor
-from maistro.graph.run import GraphRun, evaluate_condition
-from maistro.graph.types import (
-    GraphConfig,
-    GraphTask,
-    HyperagentOutput,
-)
 from maistro.resilience.p1 import (
     CompactedRetry,
     InMemoryResiliencePolicyStore,
@@ -151,57 +163,4 @@ async def execute_with_resilience(
             await do_sleep(delay)
 
 
-def _ensure_node_configs(config: GraphConfig | None, parallel_generations: int) -> None:
-    """Backfill a NodeConfig for every role, applying the beam width when the
-    caller asked for parallel generations. Mutates ``config`` in place."""
-    if config is None:
-        return
-    from maistro.graph.types import NodeConfig as _NC
-
-    for role in config.nodes:
-        if role not in config.node_configs:
-            config.node_configs[role] = _NC(role=role)
-        if parallel_generations > 1:
-            config.node_configs[role].beam_width = parallel_generations
-
-
-async def run_graph(
-    task: GraphTask,
-    llm_call: Callable[..., Awaitable[str]],
-    *,
-    model: str = "default",
-    max_retries: int = 3,
-    timeout: float = 120.0,
-    initial_backoff: float = 1.0,
-    parallel_generations: int = 1,
-    temperature: float | None = None,
-    run_id: str | None = None,
-    event_callbacks: list[Callable[[Any], Awaitable[None]]] | None = None,
-    node_executors: dict[str, NodeExecutor] | None = None,
-) -> HyperagentOutput:
-    from maistro.resilience.backoff import BackoffConfig
-
-    backoff_config = BackoffConfig(base_delay=initial_backoff)
-
-    config = task.graph_config
-    _ensure_node_configs(config, parallel_generations)
-
-    graph_run = GraphRun(
-        run_id=run_id or "",
-        task=task,
-        config=config,
-        event_callbacks=event_callbacks or [],
-        node_executors=node_executors or {},
-    )
-
-    return await graph_run.start(
-        llm_call,
-        model=model,
-        temperature=temperature,
-        timeout=timeout,
-        max_retries=max_retries,
-        backoff_config=backoff_config,
-    )
-
-
-__all__ = ["GraphRun", "evaluate_condition", "execute_with_resilience", "run_graph"]
+__all__ = ["execute_with_resilience"]

@@ -3,16 +3,16 @@ id: SPEC-070226-fbe3
 title: "Deployment topology, backup, and disaster recovery"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-081
   - maistro-engine#ADR-087
-  - maistro-engine#SPEC-230
 implements:
   - maistro-engine#ADR-081
 related:
   - maistro-engine#ADR-077
+  - maistro-engine#ADR-081
+  - maistro-engine#SPEC-230
 supersedes: []
 blocks: []
 blocked-by: []
@@ -22,15 +22,22 @@ tests: []
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-fbe3: Deployment topology, backup, and disaster recovery
 
 ## Context
 
-Hive Conductor currently runs on localhost for development. ADR-081 specifies production deployment
+Hive Conductor currently runs on localhost for development. ADR-081 proposes production deployment
 topology: multi-instance high-availability (active-active or active-passive), persistent state
-backup, and recovery procedures for data loss / instance failure.
+backup, and recovery procedures for data loss / instance failure. ADR-081 remains Proposed and is
+retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-087).
 
 ## Goals
 
@@ -92,7 +99,7 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
   `deploy/scripts/verify-restore.sh`.
 - Health endpoints for the LB already exist in maistro-server
   (`/health`, `/health/live`, `/health/ready` — `maistro_server/api/health.py`,
-  tested in `tests/api/test_health.py`).
+  tested in `packages/maistro-server/tests/api/test_health.py`).
 
 ## Acceptance criteria
 
@@ -100,7 +107,9 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
       (no local files except config). *(Topology enforces this; instances are stateless.)*
 - [ ] PostgreSQL replicas are catching up (replication lag < 1s). *(Live-infra check.)*
 - [x] Backup test: restore yesterday's backup, verify data is present and consistent.
-      *(`deploy/scripts/verify-restore.sh` — pg_dump hash + row-count check.)*
+      *(`deploy/scripts/verify-restore.sh` — semantic oracle: schema inventory + exact
+      row counts bound to the backup's exported snapshot, compared against the restored
+      database.)*
 - [ ] Instance failure: one instance goes down, remaining handle traffic without data loss.
       *(Chaos test at deploy time; LB passive checks configured.)*
 - [ ] Monitoring alerts on replication lag > 5s or backup failure. *(Wired at deploy time;
@@ -110,7 +119,9 @@ chaos/failover tests, alerting wiring) happens at deploy time on real infrastruc
 
 - Chaos test: kill one instance, verify failover and no lost requests.
 - Restore test: simulate data corruption, restore from backup, verify consistency.
-- Property: "backup restore always produces bit-for-bit identical PostgreSQL state" (via pg_dump hash).
+- Property: "a restored backup matches the semantic evidence recorded for its snapshot
+  — schema inventory and exact per-table row counts" (#1881; independent of dump
+  formatting and random metadata).
 
 ## References
 

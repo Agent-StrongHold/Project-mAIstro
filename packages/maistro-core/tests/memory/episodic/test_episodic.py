@@ -6,6 +6,7 @@ import pytest
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.episodic.tiers import clamp_weight, decay, reinforce
+from maistro.memory.exposure import MemoryExposureMode
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 
 
@@ -91,7 +92,7 @@ class TestReinforceDecay:
 
 class TestInMemoryEpisodicStore:
     async def test_store_and_retrieve(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(content="python import error fix", agent_id="a1")
         await store.store(mem)
         results = await store.retrieve("python import", agent_id="a1")
@@ -99,19 +100,19 @@ class TestInMemoryEpisodicStore:
         assert results[0].memory_id == "m1"
 
     async def test_retrieve_no_match_returns_empty(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem(content="docker build failure", agent_id="a1"))
         results = await store.retrieve("python error", agent_id="a1")
         assert results == []
 
     async def test_retrieve_excludes_deleted(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         await store.store(_mem(content="important lesson", deleted=True))
         results = await store.retrieve("important", agent_id="agent-1")
         assert results == []
 
     async def test_retrieve_team_scope_requires_org(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(scope=MemoryScope.TEAM, team_id="alpha", org_id="org-A", content="team secret")
         await store.store(mem)
         # Caller in same team but different org
@@ -119,14 +120,14 @@ class TestInMemoryEpisodicStore:
         assert results == []
 
     async def test_retrieve_team_correct_org(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(scope=MemoryScope.TEAM, team_id="alpha", org_id="org-A", content="team info")
         await store.store(mem)
         results = await store.retrieve("team info", team_id="alpha", org_id="org-A")
         assert len(results) == 1
 
     async def test_reinforce_updates_weight(self) -> None:
-        store = InMemoryEpisodicStore()
+        store = InMemoryEpisodicStore(exposure_mode=MemoryExposureMode.AGENT_MANAGED)
         mem = _mem(tier=MemoryTier.OPINION, weight=0.4, agent_id="a1")
         await store.store(mem)
         await store.reinforce("m1", delta=0.1)

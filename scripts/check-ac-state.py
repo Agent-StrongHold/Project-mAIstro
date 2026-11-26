@@ -87,6 +87,28 @@ def _canonical_develop_pr_ci() -> bool:
     )
 
 
+def _canonical_topic_push_ci() -> bool:
+    """Whether this is a canonical-repo push to a topic (unprotected) branch.
+
+    A topic push carries the exact candidate a pull_request run already judges
+    with relaxed review slack, and the live merge queue serializes whatever
+    lands. Enforcing exact banking only on the push half of that pair made the
+    two runs of one head SHA disagree: the PR-event context went green while
+    the push-event context failed "unbanked improvement", and the required
+    rollup starved every armed merge queue entry (observed 2026-09-14: every
+    topic branch merged past an unbanked develop improvement went red on
+    push). Protected pushes keep their actual-parent regression path, and
+    local, fork, and synthetic callers stay conservative.
+    """
+    return (
+        _direct_front_door()
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("GITHUB_EVENT_NAME") == "push"
+        and os.environ.get("GITHUB_REPOSITORY") == _CANONICAL_REPOSITORY
+        and os.environ.get("GITHUB_REF") not in _PROTECTED_PUSH_REFS
+    )
+
+
 def _candidate_note_fold_weakening() -> list[str]:
     """Any way this worktree weakens trusted notes beyond an authorized correction.
 
@@ -113,7 +135,9 @@ def _review_slack_policy(improvements: list[str]) -> list[str]:
         return []
 
     event = os.environ.get("GITHUB_EVENT_NAME")
-    relaxes_slack = event == "merge_group" or _canonical_develop_pr_ci()
+    relaxes_slack = (
+        event == "merge_group" or _canonical_develop_pr_ci() or _canonical_topic_push_ci()
+    )
     if not relaxes_slack:
         return _ORIGINAL_SLACK_POLICY(improvements)
 
@@ -160,7 +184,11 @@ def _rewrite_relaxed_success(output: str) -> str:
 
 def _call_with_output_policy(callable_: Any, *args: Any, **kwargs: Any) -> Any:
     """Rewrite only the success wording on paths where slack may be informational."""
-    if os.environ.get("GITHUB_EVENT_NAME") != "merge_group" and not _canonical_develop_pr_ci():
+    if (
+        os.environ.get("GITHUB_EVENT_NAME") != "merge_group"
+        and not _canonical_develop_pr_ci()
+        and not _canonical_topic_push_ci()
+    ):
         return callable_(*args, **kwargs)
 
     captured = io.StringIO()

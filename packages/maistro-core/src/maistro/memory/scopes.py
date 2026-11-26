@@ -52,7 +52,10 @@ def matches_scope(
 
     for scope, value in filters:
         if scope == MemoryScope.GLOBAL and mem.scope == MemoryScope.GLOBAL:
-            if mem.org_id and caller_org and mem.org_id != caller_org:
+            # An org-bound global is not public: an absent caller org must not
+            # act as a wildcard. Only an unbound global (empty org_id) remains
+            # visible without tenant context.
+            if mem.org_id and mem.org_id != caller_org:
                 continue
             return True
         if mem.scope != scope:
@@ -99,12 +102,10 @@ def _clause(
     builds is column names and the literal scope names, both from this module.
     """
     if scope == MemoryScope.GLOBAL:
-        # `matches_scope`: a global memory carrying an org_id is visible only to
-        # that org. With no caller org there is nothing to compare against, so
-        # every global memory is visible -- which is what the Python rule does
-        # when `caller_org` is empty.
+        # `matches_scope`: an org-bound global requires the caller's matching
+        # org. With no caller org, only an unbound global is visible.
         if not caller_org:
-            return "(scope = 'global')"
+            return "(scope = 'global' AND org_id = '')"
         params.append(caller_org)
         return f"(scope = 'global' AND (org_id = '' OR org_id = {next(placeholders)}))"
     if scope == MemoryScope.TEAM:

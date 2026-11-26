@@ -41,7 +41,9 @@ from maistro.events.processing import (
     HandlerCaller,
     HandlerCallError,
     HTTPHandlerCaller,
+    ProcessedBatch,
     process_events,
+    process_events_batch,
 )
 from maistro.events.trigger_store import (
     InMemoryTriggerStore,
@@ -90,6 +92,7 @@ __all__ = [
     "InvocationStatus",
     "InvocationStore",
     "LoggedEvent",
+    "ProcessedBatch",
     "SqliteEventLog",
     "SqliteEventOutbox",
     "SqliteEventStore",
@@ -104,5 +107,6 @@ __all__ = [
     "get_event_bus",
     "pattern_matches",
     "process_events",
+    "process_events_batch",
     "reconstruct_persisted_event",
 ]
