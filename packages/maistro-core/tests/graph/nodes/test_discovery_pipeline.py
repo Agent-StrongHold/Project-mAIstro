@@ -138,14 +138,35 @@ def _with_transport(monkeypatch: pytest.MonkeyPatch, transport: _Transport) -> N
     monkeypatch.setattr(httpx, "AsyncClient", transport.client())
 
 
-_RSS = """<?xml version="1.0"?><rss version="2.0"><channel>
+_RSS_TEMPLATE = """<?xml version="1.0"?><rss version="2.0"><channel>
 <item><title>Carbon fiber tripod review</title><link>https://feeds.example.com/a</link>
 <guid>a1</guid><description>great legs for long lenses</description>
-<pubDate>Mon, 23 Nov 2026 10:00:00 GMT</pubDate></item>
+<pubDate>{fresh}</pubDate></item>
 <item><title>Stale item</title><link>https://feeds.example.com/b</link>
 <guid>b1</guid><description>old</description>
-<pubDate>Mon, 23 Nov 2025 10:00:00 GMT</pubDate></item>
+<pubDate>{stale}</pubDate></item>
 </channel></rss>"""
+
+
+def _rss_body() -> str:
+    """The module RSS fixture with dates relative to wall clock, not baked.
+
+    The staleness rule compares each entry's ``pubDate`` against now with a
+    72-hour default (``max_age_hours``), so a baked date silently rots: this
+    fixture's fresh entry (``Mon, 23 Nov 2026 10:00:00 GMT``) crossed that
+    line on 2026-11-26 10:00 GMT — minutes after a verification run had
+    collected the suite green — and the fetch dropped both entries as stale.
+    Same convention as the staleness test below: relative dates cannot rot.
+    """
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    fresh = format_datetime(datetime.now(UTC) - timedelta(hours=2))
+    stale = format_datetime(datetime.now(UTC) - timedelta(days=400))
+    return _RSS_TEMPLATE.format(fresh=fresh, stale=stale)
+
+
+_RSS = _rss_body()
 
 _ATOM = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
 <entry><id>x1</id><title>Atom entry</title><link href="https://feeds.example.com/x"/>
