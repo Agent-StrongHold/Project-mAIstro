@@ -54,6 +54,18 @@ class _RecordingSentinel:
         return GateResult(sanitized_text="sanitized")
 
 
+class _BlockingSentinel:
+    """A Sentinel that refuses the answer, the way a Warden strike does."""
+
+    def __init__(self, reason: str = "") -> None:
+        self._reason = reason
+
+    async def process_output(
+        self, tool_name: str, content: str, auth: Any, **kwargs: Any
+    ) -> GateResult:
+        return GateResult(sanitized_text="", blocked=True, block_reason=self._reason)
+
+
 class TestWhatReachesTheConductor:
     async def test_the_last_user_message_is_the_description(
         self, monkeypatch: pytest.MonkeyPatch
@@ -94,6 +106,27 @@ class TestWhatReachesTheConductor:
         # Final answers are not tool results: token optimization would cap
         # them at 4,000 characters and append a truncation marker.
         assert sentinel.call_kwargs == [{"compress_tool_result": False}]
+
+    async def test_a_caller_supplied_principal_is_not_replaced_at_the_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`auth=None` means anonymous — never absent. A caller that carries a
+        real principal must reach the output gate as itself, or the gate would
+        judge every authenticated turn against the anonymous account's strikes
+        and locks (#66: auth context cannot silently be absent on protected
+        paths — the inverse substitution is the same defect)."""
+        monkeypatch.setattr(
+            "maistro_server.conductor_agent.run_task",
+            AsyncMock(return_value=ConductorOutput(final_answer="ok", success=True)),
+        )
+        sentinel = _RecordingSentinel()
+        auth = object()  # any principal distinct from ANONYMOUS_AUTH
+
+        await ConductorAgent(warden=_RecordingWarden(), sentinel=sentinel).handle(
+            _messages(("user", "hi")), auth=auth
+        )
+
+        assert sentinel.calls == [("assistant_response", "ok", auth)]
 
     async def test_no_fixed_identity_stand_in_reaches_run_task(
         self, monkeypatch: pytest.MonkeyPatch
@@ -196,6 +229,46 @@ class TestWhatComesBack:
         response = await ConductorAgent().handle(_messages(("user", "hi")))
 
         assert response.content == "Task completed successfully."
+
+    async def test_a_blocked_final_answer_is_returned_blocked_not_answered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The output gate's verdict binds the client-facing answer (#66).
+
+        `run_task` completing is not authority to publish: when Sentinel blocks
+        the final answer, the caller gets the blocked marker — never the raw
+        text dressed up as a reply. This is the arc a clean run never takes,
+        and the one an un-gated fallback would silently drop."""
+        monkeypatch.setattr(
+            "maistro_server.conductor_agent.run_task",
+            AsyncMock(return_value=ConductorOutput(final_answer="leak", success=True)),
+        )
+
+        response = await ConductorAgent(
+            warden=_RecordingWarden(),
+            sentinel=_BlockingSentinel(reason="prompt injection in answer"),
+        ).handle(_messages(("user", "hi")))
+
+        assert response.blocked is True
+        assert response.block_reason == "prompt injection in answer"
+        assert "leak" not in response.content
+
+    async def test_a_block_without_a_reason_still_names_the_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty ``block_reason`` must not render as an unexplained refusal
+        the client cannot tell from a crash: the boundary names itself."""
+        monkeypatch.setattr(
+            "maistro_server.conductor_agent.run_task",
+            AsyncMock(return_value=ConductorOutput(final_answer="leak", success=True)),
+        )
+
+        response = await ConductorAgent(
+            warden=_RecordingWarden(), sentinel=_BlockingSentinel(reason="")
+        ).handle(_messages(("user", "hi")))
+
+        assert response.blocked is True
+        assert response.block_reason == "Final response blocked by Warden"
 
     async def test_a_provider_failure_is_raised_not_answered(
         self, monkeypatch: pytest.MonkeyPatch
