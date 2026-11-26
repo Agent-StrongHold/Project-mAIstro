@@ -264,6 +264,64 @@ class TestTheRequiredSet:
         assert "not present yet" in out
         assert names[0] in out
 
+    def test_a_paths_filtered_producer_absent_from_a_green_head_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Replay of the #2434 incident (head 0382be897c02, publisher run
+        44909375407). The PR changed only
+        `.github/workflows/{fleet-images,integration-scope,release}.yml` and
+        `tests/ci/integration-scope.test.cjs` -- none of mutation.yml's
+        `pull_request.paths` -- so mutation.yml never triggered, and the 80
+        check runs that did land on the head were all green with exactly one
+        required row absent. That shape must stay pending, never green and
+        never a hard failure: absence is not non-execution, and
+        `Mutation gate (changed critical lines)` is not in
+        PATH_SCOPED_CHECKS, so a measured PR scope cannot excuse it either.
+        The repair is trigger coverage, not evaluator leniency: the head
+        must eventually carry the row, which is why the repair PR carries a
+        `docs/testing/inventory-notes/**` file (the #2371 trigger path) so
+        the workflow runs and produces real zero-overlap evidence.
+        """
+        orphaned = "Mutation gate (changed critical lines)"
+        names = check.required_check_names(base_branch="develop", event_name="pull_request")
+        assert orphaned in names
+        runs = [_run(name) for name in names if name != orphaned]
+        envelope = _envelope(
+            tmp_path,
+            {
+                "measured": True,
+                "truncated": False,
+                "files": [
+                    ".github/workflows/fleet-images.yml",
+                    ".github/workflows/integration-scope.yml",
+                    ".github/workflows/release.yml",
+                    "tests/ci/integration-scope.test.cjs",
+                ],
+            },
+        )
+        argv = [
+            "--check-runs",
+            str(_payload(tmp_path, runs)),
+            "--require-complete",
+            "--base-branch",
+            "develop",
+            "--event-name",
+            "pull_request",
+            "--changed-files",
+            str(envelope),
+        ]
+        # The incident verdict: the publisher posted `pending` ("Required
+        # execution evidence is still arriving"), and the enqueue
+        # controller's gates-ran precondition stayed red ("commit status not
+        # successful") for as long as no producer could create the row.
+        assert check.main(argv) == check.PENDING_EXIT
+        assert orphaned in capsys.readouterr().out
+        # The repair condition: once the producer's trigger paths cover the
+        # PR, the identical head with the identical 80-run shape is green.
+        runs.append(_run(orphaned))
+        _payload(tmp_path, runs)  # rewrite the evidence file with the row present
+        assert check.main(argv) == 0
+
     def test_one_skipped_check_fails_the_real_contract(
         self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -899,3 +957,135 @@ class TestAttemptOrdering:
     ) -> None:
         assert check._supersedes(_run("a", conclusion="failure"), _run("a"))
         assert check._supersedes(_run("a"), _run("a", conclusion="failure"))
+
+
+class TestWorkflowPathFilteredProducers:
+    """A workflow-level `paths:` filter leaves no check run behind: GitHub
+    evaluates the filter before any job exists, so outside the filter the
+    producer is *absent*, not `skipped`. That absence stays pending -- never
+    excused, never a pass: the #2434 incident replay pins the verdict (a
+    green head with exactly the paths-filtered row absent must wait until
+    the producer's trigger scope covers the PR and the row lands). The
+    repair is trigger coverage, not evaluator leniency; the changed-file
+    envelope drives only the PATH_SCOPED_CHECKS skip rule."""
+
+    MUTATION_GATE = "Mutation gate (changed critical lines)"
+
+    @staticmethod
+    def _envelope(
+        tmp_path: Path, files: list[str], *, measured: bool = True, truncated: bool = False
+    ) -> Path:
+        path = tmp_path / "changed-files.json"
+        payload: dict[str, Any] = {"measured": measured, "truncated": truncated, "files": files}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _all_other_rows_green(self, check: ModuleType) -> list[dict[str, Any]]:
+        """Every required PR check except the mutation gate, ran and green."""
+        required = [
+            name
+            for name in check.required_check_names(base_branch="develop", event_name="pull_request")
+            if name != self.MUTATION_GATE
+        ]
+        return [_run(name, conclusion="success") for name in required]
+
+    def test_a_docs_only_envelope_keeps_the_absent_gate_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The #2434 shape end to end: every completed producer is green and
+        the mutation gate is absent because this PR's measured file set
+        cannot match its producer's `paths:` filter. The verdict is
+        PENDING (exit 2) -- absence is not non-execution, and a measured
+        scope cannot excuse a non-PATH_SCOPED producer."""
+        runs = self._all_other_rows_green(check)
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+                "--base-branch",
+                "develop",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(
+                    self._envelope(
+                        tmp_path, ["docs/a.md", ".cursor/context/note.md", "CHANGELOG.md"]
+                    )
+                ),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "PENDING: execution evidence is still arriving" in out
+        assert self.MUTATION_GATE in out
+
+    def test_with_the_row_present_the_identical_head_is_green(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The repair condition: once the producer's trigger paths cover the
+        PR and its zero-overlap row lands, the same head is green."""
+        runs = self._all_other_rows_green(check)
+        runs.append(_run(self.MUTATION_GATE, conclusion="success"))
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+                "--base-branch",
+                "develop",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(self._envelope(tmp_path, ["docs/a.md"])),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "ok:" in out
+
+    def test_an_in_scope_absence_is_pending_too(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The envelope never excuses what it proves reachable: a PR touching
+        packages/**/*.py with no mutation run is evidence still arriving."""
+        runs = self._all_other_rows_green(check)
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+                "--base-branch",
+                "develop",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(self._envelope(tmp_path, ["packages/maistro-core/src/x.py"])),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 2
+        assert self.MUTATION_GATE in out
+
+    def test_merge_groups_need_no_envelope_for_pr_only_producers(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        # A queue SHA carries no PR changed-file envelope; producers that
+        # cannot run there are removed from the required set itself
+        # (MERGE_GROUP_PR_ONLY_CHECKS), so no envelope is consulted.
+        names = check.required_check_names(base_branch="develop", event_name="merge_group")
+        assert self.MUTATION_GATE not in names
+        assert "pr-base" not in names
+        assert check.INTEGRATION_SCOPE_CHECK in names
+
+    def test_a_real_verdict_from_another_trigger_is_still_judged(self, check: ModuleType) -> None:
+        # A workflow_dispatch run on the same head produces a real verdict
+        # even for a PR whose envelope proves the paths filter cannot match;
+        # that verdict is evidence and must be judged, never dropped.
+        verdict = check.evaluate(
+            [self.MUTATION_GATE],
+            [_run(self.MUTATION_GATE, conclusion="failure")],
+            require_complete=True,
+        )
+        assert verdict.ran == [self.MUTATION_GATE]
+        assert verdict.ok is True

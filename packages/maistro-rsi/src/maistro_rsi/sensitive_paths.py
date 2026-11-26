@@ -123,6 +123,11 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # question: it makes a containment decision (Codex, #513).
     "maistro/config/settings.py",
     "maistro/tools/sandbox/",
+    # `maistro/sandbox/` — the canonical sandbox substrate (#76): selector,
+    # policy ladder, backends, fence, credential boundary — is already listed
+    # in the convergence-closure enumeration below; listing it twice here
+    # broke the uniqueness invariant pinned by
+    # TestItStaysASurfaceAndNotAWildcard.test_the_patterns_are_unique.
     # Opening a pull request is a promotion path: it is how a candidate's diff
     # leaves the sandbox and reaches human reviewers, and a change here can
     # decide which branch or repository receives it.
@@ -158,6 +163,20 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # half -- it decides which credential a Binding's effect actually uses.
     "maistro/capabilities/effect_context.py",
     "maistro/capabilities/credential_routing.py",
+    # The model-facing tool gate (#57). contracts.py admits every
+    # GovernedToolExecutor call -- Agent allowlist, host-owned schema,
+    # Binding re-resolution in the canonical store -- before the canonical
+    # Invocation; expected_effect.py defines the persisted prediction
+    # evidence and the canonical digest a later reviewer recomputes the
+    # comparison from; and the reversibility modules are the host-owned
+    # policy registry every tool's tier is resolved from as an admission
+    # fact. A candidate able to edit them can widen its own tool
+    # authorization, restate evidence, or downgrade an approval tier
+    # without touching any protected path above.
+    "maistro/capabilities/expected_effect.py",
+    "maistro/tools/contracts.py",
+    "maistro/tools/reversibility.py",
+    "maistro/tools/reversibility_registry.py",
     # The credential pool, store, router and the providers that fill them.
     # A directory pattern rather than five file patterns, for the reason this
     # file already gives for `maistro_rsi/`: a pattern cannot fall behind a
@@ -197,6 +216,71 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # itself. Matched at directory granularity: the whole package persists
     # depth state, so `executor.py` alone left its siblings uncovered.
     "maistro/graph/durable_runs/",
+    # --- the #552 canonical convergence surface -------------------------------
+    # Epic #552 wires the RSI promotion path through the canonical M1 execution
+    # and M3 work-source substrate: cycles admit as canonical Runs (runs/),
+    # execute on the Graph engine, are scoped to Projects (projects/), claim
+    # work through the generic backlog contracts (backlog/, workspaces/), gate
+    # kept promotions through the shared M4 contract (governance/), and
+    # journal into Workspace history. Reaching that substrate grows the
+    # derived promotion closure by exactly these modules, and a candidate that
+    # can edit the engine that evaluates and promotes it must escalate -- the
+    # question this gate derives. The personas scorer tier stays lazy for the
+    # same reason (its data/store tier is all the persona store needs), but
+    # the extension SDK facade stays EAGER on purpose: a lazy union made the
+    # tier modules statically unreachable, and the reachability ratchet's
+    # two-merge rule would need develop-side grants that do not exist. So the
+    # closure keeps the SDK and its sandbox substrate, and they escalate --
+    # which is the containment this epic asks for: the SDK is the host's
+    # authority/trust substrate (install, policy, quarantine, certification),
+    # and the sandbox is the isolated-execution boundary itself (#305). A
+    # candidate that can edit either is editing what contains or authorizes
+    # it.
+    "maistro/agents/circuit_breaker.py",
+    "maistro/agents/recipes/",
+    "maistro/archive/",
+    "maistro/backlog/",
+    "maistro/extensions/",
+    "maistro/governance/",
+    # The graph modules the convergence closure reaches, enumerated from the
+    # check-promotion-surface walk rather than as a `maistro/graph/` blanket:
+    # the ordinary node library stays OUTSIDE the escalation surface on
+    # purpose (TestSensitiveSurfaceCoverage pins `nodes/llm_summarize.py` as
+    # not sensitive), while the engine modules the promotion path imports
+    # (execution state, DAG registry/validation, harness dispatch, traversal
+    # commit, ...) escalate. A new graph module joining the closure fails the
+    # promotion-surface gate and joins this list as a decision, not silently.
+    "maistro/graph/__init__.py",
+    "maistro/graph/concurrency.py",
+    "maistro/graph/dag_registry.py",
+    "maistro/graph/dag_validator.py",
+    "maistro/graph/definitions.py",
+    "maistro/graph/events.py",
+    "maistro/graph/execution_state.py",
+    "maistro/graph/harness_executor.py",
+    "maistro/graph/harness_targets.py",
+    "maistro/graph/import_provenance.py",
+    "maistro/graph/node.py",
+    "maistro/graph/node_types.py",
+    "maistro/graph/nodes/__init__.py",
+    "maistro/graph/nodes/base.py",
+    "maistro/graph/nodes/capability_effect.py",
+    "maistro/graph/optimizer.py",
+    "maistro/graph/phases.py",
+    "maistro/graph/strategy.py",
+    "maistro/graph/template_adapter.py",
+    "maistro/graph/templates.py",
+    "maistro/graph/traversal_commit.py",
+    "maistro/graph/types.py",
+    "maistro/interop/",
+    "maistro/ontology/",
+    "maistro/personas/",
+    "maistro/projects/",
+    "maistro/runs/",
+    "maistro/runtime/",
+    "maistro/sandbox/",
+    "maistro/tasks/",
+    "maistro/workspaces/",
     # --- the Conductor's RSI containment, now that the gate can see it ------
     # `packages/*/src` never matched the Conductor's flat backend, so these were
     # invisible to the promotion-surface walk until #513 added that source root

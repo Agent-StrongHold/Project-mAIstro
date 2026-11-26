@@ -128,7 +128,12 @@ class _SpyStore:
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
-        self.calls = {"start_run": 0, "append_event": 0, "finish_run": 0}
+        self.calls = {
+            "start_run": 0,
+            "append_event": 0,
+            "finish_run": 0,
+            "record_status": 0,
+        }
 
     async def start_run(self, **kwargs: Any) -> Any:
         self.calls["start_run"] += 1
@@ -137,6 +142,10 @@ class _SpyStore:
     async def append_event(self, run_id: str, **kwargs: Any) -> Any:
         self.calls["append_event"] += 1
         return await self._inner.append_event(run_id, **kwargs)
+
+    async def record_status(self, run_id: str, **kwargs: Any) -> Any:
+        self.calls["record_status"] += 1
+        return await self._inner.record_status(run_id, **kwargs)
 
     async def finish_run(self, run_id: str, **kwargs: Any) -> Any:
         self.calls["finish_run"] += 1
@@ -177,12 +186,14 @@ async def test_writer_finishes_every_nonterminal_run_zero_times(
         spy, inner = await _record_with_spy(monkeypatch, _writer_result(run_id, status.value))
 
         assert spy.calls["finish_run"] == 0, status.value
+        assert spy.calls["record_status"] == 1, status.value
         assert spy.calls["start_run"] == 1, status.value
         assert spy.calls["append_event"] == 1, status.value
         row = inner.get_run(run_id)
         assert row is not None
         # The row stays open: no terminal metadata the canonical Run forbids.
         assert row["finished_at"] is None, status.value
+        assert row["status"] == status.value, status.value
 
 
 async def test_writer_still_finishes_a_terminal_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,6 +204,7 @@ async def test_writer_still_finishes_a_terminal_run(monkeypatch: pytest.MonkeyPa
     )
 
     assert spy.calls["finish_run"] == 1
+    assert spy.calls["record_status"] == 0
     row = inner.get_run("r-done")
     assert row is not None
     assert row["status"] == "completed"
@@ -213,7 +225,12 @@ async def test_writer_never_coerces_a_malformed_status_to_failed(
             monkeypatch, _writer_result("r-malformed", status_input)
         )
 
-    assert spy.calls == {"start_run": 0, "append_event": 0, "finish_run": 0}
+    assert spy.calls == {
+        "start_run": 0,
+        "append_event": 0,
+        "finish_run": 0,
+        "record_status": 0,
+    }
     assert inner.get_run("r-malformed") is None
     warnings = [r for r in caplog.records if "dag_run_projection_not_recorded" in r.message]
     assert warnings, "the malformed input must surface as the projection failure it is"

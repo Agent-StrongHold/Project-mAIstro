@@ -167,10 +167,10 @@ class _RsiService:
             raise
         except _dispatch.DispatchError as exc:
             run.status = "errored"
-            # Dispatch errors are composed server-side from exit codes and
-            # truncated docker stderr — no provider replies, no candidate
-            # output — so the operator-facing record can carry the reason.
-            run.last_error = str(exc)
+            # The run record is returned to the browser (CodeQL
+            # py/stack-trace-exposure). Docker exit text and truncated stderr
+            # stay in the server log; the public field names only the kind.
+            run.last_error = f"{type(exc).__name__}: run failed; see server logs"
             logger.warning("rsi run %s failed: %s", run.run_id, exc, exc_info=True)
         except Exception as exc:
             run.status = "errored"

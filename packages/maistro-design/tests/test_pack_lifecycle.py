@@ -23,7 +23,10 @@ without a second YAML file.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -36,6 +39,7 @@ from maistro_design.packs import (
     GoalRubricCatalog,
     InMemoryPackLifecycleStore,
     InvalidLifecycleOperation,
+    PackActivationRecord,
     PackConcurrentWriteConflict,
     PackConfigurationInvalid,
     PackId,
@@ -43,14 +47,17 @@ from maistro_design.packs import (
     PackLifecycleError,
     PackLifecycleService,
     PackLifecycleState,
+    PackManifestSnapshot,
     PackNotEnabled,
     PackRegistry,
     PackRegistryUpgradeUnavailable,
+    PackTransition,
     PackTransitionKind,
     PackUpgradeBlocked,
     PackUpgradePreflight,
     SnapshotIntegrityError,
     WorkspacePackConfiguration,
+    pack_from_snapshot,
     pack_graph_template,
     snapshot_pack,
 )
@@ -84,6 +91,21 @@ def _service(
 
 def _registry_with(pack: DomainPack) -> PackRegistry:
     return PackRegistry((pack,))
+
+
+def _thin_release_snapshot() -> PackManifestSnapshot:
+    """The exact bytes a pre-#985 (1.0.0) activation stored: the thin #793
+    shape — no `artifact_payload_kind`, no dimension weights/anchors — plus
+    the SHA-256 the 1.0.0 `snapshot_pack` recorded over them."""
+    body: dict[str, Any] = json.loads(PackRegistry.builtin().get(PackId.PRODUCT).model_dump_json())
+    body["version"] = "1.0.0"
+    del body["artifact_payload_kind"]
+    body["rubric_dimensions"] = [
+        {"dimension_id": d["dimension_id"], "name": d["name"], "description": d["description"]}
+        for d in body["rubric_dimensions"]
+    ]
+    encoded = json.dumps(body, sort_keys=True)
+    return PackManifestSnapshot(body=encoded, sha256=hashlib.sha256(encoded.encode()).hexdigest())
 
 
 def _release(
@@ -189,7 +211,7 @@ class TestConfigurationNeverMutatesGlobalIdentity:
         await service.configure_pack(
             WS_A,
             PackId.PRODUCT,
-            WorkspacePackConfiguration(rubric_dimension_ids=("clarity_of_offer",)),
+            WorkspacePackConfiguration(rubric_dimension_ids=("job",)),
             actor=ACTOR,
             reason="narrow the rubric",
         )
@@ -199,7 +221,7 @@ class TestConfigurationNeverMutatesGlobalIdentity:
         # And the override lives on the Workspace's record alone.
         a = (await service.record(WS_A, PackId.PRODUCT)).configuration
         b = (await service.record(WS_B, PackId.PRODUCT)).configuration
-        assert a.rubric_dimension_ids == ("clarity_of_offer",)
+        assert a.rubric_dimension_ids == ("job",)
         assert b == WorkspacePackConfiguration()
 
     @pytest.mark.contract("boundary")
@@ -246,20 +268,26 @@ class TestConfigurationNeverMutatesGlobalIdentity:
         await service.configure_pack(
             WS_A,
             PackId.PRODUCT,
-            WorkspacePackConfiguration(rubric_dimension_ids=("claim_evidence",)),
+            WorkspacePackConfiguration(rubric_dimension_ids=("metric",)),
             actor=ACTOR,
             reason="focus",
         )
         catalog = await service.instantiate_catalog(
             WS_A, PackId.PRODUCT, goal_id=GOAL_ID, goal_revision=1
         )
-        assert [dimension.dimension_id for dimension in catalog.dimensions] == ["claim_evidence"]
+        assert [dimension.dimension_id for dimension in catalog.dimensions] == ["metric"]
+        # A narrowed override is a partial judgment: the declared weight rides
+        # unchanged as provenance (no silent renormalization), while the pack's
+        # full defaults instantiate as the whole (weights summing to 1).
+        assert catalog.dimensions[0].weight == 0.20
+        assert catalog.weight_sum == 0.20
         unconfigured = (
             PackRegistry.builtin()
             .get(PackId.PRODUCT)
             .instantiate_rubric_catalog(goal_id=GOAL_ID, goal_revision=1)
         )
-        assert len(unconfigured.dimensions) == 3  # the pack defaults, unchanged
+        assert len(unconfigured.dimensions) == 6  # the pack defaults, unchanged
+        assert unconfigured.weight_sum == 1.0
 
 
 # --- AC-3: upgrades never rewrite historical revisions -----------------------
@@ -282,12 +310,12 @@ class TestUpgradePreservesHistoricalRevisions:
     @pytest.mark.scope("integration")
     async def test_upgrade_moves_only_the_record(self, activated: Any) -> None:
         service, template, catalog = activated
-        upgraded_registry = _registry_with(_release("1.1.0"))
+        upgraded_registry = _registry_with(_release("2.1.0"))
         moved = _service(store=service._store, registry=upgraded_registry)
         preflight = await moved.preflight_upgrade(WS_A, PackId.PRODUCT, authorized_backends=GRANTS)
         assert isinstance(preflight, PackUpgradePreflight)
         assert preflight.can_upgrade
-        assert (preflight.current_version, preflight.target_version) == ("1.0.0", "1.1.0")
+        assert (preflight.current_version, preflight.target_version) == ("2.0.0", "2.1.0")
         await moved.upgrade_pack(
             WS_A,
             PackId.PRODUCT,
@@ -296,7 +324,7 @@ class TestUpgradePreservesHistoricalRevisions:
             authorized_backends=GRANTS,
         )
         record = await service.record(WS_A, PackId.PRODUCT)
-        assert record is not None and record.version == "1.1.0"
+        assert record is not None and record.version == "2.1.0"
         # Historical objects are value objects minted earlier: untouched.
         assert (
             template.content_hash
@@ -305,17 +333,17 @@ class TestUpgradePreservesHistoricalRevisions:
             ).content_hash
         )
         assert isinstance(catalog, GoalRubricCatalog)
-        assert catalog.pack_version == "1.0.0"
+        assert catalog.pack_version == "2.0.0"
         assert catalog.goal_revision == 2
         # New use now materializes the release the Workspace upgraded to.
         new_template = await service.materialize_template(WS_A, PackId.PRODUCT)
-        assert new_template.metadata["pack_version"] == "1.1.0"
+        assert new_template.metadata["pack_version"] == "2.1.0"
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
     async def test_an_unupgraded_workspace_keeps_running_its_snapshot(self) -> None:
-        # WS_A activates at 1.0.0; the registry then moves to 1.1.0. WS_A has
-        # not upgraded, so its new use must still materialize 1.0.0 — the
+        # WS_A activates at 2.0.0; the registry then moves to 2.1.0. WS_A has
+        # not upgraded, so its new use must still materialize 2.0.0 — the
         # registry release cannot silently rewrite what a Workspace runs.
         store = InMemoryPackLifecycleStore()
         first = _service(store=store)
@@ -323,22 +351,22 @@ class TestUpgradePreservesHistoricalRevisions:
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
         )
         a_before = await first.materialize_template(WS_A, PackId.PRODUCT)
-        assert a_before.metadata["pack_version"] == "1.0.0"
+        assert a_before.metadata["pack_version"] == "2.0.0"
 
-        moved = _service(store=store, registry=_registry_with(_release("1.1.0")))
+        moved = _service(store=store, registry=_registry_with(_release("2.1.0")))
         a_after_registry_move = await moved.materialize_template(WS_A, PackId.PRODUCT)
-        assert a_after_registry_move.metadata["pack_version"] == "1.0.0"
+        assert a_after_registry_move.metadata["pack_version"] == "2.0.0"
         assert a_after_registry_move.content_hash == a_before.content_hash
         # WS_B activates *now*: fresh activations take the current registry
         # release, WS_A stays where it is until it upgrades.
         await moved.enable_pack(
             WS_B, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
         )
-        assert (await moved.record(WS_B, PackId.PRODUCT)).version == "1.1.0"
+        assert (await moved.record(WS_B, PackId.PRODUCT)).version == "2.1.0"
         b_template = await moved.materialize_template(WS_B, PackId.PRODUCT)
-        assert b_template.metadata["pack_version"] == "1.1.0"
+        assert b_template.metadata["pack_version"] == "2.1.0"
         # Downgrade the registry underneath both: nobody follows it silently.
-        downgraded = _service(store=store, registry=_registry_with(_release("0.9.0")))
+        downgraded = _service(store=store, registry=_registry_with(_release("1.9.0")))
         preflight = await downgraded.preflight_upgrade(
             WS_A, PackId.PRODUCT, authorized_backends=GRANTS
         )
@@ -347,7 +375,7 @@ class TestUpgradePreservesHistoricalRevisions:
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     async def test_upgrade_preflight_and_upgrade_refuse_without_a_record(self) -> None:
-        service = _service(registry=_registry_with(_release("1.1.0")))
+        service = _service(registry=_registry_with(_release("2.1.0")))
         preflight = await service.preflight_upgrade(
             WS_A, PackId.PRODUCT, authorized_backends=GRANTS
         )
@@ -359,7 +387,7 @@ class TestUpgradePreservesHistoricalRevisions:
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
     async def test_upgrade_preflight_refuses_a_tombstoned_activation(self) -> None:
-        service = _service(registry=_registry_with(_release("1.1.0")))
+        service = _service(registry=_registry_with(_release("2.1.0")))
         await service.enable_pack(
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
         )
@@ -387,7 +415,7 @@ class TestUpgradePreservesHistoricalRevisions:
         tampered_registry = _registry_with(
             PackRegistry.builtin()
             .get(PackId.PRODUCT)
-            .model_copy(update={"summary": "a different contract under 1.0.0"})
+            .model_copy(update={"summary": "a different contract under 2.0.0"})
         )
         conflicted = _service(store=service._store, registry=tampered_registry)
         with pytest.raises(PackIdentityConflict, match="changed content"):
@@ -446,16 +474,16 @@ class TestDisableAndRemoveBlockNewUseOnly:
                 PackRegistry.builtin().get(PackId.PRODUCT), workspace_id=WS_A
             ).content_hash
         )
-        assert catalog.pack_version == "1.0.0" and len(catalog.dimensions) == 3
+        assert catalog.pack_version == "2.0.0" and len(catalog.dimensions) == 6
         # Re-enable resumes the same release, not the registry's current one.
         registry_moves = _service(store=service._store, registry=_registry_with(_release("9.9.9")))
         resumed = await registry_moves.enable_pack(
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="back", authorized_backends=GRANTS
         )
-        assert resumed.version == "1.0.0"
+        assert resumed.version == "2.0.0"
         assert (await service.materialize_template(WS_A, PackId.PRODUCT)).metadata[
             "pack_version"
-        ] == "1.0.0"
+        ] == "2.0.0"
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
@@ -488,7 +516,7 @@ class TestDisableAndRemoveBlockNewUseOnly:
                 PackRegistry.builtin().get(PackId.PRODUCT), workspace_id=WS_A
             ).content_hash
         )
-        assert catalog.pack_version == "1.0.0"
+        assert catalog.pack_version == "2.0.0"
         # Removal is a tombstone, not a deletion: the trail survives.
         kinds = [t.kind for t in await service.transitions(WS_A, PackId.PRODUCT)]
         assert kinds == [
@@ -517,12 +545,12 @@ class TestDisableAndRemoveBlockNewUseOnly:
     async def test_reenable_after_removal_is_a_fresh_activation(self, activated: Any) -> None:
         service, _template, _catalog = activated
         await service.remove_pack(WS_A, PackId.PRODUCT, actor=ACTOR, reason="offboard")
-        registry_moves = _service(store=service._store, registry=_registry_with(_release("2.0.0")))
+        registry_moves = _service(store=service._store, registry=_registry_with(_release("3.0.0")))
         fresh = await registry_moves.enable_pack(
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="return", authorized_backends=GRANTS
         )
         # A post-removal activation takes the current registry release.
-        assert fresh.version == "2.0.0"
+        assert fresh.version == "3.0.0"
         assert fresh.activated_at == fresh.updated_at
         kinds = [t.kind for t in await registry_moves.transitions(WS_A, PackId.PRODUCT)]
         assert kinds[0] is PackTransitionKind.ENABLE and kinds[-1] is PackTransitionKind.ENABLE
@@ -563,7 +591,7 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
     async def test_upgrade_blocked_until_the_new_backend_is_authorized(self) -> None:
-        # 1.1.0 adds `media` to the product pack's dependency surface.
+        # 2.1.0 adds `media` to the product pack's dependency surface.
         store = InMemoryPackLifecycleStore()
         service = _service(store=store)
         await service.enable_pack(
@@ -571,7 +599,7 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
         )
         moved = _service(
             store=store,
-            registry=_registry_with(_release("1.1.0", add_backend=ExecuteBackend.MEDIA)),
+            registry=_registry_with(_release("2.1.0", add_backend=ExecuteBackend.MEDIA)),
         )
         preflight = await moved.preflight_upgrade(WS_A, PackId.PRODUCT, authorized_backends=GRANTS)
         assert not preflight.can_upgrade
@@ -582,7 +610,7 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
             await moved.upgrade_pack(
                 WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
             )
-        assert (await service.record(WS_A, PackId.PRODUCT)).version == "1.0.0"
+        assert (await service.record(WS_A, PackId.PRODUCT)).version == "2.0.0"
         # The Workspace grants the new backend; the upgrade now passes.
         await moved.upgrade_pack(
             WS_A,
@@ -591,7 +619,7 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
             reason="grant landed",
             authorized_backends={*GRANTS, ExecuteBackend.MEDIA},
         )
-        assert (await service.record(WS_A, PackId.PRODUCT)).version == "1.1.0"
+        assert (await service.record(WS_A, PackId.PRODUCT)).version == "2.1.0"
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
@@ -603,18 +631,18 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
         await service.configure_pack(
             WS_A,
             PackId.PRODUCT,
-            WorkspacePackConfiguration(rubric_dimension_ids=("channel_fit",)),
+            WorkspacePackConfiguration(rubric_dimension_ids=("surface",)),
             actor=ACTOR,
             reason="focus",
         )
         moved = _service(
             store=service._store,
-            registry=_registry_with(_release("1.1.0", drop_dimension="channel_fit")),
+            registry=_registry_with(_release("2.1.0", drop_dimension="surface")),
         )
         preflight = await moved.preflight_upgrade(WS_A, PackId.PRODUCT, authorized_backends=GRANTS)
-        assert preflight.dropped_rubric_dimensions == ("channel_fit",)
+        assert preflight.dropped_rubric_dimensions == ("surface",)
         assert not preflight.can_upgrade
-        with pytest.raises(PackUpgradeBlocked, match="channel_fit"):
+        with pytest.raises(PackUpgradeBlocked, match="surface"):
             await moved.upgrade_pack(
                 WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
             )
@@ -624,11 +652,11 @@ class TestUpgradeReevaluatesDependencyAndAuthority:
             PackId.PRODUCT,
             actor=ACTOR,
             reason="migrate config with the release",
-            configuration=WorkspacePackConfiguration(rubric_dimension_ids=("claim_evidence",)),
+            configuration=WorkspacePackConfiguration(rubric_dimension_ids=("metric",)),
             authorized_backends=GRANTS,
         )
-        assert upgraded.version == "1.1.0"
-        assert upgraded.configuration.rubric_dimension_ids == ("claim_evidence",)
+        assert upgraded.version == "2.1.0"
+        assert upgraded.configuration.rubric_dimension_ids == ("metric",)
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
@@ -776,7 +804,7 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
         await service.enable_pack(
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="r", authorized_backends=GRANTS
         )
-        moved = _service(store=service._store, registry=_registry_with(_release("1.1.0")))
+        moved = _service(store=service._store, registry=_registry_with(_release("2.1.0")))
         await moved.upgrade_pack(
             WS_A, PackId.PRODUCT, actor=ACTOR, reason="new release", authorized_backends=GRANTS
         )
@@ -789,8 +817,8 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
         ]
         upgrade_transition = trail[1]
         assert (upgrade_transition.from_version, upgrade_transition.to_version) == (
-            "1.0.0",
-            "1.1.0",
+            "2.0.0",
+            "2.1.0",
         )
         # Every row carries the full attribution the issue's audit criterion
         # names: actor, timestamps, states and versions.
@@ -854,6 +882,94 @@ class TestTransitionsAreAuditedAtomicAndRestartSafe:
             )
 
 
+# --- pre-2.0.0 snapshots deserialize (read-time migration) -------------------
+
+
+class TestLegacyThinSnapshotsStillDeserialize:
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_thin_snapshot_becomes_a_pack_with_derived_thickness(self) -> None:
+        pack = pack_from_snapshot(_thin_release_snapshot(), PackId.PRODUCT)
+        # The recorded release identity is preserved verbatim: migration
+        # derives the thick fields, it does not rewrite what was activated.
+        assert pack.version == "1.0.0"
+        assert pack.artifact_payload_kind in pack.artifact_kinds
+        from math import fsum
+
+        assert fsum(d.weight for d in pack.rubric_dimensions) == 1.0
+        for dimension in pack.rubric_dimensions:
+            assert dimension.low_anchor and dimension.high_anchor
+        # The dimension ids (and everything else thin) ride unchanged — a
+        # Workspace configuration that selected them still validates.
+        assert [d.dimension_id for d in pack.rubric_dimensions] == [
+            d.dimension_id for d in PackRegistry.builtin().get(PackId.PRODUCT).rubric_dimensions
+        ]
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_migrated_thin_pack_fails_closed_on_judged_emissions(self) -> None:
+        # A thin pack shipped no payload schema: deserializing it must not
+        # invent judging power. Emissions fail closed at the schema gate.
+        from maistro_design.packs import parse_pack_artifact
+
+        pack = pack_from_snapshot(_thin_release_snapshot(), PackId.PRODUCT)
+        with pytest.raises(Exception, match="no registered payload schema"):
+            parse_pack_artifact(
+                pack, artifact_kind=pack.artifact_payload_kind, payload={"anything": 1}
+            )
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_tampered_thin_evidence_is_refused_before_migration(self) -> None:
+        thin = _thin_release_snapshot()
+        tampered = PackManifestSnapshot(body=thin.body + " ", sha256=thin.sha256)
+        with pytest.raises(SnapshotIntegrityError, match="digest mismatch"):
+            pack_from_snapshot(tampered, PackId.PRODUCT)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    async def test_a_disabled_legacy_activation_reenables_from_its_snapshot(self) -> None:
+        # The re-enable path reads the stored manifest too: a Workspace that
+        # disabled its 1.0.0 pack must be able to turn it back on.
+        thin = _thin_release_snapshot()
+        now = datetime.now(UTC)
+        store = InMemoryPackLifecycleStore()
+        await store.commit(
+            PackActivationRecord(
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                state=PackLifecycleState.DISABLED,
+                version="1.0.0",
+                manifest=thin,
+                configuration=WorkspacePackConfiguration(),
+                enabled_by=ACTOR,
+                activated_at=now,
+                updated_at=now,
+            ),
+            PackTransition(
+                seq=1,
+                at=now,
+                kind=PackTransitionKind.DISABLE,
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                actor=ACTOR,
+                from_state=PackLifecycleState.ENABLED,
+                to_state=PackLifecycleState.DISABLED,
+                from_version="1.0.0",
+                to_version="1.0.0",
+                reason="paused at 1.0.0",
+            ),
+            expected=None,
+        )
+        service = _service(store=store)
+        await service.enable_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="resume", authorized_backends=GRANTS
+        )
+        record = await service.record(WS_A, PackId.PRODUCT)
+        assert record is not None and record.state is PackLifecycleState.ENABLED
+        assert record.version == "1.0.0"
+
+
 # --- contract edges ----------------------------------------------------------
 
 
@@ -891,6 +1007,62 @@ class TestLifecycleContractEdges:
             await service.configure_pack(
                 WS_A, PackId.PRODUCT, WorkspacePackConfiguration(), actor=ACTOR, reason="r"
             )
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    async def test_legacy_thin_snapshots_survive_upgrade_preflight_and_upgrade(self) -> None:
+        # A Workspace that activated a 1.0.0 pack before #985 stores a thin
+        # snapshot: no artifact_payload_kind, no dimension weights/anchors.
+        # Upgrade preflight deserializes that snapshot first, so without the
+        # read-time migration the upgrade itself would dead-end. This test
+        # seeds exactly that durable state and proves the sanctioned escape
+        # hatch — upgrade to the thick release — still works.
+        thin = _thin_release_snapshot()
+        now = datetime.now(UTC)
+        store = InMemoryPackLifecycleStore()
+        await store.commit(
+            PackActivationRecord(
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                state=PackLifecycleState.ENABLED,
+                version="1.0.0",
+                manifest=thin,
+                configuration=WorkspacePackConfiguration(),
+                enabled_by=ACTOR,
+                activated_at=now,
+                updated_at=now,
+            ),
+            PackTransition(
+                seq=1,
+                at=now,
+                kind=PackTransitionKind.ENABLE,
+                workspace_id=WS_A,
+                pack_id=PackId.PRODUCT,
+                actor=ACTOR,
+                from_state=PackLifecycleState.AVAILABLE,
+                to_state=PackLifecycleState.ENABLED,
+                from_version="",
+                to_version="1.0.0",
+                reason="onboard at 1.0.0",
+            ),
+            expected=None,
+        )
+        service = _service(store=store)
+        preflight = await service.preflight_upgrade(
+            WS_A, PackId.PRODUCT, authorized_backends=GRANTS
+        )
+        assert preflight.can_upgrade
+        assert (preflight.current_version, preflight.target_version) == ("1.0.0", "2.0.0")
+        await service.upgrade_pack(
+            WS_A, PackId.PRODUCT, actor=ACTOR, reason="move to thick", authorized_backends=GRANTS
+        )
+        record = await service.record(WS_A, PackId.PRODUCT)
+        assert record is not None and record.version == "2.0.0"
+        # The upgrade rewrote the snapshot onto a thick release: the stored
+        # evidence is now first-class, no longer riding the read-time shim.
+        assert "artifact_payload_kind" in json.loads(record.manifest.body)
+        upgraded_pack = pack_from_snapshot(record.manifest, PackId.PRODUCT)
+        assert upgraded_pack.version == "2.0.0"
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")

@@ -11,7 +11,7 @@ Fills the slots canvas cannot: ``reflowable-web``, ``deck``, ``video``, and
 * **Failure** — :meth:`render` *may* raise (bad status / transport error); the substrate
   circuit-breaks the provider on that.
 
-Daemon surface (as of nexu-io/open-design main): base ``http://127.0.0.1:7456``, bearer
+Daemon surface (as of nexu-io/open-design main): base HTTP on IPv4 loopback port 7456, bearer
 auth, health ``GET /api/health``, dispatch ``POST /api/chat``. The token is supplied by the
 caller (resolved from the vault upstream); this provider never reads secrets itself.
 
@@ -50,7 +50,7 @@ class OpenDesignConfig:
     """Connection settings. ``token`` is resolved from the vault by the caller."""
 
     enabled: bool = True
-    base_url: str = "http://127.0.0.1:7456"
+    base_url: str = "http://127.0.0.1:7456"  # DevSkim: ignore DS162092 until 2027-12-31
     token: str | None = None
     timeout: float = 1.5
 

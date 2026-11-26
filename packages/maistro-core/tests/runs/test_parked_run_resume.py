@@ -454,9 +454,18 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         initial_status=RunStatus.QUEUED,
         actor_principal_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
     )
-    # Leave room for a real PostgreSQL round trip while keeping the recovery
-    # window short enough to exercise the heartbeat and expiry boundary.
-    ttl = timedelta(seconds=0.5)
+    # The lease must outlive worst-case event-loop latency on a loaded,
+    # coverage-instrumented runner: the heartbeat ticks at ttl/3, and a
+    # first tick that lands after the expiry boundary is refused
+    # (`renew_attempt_lease` raises on a lapsed lease) and stops the
+    # heartbeat permanently — correct production behavior for a worker
+    # silent past its TTL, but here it reads as "never renewed" and fails
+    # the poll below (seen as a flaky "not renewed by the heartbeat" on
+    # the no-services coverage job, run 40142381555; reproduced locally by
+    # stalling the loop for 1s after resume with ttl=0.5s). 5s keeps the
+    # first tick ~1.7s, far inside the lease, while the recovery tick's
+    # explicit clock keeps the expiry boundary itself deterministic.
+    ttl = timedelta(seconds=5)
     executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
 
     parked = await executor.execute(run)
@@ -725,7 +734,7 @@ class TestWhatTheTickRefusesToTouch:
         assert resumable_pause(node_run, [failed], now=datetime.now(UTC)) is None
 
     async def test_a_run_whose_every_attempt_was_reclaimed_stays_parked(self) -> None:
-        """Looking past reclaimed Attempts can run out of Attempts.
+        """Looking past typed RECOVERED Attempts can run out of Attempts.
 
         Reading past a recovery artefact only works because a real pause was
         recorded before it. A NodeRun whose every physical try was reclaimed
@@ -733,20 +742,31 @@ class TestWhatTheTickRefusesToTouch:
         must stay parked rather than be resumed on an invented one.
         """
         from maistro.runs.consumption import resumable_pause
-        from maistro.runs.lifecycle import reclaimed_attempt_error
-        from maistro.runs.model import Attempt, NodeRun
+        from maistro.runs.lifecycle import reclaim_attempt
+        from maistro.runs.model import Attempt, ExecutionLease, NodeRun
 
         node_run = NodeRun(run_id="r", node_id="n1", ordinal=1, status=RunStatus.WAITING)
-        reclaimed = [
-            Attempt(
+        reclaimed = []
+        for ordinal in (1, 2):
+            running = Attempt(
                 node_run_id=node_run.node_run_id,
                 ordinal=ordinal,
-                status=AttemptStatus.CANCELLED,
-                error=reclaimed_attempt_error(f"worker-{ordinal}"),
-                finished_at=datetime.now(UTC),
+                status=AttemptStatus.RUNNING,
+                started_at=datetime.now(UTC),
             )
-            for ordinal in (1, 2)
-        ]
+            running = running.model_copy(
+                update={
+                    "execution_lease": ExecutionLease(
+                        attempt_id=running.attempt_id,
+                        node_run_id=running.node_run_id,
+                        lease_epoch=1,
+                        holder=f"worker-{ordinal}",
+                        issued_at=datetime.now(UTC) - timedelta(seconds=2),
+                        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                    )
+                }
+            )
+            reclaimed.append(reclaim_attempt(running, at=datetime.now(UTC)))
 
         assert resumable_pause(node_run, reclaimed, now=datetime.now(UTC)) is None
         assert resumable_pause(node_run, [], now=datetime.now(UTC)) is None
@@ -993,6 +1013,24 @@ class TestWhatCountsAsAReadablePause:
         assert (
             resumable_pause(
                 node_run, [self._elapsed_pause(node_run), cancelled], now=datetime.now(UTC)
+            )
+            is None
+        )
+
+    def test_spoofed_reclaim_error_text_is_not_looked_past(self) -> None:
+        """String-prefix reclaim evidence is not look-past authority (#232 P5a)."""
+        from maistro.runs.consumption import resumable_pause
+        from maistro.runs.lifecycle import reclaimed_attempt_error
+
+        node_run = self._parked_node_run()
+        spoofed = self._attempt(node_run, None, status=AttemptStatus.CANCELLED).model_copy(
+            update={"ordinal": 2, "error": reclaimed_attempt_error("worker-spoof")}
+        )
+        assert spoofed.cancellation_cause is None
+
+        assert (
+            resumable_pause(
+                node_run, [self._elapsed_pause(node_run), spoofed], now=datetime.now(UTC)
             )
             is None
         )
