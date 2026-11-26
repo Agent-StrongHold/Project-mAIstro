@@ -277,21 +277,38 @@ def test_provider_failure_detail_is_not_returned_to_the_caller(authed_client, mo
     assert secret not in response.text
 
 
-def test_cancelled_chat_terminalizes_canonical_evidence():
+def test_cancelled_chat_terminalizes_canonical_evidence(monkeypatch):
+    from ..execution import get_execution_plane
+    from ..state import get_state
 
     async def scenario() -> None:
         started = asyncio.Event()
+        prompts: list[str] = []
+        captures: list[dict[str, Any]] = []
 
-        class BlockingSession:
-            async def handle_message(self, _message: str) -> str:
+        async def provider(prompt: str, **_kwargs: Any) -> str:
+            prompts.append(prompt)
+            if len(prompts) == 1:
                 started.set()
                 await asyncio.Event().wait()
                 raise AssertionError("blocking chat should have been cancelled")
+            return "recovered reply"
 
-        plane = _new_execution_plane()
+        async def capture(**kwargs: Any) -> str:
+            captures.append(kwargs)
+            return "episode"
+
+        state = get_state()
+        monkeypatch.setattr(state.provider, "acomplete", provider)
+        monkeypatch.setattr(state.memory, "store_episode", capture)
+        plane = get_execution_plane()
+        workspace_id, project_id = await plane.scope_for("user")
+        session = state.new_chat_session(
+            user_id="user", workspace_id=workspace_id, project_id=project_id
+        )
         task = asyncio.create_task(
             plane.run_chat(
-                session=BlockingSession(),  # type: ignore[arg-type]
+                session=session,
                 user_id="user",
                 session_id="session",
                 message="hello",
@@ -310,6 +327,23 @@ def test_cancelled_chat_terminalizes_canonical_evidence():
         attempts = await plane.run_store.list_attempts(node_runs[0].node_run_id)
         assert len(attempts) == 1
         assert attempts[0].status is AttemptStatus.CANCELLED
+        assert session._history == []
+        assert captures == []
+
+        recovered = await plane.run_chat(
+            session=session,
+            user_id="user",
+            session_id="session",
+            message="recovered turn",
+        )
+        assert recovered.run.status is RunStatus.COMPLETED
+        assert recovered.run_id != cancelled[0].run_id
+        assert "hello" not in prompts[-1]
+        assert session._history == [
+            {"role": "user", "content": "recovered turn"},
+            {"role": "assistant", "content": "recovered reply"},
+        ]
+        assert len(captures) == 1
 
     _await(scenario())
 
