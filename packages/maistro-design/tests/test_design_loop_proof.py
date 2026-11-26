@@ -56,6 +56,26 @@ from maistro_design.proof import (
 
 WORKSPACE_ID = "ws-795-proof"
 
+#: The thick product catalog's dimension ids (M7-A9, #985), in manifest
+#: order — the full set the proof's Rubric revisions carry.
+_PRODUCT_DIMENSION_IDS = (
+    "job",
+    "metric",
+    "scope",
+    "surface",
+    "empty",
+    "authority",
+)
+#: The spec fields the presence-check dimensions read (everything but the
+#: planted ``authority`` dimension, which reads the claims' citations).
+_SPEC_FIELDS = {
+    "job": "Keep one hydration promise on a single-SKU store page",
+    "metrics": ["Return rate under 2% in the first 30 days"],
+    "surfaces": ["store"],
+    "non_goals": ["No marketplace listings", "No B2B pricing"],
+    "empty_state": "An empty store page renders the first-product guide",
+}
+
 
 @pytest.fixture(params=["memory", "sqlite"])
 async def proof_spine(request: pytest.FixtureRequest) -> Any:
@@ -101,7 +121,7 @@ class TestPlantedFailureIsDurableEvidence:
             proof.run_id,
             rubric_id=proof.rubric_id,
             rubric_revision=proof.rubric_revision_initial,
-            dimension_ids=[PLANTED_DIMENSION_ID, "clarity_of_offer", "channel_fit"],
+            dimension_ids=list(_PRODUCT_DIMENSION_IDS),
         )
         assert summary_v1.complete
         assert summary_v1.failed_dimensions == (PLANTED_DIMENSION_ID,)
@@ -129,7 +149,10 @@ class TestPlantedFailureIsDurableEvidence:
         )
         rubric_v1 = await rubrics.get_revision(proof.rubric_id, proof.rubric_revision_initial)
         assert rubric_v1 is not None
-        unevidenced = {"claims": [{"text": "c", "evidence": None}], "offer": "o", "channel": "c"}
+        unevidenced = {
+            "claims": [{"text": "c", "evidence": None}],
+            **_SPEC_FIELDS,
+        }
         scores = {s.dimension_id: s for s in score_artifact_against_rubric(unevidenced, rubric_v1)}
         assert scores[PLANTED_DIMENSION_ID].passed is False
         # An unevidenced artifact cites nothing: the empty pointer list is
@@ -141,8 +164,7 @@ class TestPlantedFailureIsDurableEvidence:
                 {"text": "c2", "evidence": "source:x#1"},
                 {"text": "c3", "evidence": "source:y#2"},
             ],
-            "offer": "o",
-            "channel": "c",
+            **_SPEC_FIELDS,
         }
         scores = {s.dimension_id: s for s in score_artifact_against_rubric(evidenced, rubric_v1)}
         assert scores[PLANTED_DIMENSION_ID].passed is True
@@ -152,8 +174,8 @@ class TestPlantedFailureIsDurableEvidence:
             "source:x#1",
             "source:y#2",
         ]
-        assert scores["clarity_of_offer"].evidence_pointers == []
-        assert scores["channel_fit"].evidence_pointers == []
+        assert scores["job"].evidence_pointers == []
+        assert scores["surface"].evidence_pointers == []
 
 
 @pytest.mark.asyncio
@@ -208,8 +230,8 @@ class TestFenceCycleIsCanonical:
         assert reread_run is not None
         assert reread_run.status is RunStatus.COMPLETED
         scores = await run_store.list_eval_scores(proof.run_id)
-        # Three dimensions at v1 (one failing) + three passing at v2.
-        assert len(scores) == 6
+        # Six dimensions at v1 (one failing) + six passing at v2.
+        assert len(scores) == 12
         v1_failed = [s for s in scores if s.rubric_revision == 1 and not s.passed]
         assert [s.dimension_id for s in v1_failed] == [PLANTED_DIMENSION_ID]
         assert await rubrics.get_revision(proof.rubric_id, 1) is not None
@@ -247,7 +269,7 @@ class TestRefineAttemptsAndAcceptance:
         assert len(failed_records) == 1
         assert failed_records[0].attempt_id == evaluate.attempts[0].attempt_id
         winning = [s for s in proof.lineage.eval_scores if s.attempt_id == proof.re_eval_attempt_id]
-        assert len(winning) == 3
+        assert len(winning) == 6
         assert all(s.passed for s in winning)
         assert all(s.rubric_revision == proof.rubric_revision_redirected for s in winning)
         # The passing claim_evidence record cites the exact repair citation,
@@ -442,31 +464,65 @@ def _proof_rubric(rubrics: RubricStore, goals: Any, project_id: str) -> Any:
 @pytest.mark.contract("behavioral")
 class TestScorerDegeneratePaths:
     async def test_missing_prose_fields_fail_with_their_reasons(self, proof_spine: Any) -> None:
-        """An artifact with evidenced claims but no offer/channel fails exactly
-        the two prose dimensions — and only them."""
+        """An artifact with evidenced claims but a bare spec fails exactly the
+        five presence dimensions — and only them."""
         _run_store, rubrics, goals, project_id = proof_spine
         rubric = await _proof_rubric(rubrics, goals, project_id)
         artifact = {"claims": [{"text": "c", "evidence": "source:x#1"}]}
         verdicts = {s.dimension_id: s for s in score_artifact_against_rubric(artifact, rubric)}
         assert verdicts[PLANTED_DIMENSION_ID].passed is True
-        assert verdicts["clarity_of_offer"].passed is False
-        assert verdicts["clarity_of_offer"].detail["reasons"] == [
-            "no offer statement on the artifact"
-        ]
-        assert verdicts["channel_fit"].passed is False
-        assert verdicts["channel_fit"].detail["reasons"] == ["no channel named on the artifact"]
+        assert verdicts["job"].passed is False
+        assert verdicts["job"].detail["reasons"] == ["no job statement on the artifact"]
+        assert verdicts["metric"].passed is False
+        assert verdicts["metric"].detail["reasons"] == ["no success metric on the artifact"]
+        assert verdicts["scope"].passed is False
+        assert verdicts["scope"].detail["reasons"] == ["no non-goal fence on the artifact"]
+        assert verdicts["surface"].passed is False
+        assert verdicts["surface"].detail["reasons"] == ["no surface named on the artifact"]
+        assert verdicts["empty"].passed is False
+        assert verdicts["empty"].detail["reasons"] == ["no empty/error state on the artifact"]
 
     async def test_planted_dimension_fails_when_there_are_no_claims(self, proof_spine: Any) -> None:
-        """A claim-free artifact cannot pass the evidence dimension by
+        """A claim-free artifact cannot pass the authority dimension by
         vacuity: ``no claims to evaluate`` is a failure, not a pass."""
         _run_store, rubrics, goals, project_id = proof_spine
         rubric = await _proof_rubric(rubrics, goals, project_id)
-        artifact = {"claims": [], "offer": "o", "channel": "c"}
+        artifact = {"claims": [], **_SPEC_FIELDS}
         verdicts = {s.dimension_id: s for s in score_artifact_against_rubric(artifact, rubric)}
         assert verdicts[PLANTED_DIMENSION_ID].passed is False
         assert verdicts[PLANTED_DIMENSION_ID].detail["reasons"] == ["no claims to evaluate"]
-        assert verdicts["clarity_of_offer"].passed is True
-        assert verdicts["channel_fit"].passed is True
+        assert verdicts["job"].passed is True
+        assert verdicts["surface"].passed is True
+
+    async def test_raw_scores_sit_on_the_declared_anchor_scale(self, proof_spine: Any) -> None:
+        """The declared 1-5 anchor scale is what the scorer records: a pass
+        is the high anchor, a fail the low anchor — never a synthetic value
+        outside the range the manifest names."""
+        _run_store, rubrics, goals, project_id = proof_spine
+        rubric = await _proof_rubric(rubrics, goals, project_id)
+        evidenced = {"claims": [{"text": "c", "evidence": "source:x#1"}], **_SPEC_FIELDS}
+        scores = score_artifact_against_rubric(evidenced, rubric)
+        assert all(s.raw_score == 5.0 for s in scores)
+        assert all(s.passed for s in scores)
+        failing = score_artifact_against_rubric({"claims": []}, rubric)
+        assert all(s.raw_score == 1.0 and not s.passed for s in failing)
+
+    async def test_rubric_projection_carries_the_manifest_thickness(self, proof_spine: Any) -> None:
+        """The ontology projection keeps the thick catalog's weights, anchors,
+        and declared method — the judgment a Goal instantiates is the pack's
+        own, not a flattened name list."""
+        from maistro.ontology.rubric import NumericScale, ScoringMethod
+
+        _run_store, rubrics, goals, project_id = proof_spine
+        rubric = await _proof_rubric(rubrics, goals, project_id)
+        assert [d.id for d in rubric.dimensions] == list(_PRODUCT_DIMENSION_IDS)
+        assert [d.weight for d in rubric.dimensions] == [0.22, 0.20, 0.18, 0.16, 0.12, 0.12]
+        for dimension in rubric.dimensions:
+            assert dimension.method is ScoringMethod.MODEL_JUDGE
+            scale = dimension.scale.numeric
+            assert scale is not None and (scale.min_value, scale.max_value) == (1.0, 5.0)
+        assert isinstance(rubric.dimensions[0].scale.numeric, NumericScale)
+        assert rubric.dimensions[_PRODUCT_DIMENSION_IDS.index("authority")].evidence_required
 
     async def test_refine_preserves_an_existing_citation(self) -> None:
         """The refine repair adds evidence where it is missing and never
