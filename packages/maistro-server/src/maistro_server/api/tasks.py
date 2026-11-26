@@ -22,7 +22,7 @@ from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.delegation import resolve_delegated_identity
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.principal import Principal
 from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, TaskCreatedResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 TASK_CONCURRENCY_RETRY_AFTER_S = CHAT_TURN_RETRY_AFTER_S
 
 
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
+def _owner_id(auth: Principal | None) -> str:
     """Compatibility view of the non-delegated effective owner."""
     return "dev" if auth is None else auth.user_id
 
