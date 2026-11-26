@@ -56,9 +56,15 @@ def tool_fingerprint() -> str:
     """Hash the mutation toolchain so cached results cannot survive an upgrade."""
     import importlib.metadata as metadata
 
+    from cosmic_ray.plugins import operator_names
+
     parts = []
     for package in ("cosmic-ray", "pytest", "coverage", "pytest-timeout"):
         parts.append(f"{package}={metadata.version(package)}")
+    # The registered operator set changes the enumerated mutant set, so it is
+    # part of the fingerprint: a result cached before an operator landed must
+    # not be accepted for a session that now produces different mutants.
+    parts.append("operators=" + ",".join(sorted(operator_names())))
     digest = hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()
     return f"sha256:{digest}"
 

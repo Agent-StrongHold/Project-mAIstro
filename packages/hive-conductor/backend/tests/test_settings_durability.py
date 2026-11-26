@@ -758,10 +758,10 @@ def test_setup_returns_503_rather_than_completing_without_durable_settings(
     # overlap visible: any later suite asserting on those logins inherited
     # the clobbered credentials whenever this file ran first).
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.model_store import ModelStore
 
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
     settings_store.reset(store=_DroppingStore())
     try:
         with pytest.raises(HTTPException) as caught:
@@ -793,10 +793,10 @@ def test_setup_refuses_a_default_model_carrying_credential_material(
     # Same isolation as the 503 test above: the refusal under test happens
     # after the accounts are created.
     import stores
-    from models.schemas import HiveUser
+    from models.schemas import HiveAccount
     from services.model_store import ModelStore
 
-    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveAccount))
     settings_store.reset(store=_RecordingStore())
     try:
         with pytest.raises(HTTPException) as caught:
