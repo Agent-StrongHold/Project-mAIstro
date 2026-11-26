@@ -534,7 +534,7 @@ def _live_ruleset(
     include: tuple[str, ...] = ("~DEFAULT_BRANCH",),
     strict: bool | None = True,
     queue: dict | None = None,
-    state: str = "active",
+    enforcement: str = "active",
 ) -> dict:
     """A ruleset payload shaped like the live API returns it (2026-11-26 read)."""
     parameters: dict = {
@@ -548,7 +548,7 @@ def _live_ruleset(
     return {
         "id": rs_id,
         "name": f"ruleset-{rs_id}",
-        "state": state,
+        "enforcement": enforcement,
         "conditions": {"ref_name": {"include": list(include), "exclude": []}},
         "rules": rules,
     }
@@ -625,15 +625,25 @@ class TestRulesetSurfaceReading:
 
     def test_exclude_outranks_include(self, gate):
         ruleset = {
-            "state": "active",
+            "enforcement": "active",
             "conditions": {"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/main"]}},
         }
         assert gate._governs(ruleset, "develop", "develop")
         assert not gate._governs(ruleset, "main", "develop")
 
     def test_a_disabled_ruleset_governs_nothing(self, gate):
+        ruleset = _live_ruleset(1, ["test"], enforcement="disabled")
+        assert not gate._governs(ruleset, "develop", "develop")
+
+    def test_an_evaluate_mode_ruleset_governs_nothing(self, gate):
+        """`evaluate` shapes but enforces nothing, so it must not contribute
+        required contexts to verification or the apply freeze guard."""
+        ruleset = _live_ruleset(1, ["test"], enforcement="evaluate")
+        assert not gate._governs(ruleset, "develop", "develop")
+
+    def test_a_ruleset_without_enforcement_governs_nothing(self, gate):
         ruleset = _live_ruleset(1, ["test"])
-        ruleset["state"] = "disabled"
+        del ruleset["enforcement"]
         assert not gate._governs(ruleset, "develop", "develop")
 
     def test_contexts_and_strict_are_read_from_the_rule(self, gate):

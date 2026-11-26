@@ -372,13 +372,16 @@ def _refs_match(refs: list[str] | set[str], branch: str, default_branch: str) ->
 
 
 def _governs(ruleset: dict[str, Any], branch: str, default_branch: str) -> bool:
-    """Whether an active ruleset's conditions target `branch`.
+    """Whether an enforced ruleset's conditions target `branch`.
 
     GitHub's rule: some `include` entry must match and no `exclude` entry may.
     The live API returns `conditions` as a single `ref_name` object; an older
-    list-of-conditions shape is tolerated rather than trusted.
+    list-of-conditions shape is tolerated rather than trusted. Enforcement is
+    carried by `enforcement` — `disabled`, `active`, or `evaluate` — and only
+    `active` rulesets bind: a disabled or evaluate-mode ruleset must not
+    contribute contexts to verification or the `--apply` freeze guard.
     """
-    if ruleset.get("state", "active") == "disabled":
+    if ruleset.get("enforcement") != "active":
         return False
     conditions = ruleset.get("conditions") or {}
     ref_name: dict[str, Any] = {}
