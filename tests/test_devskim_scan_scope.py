@@ -49,6 +49,13 @@ SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".sh", ".jinja", ".java"
 # assertions are unchanged.
 @cache
 def _scanner_step() -> dict[str, object]:
+    # Parsed once per process, not once per classified file: the sweep below
+    # calls `_is_scanned` for every shipped source (~1.6k files), and a
+    # per-file `yaml.safe_load` of this workflow pushed the sweep past the
+    # 30s pytest-timeout budget of the coverage-gate root producer on hosted
+    # runners (run 40400026640, job 121853711206). Parsing is read-only and
+    # the result is never mutated, so caching cannot change what any test
+    # here observes.
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["lint"]["steps"]
     scanner = [s for s in steps if str(s.get("uses", "")).startswith("microsoft/DevSkim-Action")]
@@ -76,6 +83,9 @@ def _include_globs() -> list[str]:
 @cache
 def _as_regex(glob: str) -> re.Pattern[str]:
     """A DevSkim ignore glob as a regex over a repo-relative POSIX path.
+
+    Compiled once per distinct glob: the sweep matches every shipped source
+    against the whole glob list, and recompiling per file is pure waste.
 
     Written out rather than borrowed from `fnmatch`, whose `*` crosses `/` and
     would make every pattern here look broader than it is.
@@ -196,6 +206,38 @@ def test_no_shipped_source_file_is_excluded_from_the_scan() -> None:
     assert excluded == [], (
         "include/ignore configuration removes shipped code from the DevSkim scan:\n  "
         + "\n  ".join(excluded)
+    )
+
+
+def test_the_sweep_does_not_reparse_the_workflow_per_source_file(monkeypatch) -> None:
+    """The sweep's cost must not scale with workflow re-parses.
+
+    Classification used to re-read and re-parse ``devskim.yml`` for every
+    shipped source file; on the hosted runner that pushed this test past the
+    30s ``pytest-timeout`` budget of the coverage-gate root producer
+    (``coverage run … -m pytest tests/ --timeout=30``, run 40400026640), red
+    an otherwise green gate, and failed coverage for a PR whose own change
+    was a workflow condition. Pinned structurally — a count of
+    ``yaml.safe_load`` calls across a full sweep — rather than by
+    wall-clock, so the assertion does not encode one machine's speed.
+    """
+    loads = {"count": 0}
+    real_safe_load = yaml.safe_load
+
+    def counting_safe_load(*args: object, **kwargs: object) -> object:
+        loads["count"] += 1
+        return real_safe_load(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(yaml, "safe_load", counting_safe_load)
+    sources = _shipped_sources()
+    assert sources, "found no shipped sources — the tree layout changed, fix SHIPPED_TREES"
+    for rel in sources:
+        _is_scanned(rel)
+    # A cold cache parses the workflow exactly once; a warm cache (any other
+    # test in this module ran first) needs zero. Anything per-file fails hard.
+    assert loads["count"] <= 1, (
+        f"the sweep parsed the workflow {loads['count']} times "
+        f"for {len(sources)} shipped sources — classification is O(files) YAML parses again"
     )
 
 
