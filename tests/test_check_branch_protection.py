@@ -509,3 +509,254 @@ class TestGeneratedTables:
         out = capsys.readouterr().out
         assert "does not hang together" in out
         assert "--update-doc" in out
+
+
+# --- #85: the declared policy, the generated document and GitHub compared ----
+
+
+def _live_view(
+    contexts,
+    *,
+    approvals=0,
+    stale=True,
+    methods=("squash", "rebase"),
+    rules=("creation", "deletion", "non_fast_forward", "required_linear_history"),
+):
+    """A ruleset read-back in the shape `normalize_ruleset` produces."""
+    return {
+        "id": 1,
+        "name": "Pr merge",
+        "enforcement": "active",
+        "target": "refs/heads/develop",
+        "required_status_checks": {"strict": True, "contexts": sorted(contexts)},
+        "required_approving_review_count": approvals,
+        "dismiss_stale_reviews_on_push": stale,
+        "require_code_owner_review": False,
+        "require_last_push_approval": False,
+        "required_review_thread_resolution": True,
+        "allowed_merge_methods": sorted(methods),
+        "rules": sorted(rules),
+        "merge_queue": None,
+        "bypass": [{"actor_type": "OrganizationAdmin", "bypass_mode": "always"}],
+    }
+
+
+def _policy(develop=("test",), main=("test",), *, additional=None):
+    """A declared policy in the shape `drift` reads."""
+
+    def branch(contexts, approvals):
+        return {
+            "required_status_checks": {"strict": True, "contexts": sorted(contexts)},
+            "required_pull_request_reviews": {
+                "required_approving_review_count": approvals,
+                "dismiss_stale_reviews": True,
+                "require_code_owner_reviews": False,
+                "require_last_push_approval": False,
+            },
+            "required_conversation_resolution": True,
+            "required_linear_history": True,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+            "block_creations": True,
+            "ruleset": {
+                "allowed_merge_methods": ["squash", "rebase"],
+                "bypass": {"OrganizationAdmin": "always"},
+                "additional_required_checks": list(additional or []),
+            },
+        }
+
+    return {
+        "branches": {
+            "develop": branch(develop, 0),
+            "main": branch(main, 1),
+        }
+    }
+
+
+def _snapshot(develop=("test",), main=("test",), **overrides):
+    snap = {
+        "read_at": "2026-11-25T00:00:00Z",
+        "repo": "Agent-StrongHold/Project-mAIstro",
+        "default_branch": "develop",
+        "rulesets": {
+            "develop": _live_view(develop),
+            "main": _live_view(main, approvals=1),
+        },
+        "classic_protection": {"develop": None, "main": None},
+    }
+    snap["rulesets"]["main"]["target"] = "refs/heads/main"
+    snap.update(overrides)
+    return snap
+
+
+@pytest.fixture
+def no_live_queue(gate, monkeypatch, tmp_path):
+    """Synthetic branch policies do not declare the repository's real queue."""
+    monkeypatch.setattr(gate, "MERGE_QUEUE", tmp_path / "absent-queue.json")
+
+
+@pytest.mark.usefixtures("no_live_queue")
+class TestTheLiveReadBack:
+    """#85: the boundary GitHub enforces is compared, and drift is red.
+
+    The three offline rules compare the policy with the workflows; nothing
+    compared the policy with GitHub, which is the only side that decides what
+    actually merges. Each test below drives one divergence to a failure line
+    and asserts on the diagnosis, because the line is what a human has to act
+    on — and, once recorded, what `known_live_drift` has to match exactly.
+    """
+
+    def test_a_matching_read_back_reports_no_drift(self, gate) -> None:
+        rows = [("CI", "test", "every PR")]
+        assert gate.drift(_policy(), _snapshot(), rows) == []
+        assert gate.drift_problems(_policy(), _snapshot(), rows) == []
+
+    def test_a_check_required_live_but_not_declared_is_reported(self, gate) -> None:
+        rows = [("CI", "test", "every PR"), ("CI", "docker-build", "every PR")]
+        snap = _snapshot(develop=("test", "docker-build"))
+        lines = gate.drift(_policy(), snap, rows)
+        assert any(
+            "the live ruleset requires but the policy does not declare" in line
+            and "docker-build" in line
+            for line in lines
+        )
+
+    def test_a_check_declared_but_not_required_live_is_reported(self, gate) -> None:
+        """The enforcement gap: a gate the contract says blocks which GitHub
+        does not require. Reporting it is the whole point of the comparison."""
+        rows = [("CI", "test", "every PR"), ("CI", "cross-product-parity", "every PR")]
+        policy = _policy(develop=("test", "cross-product-parity"))
+        lines = gate.drift(policy, _snapshot(), rows)
+        assert any(
+            "the policy declares but the live ruleset does not require" in line
+            and "cross-product-parity" in line
+            for line in lines
+        )
+
+    def test_a_live_required_check_no_workflow_produces_is_reported(self, gate) -> None:
+        """A required context with no producer is a permanent `Expected` —
+        the branch it guards can never be merged to."""
+        rows = [("CI", "test", "every PR")]
+        snap = _snapshot(main=("test", "ghost-check"))
+        lines = gate.drift(_policy(main=("test",)), snap, rows)
+        assert any(
+            "'ghost-check', which no workflow in this repository produces" in line for line in lines
+        )
+
+    def test_a_ruleset_only_check_is_not_called_unproduced(self, gate) -> None:
+        """`additional_required_checks` is the policy's declaration that a
+        context is published outside the PR job graph; counting it as missing
+        would fail every workflow_run publisher the policy already knows."""
+        rows = [("CI", "test", "every PR")]
+        policy = _policy(additional=["gates-ran"])
+        snap = _snapshot(main=("test", "gates-ran"))
+        lines = gate.drift(policy, snap, rows)
+        assert not any("which no workflow" in line for line in lines)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "diagnosis"),
+        [
+            ("enforcement", "disabled", "not active"),
+            ("enforcement", "evaluate", "not active"),
+            ("target", "refs/heads/other", "does not cover"),
+            ("required_approving_review_count", 0, "required_approving_review_count"),
+            ("dismiss_stale_reviews_on_push", False, "dismiss_stale_reviews"),
+            ("require_code_owner_review", True, "require_code_owner_reviews"),
+            ("require_last_push_approval", True, "require_last_push_approval"),
+        ],
+    )
+    def test_boundary_drift_is_red(self, gate, monkeypatch, field, value, diagnosis):
+        monkeypatch.setattr(gate, "MERGE_QUEUE", Path("/nonexistent-issue85-queue"))
+        snap = _snapshot()
+        snap["rulesets"]["main"][field] = value
+        monkeypatch.setattr(gate, "fetch_live", lambda _token: snap)
+        monkeypatch.setattr(gate, "load_snapshot", lambda: snap)
+        lines = gate.verify_live(_policy(), "test-token", [("CI", "test", "every PR")])
+        assert any(diagnosis in line for line in lines)
+
+    def test_strict_checks_cannot_be_disabled_silently(self, gate):
+        snap = _snapshot()
+        snap["rulesets"]["develop"]["required_status_checks"]["strict"] = False
+        assert any(
+            "required_status_checks.strict" in line for line in gate.drift(_policy(), snap, [])
+        )
+
+    def test_documenting_drift_does_not_authorize_live_mismatch(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "MERGE_QUEUE", Path("/nonexistent-issue85-queue"))
+        policy = _policy()
+        snap = _snapshot(develop=())
+        rows = [("CI", "test", "every PR")]
+        policy["known_live_drift"] = {
+            line: {"reason": "documented enforcement gap", "owner": "maintainer"}
+            for line in gate.drift(policy, snap, rows)
+        }
+        assert gate.drift_problems(policy, snap, rows) == []
+        monkeypatch.setattr(gate, "fetch_live", lambda _token: snap)
+        monkeypatch.setattr(gate, "load_snapshot", lambda: snap)
+        assert any(
+            "does not require: test" in line for line in gate.verify_live(policy, "token", rows)
+        )
+        monkeypatch.setenv("GH_TOKEN", "test-token")
+        assert gate.verify(policy, rows) == 1
+
+    def test_explicit_verification_without_credentials_fails(self, gate, monkeypatch):
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        assert gate.verify(_policy(), []) == 1
+
+    def test_default_branch_change_invalidates_read_back(self, gate):
+        assert gate.snapshot_staleness(_snapshot(), _snapshot(default_branch="main"))
+
+    def test_live_document_drift_reaches_nonzero_exit(self, gate, tmp_path, monkeypatch):
+        doc = tmp_path / "BRANCH-PROTECTION.md"
+        doc.write_text(gate.DOC.read_text().replace("| **31** |", "| **999** |", 1))
+        assert "**999**" in doc.read_text(), "mutation must change the live table"
+        monkeypatch.setattr(gate, "DOC", doc)
+        assert gate.main([]) == 1
+
+    def test_refresh_and_verify_use_read_only_api_and_preserve_errors(self, gate, monkeypatch):
+        import urllib.error
+
+        responses = {
+            "": {"default_branch": "develop"},
+            "/rulesets?per_page=100": [],
+            "/branches/develop/protection": urllib.error.HTTPError(
+                "url", 403, "Forbidden", {}, None
+            ),
+        }
+
+        def get(url, _token):
+            response = responses[url.split(gate.REPO, 1)[1]]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        monkeypatch.setattr(gate, "_get", get)
+        lines = gate.verify_live(_policy(), "token", [])
+        assert lines == ["FAIL: reading the live rulesets failed: HTTP 403"]
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            {"include": ["refs/heads/main", "refs/heads/develop"]},
+            {"include": ["~ALL"], "exclude": ["refs/heads/main"]},
+        ],
+    )
+    def test_unsupported_selectors_fail_closed(self, gate, selector):
+        with pytest.raises(ValueError, match="unsupported ref selectors"):
+            gate.normalize_ruleset({"conditions": {"ref_name": selector}})
+
+    def test_overlapping_rulesets_fail_closed(self, gate, monkeypatch):
+        def get(url, _token):
+            if url.endswith(gate.REPO):
+                return {"default_branch": "develop"}
+            if "?per_page" in url:
+                return [{"id": 1}, {"id": 2}]
+            return {
+                "target": "branch",
+                "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}},
+            }
+
+        monkeypatch.setattr(gate, "_get", get)
+        with pytest.raises(ValueError, match="overlapping rulesets"):
+            gate.fetch_live("token")
