@@ -38,3 +38,15 @@ def test_merge_group_replaces_specialized_evidence_with_aggregate(check: ModuleT
 def test_merge_group_still_requires_unconditional_core_checks(check: ModuleType) -> None:
     names = set(check.required_check_names(base_branch="develop", event_name="merge_group"))
     assert {"test", "lint-and-type-check", "workflow-lint"} <= names
+
+
+def test_merge_group_does_not_request_pull_request_only_mutation_evidence(
+    check: ModuleType,
+) -> None:
+    """The mutation gate's job is `if: github.event_name == 'pull_request'`
+    under a workflow with no merge_group trigger (#2270), so a synthetic
+    queue SHA can never carry it — the same class as `pr-base` (#2059)."""
+    names = check.required_check_names(base_branch="develop", event_name="merge_group")
+    assert "Mutation gate (changed critical lines)" not in names
+    assert "pr-base" not in names
+    assert check.INTEGRATION_SCOPE_CHECK in names
