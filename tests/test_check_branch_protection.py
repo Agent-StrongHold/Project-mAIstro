@@ -14,6 +14,7 @@ import importlib.util
 import json
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -597,7 +598,9 @@ def _api_router(
             rs_id = int(url.rsplit("/", 1)[1])
             return next(rs for rs in (rulesets or []) if rs["id"] == rs_id)
         if url.startswith(f"{REPO_API}/pulls?"):
-            return list(pulls or [])
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            base = (query.get("base") or [None])[0]
+            return [pr for pr in (pulls or []) if pr.get("base") == base]
         if "/check-runs?" in url:
             sha = url.split("/commits/")[1].split("/")[0]
             return {"check_runs": reports.get(sha, {}).get("check_runs", [])}
@@ -609,8 +612,8 @@ def _api_router(
     return fake_get
 
 
-def _open_pr(number: int, sha: str) -> dict:
-    return {"number": number, "head": {"sha": sha}}
+def _open_pr(number: int, sha: str, base: str = "develop") -> dict:
+    return {"number": number, "base": base, "head": {"sha": sha}}
 
 
 class TestRulesetSurfaceReading:
@@ -835,6 +838,37 @@ class TestApplyFreezeGuard:
         )
         assert gate.main(["--apply", "develop"]) == 0
         assert "gh api" in capsys.readouterr().out
+
+    def test_a_main_targeting_pr_does_not_block_an_apply_to_develop(
+        self, gate, capsys, monkeypatch
+    ):
+        """The freeze guard must scope to PRs targeting the applied branch:
+        `integration-scope` is required on `develop` but advisory on `main`, so
+        a promotion PR lacking it is unaffected by `--apply develop` and must
+        not force `--allow-freeze` (the API's `base` filter)."""
+        self._with_token(monkeypatch)
+        develop = gate.declared_required(gate.load_ruleset()["branches"]["develop"])
+        live = _live_matching_rulesets(gate)
+        live[0] = _live_ruleset(21421373, [c for c in develop if c != "test"])
+        monkeypatch.setattr(
+            gate,
+            "_get",
+            _api_router(
+                rulesets=live,
+                pulls=[_open_pr(99, "sha-99", base="main")],
+                reports={
+                    "sha-99": {
+                        "check_runs": [
+                            {"name": "test", "status": "completed", "conclusion": "failure"}
+                        ]
+                    }
+                },
+            ),
+        )
+        assert gate.main(["--apply", "develop"]) == 0
+        out = capsys.readouterr().out
+        assert "PR #99" not in out
+        assert "gh api" in out
 
     def test_a_pending_head_counts_as_frozen(self, gate, capsys, monkeypatch):
         self._with_token(monkeypatch)

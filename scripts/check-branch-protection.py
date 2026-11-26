@@ -46,6 +46,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -582,10 +583,19 @@ def _classify(context: str, report: dict[str, str]) -> str | None:
 
 
 def freeze_offenders(
-    token: str, contexts: list[str], max_prs: int = 200
+    token: str, contexts: list[str], branch: str, max_prs: int = 200
 ) -> list[tuple[int, str, str]]:
-    """(PR number, context, reason) for every open PR the contexts would freeze."""
-    pulls = _get(f"https://api.github.com/repos/{REPO}/pulls?state=open&per_page=100", token)
+    """(PR number, context, reason) for every open PR the contexts would freeze.
+
+    Only PRs targeting `branch` are examined: an apply changes protection on
+    that branch alone, and a context that is advisory elsewhere must not block
+    it (the API's documented `base` filter scopes the listing).
+    """
+    base = urllib.parse.quote(branch, safe="")
+    pulls = _get(
+        f"https://api.github.com/repos/{REPO}/pulls?state=open&base={base}&per_page=100",
+        token,
+    )
     examined = pulls[:max_prs]
     if len(pulls) > len(examined):
         print(f"NOTE: examined the first {len(examined)} of {len(pulls)} open PRs")
@@ -655,7 +665,7 @@ def apply_protection(ruleset: dict[str, Any], branch: str, *, allow_freeze: bool
         live_contexts |= set(contexts)
     newly = sorted(set(declared_required(ruleset["branches"][branch])) - live_contexts)
     if governed and newly:
-        offenders = freeze_offenders(token, newly)
+        offenders = freeze_offenders(token, newly, branch)
         if offenders:
             print(
                 "Applying this ruleset would newly require checks that open PRs do not "
