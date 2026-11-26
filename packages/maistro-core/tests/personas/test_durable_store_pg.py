@@ -223,10 +223,10 @@ async def test_persona_migration_cascade_is_enforced_by_the_database_itself() ->
 
         async with pool.acquire() as conn:
             # The fence first: deleting a Workspace that still owns Projects is
-            # refused outright, whatever the caller meant to cascade. Postgres
-            # reports RESTRICT/NO ACTION breaches as ERRCODE_FOREIGN_KEY_VIOLATION
-            # (SQLSTATE 23503), which asyncpg surfaces as ForeignKeyViolationError.
-            with pytest.raises(asyncpg.exceptions.ForeignKeyViolationError):
+            # refused outright, whatever the caller meant to cascade. RESTRICT
+            # breaches surface as SQLSTATE 23001 — asyncpg's RestrictViolationError,
+            # a sibling of ForeignKeyViolationError (23503), not a subclass of it.
+            with pytest.raises(asyncpg.exceptions.RestrictViolationError):
                 await conn.execute(
                     "DELETE FROM canonical_workspaces WHERE workspace_id = $1", workspace_id
                 )
