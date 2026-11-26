@@ -646,3 +646,100 @@ identities; no ledger amendment required); what remains is program-scale
 composition plus operator release evidence, not a defect in this branch's diff.
 
 Progress: `{checked: 19, done: 0, skipped: 0, errors: 0, next: "implement rows 8/12/17/18 production composition on canonical seams; obtain operator release evidence"}`.
+
+## Round 11 — composition repair for the row-8 tick-caller half (repair stage)
+
+Starting HEAD `d17618fb737d` (exact match), worktree clean, no uncommitted
+salvage. The ten prior rounds recorded the same actionable gap without
+implementing it, so this round implements the bounded, evidence-backed half of
+the row-8 finding that is reachable from this lane: the two M3 #806 Container
+ticks had no production caller. No driver `check-*.log` files exist in this
+job directory; every result below was executed fresh at this head.
+
+### The repair (composition only, no new authority)
+
+`hive-conductor/backend/services/canonical_recovery.py` — the operator
+cadence that already ticks `recover_abandoned_attempts`,
+`recover_stranded_chat_admissions` and `resume_parked_runs` (ADR-019:
+bounded, idempotent, operator-scheduled) — now ticks the two Goal control
+plane halves beside them:
+
+- `goal_leases` → `Container.sweep_goal_leases`: policy-free fence mechanics,
+  fully operational. A Goal claim whose holder stopped renewing is released in
+  production and the Goal is marked due for the bounded sweep, so a dead
+  reconciler's fence cannot pin a Goal forever.
+- `goal_reconciliation` → `Container.reconcile_goals`: armed and safe. It
+  decides only when a #805 reconciliation policy is composed onto the
+  Container; without one it returns 0 and durable wakes stay pending facts
+  for the composition that lands them. The Container's own contract ("the
+  mechanics never invent what a reconciliation decision means") is preserved
+  — this round deliberately does not invent #805's decision semantics, which
+  remain owned by #805.
+
+No competing scheduler, Goal store, event authority, or authorization path
+was introduced: both ticks are the Container's own existing seams, ticked by
+the operator loop the repo already uses for every other recovery sweep.
+
+### Red-first regression proof (structure, not wall-clock)
+
+Three tests join `test_canonical_recovery_cadence.py`, driving a real SQLite
+Container through the production engine lookup the cadence uses. Run against
+the pre-repair cadence: **2 failed, 1 passed** — the lapsed-claim test
+initially passed for the wrong reason (`GoalReconciliationStore.claim` treats
+a lapsed claim as claimable anyway) and was rewritten to assert the sweep's
+own observable effects (`reconciliation_view()["claim"] is None` +
+`["awake_after"] is not None`), after which it failed red too. Post-repair:
+all 3 pass, including the negative control pinning that a production
+Container without a policy never decides.
+
+### Fresh validation (all exit 0, this round, this head)
+
+| Command | Executed outcome |
+| --- | --- |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4579 passed, 113 skipped** (246.6s; 4576 + the 3 new tests) |
+| pre-repair red run: cadence `-k "goal_claim or composed_policy or without_a_policy"` | expected exit 1: 2 failed, 1 passed |
+| `uv run pytest test_canonical_recovery_cadence.py + test_entra_jit_provisioning.py + test_hive_unwired_retire_2309.py -q` | **55 passed** |
+| `uv run ruff check` / `ruff format --check` (touched files) | clean |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` | ok: 4692 unique identities match baseline + the recorded +3 delta, 0 duplicate evidence |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI args) | 1219 reviewed -> 1219 findings, no unbanked identities, no ledger amendment |
+| `RATCHET_BASE_REV=origin/develop uv run python scripts/check-workspace-retirement.py` (CI args) | 78 -> 78 tolerated importers, OK on 89 entries |
+| `uv run python scripts/check-reachability.py` / `-dispositions.py` / `-provenance.py` | 1509 modules / 81 unreachable; no unauthorized expansion |
+| `uv run python scripts/check-release-consistency.py` | released none / shipping 0.9.0 / working toward 1.0.0 (row 1) |
+| `git diff --numstat origin/develop -- quality/` | exactly the documented lane deltas (reachability-baseline −1, dispositions +1/−1); no ledger edit this round |
+
+Inventory note: `docs/testing/inventory-notes/issue-7-goal-reconciliation-ticks.md`
+(records the +3 delta and the red-first evidence).
+
+### Updated acceptance accounting (delta on Rounds 5–10)
+
+- **Row 8: NOT MET → PARTIAL.** The tick-caller half of the finding is
+  repaired: production now sweeps Goal lease fences and runs the bounded
+  reconciliation sweep. What remains unmet: (a) no production assignment of a
+  #805 `ReconciliationPolicy`, so the sweep still decides nothing — its
+  decision semantics are #805-owned and were deliberately not invented here;
+  (b) `wire_goal_reconciliation` still answers a PostgreSQL pool with
+  `InMemoryGoalStore` — per that module's own docstring, SQLite is the
+  declared durable backend for this control plane and the PG twin is the
+  tracked follow-up (#1572 owns the canonical Goal PG store, a different
+  plane).
+- **Row 18: NOT MET, unchanged, not repairable in this round.** Wiring
+  Design Studio's consumption of the shared user-memory surface requires
+  composing `UserModelService` into the hive backend; that service is
+  maistro-server-only and PostgreSQL-only by design (ADR-092526-4391), and
+  inventing a hive-side lookalike would violate the exit condition it is
+  meant to satisfy. Recorded as the next composition task, not guessed at.
+- **Rows 2, 3, 5, 17: UNVERIFIED, unchanged** — release-pipeline execution,
+  clean-machine/live-model E2E, RC soak/promotion and discovery-pipeline
+  evidence require operator/release actions (and GitHub mutations this lane is
+  prohibited from performing).
+- Rows 4, 7, 9, 11, 12 PARTIAL and rows 1, 6, 10, 13–16, 19 PASS carry
+  forward from Rounds 5–10 unchanged by this diff.
+
+**Verdict: NEEDS-REPAIR for milestone acceptance stands.** The lane's own
+slices and every CI gate this diff touches are green with CI's exact
+arguments; one bounded composition repair landed with red-first tests; the
+remaining gap is the #805 policy composition, the row-18 Design Studio
+consumption composition, and operator release evidence — program-scale work
+plus actions outside this lane's authority.
+
+Progress: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "compose #805 policy semantics and hive-side UserModelService consumption (row 18) on canonical seams; obtain operator release evidence"}`.

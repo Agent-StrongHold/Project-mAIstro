@@ -22,6 +22,15 @@ import pytest
 from pydantic import BaseModel
 
 from maistro.container import Container, create_container
+from maistro.goals.reconciliation import (
+    Goal as ReconciliationGoal,
+)
+from maistro.goals.reconciliation import (
+    GoalFacts,
+    PlannedAdmission,
+    PolicyDecision,
+    WakeReason,
+)
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.graph.nodes.base import (
@@ -413,6 +422,102 @@ async def test_without_a_container_the_cadence_is_a_noop(
     cadence.start_canonical_recovery()
     await asyncio.sleep(0.01)
     assert cadence._task is not None and not cadence._task.done()
+
+
+# --- Goal reconciliation control plane (#806): the cadence is the operator ---
+
+
+class _AdmitOncePolicy:
+    """Minimal #805 stand-in: one fenced admission decision per consultation."""
+
+    async def decide(self, facts: GoalFacts) -> PolicyDecision:
+        return PolicyDecision(
+            admissions=(PlannedAdmission(kind="run", decision_key="dec-cadence"),)
+        )
+
+
+async def _durable_goal(container: Container, goal_id: str) -> None:
+    await container.goal_reconciliation_store.create_goal(
+        ReconciliationGoal(goal_id=goal_id, workspace_id="hive-canonical-recovery", project_id="p")
+    )
+
+
+async def test_cadence_reclaims_a_lapsed_goal_claim(
+    container: Container, booted: Callable[[Any], None]
+) -> None:
+    """A Goal claim whose holder stopped renewing is reclaimed by the production
+    cadence — the same operator loop that reclaims Attempt leases — so a dead
+    reconciler's fence cannot pin a Goal forever (#806)."""
+    import services.canonical_recovery as cadence
+
+    booted(container)
+    past = datetime.now(UTC) - timedelta(seconds=60)
+    await _durable_goal(container, "g-cadence-lapsed")
+    stale = await container.goal_reconciliation_store.claim(
+        "g-cadence-lapsed", holder="dead-process", ttl=timedelta(seconds=30), now=past
+    )
+    assert stale is not None
+
+    await cadence.tick_canonical_recovery()
+
+    # The sweep's own effects, not just takeover-ability: the lapsed claim row
+    # is released and the Goal is woken, so the reconciliation sweep finds it
+    # due instead of the dead holder's fence pinning it forever.
+    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-lapsed")
+    assert view is not None
+    assert view["claim"] is None
+    assert view["awake_after"] is not None
+
+
+async def test_cadence_reconciliation_tick_decides_a_due_goal_under_a_composed_policy(
+    container: Container, booted: Callable[[Any], None]
+) -> None:
+    """With #805's decision semantics composed onto the production Container,
+    the cadence — not a test-only call — repairs a missed wake into exactly one
+    fenced admission, and the next pass finds the Goal asleep."""
+    import services.canonical_recovery as cadence
+
+    booted(container)
+    await _durable_goal(container, "g-cadence-due")
+    # A canonical change was recorded durably, then the notifying process died:
+    # nobody re-delivers, the bounded tick alone must repair it.
+    await container.goal_reconciliation_store.record_wake(
+        "g-cadence-due",
+        reason=WakeReason.RUN_TERMINAL,
+        correlation_id="event-cadence-1",
+        unblocks=True,
+    )
+    container.goal_reconciliation_policy = _AdmitOncePolicy()  # type: ignore[assignment]
+
+    await cadence.tick_canonical_recovery()
+
+    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-due")
+    assert view is not None
+    assert view["admissions_total"] == 1
+    assert view["pending_wakes"] == 0
+
+    # Idempotent across ticks: the Goal is asleep, so nothing re-admits.
+    await cadence.tick_canonical_recovery()
+    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-due")
+    assert view is not None and view["admissions_total"] == 1
+
+
+async def test_cadence_reconciliation_without_a_policy_decides_nothing(
+    container: Container, booted: Callable[[Any], None]
+) -> None:
+    """A production Container never invents #805's decision semantics: without
+    a composed policy the cadence's reconciliation half is a safe no-op over
+    the durable facts — never a crash, never a second scheduler."""
+    import services.canonical_recovery as cadence
+
+    booted(container)
+    await _durable_goal(container, "g-cadence-inert")
+    assert container.goal_reconciliation_policy is None
+
+    await cadence.tick_canonical_recovery()
+
+    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-inert")
+    assert view is not None and view["admissions_total"] == 0
 
 
 async def test_engine_start_and_stop_bracket_the_cadence() -> None:
