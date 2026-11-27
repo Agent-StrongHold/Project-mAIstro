@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { clearUiState } from "../lib/uiState";
 import { LandingSuggestionBanner } from "./LandingSuggestionBanner";
 import { LastSurfaceTracker } from "./LastSurfaceTracker";
@@ -119,6 +119,36 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
   const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const drawerRef = useRef<HTMLElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  // Keyboard journeys (#370): opening the drawer moves focus into the menu;
+  // closing it (close button, overlay click, or a nav link) restores focus to
+  // the trigger instead of stranding the user on <body> so the next Tab
+  // restarts the page. The restore runs only after an actual open→closed
+  // transition: a narrow viewport's first render also lands here with
+  // drawerOpen already false, and stealing focus for the hamburger then would
+  // jump the user past the skip link before they pressed anything (Codex
+  // review on PR #2530). The drawer has no Escape handler; do not claim one.
+  const drawerWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (drawerOpen) {
+      drawerWasOpenRef.current = true;
+      drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+    } else if (drawerWasOpenRef.current) {
+      drawerWasOpenRef.current = false;
+      if (isMobile) menuButtonRef.current?.focus();
+    }
+  }, [drawerOpen, isMobile]);
   const nav = fullNav.filter((item) => {
     // One canonical filter for both gating spellings: `surface` resolves
     // through the SURFACE_POLICY contract served at /v1/auth/capabilities,
@@ -140,19 +170,34 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       {/* #1050/#1822: stamp last surface for recent-return landing. */}
       <LastSurfaceTracker />
       <button
+        ref={menuButtonRef}
         className="hamburger"
         onClick={() => setDrawerOpen(true)}
         aria-label="Open menu"
+        aria-expanded={drawerOpen}
+        aria-controls="mobile-navigation"
       >
         <span /><span /><span />
       </button>
 
-      <div className={`drawer-overlay${drawerOpen ? " open" : ""}`} onClick={() => setDrawerOpen(false)} />
+      <div
+        className={`drawer-overlay${drawerOpen ? " open" : ""}`}
+        onClick={() => setDrawerOpen(false)}
+        aria-hidden="true"
+      />
 
-      <nav className={`drawer${drawerOpen ? " open" : ""}`}>
+      <nav
+        ref={drawerRef}
+        id="mobile-navigation"
+        className={`drawer${drawerOpen ? " open" : ""}`}
+        aria-label="Primary navigation"
+        aria-hidden={isMobile && !drawerOpen}
+        inert={isMobile && !drawerOpen ? true : undefined}
+      >
         <div className="drawer-header">
           <span style={{ fontFamily: "var(--hand)", fontSize: 20, fontWeight: 700 }}>{shellTitle}</span>
           <AppearanceToggle />
@@ -190,7 +235,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </button>
       </nav>
 
-      <nav className="icon-sidebar">
+      <nav className="icon-sidebar" aria-label="Primary navigation">
         {nav.map((item) => (
           <NavLink
             key={item.to}
@@ -258,7 +303,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <span className="nav-icon-label" style={{ color: "var(--danger)" }}>Sign out</span>
         </button>
       </nav>
-      <main className="main-content">
+      <main id="main-content" className="main-content" tabIndex={-1}>
         {/* M3-B7 (#97): degraded mode is a user-facing operating state —
             the banner names every degraded optional capability from
             /health and disappears on its own when they recover. */}

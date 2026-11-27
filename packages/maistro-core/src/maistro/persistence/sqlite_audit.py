@@ -13,6 +13,7 @@ from maistro.observability.metrics import (
     sqlite_table_sample,
 )
 from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES, AuditPage, make_page, page_query
+from maistro.persistence.decision_evidence import DECISION_COLUMNS, decision_fields, decision_values
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
@@ -38,7 +39,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     request_id TEXT NOT NULL DEFAULT '',
     signature TEXT NOT NULL DEFAULT '',
     signing_key_id TEXT NOT NULL DEFAULT '',
-    proof_type TEXT NOT NULL DEFAULT ''
+    proof_type TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    principal_id TEXT NOT NULL DEFAULT '',
+    policy_snapshot TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '',
+    inputs_hash TEXT NOT NULL DEFAULT '',
+    decision_signature TEXT,
+    signature_key_id TEXT,
+    signature_algorithm TEXT,
+    signature_public_key TEXT,
+    violations TEXT NOT NULL DEFAULT '[]'
 )
 """
 
@@ -124,6 +135,11 @@ class SqliteAuditLog:
                     await self._conn.execute(
                         f"ALTER TABLE audit_log ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"  # nosec B608
                     )
+            for name, definition in DECISION_COLUMNS.items():
+                if name not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE audit_log ADD COLUMN {name} {definition}"
+                    )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
@@ -169,8 +185,10 @@ class SqliteAuditLog:
                 """INSERT INTO audit_log
                (timestamp, boundary, user_id, org_id, team_id, agent_id,
                 tool_name, verdict, detail, trace_id, request_id,
-                signature, signing_key_id, proof_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                signature, signing_key_id, proof_type, action, principal_id, policy_snapshot,
+                payload, decision_signature, signature_key_id, signature_algorithm,
+                signature_public_key, violations, inputs_hash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     # Stored as a UTC instant: purge_expired and retention health
                     # order this column as text, so a non-UTC offset (e.g.
@@ -190,6 +208,7 @@ class SqliteAuditLog:
                     signed.signature,
                     signed.signing_key_id,
                     signed.proof_type,
+                    *decision_values(signed),
                 ),
             )
             await self._conn.commit()
@@ -277,8 +296,8 @@ class SqliteAuditLog:
         params.append(limit)
         query = (
             f"SELECT timestamp, boundary, user_id, org_id, team_id, agent_id, tool_name, "
-            f"verdict, detail, trace_id, request_id, signature, signing_key_id, proof_type "
-            f"FROM audit_log "
+            f"verdict, detail, trace_id, request_id, signature, signing_key_id, proof_type, "
+            f"{', '.join(DECISION_COLUMNS)} FROM audit_log "
             f"WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # nosec B608
         )
 
@@ -304,6 +323,7 @@ class SqliteAuditLog:
                     signature=signature,
                     signing_key_id=signing_key_id,
                     proof_type=proof_type,
+                    **decision_fields(dict(zip(DECISION_COLUMNS, r[14:], strict=True))),
                 )
             )
         return entries

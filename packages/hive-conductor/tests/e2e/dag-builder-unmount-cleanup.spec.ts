@@ -164,7 +164,7 @@ async function expectNoErrors() {
 /** Mount the builder via SPA navigation, select the DAG, start a Run. */
 async function mountAndRun() {
   await page.getByRole("link", { name: "DAG Builder", exact: true }).click();
-  await page.getByText(dag.name, { exact: true }).first().click();
+  await page.getByRole("button", { name: `Open DAG ${dag.name}` }).click();
   // Precondition: the stubbed workspace is active, or Run would refuse.
   await expect(page.getByRole("tab", { name: workspaces[0].name })).toBeVisible();
   const runButton = page.getByRole("button", { name: /Run DAG/ });
@@ -395,7 +395,7 @@ test("a remount after leaving mid-Run resumes from canonical state with exactly 
   const listFetchesBefore = dagListFetches;
   const detailFetchesBefore = dagDetailFetches;
   await page.getByRole("link", { name: "DAG Builder", exact: true }).click();
-  await page.getByText(dag.name, { exact: true }).first().click();
+  await page.getByRole("button", { name: `Open DAG ${dag.name}` }).click();
   const runButton = page.getByRole("button", { name: /Run DAG/ });
   await expect(runButton).toBeEnabled();
   expect(dagListFetches).toBeGreaterThan(listFetchesBefore);

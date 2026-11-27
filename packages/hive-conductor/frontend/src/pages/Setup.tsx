@@ -403,8 +403,10 @@ export default function Setup() {
 
   if (mnemonic) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", padding: 20 }}>
-        <div style={{ width: "100%", maxWidth: 520, background: "var(--paper)", border: "2px solid var(--ink)", borderRadius: 8 }}>
+      <>
+        <a className="skip-link" href="#setup-content">Skip to setup content</a>
+        <main id="setup-content" tabIndex={-1} aria-label="Recovery seed confirmation" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", padding: 20 }}>
+          <div style={{ width: "100%", maxWidth: 520, background: "var(--paper)", border: "2px solid var(--ink)", borderRadius: 8 }}>
           <div style={{ padding: "16px 20px", borderBottom: "2px solid var(--ink)", background: "rgba(196,69,42,0.08)" }}>
             <div style={{ fontFamily: "var(--hand)", fontSize: 22, fontWeight: 700, color: "var(--danger)" }}>Recovery Seed Phrase</div>
             <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginTop: 4 }}>WRITE THESE DOWN. They will never be shown again. This is the root of trust for your hive.</div>
@@ -430,13 +432,16 @@ export default function Setup() {
           <div style={{ padding: "12px 20px", borderTop: "1px solid var(--rule)", display: "flex", justifyContent: "flex-end" }}>
             <button className="btn btn-accent" disabled={!mnemonicConfirmed} onClick={() => void autoLogin()}>enter the hive {"\uD83D\uDC1D"}</button>
           </div>
-        </div>
-      </div>
+          </div>
+        </main>
+      </>
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", padding: 20 }}>
+    <>
+      <a className="skip-link" href="#setup-content">Skip to setup content</a>
+      <main id="setup-content" tabIndex={-1} aria-label="Hive Conductor setup" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", padding: 20 }}>
       <div style={{ width: "100%", maxWidth: 560, background: "var(--paper)", border: "2px solid var(--ink)", borderRadius: 8, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "2px solid var(--ink)", background: "var(--honey-light)" }}>
           <div style={{ fontFamily: "var(--hand)", fontSize: 30, fontWeight: 700 }}>
@@ -449,12 +454,19 @@ export default function Setup() {
 
         <div style={{ display: "flex", borderBottom: "1px solid var(--rule)" }}>
           {steps.map((s, i) => (
-            <div key={s} style={{ flex: 1, padding: "8px 0", textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: step === i ? "2px solid var(--accent)" : "2px solid transparent", color: step === i ? "var(--ink)" : i < step ? "var(--ok)" : "var(--pencil)", fontWeight: step === i ? 700 : 400 }} onClick={() => { if (i < step) setStep(i); }}>
-              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `1.3px solid ${i <= step ? "var(--accent)" : "var(--rule)"}`, background: i < step ? "var(--accent)" : "transparent", color: i < step ? "var(--paper)" : "var(--pencil)", margin: "0 auto 3px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>
+            <button
+              key={s}
+              type="button"
+              disabled={i >= step}
+              aria-current={step === i ? "step" : undefined}
+              onClick={() => setStep(i)}
+              style={{ flex: 1, padding: "8px 0", textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, cursor: i < step ? "pointer" : "default", border: 0, borderRadius: 0, borderBottom: step === i ? "2px solid var(--accent)" : "2px solid transparent", color: step === i ? "var(--ink)" : i < step ? "var(--ok)" : "var(--pencil)", fontWeight: step === i ? 700 : 400, background: "transparent", boxShadow: "none" }}
+            >
+              <span aria-hidden="true" style={{ width: 18, height: 18, borderRadius: "50%", border: `1.3px solid ${i <= step ? "var(--accent)" : "var(--rule)"}`, background: i < step ? "var(--accent)" : "transparent", color: i < step ? "var(--paper)" : "var(--pencil)", margin: "0 auto 3px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>
                 {i < step ? "\u2713" : i + 1}
-              </div>
+              </span>
               {s}
-            </div>
+            </button>
           ))}
         </div>
 
@@ -568,11 +580,11 @@ export default function Setup() {
               )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {Object.values(presets).map((p) => (
-                  <div key={p.name} onClick={() => setPreset(p.name)} style={{ padding: 10, border: `1.4px solid ${preset === p.name ? "var(--accent)" : "var(--ink)"}`, borderRadius: 6, cursor: "pointer", background: preset === p.name ? "var(--honey-light)" : "transparent" }}>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 17, fontWeight: 600, color: preset === p.name ? "var(--accent)" : "var(--ink)" }}>{p.label}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "3px 0" }}>{p.description}</div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{p.max_vcpu} vCPU · {p.max_memory_gb}GB · {p.db_backend} · {p.max_agents} agents{p.gpu_available ? " · GPU" : ""}</div>
-                  </div>
+                  <button type="button" key={p.name} aria-pressed={preset === p.name} onClick={() => setPreset(p.name)} style={{ padding: 10, border: `1.4px solid ${preset === p.name ? "var(--accent)" : "var(--ink)"}`, borderRadius: 6, cursor: "pointer", background: preset === p.name ? "var(--honey-light)" : "transparent", color: "var(--ink)", textAlign: "left", boxShadow: "none" }}>
+                    <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 17, fontWeight: 600, color: preset === p.name ? "var(--accent)" : "var(--ink)" }}>{p.label}</span>
+                    <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "3px 0" }}>{p.description}</span>
+                    <span style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{p.max_vcpu} vCPU · {p.max_memory_gb}GB · {p.db_backend} · {p.max_agents} agents{p.gpu_available ? " · GPU" : ""}</span>
+                  </button>
                 ))}
               </div>
             </div>
@@ -625,7 +637,9 @@ export default function Setup() {
                     <button
                       type="button"
                       className={`toggle${enabled ? " on" : ""}`}
-                      aria-label={`Toggle ${m.name}`}
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={`${m.name}${depsMet || enabled ? "" : " (requires a dependency)"}`}
                       disabled={identityUnavailable || !(depsMet || enabled)}
                       onClick={() => {
                         touchedModules.current.add(m.id);
@@ -706,7 +720,8 @@ export default function Setup() {
             </button>
           )}
         </div>
-      </div>
-    </div>
+        </div>
+      </main>
+    </>
   );
 }
