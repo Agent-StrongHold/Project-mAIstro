@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,12 @@ from tests.golden_baselines.contract import (
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES = ROOT / "tests" / "golden_baselines"
 MANIFEST = BASELINES / "manifest.json"
+
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from ratchet_provenance import resolve_baseline  # noqa: E402
 
 
 def _manifest() -> dict:
@@ -58,6 +65,49 @@ def test_fixture_bytes_match_the_locked_manifest_hashes() -> None:
     for record in _manifest()["fixtures"]:
         payload = (BASELINES / record["path"]).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == record["sha256"]
+
+
+def _assert_preserved_locked_records(trusted: dict, candidate: dict, directory: Path) -> None:
+    """An old oracle is immutable even when a candidate also changes its hash."""
+    candidate_records = {row["path"]: row for row in candidate["fixtures"]}
+    assert len(candidate_records) == len(candidate["fixtures"]), "duplicate fixture path"
+    assert candidate["captured_from_commit"] == trusted["captured_from_commit"], (
+        "capture provenance changed"
+    )
+    for record in trusted["fixtures"]:
+        path = record["path"]
+        assert candidate_records.get(path) == record, f"locked fixture record changed: {path}"
+        fixture = directory / path
+        assert fixture.is_file(), f"locked fixture missing: {path}"
+        assert hashlib.sha256(fixture.read_bytes()).hexdigest() == record["sha256"], (
+            f"locked fixture bytes changed: {path}"
+        )
+
+
+def test_locked_fixture_records_preserve_the_independent_base() -> None:
+    baseline = resolve_baseline(MANIFEST, root=ROOT)
+    assert baseline.origin == "base" and baseline.base_sha, "independent golden baseline required"
+    trusted = baseline.loads()
+    assert isinstance(trusted, dict), "trusted golden manifest is missing or invalid"
+    _assert_preserved_locked_records(trusted, _manifest(), BASELINES)
+
+
+def test_candidate_cannot_rewrite_fixture_and_matching_manifest(tmp_path: Path) -> None:
+    path = tmp_path / "fixture.json"
+    path.write_bytes(b"original")
+    trusted = {
+        "captured_from_commit": "a" * 40,
+        "fixtures": [{"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}],
+    }
+    path.write_bytes(b"changed")
+    candidate = {
+        "captured_from_commit": trusted["captured_from_commit"],
+        "fixtures": [{"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}],
+    }
+    # Candidate-only checksum verification would pass.
+    assert candidate["fixtures"][0]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(AssertionError, match="locked fixture record changed"):
+        _assert_preserved_locked_records(trusted, candidate, tmp_path)
 
 
 def test_every_fixture_is_locked_and_fail_closed_schema_valid() -> None:
