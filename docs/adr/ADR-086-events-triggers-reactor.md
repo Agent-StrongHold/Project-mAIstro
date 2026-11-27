@@ -97,10 +97,19 @@ handler-owned idempotency contract.
 >   a replay of already-idempotent work and never skips an event still in flight.
 > - **Gap policy.** PostgreSQL hands out `event_log.id` before the appending transaction
 >   commits, so a lower id can be invisible while a higher one is readable. The bridge processes
->   what it can see but persists its position only up to the first id the log skipped, and holds
->   there until the id appears or a grace window (`durable_event_hole_grace_s`, default 60 s)
->   lapses, after which the hole is treated as an append that aborted and the position moves on.
->   Handler work is never delayed by a hole; only the persisted resume point is.
+>   what it can see but persists its position only up to the first skipped id it has not proven
+>   terminally absent — the log reports and proves **every** skipped id of a run individually
+>   (`EventLogStore.prove_holes_absent`, #2509), because proof that one id's append rolled back
+>   says nothing about a neighbouring id that may still commit. "Terminally absent" is durable
+>   database evidence — never elapsed time — that the allocating transaction ended
+>   without committing and that no future transaction can make the id visible. On PostgreSQL the
+>   evidence is `pg_locks`: a transaction that has called `nextval` holds a granted lock on the
+>   sequence until it commits or aborts, so when no such lock exists and a fresh read still cannot
+>   see the id, the append rolled back and a sequence never hands the id out again. A time-based
+>   grace used to move the position past an unresolved hole after 60 s; that was removed — a
+>   transaction can stay open past any timeout and commit afterwards, and the position moving past
+>   it then loses the event from every later read. Handler work is never delayed by a hole; only
+>   the persisted resume point is.
 >
 > None of this changes the correctness contract above: the cursor is a resume *optimisation*,
 > and `InvocationStore`'s `(trigger_id, event_id)` claim remains what makes redelivery safe

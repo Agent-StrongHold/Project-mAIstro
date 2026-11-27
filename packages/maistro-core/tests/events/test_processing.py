@@ -1497,9 +1497,13 @@ class TestTheBatchReportsWhatTheLogSkipped:
         assert batch.cursor == 2
         assert batch.holes == ()
 
-    async def test_every_gap_is_reported_by_its_first_missing_id(
+    async def test_every_missing_id_of_a_run_is_reported(
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
     ) -> None:
+        """A collapsed run would let the durable cursor cross unproven ids:
+        proving the first id of a gap absent says nothing about its missing
+        neighbours, which may still commit (#2509 review). Each skipped id is
+        reported so each can be proven on its own."""
         inner, triggers, invocations = stores
         await triggers.add(
             TriggerDefinition(name="agents", event_pattern="agent.*", **SAFE_TRIGGER_KWARGS)
@@ -1513,7 +1517,7 @@ class TestTheBatchReportsWhatTheLogSkipped:
 
         assert [event_id for _, event_id in caller.calls] == [1, 3, 6]
         assert batch.cursor == 6
-        assert batch.holes == (2, 4)
+        assert batch.holes == (2, 4, 5)
 
     async def test_a_hole_at_the_very_start_is_reported_too(
         self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]

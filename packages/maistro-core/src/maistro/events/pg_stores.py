@@ -72,6 +72,8 @@ from maistro.observability.metrics import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
 
 #: `BIGSERIAL` rather than SQLite's implicit rowid, and `DOUBLE PRECISION` for
@@ -381,6 +383,50 @@ class PgEventLog:
             time.time(),
         )
         return int(value)
+
+    async def prove_holes_absent(self, hole_ids: Sequence[int]) -> frozenset[int]:
+        """Prove a hole terminally absent from PostgreSQL's own bookkeeping.
+
+        `BIGSERIAL` allocates the id inside the appending transaction, and a
+        transaction that has called `nextval` holds a granted lock on the
+        sequence relation until it commits or aborts. That lock is the proof
+        mechanism, in two steps ordered so the reasoning holds:
+
+        1. Read `pg_locks` for the sequence. A granted lock means some append
+           transaction is still live and *may yet commit* — perhaps the very
+           transaction that allocated one of these holes — so nothing is
+           proven and the caller must keep its cursor below every hole.
+        2. No granted lock means every transaction that ever allocated an id
+           from this sequence has ended: an id invisible to the fresh read in
+           step 2 was allocated by a transaction that rolled back, and since
+           a sequence never hands out a value twice, no future transaction
+           can make it visible either. That is durable database evidence,
+           not elapsed time — a transaction can stay open past any timeout
+           and commit afterwards, so time alone must never be what lets a
+           cursor cross a hole (#2509).
+
+        Reads take no sequence lock, so this store's own scanning cannot
+        false-positive step 1; only genuine in-flight appends do, and they
+        should.
+        """
+        if not hole_ids:
+            return frozenset()
+        async with self._pool.acquire() as conn:
+            live_append = await conn.fetchval(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_locks "
+                "WHERE granted AND relation = to_regclass('event_log_id_seq')::oid)"
+            )
+            if live_append:
+                # Some append transaction still holds the sequence; the hole
+                # this consumer saw may be the id it will commit.
+                return frozenset()
+            rows = await conn.fetch(
+                "SELECT id FROM event_log WHERE id = ANY($1::bigint[])",
+                list(hole_ids),
+            )
+            visible = {int(row["id"]) for row in rows}
+            return frozenset(hole_ids) - visible
 
 
 class PgTriggerStore:
