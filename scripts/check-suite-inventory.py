@@ -937,6 +937,11 @@ def main() -> int:
     if args.check_ownership or args.check_discovery:
         return check_python_test_ownership(discovery=args.check_discovery)
 
+    return run_inventory(args)
+
+
+def run_inventory(args: argparse.Namespace) -> int:
+    """Run the existing inventory ledger and collection contract."""
     if problems := notes_problems() + table_problems():
         for problem in problems:
             print(f"error: {problem}", file=sys.stderr)

@@ -28,6 +28,9 @@ next_due_at. The original tests cannot be moved as-is.
 
 All named equivalents refer to packages/maistro-core/tests/scheduling/test_store.py.
 The new scenario uses its existing memory/SQLite/PostgreSQL parity fixture.
-This mapping is source-based and awaits review and real collection/execution,
-including the PostgreSQL leg. Do not claim the orphan removed until the
-mapping and evidence are reviewed. Inventory delta must be measured, not guessed.
+Candidate 31de0a7, quality run 45959792559, PostgreSQL coverage job
+140374642735: the new parity test passed on memory, SQLite and PostgreSQL.
+CI job 140375077147 measured +3 core and +7 root node IDs. Based on that
+source mapping and real PG evidence, this follow-up removes the stale root
+file. The removal does not reduce collected node IDs. The revised candidate
+must re-prove the complete suite and inventory.

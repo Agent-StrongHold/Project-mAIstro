@@ -1023,3 +1023,67 @@ class TestPythonTestOwnership:
         monkeypatch.setattr(gate, "RECIPES", {"tests/": gate.Recipe(args=[])})
         monkeypatch.setattr(gate, "collect", lambda *_: (1, "pytest", []))
         assert gate.check_python_discovery(["tests/test_a.py"]) == 1
+
+
+    def test_discovery_uses_all_recipes_and_reports_missing(self, gate, monkeypatch, capsys):
+        monkeypatch.setattr(
+            gate, "RECIPES", {"tests/": gate.Recipe(args=[]), "formal/": gate.Recipe(args=[])}
+        )
+        monkeypatch.setattr(
+            gate, "collect", lambda suite, _: (1, "pytest", [f"{suite}test_a.py::test_a"])
+        )
+        paths = ["tests/test_a.py", "formal/test_a.py"]
+        assert gate.check_python_discovery(paths) == 0
+        assert gate.check_python_discovery([*paths, "formal/test_b.py"]) == 1
+        assert "formal/test_b.py" in capsys.readouterr().err
+
+    def test_discovery_refuses_collection_failure(self, gate, monkeypatch, capsys):
+        monkeypatch.setattr(gate, "RECIPES", {"tests/": gate.Recipe(args=[])})
+
+        def broken(*_):
+            raise RuntimeError("collection failed")
+
+        monkeypatch.setattr(gate, "collect", broken)
+        assert gate.check_python_discovery(["tests/test_a.py"]) == 1
+        assert "collection failed" in capsys.readouterr().err
+
+    def test_ownership_reads_tracked_paths_and_dispatches_discovery(self, gate, monkeypatch, capsys):
+        import subprocess
+
+        monkeypatch.setattr(gate, "RECIPES", {"tests/": gate.Recipe(args=[])})
+        tracked = ["tests/test_a.py"]
+        monkeypatch.setattr(
+            gate.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], 0, stdout="\0".join(tracked) + "\0"
+            ),
+        )
+        seen = []
+        monkeypatch.setattr(gate, "check_python_discovery", lambda paths: seen.append(paths) or 0)
+        assert gate.check_python_test_ownership() == 0
+        assert seen == []
+        assert gate.check_python_test_ownership(discovery=True) == 0
+        assert seen == [tracked.copy()]
+        tracked.append("test_orphan.py")
+        assert gate.check_python_test_ownership(discovery=True) == 1
+        assert "test_orphan.py" in capsys.readouterr().err
+
+    def test_ownership_refuses_unreadable_git_index(self, gate, monkeypatch, capsys):
+        def broken(*_args, **_kwargs):
+            raise OSError("unreadable index")
+
+        monkeypatch.setattr(gate.subprocess, "run", broken)
+        assert gate.check_python_test_ownership() == 2
+        assert "unreadable index" in capsys.readouterr().err
+
+    def test_cli_dispatches_ownership_and_discovery(self, gate, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            gate, "check_python_test_ownership",
+            lambda *, discovery=False: seen.append(discovery) or 0,
+        )
+        for flag in ("--check-ownership", "--check-discovery"):
+            monkeypatch.setattr(sys, "argv", ["check-suite-inventory.py", flag])
+            assert gate.main() == 0
+        assert seen == [False, True]
