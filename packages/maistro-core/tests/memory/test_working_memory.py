@@ -18,6 +18,7 @@ The invariants under test are the ones the epic sells:
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 import pytest
@@ -49,6 +50,7 @@ from maistro.memory.working.wiring import (
     wire_in_memory_working_memory,
     wire_working_memory,
 )
+from maistro.testing.postgres import postgres_dsn
 
 WS = "ws-behavior"
 
@@ -652,6 +654,30 @@ class TestMeasurement:
 # wiring
 
 
+class _RecordingWorkingLogPool:
+    """A stand-in asyncpg pool that records every statement wiring issues, so
+    backend selection and bootstrap DDL are asserted without a live server."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def acquire(self) -> Any:
+        return self
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    def transaction(self) -> Any:
+        return self
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.statements.append(sql)
+        return "INSERT 0 0"
+
+
 class TestWiring:
     async def test_sqlite_pool_wires_the_durable_twin(self, tmp_path: Any) -> None:
         import aiosqlite
@@ -666,6 +692,92 @@ class TestWiring:
             assert len(await manager.store.list_entries("ws-wired")) == 1
         finally:
             await conn.close()
+
+    async def test_postgres_pool_wires_the_durable_twin_over_sqlite(self) -> None:
+        """Backend selection without a live server: a PostgreSQL pool wins
+        even when a SQLite pool is also at hand, creates the migration-072
+        tables under the advisory lock, and never initializes a SQLite
+        fallback store — the split this wiring shipped before the PG twin
+        existed, answering a ``postgresql://`` deployment with the
+        process-memory log (#105)."""
+        from maistro.memory.working.pg_store import PgWorkspaceLogStore
+        from maistro.memory.working.wiring import WORKING_LOG_PG_TABLES
+
+        pool = _RecordingWorkingLogPool()
+        manager = await wire_working_memory(None, pg_pool=pool)
+        assert isinstance(manager.store, PgWorkspaceLogStore)
+        assert any("pg_advisory_xact_lock" in sql for sql in pool.statements), (
+            "concurrent bootstrap must serialise on the advisory lock"
+        )
+        ddl = "\n".join(pool.statements)
+        for table in WORKING_LOG_PG_TABLES:
+            assert f"CREATE TABLE IF NOT EXISTS {table}" in ddl
+
+    async def test_postgres_wiring_brings_a_bare_database_up_and_survives_restart(
+        self,
+    ) -> None:
+        """Against a real server, on a throwaway database: a fresh deployment
+        that never ran `alembic upgrade head` comes up with the log on the
+        durable backend it selected, and a new pool (a restart in
+        production) re-reads what the first process retained — the #105
+        acceptance the old wiring failed."""
+        dsn = postgres_dsn()
+        if not dsn:
+            pytest.skip("set MAISTRO_TEST_PG_DSN to a reachable PostgreSQL server")
+        asyncpg = pytest.importorskip("asyncpg")
+        psycopg = pytest.importorskip("psycopg")
+
+        from maistro.memory.working.pg_store import PgWorkspaceLogStore
+        from maistro.memory.working.wiring import WORKING_LOG_PG_TABLES
+
+        base = dsn.rsplit("/", 1)[0]
+        name = f"working_log_wiring_{uuid.uuid4().hex[:12]}"
+        bare = f"{base}/{name}"
+        # Admin over the existing test database (a URL without one would
+        # connect to a database named after the user): CREATE DATABASE needs
+        # autocommit.
+        with psycopg.connect(dsn, autocommit=True) as admin:  # type: ignore[arg-type]
+            admin.execute(f'CREATE DATABASE "{name}"')  # type: ignore[union-attr]
+        try:
+            first = await asyncpg.create_pool(bare, min_size=1, max_size=2)
+            try:
+                manager = await wire_working_memory(None, pg_pool=first)
+                assert isinstance(manager.store, PgWorkspaceLogStore)
+                rows = await first.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                )
+                assert {row["tablename"] for row in rows} == set(WORKING_LOG_PG_TABLES), (
+                    "wiring must bring a bare database up with the working-log schema"
+                )
+                await manager.observe("ws-bare", cycle=1, text="retained observation")
+                await manager.store.put_result(
+                    WorkingResult(
+                        workspace_id="ws-bare",
+                        result_id="res-bare",
+                        source="tool",
+                        content="full payload",
+                    )
+                )
+            finally:
+                await first.close()
+
+            # The restart: a new pool, as a new process would dial.
+            second = await asyncpg.create_pool(bare, min_size=1, max_size=2)
+            try:
+                rehydrated = await wire_working_memory(None, pg_pool=second)
+                assert isinstance(rehydrated.store, PgWorkspaceLogStore)
+                entries = await rehydrated.store.list_entries("ws-bare")
+                assert [e.text for e in entries] == ["retained observation"]
+                assert entries[0].seq == 1
+                got = await rehydrated.store.get_result("ws-bare", "res-bare")
+                assert got is not None and got.content == "full payload"
+                assert await rehydrated.store.purge_workspace("ws-bare") == 1
+                assert await rehydrated.store.get_result("ws-bare", "res-bare") is None
+            finally:
+                await second.close()
+        finally:
+            with psycopg.connect(dsn, autocommit=True) as cleanup:  # type: ignore[arg-type]
+                cleanup.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')  # type: ignore[union-attr]
 
     async def test_no_pool_falls_back_loudly(self, caplog: Any) -> None:
         import logging
@@ -703,3 +815,16 @@ class TestWiring:
         assert isinstance(fallback.store, InMemoryWorkspaceLogStore)
         # The field exists on Container and defaults to None (direct-built).
         assert Container.__dataclass_fields__["working_memory"].default is None
+
+    async def test_container_wires_postgres_over_no_sqlite_pool(self) -> None:
+        """The container's PostgreSQL branch holds only ``pg_pool`` — its
+        ``db_pool`` stays ``None`` — so the working-log seam it calls must
+        select the PG twin from that argument alone. Before #105's repair it
+        passed only ``db_pool``, so every PostgreSQL deployment got the
+        in-process log that dies with the process: the exact regression this
+        selection pins."""
+        from maistro.container import _wire_working_memory_backend
+        from maistro.memory.working.pg_store import PgWorkspaceLogStore
+
+        wired = await _wire_working_memory_backend(None, pg_pool=_RecordingWorkingLogPool())
+        assert isinstance(wired.store, PgWorkspaceLogStore)
