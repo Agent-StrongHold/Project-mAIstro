@@ -4,6 +4,7 @@ import logging
 import random
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from .archive import CandidateArchive, apply_objective
 from .attribution import EvalContext, ProducerKind, ProducerLedger, producer_identity
 from .crossover import crossover_and_mutate
+from .evidence_manifest import build_evidence_manifest, publish_evidence_manifest
 from .fitness import compute_fitness, passes_hard_gate
 from .harness import EvalHarness, evidence_method
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
@@ -34,7 +36,7 @@ from .retrodiction import (
     TraceLedger,
 )
 from .tournament import EloTournament
-from .types import FitnessComponents, PipelineGenome
+from .types import EvalResult, FitnessComponents, PipelineGenome
 
 logger = logging.getLogger("maistro_evolve.cycle")
 
@@ -139,6 +141,12 @@ class EvolutionConfig(BaseModel):
     # repeated independent evidence the promotion policy requires.
     reconfirm_per_cycle: int = Field(default=2, ge=0, le=MAX_EVAL_BATCH_SIZE)
 
+    # Where the run publishes its evidence manifest (results + metered
+    # cost/security tax/RHAE + verdict conformance + the ordered public
+    # trace). None ⇒ nothing is published: the manifest is an artifact an
+    # operator asks for, not a side effect every evolution run should have.
+    evidence_dir: str | None = None
+
 
 class FitnessEvidenceDriftError(RuntimeError):
     """A genome's fitness moved although its exact evidence did not (#853).
@@ -207,6 +215,12 @@ class EvolutionCycle:
         self.ledger = ledger or ProducerLedger()
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
+        # Monotonic per-evaluation ordinal (#104): one genome can be
+        # evaluated twice within a single cycle (first eval, then #854
+        # reconfirmation), and both runs share the genome id and cycle
+        # count. The published evidence needs its own identity so the
+        # second manifest cannot replace the first sample's.
+        self._evaluation_seq: int = 0
         # Prior-cycle trace evidence for the retrodiction prefilter (M4-A5).
         # The ledger deliberately outlives individual run_cycle() calls — the
         # point is replaying THIS cycle's candidates against traces recorded
@@ -330,6 +344,7 @@ class EvolutionCycle:
                 )
         self._stamp_evidence(genome, cfg)
         genome.updated_at = datetime.now(UTC).isoformat()
+        self._publish_evidence(genome, results, cfg)
         return results
 
     def _decide_batch(
@@ -452,6 +467,49 @@ class EvolutionCycle:
         for genome in candidates[: config.reconfirm_per_cycle]:
             await self._eval_and_fold(genome, config, llm_call)
             population.add(genome)
+
+    def _publish_evidence(
+        self,
+        genome: PipelineGenome,
+        results: list[EvalResult],
+        config: EvolutionConfig,
+    ) -> None:
+        """Publish this evaluation's evidence manifest, when a target is configured.
+
+        The manifest is the falsifiable artifact behind the run's numbers:
+        which benchmark produced which score over how many samples, the
+        metered cost/security tax/RHAE block, the verdict-conformance report
+        that shows the pass/fail rule was host-owned, and the ordered public
+        trace of what the run did. It is verified before it is written, and
+        refused rather than published when it does not verify.
+
+        One directory per run (``<evidence_dir>/<run_id>/manifest.json``) so a
+        later run cannot overwrite an earlier run's evidence.
+        """
+        if not config.evidence_dir:
+            return
+        if not results:
+            # No benchmark produced a result, so there is no run to publish
+            # evidence about. Nothing is written rather than an empty
+            # manifest that would look like a run.
+            logger.warning(
+                "evolve_cycle_evidence: no results to publish evidence for "
+                "(genome %s) — nothing written",
+                genome.id,
+            )
+            return
+        # One evaluation, one identity: first eval and #854 reconfirmation
+        # within the same cycle would otherwise publish under the same run
+        # id and the atomic replace would silently discard the first
+        # sample's manifest while fitness retained both samples.
+        self._evaluation_seq += 1
+        run_id = f"{genome.id}-cycle-{self._cycle_count}-eval-{self._evaluation_seq}"
+        manifest = build_evidence_manifest(
+            run_id=run_id,
+            results=results,
+            verdict_conformance=self.harness.verdict_conformance(),
+        )
+        publish_evidence_manifest(manifest, Path(config.evidence_dir) / run_id)
 
     async def _run_tournament_battles(
         self,

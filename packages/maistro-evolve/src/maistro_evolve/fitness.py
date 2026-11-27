@@ -6,6 +6,7 @@ from typing import Any
 
 from .curriculum import RESERVED_BENCHMARK_PREFIX
 from .diversity import trait_vector
+from .lift_matrix import TRANSFER_EPSILON
 from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .types import FitnessComponents, PipelineGenome
 
@@ -183,15 +184,33 @@ def hard_gate_threshold(benchmark: str) -> float:
     return _DEFAULT_GATE_FLOOR if tuned is None else tuned
 
 
+def _gate_failures(genome: PipelineGenome) -> list[str]:
+    """Every correctness-gate failure the host records for ``genome``.
+
+    The composed definition shared by every gate consumer: per-benchmark
+    thresholds (``_check_hard_gate``) plus the transfer-inversion rules
+    (``_check_transfer_inversion``) that zero ``compute_fitness``. Fitness,
+    the retrodiction accounting, selection/promotion eligibility, and the
+    raw promote transition all ask this one list, so "disqualified" means
+    the same thing on every path (#104: a measured inversion must gate M4
+    promotion, not just the score — a gate that only reaches fitness cannot
+    stop an activation).
+    """
+    _, failures = _check_hard_gate(genome)
+    return failures + _check_transfer_inversion(genome)
+
+
 def passes_hard_gate(genome: PipelineGenome) -> bool:
-    """Public pass/fail read of the hard gate over a genome's current scores.
+    """Public pass/fail read of the correctness gates over a genome's evidence.
 
     Used by the retrodiction prefilter's false-negative accounting: a
     filtered candidate that later passes full evaluation counts against the
-    filter. Delegates to ``_check_hard_gate`` — same gate, one definition.
+    filter. Delegates to ``_gate_failures`` — the same composed gate, one
+    definition — including the transfer-inversion rules, so a candidate
+    that inverts on the frontier model is not counted as a filter false
+    negative.
     """
-    passed, _ = _check_hard_gate(genome)
-    return passed
+    return not _gate_failures(genome)
 
 
 def _weighted_eval_score(
@@ -350,6 +369,12 @@ def _evidence_hash(
         "latency_evidence": _num(genome.harness_params.get("avg_latency_seconds")),
         "elo_evidence": _num(genome.harness_params.get("avg_elo")),
         "elo_battles_evidence": _num(genome.harness_params.get("elo_battles")),
+        # These inputs can zero fitness independently of benchmark scores.
+        # Omitting them makes a legitimate transfer refresh look like fitness
+        # drift under identical evidence, stopping the cycle's recomputation.
+        "transfer_evidence": genome.harness_params.get("transfer_by_benchmark"),
+        "transfer_epsilon": genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON),
+        "approved_for_promotion": genome.approved_for_promotion,
         "self_traits": [round(v, 9) for v in trait_vector(genome)],
         # Population evidence diversity was computed against (other members
         # only, sorted by id so list order cannot change the hash).
@@ -364,6 +389,81 @@ def _evidence_hash(
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _inversion_entry_failures(transfers: dict[str, Any], epsilon: float) -> list[str]:
+    """Rule 1: a measured ``transfer < -epsilon`` disqualifies, however big the lift."""
+    failures: list[str] = []
+    for bench, entry in sorted(transfers.items()):
+        if not isinstance(entry, dict) or "transfer" not in entry:
+            failures.append(f"{bench} transfer evidence present but has no 'transfer' value")
+            continue
+        transfer = entry["transfer"]
+        if not isinstance(transfer, (int, float)) or isinstance(transfer, bool):
+            failures.append(f"{bench} transfer value is not a number: {transfer!r}")
+            continue
+        # Transfer is the difference between two scores in [0, 1]. This
+        # range check also rejects NaN/infinity without coercing untrusted
+        # values; NaN otherwise silently bypasses the comparison below.
+        if not -1.0 <= transfer <= 1.0:
+            failures.append(f"{bench} transfer must be finite and in [-1, 1]: {transfer!r}")
+            continue
+        if transfer < -epsilon:
+            stale = " (stale measurement)" if entry.get("transfer_stale") else ""
+            failures.append(
+                f"{bench} transfer {transfer:.3f} < -{epsilon:.2f}: harness "
+                f"inverts on the frontier model{stale} — disqualified"
+            )
+    return failures
+
+
+def _missing_transfer_evidence(genome: PipelineGenome, transfers: dict[str, Any]) -> list[str]:
+    """Rule 2: a promotion candidate carries transfer evidence for every scored benchmark."""
+    if not genome.approved_for_promotion:
+        return []
+    return [
+        f"promotion candidate lacks transfer evidence for {bench} "
+        "(SPEC-281: stale is acceptable, absent is not)"
+        for bench in sorted(genome.eval_scores)
+        if bench not in transfers
+    ]
+
+
+def _check_transfer_inversion(genome: PipelineGenome) -> list[str]:
+    """SPEC-281 §2 / AC-3 + AC-4: inversion is a hard gate, absence blocks promotion.
+
+    The frontier cell is expensive, so transfer is sampled — every N
+    generations and on every promotion candidate — and carried forward in
+    ``harness_params["transfer_by_benchmark"]`` as
+    ``{benchmark: {"transfer": float, "transfer_stale": bool}}`` between
+    samples. Two rules, both fail-closed:
+
+    1. A measured ``transfer < -epsilon`` is a gate failure no matter how
+    large the lift is — a harness that damages the frontier model is
+    disqualified, not penalized.
+    2. A genome flagged ``approved_for_promotion`` must carry transfer
+    evidence for every benchmark it was scored on. "A stale transfer is
+    still evidence; an absent one is not" (SPEC-281 §2) — stale entries pass
+    this gate, absent ones do not.
+    """
+    transfers: dict[str, Any] = genome.harness_params.get("transfer_by_benchmark") or {}
+    if not isinstance(transfers, dict):
+        return [
+            "transfer_by_benchmark must be a mapping of benchmark -> "
+            "{'transfer': float, 'transfer_stale': bool}"
+        ]
+    # Legacy per-genome tolerances may tighten policy, never relax it. The
+    # host's ceiling is fixed even when a candidate supplies its own value.
+    epsilon = genome.harness_params.get("transfer_epsilon", TRANSFER_EPSILON)
+    if (
+        not isinstance(epsilon, (int, float))
+        or isinstance(epsilon, bool)
+        or not 0.0 <= epsilon <= TRANSFER_EPSILON
+    ):
+        return [f"transfer_epsilon must be a finite number in [0, {TRANSFER_EPSILON}]"]
+    return _inversion_entry_failures(transfers, epsilon) + _missing_transfer_evidence(
+        genome, transfers
+    )
 
 
 def compute_fitness(
@@ -386,7 +486,8 @@ def compute_fitness(
     ``capability_score``, and a gate failure zeroes ``total`` regardless of
     any weight configuration or padded context evidence.
     """
-    passed, gate_failures = _check_hard_gate(genome)
+    gate_failures = _gate_failures(genome)
+    passed = not gate_failures
 
     w_eval = _weighted_eval_score(genome, objective)
     cost_eff = _cost_efficiency(genome)

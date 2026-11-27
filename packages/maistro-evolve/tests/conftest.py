@@ -17,6 +17,13 @@ def _stable_real_benchmark_availability(
     Whether the vendored BFCL corpus is present is an integration/packaging concern,
     not something that should make these unit tests environment-dependent.
 
+    The unavailable map must name *every* real adapter the registry holds —
+    including the ARC-AGI second-domain adapter (#104 M4-G), whose corpus is
+    not vendored in this repository — because the harness contract test
+    asserts that the available and unavailable sets together cover the real
+    registry exactly. An adapter that exists but is named nowhere would be
+    invisible to that assertion.
+
     Individual tests remain free to replace ``available_real_benchmarks`` again to
     exercise unavailable/empty combinations.
     """
@@ -40,6 +47,12 @@ def _stable_real_benchmark_availability(
     monkeypatch.setattr(
         bench_pkg,
         "available_real_benchmarks",
-        lambda: ({"bfcl": fake_bfcl}, {"ifeval": "optional test dependency unavailable"}),
+        lambda: (
+            {"bfcl": fake_bfcl},
+            {
+                "ifeval": "optional test dependency unavailable",
+                "arc_agi": "ARC-AGI corpus not vendored in this checkout",
+            },
+        ),
     )
     yield
