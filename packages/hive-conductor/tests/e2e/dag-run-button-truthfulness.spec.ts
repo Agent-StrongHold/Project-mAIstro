@@ -100,7 +100,7 @@ async function runWith(sequence: object[]) {
   frames = sequence;
   socketUrls = [];
   await page.goto("/dags", { waitUntil: "domcontentloaded" });
-  await page.getByText(dag.name, { exact: true }).first().click();
+  await page.getByRole("button", { name: `Open DAG ${dag.name}` }).click();
   await page.getByRole("button", { name: /Run DAG/ }).click();
   const log = page.getByRole("log", { name: "DAG execution log" });
   await expect(log).toBeVisible();

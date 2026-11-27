@@ -104,8 +104,8 @@ test("creating and deleting a memory entry does not refetch the whole collection
   const entryCard = page.locator(".card", { hasText: key });
   await expect(entryCard).toBeVisible();
 
-  await entryCard.click();
-  await page.getByRole("button", { name: "delete" }).click();
+  await entryCard.getByRole("button", { name: /Open memory entry/ }).click();
+  await page.getByRole("button", { name: "delete", exact: true }).click();
   const [deleteResponse] = await Promise.all([
     page.waitForResponse(
       (r) => r.url().includes("/v1/memory/entries/") && r.request().method() === "DELETE",
@@ -140,7 +140,7 @@ test("deleting a memory entry disappears immediately and comes back if the delet
 
   const card = page.locator(".card", { hasText: key });
   await expect(card).toBeVisible();
-  await card.click();
+  await card.getByRole("button", { name: /Open memory entry/ }).click();
 
   let releaseDelete: (() => void) | null = null;
   await page.route(`**/v1/memory/entries/${entry.id}`, async (route, request) => {
@@ -154,7 +154,7 @@ test("deleting a memory entry disappears immediately and comes back if the delet
     await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "boom" }) });
   });
 
-  await page.getByRole("button", { name: "delete" }).click();
+  await page.getByRole("button", { name: "delete", exact: true }).click();
   const deleteResponsePromise = page.waitForResponse(
     (r) => r.url().includes(`/v1/memory/entries/${entry.id}`) && r.request().method() === "DELETE",
   );
@@ -191,8 +191,8 @@ test("editing a memory entry applies immediately and reverts if the save fails",
     (r) => /\/v1\/memory\/entries$/.test(new URL(r.url()).pathname) && r.request().method() === "GET",
   );
 
-  await page.locator(".card", { hasText: key }).click();
-  await page.getByRole("button", { name: "edit" }).click();
+  await page.locator(".card", { hasText: key }).getByRole("button", { name: /Open memory entry/ }).click();
+  await page.getByRole("button", { name: "edit", exact: true }).click();
   await page.locator("textarea.input-field").fill("edited value");
 
   let releaseUpdate: (() => void) | null = null;
@@ -257,7 +257,7 @@ test("a newer selection survives a failed delete of the previously selected entr
 
   const cardA = page.locator(".card", { hasText: keyA });
   const cardB = page.locator(".card", { hasText: keyB });
-  await cardA.click();
+  await cardA.getByRole("button", { name: /Open memory entry/ }).click();
 
   let releaseDelete: (() => void) | null = null;
   await page.route(`**/v1/memory/entries/${entryA.id}`, async (route, request) => {
@@ -271,7 +271,7 @@ test("a newer selection survives a failed delete of the previously selected entr
     await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "boom" }) });
   });
 
-  await page.getByRole("button", { name: "delete" }).click();
+  await page.getByRole("button", { name: "delete", exact: true }).click();
   const deleteResponsePromise = page.waitForResponse(
     (r) => r.url().includes(`/v1/memory/entries/${entryA.id}`) && r.request().method() === "DELETE",
   );
@@ -279,7 +279,7 @@ test("a newer selection survives a failed delete of the previously selected entr
   await expect(cardA).toHaveCount(0);
 
   // While A's DELETE is still held, the user picks a different entry.
-  await cardB.click();
+  await cardB.getByRole("button", { name: /Open memory entry/ }).click();
   await expect(page.getByRole("heading", { name: keyB })).toBeVisible();
 
   await expect.poll(() => releaseDelete !== null).toBe(true);
@@ -330,8 +330,8 @@ test("a second successful edit survives an earlier edit's late failure", async (
     await route.continue();
   });
 
-  await page.locator(".card", { hasText: key }).click();
-  await page.getByRole("button", { name: "edit" }).click();
+  await page.locator(".card", { hasText: key }).getByRole("button", { name: /Open memory entry/ }).click();
+  await page.getByRole("button", { name: "edit", exact: true }).click();
   await page.locator("textarea.input-field").fill("v1");
   // The two PUTs share a URL and method, so the responses are told apart by
   // status: the held first request is fulfilled with 500 (below), the
@@ -347,7 +347,7 @@ test("a second successful edit survives an earlier edit's late failure", async (
 
   // Edit the same entry again while the first PUT is still held, and let
   // this second save go all the way through.
-  await page.getByRole("button", { name: "edit" }).click();
+  await page.getByRole("button", { name: "edit", exact: true }).click();
   await page.locator("textarea.input-field").fill("v2");
   const secondPutPromise = page.waitForResponse(
     (r) => r.url().includes(`/v1/memory/entries/${entry.id}`) && r.request().method() === "PUT" && r.status() === 200,

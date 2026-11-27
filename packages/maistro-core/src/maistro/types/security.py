@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro.security.integrity_types import DecisionSignature
 from maistro.security.redact import redact as _redact
 
 
@@ -60,6 +61,13 @@ class Violation:
         # violations inherits redacted text. (The sentinel-side Violation in
         # `maistro.security._types` applies the identical rule.)
         object.__setattr__(self, "detail", _redact(self.detail))
+        # repair_action rides the same signed-and-persisted path, and paths
+        # like schema-default substitution can embed credential values. Scrub
+        # at construction too -- before signing -- so the signature covers
+        # only redacted text. `redact` is idempotent, so rebuilding Violation
+        # objects from a persisted row yields identical decision bytes.
+        if self.repair_action:
+            object.__setattr__(self, "repair_action", _redact(self.repair_action))
 
 
 @dataclass(frozen=True)
@@ -78,7 +86,14 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
-    # ADR-073 decision proof. The audit store signs before retaining this row.
+    action: str = ""
+    principal_id: str = ""
+    policy_snapshot: str = ""
+    payload: str = ""
+    inputs_hash: str = ""
+    integrity: DecisionSignature | None = None
+
+    # Store-level audit proof; distinct from the Sentinel decision envelope.
     signature: str = ""
     signing_key_id: str = ""
     proof_type: str = ""
@@ -86,7 +101,6 @@ class AuditEntry:
     # must never put scanned content in an audit entry. (#1139: the Turing
     # ingress composes these onto the canonical record.)
     route: str = ""
-    action: str = ""
     policy_version: str = ""
     workspace_id: str = ""
     project_id: str = ""
