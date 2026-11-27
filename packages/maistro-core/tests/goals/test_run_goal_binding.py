@@ -66,10 +66,14 @@ async def run_spine(request, tmp_path) -> Any:
         asyncpg = pytest.importorskip("asyncpg")
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
         try:
             pg_projects = PgProjectScopeStore(pool)
+            # Provisioned through the canonical authority (#37): the scope
+            # store verifies Workspace existence before minting a Root.
+            await provision_workspace(pool, WORKSPACE)
             root = await pg_projects.create_root(WORKSPACE)
             yield PgRunStore(pool, project_store=pg_projects), root.project_id, None
         finally:

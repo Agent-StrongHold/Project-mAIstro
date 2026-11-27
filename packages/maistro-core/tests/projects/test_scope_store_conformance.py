@@ -37,6 +37,7 @@ from uuid import uuid4
 import pytest
 
 from maistro.projects.scope import (
+    Project,
     ProjectIntegrityError,
     ProjectMembership,
     ProjectNotEmpty,
@@ -109,7 +110,35 @@ class _PostgresBackend:
     async def store(self):
         from maistro.projects.pg_scope_store import PgProjectScopeStore
 
-        return PgProjectScopeStore(self._pool)
+        class _ProvisionedPgScopes(PgProjectScopeStore):
+            """A PG store whose fresh ids are provisioned like production's.
+
+            #37's fence makes `create_root` refuse a Workspace id nothing
+            canonical owns — including every fresh id this suite mints.
+            Production never calls `create_root` for an unprovisioned id: the
+            container provisions its configured Workspace at startup and
+            Hive's imports provision theirs, so the fence's refusal paths are
+            exercised in the wiring those paths run
+            (tests/persistence/test_workspace_scope_fence_pg.py proves the
+            negative against this same class, unprovisioned). This suite's
+            subject is the tree contract over legitimately owned Workspaces,
+            so the harness provisions each fresh id — the same
+            `canonical_workspaces` row the container would write — before
+            delegating to the real `create_root`.
+            """
+
+            async def create_root(self, workspace_id: str) -> Project:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """INSERT INTO canonical_workspaces
+                               (workspace_id, name, created_at, updated_at, payload)
+                           VALUES ($1, $1, now(), now(), '{}'::text::jsonb)
+                           ON CONFLICT (workspace_id) DO NOTHING""",
+                        workspace_id,
+                    )
+                return await super().create_root(workspace_id)
+
+        return _ProvisionedPgScopes(self._pool)
 
     async def close(self) -> None:
         return None

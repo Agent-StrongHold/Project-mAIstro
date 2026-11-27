@@ -178,6 +178,29 @@ async def owned_workspace():
     return workspace
 
 
+async def _mirror_workspace_identity(factory: Any, workspace_id: str, name: str) -> None:
+    """Mirror one canonical Workspace identity into the shared database.
+
+    Migration 071 (#37) enforces `canonical_projects` -> `canonical_workspaces`
+    (RESTRICT) on new writes, so a Project mirror is refused until the
+    Workspace identity the in-process canonical authority owns is durable in
+    the same database. Idempotent: `ON CONFLICT DO NOTHING`.
+    """
+    from sqlalchemy import text
+
+    async with factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO canonical_workspaces "
+                "(workspace_id, name, created_at, updated_at, payload) "
+                "VALUES (:w, :name, NOW(), NOW(), '{}'::jsonb) "
+                "ON CONFLICT (workspace_id) DO NOTHING"
+            ),
+            {"w": workspace_id, "name": name},
+        )
+        await session.commit()
+
+
 @pytest.fixture
 async def stack(_pg_server, owned_workspace):
     """Goal seam + brief store + project store over the real durable stores,
@@ -195,6 +218,13 @@ async def stack(_pg_server, owned_workspace):
     brief_store = PgCreativeBriefStore(session_factory=_pg_server.factory)
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root(owned_workspace.id)
+
+    # The Project mirror below is refused until the Workspace identity the
+    # in-process canonical authority owns is durable in the same database
+    # (#37 fence). No second Root row is created:
+    # `ix_canonical_projects_one_root` allows one root per Workspace, and the
+    # mirror below already provides it.
+    await _mirror_workspace_identity(_pg_server.factory, owned_workspace.id, owned_workspace.name)
 
     async def register_project() -> None:
         # What the canonical Project store's PostgreSQL twin writes; the
@@ -276,9 +306,15 @@ async def stack(_pg_server, owned_workspace):
             await session.execute(
                 text("DELETE FROM canonical_projects WHERE workspace_id = :w"), {"w": ws}
             )
+            # The mirrored identity goes last: the Projects RESTRICT above is
+            # only satisfied once their rows are gone (memberships and
+            # personas cascade; canonical_projects does not).
+            await session.execute(
+                text("DELETE FROM canonical_workspaces WHERE workspace_id = :w"), {"w": ws}
+            )
             await session.commit()
-        # The per-test Workspace lives in the in-process canonical store; the
-        # shared test database keeps no Workspace rows of its own.
+        # The per-test Workspace's canonical identity is mirrored into the
+        # shared database for the #37 fence and removed with everything else.
 
 
 async def _commit(stack: Any, draft: dict[str, Any], **kwargs: Any) -> Any:
@@ -1225,6 +1261,11 @@ async def test_a_revision_cannot_target_a_foreign_goal(stack) -> None:
     foreign_root = await foreign_projects.create_root(other_workspace.id)
     foreign_session_factory = stack.server.factory
     foreign_brief_store = stack.brief_store.__class__(session_factory=foreign_session_factory)
+    # The #37 fence refuses the Project mirror until the second Workspace's
+    # identity is durable in the shared database too.
+    await _mirror_workspace_identity(
+        foreign_session_factory, other_workspace.id, other_workspace.name
+    )
     from sqlalchemy import text
 
     async with foreign_session_factory() as session:
@@ -1297,6 +1338,9 @@ async def test_a_dual_admin_cannot_cross_workspaces_via_revises(stack) -> None:
     other_projects = stack.projects.__class__()
     other_root = await other_projects.create_root(other_workspace.id)
     other_brief_store = stack.brief_store.__class__(session_factory=stack.server.factory)
+    # The #37 fence refuses the Project mirror until the second Workspace's
+    # identity is durable in the shared database too.
+    await _mirror_workspace_identity(stack.server.factory, other_workspace.id, other_workspace.name)
     from sqlalchemy import text
 
     async with stack.server.factory() as session:
@@ -2084,6 +2128,9 @@ async def test_a_revision_cannot_bind_a_lineage_from_another_workspace(stack) ->
     )
     other_projects = stack.projects.__class__()
     other_root = await other_projects.create_root(other_workspace.id)
+    # The #37 fence refuses the Project mirror until the second Workspace's
+    # identity is durable in the shared database too.
+    await _mirror_workspace_identity(stack.server.factory, other_workspace.id, other_workspace.name)
     from services.agent_materialization import workspace_agent_id
 
     from maistro.goals import GoalRevisionDraft
