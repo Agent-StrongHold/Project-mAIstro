@@ -1329,3 +1329,34 @@ overnight operation, and production Dreaming producer/Agent recall remain
 UNVERIFIED or unmet as stated in Round 19. No tests were added, so no inventory
 delta applies. This documentation-only verification update does not promote the
 milestone verdict: **NEEDS-REPAIR**.
+
+## Round 21 — bounded repair disposition at 218804c2e4
+
+The assigned job directory had no `check-*.log` files. I read the supplied
+prior verifier logs (all seven checks in job `27114af766a84e59bf93e19b8782eae4`)
+and independently reran the focused validations at this exact head:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3721 files).
+- Goal reconciliation/container production tests: 23 passed.
+- Workspace recovery/design/Entra/JIT/unwired-retirement tests: 61 passed.
+- Release consistency: passed; no published versions, shipping 0.9.0 toward 1.0.0.
+- CI-exact vulture baseline scan: 1217 reviewed identities = 1217 findings.
+- `git tag -l 'v*'`: no tags. The release workflow explicitly says it is not
+  yet exercised (`.github/workflows/release.yml:23`).
+
+No code change can truthfully substitute for the external release/soak/restore
+operator records or a product Dreaming producer. The production evidence still
+shows no caller of `promote_evidence`; `KNOWN-GAPS.md:360-366` explicitly defers
+the producer, and the user-model API remains owner-invoked rather than used by
+an Agent runtime. ADR-080 governs same-user user-scope reuse without widening
+private memory; ADR-082226-5104 requires Dreaming to be canonical Run execution
+and Ladybug to remain a disposable projection. Adding an unintegrated producer
+here would violate those authority seams rather than satisfy acceptance.
+
+Accordingly, not verified: release workflow end-to-end; clean-machine deploy
+with real-model Graph E2E; backup/restore including credential/decryption
+escrow; RC soak and byte-equivalent promotion; overnight live fire; and
+production Dreaming-to-Agent recall. No tests or production behavior changed,
+so no suite inventory delta is applicable. This round records the bounded
+verification and leaves milestone status **NEEDS-REPAIR**; operator evidence
+and the separately scoped producer work remain required.
