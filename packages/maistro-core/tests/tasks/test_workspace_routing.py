@@ -418,3 +418,76 @@ async def test_the_default_workspace_is_verified_like_any_other() -> None:
     run = await spine.runs.get_run(task.run_id or "")
     assert run is not None
     assert run.workspace_id == "default"
+
+
+class _SuspendingProjects:
+    """A project store whose ``create_root`` yields to the event loop first.
+
+    In-memory stores answer without ever suspending, so concurrent callers
+    of one router serialize and the rebuild lock never actually races. A
+    store with real I/O suspends instead — which is what lets two callers
+    pass the cache check before either of them holds the lock. Delegating
+    everything else keeps the router's other seams untouched.
+    """
+
+    def __init__(self, inner: InMemoryProjectScopeStore) -> None:
+        self._inner = inner
+
+    async def create_root(self, workspace_id: str) -> object:
+        await asyncio.sleep(0)
+        return await self._inner.create_root(workspace_id)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+async def test_a_cached_admitter_is_rebuilt_when_the_root_under_the_id_changes(
+    spine,
+) -> None:
+    """A cached admitter is only as valid as the Root it resolved against.
+
+    The per-call ``create_root`` re-resolution exists so a cached admitter
+    cannot outlive the Root it was built for: when the same Workspace id
+    resolves to a different Root Project — a scope store that lost its tree
+    — the stale admitter must be dropped, not served, and the rebuilt one
+    must bind the Root the store answers with now.
+    """
+    _projects, _runs, router = spine
+    warm = await router.admitter_for("w-move")
+    _, stale_root = await warm.admission_scope()
+
+    # The scope store loses its tree: the next resolution under the same
+    # Workspace id answers with a freshly minted, different Root.
+    router._projects = InMemoryProjectScopeStore()
+    rebuilt = await router.admitter_for("w-move")
+
+    assert rebuilt is not warm
+    _, new_root = await rebuilt.admission_scope()
+    assert new_root != stale_root
+    # The stale admitter never comes back: the cache now serves the rebuilt
+    # binding.
+    assert await router.admitter_for("w-move") is rebuilt
+
+
+async def test_concurrent_rebuilds_share_one_admitter(spine) -> None:
+    """Racing re-resolutions after a Root change must not build N admitters.
+
+    Every racing caller resolves the same new Root before any of them holds
+    the rebuild lock, so the first caller builds and the rest must adopt the
+    already-cached admitter rather than construct their own — the same
+    contract the cold-cache race already pins, held on the rebuild path
+    where each caller has just evicted a stale entry.
+    """
+    _projects, _runs, router = spine
+    stale = await router.admitter_for("w-race")
+
+    # The store loses its tree and suspends before answering, so every
+    # concurrent caller resolves the new Root before any of them holds the
+    # rebuild lock.
+    router._projects = _SuspendingProjects(InMemoryProjectScopeStore())
+    admitters = await asyncio.gather(*(router.admitter_for("w-race") for _ in range(8)))
+
+    assert len({id(a) for a in admitters}) == 1
+    assert all(a is not stale for a in admitters)
+    scopes = {tuple(await a.admission_scope()) for a in admitters}
+    assert len(scopes) == 1

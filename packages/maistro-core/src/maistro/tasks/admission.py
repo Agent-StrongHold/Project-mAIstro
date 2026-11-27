@@ -594,9 +594,13 @@ class WorkspaceRoutingAdmitter:
             # The Root under this id changed while the admitter sat cached: a
             # Workspace that was torn down and re-provisioned, or a scope store
             # that lost its tree. The cached admitter points at a Root nothing
-            # else considers canonical — drop it and rebuild below.
+            # else considers canonical — drop it and rebuild below. The pop is
+            # guarded: only the stale entry this call decided against may be
+            # dropped, or racing re-resolutions would evict each other's
+            # already-rebuilt entries and stack one admitter per caller.
             async with self._lock:
-                self._by_workspace.pop(resolved, None)
+                if self._by_workspace.get(resolved) is cached:
+                    self._by_workspace.pop(resolved, None)
         else:
             root = await self._projects.create_root(resolved)
         async with self._lock:

@@ -129,3 +129,24 @@ class TestSqliteFence:
             assert root.workspace_id == "ws-unprovisioned"
         finally:
             await conn.close()
+
+    async def test_an_operational_error_that_is_not_the_missing_table_propagates(self) -> None:
+        """A real database fault is not the bootstrap escape.
+
+        `_workspace_row` reads exactly one OperationalError as "no authority
+        provisioned yet": the missing `canonical_workspaces` table. Any other
+        OperationalError — a locked database, an I/O failure — must
+        propagate. Swallowing it into the None answer would misread a
+        mid-fault database as never-provisioned and mint a Root under an id
+        nothing verified.
+        """
+        import sqlite3
+
+        class _FaultingConn:
+            # aiosqlite's `execute` returns the cursor awaitable without
+            # awaiting, so the fault must fire on the call itself.
+            def execute(self, *_args: object, **_kwargs: object) -> object:
+                raise sqlite3.OperationalError("database is locked")
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await SqliteProjectScopeStore._workspace_row(_FaultingConn(), "ws-any")
