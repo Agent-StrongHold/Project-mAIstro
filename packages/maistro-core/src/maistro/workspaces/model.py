@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -95,6 +96,32 @@ class WorkspaceMembership(BaseModel):
         return self.role is WorkspaceRole.OWNER
 
 
+def creation_memberships(
+    workspace: Workspace,
+    creator_user_id: str,
+    initial_memberships: Mapping[str, WorkspaceRole] | None,
+) -> list[WorkspaceMembership]:
+    """Validate the entire initial roster before any canonical create write.
+
+    Convergence imports supply a roster once, in the identity/Root transaction,
+    never as later membership upserts which could undo a concurrent revocation.
+    Ordinary creates still provision only their creator as owner.
+    """
+    roles = {creator_user_id: WorkspaceRole.OWNER, **(initial_memberships or {})}
+    memberships = [
+        WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=user_id,
+            role=role,
+            added_at=workspace.created_at,
+        )
+        for user_id, role in roles.items()
+    ]
+    if roles[creator_user_id] != WorkspaceRole.OWNER:
+        raise ValueError("the Workspace creator must be an owner")
+    return memberships
+
+
 # Backward-compatible alias: WorkspaceMembership is the canonical identity;
 # WorkspaceMember remains only for pre-convergence import compatibility.
 WorkspaceMember = WorkspaceMembership
@@ -102,6 +129,19 @@ WorkspaceMember = WorkspaceMembership
 
 class WorkspaceNotFound(KeyError):
     pass
+
+
+class WorkspaceDeleted(KeyError):
+    """The Workspace's id was deleted and can never be re-created (#37).
+
+    Deletion is the one irreversible fact the canonical store records: a
+    tombstone row joins the Workspace row's delete in the same transaction,
+    so no later caller — a convergence import replaying a stale mirror, a
+    provisioning helper that kept the id in configuration, a recovery tool —
+    can mint a new authority under a deleted id. A Workspace that never
+    existed raises :class:`WorkspaceNotFound`; only a deleted one raises
+    this.
+    """
 
 
 class WorkspaceAccessDenied(PermissionError):
@@ -115,6 +155,7 @@ class WorkspaceOwnershipError(ValueError):
 __all__ = [
     "Workspace",
     "WorkspaceAccessDenied",
+    "WorkspaceDeleted",
     "WorkspaceMember",
     "WorkspaceMembership",
     "WorkspaceNotFound",

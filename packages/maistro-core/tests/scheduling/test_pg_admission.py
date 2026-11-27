@@ -31,6 +31,11 @@ async def test_two_admitters_concurrently_claim_each_due_occurrence_once(
 
     workspace = f"issue-220-{uuid4().hex}"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    from maistro.testing.postgres import provision_workspace
+
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace,
@@ -121,6 +126,11 @@ async def test_admitters_on_opposite_sides_of_a_timezone_edit_claim_each_instant
 
     workspace = f"issue-850-{uuid4().hex}"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    from maistro.testing.postgres import provision_workspace
+
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace,

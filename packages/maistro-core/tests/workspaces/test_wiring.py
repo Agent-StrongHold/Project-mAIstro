@@ -50,11 +50,17 @@ async def test_a_sqlite_project_store_yields_the_sqlite_store_with_its_schema(tm
 
         assert isinstance(store, SqliteWorkspaceStore)
         # `ensure_schema` ran: the tables exist without the caller doing anything.
+        # `canonical_workspace_deletions` is #37's tombstone — deletion is a
+        # recorded fact, not an absent row.
         async with conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'canonical_workspace%'"
         ) as cursor:
             tables = {row[0] for row in await cursor.fetchall()}
-        assert tables == {"canonical_workspaces", "canonical_workspace_memberships"}
+        assert tables == {
+            "canonical_workspaces",
+            "canonical_workspace_memberships",
+            "canonical_workspace_deletions",
+        }
     finally:
         await conn.close()
 

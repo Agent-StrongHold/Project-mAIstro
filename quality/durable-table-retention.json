@@ -1621,6 +1621,31 @@
       "deletion_path": null,
       "issue": "#98",
       "notes": "One row per Workspace BacklogItem. No delete path yet, and Workspace deletion does not purge them; the PostgreSQL slice of #98 decides retention (likely bounded_by_parent on canonical_workspaces)."
+    },
+    {
+      "table": "canonical_workspace_deletions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/store.py",
+      "data_class": "audit",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#37",
+      "notes": "One row per deleted Workspace id — the tombstone that keeps deletion true after the Workspace row is gone (#37). PgWorkspaceStore.delete writes it in the same transaction that removes the Workspace, and create on either backend refuses a tombstoned id, so a stale Hive mirror, a replayed import journal, or leftover configuration cannot resurrect deleted authority. Deleting a tombstone would be resurrecting the Workspace, so no purge path exists by design; the table grows by one row per Workspace deletion, which is bounded by the number of Workspaces ever deleted. Alembic 072 creates it on PostgreSQL; SqliteWorkspaceStore.ensure_schema creates the same definition on SQLite (guarded DDL)."
+    },
+    {
+      "table": "canonical_orphan_project_quarantine",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/073_workspace_tombstones_and_project_fk.py",
+      "data_class": "audit",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#37",
+      "notes": "One row per historical Project whose Workspace id nothing canonical owned, copied here with its full payload and the reason it was held out before removal from the live tree (alembic 072, the approved non-destructive orphan disposition of #37). This is provenance evidence, not live scope: nothing references a quarantined Workspace id again, and create_root refuses the id via the tombstone. Rows are never auto-deleted — an operator may quarantine further leftover rows by hand and VALIDATE CONSTRAINT per the migration's runbook; a bounded purge decision has no owner today. SQLite carries no legacy orphan population (its schema is store-created), so the table is PostgreSQL-only."
     }
   ]
 }

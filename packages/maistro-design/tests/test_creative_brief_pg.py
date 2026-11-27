@@ -78,11 +78,26 @@ def _brief(lineage_id: str, workspace_id: str, project_id: str, version: int = 1
 
 
 async def _seed_scope(session_factory: object, workspace_id: str, project_id: str) -> None:
-    """Register one canonical Project in the claimed Workspace."""
+    """Register one canonical Project in the claimed Workspace.
+
+    Migration 071 (#37) enforces `canonical_projects` -> `canonical_workspaces`
+    (RESTRICT) on new writes, so the Project row needs the Workspace identity
+    to be durable first; `_cleanup` already removes it. The Project here is a
+    Subproject (`is_root = FALSE`), so no Root row is minted or needed.
+    """
     from sqlalchemy import text
 
     factory = session_factory  # async_sessionmaker
     async with factory() as session:  # type: ignore[operator]
+        await session.execute(
+            text(
+                "INSERT INTO canonical_workspaces "
+                "(workspace_id, name, created_at, updated_at, payload) "
+                "VALUES (:w, :name, NOW(), NOW(), '{}'::jsonb) "
+                "ON CONFLICT (workspace_id) DO NOTHING"
+            ),
+            {"w": workspace_id, "name": workspace_id},
+        )
         await session.execute(
             text(
                 "INSERT INTO canonical_projects (project_id, workspace_id, is_root, payload) "

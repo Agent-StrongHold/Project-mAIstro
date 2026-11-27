@@ -71,7 +71,13 @@ async def backend(
                 msg = "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty"
                 raise RuntimeError(msg)
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.testing.postgres import provision_workspace
+
         pool = pg_pool
+        # Priming the spine goes through the admission fence (#37), so the
+        # Workspace is provisioned first, by the caller, exactly like the
+        # container provisions its configured Workspace before wiring.
+        await provision_workspace(pg_pool, WORKSPACE)
     try:
         (
             projects,
