@@ -2038,3 +2038,92 @@ exercise needs an operator tag push); no model credentials in the environment
 runner-only workflows). Writer handoff disposition stands: verdict **MERGE-READY
 (writer handoff only, never integration approval)**; the three external items
 belong to the operator phase. No issue-closure action; PR #2529 stays DRAFT.
+
+## Round 37 — repair round at 3635a1e5 (post-crash revalidation; writer handoff reaffirmed)
+
+Round 37 is the assigned repair lane (`L7`, job `420aaed077e94c8682320742639f0869`,
+stage `repair`). Prior-loop diagnosis, first-hand: the Round-36 verifier job
+(`0bec604e5f5a45da8f2ed25f5e7a8532`) recorded **returncode 0 for all seven of
+its checks** at this exact head — `uv sync`, both ruffs, the core factory/goals
+battery, the conductor cadence/JIT/design battery, and both suite-inventory
+gates — and only then died with `agent_exit: 1`,
+`failure_kind: worker_error` ("agent exited nonzero; inspect private events
+log"). That is a driver-process abort **after** green validation, not a
+validation regression: there was nothing in the tree to repair. The older
+`36a00a3b` check-4 failure (`WorkspaceNotFound: 'hive-canonical-recovery'`)
+was already fixed by `a34477e472` and re-proven green below. Worktree found
+clean at the assigned head `3635a1e5479cd7b94e49462a93e159ebddb45f14`
+(`git status --short` empty), matching the dispatch snapshot exactly.
+
+Everything re-executed first-hand at `3635a1e5` (not trusted from any prior
+round):
+
+| Command (exact) | Result |
+| --- | --- |
+| `git fetch origin` + `git rev-list --count origin/develop ^HEAD` | 0; merge-base = `origin/develop` (`7eacf6eb`) — no develop sync conflict |
+| `uv sync --locked --extra dev` | exit 0, 466 packages |
+| `uv run ruff check .` | All checks passed |
+| `uv run ruff format --check .` | 3732 files already formatted |
+| `uv run pytest packages/maistro-core/tests/agents/test_factory.py packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x` | **100 passed in 2.04s** |
+| conductor battery: `pytest test_canonical_recovery_cadence.py test_design_shared_surfaces.py test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q -x` (repo-root paths) | **61 passed in 3.41s** (incl. the Round-25 `test_cadence_reclaims_a_lapsed_goal_claim`) |
+| `uv run pytest packages/hive-conductor/backend/tests -q` (full suite) | **4651 passed, 121 skipped in 3:44** — matches the Round 26/29–36 baseline exactly |
+| `uv run pytest packages/hive-conductor/backend/tests/test_backup_restore_drill.py -q` | **14 passed in 1.79s** — #88 escrow/decrypt/restore proofs first-hand |
+| `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests` and `--suite packages/maistro-core/tests` | both `ok: 1 suite(s) match the recorded inventory`, rc 0 |
+| `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI-exact, base `7eacf6eb`, candidate `3635a1e5`) | **1217 reviewed identities = 1217 findings**, rc 0 — no unbanked identities, no ledger amendment needed or made |
+| `uv run python scripts/check-release-consistency.py` | ok: released none, shipping 0.9.0, working toward 1.0.0, rc 0 |
+| `uv run python scripts/check-backlog-consistency.py` | OK, 167 items, rc 0 |
+
+Acceptance substance re-audited against production source, not test output
+alone:
+
+- **Goal completion is not inferred from Run terminal status** — read
+  `packages/maistro-core/src/maistro/goals/reconciliation/production.py`
+  first-hand: `PolicyEngine.decide()` short-circuits terminal Goals, and its
+  only non-terminal outputs are `_progress()` admissions keyed by
+  wake-correlation, a budget `blocked_reason` gate, or a wake-driven sleep.
+  `PolicyDecision.complete` is never constructed by the policy (module
+  docstring states this at lines 31–35), so a Goal can only settle through
+  evidence-backed desired-state truth, never through the reconciliation loop.
+- **Persistent Agent survives restart without duplicate authority** — the
+  reconciliation production suite (100 passed above) exercises
+  crash-after-insert replay, reopen repair, and revision-bump replan keys
+  through the composed container; the restart-idempotency inventory note is
+  in-tree at `docs/testing/inventory-notes/issue-7-reconciliation-restart-idempotency.md`.
+- **Cadence reclaim cannot pin a Goal behind a dead reconciler (#806)** —
+  the previously failing `test_cadence_reclaims_a_lapsed_goal_claim` passes
+  because `a34477e472` provisions the canonical Workspace through
+  `project_scope_store.create_root` in the test helper (verified at
+  `test_canonical_recovery_cadence.py:192,469`).
+- **Entra JIT fails closed (#492)** — `services/entra_jit.py` docstring and
+  code: disabled by default with unlinked identities refused unchanged, and
+  a directory outage refuses login rather than degrading to "no groups";
+  pinned by the 890-line JIT suite (green above).
+- **Backup/restore incl. credential escrow (#88)** — the 14-test drill
+  sources the real `deploy/scripts/backup.sh`/`verify-restore.sh` functions
+  and proves absent-escrow/wrong-identity/corrupt-component rejection plus
+  the pinned-secret decrypt from the backed-up vault with the escrowed key.
+- **KNOWN-GAPS dispositions** — `KNOWN-GAPS.md` carries 15 `###` entries,
+  all under the single explicit `## Deferred To v1.1` heading, several
+  titled with their shipped subset (e.g. "Adaptive-Workspace user-model
+  memory ships wired for owner control; the autonomous producer is
+  deferred") — each item's shipped/deferred disposition is explicit.
+
+External gates re-derived first-hand at `3635a1e5` — still exactly **three**,
+unchanged since Round 35: (1) `git tag -l 'v*'` → **0 tags**; exercising
+`.github/workflows/release.yml` requires an operator `v*` tag push, which is
+prohibited to this worker; (2) environment grep for
+`OPENAI|ANTHROPIC|LITELLM|_API_KEY|GROQ|MISTRAL|COHERE|DEEPSEEK|TOGETHER|GOOGLE|AZURE`
+→ **0 model credentials**, so the clean-machine real-model Graph E2E needs
+operator-supplied credentials; (3) `soak-evidence.json` / `release-evidence.json`
+**absent from the tree** (confirmed `ls`), emitted only by
+`.github/workflows/soak-pressure.yml` and `release.yml` on GitHub runners,
+with soak duration outside the job budget. Closure-keyword scan over all
+`7eacf6eb..HEAD` commit subjects: **0** matches for
+`fixes/closes/resolves #N` — no premature issue closure; PR #2529 stays DRAFT.
+
+Docs-only round (no production or test change since `a34477e472`; no new
+tests), so no suite-inventory delta note is required. Disposition: **writer
+handoff reaffirmed — MERGE-READY (writer handoff only, never integration
+approval)**. The integration/operator phase owns the three external items
+(`v*` tag push, real-model credentials, soak/promotion workflows). No issue
+closure action is taken.
