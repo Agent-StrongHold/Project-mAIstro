@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -36,10 +35,7 @@ from maistro.capabilities.effect_context import (
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
-from maistro.events.consumer_cursor import (
-    DEFAULT_HOLE_GRACE_SECONDS,
-    LEGACY_BRIDGE_CONSUMER_ID,
-)
+from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 from maistro.events.publisher import CanonicalEventPublisher
 from maistro.goals.authorization import ScopedGoalStore
 from maistro.goals.reconciliation.wiring import wire_goal_reconciliation
@@ -517,13 +513,6 @@ class Container:
     # a lease holder across repeated ticks/renewals.
     consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
     _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
-    # Ids the durable log skipped over below the settled cursor, keyed to
-    # when this holder first saw each missing. PostgreSQL allocates ids
-    # before commit, so a hole is an append that has not committed yet (or
-    # never will); the durable position stays below it for
-    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
-    _durable_event_holes: dict[int, float] = field(default_factory=dict)
-    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
     # Goal reconciliation control plane (M3 #806): the one durable store of
     # Goal rows, claim/lease fences, wake facts and admissions, plus the
     # #805-owned decision policy. `None` until #805 composes one: without a
@@ -1249,7 +1238,9 @@ class Container:
         crash between "processed" and "cursor written" costs at most a replay
         of already-settled, already-idempotent work; it never skips an event
         still in flight. Nor does it skip an event whose id the log handed
-        out but has not committed yet: see `_gap_safe_position`. The same
+        out but has not committed yet: the position stops just below the
+        first hole the log has not proven terminally absent -- see
+        `_gap_safe_position`. The same
         settled position is also acknowledged on the log itself
         (`EventLogStore.acknowledge_replay`, #836), so the per-consumer
         replay cursor stored beside the events stays truthful for readers
@@ -1273,7 +1264,7 @@ class Container:
             after_id=lease.position,
             limit=limit,
         )
-        new_cursor = self._gap_safe_position(batch.cursor, batch.holes, now=time.time())
+        new_cursor = await self._gap_safe_position(batch.cursor, batch.holes)
         if new_cursor > lease.position:
             await self.consumer_cursor_store.advance(
                 LEGACY_BRIDGE_CONSUMER_ID,
@@ -1294,25 +1285,33 @@ class Container:
         self.durable_event_cursor = new_cursor
         return new_cursor
 
-    def _gap_safe_position(self, cursor: int, holes: tuple[int, ...], *, now: float) -> int:
+    async def _gap_safe_position(self, cursor: int, holes: tuple[int, ...]) -> int:
         """The highest position this tick may persist without skipping an event.
 
         `holes` are ids below `cursor` that the log did not return (see
-        `ProcessedBatch`). On PostgreSQL an id can be allocated by an append
-        that has not committed yet; persisting past it would drop that event
-        from every later ``id > position`` read. So the durable position is
-        capped just below the first hole this holder has known for less than
-        `durable_event_hole_grace_s`. A hole that outlives the grace is an
-        append that aborted (or is slower than any healthy one), and the
-        position moves past it. A hole that fills is simply not reported
-        next tick, so the event is read and dispatched then; every event
-        above the cap was already dispatched this tick and is redelivered
-        idempotently until the cap lifts.
+        `ProcessedBatch` — every missing id of a run, not just its first). On
+        PostgreSQL an id can be allocated by an append that has not committed
+        yet; persisting past it would drop that event from every later
+        ``id > position`` read. The position therefore stops just below the
+        first hole the log has not **proven terminally absent**
+        (`EventLogStore.prove_holes_absent`): durable database evidence that
+        the allocating transaction ended without committing and that no
+        future transaction can ever make the id visible. Each missing id is
+        proven on its own — proof that one id of a run rolled back says
+        nothing about its neighbours, which may still be in flight. Elapsed
+        time never authorizes crossing a hole — a transaction can hold an
+        allocated id past any timeout and still commit (#2509) — so a hole
+        without evidence pins the cursor for as long as it is unproven. A
+        hole that fills is simply not reported next tick, so the event is
+        read and dispatched then; every event above the cap was already
+        dispatched this tick and is redelivered idempotently until the cap
+        lifts.
         """
-        seen = {hole: self._durable_event_holes.get(hole, now) for hole in holes}
-        self._durable_event_holes = seen
+        if not holes:
+            return cursor
+        absent = await self.durable_event_log.prove_holes_absent(holes)
         for hole in holes:
-            if now - seen[hole] < self.durable_event_hole_grace_s:
+            if hole not in absent:
                 return hole - 1
         return cursor
 
