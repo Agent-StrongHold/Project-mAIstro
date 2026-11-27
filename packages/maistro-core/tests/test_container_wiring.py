@@ -8,6 +8,7 @@ connected, and reachable on the container.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.persistence.audit_pages import AUDIT_PAGE_INDEXES
+from maistro.persistence.decision_evidence import DECISION_COLUMNS
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -201,6 +203,110 @@ async def test_aclose_releases_working_memory_projections_but_never_the_log() ->
     await container.aclose()
 
     assert manager.hot("ws-shutdown") is None
+
+
+async def test_sentinel_decision_reaches_durable_policy_decision_topic() -> None:
+    """The product composition root emits ADR-037 `policy.decision` events.
+
+    `create_container` must attach the same durable event log the rest of the
+    engine uses, and the event must carry the signature public material the
+    audit record carries.
+    """
+    from maistro.security.sentinel.authz_types import Principal
+    from maistro.types.config import SecurityConfig
+
+    container = await _container(
+        security=SecurityConfig(permissions={"deploy": frozenset({"admin"})})
+    )
+    decision = await container.sentinel.authorize(
+        "deploy", Principal("owner-1", "human", ("admin",)), args={"change": "42"}
+    )
+    assert decision.integrity is not None
+
+    events = await container.durable_event_log.query(event_type="policy.decision")
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["decision"] == "allowed"
+    assert payload["integrity"]["key_id"] == decision.integrity.key_id
+    assert payload["integrity"]["signature"] == decision.integrity.signature
+    assert payload["integrity"]["public_key"] == decision.integrity.public_key
+
+
+async def test_container_reloads_stable_sentinel_signing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured signing seed is the same key across container creations."""
+    from maistro.types.config import SecurityConfig
+
+    seed = base64.urlsafe_b64encode(b"\x02" * 32).rstrip(b"=").decode("ascii")
+    monkeypatch.setenv("MAISTRO_SENTINEL_SIGNING_KEY", seed)
+    first = await _container(security=SecurityConfig())
+    second = await _container(security=SecurityConfig())
+
+    assert first.sentinel.verification_keyring == second.sentinel.verification_keyring
+    assert len(first.sentinel.verification_keyring) == 1
+
+
+async def test_signed_tool_decisions_survive_container_restart_with_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wired tool-call boundary retains both verdicts and canonical events."""
+    from dataclasses import replace
+
+    from maistro.security._types import AuthContext
+    from maistro.security.sentinel.integrity import verify_decision
+    from maistro.types.config import SecurityConfig
+
+    seed = base64.urlsafe_b64encode(bytes(range(32))).decode("ascii")
+    monkeypatch.setenv("MAISTRO_SENTINEL_SIGNING_KEY", seed)
+    monkeypatch.setenv("MAISTRO_AUDIT_SIGNING_KEY", seed)
+    config = {
+        "database_url": f"sqlite:///{tmp_path / 'signed.db'}",
+        "security": SecurityConfig(permissions={"deploy": frozenset({"admin"})}),
+    }
+    first = await _container(**config)
+    try:
+        for role, allowed in (("admin", True), ("guest", False)):
+            verdict = await first.sentinel.pre_call(
+                "deploy",
+                {"credential": "must-not-be-retained"},
+                AuthContext(user_id=role, org_id="tenant-a", roles=frozenset({role})),
+                {},
+            )
+            assert verdict.allowed is allowed
+        pinned = first.sentinel.verification_keyring
+    finally:
+        await first.aclose()
+    second = await _container(**config)
+    try:
+        rows = await second.audit_log.get_entries(org_id="tenant-a")
+        assert {row.verdict for row in rows} == {"allowed", "denied"}
+        assert await second.audit_log.get_entries(org_id="tenant-b") == []
+        events = await second.durable_event_log.query(event_type="policy.decision")
+        assert len(events) == 2
+        for row in rows:
+            assert verify_decision(row, trusted_keys=pinned)
+            assert second.audit_log.verify(row)
+            assert not verify_decision(replace(row, org_id="tenant-b"), trusted_keys=pinned)
+            assert any(
+                event.payload["integrity"]["signature"] == row.integrity.signature
+                for event in events
+            )
+        assert "must-not-be-retained" not in repr(rows) + repr(events)
+    finally:
+        await second.aclose()
+
+
+async def test_container_refuses_malformed_sentinel_signing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falling back to an ephemeral key would silently break pinned verification."""
+    from maistro.types.config import AgentConfig
+    from maistro.types.errors import ConfigError
+
+    monkeypatch.setenv("MAISTRO_SENTINEL_SIGNING_KEY", "not-a-key")
+    with pytest.raises(ConfigError, match="MAISTRO_SENTINEL_SIGNING_KEY"):
+        await create_container(AgentConfig(router_api_key="test-key"))
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
@@ -1805,12 +1911,20 @@ async def test_audit_log_wiring_prefers_postgres_and_upgrades_its_schema() -> No
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''",
         ]
-        assert conn.statements[6] == (
+        # #69: the Sentinel decision-envelope columns ride the same idempotent
+        # bootstrap upgrade, before any index DDL.
+        decision_alters = [
+            f"ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS {name} {definition}"
+            for name, definition in DECISION_COLUMNS.items()
+        ]
+        assert conn.statements[6 : 6 + len(decision_alters)] == decision_alters
+        scope_at = 6 + len(decision_alters)
+        assert conn.statements[scope_at] == (
             "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
         )
         # The page indexes `get_page` needs: wiring is the only thing that can
         # create them on a database the migration chain never touched.
-        assert conn.statements[7:] == [
+        assert conn.statements[scope_at + 1 :] == [
             f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
             for name, fields in AUDIT_PAGE_INDEXES.items()
         ]

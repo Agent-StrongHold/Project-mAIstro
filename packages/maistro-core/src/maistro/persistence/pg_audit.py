@@ -18,6 +18,7 @@ from maistro.persistence.audit_pages import (
     make_page,
     page_query,
 )
+from maistro.persistence.decision_evidence import DECISION_COLUMNS, decision_fields, decision_values
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
@@ -129,6 +130,10 @@ class PgAuditLog:
             await conn.execute(
                 "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
             )
+            for name, definition in DECISION_COLUMNS.items():
+                await conn.execute(
+                    f"ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS {name} {definition}"
+                )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
             )
@@ -136,6 +141,20 @@ class PgAuditLog:
                 await conn.execute(
                     f"CREATE INDEX IF NOT EXISTS {name} ON audit_log ({', '.join(fields)})"
                 )
+
+    @staticmethod
+    def _signed_timestamp(entry: AuditEntry) -> datetime:
+        """Store the timestamp the signature covers, not the insert time.
+
+        ``audit_log.timestamp`` has a ``now()`` default. Leaving the column to
+        that default would silently break verification: every reloaded row would
+        differ from the bytes that were signed, no matter how intact the rest of
+        the record is.
+        """
+        timestamp = entry.timestamp
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp
 
     async def log(self, entry: AuditEntry) -> None:
         """Sign and record an audit entry."""
@@ -145,8 +164,11 @@ class PgAuditLog:
                 """INSERT INTO audit_log
                    (boundary, user_id, org_id, team_id, agent_id,
                     tool_name, verdict, detail, trace_id, request_id,
-                    signature, signing_key_id, proof_type)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                    action, principal_id, policy_snapshot, payload, decision_signature,
+                    signature_key_id, signature_algorithm, signature_public_key, violations,
+                    inputs_hash, signature, signing_key_id, proof_type, timestamp)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                           $19,$20,$21,$22,$23,$24)""",
                 entry.boundary,
                 entry.user_id,
                 getattr(entry, "org_id", "") or "",
@@ -157,9 +179,11 @@ class PgAuditLog:
                 entry.detail,
                 getattr(signed, "trace_id", ""),
                 getattr(signed, "request_id", ""),
+                *decision_values(signed),
                 signed.signature,
                 signed.signing_key_id,
                 signed.proof_type,
+                self._signed_timestamp(signed),
             )
 
     async def purge_expired(
@@ -302,6 +326,7 @@ class PgAuditLog:
                 signature=r.get("signature", ""),
                 signing_key_id=r.get("signing_key_id", ""),
                 proof_type=r.get("proof_type", ""),
+                **decision_fields(r),
             )
             for r in rows
         ]

@@ -16,6 +16,7 @@ from datetime import datetime
 from itertools import combinations
 from typing import Any
 
+from maistro.persistence.decision_evidence import decision_fields
 from maistro.types.security import AuditEntry
 
 MAX_PAGE_SIZE = 200
@@ -107,10 +108,20 @@ def page_query(
 
 
 def make_page(rows: Sequence[Mapping[str, Any]], limit: int) -> AuditPage:
+    """Map durable rows onto page records without losing decision evidence.
+
+    ``get_entries`` reconstructs the signed Sentinel envelope and the store
+    proof columns; a paginated read hands rows to the same readers (Hive's
+    ``audit_bridge`` included), so the mapper must preserve that evidence too
+    or a signed row would present itself as unsigned (#69).
+    """
     size = max(1, min(limit, MAX_PAGE_SIZE))
     records = []
     for row in rows[:size]:
         timestamp = row["timestamp"]
+        proof: dict[str, Any] = {
+            key: row.get(key, "") or "" for key in ("signature", "signing_key_id", "proof_type")
+        }
         records.append(
             (
                 int(row["id"]),
@@ -135,6 +146,10 @@ def make_page(rows: Sequence[Mapping[str, Any]], limit: int) -> AuditPage:
                             "request_id",
                         )
                     },
+                    # Store-level proof columns predate every reader here.
+                    **proof,
+                    # Signed decision envelope; safe on rows predating #69.
+                    **decision_fields(row),
                 ),
             )
         )
