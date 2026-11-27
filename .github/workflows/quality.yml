@@ -349,7 +349,18 @@ jobs:
   coverage-postgres:
     name: coverage (PostgreSQL)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 -> 40 on 2026-11-27: capacity, not scope (#37 CI repair). The job's
+    # own producer rule keeps lengthening it — each new PG-gated store adds a
+    # suite here — and the recorded arc grew 2.8 -> 16.9 minutes across its
+    # last green runs before #37's durable-Workspace legs pushed the step
+    # sequence past the budget: run 45948144005 was killed at exactly the 20
+    # minute mark (job cancelled 20m10s after start, mid pytest, exit shows
+    # the cancellation unwind, not a test failure). Every suite in the arc
+    # passes against a real pgvector/pg17 server; the same commands complete
+    # in ~14.5 minutes locally, so this is runner speed against a fixed
+    # ceiling, mirroring the coverage-gate raise below. The gate itself
+    # (publish-set floor + diff coverage) is unchanged.
+    timeout-minutes: 40
     services:
       postgres:
         image: pgvector/pgvector:pg17
