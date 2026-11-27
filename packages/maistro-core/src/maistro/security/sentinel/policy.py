@@ -649,6 +649,7 @@ class Sentinel:
         auth: AuthContext,
         *,
         context: list[WardenContext] | None = None,
+        compress_tool_result: bool = True,
     ) -> GateResult:
         """Apply the post-call policy and return its structured security outcome.
 
@@ -656,6 +657,11 @@ class Sentinel:
         projection boundaries use this method so they can distinguish a refusal
         from an allowed, explicitly sanitized value without repeating Warden or
         PII policy logic.
+
+        Final-answer boundaries pass ``compress_tool_result=False``: Warden and
+        PII processing still run, but the tool-result token optimization (which
+        caps output at ``MAX_RESULT_LENGTH``) is skipped so the client receives
+        the complete sanitized answer rather than a truncated tool result.
         """
         violations: list[Violation] = []
         processed = strip_terminal_escapes(result)
@@ -706,7 +712,8 @@ class Sentinel:
                 )
             )
 
-        processed = optimize_result(processed, tool_name)
+        if compress_tool_result:
+            processed = optimize_result(processed, tool_name)
 
         await self._log_audit(
             boundary="post_call",
