@@ -1739,3 +1739,47 @@ workflow exercise via `v*` tag push, clean-machine real-model Graph E2E, RC
 soak + byte-equivalent promotion evidence, overnight operation) remain
 unproducible inside this repository. Disposition remains **BLOCKED** on
 external operator evidence. PR #2529 stays DRAFT.
+
+## Round 32 — review-only repair-round revalidation at 679ff9081b (no verifier checks)
+
+Round 32 opened from a review-only repair dispatch (`review: true`, zero
+verifier check logs, prior block = worker-requested attention on external
+evidence). Code state is byte-identical to the fully validated Round-30/31
+tree: `git diff --stat bfc4db70fb..HEAD` = 1 file changed,
+`docs/implementation/issue-7-handoff.md` (+42) only. Every locally reachable
+gate re-proven first-hand at 679ff9081b rather than trusted:
+
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  already formatted.
+- Verifier's exact check-4 command (`pytest
+  test_canonical_recovery_cadence.py test_design_shared_surfaces.py
+  test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q`, from
+  the repo root) — **61 passed in 3.61s**. (Note for future rounds: running
+  `uv run pytest` from inside `packages/hive-conductor/backend` fails in uv's
+  editable-build layer (`editables` path-rewrite limitation), unrelated to the
+  code — always invoke from the repo root.)
+- `pytest packages/maistro-core/tests/goals
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/agents/test_factory.py` — 327 passed, 24
+  skipped.
+- `pytest packages/maistro-core/tests/events` — 445 passed, 90 skipped.
+- `scripts/check-release-consistency.py` — ok (released none, shipping 0.9.0
+  toward 1.0.0), rc=0.
+- `scripts/check-backlog-consistency.py` — OK (167 items), rc=0.
+- `scripts/check-suite-inventory.py` — ok: 21 suites match the recorded
+  inventory, 0 byte-identical redundant files, rc=0 (docs-only round, no
+  inventory delta note required).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, quality.yml) — 1217 reviewed
+  identities = 1217 findings vs base `7eacf6eb`, rc=0, no ledger amendment.
+
+External-evidence spot-checks re-derived fresh at 679ff9081b: `git tag -l
+'v*'` → 0 tags; `soak-evidence.json`/`release-evidence.json` still absent
+from the tree and emitted only by `.github/workflows/soak-pressure.yml` and
+`release.yml`; 0 `OPENAI*`/`ANTHROPIC*`/`LITELLM*`/`*_API_KEY` environment
+variables. The four externally gated exit conditions (release workflow
+exercise via `v*` tag push, clean-machine real-model Graph E2E, RC soak +
+byte-equivalent promotion evidence, overnight operation) remain unproducible
+in-repo without violating the no-GitHub-mutations prohibition or fabricating
+provenance. No production or test change this round; disposition remains
+**BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
