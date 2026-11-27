@@ -1232,3 +1232,38 @@ operator evidence; the production Dreaming promotion caller is still explicitly
 deferred under #1046. These are not established by the passing deterministic
 checks above. ADR-080 and ADR-082226-5104 remain the governing memory model; no
 alternative scheduler, memory authority, or authorization path is introduced.
+
+## Round 18 — independent revalidation at d6b1e6ec03
+
+The assigned job directory contained no `check-*.log` files, so no driver
+validation claims were available to inspect. Re-ran relevant deterministic
+checks against the exact assigned head:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed; 3721 files
+  already formatted.
+- `uv run pytest packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x`:
+  23 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q -x`:
+  61 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1217 reviewed identities = 1217 findings; no unbanked identities.
+- `uv run python scripts/check-release-consistency.py`: passed; none released,
+  shipping 0.9.0, working toward 1.0.0.
+- `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests`:
+  passed for 4766 collected/unique node IDs.
+- `git tag -l 'v*'`: no tags.
+
+No production or test code was changed: the verified Goal-reconciliation path is
+already covered, whereas the remaining unmet items are not safely repairable by
+an evidence-only lane. In particular, adding an autonomous Dreaming producer
+without its accepted #1046 design/cadence seam would contradict
+`KNOWN-GAPS.md:360-366` (“do not invent a producer for it sooner”); live release,
+backup/restore, soak, and overnight claims require actual operator exercises.
+ADR-080 governs consolidation/cross-scope memory behavior, and
+ADR-082226-5104 keeps PostgreSQL durable authority distinct from disposable
+per-Workspace working memory. Consequently, milestone acceptance remains
+**NEEDS-REPAIR**, and the following evidence is explicitly UNVERIFIED here:
+release workflow exercise; clean-machine deployment and real-model Graph E2E;
+backup/restore including credential/decryption escrow; RC soak and byte-equivalent
+promotion; overnight live operation; Dreaming durable user-fact producer and
+Agent-runtime recall. This check does not establish remote PR checks or approval.
