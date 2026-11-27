@@ -1517,3 +1517,29 @@ Re-run battery, all green: `ruff check .`, `ruff format --check .`,
 `pytest packages/hive-conductor/backend/tests` (4651 passed, 121 skipped).
 The Round 25 disposition is otherwise unchanged: local gates green,
 acceptance still blocked on external operator evidence.
+
+## Round 27 — independent revalidation of the Round 26 repair at a34477e472
+
+Round 26's repair commit (`a34477e472`) postdates the failed driver battery
+(job `36a00a3b`, head `4134217158`, `check-4.log` = the pre-fix failure), so
+this round re-ran the complete battery independently at the repaired head
+`a34477e472b609f3dee75c9fbac8506713d35d31` and confirmed the failure is gone:
+
+- `pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py`:
+  13 passed (the previously failing
+  `test_cadence_reclaims_a_lapsed_goal_claim` included).
+- `pytest packages/hive-conductor/backend/tests`: **4651 passed, 121 skipped**
+  — byte-for-byte the counts Round 26 claimed.
+- `pytest packages/maistro-core/tests/goals`: 182 passed, 24 skipped.
+- `ruff check .`: All checks passed. `ruff format --check .`: 3732 files
+  already formatted.
+- `scripts/check-suite-inventory.py`: ok, 21 suites match the recorded
+  inventory; 0 duplicate/byte-identical test files (37973 unique identities).
+
+No tree edits were made this round; no test count changed, so no
+`docs/testing/inventory-notes/` delta applies. The Round 25/26 disposition
+stands: every locally reachable exit condition is validated, and M3
+acceptance remains **BLOCKED** on external operator evidence (release
+workflow exercise, clean-machine real-model E2E, escrowed backup/restore,
+RC soak and byte-equivalent promotion, overnight operation). PR #2529 stays
+DRAFT.
