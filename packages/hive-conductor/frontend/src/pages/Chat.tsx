@@ -274,6 +274,7 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [model, setModel] = useState("");
@@ -315,6 +316,28 @@ export default function ChatPage() {
       })
       .catch(() => {});
   }, []);
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
+  const modelDropdownRef = useRef<HTMLUListElement>(null);
+
+  // A menu that closes without returning focus strands the keyboard user on
+  // <body>, so the next Tab restarts at the top of the page instead of where
+  // they were (#370). Selecting an option or pressing Escape both land back on
+  // the trigger.
+  const closeModelMenu = useCallback(() => {
+    setModelOpen(false);
+    modelButtonRef.current?.focus();
+  }, []);
+
+  // Opening the listbox moves focus onto the selected option so Arrow/Enter
+  // operate it without a pointer.
+  useEffect(() => {
+    if (!modelOpen) return;
+    const dropdown = modelDropdownRef.current;
+    const option =
+      dropdown?.querySelector<HTMLButtonElement>(".model-option--active") ??
+      dropdown?.querySelector<HTMLButtonElement>("button");
+    option?.focus();
+  }, [modelOpen]);
 
   const activeSession =
     sessions.find((s) => s.id === activeId) ??
@@ -686,6 +709,14 @@ export default function ChatPage() {
     })();
   };
 
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   const canCompose = Boolean(activeWorkspaceId && activeId && !loadingSessions && !loadError);
   const isEmpty = canCompose && activeSession.messages.length === 0;
 
@@ -710,7 +741,12 @@ export default function ChatPage() {
   return (
     <div className="chat-layout">
       {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
-      <aside className={`drawer${drawerOpen ? " drawer--open" : ""}`} aria-label="Chat sessions">
+      <aside
+        className={`drawer${drawerOpen ? " drawer--open" : ""}`}
+        aria-label="Chat sessions"
+        aria-hidden={isMobile && !drawerOpen}
+        inert={isMobile && !drawerOpen ? true : undefined}
+      >
         <div className="drawer-header">
           <span className="drawer-title">Sessions</span>
           <button
@@ -749,8 +785,15 @@ export default function ChatPage() {
           <span className="chat-header-title">AI Assistant</span>
           <div className="model-selector">
             <button
+              ref={modelButtonRef}
               className="btn-model"
               onClick={() => setModelOpen((o) => !o)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && modelOpen) {
+                  event.preventDefault();
+                  closeModelMenu();
+                }
+              }}
               aria-haspopup="listbox"
               aria-expanded={modelOpen}
               aria-label={`Current model: ${model}`}
@@ -758,19 +801,40 @@ export default function ChatPage() {
               {model} <span aria-hidden="true">▾</span>
             </button>
             {modelOpen && (
-              <ul className="model-dropdown" role="listbox" aria-label="Select model">
+              <ul
+                ref={modelDropdownRef}
+                className="model-dropdown"
+                role="listbox"
+                aria-label="Select model"
+                onKeyDown={(event) => {
+                  const options = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>("button"),
+                  );
+                  const index = options.indexOf(document.activeElement as HTMLButtonElement);
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    options[Math.min(index + 1, options.length - 1)]?.focus();
+                  } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    options[Math.max(index - 1, 0)]?.focus();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeModelMenu();
+                  }
+                }}
+              >
                 {MODELS.map((m) => (
-                  <li
-                    key={m}
-                    role="option"
-                    aria-selected={m === model}
-                    className={`model-option${m === model ? " model-option--active" : ""}`}
-                    onClick={() => {
-                      setModel(m);
-                      setModelOpen(false);
-                    }}
-                  >
-                    {m}
+                  <li key={m} role="option" aria-selected={m === model}>
+                    <button
+                      type="button"
+                      className={`model-option${m === model ? " model-option--active" : ""}`}
+                      onClick={() => {
+                        setModel(m);
+                        closeModelMenu();
+                      }}
+                    >
+                      {m}
+                    </button>
                   </li>
                 ))}
               </ul>

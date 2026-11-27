@@ -6,7 +6,9 @@ Post-call: Warden scan tool result, PII filter, token optimize, audit log.
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from maistro.observability.metrics import maistro_security_block_total
@@ -27,6 +29,7 @@ from maistro.security.sentinel.delegation import (
     utc_now,
 )
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
+from maistro.security.sentinel.integrity import DecisionSigner
 from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.sentinel.rlphd import RlphdModel, RlphdThresholdStore, RlphdVerdict
@@ -37,8 +40,24 @@ from maistro.security.warden.sanitizer import strip_terminal_escapes
 logger = logging.getLogger("maistro.sentinel")
 
 if TYPE_CHECKING:
+    from maistro.events.durable_log import EventLogStore
     from maistro.security._types import AuditLog, AuthContext, PermissionTable
     from maistro.security.warden.detector import Warden, WardenContext
+
+#: Stable identifier for the Sentinel policy in the ADR-037 event contract.
+#: The snapshot (not this label) is what carries the tunables a decision read.
+_POLICY_ID = "maistro.sentinel"
+
+
+def _bounded_inputs_hash(args: dict[str, Any] | None, limits: ToolArgumentLimits) -> str:
+    """Never serialize a rejected JSON bomb merely to produce audit evidence.
+
+    Empty means unavailable (absent, non-JSON, or over the resource ceiling),
+    not a digest of rejected arguments. The signed violation explains the refusal.
+    """
+    if args is None or check_argument_limits(args, limits=limits) is not None:
+        return ""
+    return hash_args(args)
 
 
 def check_permission(
@@ -106,6 +125,8 @@ class Sentinel:
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
+        integrity_signer: DecisionSigner | None = None,
+        event_log: EventLogStore | None = None,
         delegation_authority: DelegationAuthority | None = None,
     ) -> None:
         self._warden = warden
@@ -126,6 +147,16 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # Every Sentinel instance signs its decisions. Deployments may inject a
+        # durable-key-backed signer; the default still protects the audit record
+        # and exposes only public verification material.
+        self._integrity_signer = integrity_signer or DecisionSigner()
+        # The ADR-037 `policy.decision` event is appended to the existing
+        # ADR-086 durable event log, never to a second event authority. A
+        # standalone Sentinel (tests, embedded callers) has no log until a
+        # composition root attaches one; the durable audit record is still
+        # written and signed in either case.
+        self._event_log = event_log
         # AgentIdentity manifests are requests, never grants. A missing host
         # authority therefore refuses delegation rather than consulting roster
         # state as an implicit allow-list.
@@ -145,6 +176,15 @@ class Sentinel:
                 "explicit permission source instead."
             )
 
+    @property
+    def verification_keyring(self) -> dict[str, str]:
+        """Publishable verification-key reference set for pinned verification."""
+        return self._integrity_signer.keyring
+
+    def attach_event_log(self, event_log: EventLogStore) -> None:
+        """Attach the canonical durable event log used for `policy.decision`."""
+        self._event_log = event_log
+
     async def _effective_table(self) -> PermissionTable | None:
         """The permission table for THIS decision, or None when undecidable.
 
@@ -157,26 +197,40 @@ class Sentinel:
             return self._permission_table
         return await resolve_live_table(self._permission_source)
 
-    async def _permission_denial_reason(self, action: str, principal: Principal) -> str | None:
+    async def _permission_denial_reason(
+        self,
+        action: str,
+        principal: Principal,
+        table: PermissionTable | None,
+    ) -> str | None:
         """Why this (action, principal) is denied right now, or None when permitted.
 
-        The one fail-closed permission gate every authorize flows through: the
-        live permission source (#1165) is resolved here so the decision reads
-        canonical state at the moment it is made, an unavailable source denies,
-        and a capability miss denies.
+        ``table`` is the already-resolved permission table for this decision,
+        including ``None`` for an unavailable source: it is never re-resolved
+        here, so authorization and its signed snapshot always rest on the same
+        read and an unavailable source denies fail-closed.
         """
-        table = await self._effective_table()
         if table is None:
             return f"permission source unavailable for '{action}'; denied fail-closed"
         authorized = check_permission(
-            _principal_auth_context(principal),
-            action,
-            table,
-            allow_on_miss=self._allow_on_miss,
+            _principal_auth_context(principal), action, table, allow_on_miss=self._allow_on_miss
         )
         if not authorized:
             return f"principal '{principal.id}' lacks capability for '{action}'"
         return None
+
+    def _policy_snapshot(self, table: PermissionTable | None) -> str:
+        """Capture the exact policy inputs used for this decision."""
+        snapshot = {
+            "permission_table": None
+            if table is None
+            else {name: sorted(roles) for name, roles in sorted(table.items())},
+            "tier_policy": {
+                f"{action}:{scope}": tier.value
+                for (action, scope), tier in sorted(self._tier_policy.items())
+            },
+        }
+        return json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
 
     async def authorize_delegation(
         self,
@@ -247,12 +301,18 @@ class Sentinel:
         args: dict[str, Any] | None = None,
         rlphd_features: dict[str, float] | None = None,
     ) -> AuthzDecision:
-        """ADR-068 §F steps 1-4, short-circuiting on first deny."""
+        """ADR-068 steps 1-4, with a signed ``policy.decision`` record."""
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
+        table = await self._effective_table()
+        policy_snapshot = self._policy_snapshot(table)
+        # The signed contract names the inputs the decision was taken on, so a
+        # later reader can tell whether a record covers *this* call or a
+        # different one. Hashed, never raw: args can carry secrets.
+        inputs_hash = _bounded_inputs_hash(args, self._argument_limits)
 
-        denial_reason = await self._permission_denial_reason(action, principal)
+        denial_reason = await self._permission_denial_reason(action, principal, table)
         if denial_reason is not None:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -261,9 +321,12 @@ class Sentinel:
                 rlphd=None,
                 reason=denial_reason,
             )
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         if not within_budget:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -272,9 +335,12 @@ class Sentinel:
                 rlphd=None,
                 reason="over budget",
             )
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         if tier == Tier.BLOCKED:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -283,12 +349,17 @@ class Sentinel:
                 rlphd=None,
                 reason="action is blocked",
             )
+            return await self._record_authorization(
+                action, principal, decision, policy_snapshot, inputs_hash
+            )
 
         needs = self._resolve_needs(tier, principal)
         if tier == Tier.SELF_ELEVATION:
             cleared = await self._check_elevation_grant(action, principal, needs, args)
             if cleared is not None:
-                return cleared
+                return await self._record_authorization(
+                    action, principal, cleared, policy_snapshot, inputs_hash
+                )
 
         approver_scope: str | None = None
         if tier == Tier.DELEGATED and self._approver_graph is not None:
@@ -301,9 +372,11 @@ class Sentinel:
                 action, principal, approver_scope, rlphd_features
             )
             if auto_acted_decision is not None:
-                return auto_acted_decision
+                return await self._record_authorization(
+                    action, principal, auto_acted_decision, policy_snapshot, inputs_hash
+                )
 
-        return AuthzDecision(
+        decision = AuthzDecision(
             tier=tier,
             authorized=True,
             needs=needs,
@@ -312,6 +385,48 @@ class Sentinel:
             rlphd=rlphd_verdict,
             reason="",
         )
+        return await self._record_authorization(
+            action, principal, decision, policy_snapshot, inputs_hash
+        )
+
+    async def _record_authorization(
+        self,
+        action: str,
+        principal: Principal,
+        decision: AuthzDecision,
+        policy_snapshot: str,
+        inputs_hash: str = "",
+    ) -> AuthzDecision:
+        verdict = "allowed" if decision.authorized else "denied"
+        if decision.needs != "none" and decision.authorized:
+            verdict = "elevate"
+        entry = await self._log_audit(
+            boundary="policy.decision",
+            user_id=principal.id,
+            team_id=principal.scopes[0] if principal.scopes else "",
+            tool_name=action,
+            action=action,
+            principal_id=principal.id,
+            verdict=verdict,
+            detail=decision.reason,
+            policy_snapshot=policy_snapshot,
+            payload=json.dumps(
+                {
+                    "tier": decision.tier.value,
+                    "authorized": decision.authorized,
+                    "needs": decision.needs,
+                    "approver_scope": decision.approver_scope,
+                    "within_budget": decision.within_budget,
+                    "reason": decision.reason,
+                    "rlphd": asdict(decision.rlphd) if decision.rlphd is not None else None,
+                    "principal": asdict(principal),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            inputs_hash=inputs_hash,
+        )
+        return replace(decision, integrity=entry.integrity)
 
     def _resolve_needs(
         self, tier: Tier, principal: Principal
@@ -459,6 +574,8 @@ class Sentinel:
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+                policy_snapshot=self._policy_snapshot(table),
+                inputs_hash=_bounded_inputs_hash(args, self._argument_limits),
                 detail=delegation_detail,
             )
             return verdict
@@ -476,6 +593,8 @@ class Sentinel:
                 verdict="denied",
                 violations=tuple(violations),
                 detail=_join_detail(delegation_detail, limit_violation.detail),
+                policy_snapshot=self._policy_snapshot(table),
+                inputs_hash="",
             )
             return verdict
 
@@ -503,6 +622,8 @@ class Sentinel:
                 f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
             ),
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
+            policy_snapshot=self._policy_snapshot(table),
+            inputs_hash=hash_args(args),
         )
 
         return verdict
@@ -528,6 +649,7 @@ class Sentinel:
         auth: AuthContext,
         *,
         context: list[WardenContext] | None = None,
+        compress_tool_result: bool = True,
     ) -> GateResult:
         """Apply the post-call policy and return its structured security outcome.
 
@@ -535,6 +657,11 @@ class Sentinel:
         projection boundaries use this method so they can distinguish a refusal
         from an allowed, explicitly sanitized value without repeating Warden or
         PII policy logic.
+
+        Final-answer boundaries pass ``compress_tool_result=False``: Warden and
+        PII processing still run, but the tool-result token optimization (which
+        caps output at ``MAX_RESULT_LENGTH``) is skipped so the client receives
+        the complete sanitized answer rather than a truncated tool result.
         """
         violations: list[Violation] = []
         processed = strip_terminal_escapes(result)
@@ -585,7 +712,8 @@ class Sentinel:
                 )
             )
 
-        processed = optimize_result(processed, tool_name)
+        if compress_tool_result:
+            processed = optimize_result(processed, tool_name)
 
         await self._log_audit(
             boundary="post_call",
@@ -657,26 +785,81 @@ class Sentinel:
         violations: tuple[Violation, ...] = (),
         detail: str = "",
         repaired_data: dict[str, Any] | None = None,
-    ) -> None:
-        if self._audit_log is None:
-            return
+        action: str = "",
+        principal_id: str = "",
+        policy_snapshot: str = "",
+        payload: str = "",
+        inputs_hash: str = "",
+    ) -> AuditEntry:
         if repaired_data and not detail:
             detail = f"repaired_data_keys={list(repaired_data.keys())}"
+        entry = AuditEntry(
+            boundary=boundary,
+            user_id=user_id,
+            team_id=team_id,
+            org_id=org_id,
+            tool_name=tool_name,
+            verdict=verdict,
+            violations=violations,
+            detail=detail,
+            action=action or tool_name,
+            principal_id=principal_id or user_id,
+            policy_snapshot=policy_snapshot,
+            payload=payload,
+            inputs_hash=inputs_hash,
+        )
+        # Sign before handing the record to any audit implementation. This
+        # keeps the guarantee independent of whether storage is durable.
+        entry = replace(entry, integrity=self._integrity_signer.sign(entry))
+        if self._audit_log is not None:
+            try:
+                await self._audit_log.log(entry)
+            except Exception:
+                logger.error("Security audit log write failed")
+        await self._emit_policy_event(entry)
+        return entry
+
+    async def _emit_policy_event(self, entry: AuditEntry) -> None:
+        """Append the ADR-037 `policy.decision` event for a signed record.
+
+        Decision durability must not depend on the event log: the signed audit
+        write above is the authoritative record, so a failing event backend is
+        reported loudly but does not turn a policy decision into an exception.
+        The payload carries only public material and the same `inputs_hash` the
+        signature commits to, allowing an event reader to correlate the event
+        with the durable decision record without reading secrets.
+        """
+        if self._event_log is None:
+            return
+        integrity = entry.integrity
         try:
-            await self._audit_log.log(
-                AuditEntry(
-                    boundary=boundary,
-                    user_id=user_id,
-                    org_id=org_id,
-                    team_id=team_id,
-                    tool_name=tool_name,
-                    verdict=verdict,
-                    violations=violations,
-                    detail=detail,
-                )
+            await self._event_log.append(
+                "policy.decision",
+                entity_type="policy_decision",
+                entity_id=entry.action or entry.tool_name or "",
+                source="maistro.security.sentinel",
+                payload={
+                    "policy_id": _POLICY_ID,
+                    "boundary": entry.boundary,
+                    "decision": entry.verdict,
+                    "inputs_hash": entry.inputs_hash,
+                    "action": entry.action or entry.tool_name,
+                    "principal_id": entry.principal_id,
+                    "policy_snapshot": entry.policy_snapshot,
+                    "integrity": (
+                        {
+                            "key_id": integrity.key_id,
+                            "algorithm": integrity.algorithm,
+                            "signature": integrity.signature,
+                            "public_key": integrity.public_key,
+                        }
+                        if integrity is not None
+                        else None
+                    ),
+                },
             )
         except Exception:
-            logger.error("Security audit log write failed")
+            logger.error("Policy decision event append failed")
 
 
 def _detection_layer(verdict: WardenVerdict) -> str:

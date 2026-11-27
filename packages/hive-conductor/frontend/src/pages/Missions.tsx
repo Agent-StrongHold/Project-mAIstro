@@ -415,17 +415,16 @@ export default function Missions() {
           const sc = STATUS_COLORS[m.status];
           const pulse = PULSE_STATUSES.has(m.status);
           return (
-            <div
+            <article
               key={m.id}
-              onClick={() => selectMission(m)}
               style={{
                 padding: "6px 8px",
                 borderRadius: 4,
                 border: `1.3px solid ${active?.id === m.id ? "var(--accent)" : "var(--rule)"}`,
                 background: active?.id === m.id ? "var(--accent-bg, rgba(212,160,23,0.08))" : "transparent",
-                cursor: "pointer",
               }}
             >
+              <button type="button" onClick={() => selectMission(m)} aria-label={`Open mission ${m.name}`} style={{ padding: "2px 6px", fontSize: 9 }}>Open</button>
               <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
                 <span
                   style={{
@@ -446,7 +445,7 @@ export default function Missions() {
                 {m.assigned_agents.length > 0 ? `${m.assigned_agents[0]} \u00B7 ` : ""}
                 {m.created_at ? new Date(m.created_at).toLocaleDateString() : ""}
               </div>
-            </div>
+            </article>
           );
         })}
 
