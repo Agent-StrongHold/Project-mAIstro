@@ -73,8 +73,13 @@ from uuid import uuid4
 
 import stores
 
-from maistro.goals import GoalRevisionDraft
-from maistro_design.brief import ArtifactRequest, BriefReference, CreativeBrief
+from maistro.goals import GoalRevisionConflict, GoalRevisionDraft
+from maistro_design.brief import (
+    ArtifactRequest,
+    BriefReference,
+    BriefVersionConflictError,
+    CreativeBrief,
+)
 from services.model_store import JsonStore
 from services.workspace_agent import WorkspaceNotFound, resolve_workspace_agent
 
@@ -636,7 +641,19 @@ async def _intake_protocol(
             lineage_id=lineage_id,
             version=1,
         )
-        await brief_store.create(brief)
+        try:
+            brief = await brief_store.create(brief)
+        except BriefVersionConflictError:
+            # A follower can take a still-live driver's record over (the
+            # staleness heuristic cannot tell a slow driver from a dead one)
+            # and reach this insert while the twin driver's insert for the
+            # same pre-minted identity is still in flight. The loser of the
+            # unique race adopts the winner's row — a takeover costs a
+            # duplicate-skip check, not a failed logical commit. A conflict
+            # without our identity (the re-read misses) is genuine: re-raise.
+            brief = await brief_store.get(brief_id, workspace_id=workspace_id)
+            if brief is None:
+                raise
     record["stage"] = "brief_created"
     record["status"] = "brief_created"
     _put_record(record)
@@ -648,14 +665,29 @@ async def _intake_protocol(
     except LookupError:
         goal = None
     if goal is None:
-        goal = await goal_reader.create_goal(
-            principal_id=user_id,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            agent_id=agent_id,
-            draft=_revision_draft(record["draft"], agent_id),
-            goal_id=goal_id,
-        )
+        try:
+            goal = await goal_reader.create_goal(
+                principal_id=user_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                agent_id=agent_id,
+                draft=_revision_draft(record["draft"], agent_id),
+                goal_id=goal_id,
+            )
+        except Exception:
+            # The same takeover race, at the insert that completes the pair:
+            # the twin driver's row for this record's pre-minted goal_id
+            # landed between our check and our insert (the unique index
+            # serializes them; the loser sees the violation). A row under our
+            # own pre-minted id is by definition this logical commit's write
+            # — adopt it. Any other failure (the re-read misses or itself
+            # fails) is re-raised so the record keeps its truthful failure.
+            try:
+                goal = await goal_reader.get_goal(goal_id, principal_id=user_id)
+            except LookupError:
+                goal = None
+            if goal is None:
+                raise
     return _mark_committed(
         record,
         {
@@ -666,6 +698,82 @@ async def _intake_protocol(
             "brief_version": 1,
         },
     )
+
+
+async def _adopt_revision_tail(
+    goal: Any,
+    *,
+    goal_reader: Any,
+    goal_id: str,
+    user_id: str,
+    expected_revision: int,
+    new_draft: GoalRevisionDraft,
+) -> int:
+    """Adopt the appended tail iff it is this commit's revision — the
+    successor the CAS append would have minted, with the complete content
+    this draft produces (a crash that landed the append but not the record
+    update, or the twin driver a takeover race handed the append to).
+    desired_state alone is not unique (subject/outcome shared, deadline
+    differs), so every field is compared; anything else means another
+    writer moved the Goal."""
+    revisions = await goal_reader.list_goal_revisions(goal_id, principal_id=user_id)
+    tail = revisions[-1] if revisions else None
+    if (
+        tail is None
+        or tail.revision != expected_revision + 1
+        or (tail.desired_state, tail.success_conditions, tail.stop_conditions, tail.author)
+        != (
+            new_draft.desired_state,
+            new_draft.success_conditions,
+            new_draft.stop_conditions,
+            new_draft.author,
+        )
+    ):
+        raise CommitRejected(
+            f"goal {goal_id} moved to revision {goal.current_revision}; "
+            "re-check the current state before revising"
+        )
+    return tail.revision
+
+
+async def _append_or_adopt_revision(
+    goal: Any,
+    *,
+    goal_reader: Any,
+    goal_id: str,
+    user_id: str,
+    expected_revision: int,
+    new_draft: GoalRevisionDraft,
+) -> tuple[Any, int]:
+    """Append this commit's revision under compare-and-set, or adopt the
+    twin that already appended it.
+
+    A follower can take a still-live driver's record over (the staleness
+    heuristic cannot tell a slow driver from a dead one) and race the same
+    compare-and-set. The loser re-reads and takes the same adoption-or-
+    refusal a crash after the append gets: a stale writer still loses
+    cleanly (``_adopt_revision_tail`` refuses a foreign tail), a twin
+    writing this commit's own next revision converges."""
+    if goal.current_revision == expected_revision:
+        try:
+            goal = await goal_reader.append_revision(
+                goal_id,
+                new_draft,
+                principal_id=user_id,
+                expected_revision=expected_revision,
+            )
+            return goal, goal.current_revision
+        except GoalRevisionConflict:
+            goal = await goal_reader.get_goal(goal_id, principal_id=user_id)
+    revision = await _adopt_revision_tail(
+        goal,
+        goal_reader=goal_reader,
+        goal_id=goal_id,
+        user_id=user_id,
+        expected_revision=expected_revision,
+        new_draft=new_draft,
+    )
+    return goal, revision
 
 
 async def _revise_protocol(
@@ -729,40 +837,14 @@ async def _revise_protocol(
         )
     new_draft = _revision_draft(record["draft"], agent_id)
     if revise_goal:
-        revision = goal.current_revision
-        if goal.current_revision == expected_revision:
-            goal = await goal_reader.append_revision(
-                goal_id,
-                new_draft,
-                principal_id=user_id,
-                expected_revision=expected_revision,
-            )
-            revision = goal.current_revision
-        else:
-            # Resume after a crash that landed the append but not the record
-            # update: adopt the tail iff it is this commit's revision — the
-            # successor the CAS append would have minted, with the complete
-            # content this draft produces. desired_state alone is not unique
-            # (subject/outcome shared, deadline differs), so every field is
-            # compared; anything else means another writer moved the Goal.
-            revisions = await goal_reader.list_goal_revisions(goal_id, principal_id=user_id)
-            tail = revisions[-1] if revisions else None
-            if (
-                tail is None
-                or tail.revision != expected_revision + 1
-                or (tail.desired_state, tail.success_conditions, tail.stop_conditions, tail.author)
-                != (
-                    new_draft.desired_state,
-                    new_draft.success_conditions,
-                    new_draft.stop_conditions,
-                    new_draft.author,
-                )
-            ):
-                raise CommitRejected(
-                    f"goal {goal_id} moved to revision {goal.current_revision}; "
-                    "re-check the current state before revising"
-                )
-            revision = tail.revision
+        goal, revision = await _append_or_adopt_revision(
+            goal,
+            goal_reader=goal_reader,
+            goal_id=goal_id,
+            user_id=user_id,
+            expected_revision=expected_revision,
+            new_draft=new_draft,
+        )
     else:
         if goal.current_revision != expected_revision:
             raise CommitRejected(
@@ -788,7 +870,15 @@ async def _revise_protocol(
             version=(prior.version + 1) if prior else 1,
             supersedes_brief_id=prior.brief_id if prior else None,
         )
-        await brief_store.create(brief)
+        try:
+            brief = await brief_store.create(brief)
+        except BriefVersionConflictError:
+            # The takeover race again: the twin driver's version insert for
+            # this record's pre-minted brief id landed first. Adopt it —
+            # the version it carries is the one this commit minted.
+            brief = await brief_store.get(brief_id, workspace_id=workspace_id)
+            if brief is None:
+                raise
     return _mark_committed(
         record,
         {
