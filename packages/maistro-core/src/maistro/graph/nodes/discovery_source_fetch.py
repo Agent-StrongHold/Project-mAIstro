@@ -18,10 +18,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
+from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.discovery_source import invoke_discovery_source
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
@@ -30,6 +31,11 @@ from maistro.capabilities.providers.discovery_source import DiscoverySourceReque
 from . import register_node
 from .base import BaseNode, NodeContext, ReplaySemantics
 from .discovery_context import DiscoveryContextProvider, default_discovery_context
+
+#: Sentinel distinguishing "no warden supplied" from an explicit `None` (a
+#: policy declared unavailable, which `scan_inbound` fails closed on) — the
+#: same shape as the A2A delegation node's wiring (#1137).
+_WARDEN_UNSET = object()
 
 
 class DiscoverySourceFetchIn(BaseModel):
@@ -123,6 +129,10 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
     optional_authorities: ClassVar[Mapping[str, str]] = {
         "effect_context": "effect_context",
         "discovery_context": "discovery_context",
+        # The inbound-content policy (#66, same authority the delegation node
+        # wires): fetched feed rows are peer-controlled content scanned before
+        # they may flow downstream. The scan itself fails closed when absent.
+        "warden": "warden",
     }
     display_name: ClassVar[str] = "Discovery: fetch declared sources"
     description: ClassVar[str] = (
@@ -137,9 +147,17 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
         *,
         effect_context: CapabilityEffectContext | None = None,
         discovery_context: DiscoveryContextProvider | None = None,
+        warden: InboundWarden | None | object = _WARDEN_UNSET,
     ) -> None:
         self._effects = effect_context or default_effect_context()
         self._cycle = discovery_context or default_discovery_context()
+        # Feed rows are attacker-influenced even though the source URL was
+        # declared by the Workspace (#66): the default is the canonical
+        # detector, an explicitly unavailable policy fails closed in
+        # `scan_inbound`.
+        self._warden = (
+            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
+        )
 
     async def _binding_for(
         self, inputs: DiscoverySourceFetchIn, ctx: NodeContext, cycle: Any
@@ -208,6 +226,31 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
             rows.append(row)
         return rows, skipped_stale
 
+    @staticmethod
+    def _source_meta(
+        source: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> tuple[str, str, dict[str, str]]:
+        """URL, category and the provenance row recorded for one source."""
+        url = str(source.get("url") or "").strip()
+        category = str(result.get("category") or source.get("category") or "")
+        return url, category, {"url": url, "category": category}
+
+    async def _refusal_for_rows(self, rows: list[dict[str, str]]) -> str | None:
+        """The #66 boundary for accepted rows, as a refusal or `None`.
+
+        Accepted rows are peer-controlled content. They are scanned in their
+        canonical form — keys included — before they can flow toward the
+        curator's model prompt or the Workspace, and a refusal stops the cycle
+        here: poisoned rows are never silently dropped into a weaker
+        downstream.
+        """
+        if not rows:
+            return None
+        verdict = await scan_inbound(self._warden, rows, boundary="discovery_source")
+        if verdict.clean:
+            return None
+        return "discovery source content refused by Warden"
+
     async def _execute(
         self, inputs: DiscoverySourceFetchIn, ctx: NodeContext
     ) -> DiscoverySourceFetchOut:
@@ -233,12 +276,11 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
         for source in sources:
             if len(entries) >= inputs.limit:
                 break
-            url = str(source.get("url") or "").strip()
             per_source = min(inputs.max_entries_per_source, inputs.limit - len(entries))
             result = await self._invoke_source(source, binding, ctx, inputs, per_source)
             sources_queried += 1
-            category = str(result.get("category") or source.get("category") or "")
-            sources_meta.append({"url": url, "category": category})
+            _url, category, meta = self._source_meta(source, result)
+            sources_meta.append(meta)
             rows, stale = self._accept_entries(
                 result,
                 category,
@@ -247,6 +289,9 @@ class DiscoverySourceFetchNode(BaseNode[DiscoverySourceFetchIn, DiscoverySourceF
                 remaining=inputs.limit - len(entries),
             )
             skipped_stale += stale
+            refusal = await self._refusal_for_rows(rows)
+            if refusal:
+                return DiscoverySourceFetchOut(refusal=refusal)
             entries.extend(rows)
         return DiscoverySourceFetchOut(
             entries=entries,

@@ -35,7 +35,10 @@ def _check_required_fields(
                     rule="missing_required_with_default",
                     severity="info",
                     detail=f"Missing '{field_name}', used default",
-                    repair_action=f"default={field_schema['default']}",
+                    # The default may be a credential (e.g. a secret api_key
+                    # default). Name the field, never echo the value: this
+                    # string is signed and persisted verbatim (#69).
+                    repair_action=f"used schema default for '{field_name}'",
                 )
             )
         else:

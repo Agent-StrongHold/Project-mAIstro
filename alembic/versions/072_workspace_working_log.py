@@ -1,7 +1,7 @@
 """Durable per-Workspace working log over PostgreSQL (#301, M4-H / #105).
 
-Revision ID: 071
-Revises: 070
+Revision ID: 072
+Revises: 071 (develop's landed 071 = #69's Sentinel decision-integrity revision)
 
 ADR-082226-5104's log-as-context is only real when the observation log
 outlives the process, and until this revision a PostgreSQL deployment could
@@ -40,8 +40,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "071"
-down_revision = "070"
+revision = "072"
+down_revision = "071"
 branch_labels = None
 depends_on = None
 

@@ -386,8 +386,12 @@ export default function DagRuns() {
               return (
                 <g
                   key={n.role}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${n.role} node`}
                   style={{ cursor: "pointer" }}
                   onClick={() => setSelectedNode(isSelected ? null : n.role)}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedNode(isSelected ? null : n.role); } }}
                 >
                   <rect
                     x={x}

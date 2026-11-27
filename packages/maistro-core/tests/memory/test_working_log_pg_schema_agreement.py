@@ -78,7 +78,7 @@ def _migration_ddl() -> str:
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
     below only have to parse — nothing dials them. Rendering the real migration
     rather than re-typing its DDL is the point: a change to
-    `alembic/versions/071_workspace_working_log.py` reaches this test.
+    `alembic/versions/072_workspace_working_log.py` reaches this test.
     """
     env = {
         **os.environ,

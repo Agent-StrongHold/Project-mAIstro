@@ -227,7 +227,7 @@ EXPECTED_TABLES = frozenset(
         "user_model_facts",
         "user_model_statement_keys",
         "trigger_definitions",
-        # The per-Workspace working log (#301, M4-H; 071): the lossless
+        # The per-Workspace working log (#301, M4-H; 072): the lossless
         # observation log and the content-addressed results behind its
         # references — the PostgreSQL durable twin of the SQLite tables the
         # runtime bootstrap has always created.
