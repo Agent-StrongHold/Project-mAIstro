@@ -1543,3 +1543,63 @@ acceptance remains **BLOCKED** on external operator evidence (release
 workflow exercise, clean-machine real-model E2E, escrowed backup/restore,
 RC soak and byte-equivalent promotion, overnight operation). PR #2529 stays
 DRAFT.
+
+## Round 28 — block-resolution pass: external-evidence items re-mapped at `93f08c74`
+
+The standing BLOCKED disposition was challenged rather than re-asserted: this
+round re-executed the in-repo battery independently at the current head
+`93f08c7402b9c06b804053e8bb3152b7c7299f7b` (no prior claim taken on trust) and
+re-derived, per exit condition, whether the missing evidence is genuinely
+unproducible in-repo. Executed first-hand this round:
+
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  already formatted.
+- `pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py`
+  — 13 passed (includes the Round 26 repaired
+  `test_cadence_reclaims_a_lapsed_goal_claim`).
+- `pytest tests/test_release_guard.py tests/test_promote_release.py
+  tests/test_soak_compose_pressure.py` — 132 passed (release pipeline logic:
+  guard, byte-equivalent RC promotion, soak containment driver).
+- `pytest packages/hive-conductor/backend/tests` — **4651 passed,
+  121 skipped** (persistent Agent/Goal reconciliation, restart/failover,
+  lease takeover, crash replay, Conductor inspection surfaces, Entra JIT).
+- `pytest packages/maistro-core/tests/goals` — 182 passed, 24 skipped.
+- `pytest packages/hive-conductor/backend/tests/test_backup_restore_drill.py`
+  — 14 passed: the #88 escrow/backup-restore code path is exercised in-repo
+  across every recorded failure mode (absent escrow, wrong identity, corrupt
+  component, missing state.db, ciphertext without escrow root).
+- `scripts/check-release-consistency.py` — ok (released none, shipping 0.9.0
+  toward 1.0.0: VERSION/CHANGELOG/package metadata consistent).
+- `scripts/check-backlog-consistency.py` — ok (167 items; every gap marker
+  resolves; terminal items carry closure evidence — the
+  KNOWN-GAPS.md shipped/deferred disposition gate).
+- `scripts/check-suite-inventory.py` — ok, 21 suites match (37973 unique
+  identities, 0 duplicated/byte-identical test files).
+- Release-workflow static verification re-run: `release.yml`,
+  `soak-pressure.yml`, `release-installer.yml`, `compliance-evidence.yml` all
+  parse as valid YAML.
+
+Re-derived external-evidence mapping (why the remaining four exit conditions
+cannot be closed from inside this repository):
+
+1. *Release workflows verified rather than exercised* — `git tag -l 'v*'
+   returns 0 tags; exercising `release.yml` requires a `v*` tag push plus the
+   PyPI trusted publisher, the gated `release` environment and branch
+   protection that the workflow itself lists as maintainer prerequisites
+   (`.github/workflows/release.yml` tail). All are GitHub-side mutations,
+   prohibited to this lane.
+2. *Clean-machine real-model Graph E2E* — needs live model credentials not
+   present in this environment; no in-repo test can mint them.
+3. *RC soak + byte-equivalent final promotion* — `soak-evidence.json` and
+   `release-evidence.json` are produced by `soak-pressure.yml`/`release.yml`
+   against published RC artifacts (workflow lines 613/952/1005); minting them
+   locally would fabricate the artifact-identity chain the promotion logic
+   exists to verify. The promotion *logic* is unit-proven (132 passed above).
+4. *Overnight operation* — time-bound live operation outside this lane's
+   scope.
+
+No production or test change is warranted: every locally reachable exit
+condition is green first-hand at this head, and the remainder is mapped to
+maintainer-side prerequisites, not to in-tree defects. No test count changed,
+so no `docs/testing/inventory-notes/` delta applies. Disposition remains
+**BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
