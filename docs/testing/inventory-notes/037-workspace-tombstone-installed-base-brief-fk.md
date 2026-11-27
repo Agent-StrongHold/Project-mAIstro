@@ -6,8 +6,9 @@ inventory-delta:
 
 One new `tests/migrations` node ID closes #37's installed-base gap for the
 second `ON DELETE RESTRICT` foreign key into `canonical_projects`. Revision
-`072` (renumbered from the `071` it was written as, past develop's landed
-`071_sentinel_decision_integrity`) quarantines orphan Projects and purges
+`073` (renumbered from the `071` it was written as, past develop's landed
+`071_sentinel_decision_integrity` and then develop's landed
+`072_workspace_working_log`) quarantines orphan Projects and purges
 them leaf-first, excluding rows
 that own protected history — but its predicate checked only
 `canonical_runs.project_id`. `design_creative_briefs.project_id` (revision
@@ -28,7 +29,7 @@ tombstoned while the live one is not, and the Project → Workspace fence lands
 predicate with exactly the named
 `design_creative_briefs_project_id_fkey` RESTRICT violation.
 
-No production code outside the `072` migration's purge predicate changed, and
+No production code outside the `073` migration's purge predicate changed, and
 no other suite count moved (`formal/` stays 670: the same-round formal-model
 repair provisions canonical Workspaces through the existing
 `maistro.testing.postgres.provision_workspace` helper and adds no node IDs).

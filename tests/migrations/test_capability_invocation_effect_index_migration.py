@@ -214,14 +214,15 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # merged identities develop already shipped — a landed trunk migration
     # never moves, and redrawing them would leave databases stamped at
     # develop's `066` never executing the new revision — so it takes `068`,
-    # #1064's Evolve domain publications renumber past that landed run as `070`.
-    # one linear head. The Schedule deletion-marker table (#2467) — `064`
-    # when written on this branch's previous tip — renumbers past that
-    # landed run as `069` under the same convention, #69's Sentinel
-    # decision-integrity revision appends past the Evolve pair as `071`,
-    # and #37's tombstone/Project-FK fences renumber past that landed
-    # revision as `072`.
-    assert directory.get_heads() == ["072"]
+    # #1064's Evolve domain publications renumber past that landed run as `070`,
+    # keeping one linear head. The Schedule deletion-marker table (#2467) —
+    # `064` when written on this branch's previous tip — renumbers past that
+    # landed run as `069` under the same convention; #69's Sentinel
+    # decision-integrity revision appends past the Evolve pair as `071`, the
+    # per-Workspace working log (#301, M4-H; #105) appends past that as
+    # `072`, and #37's tombstone/Project-FK fences renumber past that landed
+    # revision as `073`.
+    assert directory.get_heads() == ["073"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
@@ -287,9 +288,11 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     assert directory.get_revision("071").down_revision == "070"
     assert Path(directory.get_revision("071").path).name == "071_sentinel_decision_integrity.py"
     assert directory.get_revision("072").down_revision == "071"
+    assert Path(directory.get_revision("072").path).name == "072_workspace_working_log.py"
+    assert directory.get_revision("073").down_revision == "072"
     assert (
-        Path(directory.get_revision("072").path).name
-        == "072_workspace_tombstones_and_project_fk.py"
+        Path(directory.get_revision("073").path).name
+        == "073_workspace_tombstones_and_project_fk.py"
     )
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —

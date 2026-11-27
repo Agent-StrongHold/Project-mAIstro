@@ -1,6 +1,6 @@
 """The #37 tombstone/Project-FK revision against an installed-base shape.
 
-`072_workspace_tombstones_and_project_fk` quarantines every orphan Project
+`073_workspace_tombstones_and_project_fk` quarantines every orphan Project
 (a Project whose Workspace id owns no canonical Workspace) and then purges
 the quarantined rows leaf-first, excluding the rows whose history forbids
 deletion. Two foreign keys forbid it, and the purge must honor both:
@@ -52,8 +52,9 @@ pytestmark = pytest.mark.skipif(
 
 #: The revision recorded while the chain sits exactly where the fences find
 #: it: develop's tip before the #37 fences appended. An installed base at
-#: ``070`` walks develop's landed ``071`` (Sentinel decision integrity) and
-#: then ``072`` — the fences — as the append-only rungs to the head.
+#: ``070`` walks develop's landed ``071`` (Sentinel decision integrity), the
+#: landed per-Workspace working log ``072``, and then ``073`` — the fences
+#: — as the append-only rungs to the head.
 PRE_FENCES = "070"
 
 QUARANTINE_REASON = "workspace_missing_at_fk_adoption"

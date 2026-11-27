@@ -1,14 +1,16 @@
 """Deleted Workspaces stay deleted, and new Projects cannot outlive the fact.
 
-Revision ID: 072
-Revises: 071
+Revision ID: 073
+Revises: 072
 
 (Numbered 069 when written against the pre-sync base; develop landed its own
 069 (`069_schedule_deletions`) and a 070 first, so the branch rebased this
 revision behind them to keep a single alembic head. Develop then landed its
 own 071 — `071_sentinel_decision_integrity` (#69) — past the Evolve pair, so
-this revision renumbers past that landed revision as `072` under the same
-convention: a landed trunk migration never moves.)
+this revision renumbered past that landed revision as `072` under the same
+convention: a landed trunk migration never moves. Develop then landed its
+own 072 — `072_workspace_working_log` (#301, M4-H) — so this revision
+renumbers past that landed revision as `073` under the same convention.)
 
 Two fences for the one-Workspace-authority contract (#37), both appended
 behind the shipped stores rather than rewritten into them:
@@ -62,8 +64,8 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import text
 
-revision = "072"
-down_revision = "071"
+revision = "073"
+down_revision = "072"
 branch_labels = None
 depends_on = None
 
