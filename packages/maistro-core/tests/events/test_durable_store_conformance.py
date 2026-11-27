@@ -79,6 +79,50 @@ async def _sqlite_conn():
     return await aiosqlite.connect(":memory:")
 
 
+class _SharedConnSpy:
+    """Forwards every connection call; fires a callback when the proof's
+    hole re-read is dispatched through it — i.e. when a proof is running on
+    the shared spine connection instead of its own (the old wiring)."""
+
+    def __init__(self, inner, on_proof_read):
+        self._inner = inner
+        self._on_proof_read = on_proof_read
+
+    async def execute(self, sql, *args):
+        result = await self._inner.execute(sql, *args)
+        if sql.lstrip().upper().startswith("SELECT ID FROM EVENT_LOG"):
+            await self._on_proof_read()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _ProofConnProxy:
+    """Forwards every call to the isolated proof connection; fires a callback
+    once its rollback completes — the moment the write lock is released and a
+    sibling write can proceed against the shared connection."""
+
+    def __init__(self, inner, on_rollback):
+        self._inner = inner
+        self._on_rollback = on_rollback
+
+    def __await__(self):
+        # Already opened by `_proof_conn_connect`; `await conn` (if a caller
+        # ever does) resolves to the proxy itself.
+        return iter(())
+
+    async def execute(self, sql, *args):
+        return await self._inner.execute(sql, *args)
+
+    async def rollback(self):
+        await self._inner.rollback()
+        await self._on_rollback()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 async def _pg_pool():
     url = _require_postgres()
     import asyncpg
@@ -411,6 +455,97 @@ async def test_sqlite_hole_proof_waits_out_a_live_writer(tmp_path):
             assert await store.prove_holes_absent((inflight_id,)) == frozenset({inflight_id})
         finally:
             await writer.close()
+    finally:
+        await conn.close()
+
+
+async def test_the_sqlite_hole_proof_never_rolls_back_a_sibling_stores_write(tmp_path):
+    """The proof must run on its own connection, not on the shared spine one.
+
+    `_wire_sqlite_durable_events` wires the event log, trigger store,
+    invocation store and cursor store onto ONE connection, so a proof that
+    took its write lock and rolled back there would swallow whatever a
+    sibling store had appended mid-proof: the sibling's INSERT joins the
+    proof's transaction, the proof's rollback silently discards it, and the
+    sibling still reports success (#2509 review). This test fires a sibling
+    INSERT into the exact window that loses it — after the proof's read has
+    been dispatched, before its rollback — and asserts the write survives.
+    Against a proof running on the shared connection the row is gone after
+    the commit; against the isolated proof connection it persists."""
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+    from maistro.events.trigger_store import SqliteTriggerStore
+
+    db_path = str(tmp_path / "shared.db")
+    conn = await aiosqlite.connect(db_path)
+    try:
+        store = SqliteEventLog(conn)
+        await store.ensure_schema()
+        triggers = SqliteTriggerStore(conn)
+        await triggers.ensure_schema()
+        committed = await store.append("agent.created")
+
+        # A second writer allocates the next id, then rolls back: id
+        # `committed.id + 1` is a permanent hole the proof may judge.
+        writer = await aiosqlite.connect(db_path)
+        try:
+            await writer.execute("PRAGMA busy_timeout = 2000")
+            await writer.execute("BEGIN IMMEDIATE")
+            cursor = await writer.execute(
+                "INSERT INTO event_log (event_type, entity_type, entity_id, payload, "
+                "source, created_at) VALUES ('agent.created', '', '', '{}', '', 0)"
+            )
+            hole_id = cursor.lastrowid
+            await writer.execute("ROLLBACK")
+        finally:
+            await writer.close()
+        assert hole_id == committed.id + 1
+
+        # Fire the sibling write exactly once, at whichever point the proof
+        # hands this test control mid-transaction: after the proof's hole
+        # re-read on the shared connection (the proof running there), or at
+        # the isolated proof connection's rollback completion (the write lock
+        # just released). One-shot: exactly one sibling INSERT either way.
+        fired = False
+
+        async def fire_sibling_insert() -> None:
+            nonlocal fired
+            if fired:
+                return
+            fired = True
+            await conn.execute(
+                "INSERT INTO trigger_definitions (trigger_id, name) VALUES ('sibling', 'in-flight')"
+            )
+
+        real_connect = aiosqlite.connect
+
+        async def proxying_connect(database, *args, **kwargs):
+            assert database == db_path  # only the proof opens its own connection
+            return _ProofConnProxy(
+                await real_connect(database, *args, **kwargs), fire_sibling_insert
+            )
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(aiosqlite, "connect", proxying_connect)
+            spied_store = SqliteEventLog(_SharedConnSpy(conn, fire_sibling_insert))
+            proven = await spied_store.prove_holes_absent((hole_id,))
+
+        # The proof itself stays honest in either wiring.
+        assert proven == frozenset({hole_id})
+
+        # The sibling believed its INSERT succeeded; the commit must land it.
+        await conn.commit()
+        checker = await aiosqlite.connect(db_path)
+        try:
+            survived = await checker.execute(
+                "SELECT name FROM trigger_definitions WHERE trigger_id = 'sibling'"
+            )
+            assert await survived.fetchone() is not None, (
+                "the hole proof rolled back a sibling store's uncommitted write"
+            )
+        finally:
+            await checker.close()
     finally:
         await conn.close()
 

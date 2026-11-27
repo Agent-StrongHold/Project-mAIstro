@@ -781,6 +781,54 @@ async def test_durable_evidence_advances_the_cursor_past_a_rolled_back_append() 
     assert await _durable_position(container) == 3
 
 
+async def test_proof_of_one_hole_never_crosses_the_unproven_ids_behind_it() -> None:
+    """#2509 review: a hole report that collapsed a missing run to its first
+    id would let the position cross the rest of the run on that id's proof
+    alone. Ids 2 and 3 are both invisible while 4 is readable; only 2's append
+    is proven rolled back. 3 may still commit — its id was allocated by a
+    live transaction the proof never examined — so the position may pass 2
+    (its proof is in hand) but must stop just below 3, never ride 2's proof
+    up to 4."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+    )
+    inner = _HidingLog(container.durable_event_log, hidden={2, 3})
+    log = _ProvingLog(inner, proven={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(4):
+        await inner.append("agent.created")
+
+    assert await container.process_durable_events() == 2
+    assert delivered == [1, 4]
+    assert await _durable_position(container) == 2
+    assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 2
+
+    # Unproven still: further ticks hold the same line.
+    assert await container.process_durable_events() == 2
+    assert await _durable_position(container) == 2
+    assert delivered == [1, 4]
+
+    # 3's append rolls back too: only now is the run crossed, on evidence
+    # for every skipped id, and 4 settles behind them without redelivery.
+    log.proven = {2, 3}
+    assert await container.process_durable_events() == 4
+    assert delivered == [1, 4]
+    assert await _durable_position(container) == 4
+
+
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
 
 

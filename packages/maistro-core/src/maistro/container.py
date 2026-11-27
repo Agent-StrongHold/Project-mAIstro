@@ -1292,13 +1292,16 @@ class Container:
         """The highest position this tick may persist without skipping an event.
 
         `holes` are ids below `cursor` that the log did not return (see
-        `ProcessedBatch`). On PostgreSQL an id can be allocated by an append
-        that has not committed yet; persisting past it would drop that event
-        from every later ``id > position`` read. The position therefore stops
-        just below the first hole the log has not **proven terminally
-        absent** (`EventLogStore.prove_holes_absent`): durable database
-        evidence that the allocating transaction ended without committing
-        and that no future transaction can ever make the id visible. Elapsed
+        `ProcessedBatch` — every missing id of a run, not just its first). On
+        PostgreSQL an id can be allocated by an append that has not committed
+        yet; persisting past it would drop that event from every later
+        ``id > position`` read. The position therefore stops just below the
+        first hole the log has not **proven terminally absent**
+        (`EventLogStore.prove_holes_absent`): durable database evidence that
+        the allocating transaction ended without committing and that no
+        future transaction can ever make the id visible. Each missing id is
+        proven on its own — proof that one id of a run rolled back says
+        nothing about its neighbours, which may still be in flight. Elapsed
         time never authorizes crossing a hole — a transaction can hold an
         allocated id past any timeout and still commit (#2509) — so a hole
         without evidence pins the cursor for as long as it is unproven. A

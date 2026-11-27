@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +12
+  packages/maistro-core/tests: +14
 ---
 # 2509-durable-cursor-hole-proof
 
@@ -32,7 +32,7 @@ its `now` parameter, its per-holder first-seen map, and
 `durable_event_hole_grace_s` / `DEFAULT_HOLE_GRACE_SECONDS` ceased to exist.
 ADR-086's gap-policy bullet records the new contract.
 
-**Tests (+12, all in `packages/maistro-core/tests`).**
+**Tests (+14, all in `packages/maistro-core/tests`).**
 `tests/test_container_wiring.py` (+1 net): the two grace tests become
 `test_an_unproven_hole_holds_the_cursor_no_matter_how_long_it_lingers` (an
 unproven hole pins the durable position and the replay acknowledgement across
@@ -65,16 +65,61 @@ already settled) and the position settles at 3 with id 3 retained. Two: A
 rolls back and the next tick crosses the hole on durable evidence — bounded
 forward progress, no sleep and no timer.
 
-**Demonstrated regression sensitivity.** Against the pre-fix sources the new
-evidence-gated tests fail (the old `_gap_safe_position` demanded a `now` —
-crossing was time-parameterized — and crossed without querying any proof),
-while the old grace test passed, i.e. it was green precisely on the behaviour
-the issue calls silent event loss.
+**Repair round (PR review + SAST gate).** Three follow-ups on the same
+change, each with a test that fails against the code it repairs:
+
+1. *Every skipped id is reported, not just the first of a run*
+   (`ProcessedBatch.holes`, first review finding): proving hole 2 absent said
+   nothing about the ids 3, 4, … behind it — the old first-of-run report let
+   `_gap_safe_position` ride 2's proof past ids whose appends may still
+   commit. `process_events_batch` now reports every missing id, so each is
+   proven on its own and the position stops below the first unproven one.
+   `test_every_gap_is_reported_by_its_first_missing_id` asserted the collapsed
+   form and is replaced by `test_every_missing_id_of_a_run_is_reported`
+   (count-neutral), and `tests/test_container_wiring.py` gains
+   `test_proof_of_one_hole_never_crosses_the_unproven_ids_behind_it` (+1):
+   ids 2 and 3 hidden while 4 is readable, only 2 proven — the tick settles
+   4 but the position stops at 2 until 3's proof arrives, then moves to 4.
+2. *The SQLite proof runs on an isolated connection* (second review
+   finding): `_wire_sqlite_durable_events` wires all four durable stores onto
+   ONE connection, so a proof that took its write lock on the shared spine
+   connection would roll back a sibling store's uncommitted INSERT while the
+   sibling still reported success. `prove_holes_absent` now opens its own
+   connection to the same file (`BEGIN IMMEDIATE` answers database-wide, so
+   the instance lock was never the guard); a pathless `sqlite://` (in-memory)
+   cannot isolate, so it honestly proves nothing. `test_durable_store_conformance.py`
+   gains `test_the_sqlite_hole_proof_never_rolls_back_a_sibling_stores_write`
+   (+1): it fires a sibling `trigger_definitions` INSERT into the exact
+   window that loses it — between the proof's re-read and its rollback — and
+   asserts the row survives the commit; against a shared-connection proof the
+   row is gone.
+3. *SAST / Bandit gate*: the `# nosec B608` annotation for the hole re-read
+   sat on its own line above the f-string bandit flags, so `SAST / Bandit`
+   failed with one Medium B608 finding; it now annotates the flagged line
+   itself (same placement as the other in-file `nosec`), and the gate is
+   back to a strict 0 Medium+ baseline. `aiosqlite` also moved from a
+   function-local import to the module's runtime imports (it is a declared
+   dependency; the TYPE_CHECKING-only import made the local one carry
+   `type: ignore` noise).
+
+**Demonstrated regression sensitivity.** All three repair-round tests fail
+against the pre-repair head `5202e6b082` (collapsed `holes`, shared-connection
+proof) and pass with the repair; against the pre-fix sources the original
+evidence-gated tests fail while the old grace test passed, i.e. it was green
+precisely on the behaviour the issue calls silent event loss.
 
 **Legs.** `packages/maistro-core/tests/events` + `tests/test_container_wiring.py`
-with `MAISTRO_TEST_DATABASE_URL` pointing at a real PostgreSQL 18: full
-`packages/maistro-core/tests` (17955 passed, 1308 skipped) and Ruff clean;
-`check-vulture-baseline.py` (1217 = 1217, candidate = base),
-`check-radon-baseline.py` (124 = 124), reachability, wiring-reads,
-contract-markers, doc-links, ADR-index and execution-lifecycles gates all
-pass. Mypy clean on `maistro.events` and `container.py`.
+with `MAISTRO_TEST_DATABASE_URL` pointing at a real PostgreSQL (docker
+`postgres:17`), `MAISTRO_REQUIRE_PG_LEGS=1`: `packages/maistro-core/tests/events`
+525 passed (5 skips are purge/envelope legs gated on other stores or
+`MAISTRO_TEST_PG_DSN`), `tests/migrations/test_event_schema_agreement.py`
+5 passed, full `packages/maistro-core/tests` 18085 passed / 1179 skipped with
+only `workspaces/test_sqlite_alembic_schema_parity[postgres]` failing — a
+pre-existing environment limitation (plain postgres:17 cannot serve the
+alembic chain's `CREATE EXTENSION vector`; CI runs that leg on the pgvector
+image) reproduced identically on untouched `5202e6b082`. CI-exact
+`uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend
+packages/maistro-server/src -ll --confidence-level=medium`: 0 Medium+.
+Mypy clean on `events` and `container.py`; Ruff check + format clean;
+`check-suite-inventory.py --suite packages/maistro-core/tests` green at the
+recorded +14.

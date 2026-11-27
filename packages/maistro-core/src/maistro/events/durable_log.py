@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import aiosqlite
+
 from maistro.observability.metrics import (
     publish_retention_table_health,
     retention_health_probe_due,
@@ -30,8 +32,6 @@ from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgra
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    import aiosqlite
 
     from maistro.events.bus import Event
 
@@ -428,52 +428,73 @@ class SqliteEventLog:
         """Prove a hole terminally absent by becoming the one SQLite writer.
 
         SQLite serialises writers: at most one write transaction exists at a
-        time. Taking the write lock (`BEGIN IMMEDIATE`, under a zero busy
-        timeout so a held lock fails fast instead of stalling the tick)
-        proves no other writer transaction is live — so every id any
-        transaction allocated has terminated, and a re-read inside that same
-        lock answers terminally: still invisible means the append rolled
-        back, because the single-writer order makes id allocation and commit
-        agree. A `database is locked` failure means a writer IS live and some
-        hole may yet commit, so nothing is proven and the caller holds its
-        cursor below the hole until a later tick (#2509).
+        time per database. The proof therefore runs on an isolated connection
+        to the same file — never on the shared spine connection. Every
+        durable store `_wire_sqlite_durable_events` wires shares that
+        connection, so a sibling's INSERT executed mid-proof would join this
+        transaction and this rollback would silently discard it while the
+        sibling still reported success — the exact #327/#1199/#101 failure
+        this codebase already paid for three times.
+
+        Taking the write lock (`BEGIN IMMEDIATE`, under a zero busy timeout
+        so a held lock fails fast instead of stalling the tick) proves no
+        other writer transaction is live — so every id any transaction
+        allocated has terminated, and a re-read inside that same lock
+        answers terminally: still invisible means the append rolled back,
+        because the single-writer order makes id allocation and commit
+        agree. A `database is locked` failure means a writer IS live and
+        some hole may yet commit, so nothing is proven and the caller holds
+        its cursor below the hole until a later tick (#2509).
         """
         if not hole_ids:
             return frozenset()
-        async with self._lock:
-            cursor = await self._conn.execute("PRAGMA busy_timeout")
-            row = await cursor.fetchone()
-            previous_timeout = int(row[0]) if row is not None else 0
-            await self._conn.execute("PRAGMA busy_timeout = 0")
+        path = await self._database_path()
+        if path is None:
+            # A pathless `sqlite://` is an in-memory database: an isolated
+            # proof connection would open a different, empty database, and
+            # a proof on the shared connection could roll back a sibling
+            # store's uncommitted write. With isolation impossible, the
+            # honest answer is the in-memory store's: prove nothing.
+            return frozenset()
+        # `self._lock` is intentionally not held: it guards only this
+        # instance, while the isolated connection serialises against every
+        # writer database-wide — which is the guarantee the proof needs.
+        proof_conn = await aiosqlite.connect(path)
+        try:
+            await proof_conn.execute("PRAGMA busy_timeout = 0")
             try:
-                try:
-                    await self._conn.execute("BEGIN IMMEDIATE")
-                except sqlite3.OperationalError:
-                    # `database is locked`: another writer holds the
-                    # transaction; its append may still commit, so no hole
-                    # can be judged from here. A genuine store bug (any
-                    # other error class) propagates instead of masquerading
-                    # as an inconclusive proof.
-                    return frozenset()
-                try:
-                    marks = ",".join("?" * len(hole_ids))
-                    cursor = await self._conn.execute(
-                        # nosec B608 - marks is ?-placeholders only, values bound
-                        f"SELECT id FROM event_log WHERE id IN ({marks})",
-                        tuple(hole_ids),
-                    )
-                    visible = {int(r[0]) for r in await cursor.fetchall()}
-                    return frozenset(hole_ids) - visible
-                finally:
-                    # Nothing was written: roll back to release the write
-                    # lock immediately rather than holding it to the next
-                    # statement this connection runs.
-                    await self._conn.rollback()
-            finally:
-                # previous_timeout is the connection's own prior value.
-                await self._conn.execute(  # nosec B608 - value read back from the same connection
-                    f"PRAGMA busy_timeout = {previous_timeout}"
+                await proof_conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                # `database is locked`: another writer holds the
+                # transaction; its append may still commit, so no hole
+                # can be judged from here. A genuine store bug (any
+                # other error class) propagates instead of masquerading
+                # as an inconclusive proof.
+                return frozenset()
+            try:
+                marks = ",".join("?" * len(hole_ids))
+                cursor = await proof_conn.execute(
+                    f"SELECT id FROM event_log WHERE id IN ({marks})",  # nosec B608 - marks is ?-placeholders only, values bound
+                    tuple(hole_ids),
                 )
+                visible = {int(r[0]) for r in await cursor.fetchall()}
+                return frozenset(hole_ids) - visible
+            finally:
+                # Nothing was written: roll back to release the write
+                # lock immediately rather than holding it to the next
+                # statement this connection runs.
+                await proof_conn.rollback()
+        finally:
+            await proof_conn.close()
+
+    async def _database_path(self) -> str | None:
+        """The main database's file path, or None when it is in-memory."""
+        cursor = await self._conn.execute("PRAGMA database_list")
+        for row in await cursor.fetchall():
+            if str(row[1]) == "main":
+                file_path = str(row[2] or "")
+                return file_path if file_path and file_path != ":memory:" else None
+        return None
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> LoggedEvent:

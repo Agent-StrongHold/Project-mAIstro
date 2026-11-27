@@ -97,9 +97,11 @@ handler-owned idempotency contract.
 >   a replay of already-idempotent work and never skips an event still in flight.
 > - **Gap policy.** PostgreSQL hands out `event_log.id` before the appending transaction
 >   commits, so a lower id can be invisible while a higher one is readable. The bridge processes
->   what it can see but persists its position only up to the first id the log skipped, and holds
->   there until the log **proves the hole terminally absent** (`EventLogStore.prove_holes_absent`,
->   #2509): durable database evidence — never elapsed time — that the allocating transaction ended
+>   what it can see but persists its position only up to the first skipped id it has not proven
+>   terminally absent — the log reports and proves **every** skipped id of a run individually
+>   (`EventLogStore.prove_holes_absent`, #2509), because proof that one id's append rolled back
+>   says nothing about a neighbouring id that may still commit. "Terminally absent" is durable
+>   database evidence — never elapsed time — that the allocating transaction ended
 >   without committing and that no future transaction can make the id visible. On PostgreSQL the
 >   evidence is `pg_locks`: a transaction that has called `nextval` holds a granted lock on the
 >   sequence until it commits or aborts, so when no such lock exists and a fresh read still cannot
