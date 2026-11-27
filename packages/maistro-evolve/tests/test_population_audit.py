@@ -60,6 +60,10 @@ def _stamped(
     g.harness_params["eval_history"] = {"proxy_ifeval": [score - 0.01, score + 0.01]}
     g.harness_params["objective_version"] = "objective-test"
     g.harness_params["evidence_cycle"] = cycle
+    # #104/SPEC-281 §2: an approved promotion candidate carries transfer
+    # evidence for every benchmark it was scored on (stale is acceptable,
+    # absent is not) — the promotion path consults the same gate as fitness.
+    g.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
     return g
 
 
