@@ -844,7 +844,53 @@ def unowned_python_tests(paths: list[str], suite_roots: list[str]) -> list[str]:
     )
 
 
-def check_python_test_ownership() -> int:
+def missing_collected_test_files(
+    paths: list[str], suite: str, node_ids: list[str]
+) -> list[str]:
+    """Compare tracked candidates to runner-reported file identities.
+
+    Pytest may report paths relative to its own root (formal is one example)
+    or to the repository root. Accept only paths belonging to this suite.
+    """
+    prefix = suite.rstrip("/") + "/"
+    expected = {
+        path
+        for path in paths
+        if path.startswith(prefix)
+        and re.fullmatch(r"(?:test_.*|.*_test)\.py", path.rsplit("/", 1)[-1])
+        and path not in NON_TEST_MODULES
+    }
+    actual: set[str] = set()
+    for node_id in node_ids:
+        path = node_id.split("::", 1)[0]
+        if path in expected:
+            actual.add(path)
+        elif prefix + path in expected:
+            actual.add(prefix + path)
+    return sorted(expected - actual)
+
+
+def check_python_discovery(paths: list[str]) -> int:
+    """Require actual collection evidence for every Python recipe."""
+    failed = False
+    for suite, recipe in RECIPES.items():
+        try:
+            count, _command, ids = collect(suite, recipe)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        if not ids or len(ids) != count:
+            print(f"error: incomplete collection evidence for {suite}", file=sys.stderr)
+            failed = True
+            continue
+        for path in missing_collected_test_files(paths, suite, ids):
+            print(f"error: tracked test not collected by {suite}: {path}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+def check_python_test_ownership(*, discovery: bool = False) -> int:
     """Enumerate tracked files, failing closed if Git cannot read the index."""
     try:
         proc = subprocess.run(
@@ -857,12 +903,13 @@ def check_python_test_ownership() -> int:
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"error: cannot enumerate tracked Python files: {exc}", file=sys.stderr)
         return 2
-    missing = unowned_python_tests(
-        [path for path in proc.stdout.split("\0") if path], list(RECIPES)
-    )
+    paths = [path for path in proc.stdout.split("\0") if path]
+    missing = unowned_python_tests(paths, list(RECIPES))
     for path in missing:
         print(f"error: tracked test has no collection recipe: {path}", file=sys.stderr)
-    return 1 if missing else 0
+    if missing:
+        return 1
+    return check_python_discovery(paths) if discovery else 0
 
 
 def main() -> int:
@@ -884,10 +931,11 @@ def main() -> int:
         help="fold outstanding deltas into baseline.json (deliberate maintenance)",
     )
     ap.add_argument("--check-ownership", action="store_true", help="check tracked Python test ownership only")
+    ap.add_argument("--check-discovery", action="store_true", help="verify Python ownership and actual collection")
     args = ap.parse_args()
 
-    if args.check_ownership:
-        return check_python_test_ownership()
+    if args.check_ownership or args.check_discovery:
+        return check_python_test_ownership(discovery=args.check_discovery)
 
     if problems := notes_problems() + table_problems():
         for problem in problems:

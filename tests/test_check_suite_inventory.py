@@ -1003,3 +1003,23 @@ class TestPythonTestOwnership:
             [*gate.NON_TEST_MODULES, "packages/new/src/test_inventory.py", "conftest.py"],
             ["tests/"],
         ) == ["packages/new/src/test_inventory.py"]
+
+
+    def test_collected_file_identity_supports_pytest_roots(self, gate):
+        paths = ["formal/models/test_a.py", "formal/models/test_b.py"]
+        assert gate.missing_collected_test_files(
+            paths, "formal/", ["models/test_a.py::test_a"]
+        ) == ["formal/models/test_b.py"]
+        assert gate.missing_collected_test_files(
+            paths, "formal/", ["formal/models/test_a.py::test_a", "models/test_b.py::test_b"]
+        ) == []
+
+    def test_unrelated_suite_cannot_claim_missing_test(self, gate):
+        assert gate.missing_collected_test_files(
+            ["pkg/tests/test_a.py"], "pkg/tests", ["other/tests/test_a.py::test_a"]
+        ) == ["pkg/tests/test_a.py"]
+
+    def test_missing_node_evidence_fails_closed(self, gate, monkeypatch):
+        monkeypatch.setattr(gate, "RECIPES", {"tests/": gate.Recipe(args=[])})
+        monkeypatch.setattr(gate, "collect", lambda *_: (1, "pytest", []))
+        assert gate.check_python_discovery(["tests/test_a.py"]) == 1
