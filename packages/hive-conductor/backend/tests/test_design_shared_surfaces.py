@@ -35,6 +35,7 @@ import stores
 
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
 from maistro.memory.user_model import InMemoryUserModelStore, promote_evidence
+from maistro.memory.user_model.retrieval import RecallQuery, ScoredFact
 from maistro.memory.user_model.service import UserModelService
 from maistro.memory.user_model.types import FactSensitivity, new_fact_id
 from maistro.security.sentinel.audit import InMemoryAuditLog
@@ -349,3 +350,110 @@ def test_resolver_refuses_to_compose_without_postgres(monkeypatch) -> None:
         "a deployment without PostgreSQL gets None — never an in-memory store "
         "that could not survive a restart"
     )
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
+def test_resolver_refuses_to_compose_without_the_core_audit_log(monkeypatch) -> None:
+    """PostgreSQL configured but no core runtime: no half-composed service.
+
+    The user model's canonical audit log is resolved from the embedded core
+    runtime — the same wiring ``maistro_server.main`` makes. Without it the
+    resolver answers ``None`` rather than composing a service that could not
+    record what it recalled.
+    """
+    import services.audit_bridge
+    import services.user_model as user_model_service
+
+    monkeypatch.setattr(
+        user_model_service,
+        "resolve_database_url",
+        lambda: "postgresql://maistro:maistro@127.0.0.1:5432/maistro_test",
+    )
+    monkeypatch.setattr(services.audit_bridge, "core_audit_log", lambda: None)
+    assert user_model_service.resolve_user_model_service() is None, (
+        "a missing canonical audit log is a half-composed service; recall nothing"
+    )
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
+def test_resolver_refuses_to_compose_without_the_design_session_factory(monkeypatch) -> None:
+    """PostgreSQL and audit present but the design engine never started: None.
+
+    ``_get_async_session_factory`` answers ``None`` when the design services'
+    async engine did not start; the resolver degrades the same way it does for
+    every other unavailability instead of building the store over an
+    invented factory.
+    """
+    import services.audit_bridge
+    import services.design_service
+    import services.user_model as user_model_service
+
+    audit = InMemoryAuditLog()
+    monkeypatch.setattr(
+        user_model_service,
+        "resolve_database_url",
+        lambda: "postgresql://maistro:maistro@127.0.0.1:5432/maistro_test",
+    )
+    monkeypatch.setattr(services.audit_bridge, "core_audit_log", lambda: audit)
+    monkeypatch.setattr(services.design_service, "_get_async_session_factory", lambda: None)
+    assert user_model_service.resolve_user_model_service() is None, (
+        "no session factory means no store; degrade to None, never to a lookalike"
+    )
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
+def test_resolver_composes_the_shared_service_over_postgres(monkeypatch) -> None:
+    """The one composition: shared service over the deployment's own seams.
+
+    With PostgreSQL configured, the core audit log running and the design
+    session factory started, the resolver returns the canonical
+    ``UserModelService`` whose store is the durable ``PostgresUserModelStore"
+    bound to that same factory — no second service class, no second store.
+    """
+    import services.audit_bridge
+    import services.design_service
+    import services.user_model as user_model_service
+
+    from maistro.memory.user_model.pg_store import PostgresUserModelStore
+    from maistro.memory.user_model.service import UserModelService
+
+    audit = InMemoryAuditLog()
+    factory = object()  # sentinel: the store keeps it; no session is opened here
+    monkeypatch.setattr(
+        user_model_service,
+        "resolve_database_url",
+        lambda: "postgresql://maistro:maistro@127.0.0.1:5432/maistro_test",
+    )
+    monkeypatch.setattr(services.audit_bridge, "core_audit_log", lambda: audit)
+    monkeypatch.setattr(services.design_service, "_get_async_session_factory", lambda: factory)
+
+    service = user_model_service.resolve_user_model_service()
+
+    assert isinstance(service, UserModelService), "the one shared service class"
+    assert isinstance(service.store, PostgresUserModelStore), "the durable store, not a twin"
+    assert service.store._factory is factory, "bound to the design deployment's own factory"
+    assert service.audit_log is audit, "the canonical audit log travels with the service"
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
+async def test_recall_failure_degrades_to_none(caplog) -> None:
+    """A user-model outage must not fail the work opening — and must be visible.
+
+    Recall is enrichment over an already-working interview: the outage path
+    answers ``None`` (omitted context) and logs, never raises through the
+    chat surface.
+    """
+    import logging
+
+    from services.user_model import recall_for_design_task
+
+    class _OutageService:
+        """Duck-typed stand-in for the one shared service, mid-outage."""
+
+        async def recall_for_task(self, query: RecallQuery) -> list[ScoredFact]:
+            raise RuntimeError("user model store is down")
+
+    with caplog.at_level(logging.ERROR, logger="services.user_model"):
+        recalled = await recall_for_design_task("user", "edit a video", service=_OutageService())
+    assert recalled is None, "an outage recalls nothing instead of failing the opening"
+    assert caplog.records, "the outage is logged, not swallowed"
