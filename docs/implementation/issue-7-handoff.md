@@ -1435,3 +1435,58 @@ promotion caller would introduce the competing path prohibited by the ADR and
 is not an acceptable substitute. No production or test change is warranted by
 the evidence available in this environment. This validation-only checkpoint
 adds no test inventory delta. Milestone disposition remains **NEEDS-REPAIR**.
+
+## Round 25 — independent verification, repair budget exhausted (head `4b1d1bb9`)
+
+Driver-supplied `check-*.log` files at this exact head were inspected and
+re-verified: `uv sync --locked --extra dev`, `uv run ruff check .` (clean),
+`uv run ruff format --check .` (3723 files), Goal container/reconciliation
+production tests (23 passed), Conductor recovery/design/Entra
+JIT/unwired-retirement tests (61 passed), and suite inventory for
+`packages/hive-conductor/backend/tests` (4766) and `packages/maistro-core/tests`
+(19274) — all ok. Independently re-executed at this head:
+
+- Goal container wiring/reconciliation production tests: 23 passed (first hand).
+- Conductor canonical-recovery/design/Entra-JIT/unwired-retirement tests:
+  61 passed (first hand).
+- Release-pipeline logic tests (`tests/test_release_guard.py`,
+  `tests/test_promote_release.py`, `tests/test_soak_compose_pressure.py`):
+  132 passed (first hand).
+- `scripts/check-release-consistency.py`: passed (released none, shipping
+  0.9.0 toward 1.0.0). `scripts/check-backlog-consistency.py`: passed
+  (167 items, every terminal item carries closure evidence).
+- CI-exact reachability gates with `RATCHET_BASE_REV=7615ebd709a3`:
+  `check-reachability.py` (1530 production modules, 81 unreachable),
+  `check-reachability-dispositions.py` (27 groups cover all 81), and
+  `check-reachability-dispositions-provenance.py` (81 -> 81, new debt uses
+  prior authorization) — all passed. The ledger delta vs the develop base is
+  documented, not silent row loss: `services.entra_entitlements` left the
+  RETIRE group because the #492 JIT lane wired it as the SSO entitlement
+  policy (`services/entra_jit.py:40`, `config.py:597` are real production
+  callers), with the rationale recorded in
+  `quality/reachability-dispositions.json`.
+- Closure-keyword scan over all 38 commits `7615ebd709..4b1d1bb9`: zero
+  `fixes/closes/resolves #N` directives; PR #2529 body says "Refs #7" only;
+  issue #7 remains open.
+
+The remaining unmet exit conditions are unchanged and are external operator
+or maintainer actions, not agent-repairable defects: the release workflow has
+still never been exercised (`.github/workflows/release.yml:33` self-declares
+this; `git tag -l 'v*'` returns zero tags and the workflow's own tail lists
+PyPI trusted publishers, the gated `release` environment and branch protection
+as prerequisites "none of these can be done from inside this repo"); there is
+no `soak-evidence.json` or `release-evidence.json` anywhere in the tree, so
+RC soak plus byte-equivalent final promotion has not been run; clean-machine
+real-model Graph E2E, escrowed backup/restore (#88) and overnight live
+operation remain unperformed; and the Dreaming producer behind
+`promote_evidence` is explicitly deferred to #1046
+(`KNOWN-GAPS.md:360-366`) — ADR-082226-5104 §7 forbids a detached producer as
+a substitute repair.
+
+The validation repair budget is exhausted and this round found no concrete
+code defect: every local gate is green and the ledger changes are documented
+and authorized. Acceptance is **BLOCKED** on external operator evidence
+(release workflow exercise, clean-machine real-model E2E, escrowed
+backup/restore, RC soak and byte-equivalent promotion, overnight operation)
+that cannot be produced from inside this repository. No production or test
+edit is justified; no test inventory delta applies. PR #2529 stays DRAFT.
