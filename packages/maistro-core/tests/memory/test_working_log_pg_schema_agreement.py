@@ -1,7 +1,7 @@
-"""Migration 071 and `pg_store._PG_SCHEMA` must describe the same two tables.
+"""Migration 072 and `pg_store._PG_SCHEMA` must describe the same two tables.
 
 The working-log tables ship twice. A managed deployment gets them from Alembic
-revision 071; tests and single-command dev runs get them from
+revision 072; tests and single-command dev runs get them from
 `ensure_working_log_schema` — the same dual-ship, and the same drift risk, the
 Goal tables carry (compared by
 `packages/maistro-core/tests/goals/test_goal_pg_schema_agreement.py` for
@@ -12,7 +12,7 @@ application code — and duplicated DDL drifts.
 Drift here is not cosmetic. `seq` being an identity column *is* the
 append-only contract: the log assigns positions on `append` and a caller's
 `seq` is ignored, which is exactly what the conformance suite pins. If
-migration 071 ever grew a plain `BIGINT PRIMARY KEY` while `_PG_SCHEMA` kept
+migration 072 ever grew a plain `BIGINT PRIMARY KEY` while `_PG_SCHEMA` kept
 the identity, a managed deployment would hand out NULLs or require explicit
 positions where every test environment assigns them. So this compares the two
 against a real server's catalogue — columns, types, nullability, defaults,
@@ -38,7 +38,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 
-#: The tables migration 071 creates. Spelled out rather than derived from the
+#: The tables migration 072 creates. Spelled out rather than derived from the
 #: catalogue: a comparison of "the tables that exist" passes vacuously when
 #: neither side creates anything.
 WORKING_LOG_TABLES = (
@@ -47,10 +47,10 @@ WORKING_LOG_TABLES = (
 )
 
 #: Each side rendered/applied on its own: `alembic upgrade a:b --sql` renders
-#: the revisions strictly between the two, so rendering `071:head` would drag
+#: the revisions strictly between the two, so rendering `072:head` would drag
 #: every later revision into the comparison — and there must not be one that
 #: recreates these tables.
-WORKING_LOG_REVISION_RANGE = "070:071"
+WORKING_LOG_REVISION_RANGE = "071:072"
 
 
 def _require_postgres() -> str:
@@ -73,7 +73,7 @@ def _require_postgres() -> str:
 
 
 def _migration_ddl() -> str:
-    """Render revision 071 with `alembic --sql`, which does not connect.
+    """Render revision 072 with `alembic --sql`, which does not connect.
 
     Offline mode still builds a URL through `DatabaseSettings`, so the DB_* vars
     below only have to parse — nothing dials them. Rendering the real migration
@@ -103,7 +103,7 @@ def _migration_ddl() -> str:
 def _executable_statements(ddl: str) -> list[str]:
     """Strip comments and transaction/bookkeeping noise from rendered DDL.
 
-    What survives is only the CREATE TABLE / CREATE INDEX revision 071 emits.
+    What survives is only the CREATE TABLE / CREATE INDEX revision 072 emits.
     `alembic_version` is dropped because it is alembic's own bookkeeping, not
     part of the schema under comparison.
     """
@@ -119,7 +119,7 @@ def _executable_statements(ddl: str) -> list[str]:
             continue
         statements.append(statement)
     if not statements:  # pragma: no cover - a silent empty render would pass everything
-        msg = "alembic rendered no DDL for revision 071; the comparison would be vacuous"
+        msg = "alembic rendered no DDL for revision 072; the comparison would be vacuous"
         raise AssertionError(msg)
     return statements
 
@@ -228,7 +228,7 @@ async def built_schemas():
         await conn.close()
 
 
-class TestMigration071MatchesEnsureSchema:
+class TestMigration072MatchesEnsureSchema:
     def test_both_sides_create_both_tables(self, built_schemas):
         """Guards the comparison itself: equal-and-empty is not agreement."""
         migration, ensure = built_schemas

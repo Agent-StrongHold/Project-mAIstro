@@ -49,7 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
     import asyncpg.pool
 
-#: Tables the PostgreSQL working log answers through. Migration 071 owns their
+#: Tables the PostgreSQL working log answers through. Migration 072 owns their
 #: DDL for managed deployments; ``_PG_SCHEMA`` below mirrors it.
 WORKING_LOG_PG_TABLES: Final = (
     "workspace_working_log",
@@ -111,7 +111,7 @@ async def ensure_working_log_schema(pool: asyncpg.Pool) -> None:
     serialises them and is released when the transaction ends, including by
     crash.
 
-    Migration 071 remains the real path for a managed deployment; this is what
+    Migration 072 remains the real path for a managed deployment; this is what
     lets the Container come up — with the observation log on the same durable
     PostgreSQL the deployment already selected — in tests and single-command
     dev runs that never ran the chain.

@@ -15,7 +15,7 @@ What moved the count, all in `packages/maistro-core/tests/memory/`:
   `TestPostgresRestart::test_log_and_results_survive_a_fresh_pool`
   (+1): the durable leg's reason to exist, a new pool re-reading what the
   first process retained.
-- `test_working_log_pg_schema_agreement.py` — new file, 6 tests: migration 071
+- `test_working_log_pg_schema_agreement.py` — new file, 6 tests: migration 072
   vs `pg_store._PG_SCHEMA` compared against a real server's catalogue
   (columns, identity generation on `seq`, primary keys, absence of foreign
   keys, indexes).
