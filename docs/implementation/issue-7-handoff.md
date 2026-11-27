@@ -1783,3 +1783,53 @@ byte-equivalent promotion evidence, overnight operation) remain unproducible
 in-repo without violating the no-GitHub-mutations prohibition or fabricating
 provenance. No production or test change this round; disposition remains
 **BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
+
+## Round 33 — repair-round revalidation at 4fdd2ca625 (verifier finding closed first-hand)
+
+Round 33 opened from a repair dispatch whose prior block was the Round 25/29
+external-evidence disposition plus one recorded verifier validation failure:
+job `36a00a3b` `check-4.log` — `test_cadence_reclaims_a_lapsed_goal_claim`
+raised `WorkspaceNotFound: 'hive-canonical-recovery'` from
+`SqliteProjectScopeStore.create_root_in`. First-hand triage: the log was
+generated 08:11Z, **before** the repair commit `a34477e472` (09:29Z) landed;
+the current `_root_project_id` helper provisions the Workspace through
+`workspace_store.create` before minting the Root, and the finding does not
+reproduce at this head.
+
+Everything re-proven first-hand at 4fdd2ca625 (code byte-identical to the
+fully validated Round-30/31 tree; only this doc changed since `bfc4db70fb`):
+
+- Develop sync: `git fetch origin`; `origin/develop` = `7eacf6eb`, merge base
+  = `7eacf6eb`, `git rev-list --count origin/develop ^HEAD` = 0 — no sync
+  conflict, nothing to merge.
+- Verifier's exact check-4 command (`pytest test_canonical_recovery_cadence.py
+  test_design_shared_surfaces.py test_entra_jit_provisioning.py
+  test_hive_unwired_retire_2309.py -q`, repo root) — **61 passed** (was
+  1 failed pre-`a34477e472`).
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  already formatted.
+- `pytest packages/maistro-core/tests/goals
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/agents/test_factory.py
+  packages/maistro-core/tests/events` — 772 passed, 114 skipped.
+- **Full** `pytest packages/hive-conductor/backend/tests` — 4651 passed,
+  121 skipped (matches the Round 26 baseline exactly).
+- `scripts/check-release-consistency.py` — ok, rc=0;
+  `scripts/check-backlog-consistency.py` — OK (167 items), rc=0;
+  `scripts/check-suite-inventory.py` — ok, 21 suites match, rc=0 (docs-only
+  round, no inventory delta note required);
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact) — 1217 reviewed identities =
+  1217 findings vs base `7eacf6eb`, rc=0, no ledger amendment.
+- External-evidence spot-checks fresh at 4fdd2ca625: `git tag -l 'v*'` →
+  0 tags; `soak-evidence.json`/`release-evidence.json` absent from the tree;
+  0 `OPENAI*`/`ANTHROPIC*`/`LITELLM*`/`*_API_KEY` environment variables.
+
+No production or test change this round: the verifier's recorded validation
+failure is closed by the already-landed `a34477e472` fix, every locally
+reachable gate is green first-hand, and the four externally gated exit
+conditions (release workflow exercise via `v*` tag push, clean-machine
+real-model Graph E2E, RC soak + byte-equivalent promotion evidence, overnight
+operation) remain unproducible inside this repository without violating the
+no-GitHub-mutations prohibition or fabricating provenance. Disposition remains
+**BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
