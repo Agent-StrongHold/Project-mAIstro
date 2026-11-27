@@ -358,3 +358,106 @@ Changed tracked file this round: this validation note only. Progress:
 checked 1, done 1 focused validation/handoff, skipped issues 0, reproduced
 gate errors 0; operational acceptance completed 0. Next: release-owner
 execution and hosted aggregate coverage proof, not another speculative edit.
+
+## Follow-up job `0211010cce894cf0a248d0f1e19aadc0`
+
+Frozen snapshot: issue #89 only; assigned starting HEAD `2c55936f6283468b`
+(verified: worktree clean at exactly that commit), base
+`618954f0528090144683c308a18e19c6068d63f1`; the release/registry/quality
+workflow gates and adjacent release tests. No driver `check-*.log` files were
+supplied in this job directory and the driver `checks` array is empty, so
+every log below is a fresh worker execution in
+`/home/dev/maistro/jobs/0211010cce894cf0a248d0f1e19aadc0/` at this head.
+Prior rounds' claims were not trusted: gates re-executed fresh, production
+machinery re-read from source.
+
+Dispatched gate states, resolved with captured + fresh evidence:
+
+- **"Validate ADR/spec front-matter: queued" is an in-flight state, not a
+  failure.** The dispatch's own capture of PR #2536's pushed head
+  `5f6bff7d458f` contains 81 completed check-runs where that check reports
+  `status=completed, conclusion=success`; only
+  "Coverage gate (publish-set floor + diff coverage)" is `failure` there.
+  Independently re-proved at the assigned HEAD: all seven `registry.yml`
+  steps exit 0 (`check-registry-local.log`) — registry/lifecycle tests
+  **194 passed**; `tools/lint_lifecycle.py` clean;
+  `maistro_registry.cli lint . --strict` **447 files, 0 errors / 0 warnings**
+  (199 pre-existing test-evidence debts);
+  `check-citation-status-provenance.py` with `RATCHET_BASE_REV=origin/develop`
+  0 exceptions; ADR index consistent; regenerated spec AC-Defined index
+  leaves `git diff --exit-code docs/specs/README.md` clean; status-language
+  check clean. No repair warranted.
+- **PR #2536's Coverage-gate RED stays a stale pushed head.** Fresh ancestry:
+  `git merge-base --is-ancestor 5f6bff7d458f HEAD` holds (pushed tip is an
+  ancestor of the assigned HEAD) and
+  `git merge-base --is-ancestor 87ce1ab3de 5f6bff7d458f` **fails** — the
+  diff-coverage fix (tests-only, `tests/test_promote_release.py` seam cases)
+  is a strictly local descendant of the pushed tip, so the hosted RED
+  measured content the branch no longer contains. Pushing is prohibited for
+  this worker; the remote advance is the outstanding handoff. The diff half
+  of the gate was re-proven at the assigned HEAD: focused release battery
+  **183 passed** under `coverage run --branch --source=scripts`
+  (`check-release-coverage-local.log`); `check-diff-coverage.py
+  <job>/coverage-release.xml --base 618954f052` → **ok** — 2 changed
+  production files at/above 90% lines / 80% branch arcs, 3 test files exempt
+  by declaration. The hosted publish-set aggregate floor (87%, six-plus CI
+  producers, Postgres-backed legs) remains CI-executed only, UNVERIFIED
+  locally.
+- **exact-debt-ledger / vulture** (CI-exact
+  `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`):
+  **1217 reviewed identities → 1217 findings**, exit 0;
+  `git diff --numstat <base> -- quality/ docs/testing/inventory/` empty —
+  ledgers byte-identical to the assigned base; no unbanked identity, no
+  amendment warranted (`check-vulture-local.log`).
+- **Static battery**: `ruff check .`, `ruff format --check .` (3717 files),
+  `check-release-consistency.py` (shipping 0.9.0, working toward 1.0.0),
+  `check-workflow-inventory.py` (33 workflows), `check-suite-inventory.py`
+  (21/21 suites) all exit 0 (`check-static-local.log`). No tests added or
+  removed this round; inventory delta 0, no inventory note required.
+- **Byte-equivalence mutation probe re-run fresh** (`check-byte-mutation-local.log`):
+  control `test_adopt_wheels_fails_closed_on_tampered_bytes` **1 passed**
+  (exit 0); with `verify_dist` stubbed on the fixture-loaded module only via
+  a process-local plugin stored outside the tree, the same test failed with
+  `MUTANT ACTIVE` and `assert 0 == 1` (exit 1, expected) — the regression
+  genuinely reaches byte verification; mutant killed; tracked tree clean.
+  (First mutant invocation exited 4 on a plugin-discovery mistake —
+  `--pythonpath` does not affect `-p` plugin loading — corrected with
+  `PYTHONPATH` and recorded in the log.)
+
+Production machinery re-read from source at this head (not from prior notes):
+`promote_release.py:150-156` `REQUIRED_SOAK_CHECKS` = clean_install,
+real_model, security_hot_path, backup_restore, multi_replica_soak;
+`:259` `_validate_binding` (wheel/image digests + config binding);
+`:316-329` boolean `invalidates_invariant` must carry a matching
+`routed_issue` ("file/reclassify it there before promotion (#89)");
+`:333` `validate_soak`; `:351` `verify_dist` — exact sha256 comparison,
+rejecting missing/mismatched/extra files. `release.yml:22,138-140,154,279-281`:
+candidate rc tags build (TestPyPI), finals adopt the selected candidate's
+bytes instead of rebuilding, dist retained 90 days, final tags restricted to
+main. Accepted ADR-073126-c4e1 and ADR-095 unchanged: sole tag-triggered
+publisher, protected promotion, human release approval; the tree guard's
+exact equality is stricter than #89's metadata exception and consistent.
+
+### Acceptance disposition (fourth consecutive fresh round, unchanged)
+
+All eight operational acceptance criteria of issue #89 remain UNVERIFIED
+from this worktree: they require a hosted, protected, tag-triggered pipeline
+execution with a real candidate tag/run, the schema-1 `soak-evidence`
+artifact on that RC run (incl. the #860 sustained multi-replica workload and
+its subscenarios), external package/image/signature/install verification,
+and protected final promotion — none of which a local writer may produce
+(pushing, tagging, releases and evidence fabrication are prohibited, and the
+validator is not a workload runner). The dispatched "gate failure" resolved
+to a transient queued state and the carried Coverage RED to a stale pushed
+head; no local source, test, workflow, gate, grant, or ledger defect was
+reproduced this round.
+
+Verdict: **BLOCKED on operational acceptance**, identical to every prior
+fresh round. Writer handoff only: local gates are green at
+`2c55936f6283468b`; outstanding actions are (1) advance `origin/auto-89` to
+this head so CI re-measures the fixed content (worker push prohibited),
+(2) release-owner/#860 production of the soak/promotion evidence chain
+through the canonical pipeline. No GitHub mutation performed.
+
+Progress: checked 1 issue, done 1 focused validation round, skipped 0,
+unexpected gate failures 0.
