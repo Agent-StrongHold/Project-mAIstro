@@ -63,6 +63,14 @@ class _Spine:
 async def _projects(scope_store: Any, workspaces: tuple[str, ...]) -> dict[str, str]:
     projects: dict[str, str] = {}
     for workspace in workspaces:
+        # A PG scope store verifies Workspace existence before minting a Root
+        # (#37), so its caller provisions first — the same canonical
+        # Workspace row the container would write.
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.testing.postgres import provision_workspace
+
+        if isinstance(scope_store, PgProjectScopeStore):
+            await provision_workspace(scope_store._pool, workspace)
         root = await scope_store.create_root(workspace)
         project = await scope_store.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Bounded"

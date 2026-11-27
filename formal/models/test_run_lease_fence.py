@@ -139,9 +139,16 @@ class RunLeaseFenceMachine(RuleBasedStateMachine):
 
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         workspace = f"formal-i29-{uuid.uuid4().hex}"
         projects = PgProjectScopeStore(server.pool)
+        # The admission fence (#37) refuses a Root Project for a Workspace id
+        # nothing canonical owns, and every scratch id this machine mints is
+        # exactly that until provisioned. Provision through
+        # `PgWorkspaceStore.create` — the composition path itself — so the
+        # model exercises the store, not the fence.
+        server.run(provision_workspace(server.pool, workspace))
         root = server.run(projects.create_root(workspace))
         project = server.run(
             projects.create(

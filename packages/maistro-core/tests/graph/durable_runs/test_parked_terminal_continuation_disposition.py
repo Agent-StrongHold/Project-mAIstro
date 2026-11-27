@@ -112,9 +112,12 @@ async def spine(
         from maistro.persistence import _register_json_codecs
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
-        from maistro.testing.postgres import postgres_dsn
+        from maistro.testing.postgres import postgres_dsn, provision_workspace
 
         projects = PgProjectScopeStore(pg_pool)
+        # Provisioned through the canonical authority (#37): the scope store
+        # verifies Workspace existence before minting a Root.
+        await provision_workspace(pg_pool, _WORKSPACE)
         root = await projects.create_root(_WORKSPACE)
         project = await projects.create(
             workspace_id=_WORKSPACE, parent_project_id=root.project_id, name="Parked rows"

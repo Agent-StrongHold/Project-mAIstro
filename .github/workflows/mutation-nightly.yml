@@ -212,11 +212,24 @@ jobs:
 
   nightly-publish:
     name: Publish mutation health
-    needs: nightly-shard
+    needs: [nightly-plan, nightly-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RATCHET_BASE_REV: ${{ needs.nightly-plan.outputs.ratchet_base }}
+      MEASURED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify publishing baseline provenance
+        run: |
+          set -euo pipefail
+          [[ "$RATCHET_BASE_REV" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RATCHET_BASE_REV" != "$MEASURED_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$MEASURED_SHA" ]]
+          git merge-base --is-ancestor "$RATCHET_BASE_REV" "$MEASURED_SHA"
 
       - uses: actions/setup-python@v7
         with:
@@ -253,6 +266,31 @@ jobs:
             --rows-output publish/mutation-rows.jsonl \
             --json-output publish/mutation-health-report.json \
             --markdown-output publish/mutation-health-report.md
+          # An aggregate is not promotable unless every planned source has
+          # exact-candidate, exact-fitness-base measurement evidence.
+          uv run python - <<'PY'
+          import hashlib, json, os, sys
+          sys.path.insert(0, "scripts")
+          import mutation_pr_gate
+
+          report = json.load(open("publish/mutation-health-report.json"))
+          rows = [json.loads(line) for line in open("publish/mutation-telemetry-all.jsonl") if line.strip()]
+          commit = os.environ["MEASURED_SHA"]
+          base = os.environ["RATCHET_BASE_REV"]
+          fingerprint = hashlib.sha256(
+              (mutation_pr_gate.tool_fingerprint() + ":" + base).encode()
+          ).hexdigest()
+          provenance = {"candidate_sha": commit, "fitness_base_sha": base,
+                        "run_id": os.environ["GITHUB_RUN_ID"],
+                        "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
+          with open("publish/mutation-provenance.json", "w") as out:
+              json.dump(provenance, out, indent=2)
+          if not report["complete"] or not rows:
+              raise SystemExit("Incomplete mutation sweep")
+          if any(row.get("verified_commit") != commit or row.get("tool_fingerprint") != fingerprint
+                 for row in rows):
+              raise SystemExit("Mutation checkpoint candidate/base provenance mismatch")
+          PY
           # Killed/survived/timeout/error counts straight from the raw rows.
           uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, collections
@@ -272,22 +310,31 @@ jobs:
           PY
           # The candidate baseline may only tighten the trusted one; a candidate
           # that weakens or invents floors fails here.
+          # Preserve complete measurements even when a quality floor rejects
+          # them. Keep both checks fatal; do not let one hide the other.
+          raw_status=0
           uv run python scripts/check_mutation_baseline.py publish/mutation-rows.jsonl \
-            --baseline "${TRUSTED_BASELINE}"
+            --baseline "${TRUSTED_BASELINE}" || raw_status=$?
           # Candidate history/baseline artifacts for review (never auto-committed).
+          ratchet_status=0
           uv run python scripts/mutation_ratchet.py publish/mutation-telemetry-all.jsonl \
             --baseline "${TRUSTED_BASELINE}" \
             --history "${HISTORY}" \
             --json-output publish/mutation-ratchet.json \
             --markdown-output publish/mutation-ratchet.md \
             --candidate-output publish/mutation-baseline-candidate.json \
-            --floor 0.90
+            --floor 0.90 || ratchet_status=$?
           uv run python scripts/mutation_history.py publish/mutation-telemetry-all.jsonl \
             --history "${HISTORY}" \
             --output publish/mutation-history-candidate.json
           cat publish/mutation-health-report.md >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$raw_status" != 0 || "$ratchet_status" != 0 ]]; then
+            echo "::error::Mutation quality gate rejected the sweep; artifacts are diagnostic, not authorization"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: mutation-health
           path: publish/

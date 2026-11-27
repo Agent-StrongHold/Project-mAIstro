@@ -204,9 +204,27 @@ class PgProjectScopeStore:
         let two concurrent callers both find no root and both try to create
         one — the loser gets a unique violation rather than the root that now
         exists.
+
+        The Workspace itself is verified on this connection first, under its
+        own row lock (#37): `SELECT ... FOR UPDATE` is the serialization point
+        `PgWorkspaceStore.delete` also takes, so a delete and an admission
+        order against each other instead of racing — an admission either
+        commits while the Workspace row still exists (the delete then purges
+        the root with everything else) or finds the row gone and refuses
+        before the insert, leaving zero rows. The `canonical_projects` →
+        `canonical_workspaces` foreign key backs the same fence for any
+        write that bypasses this method.
         """
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        from maistro.workspaces.model import WorkspaceNotFound
+
+        exists = await conn.fetchval(
+            "SELECT 1 FROM canonical_workspaces WHERE workspace_id = $1 FOR UPDATE",
+            workspace_id,
+        )
+        if exists is None:
+            raise WorkspaceNotFound(workspace_id)
         root = Project(
             workspace_id=workspace_id,
             name="Root",

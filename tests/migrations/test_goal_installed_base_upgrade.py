@@ -81,11 +81,12 @@ GOAL_REVISION = "063"
 #: convention.
 #: #1064's Evolve domain store renumbers past that landed run as ``070``;
 #: this issue's Sentinel decision-integrity revision (#69) appends past that
-#: as ``071``, and the per-Workspace working log (#301, M4-H; #105) appends
-#: past that as ``072``.
+#: as ``071``, the per-Workspace working log (#301, M4-H; #105) appends
+#: past that as ``072``, and #37's tombstone/Project-FK fences renumber
+#: past that landed revision as ``073``.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "072"
+CHAIN_HEAD = "073"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -357,6 +358,7 @@ async def _drive_and_reopen_the_durable_composition(prefix: str) -> None:
     from maistro.runs import RunStatus
     from maistro.runs.admission import admit_direct_work
     from maistro.runs.pg_store import PgRunStore
+    from maistro.testing.postgres import provision_workspace
 
     workspace = f"ws-{prefix}"
 
@@ -365,6 +367,10 @@ async def _drive_and_reopen_the_durable_composition(prefix: str) -> None:
 
     # --- first process: write everything, then close the pool ------------
     pool = await open_pool()
+    # #37's admission fence refuses a Root Project for a Workspace nothing
+    # canonical owns, so the composition provisions its Workspace the same
+    # way every production path does before minting scope under it.
+    await provision_workspace(pool, workspace)
     projects = PgProjectScopeStore(pool)
     root = await projects.create_root(workspace)
     project = await projects.create(
@@ -457,8 +463,9 @@ class TestTheMergedIdentities:
         # parented on 062.
         # #1064's Evolve domain publications renumber past that as `070`,
         # #69's Sentinel decision-integrity revision appends past that as
-        # `071`, and the per-Workspace working log (#301, M4-H; #105)
-        # appends past that as `072`.
+        # `071`, the per-Workspace working log (#301, M4-H; #105) appends
+        # past that as `072`, and #37's tombstone/Project-FK fences renumber
+        # past that landed revision as `073`.
         assert revisions["064"].down_revision == GOAL_REVISION
         assert revisions["065"].down_revision == "064"
         assert revisions["066"].down_revision == "065"
@@ -467,7 +474,8 @@ class TestTheMergedIdentities:
         assert revisions["069"].down_revision == "068"
         assert revisions["070"].down_revision == "069"
         assert revisions["071"].down_revision == "070"
-        assert revisions[CHAIN_HEAD].down_revision == "071"
+        assert revisions["072"].down_revision == "071"
+        assert revisions[CHAIN_HEAD].down_revision == "072"
         assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
@@ -487,6 +495,7 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "070_evolve_domain_publications.py").is_file()
         assert (VERSIONS / "071_sentinel_decision_integrity.py").is_file()
         assert (VERSIONS / "072_workspace_working_log.py").is_file()
+        assert (VERSIONS / "073_workspace_tombstones_and_project_fk.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.

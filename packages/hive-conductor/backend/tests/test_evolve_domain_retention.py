@@ -55,6 +55,23 @@ async def retention_domain(request: pytest.FixtureRequest, tmp_path: Path):
         domain = SqliteEvolveDomainStore(str(path))
     try:
         await domain.ensure_schema()
+        if request.param == "postgres":
+            # Migration 071 (#37): the Root fence verifies the Workspace
+            # durably (`SELECT ... FOR UPDATE`) and the new
+            # `canonical_projects` -> `canonical_workspaces` foreign key
+            # backs it. Provision the per-test identity through the shipped
+            # atomic create before minting its Root.
+            from maistro.workspaces.pg_store import PgWorkspaceStore
+
+            exists = await connection.fetchval(
+                "SELECT 1 FROM canonical_workspaces WHERE workspace_id = $1", workspace
+            )
+            if exists is None:
+                await PgWorkspaceStore(connection, project_store=projects).create(
+                    creator_user_id=DEFAULT_TEST_ACTOR_PRINCIPAL_ID,
+                    name="Evolve domain retention",
+                    workspace_id=workspace,
+                )
         root = await projects.create_root(workspace)
         yield SimpleNamespace(
             workspace=workspace, project_id=root.project_id, runs=runs, domain=domain
