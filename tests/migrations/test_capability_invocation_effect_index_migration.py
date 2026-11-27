@@ -214,12 +214,14 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     # merged identities develop already shipped — a landed trunk migration
     # never moves, and redrawing them would leave databases stamped at
     # develop's `066` never executing the new revision — so it takes `068`,
-    # #1064's Evolve domain publications renumber past that landed run as `070`.
-    # one linear head. The Schedule deletion-marker table (#2467) — `064`
-    # when written on this branch's previous tip — renumbers past that
-    # landed run as `069` under the same convention, and #69's Sentinel
-    # decision-integrity revision appends past the Evolve pair as `071`.
-    assert directory.get_heads() == ["071"]
+    # #1064's Evolve domain publications renumber past that landed run as `070`,
+    # keeping one linear head. The Schedule deletion-marker table (#2467) —
+    # `064` when written on this branch's previous tip — renumbers past that
+    # landed run as `069` under the same convention; #69's Sentinel
+    # decision-integrity revision appends past the Evolve pair as `071`, and
+    # the per-Workspace working log (#301, M4-H; #105) appends past that as
+    # `072`.
+    assert directory.get_heads() == ["072"]
     assert directory.get_revision("064").down_revision == "063"
     assert directory.get_revision("065").down_revision == "064"
     assert directory.get_revision("066").down_revision == "065"
@@ -283,6 +285,8 @@ def test_effect_claim_revision_follows_the_chain_tip() -> None:
     assert Path(directory.get_revision("070").path).name == "070_evolve_domain_publications.py"
     assert directory.get_revision("071").down_revision == "070"
     assert Path(directory.get_revision("071").path).name == "071_sentinel_decision_integrity.py"
+    assert directory.get_revision("072").down_revision == "071"
+    assert Path(directory.get_revision("072").path).name == "072_workspace_working_log.py"
     # The superseded standalone revisions must stay gone: resurrecting either
     # re-forks the chain (a second head) or re-applies DDL no store declares —
     # the exact collision the 55be1459 resolution removed them for. Develop's
