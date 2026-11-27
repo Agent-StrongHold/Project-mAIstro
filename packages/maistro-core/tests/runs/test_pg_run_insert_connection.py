@@ -123,8 +123,13 @@ class _RecordingPool:
 
 async def _scoped(pg_pool: Any) -> tuple[str, str, PgProjectScopeStore]:
     """One fresh Workspace with a real Project row, the scope a Run needs."""
+    from maistro.testing.postgres import provision_workspace
+
     workspace = f"issue-1883-{uuid4().hex}"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Connection-owned insert"

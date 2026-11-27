@@ -596,6 +596,26 @@ class _PgRestartSpine:
         self.graph_run_store = CanonicalDurableRunStore(self.run_store, continuations)
         self.domain_store = PgEvolveDomainStore(self.pool)
         await self.domain_store.ensure_schema()
+        # Migration 071 (#37): `create_root` verifies the Workspace on the
+        # same connection (`SELECT ... FOR UPDATE`), and the new
+        # `canonical_projects` -> `canonical_workspaces` foreign key backs
+        # the same fence. A restart leg's Workspace must therefore exist
+        # durably before its Root is minted. Provision it through the
+        # shipped atomic create (identity + roster + Root in one
+        # transaction) the first time any leg sees the id; later legs' legs
+        # share the fixed `_WS` id and find it already there.
+        from maistro.workspaces.pg_store import PgWorkspaceStore
+
+        workspaces = PgWorkspaceStore(self.pool, project_store=self.project_store)
+        exists = await self.pool.fetchval(
+            "SELECT 1 FROM canonical_workspaces WHERE workspace_id = $1", self.workspace
+        )
+        if exists is None:
+            await workspaces.create(
+                creator_user_id=_ACTOR,
+                name="Evolve restart replay",
+                workspace_id=self.workspace,
+            )
         try:
             await self.project_store.root_for_workspace(self.workspace)
         except ProjectNotFound:

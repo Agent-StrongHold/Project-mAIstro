@@ -50,6 +50,11 @@ async def _wired(
     the Workspace, a real Project id under it, and the four wired halves."""
     workspace = f"issue-1845-{uuid4().hex}"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    from maistro.testing.postgres import provision_workspace
+
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Atomic admission"

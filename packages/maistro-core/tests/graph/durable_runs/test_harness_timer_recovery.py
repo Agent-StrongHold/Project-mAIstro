@@ -128,6 +128,12 @@ async def spine(
     projects: ProjectScopeStore = (
         PgProjectScopeStore(pg_pool) if request.param == "postgres" else InMemoryProjectScopeStore()
     )
+    if request.param == "postgres":
+        # The scope store verifies Workspace existence before minting a Root
+        # (#37); provisioning is the same canonical row the container writes.
+        from maistro.testing.postgres import provision_workspace
+
+        await provision_workspace(pg_pool, _WORKSPACE)
     project = await projects.create_root(_WORKSPACE)
     # The shared PostgreSQL fixture does not truncate capability Bindings.
     # Recomposition reuses this fixture's identity; other cases cannot collide.

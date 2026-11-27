@@ -227,6 +227,10 @@ class _Spine:
 
 async def _spine() -> _Spine:
     container = await create_container(AgentConfig(router_api_key="test-key"))
+    if await container.workspace_store.get(_WORKSPACE) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=_WORKSPACE, workspace_id=_WORKSPACE
+        )
     root = await container.project_scope_store.create_root(_WORKSPACE)
     return _Spine(container, root.project_id)
 

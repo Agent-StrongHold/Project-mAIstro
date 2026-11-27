@@ -28,6 +28,10 @@ async def test_terminal_replay_preserves_logical_cancellation(
         AgentConfig(router_api_key="test-key", database_url=database_url)
     )
     try:
+        if await container.workspace_store.get("replay-refusal") is None:
+            await container.workspace_store.create(
+                creator_user_id="test", name="replay-refusal", workspace_id="replay-refusal"
+            )
         project = await container.project_scope_store.create_root("replay-refusal")
         graph = Graph(
             workspace_id="replay-refusal",
