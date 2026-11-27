@@ -26,9 +26,6 @@ from maistro.goals.reconciliation import (
     Goal as ReconciliationGoal,
 )
 from maistro.goals.reconciliation import (
-    GoalFacts,
-    PlannedAdmission,
-    PolicyDecision,
     WakeReason,
 )
 from maistro.graph import Graph, Node
@@ -40,7 +37,12 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.chat_execution import ChatAttemptExecutor
 from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    GOAL_RECONCILIATION_SOURCE,
+    SCHEDULE_INPUTS_KEY,
+    SCHEDULE_SOURCE,
+)
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
 from maistro.types.config import AgentConfig
 
@@ -424,22 +426,35 @@ async def test_without_a_container_the_cadence_is_a_noop(
     assert cadence._task is not None and not cadence._task.done()
 
 
-# --- Goal reconciliation control plane (#806): the cadence is the operator ---
+# --- Goal reconciliation control plane (#806/#805): the cadence is the operator ---
 
 
-class _AdmitOncePolicy:
-    """Minimal #805 stand-in: one fenced admission decision per consultation."""
+async def _durable_goal(container: Container, goal_id: str) -> str:
+    """A canonical Goal plus its reconciliation control row, on SQLite."""
+    from maistro.goals.model import GoalRevisionDraft
 
-    async def decide(self, facts: GoalFacts) -> PolicyDecision:
-        return PolicyDecision(
-            admissions=(PlannedAdmission(kind="run", decision_key="dec-cadence"),)
-        )
-
-
-async def _durable_goal(container: Container, goal_id: str) -> None:
-    await container.goal_reconciliation_store.create_goal(
-        ReconciliationGoal(goal_id=goal_id, workspace_id="hive-canonical-recovery", project_id="p")
+    canonical = await container.goal_store.create_goal(
+        workspace_id="hive-canonical-recovery",
+        project_id=await _root_project_id(container),
+        agent_id="goal-agent",
+        draft=GoalRevisionDraft(
+            desired_state="Ship the milestone release notes", author="goal-agent"
+        ),
+        goal_id=goal_id,
     )
+    await container.goal_reconciliation_store.create_goal(
+        ReconciliationGoal(
+            goal_id=goal_id,
+            workspace_id="hive-canonical-recovery",
+            project_id=canonical.project_id,
+        )
+    )
+    return canonical.goal_id
+
+
+async def _root_project_id(container: Container) -> str:
+    root = await container.project_scope_store.create_root("hive-canonical-recovery")
+    return root.project_id
 
 
 async def test_cadence_reclaims_a_lapsed_goal_claim(
@@ -469,55 +484,65 @@ async def test_cadence_reclaims_a_lapsed_goal_claim(
     assert view["awake_after"] is not None
 
 
-async def test_cadence_reconciliation_tick_decides_a_due_goal_under_a_composed_policy(
+async def test_cadence_reconciliation_repairs_a_missed_wake_into_a_canonical_run(
     container: Container, booted: Callable[[Any], None]
 ) -> None:
-    """With #805's decision semantics composed onto the production Container,
-    the cadence — not a test-only call — repairs a missed wake into exactly one
-    fenced admission, and the next pass finds the Goal asleep."""
+    """With the production #805 decide-half composed onto the Container, the
+    cadence — not a test-only call — repairs a missed wake into exactly one
+    fenced admission fulfilled as a canonical QUEUED Run, and the next pass
+    finds the Goal parked."""
     import services.canonical_recovery as cadence
 
     booted(container)
-    await _durable_goal(container, "g-cadence-due")
+    goal_id = await _durable_goal(container, "g-cadence-due")
     # A canonical change was recorded durably, then the notifying process died:
     # nobody re-delivers, the bounded tick alone must repair it.
     await container.goal_reconciliation_store.record_wake(
-        "g-cadence-due",
+        goal_id,
         reason=WakeReason.RUN_TERMINAL,
         correlation_id="event-cadence-1",
         unblocks=True,
     )
-    container.goal_reconciliation_policy = _AdmitOncePolicy()  # type: ignore[assignment]
 
     await cadence.tick_canonical_recovery()
 
-    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-due")
+    view = await container.goal_reconciliation_store.reconciliation_view(goal_id)
     assert view is not None
     assert view["admissions_total"] == 1
     assert view["pending_wakes"] == 0
+    queued = await container.run_store.list_by_status(RunStatus.QUEUED)
+    pursuit = [run for run in queued if run.goal_id == goal_id]
+    assert len(pursuit) == 1
+    assert pursuit[0].goal_revision == 1
+    assert pursuit[0].provenance[ADMISSION_SOURCE] == GOAL_RECONCILIATION_SOURCE
 
-    # Idempotent across ticks: the Goal is asleep, so nothing re-admits.
+    # Idempotent across ticks: the Goal is parked, so nothing re-admits.
     await cadence.tick_canonical_recovery()
-    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-due")
+    view = await container.goal_reconciliation_store.reconciliation_view(goal_id)
     assert view is not None and view["admissions_total"] == 1
+    queued_again = await container.run_store.list_by_status(RunStatus.QUEUED)
+    assert len([r for r in queued_again if r.goal_id == goal_id]) == 1
 
 
-async def test_cadence_reconciliation_without_a_policy_decides_nothing(
+async def test_cadence_reconciliation_discovers_a_never_notified_goal(
     container: Container, booted: Callable[[Any], None]
 ) -> None:
-    """A production Container never invents #805's decision semantics: without
-    a composed policy the cadence's reconciliation half is a safe no-op over
-    the durable facts — never a crash, never a second scheduler."""
+    """The production decide-half is composed by create_container, so the
+    cadence discovers a Goal whose creation was committed but never notified —
+    the crash boundary no re-delivery exists for — and progresses it into one
+    canonical pursuit Run."""
     import services.canonical_recovery as cadence
 
     booted(container)
-    await _durable_goal(container, "g-cadence-inert")
-    assert container.goal_reconciliation_policy is None
+    goal_id = await _durable_goal(container, "g-cadence-discovered")
+    assert container.goal_reconciliation_policy is not None
 
     await cadence.tick_canonical_recovery()
 
-    view = await container.goal_reconciliation_store.reconciliation_view("g-cadence-inert")
-    assert view is not None and view["admissions_total"] == 0
+    view = await container.goal_reconciliation_store.reconciliation_view(goal_id)
+    assert view is not None and view["admissions_total"] == 1
+    queued = await container.run_store.list_by_status(RunStatus.QUEUED)
+    assert len([r for r in queued if r.goal_id == goal_id]) == 1
 
 
 async def test_engine_start_and_stop_bracket_the_cadence() -> None:

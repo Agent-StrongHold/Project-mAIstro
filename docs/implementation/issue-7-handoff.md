@@ -1091,3 +1091,116 @@ producer composition (rows 8/12) and operator acceptance evidence
 (rows 2/3/4/5/17), unreachable from this lane. No GitHub mutations, no
 ledger edits, no gate changes. Checkpoint:
 `{checked: 19, done: 0, skipped: 0, errors: 0, next: "compose an operational goal-reconciliation policy and a production Dreaming promotion caller; obtain operator release/E2E/soak evidence; re-verify when CI on the PR completes"}`.
+
+## Round 16 — writer repair: the #805 decide-half composed in production
+
+Job `6c3036a29e5244b483bd56b325b09b64` (phase: repair); starting HEAD
+`abfc1cdee4ffcde01f8f1ce9eff0562197a4c90a` (exact match); develop base
+`80242f28521bba184f4d5d62cda972c1c8928f36`. Worktree clean at the assigned
+head — no uncommitted salvage. The job directory supplied no `check-*.log`
+files, so every check below was executed fresh.
+
+### What was repaired (row 8, the decide-half)
+
+Rounds 6–15 recorded one repeatable code-level defect: `create_container`
+wired the #806 reconciliation *mechanics* but composed no `goal_reconciliation_policy`,
+so `reconcile_goals` returned 0 forever in production and the Workspace
+Agent never decided. This round composes the decide-half on the canonical
+seams, with no second scheduler, execution authority, or Goal store:
+
+- `packages/maistro-core/src/maistro/goals/reconciliation/production.py`
+  (new): `FactDrivenReconciliationPolicy` — deterministic decisions from
+  durable `GoalFacts` only (progress on fresh capacity or an unblocking
+  wake, wake-driven wait for in-flight pursuit, budget gate, replan keyed
+  by the triggering wake's canonical correlation id, discovery of the
+  never-notified Goal under one stable key). It never settles a Goal:
+  completion stays evidence-backed desired-state truth (#9), never inferred
+  from a Run terminal status. `GoalRunAdmitter` — the `PhysicalAdmitter`
+  half: fulfils a run admission as one canonical QUEUED Run through
+  `admit_direct_work`, bound to the Goal and the canonical **current**
+  revision with that revision's exact language; the canonical Goal is the
+  revision authority (the control row's revision is posture bookkeeping and
+  may trail it). Unknown canonical Goals, revisions missing from the chain
+  and non-run admission kinds refuse loudly per-Goal.
+- `maistro/runs/sources.py`: `GOAL_RECONCILIATION_SOURCE` ("goal_reconciliation"),
+  named in the leaf module so admitter, consumer allowlist and retention
+  agree on the string without importing each other.
+- `maistro/runs/consumption.py`: the source joins `CONSUMABLE_SOURCES` —
+  deliberate, reviewed: a pursuit Run is admitted QUEUED with no caller
+  holding a receipt, so excluding it would recreate the
+  admitted-work-nobody-executes state #251 removed for schedules.
+- `maistro/container.py`: `create_container` composes
+  `FactDrivenReconciliationPolicy` + `GoalRunAdmitter(run_store, goal_store)`
+  onto the Container; `reconcile_goals` passes the admitter to the
+  reconciler so admissions become canonical Runs. A hand-built Container
+  without a policy still decides nothing (contract re-pinned in tests).
+
+The four milestone verbs map honestly onto this composition: **progress**
+(admit the pursuit Run), **wait** (wake-driven park / budget gate),
+**delegate** (the pursuit Run's single node is in-process A2A delegation to
+the Goal's accountable Agent — the same `agent.delegate_remote` node every
+task executes through), **replan** (a new canonical change produces a new
+correlation-keyed admission against the current desired state). Goal→Subgoal
+*decomposition* — choosing that a Goal should split, and into what — remains
+planner-owned product surface (the same class of deferral as the Dreaming
+producer under #1046): the mechanics support `kind="subgoal"` admissions,
+the production admitter refuses them loudly rather than minting Goals nobody
+described, and the policy never invents a split.
+
+Deliberately not wired this round: the `EventWakeBridge` on the canonical
+event bus. `GOAL_WAKE_PATTERNS` maps event types ("run.terminal",
+"goal.changed", …) that no production emitter publishes yet, so subscribing
+the bridge now would be unreachable dead code; durable wakes are recorded
+through the store API and the bounded sweep repairs missed notifications
+(deterministic-tested). Wiring the bridge belongs with the first canonical
+event producer for those types.
+
+### Tests
+
+- `packages/maistro-core/tests/goals/test_goal_reconciliation_production.py`
+  (new, 16 tests): policy determinism (7), admitter fulfilment and refusals
+  (6 incl. the pinned consumable source), composed-Container end-to-end over
+  SQLite (3): discovery → canonical QUEUED Run → consumer tick claims it and
+  leaves real NodeRun/Attempt rows (`Goal -> Graph -> Run -> NodeRun ->
+  Attempt`), revision bump + durable wake → replan into a Run bound to
+  revision 2 and its language. Inventory note:
+  `docs/testing/inventory-notes/goal-reconciliation-production-decide-half.md`
+  (`packages/maistro-core/tests: +16`).
+- `packages/maistro-core/tests/goals/test_goal_container_wiring.py`: the
+  wiring test now pins the production composition; the hand-built no-policy
+  contract and the mechanics-only StubPolicy tests keep their meaning with
+  the admitter explicitly detached.
+- `packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py`:
+  the two former no-op-contract tests became production-path tests through
+  the real cadence tick on SQLite (missed wake → one canonical Run + dispatched
+  wake, tick-idempotent; never-notified Goal → discovered into one canonical
+  Run). Suite count unchanged (2 rewritten, net 0).
+
+### Validation (all fresh at this head, all exit 0)
+
+| Command | Result |
+| --- | --- |
+| `uv run pytest packages/maistro-core/tests/goals packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py -q` | **192 passed**, 24 skipped |
+| `uv run pytest packages/maistro-core/tests/runs/test_consumption*.py packages/maistro-core/tests/runs/test_consumer_claim_*.py -q` | **50 passed**, 5 skipped |
+| `uv run pytest tests/test_ci_vulture_ownership.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q` | **128 passed** |
+| `uv run ruff check .` / `uv run ruff format --check .` | all checks passed / 3703 files formatted |
+| `uv run mypy packages/maistro-core/src` | clean for all touched files (one pre-existing env-only `maistro_bootstrap.cli` stub note in `cli/_install.py`, untouched by this round) |
+| `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` | **1218 reviewed = 1218 findings** — zero unbanked identities introduced |
+| `scripts/check-reachability.py` | exit 0 (1521 modules, 81 unreachable — ledger match) |
+| `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` and `--suite packages/hive-conductor/backend/tests` | ok (+16 delta recorded; hive count unchanged) |
+| `scripts/check-ratchet-provenance.py` / `check-wiring-reads.py` / `check-release-consistency.py` / `check-backlog-consistency.py` / `check-radon-baseline.py` / `check-shipped-surface-truth.py` / `check-promotion-surface.py` | all ok (radon 124 = 124) |
+
+### Acceptance boundary after this round
+
+- Row 8 decide-half: **MET in code** — production composition with
+  deterministic tests at both the unit and composed-Container level; the
+  live/cadence halves remain deterministic (SQLite container + real cadence
+  tick), not a deployed-process observation.
+- Row 12 (Dreaming promotion producer): unchanged — deferred under #1046,
+  KNOWN-GAPS disposition in place. Not addressed this round (separate
+  producer, separate seam).
+- Rows 2/3/4/5/17 (release workflow exercise, clean-machine/real-model E2E,
+  backup/restore escrow drill, RC soak/byte-equivalent promotion, live
+  overnight fire): unchanged — operator evidence, unobtainable in-lane.
+
+Checkpoint: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "operator release/E2E/soak evidence (rows 2/3/4/5/17); Dreaming promotion producer (row 12) on its own lane; canonical goal-event producers to make the wake bridge reachable"}`.

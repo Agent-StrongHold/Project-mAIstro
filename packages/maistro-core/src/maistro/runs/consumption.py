@@ -41,7 +41,12 @@ from maistro.runs.execution import AttemptExecutionService, ExecutionYielded
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.recovered_disposition import is_typed_recovered_attempt
 from maistro.runs.service import RunExecutionService
-from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    GOAL_RECONCILIATION_SOURCE,
+    SCHEDULE_INPUTS_KEY,
+    SCHEDULE_SOURCE,
+)
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
@@ -66,7 +71,12 @@ DEFAULT_SCHEDULE_LEASE_TTL = timedelta(seconds=30)
 #: Admission sources the consumer may execute. An allowlist rather than
 #: "everything QUEUED": a source joins by deciding to, in one reviewed place,
 #: never by having its Runs picked up as a side effect of being non-terminal.
-CONSUMABLE_SOURCES = frozenset({SCHEDULE_SOURCE})
+#: Goal-reconciliation pursuit Runs join deliberately (M3 #805): they are
+#: single-node delegation Runs admitted QUEUED by the reconciler's physical
+#: admitter with no caller holding a receipt — the exact shape this consumer
+#: exists to drive — so leaving them QUEUED forever would recreate the
+#: "admitted work nobody executes" state #251 removed for schedules.
+CONSUMABLE_SOURCES = frozenset({SCHEDULE_SOURCE, GOAL_RECONCILIATION_SOURCE})
 
 
 class ScheduleExecutionFailed(RuntimeError):
