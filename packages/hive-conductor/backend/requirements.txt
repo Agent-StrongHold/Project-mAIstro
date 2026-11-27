@@ -55,6 +55,13 @@ sqlalchemy[asyncio]>=2.0.0,<3
 # ran the security scanner on stdlib `re` with no timeout support at all —
 # the exact degraded mode the conditional fallback was deleted for hiding.
 regex>=2024.5.15,<2027
+# Same contract, #1051: maistro.capabilities.providers.discovery_source
+# imports defusedxml unconditionally, and maistro.graph's node-module sweep
+# imports that provider on every `import maistro.graph` — so any backend
+# module reaching the graph package needs it at import time. Kept in step
+# with core's floor (pyproject.toml), which names the same Bandit B314 /
+# Python-docs XML-vulnerability guidance.
+defusedxml>=0.7,<1
 # Same reason, for the embedded Container on a configured DATABASE_URL (#37):
 # `maistro.persistence` imports asyncpg at import time (core hard dep), and a
 # `sqlite:` URL puts it on core's SQLite stores, which import aiosqlite (core's

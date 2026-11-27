@@ -23,9 +23,17 @@ Three offline rules, none of which needs a token or network:
    by being forgotten. Forgetting is how a gate ends up run, read, and
    unenforced — which is the state #162 was filed to end.
 
-With `--verify` and a token in `GH_TOKEN`/`GITHUB_TOKEN` it also compares the
-live protection against this file. That half needs admin scope to read
-protection at all, so it is opt-in rather than part of the PR gate.
+A fourth check, added for #85, is about the boundary itself rather than the
+workflows: `.github/live-merge-boundary.json` is a recorded read-back of the
+live repository rulesets and classic protection, `--refresh-live` re-reads
+GitHub and rewrites it, and the offline gate compares it with this file and
+with the generated document. Divergence is red unless it is written down in
+`known_live_drift` with a reason and an owner — and a written-down divergence
+that no longer exists is red too, so the record cannot outlive its fact.
+`--verify` takes the comparison to GitHub itself: with a token it re-reads
+the rulesets and fails on ALL policy differences (including documented ones)
+or if the recorded read-back has gone stale. Missing credentials fail closed. CI cannot do
+that half (no admin-scoped token on a pull request), so it is run by hand.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +55,22 @@ RULESET = ROOT / ".github" / "branch-protection.json"
 CONTRACT_GATE = ROOT / "scripts" / "check-required-checks.py"
 DOC = ROOT / "docs" / "ci" / "BRANCH-PROTECTION.md"
 REPO = "Agent-StrongHold/Project-mAIstro"
+
+#: The recorded read-back of the live merge boundary (#85).
+#:
+#: CI has no admin-scoped token, so the live rulesets cannot be read from a
+#: pull request. What can be checked there is the *recorded* read-back: a
+#: normalised snapshot of what GitHub enforced when it was last read. The
+#: snapshot is evidence, not authority -- the authority is
+#: `.github/branch-protection.json`, and every divergence between the two has
+#: to be written down (see `known_live_drift`).
+LIVE_SNAPSHOT = ROOT / ".github" / "live-merge-boundary.json"
+
+#: The reviewed merge-queue policy. It is a separate file because the queue
+#: parameters live on the ruleset's `merge_queue` rule, not on classic
+#: protection, but the queue is part of the merge boundary and so is compared
+#: against the live ruleset with everything else.
+MERGE_QUEUE = ROOT / ".github" / "merge-queue.json"
 
 #: The machine-checked region of the prose document. Everything outside it is
 #: narrative and is deliberately not generated: the value of that document is
@@ -62,6 +87,14 @@ REPO = "Agent-StrongHold/Project-mAIstro"
 #: like the summary as the only one nothing checked.
 DOC_BEGIN = "<!-- protection:tables -->"
 DOC_END = "<!-- /protection:tables -->"
+
+#: The second generated region: the live read-back, rendered from
+#: `.github/live-merge-boundary.json`. The first region says what the policy
+#: *declares*; this one says what GitHub *enforces*. Keeping them in one
+#: document, side by side, is what makes the difference between them visible
+#: to a reader instead of a fact only the gate knows.
+LIVE_DOC_BEGIN = "<!-- protection:live -->"
+LIVE_DOC_END = "<!-- /protection:live -->"
 
 #: Required here, cannot report here, advisory by declaration.
 #:
@@ -299,22 +332,564 @@ def _diff_live(branch: str, want: dict[str, Any], live: dict[str, Any]) -> list[
     return out
 
 
-def verify_live(ruleset: dict[str, Any], token: str) -> int:
-    """Compare the live protection against this file. Needs admin scope."""
-    failures = 0
-    for branch, want in ruleset["branches"].items():
-        live, reason = _live_protection(branch, token)
-        if live is None:
-            print(reason)
-            failures += not str(reason).startswith("SKIP")
+# ---------------------------------------------------------------------------
+# The live merge boundary (#85)
+# ---------------------------------------------------------------------------
+#
+# Everything above compares the declared policy with the workflows. This
+# section compares the declared policy with *GitHub*, which is the only
+# comparison that can say whether the merge boundary is the one the policy
+# describes.
+#
+# Two things were wrong about that comparison before, and both were invisible
+# from the workflow side:
+#
+# 1. It read `/branches/{branch}/protection`. ADR-095 moved enforcement to
+#    repository Rulesets, so that endpoint is no longer the merge boundary --
+#    on `main` it does not even exist (404), and on `develop` it carries no
+#    required status checks at all. So `--verify` reported every required
+#    check as "required by this file but not live" while the ruleset that
+#    actually enforces them was never read.
+# 2. It needed an admin-scoped token, so in CI it printed SKIP and the drift
+#    it was written to find was never found.
+#
+# The fix is a recorded read-back. `--refresh-live` reads the live rulesets
+# with a token and writes `.github/live-merge-boundary.json`; the offline gate
+# compares that snapshot with the declared policy, and the generated document
+# shows both side by side. Every divergence has to be written down in the
+# policy's `known_live_drift` map with a reason and an owner, so a divergence
+# nobody has looked at is a failure and an excuse that outlives its fact is a
+# failure too.
+
+
+def normalize_ruleset(raw: dict[str, Any]) -> dict[str, Any]:
+    """A live ruleset, reduced to the fields the policy declares."""
+    view: dict[str, Any] = {
+        "id": raw.get("id"),
+        "name": raw.get("name"),
+        "enforcement": raw.get("enforcement"),
+        "target": None,
+        "required_status_checks": {"strict": None, "contexts": []},
+        "required_approving_review_count": None,
+        "dismiss_stale_reviews_on_push": None,
+        "require_code_owner_review": None,
+        "require_last_push_approval": None,
+        "required_review_thread_resolution": None,
+        "allowed_merge_methods": [],
+        "rules": [],
+        "merge_queue": None,
+        "bypass": [],
+    }
+    conditions = raw.get("conditions") or {}
+    refs = conditions.get("ref_name") or {}
+    include = refs.get("include") or []
+    if len(include) != 1 or refs.get("exclude"):
+        raise ValueError(
+            f"ruleset {raw.get('id')}: unsupported ref selectors; cannot verify safely"
+        )
+    view["target"] = include[0]
+    for rule in raw.get("rules") or []:
+        kind = rule.get("type")
+        params = rule.get("parameters") or {}
+        if kind == "required_status_checks":
+            checks = params.get("required_status_checks") or []
+            view["required_status_checks"] = {
+                "strict": params.get("strict_required_status_checks_policy"),
+                "contexts": sorted(str(c.get("context")) for c in checks),
+            }
+        elif kind == "pull_request":
+            view["required_approving_review_count"] = params.get("required_approving_review_count")
+            view["dismiss_stale_reviews_on_push"] = params.get("dismiss_stale_reviews_on_push")
+            view["require_code_owner_review"] = params.get("require_code_owner_review")
+            view["require_last_push_approval"] = params.get("require_last_push_approval")
+            view["required_review_thread_resolution"] = params.get(
+                "required_review_thread_resolution"
+            )
+            view["allowed_merge_methods"] = sorted(params.get("allowed_merge_methods") or [])
+        elif kind == "merge_queue":
+            view["merge_queue"] = dict(params)
+            view["rules"].append(kind)
+        else:
+            view["rules"].append(kind)
+    view["rules"] = sorted(view["rules"])
+    view["bypass"] = [
+        {
+            "actor_type": actor.get("actor_type"),
+            "actor_id": actor.get("actor_id"),
+            "bypass_mode": actor.get("bypass_mode"),
+        }
+        for actor in raw.get("bypass_actors") or []
+    ]
+    return view
+
+
+def normalize_classic(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Classic branch protection, reduced to the fields the policy declares."""
+    if raw is None:
+        return None
+    reviews = raw.get("required_pull_request_reviews") or {}
+    checks = raw.get("required_status_checks") or {}
+    view: dict[str, Any] = {
+        "required_status_checks": {
+            "strict": checks.get("strict"),
+            "contexts": sorted(checks.get("contexts") or []),
+        },
+        "required_pull_request_reviews": {
+            "required_approving_review_count": reviews.get("required_approving_review_count"),
+            "dismiss_stale_reviews": reviews.get("dismiss_stale_reviews"),
+            "require_code_owner_reviews": reviews.get("require_code_owner_reviews"),
+            "require_last_push_approval": reviews.get("require_last_push_approval"),
+        },
+    }
+    for key in VERIFIED_KEYS:
+        value = raw.get(key)
+        view[key] = value.get("enabled") if isinstance(value, dict) else value
+    return view
+
+
+def branch_for_target(target: str | None, default_branch: str | None) -> str | None:
+    """The branch a ruleset target names, in the vocabulary both sides use."""
+    if target == "~DEFAULT_BRANCH":
+        return default_branch
+    if target and target.startswith("refs/heads/"):
+        return target[len("refs/heads/") :]
+    return None
+
+
+def fetch_live(token: str) -> dict[str, Any]:
+    """Read the live merge boundary: the repository rulesets and classic protection."""
+    repo = _get(f"https://api.github.com/repos/{REPO}", token)
+    default_branch = repo.get("default_branch")
+    listing = _get(f"https://api.github.com/repos/{REPO}/rulesets?per_page=100", token)
+    if len(listing) >= 100:
+        raise ValueError("ruleset listing may be truncated; cannot verify safely")
+    rulesets: dict[str, Any] = {}
+    for entry in listing:
+        raw = _get(f"https://api.github.com/repos/{REPO}/rulesets/{entry['id']}", token)
+        if raw.get("target") != "branch":
             continue
-        lines = _diff_live(branch, want, live)
-        for line in lines:
-            print(line)
-        failures += len(lines)
-        if not lines:
-            print(f"OK: {branch} protection matches .github/branch-protection.json")
-    return 1 if failures else 0
+        view = normalize_ruleset(raw)
+        branch = branch_for_target(view["target"], default_branch)
+        if branch is None:
+            raise ValueError(f"ruleset {entry['id']}: unsupported branch target {view['target']!r}")
+        if branch in rulesets:
+            raise ValueError(f"{branch}: overlapping rulesets; cannot verify safely")
+        rulesets[branch] = view
+    classic: dict[str, Any] = {}
+    for branch in ("develop", "main"):
+        url = f"https://api.github.com/repos/{REPO}/branches/{branch}/protection"
+        try:
+            raw_classic = _get(url, token)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            raw_classic = None
+        classic[branch] = normalize_classic(raw_classic)
+    return {
+        "read_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repo": REPO,
+        "default_branch": default_branch,
+        "rulesets": rulesets,
+        "classic_protection": classic,
+    }
+
+
+def write_snapshot(snapshot: dict[str, Any]) -> None:
+    LIVE_SNAPSHOT.write_text(
+        json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def load_snapshot() -> dict[str, Any]:
+    if not LIVE_SNAPSHOT.is_file():
+        return {}
+    return json.loads(LIVE_SNAPSHOT.read_text(encoding="utf-8"))
+
+
+def _declared_required(rule: dict[str, Any]) -> set[str]:
+    """Every context the policy requires on a branch."""
+    contexts = set(rule["required_status_checks"]["contexts"])
+    contexts |= set((rule.get("ruleset") or {}).get("additional_required_checks") or [])
+    return contexts
+
+
+def _review_drift(branch: str, rule: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """The review settings the two sides can disagree about."""
+    reviews = rule.get("required_pull_request_reviews") or {}
+    pairs = (
+        ("required_approving_review_count", "required_approving_review_count"),
+        ("dismiss_stale_reviews", "dismiss_stale_reviews_on_push"),
+        ("require_code_owner_reviews", "require_code_owner_review"),
+        ("require_last_push_approval", "require_last_push_approval"),
+    )
+    out = []
+    for declared_key, live_key in pairs:
+        want = reviews.get(declared_key)
+        got = live.get(live_key)
+        if want != got:
+            out.append(f"{branch}: {declared_key} is {want!r} in the policy and {got!r} live")
+    want = rule.get("required_conversation_resolution")
+    got = live.get("required_review_thread_resolution")
+    if want != got:
+        out.append(
+            f"{branch}: required_conversation_resolution is {want!r} in the policy and {got!r} live"
+        )
+    return out
+
+
+def _flag_drift(branch: str, rule: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """The protection flags, expressed the way a ruleset expresses them."""
+    live_rules = set(live.get("rules") or [])
+    mapping = (
+        ("required_linear_history", "required_linear_history" in live_rules),
+        ("allow_force_pushes", "non_fast_forward" not in live_rules),
+        ("allow_deletions", "deletion" not in live_rules),
+        ("block_creations", "creation" in live_rules),
+    )
+    out = []
+    for key, live_value in mapping:
+        want = rule.get(key)
+        if want != live_value:
+            out.append(f"{branch}: {key} is {want!r} in the policy and {live_value!r} live")
+    return out
+
+
+def _method_drift(branch: str, rule: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """The merge methods the two sides allow."""
+    want = sorted((rule.get("ruleset") or {}).get("allowed_merge_methods") or [])
+    got = sorted(live.get("allowed_merge_methods") or [])
+    if want != got:
+        out = [f"{branch}: allowed_merge_methods are {want} in the policy and {got} live"]
+    else:
+        out = []
+    return out
+
+
+def _bypass_view(entries: Any) -> list[str]:
+    """Actor identities and modes; changing an app/role must not look unchanged."""
+    if isinstance(entries, dict):
+        role_ids = {"admin": 5, "maintain": 4, "write": 2, "read": 1}
+        pairs = []
+        for actor, mode in entries.items():
+            kind, _, identity = actor.partition(":")
+            actor_id = role_ids.get(identity, identity) if kind == "RepositoryRole" else identity
+            label = f"{kind}:{actor_id}" if actor_id else kind
+            pairs.append((label, mode))
+    else:
+        pairs = []
+        for entry in entries or []:
+            kind = entry.get("actor_type")
+            actor_id = entry.get("actor_id")
+            label = f"{kind}:{actor_id}" if actor_id is not None else str(kind)
+            pairs.append((label, entry.get("bypass_mode")))
+    return sorted(f"{actor}:{mode}" for actor, mode in pairs)
+
+
+def _bypass_drift(branch: str, rule: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    want = _bypass_view((rule.get("ruleset") or {}).get("bypass") or {})
+    got = _bypass_view(live.get("bypass") or [])
+    if want == got:
+        return []
+    return [f"{branch}: bypass actors are {want} in the policy and {got} live"]
+
+
+def _queue_drift(policy: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """The merge-queue posture, which is part of the merge boundary too."""
+    if not MERGE_QUEUE.is_file():
+        return []
+    declared = json.loads(MERGE_QUEUE.read_text(encoding="utf-8"))
+    out = []
+    for branch, want in (declared.get("branches") or {}).items():
+        live_rule = (live.get("rulesets") or {}).get(branch) or {}
+        live_queue = live_rule.get("merge_queue")
+        if live_queue is None:
+            out.append(f"{branch}: the policy declares a merge queue and the live ruleset has none")
+            continue
+        differing = []
+        for key, value in sorted(want.items()):
+            if key.startswith("$"):
+                continue
+            got = live_queue.get(key)
+            if got != value:
+                differing.append(f"{key} is {value!r} in the policy and {got!r} live")
+        if differing:
+            out.append(f"{branch}: merge queue differs: " + "; ".join(differing))
+    return out
+
+
+def _classic_drift(policy: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """Classic protection, where it still exists alongside a ruleset.
+
+    GitHub applies both surfaces when both cover a branch, so the effective
+    policy is their intersection. Two surfaces with different values is not
+    itself a failure -- but it is invisible unless somebody writes it down,
+    and it is where a policy that says one thing and a repository that
+    enforces another hides.
+    """
+    classic = live.get("classic_protection") or {}
+    out = []
+    for branch, rule in policy["branches"].items():
+        surface = classic.get(branch)
+        if surface is None:
+            # Absent is the post-ADR-095 shape, not a divergence: the ruleset
+            # is the declared mechanism and classic protection is the legacy
+            # surface. Recording this as drift would write a permanent
+            # exception for a state the policy intends.
+            continue
+        differences = []
+        want_reviews = rule.get("required_pull_request_reviews") or {}
+        live_reviews = surface.get("required_pull_request_reviews") or {}
+        for declared_key, live_key in (
+            ("required_approving_review_count", "required_approving_review_count"),
+            ("dismiss_stale_reviews", "dismiss_stale_reviews"),
+            ("require_code_owner_reviews", "require_code_owner_reviews"),
+            ("require_last_push_approval", "require_last_push_approval"),
+        ):
+            want = want_reviews.get(declared_key)
+            got = live_reviews.get(live_key)
+            if want != got:
+                differences.append(f"{declared_key} is {want!r} in the policy and {got!r} live")
+        for key in VERIFIED_KEYS:
+            want = rule.get(key)
+            got = surface.get(key)
+            if want != got:
+                differences.append(f"{key} is {want!r} in the policy and {got!r} live")
+        if differences:
+            out.append(
+                f"{branch}: classic branch protection is active alongside the ruleset and "
+                f"differs from the policy: " + "; ".join(differences)
+            )
+    return out
+
+
+def _unproduced_drift(policy: dict[str, Any], live: dict[str, Any], rows: list) -> list[str]:
+    """Live-required contexts that nothing in this repository can report.
+
+    A required check that no workflow produces is not a gate -- it is a
+    permanent `Expected`, and the branch it guards can never be merged to.
+    The context may be produced outside the pull-request job graph (a
+    `workflow_run` publisher writes a commit status instead), which is why the
+    policy's Ruleset-only `additional_required_checks` are counted as
+    producers: that list is exactly the set of contexts the policy already
+    knows are published outside the job graph.
+    """
+    produced = {name for _workflow, name, _scope in rows}
+    out = []
+    for branch, rule in policy["branches"].items():
+        live_rule = (live.get("rulesets") or {}).get(branch) or {}
+        live_contexts = set(live_rule.get("required_status_checks", {}).get("contexts") or [])
+        declared_only = (rule.get("ruleset") or {}).get("additional_required_checks") or []
+        for context in sorted(live_contexts - produced - set(declared_only)):
+            out.append(
+                f"{branch}: the live ruleset requires {context!r}, which no workflow in this "
+                f"repository produces"
+            )
+    return out
+
+
+def drift(policy: dict[str, Any], live: dict[str, Any], rows: list) -> list[str]:
+    """Every way the declared policy and the live merge boundary disagree."""
+    out: list[str] = []
+    for branch, rule in policy["branches"].items():
+        live_rule = (live.get("rulesets") or {}).get(branch)
+        if live_rule is None:
+            out.append(f"{branch}: the live rulesets do not cover this branch")
+            continue
+        if live_rule.get("enforcement") != "active":
+            out.append(f"{branch}: the live ruleset is not active")
+        target = (rule.get("ruleset") or {}).get("target")
+        if target is not None and live_rule.get("target") != target:
+            out.append(f"{branch}: ruleset target differs from the policy")
+        if branch_for_target(live_rule.get("target"), live.get("default_branch")) != branch:
+            out.append(f"{branch}: the live ruleset target does not cover this branch")
+        want_strict = rule["required_status_checks"].get("strict")
+        got_strict = live_rule.get("required_status_checks", {}).get("strict")
+        if want_strict != got_strict:
+            out.append(
+                f"{branch}: required_status_checks.strict is {want_strict!r} in the policy "
+                f"and {got_strict!r} live"
+            )
+        declared = _declared_required(rule)
+        live_contexts = set(live_rule["required_status_checks"]["contexts"])
+        only_declared = sorted(declared - live_contexts)
+        only_live = sorted(live_contexts - declared)
+        if only_declared:
+            out.append(
+                f"{branch}: required checks the policy declares but the live ruleset does not "
+                f"require: {', '.join(only_declared)}"
+            )
+        if only_live:
+            out.append(
+                f"{branch}: required checks the live ruleset requires but the policy does not "
+                f"declare: {', '.join(only_live)}"
+            )
+        out.extend(_review_drift(branch, rule, live_rule))
+        out.extend(_flag_drift(branch, rule, live_rule))
+        out.extend(_method_drift(branch, rule, live_rule))
+        out.extend(_bypass_drift(branch, rule, live_rule))
+    out.extend(_queue_drift(policy, live))
+    out.extend(_classic_drift(policy, live))
+    out.extend(_unproduced_drift(policy, live, rows))
+    return sorted(out)
+
+
+def drift_problems(policy: dict[str, Any], live: dict[str, Any], rows: list) -> list[str]:
+    """Drift nobody has written down, and written-down drift that is gone.
+
+    Both halves fail. An unreviewed divergence is the state this issue was
+    filed about. A recorded divergence that no longer exists is worse in one
+    way: the exception outlives the fact it was written for, and the next
+    divergence of the same shape inherits an excuse nobody re-read.
+    """
+    computed = drift(policy, live, rows)
+    known = policy.get("known_live_drift") or {}
+    problems = []
+    for entry in computed:
+        if entry not in known:
+            problems.append(f"live drift nobody has recorded: {entry}")
+    for entry, note in sorted(known.items()):
+        if entry not in computed:
+            problems.append(f"recorded live drift that no longer exists: {entry}")
+        elif not str(note.get("reason", "")).strip():
+            problems.append(f"recorded live drift has no reason: {entry}")
+        elif not str(note.get("owner", "")).strip():
+            problems.append(f"recorded live drift has no owner: {entry}")
+    return problems
+
+
+def snapshot_staleness(recorded: dict[str, Any], fresh: dict[str, Any]) -> list[str]:
+    """Where the recorded read-back no longer matches GitHub."""
+    problems = []
+    for key in ("repo", "default_branch", "rulesets", "classic_protection"):
+        for path in _diff_paths(recorded.get(key), fresh.get(key), key):
+            problems.append(
+                f"the recorded live read-back is stale: {path} changed on GitHub since it was "
+                f"recorded; refresh with: python3 scripts/check-branch-protection.py --refresh-live"
+            )
+    return problems
+
+
+def _diff_paths(old: Any, new: Any, path: str) -> list[str]:
+    """The leaf paths at which two snapshots differ."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        out = []
+        for key in sorted(set(old) | set(new)):
+            out.extend(_diff_paths(old.get(key), new.get(key), f"{path}.{key}"))
+        return out
+    if isinstance(old, list) and isinstance(new, list):
+        if old == new:
+            return []
+        return [path]
+    return [] if old == new else [path]
+
+
+def render_live_tables(live: dict[str, Any], rows: list) -> str:
+    """The live read-back, rendered from the recorded snapshot."""
+    rulesets = live.get("rulesets") or {}
+    branches = list(rulesets)
+    head = [
+        "| Branch | Ruleset | Enforcement | Approvals | Stale dismissal | Code-owner review |"
+        " Last-push approval | Merge methods | Required checks (live) |",
+        "|---|---|:--:|:--:|:--:|:--:|:--:|---|:--:|",
+    ]
+    for branch in branches:
+        entry = rulesets[branch]
+        head.append(
+            f"| `{branch}` | {entry['name']} | {entry['enforcement']} "
+            f"| **{entry['required_approving_review_count']}** "
+            f"| {'yes' if entry['dismiss_stale_reviews_on_push'] else 'no'} "
+            f"| {'yes' if entry['require_code_owner_review'] else 'no'} "
+            f"| {'yes' if entry['require_last_push_approval'] else 'no'} "
+            f"| {', '.join(entry['allowed_merge_methods'])} "
+            f"| **{len(entry['required_status_checks']['contexts'])}** |"
+        )
+    grid = ["| Check | " + " | ".join(f"`{b}`" for b in branches) + " |"]
+    grid.append("|---|" + "|".join([":--:"] * len(branches)) + "|")
+    live_contexts = {
+        branch: set(rulesets[branch]["required_status_checks"]["contexts"]) for branch in branches
+    }
+    for name in sorted({name for _workflow, name, _scope in rows}):
+        marks = " | ".join(
+            MARK_REQUIRED if name in live_contexts[branch] else "-" for branch in branches
+        )
+        grid.append(f"| `{name}` | {marks} |")
+    # Checks GitHub requires that no PR job in this repository produces are
+    # the ones a reader most needs to see, and they are exactly the ones the
+    # row set above cannot show: `workflow_run` and `pull_request_target`
+    # publishers are invisible to the contract that walks `pull_request`
+    # workflows. Leaving them out of the generated region would make the live
+    # table look complete while hiding the only rows that can be a permanent
+    # `Expected`.
+    row_names = {name for _workflow, name, _scope in rows}
+    outside = [
+        f"- `{name}` on `{branch}`"
+        for branch in branches
+        for name in sorted(live_contexts[branch] - row_names)
+    ]
+    if outside:
+        grid.append("")
+        grid.append(
+            "Required live but published outside the PR-job grid "
+            "(a `workflow_run` or `pull_request_target` publisher):"
+        )
+        grid.extend(outside)
+    return "\n".join(head) + "\n\n" + "\n".join(grid)
+
+
+def live_doc_problems(live: dict[str, Any], rows: list, *, update: bool) -> list[str]:
+    """Whether the document's live table still matches the recorded read-back."""
+    if not DOC.is_file():
+        return [f"{_rel(DOC)} does not exist"]
+    text = DOC.read_text(encoding="utf-8")
+    region = f"{LIVE_DOC_BEGIN}\n\n{render_live_tables(live, rows)}\n\n{LIVE_DOC_END}"
+    if LIVE_DOC_BEGIN not in text or LIVE_DOC_END not in text:
+        if not update:
+            return [
+                f"{_rel(DOC)} has no {LIVE_DOC_BEGIN} / {LIVE_DOC_END} markers, so the live "
+                f"read-back is not checked against {_rel(LIVE_SNAPSHOT)}"
+            ]
+        # `--update-doc` is the writer for both regions, so it creates the
+        # second one rather than requiring a hand-edit of the document it is
+        # meant to own. It lands directly after the declared region: the two
+        # tables are meant to be read against each other.
+        if DOC_END in text:
+            head, rest = text.split(DOC_END, 1)
+            text = f"{head}{DOC_END}\n\n{region}{rest}"
+        else:
+            text = text.rstrip("\n") + f"\n\n{region}\n"
+        DOC.write_text(text, encoding="utf-8")
+        return []
+    head, rest = text.split(LIVE_DOC_BEGIN, 1)
+    _, tail = rest.split(LIVE_DOC_END, 1)
+    rebuilt = f"{head}{region}{tail}"
+    if update:
+        DOC.write_text(rebuilt, encoding="utf-8")
+        return []
+    if rebuilt != text:
+        return [
+            f"{_rel(DOC)} disagrees with the recorded live read-back in {_rel(LIVE_SNAPSHOT)}.\n"
+            f"         The table above says what GitHub enforces; if it no longer does, the\n"
+            f"         read-back is stale. Refresh with:\n"
+            f"         python3 scripts/check-branch-protection.py --refresh-live --update-doc"
+        ]
+    return []
+
+
+def verify_live(ruleset: dict[str, Any], token: str, rows: list) -> list[str]:
+    """Compare the live rulesets with the recorded read-back and the policy."""
+    try:
+        fresh = fetch_live(token)
+    except urllib.error.HTTPError as exc:
+        return [f"FAIL: reading the live rulesets failed: HTTP {exc.code}"]
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return [f"FAIL: reading the live rulesets failed: {exc}"]
+    recorded = load_snapshot()
+    problems = snapshot_staleness(recorded, fresh)
+    # Recording a divergence documents it; it must never authorize it. In
+    # particular, --verify used to fail on declared-vs-live differences, so
+    # accepting known_live_drift here would weaken the existing live gate.
+    problems.extend(drift(ruleset, fresh, rows))
+    return problems
 
 
 def _rel(path: Path) -> str:
@@ -438,6 +1013,96 @@ def print_apply(ruleset: dict[str, Any], branch: str) -> int:
     return 0
 
 
+def refresh_live(rows: list, *, update_doc: bool) -> int:
+    """Read GitHub and record what it enforces in the committed snapshot."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("FAIL: --refresh-live needs GH_TOKEN or GITHUB_TOKEN")
+        return 1
+    try:
+        fresh = fetch_live(token)
+    except urllib.error.HTTPError as exc:
+        print(f"FAIL: reading the live rulesets failed: HTTP {exc.code}")
+        return 1
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"FAIL: reading the live rulesets failed: {exc}")
+        return 1
+    write_snapshot(fresh)
+    print(f"recorded the live merge boundary in {_rel(LIVE_SNAPSHOT)}")
+    if update_doc:
+        live_doc_problems(fresh, rows, update=True)
+        print(f"updated the live read-back region of {_rel(DOC)}")
+    return 0
+
+
+def update_doc(ruleset: dict[str, Any], rows: list) -> int:
+    """Regenerate both machine-checked regions of the prose document."""
+    doc_problems(ruleset, rows, update=True)
+    print(f"updated {_rel(DOC)} from {_rel(RULESET)}")
+    if LIVE_SNAPSHOT.is_file():
+        live_doc_problems(load_snapshot(), rows, update=True)
+        print(f"updated the live read-back region of {_rel(DOC)}")
+    else:
+        print(f"SKIP: {_rel(LIVE_SNAPSHOT)} does not exist; record it with --refresh-live")
+    return 0
+
+
+def offline_problems(ruleset: dict[str, Any], rows: list) -> list[str]:
+    """Everything CI can check without a token, in one report.
+
+    The prose document is checked in the same pass as the ruleset, and so is
+    the recorded read-back of what GitHub actually enforces. This is the half
+    #85 is about: a declared policy, a generated document and a live boundary
+    that are each internally consistent and mutually different is the state
+    where "documented and matches live" is only true of the sentence saying
+    it. No token here -- CI compares against the committed snapshot, and
+    `--verify` re-reads GitHub to catch a stale one.
+    """
+    problems = audit(ruleset, rows)
+    problems += doc_problems(ruleset, rows, update=False)
+    if not LIVE_SNAPSHOT.is_file():
+        problems.append(
+            f"no recorded live read-back in {_rel(LIVE_SNAPSHOT)}; record what GitHub "
+            "enforces with: python3 scripts/check-branch-protection.py --refresh-live"
+        )
+        return problems
+    snapshot = load_snapshot()
+    problems += live_doc_problems(snapshot, rows, update=False)
+    problems += drift_problems(ruleset, snapshot, rows)
+    return problems
+
+
+def _report(problems: list[str]) -> None:
+    print("FAIL: the branch-protection contract does not hang together\n")
+    for line in problems:
+        print(f"  - {line}")
+    print(
+        "\nBranch protection keys checks by bare name, so a name that matches no job is "
+        "a requirement that silently does nothing.\nRefresh the contract first "
+        "(scripts/check-required-checks.py --update), then edit the ruleset to match,\n"
+        "then regenerate the prose summary (check-branch-protection.py --update-doc)."
+        "\nA line about the live read-back means GitHub and this repository disagree: "
+        "re-read it with\n--refresh-live, and either reconcile the settings or record "
+        "the divergence in known_live_drift."
+    )
+
+
+def verify(ruleset: dict[str, Any], rows: list) -> int:
+    """The half CI cannot do: re-read GitHub and compare it to the record."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("FAIL: --verify needs GH_TOKEN or GITHUB_TOKEN; live policy is UNVERIFIED")
+        return 1
+    problems = verify_live(ruleset, token, rows)
+    if problems:
+        print("FAIL: the live merge boundary has drifted from what is recorded\n")
+        for line in problems:
+            print(f"  - {line}")
+        return 1
+    print("OK: GitHub enforces the merge boundary this repository records")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -449,36 +1114,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="rewrite the generated tables in docs/ci/BRANCH-PROTECTION.md",
     )
+    parser.add_argument(
+        "--refresh-live",
+        action="store_true",
+        help=(
+            "read the live rulesets with a token and record them in "
+            f"{LIVE_SNAPSHOT.relative_to(ROOT)}"
+        ),
+    )
     args = parser.parse_args(argv)
 
     ruleset = load_ruleset()
     if args.apply:
         return print_apply(ruleset, args.apply)
 
-    contract = _contract()
-    rows = contract.collect()
-
+    rows = _contract().collect()
+    if args.refresh_live:
+        return refresh_live(rows, update_doc=args.update_doc)
     if args.update_doc:
-        doc_problems(ruleset, rows, update=True)
-        print(f"updated {_rel(DOC)} from {_rel(RULESET)}")
-        return 0
+        return update_doc(ruleset, rows)
 
-    problems = audit(ruleset, rows)
-    # The prose document is checked in the same pass, and its failures are
-    # reported alongside the ruleset's rather than after them: a PR that
-    # changes a branch's required set gets both halves of the consequence at
-    # once instead of fixing one and rediscovering the other on the next run.
-    problems += doc_problems(ruleset, rows, update=False)
+    problems = offline_problems(ruleset, rows)
     if problems:
-        print("FAIL: the branch-protection contract does not hang together\n")
-        for line in problems:
-            print(f"  - {line}")
-        print(
-            "\nBranch protection keys checks by bare name, so a name that matches no job is "
-            "a requirement that silently does nothing.\nRefresh the contract first "
-            "(scripts/check-required-checks.py --update), then edit the ruleset to match,\n"
-            "then regenerate the prose summary (check-branch-protection.py --update-doc)."
-        )
+        _report(problems)
         return 1
 
     counts = ", ".join(
@@ -489,12 +1147,12 @@ def main(argv: list[str] | None = None) -> int:
         f"OK: branch-protection ruleset agrees with the workflows ({counts}); "
         f"every PR check is required or explicitly advisory"
     )
+    print(
+        f"OK: the recorded live read-back in {_rel(LIVE_SNAPSHOT)} matches the generated "
+        "document; recorded divergences are NOT approval of the live policy"
+    )
     if args.verify:
-        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-        if not token:
-            print("SKIP: --verify needs GH_TOKEN or GITHUB_TOKEN")
-            return 0
-        return verify_live(ruleset, token)
+        return verify(ruleset, rows)
     return 0
 
 
