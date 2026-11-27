@@ -1,6 +1,118 @@
 # Issue #89 current repair validation
 
-## Frozen scope
+## Current round: supplied head `87ce1ab3dee2`, base `80242f28521b`
+
+Job `7be5ec4cd6624a7d9fd21ef99b368df0`; assigned worktree and branch
+`auto-89`. Initial status and diff were clean. The prior coverage repair at
+`87ce1ab3dee2` and all preceding work were preserved. Frozen scope: issue #89,
+supplied PR #2536 evidence, named registry/vulture gates, focused release
+coverage and adjacent tests. No remote refresh, publishing, or GitHub mutation.
+The supplied job directory initially contained no `check-*.log` files; logs
+named below were produced by this worker, not supplied by the driver.
+
+The dispatch's front-matter check is **queued**, not a failed validation.
+Captured PR #2536 evidence instead records failed coverage check
+`140175737147` at older head `5f6bff7d458f`. The prior attempt repaired that
+failure with 20 tests; the previous BLOCKED verdict concerned missing actual
+release/soak evidence. This round independently reran validation before deciding
+whether any production or ledger repair was warranted.
+
+### Executed commands and outcomes
+
+Logs are under the job directory above. All ordinary validation commands below
+exited 0; the process-local mutation deliberately made pytest exit 1.
+
+- `uv sync --locked --extra dev` — PASS (`check-sync.log`).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  — PASS, 1219 reviewed identities = 1219 findings, unclassified 0,
+  never_allowlist 0 (`check-vulture.log`). No evidence supports a ledger edit.
+- All validation steps from `.github/workflows/registry.yml` — PASS
+  (`check-registry.log`):
+  - `uv run pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py packages/maistro-registry/tests --confcutdir=tests/tools -p no:cacheprovider -q`
+    — 194 passed.
+  - `uv run python tools/lint_lifecycle.py` — baseline 0, no violations.
+  - `uv run python -m maistro_registry.cli lint . --strict` — 447 files,
+    0 errors/warnings, 199 existing test-evidence debts.
+  - `RATCHET_BASE_REV=80242f28521bba184f4d5d62cda972c1c8928f36 uv run python scripts/check-citation-status-provenance.py`
+    — 0 citation exceptions.
+  - `uv run python scripts/check-adr-index.py` — index agrees.
+  - `uv run python scripts/generate-spec-ac-defined-index.py` followed by
+    `git diff --exit-code docs/specs/README.md` — 57 specs, no diff.
+  - `uv run python scripts/check-adr-status-language.py` — 0 contradictions.
+- With `COVERAGE_FILE=<job>/release.coverage`,
+  `uv run coverage run --branch --source=scripts -m pytest tests/test_promote_release.py tests/test_release_guard.py tests/test_check_release_consistency.py tests/test_release_publish_metadata.py tests/test_soak_compose_pressure.py tests/release/ tests/test_verify_wheel_imports.py tests/test_check_license_inventory.py tests/test_check_compliance.py -x -q`
+  — **703 passed**; `uv run coverage xml -o <job>/release-coverage.xml`, then
+  `uv run python scripts/check-diff-coverage.py <job>/release-coverage.xml --base 80242f28521bba184f4d5d62cda972c1c8928f36`
+  — PASS: both measured changed production files meet 90% lines / 80% branch
+  arcs (`check-release-coverage.log`). This reproduces the relevant diff-gate
+  mechanics from `quality.yml`; it does **not** rerun all service-backed
+  producers or prove the combined publish-set floor/entire hosted check.
+- `uv run ruff check .` and `uv run ruff format --check .` — PASS,
+  3682 files formatted (`check-ruff.log`).
+- `uv run python scripts/check-suite-inventory.py` — PASS, all 21 suites,
+  37257 unique identities, 0 duplicates. No tests were added this round;
+  inventory delta is zero and the existing +20 note remains accurate.
+- `uv run python scripts/check-release-consistency.py`,
+  `uv run python scripts/check-workflow-inventory.py`, and
+  `uv run python scripts/check-workflow-write-safety.py` — PASS (33 workflows).
+- `uv run pytest tests/test_check_required_checks.py tests/test_mutation_targets.py tests/test_check_diff_coverage.py -x -q`
+  — 141 passed; `git diff --check` — PASS. These and the preceding inventory
+  commands are recorded in `check-adjacent-gates.log`.
+- `uv run python scripts/check-doc-links.py` and final `git diff --check` —
+  PASS, 3606 Markdown files / 0 broken relative links (`check-final-docs.log`).
+- Mutation proof: an inline `uv run python` pytest plugin replaced only the
+  loaded module's `verify_dist` with `lambda *args: []` before calling
+  `test_adopt_wheels_fails_closed_on_tampered_bytes`. The test failed at
+  `tests/test_promote_release.py:509` (`assert 0 == 1`), proving it reaches
+  byte verification, not just the earlier tree guard. The wrapper required
+  pytest exit 1 and exited 0 (`check-byte-verification-mutation.log`). No
+  tracked code was changed for the probe.
+
+### Acceptance rechecked against the production path
+
+Read accepted ADR-073126-c4e1, ADR-095, and ADR-097. Reconciliation: the issue
+asks for a release, but ADR authority reserves publishing to tag-triggered
+`release.yml` with protected promotion and human approval. This lane cannot
+substitute local publication or create tags. No scheduler, Goal store, event
+source, or authorization path changed.
+
+| Criterion | Fresh local evidence | Operational acceptance |
+| --- | --- | --- |
+| RC built only from candidate commit | `release.yml:284` builds wheels only for RCs; both image builds are RC-only; `cmd_record_evidence` records checked-out commit/tree and real file hashes; record and workflow tests pass in the 703-test battery | Actual hosted candidate build UNVERIFIED |
+| Clean install, real-model, security hot path, backup/restore during soak | `promote_release.py:286` requires passing status and citations for every required check; pinned-check and rejection tests pass | Actual four-part functional soak UNVERIFIED |
+| #860 sustained exact-RC multi-replica crash/restart, fencing, pressure, duplicate-work workload | `multi_replica_soak` is pinned as required; binding and missing-soak tests pass | Actual workload and measured runtime observations UNVERIFIED |
+| Invariant-invalidating findings routed before promotion | `promote_release.py:306` requires a syntactically valid routed issue; CLI rejection tests pass | Real issue filing/reclassification and contents UNVERIFIED |
+| Changes require new RC and applicable soak | `release_guard.py:190` compares the latest numeric RC tree, including tracked configuration and modes; real temporary-git rejection tests pass | Tracked-tree enforcement proven locally; deployed/external configuration equivalence and actual replacement soak UNVERIFIED |
+| Final byte-equivalent to soaked RC | `promote_release.py:351` verifies file hashes; workflow finals adopt wheels/digests without rebuilding runtime artifacts; byte-check mutant killed | Actual RC/final artifact pair and registry manifest identity UNVERIFIED |
+| External package/image/signature/install verification succeeds | Workflow has clean-venv imports, scans, signing and verification; adjacent tests pass | Actual independent external consumer verification UNVERIFIED |
+| Machine-readable evidence tied to exact artifact/config | `promote_release.py:259` binds wheel/image maps and requires a config digest; `release.yml:1021` stages evidence under SHA256SUMS; PyPI waits for images/soak; binding tests pass | Compatible real evidence production/transport and deployed-config binding UNVERIFIED |
+
+### Disposition and next owner
+
+**BLOCKED on operational acceptance, not on a reproduced local gate defect.**
+This round updates only this existing report. No source, tests, quality ledger,
+grant, or gate changed; fabricating a ledger repair when the scan is green would
+not address evidence. The full combined hosted Coverage gate remains UNVERIFIED;
+the formerly red diff-coverage portion is proven green at the supplied base.
+
+The unresolved production seam is explicit at `scripts/promote_release.py:44-57`:
+`adopt-digests` requires a compatible `soak-evidence` Actions artifact on the
+selected successful RC run; #860's native boolean record is not that schema.
+The release workflow's own soak upload is finals-only (`release.yml:952`), not
+a demonstrated post-RC producer/transport. Fake GitHub seams in CLI tests cannot
+prove this integration or a real soak. Do not weaken the evidence contract.
+Release/soak owners must provide compatible evidence for a real RC, execute all
+functional and sustained workloads, route findings, promote via the protected
+pipeline, and independently verify externally published artifacts. Environment
+reviewer, trusted publishing, and registry permissions also remain unverified.
+
+Progress: checked 1 issue, completed 1 focused validation/handoff, skipped 0
+assigned issues, unexpected validation errors 0; next: release/soak owner action.
+No push, integration approval, or issue closure.
+
+## Previous round (retained history)
+
+### Frozen scope
 
 - Assigned issue: #89, branch `auto-89`, starting HEAD `b9ec333c16848c504030d2e0c0c64b696cca60f3`.
 - Supplied comparison base: `8d8f10616fb7ae984a02bf84553489470d03c726`.
