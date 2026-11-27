@@ -1833,3 +1833,73 @@ real-model Graph E2E, RC soak + byte-equivalent promotion evidence, overnight
 operation) remain unproducible inside this repository without violating the
 no-GitHub-mutations prohibition or fabricating provenance. Disposition remains
 **BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
+
+## Round 34 — repair-round revalidation at c6d574a17b; backup/restore + escrow
+(#88) acceptance item corrected from "externally gated" to **proven locally**
+
+Round 34 opened from a review-only repair dispatch (`review: true`, zero
+verifier check logs, prior block = worker-requested attention on external
+evidence). Code state is byte-identical to the fully validated Round-30/31/33
+tree. Every locally reachable gate re-proven first-hand at c6d574a17b, not
+trusted from Round 33:
+
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  already formatted.
+- Verifier's check-4 command (`pytest test_canonical_recovery_cadence.py
+  test_design_shared_surfaces.py test_entra_jit_provisioning.py
+  test_hive_unwired_retire_2309.py -q`, full paths from the repo root) —
+  **61 passed in 3.49s**.
+- `pytest packages/maistro-core/tests/goals
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/agents/test_factory.py
+  packages/maistro-core/tests/events` — 772 passed, 114 skipped (matches
+  Rounds 29–33 exactly).
+- **Full** `pytest packages/hive-conductor/backend/tests -q` — 4651 passed,
+  121 skipped in 3:45 (matches the Round 26/29/30/31/33 baseline exactly).
+  The 121 skips are all `MAISTRO_TEST_PG_DSN`-gated Postgres-oracle tests
+  (`-rs` inspection), not drill skips.
+- `scripts/check-release-consistency.py` — ok, rc=0 (shipping 0.9.0 toward
+  1.0.0); `scripts/check-backlog-consistency.py` — OK (167 items), rc=0;
+  `scripts/check-suite-inventory.py` — ok, 21 suites match, rc=0 (docs-only
+  round, no inventory delta note required);
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, quality.yml:1668, base 7eacf6eb,
+  candidate c6d574a17b) — 1217 reviewed identities = 1217 findings, rc=0, no
+  ledger amendment.
+
+**Correction to the acceptance mapping used since Round 25.** Rounds 25–33
+mapped the exit condition "backup/restore verified, including authoritative
+Conductor credential/decryption state and escrow (#88)" to *externally gated
+(requires operator infrastructure)*. That disposition is wrong for this
+environment: issue #88 was closed 2026-10-25 with an in-repo drill —
+`deploy/scripts/backup.sh` + `deploy/scripts/verify-restore.sh` — and
+`packages/hive-conductor/backend/tests/test_backup_restore_drill.py` drives
+the real script functions (sourced, not reimplemented) against real
+artifacts. First-hand this round: `age` and `age-keygen` are present at
+`/usr/bin` (no skip), and `pytest
+test_backup_restore_drill.py -q` — **14 passed in 1.79s**, including the
+#88 acceptance proofs: absent-escrow and wrong-identity failures rejected,
+corrupt components and missing state.db rejected, ciphertext-without-escrow
+rejected, the pinned `PROOF_SECRET` decrypts from the backed-up vault with
+the escrowed `admin.key`, and legitimately-absent optional stores
+(`secrets.age`, `user_credentials.enc`) pass without an escrow root. The
+drill tests are included in the 4651-passed full backend run above. The
+remaining boundary is honest: the pg_dump/WAL/Redis legs of `backup.sh`/`verify-restore.sh`
+exercise against the prod compose topology (live containers + scratch PG),
+which the sourced-function drill deliberately abstracts; the #88 decrypt-and-restore
+proof itself is fully exercised in-repo.
+
+External gates re-derived fresh at c6d574a17b, now **three**, not four:
+(1) release workflow exercise via `v*` tag push — `git tag -l 'v*'` → 0 tags,
+and tag push is prohibited to this worker; (2) clean-machine install/deploy +
+real-model Graph E2E — 0 `OPENAI*`/`ANTHROPIC*`/`LITELLM*`/`*_API_KEY`
+environment variables (re-checked `env` first-hand); (3) RC soak +
+byte-equivalent final promotion — `soak-evidence.json`/`release-evidence.json`
+absent from the tree and emitted only by `.github/workflows/soak-pressure.yml`
+and `release.yml` on GitHub runners. Overnight/soak duration is also outside
+this job's 5400s budget. All three remain unproducible in-repo without
+violating the no-GitHub-mutations prohibition or fabricating provenance.
+
+No production or test change this round (docs-only); disposition remains
+**BLOCKED** on the three external operator-evidence items. PR #2529 stays
+DRAFT.
