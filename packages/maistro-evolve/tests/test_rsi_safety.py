@@ -244,6 +244,9 @@ class TestPromotionGate:
         g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
         g.harness_params["objective_version"] = "objective-test"
         g.harness_params["evidence_cycle"] = 1
+        # SPEC-281 §2 (#104): approved candidates carry transfer evidence per
+        # scored benchmark — the promotion path consults the same gate.
+        g.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
         store.add(g)
         promoted = asyncio.run(store.promote_audited("g1", _trail()))
         assert promoted.is_active is True
@@ -415,6 +418,7 @@ class TestRollback:
         g.harness_params["eval_history"] = {"proxy_ifeval": [0.79, 0.81]}
         g.harness_params["objective_version"] = "objective-test"
         g.harness_params["evidence_cycle"] = 1
+        g.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
         store.add(g)
         asyncio.run(store.promote_audited("g1", _trail()))
         assert asyncio.run(store.rollback_audited(_trail())) is None
@@ -432,6 +436,7 @@ class TestRollback:
             g.harness_params["eval_history"] = {"proxy_ifeval": [score - 0.01, score + 0.01]}
             g.harness_params["objective_version"] = "objective-test"
             g.harness_params["evidence_cycle"] = 1
+            g.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
         store.add(old)
         store.add(new)
 
