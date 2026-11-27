@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -175,6 +176,168 @@ def test_the_real_tree_passes_its_own_guard(guard_mod):
         assert not (REPO / "CHANGELOG.md").read_text(encoding="utf-8").count(f"## [{version}]")
     else:
         assert out["version"] == version
+
+
+# --- rc -> final source-tree promotion (#89) -------------------------------
+
+
+@pytest.fixture
+def promotion_tree(release_tree):
+    """Real git objects, not mocked tree hashes or a production checkout."""
+    root = release_tree.parent
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(root), *args], text=True, stderr=subprocess.STDOUT
+        ).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Release test")
+    git("config", "user.email", "release@example.invalid")
+    (root / "runtime.py").write_text("print('candidate')\n")
+    git("add", ".")
+    git("commit", "-qm", "candidate")
+    return root, git
+
+
+def test_final_cli_accepts_identical_rc_tree_on_a_different_commit(promotion_tree, guard_mod):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    git("commit", "--allow-empty", "-qm", "promotion merge marker")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 0
+    )
+    assert "prerelease=false\n" in output.read_text()
+
+
+def test_final_cli_requires_a_same_version_rc(promotion_tree, guard_mod, capsys):
+    root, git = promotion_tree
+    git("tag", "-a", "v0.9.0-rc1", "-m", "unrelated candidate")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 1
+    )
+    assert "no release candidate" in capsys.readouterr().err
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("change", ["runtime", "configuration", "executable-bit"])
+def test_final_cli_rejects_changes_after_the_rc(promotion_tree, guard_mod, capsys, change):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    if change == "runtime":
+        (root / "runtime.py").write_text("print('unsoaked')\n")
+        git("add", "runtime.py")
+    elif change == "configuration":
+        (root / "runtime.env").write_text("WORKERS=8\n")
+        git("add", "runtime.env")
+    else:
+        git("update-index", "--chmod=+x", "runtime.py")
+    git("commit", "-qm", "unsoaked change")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    assert guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree"]) == 1
+    assert "differs from latest candidate v1.0.0-rc1" in capsys.readouterr().err
+
+
+def test_final_cli_cannot_select_an_older_matching_rc(promotion_tree, guard_mod, capsys):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc2", "-m", "older candidate")
+    git("tag", "-a", "v1.0.0", "-m", "older matching final")
+    (root / "runtime.py").write_text("print('latest candidate')\n")
+    git("add", "runtime.py")
+    git("commit", "-qm", "latest candidate")
+    git("tag", "-a", "v1.0.0-rc10", "-m", "latest candidate")
+    # Check out the final without moving/deleting any immutable tags.
+    git("switch", "--detach", "v1.0.0")
+    assert guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree"]) == 1
+    assert "differs from latest candidate v1.0.0-rc10" in capsys.readouterr().err
+
+
+def test_final_cli_rejects_a_lightweight_candidate(promotion_tree, guard_mod, capsys):
+    _, git = promotion_tree
+    git("tag", "v1.0.0-rc1")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    assert guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree"]) == 1
+    assert "must be annotated" in capsys.readouterr().err
+
+
+def test_final_cli_fails_closed_on_missing_tag(promotion_tree, guard_mod, capsys):
+    _, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    assert guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree"]) == 1
+    assert "cannot verify RC promotion" in capsys.readouterr().err
+
+
+def test_final_cli_rejects_a_checkout_other_than_the_final_tree(promotion_tree, guard_mod, capsys):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    (root / "runtime.py").write_text("print('wrong checkout')\n")
+    git("add", "runtime.py")
+    git("commit", "-qm", "wrong checkout")
+    assert guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree"]) == 1
+    assert "checkout differs from final tag" in capsys.readouterr().err
+
+
+def test_final_cli_outputs_the_adopted_rc_tag(promotion_tree, guard_mod):
+    """The workflow needs to know WHICH candidate to adopt bytes from; the
+    guard's selection is the single source of truth (#89)."""
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "older candidate")
+    git("tag", "-a", "v1.0.0-rc2", "-m", "latest candidate")
+    git("commit", "--allow-empty", "-qm", "promotion merge marker")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 0
+    )
+    assert "rc_tag=v1.0.0-rc2\n" in output.read_text()
+
+
+def test_rc_cli_writes_no_rc_tag_output(release_tree, guard_mod):
+    """A candidate builds; there is nothing to adopt."""
+    output = release_tree.parent / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0-rc1", "--verify-rc-tree", "--github-output", str(output)])
+        == 0
+    )
+    assert "rc_tag=" not in output.read_text()
+
+
+def test_failed_tree_check_writes_no_outputs(promotion_tree, guard_mod):
+    root, git = promotion_tree
+    git("tag", "-a", "v1.0.0-rc1", "-m", "candidate")
+    (root / "runtime.py").write_text("print('unsoaked')\n")
+    git("add", "runtime.py")
+    git("commit", "-qm", "unsoaked change")
+    git("tag", "-a", "v1.0.0", "-m", "final")
+    output = root / "github-output"
+    assert (
+        guard_mod.main(["--tag", "v1.0.0", "--verify-rc-tree", "--github-output", str(output)]) == 1
+    )
+    assert not output.exists()
+
+
+def test_rc_cli_needs_no_previous_candidate(release_tree, guard_mod):
+    # The first RC must build; this fixture is deliberately not a git repo.
+    assert guard_mod.main(["--tag", "v1.0.0-rc1", "--verify-rc-tree"]) == 0
+
+
+def test_shipping_workflow_enforces_rc_tree_in_its_existing_guard():
+    import yaml
+
+    workflow = yaml.safe_load((REPO / ".github/workflows/release.yml").read_text())
+    job = workflow["jobs"]["guard"]
+    guard_step = next(step for step in job["steps"] if step.get("id") == "guard")
+    assert "--verify-rc-tree" in guard_step["run"]
+    assert not guard_step.get("continue-on-error", False)
+    checkout = next(step for step in job["steps"] if "actions/checkout@" in step.get("uses", ""))
+    assert checkout["with"]["fetch-depth"] == 0
+    assert "guard" in workflow["jobs"]["wheels"]["needs"]
+    assert "guard" in workflow["jobs"]["images"]["needs"]
 
 
 # --- release notes ---------------------------------------------------------
