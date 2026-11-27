@@ -21,8 +21,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import aiosqlite
-
 from maistro.observability.metrics import (
     publish_retention_table_health,
     retention_health_probe_due,
@@ -32,6 +30,8 @@ from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgra
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    import aiosqlite
 
     from maistro.events.bus import Event
 
@@ -459,6 +459,17 @@ class SqliteEventLog:
         # `self._lock` is intentionally not held: it guards only this
         # instance, while the isolated connection serialises against every
         # writer database-wide — which is the guarantee the proof needs.
+        # Imported here, not at module scope: `aiosqlite` is core's optional
+        # `sqlite` extra, and this module sits in every server/RSI import
+        # graph (`maistro.events` re-exports `SqliteEventLog`), so a
+        # top-level import made `import maistro_server.main` — and with it
+        # the wheel-imports, image-smoke and registry gates — require the
+        # driver in environments that never open a SQLite store (#2509
+        # CI repair). The constructor's annotation stays a string under
+        # `from __future__ import annotations`, so only this runtime
+        # `aiosqlite.connect` needs the real module.
+        import aiosqlite
+
         proof_conn = await aiosqlite.connect(path)
         try:
             await proof_conn.execute("PRAGMA busy_timeout = 0")
