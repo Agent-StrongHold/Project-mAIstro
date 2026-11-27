@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
+from maistro.security.sentinel.integrity import DecisionSignature
+
 
 class Tier(StrEnum):
     OPEN = "open"
@@ -42,3 +44,4 @@ class AuthzDecision:
     within_budget: bool
     rlphd: Any | None
     reason: str
+    integrity: DecisionSignature | None = None
