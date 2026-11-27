@@ -1489,4 +1489,31 @@ and authorized. Acceptance is **BLOCKED** on external operator evidence
 (release workflow exercise, clean-machine real-model E2E, escrowed
 backup/restore, RC soak and byte-equivalent promotion, overnight operation)
 that cannot be produced from inside this repository. No production or test
-edit is justified; no test inventory delta applies. PR #2529 stays DRAFT.
+inventory delta applies. PR #2529 stays DRAFT.
+
+## Round 26 — develop-sync validation repair at 4134217158
+
+The post-merge validation battery failed at the hive-conductor backend suite:
+`test_cadence_reclaims_a_lapsed_goal_claim` raised
+`WorkspaceNotFound: 'hive-canonical-recovery'` from
+`SqliteProjectScopeStore.create_root_in`
+(`packages/maistro-core/src/maistro/projects/sqlite_scope_store.py:353`).
+Root cause: the develop sync merged M1-A1 (#2525, develop `cc6776f03f`),
+which landed the #37 Workspace-ownership fence — `create_root` now refuses to
+mint a Root for a Workspace the canonical authority does not own. The Goal
+cadence tests' `_root_project_id` helper minted a Root for
+`hive-canonical-recovery` without provisioning the Workspace, so the test
+scaffolding (not production) predated the fence.
+
+Repair: `_root_project_id` now provisions the Workspace through the canonical
+authority first (`workspace_store.create`), mirroring the same file's
+`_parked_schedule_run` helper and the canonical pattern already recorded in
+`packages/maistro-core/tests/test_container_wiring.py:_provisioned_root`.
+No production code changed; no test count changed, so
+`scripts/check-suite-inventory.py` still matches (21 suites, ok).
+
+Re-run battery, all green: `ruff check .`, `ruff format --check .`,
+`pytest packages/maistro-core/tests/goals` (182 passed, 24 skipped), full
+`pytest packages/hive-conductor/backend/tests` (4651 passed, 121 skipped).
+The Round 25 disposition is otherwise unchanged: local gates green,
+acceptance still blocked on external operator evidence.
