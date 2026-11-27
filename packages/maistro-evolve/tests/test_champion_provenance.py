@@ -113,6 +113,9 @@ class TestCycleFoldsEvidence:
                     # M4-A8/#115: this test pins evidence folding, not producer
                     # credit — keep the ledger path out of its assertions.
                     "producer_attribution": False,
+                    # #104 M4-G: mirrors EvolutionConfig's default — no
+                    # evidence target, so nothing is published.
+                    "evidence_dir": None,
                 },
             )(),
             llm_call=None,
@@ -148,6 +151,9 @@ class TestCycleFoldsEvidence:
                     # M4-A8/#115: same scoping — the unverified-evidence
                     # assertion must not depend on producer credit.
                     "producer_attribution": False,
+                    # #104 M4-G: mirrors EvolutionConfig's default — no
+                    # evidence target, so nothing is published.
+                    "evidence_dir": None,
                 },
             )(),
             llm_call=None,
