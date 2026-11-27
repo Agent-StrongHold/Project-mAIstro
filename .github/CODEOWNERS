@@ -1,10 +1,19 @@
 # Security-critical ownership map for Project-mAIstro.
 #
-# Enforcement belongs to the live GitHub ruleset (#162/#270/#317): changes
-# matching these paths must require a CODEOWNER review, stale approval must be
-# dismissed after a push, and the last author/pusher must not self-approve.
-# This file names the accountable human authority; it is not, by itself, the
-# merge-boundary enforcement mechanism.
+# This file names the accountable human authority for each surface below. It
+# does NOT, by itself, enforce anything: GitHub only enforces code-owner review
+# when the live ruleset sets `require_code_owner_review`, and the recorded
+# read-back in `.github/live-merge-boundary.json` shows that flag is `false`
+# on both the `develop` and `main` rulesets, as is `require_last_push_approval`,
+# while `develop` requires zero approving reviews. See "Residual risk: no
+# reviewer separation is enforced (#85)" in docs/ci/BRANCH-PROTECTION.md.
+#
+# Consequence, stated plainly: a PR touching any path below can be authored and
+# merged by the same account while satisfying GitHub completely. Turning that
+# separation on is a live-settings change owned by #564/#85 and must not be
+# applied blindly — it can deadlock the autonomous queue, which relies on
+# `develop`'s zero-approval posture and the admin bypass. Until then, treat these
+# entries as review routing, not as a merge gate.
 
 # Repository governance and CI oracles
 /.github/ @BlakeMatthews-dev

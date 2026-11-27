@@ -526,6 +526,13 @@ def _challenger(genome_id: str, scores: dict[str, float]) -> PipelineGenome:
     challenger.harness_params["eval_samples"] = dict.fromkeys(scores, 2)
     challenger.harness_params["objective_version"] = "objective-test"
     challenger.harness_params["evidence_cycle"] = 3
+    # #104/SPEC-281 §2 adds transfer evidence to that contract: approved
+    # promotion candidates carry a transfer sample per scored benchmark
+    # (stale acceptable, absent not), and the promotion path now consults
+    # the same composed gate as fitness.
+    challenger.harness_params["transfer_by_benchmark"] = {
+        bench: {"transfer": 0.1} for bench in scores
+    }
     return challenger
 
 

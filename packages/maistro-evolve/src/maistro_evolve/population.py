@@ -16,7 +16,7 @@ from .archive import (
     resolve_lineage,
 )
 from .audit import GenomeAuditTrail
-from .fitness import _check_hard_gate
+from .fitness import _gate_failures
 from .promotion import (
     PromotionPolicy,
     PromotionRecord,
@@ -249,7 +249,8 @@ class PopulationStore:
            this) is never promoted, no matter how high its fitness/tournament
            score. Winning sandbox evaluation is necessary but not sufficient.
         2. a genome whose *measured capability evidence* fails the correctness
-           hard gates (``fitness._check_hard_gate``) is never promoted either —
+           hard gates (``fitness._gate_failures`` — per-benchmark thresholds
+           plus the transfer-inversion rules) is never promoted either —
            this is #853's do-nothing guard. A deliberately no-op /
            NotImplementedError-flavoured candidate has no (or failing) eval
            scores; it cannot buy promotion with missing metrics, padded cost/
@@ -274,8 +275,8 @@ class PopulationStore:
                 "only qualify a genome for sandbox evaluation, not live traffic"
             )
         if require_capability:
-            capability_ok, gate_failures = _check_hard_gate(genome)
-            if not capability_ok:
+            gate_failures = _gate_failures(genome)
+            if gate_failures:
                 raise PermissionError(
                     f"genome {genome_id} cannot be promoted: measured "
                     f"capability evidence fails the correctness gates: "
