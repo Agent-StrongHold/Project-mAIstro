@@ -153,10 +153,13 @@ jobs:
       # A different base can change test outcomes even at the same source SHA.
       # Never restore across either dimension.
       - name: Restore mutation checkpoints
-        uses: actions/cache@v6
+        id: checkpoint-cache
+        uses: actions/cache/restore@v6
         with:
           path: mutation-checkpoints
-          key: mutation-checkpoints-v2-${{ runner.os }}-${{ github.sha }}-${{ needs.nightly-plan.outputs.ratchet_base }}-${{ matrix.packet }}
+          key: mutation-checkpoints-v3-${{ runner.os }}-${{ github.sha }}-${{ needs.nightly-plan.outputs.ratchet_base }}-${{ matrix.packet }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mutation-checkpoints-v3-${{ runner.os }}-${{ github.sha }}-${{ needs.nightly-plan.outputs.ratchet_base }}-${{ matrix.packet }}-
 
       - name: Measure this packet
         run: |
@@ -192,6 +195,7 @@ jobs:
             --uploader none
 
       - name: Fold fresh checkpoints into the uploaded and cached tree
+        if: always()
         run: |
           set -euo pipefail
           # execute_source() writes new checkpoints, reports, and raw rows under
@@ -202,22 +206,38 @@ jobs:
             cp -r mutation-checkpoints-new/. mutation-checkpoints/
           fi
 
+      # A failed source must not erase earlier completed sources in this packet.
+      # Immutable attempt-specific cache keys permit recovery from a failed run.
+      - name: Save completed source checkpoints
+        if: always() && steps.checkpoint-cache.outcome == 'success' && steps.checkpoint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: mutation-checkpoints
+          key: ${{ steps.checkpoint-cache.outputs.cache-primary-key }}
+
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: mutation-packet-${{ matrix.packet }}
+          overwrite: true
           path: |
             packet-artifacts/
             mutation-checkpoints/
+            mutation-targets-pending.tsv
+            mutation-reused.jsonl
+            mutation-telemetry.jsonl
           retention-days: 30
 
   nightly-publish:
     name: Publish mutation health
     needs: [nightly-plan, nightly-shard]
+    if: always() && needs.nightly-plan.result == 'success' && needs.nightly-shard.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       RATCHET_BASE_REV: ${{ needs.nightly-plan.outputs.ratchet_base }}
       MEASURED_SHA: ${{ github.sha }}
+      SHARD_RESULT: ${{ needs.nightly-shard.result }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -285,8 +305,8 @@ jobs:
                         "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"]}
           with open("publish/mutation-provenance.json", "w") as out:
               json.dump(provenance, out, indent=2)
-          if not report["complete"] or not rows:
-              raise SystemExit("Incomplete mutation sweep")
+          if os.environ["SHARD_RESULT"] != "success" or not report["complete"] or not rows:
+              raise SystemExit("Incomplete mutation sweep; retain diagnostic evidence only")
           if any(row.get("verified_commit") != commit or row.get("tool_fingerprint") != fingerprint
                  for row in rows):
               raise SystemExit("Mutation checkpoint candidate/base provenance mismatch")
