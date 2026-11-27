@@ -54,7 +54,7 @@ from maistro.runs.pg_store import PgRunStore
 from maistro.runs.service import RunExecutionService
 from maistro.runtime import PythonExecutionRuntime
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
-from maistro.testing.postgres import postgres_dsn
+from maistro.testing.postgres import postgres_dsn, provision_workspace
 
 #: The owning worker, as its own process. It writes its progress into a
 #: directory the parent watches, so the handshake is a filesystem fact rather
@@ -223,6 +223,9 @@ async def test_remote_owner_cannot_publish_success_after_the_canonical_fence(
 
     workspace = "workspace-1242-two-workers"
     projects = PgProjectScopeStore(pg_pool)
+    # The admission fence (#37) admits no Root Project for a Workspace id
+    # nothing canonical owns; provision it the way fixtures do elsewhere.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
@@ -317,6 +320,9 @@ async def test_a_killed_owner_leaves_the_receipt_pending_until_reclaim_settles_i
 
     workspace = "workspace-1242-killed-owner"
     projects = PgProjectScopeStore(pg_pool)
+    # The admission fence (#37) admits no Root Project for a Workspace id
+    # nothing canonical owns; provision it the way fixtures do elsewhere.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
@@ -395,6 +401,9 @@ async def test_the_fence_is_durable_for_a_worker_that_restarts_afterwards(
 
     workspace = "workspace-1242-restart"
     projects = PgProjectScopeStore(pg_pool)
+    # The admission fence (#37) admits no Root Project for a Workspace id
+    # nothing canonical owns; provision it the way fixtures do elsewhere.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Durable"

@@ -319,10 +319,24 @@ class InMemoryProjectScopeStore:
         self._owns_runs = owns_runs
 
     async def create_root(self, workspace_id: str) -> Project:
-        """Create or return the Workspace's single Root Project."""
+        """Create or return the Workspace's single Root Project.
+
+        When a Workspace store is bound, the Workspace must exist in it: a
+        Root Project is scope *ownership*, and minting one for an id no
+        canonical Workspace owns is exactly the orphan-admission hole #37
+        closed. An unbound store — bare test wiring, a store not yet paired
+        with its Workspace authority — keeps the pre-#37 behaviour, because
+        there is no authority to ask; the durable stores enforce the same
+        rule against their own tables regardless of binding.
+        """
 
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        if self._workspace_store is not None:
+            from maistro.workspaces.model import WorkspaceNotFound
+
+            if await self._workspace_store.get(workspace_id) is None:
+                raise WorkspaceNotFound(workspace_id)
         existing_id = self._root_by_workspace.get(workspace_id)
         if existing_id is not None:
             return self._projects[existing_id].model_copy(deep=True)

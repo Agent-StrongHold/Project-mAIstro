@@ -76,6 +76,8 @@ async def _kind(pool, workspace_id: str) -> str | None:
     ],
 )
 async def test_a_root_project_round_trips_across_pool_kinds(writer, reader) -> None:
+    from maistro.testing.postgres import provision_workspace
+
     workspace_id = f"ws-{writer.__name__}-{reader.__name__}"
     write_pool = await writer()
     read_pool = await reader()
@@ -84,6 +86,11 @@ async def test_a_root_project_round_trips_across_pool_kinds(writer, reader) -> N
             await conn.execute(
                 "DELETE FROM canonical_projects WHERE workspace_id = $1", workspace_id
             )
+        # Provisioned through the canonical authority (#37): the scope store
+        # verifies Workspace existence before minting a Root. The workspace
+        # row is durable and this id is deterministic, so the idempotent
+        # provisioning is what lets this test re-run.
+        await provision_workspace(write_pool, workspace_id)
         written = await _store(write_pool).create_root(workspace_id)
 
         # The column, before anything reads it back through a model: a jsonb

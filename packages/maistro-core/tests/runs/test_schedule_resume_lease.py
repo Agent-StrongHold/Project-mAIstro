@@ -94,6 +94,10 @@ async def _paused_run(container: Container, *, workspace: str) -> tuple[str, Any
     exercises the actual `execute()` -> pause boundary the resume executor
     reads back.
     """
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     graph = Graph(
         workspace_id=workspace,
