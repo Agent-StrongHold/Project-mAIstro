@@ -1,0 +1,206 @@
+{
+  "read_at": "2026-11-25T07:35:10Z",
+  "repo": "Agent-StrongHold/Project-mAIstro",
+  "default_branch": "develop",
+  "rulesets": {
+    "main": {
+      "id": 21701487,
+      "name": "Main merge",
+      "enforcement": "active",
+      "target": "refs/heads/main",
+      "required_status_checks": {
+        "strict": true,
+        "contexts": [
+          "Analyze (actions)",
+          "Analyze (javascript-typescript)",
+          "Analyze (python)",
+          "Container scan + SBOM + cosign",
+          "Coverage gate (publish-set floor + diff coverage)",
+          "Gate C — canonical clean install",
+          "Quality gate (Pillars 1–4, 7, 8)",
+          "SAST (bandit + semgrep + gitleaks)",
+          "Supply chain (pip-audit)",
+          "Validate ADR/spec front-matter",
+          "autonomous-merge-admissibility",
+          "block",
+          "coverage (MinIO)",
+          "coverage (PostgreSQL)",
+          "coverage (no services)",
+          "docker-build",
+          "durable-events",
+          "exact-debt-ledger",
+          "formal-conformance",
+          "gates-ran",
+          "hive-conductor-e2e",
+          "hive-conductor-e2e-ui",
+          "lint-and-type-check",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)",
+          "security",
+          "strike-ladder",
+          "test",
+          "wheel-imports",
+          "workflow-lint"
+        ]
+      },
+      "required_approving_review_count": 1,
+      "dismiss_stale_reviews_on_push": true,
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": true,
+      "allowed_merge_methods": [
+        "merge",
+        "rebase",
+        "squash"
+      ],
+      "rules": [
+        "code_quality",
+        "copilot_code_review",
+        "creation",
+        "deletion",
+        "non_fast_forward"
+      ],
+      "merge_queue": null,
+      "bypass": [
+        {
+          "actor_type": "OrganizationAdmin",
+          "actor_id": null,
+          "bypass_mode": "pull_request"
+        },
+        {
+          "actor_type": "RepositoryRole",
+          "actor_id": 5,
+          "bypass_mode": "pull_request"
+        }
+      ]
+    },
+    "develop": {
+      "id": 21421373,
+      "name": "Pr merge",
+      "enforcement": "active",
+      "target": "~DEFAULT_BRANCH",
+      "required_status_checks": {
+        "strict": true,
+        "contexts": [
+          "Coverage gate (publish-set floor + diff coverage)",
+          "Gate C — canonical clean install",
+          "Quality gate (Pillars 1–4, 7, 8)",
+          "SAST (bandit + semgrep + gitleaks)",
+          "Supply chain (pip-audit)",
+          "Validate ADR/spec front-matter",
+          "block",
+          "coverage (MinIO)",
+          "coverage (PostgreSQL)",
+          "coverage (no services)",
+          "docker-build",
+          "durable-events",
+          "exact-debt-ledger",
+          "formal-conformance",
+          "hive-conductor-e2e",
+          "hive-conductor-e2e-ui",
+          "lint-and-type-check",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)",
+          "security",
+          "strike-ladder",
+          "test",
+          "wheel-imports",
+          "workflow-lint"
+        ]
+      },
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": false,
+      "require_code_owner_review": false,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": true,
+      "allowed_merge_methods": [
+        "rebase",
+        "squash"
+      ],
+      "rules": [
+        "code_quality",
+        "copilot_code_review",
+        "creation",
+        "deletion",
+        "merge_queue",
+        "non_fast_forward",
+        "required_linear_history"
+      ],
+      "merge_queue": {
+        "merge_method": "SQUASH",
+        "max_entries_to_build": 10,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 15,
+        "min_entries_to_merge_wait_minutes": 5,
+        "grouping_strategy": "HEADGREEN",
+        "check_response_timeout_minutes": 90
+      },
+      "bypass": [
+        {
+          "actor_type": "OrganizationAdmin",
+          "actor_id": null,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "RepositoryRole",
+          "actor_id": 4,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "RepositoryRole",
+          "actor_id": 5,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "Integration",
+          "actor_id": 29110,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "Integration",
+          "actor_id": 1210556,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "Integration",
+          "actor_id": 4229212,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "Integration",
+          "actor_id": 4518051,
+          "bypass_mode": "always"
+        },
+        {
+          "actor_type": "Integration",
+          "actor_id": 4756313,
+          "bypass_mode": "always"
+        }
+      ]
+    }
+  },
+  "classic_protection": {
+    "develop": {
+      "required_status_checks": {
+        "strict": null,
+        "contexts": []
+      },
+      "required_pull_request_reviews": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews": true,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false
+      },
+      "enforce_admins": false,
+      "required_linear_history": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false,
+      "required_conversation_resolution": true,
+      "block_creations": false,
+      "lock_branch": false
+    },
+    "main": null
+  }
+}

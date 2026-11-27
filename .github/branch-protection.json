@@ -175,6 +175,44 @@
       }
     }
   },
+  "known_live_drift": {
+    "develop: bypass actors are ['OrganizationAdmin:always', 'RepositoryRole:5:always'] in the policy and ['Integration:1210556:always', 'Integration:29110:always', 'Integration:4229212:always', 'Integration:4518051:always', 'Integration:4756313:always', 'OrganizationAdmin:always', 'RepositoryRole:4:always', 'RepositoryRole:5:always'] live": {
+      "reason": "The live develop ruleset grants five GitHub App integrations an always-bypass and a maintain-role actor (RepositoryRole 4) that the declared policy does not name. Recorded rather than reconciled: an integration that still publishes required statuses cannot simply be dropped from the ruleset without risking the queue, and adding it to the policy would bless an actor nobody reviewed here. Confirm which apps still need bypass and either name them in the policy or remove them from the ruleset (#564).",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: classic branch protection is active alongside the ruleset and differs from the policy: block_creations is True in the policy and False live": {
+      "reason": "GitHub applies classic protection on develop alongside the ruleset, and the classic surface does not block branch/tag creation while the ruleset's `creation` rule does. The effective boundary is the intersection, so the stricter ruleset rule holds today - but a second surface with different flags is exactly where a later change quietly stops meaning what the policy says. Aligning or retiring the classic surface is a live-settings change owned by #564.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: dismiss_stale_reviews is True in the policy and False live": {
+      "reason": "The policy and the classic develop protection both dismiss stale reviews; the live ruleset does not, so a reader of the ruleset alone concludes approvals survive a push that replaces the diff. Classic protection still enforces dismissal on develop today, which is why this is recorded and not an outage - but the declared mechanism (ADR-095 rulesets) does not do what the policy declares. Aligning the ruleset is a live-settings change owned by #564.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: merge queue differs: check_response_timeout_minutes is 60 in the policy and 90 live; grouping_strategy is 'ALLGREEN' in the policy and 'HEADGREEN' live; max_entries_to_build is 3 in the policy and 10 live; max_entries_to_merge is 3 in the policy and 15 live; min_entries_to_merge_wait_minutes is 2 in the policy and 5 live": {
+      "reason": ".github/merge-queue.json records the reviewed batching posture (ALLGREEN, max_entries_to_build 3, max_entries_to_merge 3, 2-minute group wait, 60-minute timeout; #1438/#1477) and scripts/check-required-checks.py fails closed on anything wider. The live queue is wider on all five of those parameters (HEADGREEN, 10, 15, 5 minutes, 90 minutes). Recorded so the reviewed posture and the enforced one cannot be mistaken for each other: widening the live queue past the reviewed cap without editing the gate is the exact failure #1438 closed, and reconciling the two is the merge-policy program's (#160/#162) decision, not this file's.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: required checks the live ruleset requires but the policy does not declare: docker-build, durable-events, hive-conductor-e2e, hive-conductor-e2e-ui, object storage (MinIO), postgres (pg17), postgres (pg18), strike-ladder, wheel-imports": {
+      "reason": "The live develop ruleset requires nine checks the policy lists as advisory, so they gate merges although the merge contract does not declare them. Stricter than declared is still drift: a check required by accident can be removed by accident, and the advisory reasons in this file then describe a contract GitHub is not enforcing. #564 owns reconciling the declared set with the live set; do not edit either side just to make this line vanish.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "develop: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), cross-product-parity, gates-ran, integration-scope, sandbox-conformance": {
+      "reason": "ENFORCEMENT GAP: six checks the policy declares required (including the Ruleset-only gates-ran) are not required by the live develop ruleset, so they do not block a merge to develop today. This is the #564 declared-vs-live problem on one line. Making them live is a GitHub settings change that must not be applied blindly (it can freeze the autonomous queue), and downgrading the policy to match live would weaken the contract instead of closing the gap. Reconcile deliberately, under #564.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "main: required checks the live ruleset requires but the policy does not declare: autonomous-merge-admissibility": {
+      "reason": "The live main ruleset requires the autonomous-merge admissibility check while the declared policy does not list it among main's required contexts: its producer is a pull_request_target workflow, outside the pull_request job graph this gate walks, so declaring it as an ordinary context would fail the offline audit that every required context has a job. It is recorded instead, together with the fact below that no producer currently exists.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "main: required checks the policy declares but the live ruleset does not require: Compliance registry, JS supply chain (npm audit + GuardDog + policy gate), cross-product-parity, docker-rebuild-compare, hive-conductor-compose-durability, sandbox-conformance": {
+      "reason": "ENFORCEMENT GAP on the release tier: six checks the policy declares required are not required by the live main ruleset, so they do not block a promotion PR to main. A release branch whose documented contract and enforced boundary disagree is the state issue #85 was filed about. Reconcile under #564; do not quietly re-declare the smaller set as the contract.",
+      "owner": "BlakeMatthews-dev"
+    },
+    "main: the live ruleset requires 'autonomous-merge-admissibility', which no workflow in this repository produces": {
+      "reason": "PERMANENT-EXPECTED RISK: the producer .github/workflows/autonomous-merge.yml was deleted in 14a67ddf5a ('ci: disable autonomous merge safety gate for now', 2026-08-28) and has not been restored, while the live main ruleset still requires its check name. Until a producer exists, a PR targeting main waits on a check that never reports - the failure this gate exists to prevent. Re-enabling the trusted gate or removing the requirement are both trusted-surface decisions (AUTONOMOUS-MERGES.md: the introducing PR requires a human merge), so it is recorded with an owner rather than resolved by a gate.",
+      "owner": "BlakeMatthews-dev"
+    }
+  },
   "advisory": {
     "$comment": [
       "Checks deliberately non-required must be named here with a reason."
