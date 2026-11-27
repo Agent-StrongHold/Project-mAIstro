@@ -1646,3 +1646,54 @@ already landed and every locally reachable gate is green first-hand at this
 head. Disposition remains **BLOCKED** on external operator evidence (release
 workflow exercise, real-model E2E, RC soak + byte-equivalent promotion
 evidence, overnight operation). PR #2529 stays DRAFT.
+
+## Round 30 — develop sync 7eacf6eb merged into auto-7; full battery re-proven
+
+Develop advanced one commit past the previous base (`cc6776f03f` →
+`7eacf6eb`, M1-E1 #2544: the durable event cursor now crosses a hole only on
+terminal-absence evidence from `EventLogStore.prove_holes_absent`, replacing
+the elapsed-time grace). Merged `7eacf6eb` into `auto-7`: git's `ort`
+strategy auto-merged the one overlapping file
+(`packages/maistro-core/src/maistro/container.py` — our #806
+`goal_reconciliation_admitter` composition beside the develop-side
+hole-proof cursor change; both sides' semantics are independent and the
+merged diff shows both intact). No conflicts; no resolutions needed.
+
+Re-executed first-hand at the merged head:
+
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  clean.
+- Verifier's exact check-4 command (`pytest
+  test_canonical_recovery_cadence.py test_design_shared_surfaces.py
+  test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q -x`) —
+  61 passed, 0 failed; the recorded Round-25-era failure does not reproduce.
+- `pytest packages/maistro-core/tests/events` — 445 passed, 90 skipped
+  (includes #2544's hole-proof and PG-container oracle tests).
+- `pytest packages/maistro-core/tests/goals` — 182 passed, 24 skipped.
+- `pytest packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/agents/test_factory.py` — 145 passed.
+- Full `pytest packages/hive-conductor/backend/tests` — 4651 passed,
+  121 skipped (identical counts to Round 29; the merge added no tests).
+- `scripts/check-suite-inventory.py` — ok: 21 suites match the recorded
+  inventory (develop's test additions arrived with their own recorded
+  counts and the 2509-durable-cursor-hole-proof delta note; this round adds
+  no tests, so no new inventory note applies).
+- `scripts/check-release-consistency.py` — ok (released none, shipping
+  0.9.0 toward 1.0.0).
+- `scripts/check-backlog-consistency.py` — OK (167 items).
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, quality.yml:1668) — 1217 reviewed
+  identities = 1217 findings against base `7eacf6eb`; no ledger amendment.
+
+External-evidence spot-checks re-derived fresh at the merged head, not
+trusted from Round 29: `git tag -l 'v*'` → 0 tags;
+`soak-evidence.json`/`release-evidence.json` absent from the tree and only
+emitted by release.yml (lines 312/330); no model credentials in the
+environment (0 `OPENAI*`/`ANTHROPIC*`/`LITELLM*` vars, 0 `*_API_KEY`). The
+four external exit conditions (release workflow exercise, clean-machine
+real-model E2E, RC soak + byte-equivalent promotion evidence, overnight
+operation) remain unproducible in-repo.
+
+No production or test change this round: the merge keeps every locally
+reachable gate green and the milestone disposition is unchanged —
+**BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
