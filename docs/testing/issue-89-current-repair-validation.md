@@ -1,6 +1,105 @@
 # Issue #89 current repair validation
 
-## Current round: supplied head `87ce1ab3dee2`, base `80242f28521b`
+## Current round: supplied head `a68a3a1b2369`, base `80242f28521b`
+
+Job `2f3dd344705a44c18915548dfb7ced54`, branch/worktree `auto-89`.
+The initial worktree was clean. Preserved all prior implementation, tests,
+and reports. Frozen scope: issue #89, supplied dispatch/PR evidence, named
+Vulture/front-matter gates, existing coverage repair and adjacent release
+checks. No `check-*.log` files were supplied in this job directory; the logs
+below were generated here. No remote enumeration or GitHub mutations occurred.
+
+**Diagnosis:** earlier rounds fixed the coverage failure, but reported BLOCKED
+because actual RC/soak/promotion evidence was absent. A queued front-matter
+check is not a reproduced failure. This round independently tested that
+assessment; no evidence justified a source, gate, or ledger repair.
+
+### Fresh execution
+
+All commands use `uv run` (dependency setup: `uv sync --locked --extra dev`).
+Logs reside in `/home/dev/maistro/jobs/2f3dd344705a44c18915548dfb7ced54`.
+
+- Named exact-debt gate: `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  — PASS, 1219 reviewed identities / 1219 findings, unclassified 0,
+  never_allowlist 0 (`check-vulture.log`). No ledger amendment warranted.
+- All seven validation steps of `.github/workflows/registry.yml` — PASS
+  (`check-registry.log`):
+  - `uv run pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py packages/maistro-registry/tests --confcutdir=tests/tools -p no:cacheprovider -q`
+    — 194 passed.
+  - `uv run python tools/lint_lifecycle.py` — baseline 0, clean.
+  - `uv run python -m maistro_registry.cli lint . --strict` — 447 files,
+    0 errors/warnings, 199 existing test-evidence debts.
+  - `RATCHET_BASE_REV=80242f28521bba184f4d5d62cda972c1c8928f36 uv run python scripts/check-citation-status-provenance.py`
+    — 0 exceptions.
+  - `uv run python scripts/check-adr-index.py` — consistent.
+  - `uv run python scripts/generate-spec-ac-defined-index.py` and
+    `git diff --exit-code docs/specs/README.md` — 57 specs, no diff.
+  - `uv run python scripts/check-adr-status-language.py` — 0 contradictions.
+- `COVERAGE_FILE=<job>/release.coverage uv run coverage run --branch --source=scripts -m pytest tests/test_promote_release.py tests/test_release_guard.py tests/test_check_release_consistency.py tests/test_release_publish_metadata.py tests/test_soak_compose_pressure.py tests/release/ tests/test_verify_wheel_imports.py tests/test_check_license_inventory.py tests/test_check_compliance.py -x -q`
+  — **703 passed**. With the same coverage file,
+  `uv run coverage xml -o <job>/release-coverage.xml`, then
+  `uv run python scripts/check-diff-coverage.py <job>/release-coverage.xml --base 80242f28521bba184f4d5d62cda972c1c8928f36`
+  — PASS, both changed measured production files meet 90% lines / 80% arcs
+  (`check-release-coverage.log`). The full combined hosted publish-set coverage
+  floor is **UNVERIFIED**; this focused producer proves the diff portion only.
+- `uv run ruff check .`, `uv run ruff format --check .` — PASS, 3682 files.
+  `uv run python scripts/check-suite-inventory.py` — PASS, 21 suites,
+  37257 unique identities / 0 duplicates. No tests added; inventory delta zero.
+  Existing +20 coverage-repair inventory note remains accurate.
+  `uv run python scripts/check-release-consistency.py`,
+  `uv run python scripts/check-workflow-inventory.py`, and
+  `uv run python scripts/check-workflow-write-safety.py` — PASS, 33 workflows
+  (`check-static.log`).
+- `uv run pytest tests/test_check_required_checks.py tests/test_mutation_targets.py tests/test_check_diff_coverage.py -x -q`
+  — 141 passed; `git diff --check` — PASS (`check-adjacent.log`).
+- `uv run python scripts/check-doc-links.py` — PASS, 3607 Markdown files,
+  0 broken relative links; report diff reviewed and `git diff --check` clean
+  (`check-report.log`).
+- Byte-check mutation: the first process-local probe incorrectly patched a
+  module replaced by fixture setup, so its wrapper failed (pytest passed).
+  Retained `check-byte-verification-mutation.log`; this was a probe error, not
+  a product failure. Corrected probe patches the live `promote_mod` fixture in
+  `pytest_runtest_call`, disabling only `verify_dist`. The existing tampered-byte
+  regression then fails at `tests/test_promote_release.py:509` (`assert 0 == 1`);
+  wrapper requires pytest exit 1 and passes
+  (`check-byte-verification-mutation-corrected.log`). No tracked mutation.
+
+### Acceptance and blocking handoff
+
+Read accepted ADR-073126-c4e1, ADR-095, and ADR-097. Reconciliation: the issue
+requires an actual release, while the accepted ADR reserves publication to
+protected, tag-triggered `release.yml` with human approval. No local publisher,
+new authorization path, or execution-model change is an acceptable substitute.
+
+| Criterion | Executed local evidence | Remaining acceptance |
+| --- | --- | --- |
+| RC artifacts built only from candidate commit | Candidate record CLI test records real git identity and file hashes; workflow RC-only wheel/image branches checked; 703 tests pass | Hosted candidate build UNVERIFIED |
+| Clean install, real-model execution, security hot path, backup/restore | Pinned required-check tests and missing/failing-check rejection tests pass against production validator | Actual functional soak UNVERIFIED |
+| Exact-RC sustained multi-replica workload with crash/restart, fencing, pressure, duplicate detection (#860) | `multi_replica_soak` is mandatory in `REQUIRED_SOAK_CHECKS`; missing-soak CLI test passes | Actual workload and measured observations UNVERIFIED |
+| Invariant-invalidating findings filed/reclassified before promotion | Production validator and CLI reject unrouted findings; tests pass | Real routing and issue contents UNVERIFIED |
+| Code/runtime-config change requires new RC and applicable soak | Real temporary-git tests reject tracked content/config/mode changes and older matching RC selection | Deployed/external config equivalence and replacement soak UNVERIFIED |
+| Final tree/bytes equivalent to soaked RC | Tree-identity and real-file hash tests pass; disabled byte-check mutant killed; workflow final builds excluded | Actual final/RC artifact pair and registry digest equality UNVERIFIED |
+| External package/image/signature/install verification succeeds | Adjacent release tests pass; clean-install/sign/verify workflow steps inspected | Actual independent external consumer verification UNVERIFIED |
+| Machine-readable soak tied to exact artifact/config | Stale wheel/image binding and missing-config tests pass; workflow evidence staging inspected | Compatible real evidence production/transport and deployed config binding UNVERIFIED |
+
+**BLOCKED, not integration approval.** The concrete unresolved integration
+contract remains `scripts/promote_release.py:44-57`: promotion requires schema-1
+`soak-evidence` on the selected successful RC run, not #860's native boolean
+record. `cmd_adopt_digests` downloads that artifact (`:578-583`); the inspected
+release workflow uploads its own soak artifact on finals only (`:952-960`).
+No compatible post-RC producer/transport or real soak is proven by injected
+GitHub unit-test seams. Do not weaken the contract or fabricate a pass record.
+
+Next owner: release/soak maintainers must supply compatible evidence for the
+exact RC, run the functional and sustained workloads, route findings, promote
+through the protected pipeline, and independently verify external artifacts.
+Trusted publishing, environment approval and registry permissions remain
+UNVERIFIED. Repeating these local checks cannot supply those observations.
+Only this existing report changed; source, tests, ledgers and grants untouched.
+Progress: checked 1 issue, done 1 validation/handoff, skipped 0, errors 1
+(corrected local probe), next: release/soak owner action. No push or closure.
+
+## Previous round: supplied head `87ce1ab3dee2`, base `80242f28521b`
 
 Job `7be5ec4cd6624a7d9fd21ef99b368df0`; assigned worktree and branch
 `auto-89`. Initial status and diff were clean. The prior coverage repair at
