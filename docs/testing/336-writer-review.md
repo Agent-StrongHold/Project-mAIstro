@@ -407,3 +407,83 @@ Re-validation at this head (nothing taken on trust from prior rounds):
 
 No ledger/grant file was edited in this round; no closure keywords added;
 no remote mutation performed.
+
+## Round: second develop-sync (cc6776f03f) + DevSkim salvage (2026-11-27)
+
+Incoming state: HEAD `10bfbe389c5dad368318eb02e442eae0142b9e39` (the
+previous round's verified tip), with one uncommitted edit left in the
+tree:
+
+- `packages/hive-conductor/frontend/playwright.permissions.config.ts`:
+  a canonical-case `// DevSkim: ignore DS162092 -- test-only loopback
+  server command.` comment added directly above the `webServer.command:`
+  line. Backed up verbatim to
+  `/home/dev/Git/wt/incoming-336-devskim.patch` before any tree change.
+
+Salvage verdict: **kept and committed** as `f0c6148a06` (preservation
+rule). Comment-only, no behavior change; the file's two pre-existing
+suppressions use lowercase `devskim:` while every other suppression in
+the tree uses the documented capitalized `DevSkim:` spelling, so the
+edit aligns the flagged `command:` line with the convention. The same
+caveat as the prior round applies: no local DevSkim run could confirm a
+live finding on that line (the CLI cannot resolve a .NET runtime here),
+so the edit is convention-alignment, not evidence-driven.
+
+Develop-sync conflict resolution (the block named by this round's
+brief): develop had advanced from the previously merged `618954f052` to
+`cc6776f03f` (M1-A1 #2525, M4 #2532, M3-A7 #2536; 140 files). Only two
+files changed on both sides — `.github/workflows/quality.yml` and
+`tests/fixtures/ci_quality_obligations.json` — and both auto-merged in
+disjoint regions (`git merge` exit 0, no conflict markers): our
+"Conductor API/UI permission matrix" step at quality.yml:1150 plus their
+`coverage-postgres` `timeout-minutes: 40` and three PG working-log
+suite legs. Post-merge audits, none taken on trust:
+
+- `git merge-base HEAD origin/develop` == `cc6776f03f` exactly — the
+  PR no longer reports conflicting against the develop tip;
+- `git diff --numstat origin/develop -- quality/` shows only the two
+  intentional branch deltas (`frontend-typed-client-baseline.json`,
+  `shipped-surface-truth.json`); `durable-table-retention.json` arrived
+  cleanly from theirs with no row loss;
+- `tests/fixtures/ci_quality_obligations.json` step/job SHA pins remain
+  valid against the merged workflow: `uv run pytest
+  tests/test_ci_quality_split.py -q` -> **96 passed**;
+- `uv run pytest tests/test_devskim_scan_scope.py -q` -> **22 passed**.
+
+Re-validation at the merged head (nothing taken on trust):
+
+- `uv sync --locked --extra dev`, `uv run ruff check .` -> all checks
+  passed; `ruff format --check .` -> 3730 files clean;
+- full backend suite (develop changed its `conftest.py` and
+  `workspace_authority.py`, so a rerun was mandatory):
+  `uv run pytest packages/hive-conductor/backend/tests -q` ->
+  **4612 passed, 120 skipped** (3 new tests from develop, consistent);
+- `scripts/check-conductor-permission-matrix.py` -> OK (51 API
+  entries, 23 UI mutations); `check_enumerations.py` -> no new gaps;
+  `check-frontend-typed-client.py` -> none new; `check-shipped-surface-truth.py`
+  -> complete; `check-suite-inventory.py --suite
+  packages/hive-conductor/backend/tests` -> matches recorded inventory;
+  `tests/test_check_conductor_permission_matrix.py` -> **4 passed**.
+- coverage-gate re-proof at the NEW diff base `cc6776f03f` (develop's
+  conftest/workspace-authority changes feed the producers, so the prior
+  round's proof alone would have been stale): producer A
+  `coverage run --branch --source=packages/hive-conductor/backend -m
+  pytest packages/hive-conductor/backend/tests --timeout=30 -q` ->
+  4612 passed/120 skipped; producer B `coverage run --append --branch
+  --source=scripts -m pytest
+  tests/test_check_conductor_permission_matrix.py --timeout=30 -q` ->
+  4 passed (the scripts diff file's sole exerciser; `tests/`-tree
+  changed files are exempt by declaration); `coverage xml` then
+  `scripts/check-diff-coverage.py coverage.xml --base cc6776f03f` ->
+  **"ok: every measured file this change touches is at or above 90%
+  lines / 80% branch arcs", exit 0**. The changed-Python set vs the new
+  base is the same 7 files as the previously proven round (the merge
+  overlap was YAML/JSON only), and publish-set code is byte-identical
+  to the develop tip, so the 87% aggregate floor is governed by
+  develop's own green run. The venv was re-synced to the lockfile
+  afterwards (the hive-conductor requirements install pins
+  structlog 25.5.0 exactly as CI does; restored to 26.1.0).
+
+No tests were added or removed by this round, so no inventory delta is
+owed. No ledger/grant file was edited; no closure keywords added; no
+remote mutation performed.
