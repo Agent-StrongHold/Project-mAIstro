@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -28,6 +29,8 @@ from maistro.observability.metrics import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import aiosqlite
 
     from maistro.events.bus import Event
@@ -104,6 +107,20 @@ class EventLogStore(Protocol):
 
     async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
         """Durably acknowledge an event, never moving a cursor backwards."""
+        ...
+
+    async def prove_holes_absent(self, hole_ids: Sequence[int]) -> frozenset[int]:
+        """Prove which hole ids can never become visible again, durably.
+
+        A hole id is *terminally absent* when database evidence — not elapsed
+        time — shows the append that allocated it has definitively ended
+        without committing: no live transaction can still make the id
+        visible, the id is not readable now, and the id allocator never
+        reuses an id. A durable consumer may advance its cursor past such an
+        id and no other; an id whose append could still commit (or whose
+        absence the store cannot prove) must stay unproven, and the caller
+        must keep its cursor below it (#2509). A visible id is never absent.
+        """
         ...
 
 
@@ -209,6 +226,19 @@ class InMemoryEventLog:
             acknowledged = max(current, event_id)
             self._replay_cursors[consumer_id] = acknowledged
             return acknowledged
+
+    async def prove_holes_absent(self, hole_ids: Sequence[int]) -> frozenset[int]:
+        """Refuse every hole: an in-memory append has no outcome to prove.
+
+        This store's appends are synchronous — there is no transaction whose
+        outcome could leave an id allocated-but-uncommitted — so a hole here
+        can only be synthetic (a test shim hiding ids from ``query``). No
+        durable evidence exists to prove one absent, and inventing it would
+        let a cursor cross an id a writer could still be filling. The safe
+        answer is to prove nothing: the caller keeps its cursor below the
+        first unproven hole until the id appears (#2509).
+        """
+        return frozenset()
 
 
 _SCHEMA = """
@@ -393,6 +423,57 @@ class SqliteEventLog:
         )
         await self._conn.commit()
         return await self.get_replay_cursor(consumer_id)
+
+    async def prove_holes_absent(self, hole_ids: Sequence[int]) -> frozenset[int]:
+        """Prove a hole terminally absent by becoming the one SQLite writer.
+
+        SQLite serialises writers: at most one write transaction exists at a
+        time. Taking the write lock (`BEGIN IMMEDIATE`, under a zero busy
+        timeout so a held lock fails fast instead of stalling the tick)
+        proves no other writer transaction is live — so every id any
+        transaction allocated has terminated, and a re-read inside that same
+        lock answers terminally: still invisible means the append rolled
+        back, because the single-writer order makes id allocation and commit
+        agree. A `database is locked` failure means a writer IS live and some
+        hole may yet commit, so nothing is proven and the caller holds its
+        cursor below the hole until a later tick (#2509).
+        """
+        if not hole_ids:
+            return frozenset()
+        async with self._lock:
+            cursor = await self._conn.execute("PRAGMA busy_timeout")
+            row = await cursor.fetchone()
+            previous_timeout = int(row[0]) if row is not None else 0
+            await self._conn.execute("PRAGMA busy_timeout = 0")
+            try:
+                try:
+                    await self._conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError:
+                    # `database is locked`: another writer holds the
+                    # transaction; its append may still commit, so no hole
+                    # can be judged from here. A genuine store bug (any
+                    # other error class) propagates instead of masquerading
+                    # as an inconclusive proof.
+                    return frozenset()
+                try:
+                    marks = ",".join("?" * len(hole_ids))
+                    cursor = await self._conn.execute(
+                        # nosec B608 - marks is ?-placeholders only, values bound
+                        f"SELECT id FROM event_log WHERE id IN ({marks})",
+                        tuple(hole_ids),
+                    )
+                    visible = {int(r[0]) for r in await cursor.fetchall()}
+                    return frozenset(hole_ids) - visible
+                finally:
+                    # Nothing was written: roll back to release the write
+                    # lock immediately rather than holding it to the next
+                    # statement this connection runs.
+                    await self._conn.rollback()
+            finally:
+                # previous_timeout is the connection's own prior value.
+                await self._conn.execute(  # nosec B608 - value read back from the same connection
+                    f"PRAGMA busy_timeout = {previous_timeout}"
+                )
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> LoggedEvent:

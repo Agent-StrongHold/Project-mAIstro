@@ -336,6 +336,141 @@ class TestReplayCursor:
             await event_log.acknowledge_replay("reactor", -1)
 
 
+class TestHoleProof:
+    """`prove_holes_absent` invariants every backend must hold (#2509).
+
+    The durable cursor may cross an id only once its append is proven
+    terminally absent by the store's own evidence. These are the universal
+    halves of that contract: a visible id is never absent, and proving no
+    holes proves nothing. The positive half — a rolled-back append proven
+    absent — needs a live second writer and is proved per backend below
+    (`test_sqlite_...` here, `test_pg_...` for PostgreSQL); the in-memory
+    store has no transaction outcome to prove, so its honest answer is to
+    prove nothing, ever.
+    """
+
+    async def test_a_visible_id_is_never_proven_absent(self, event_log):
+        event = await event_log.append("agent.created")
+        assert await event_log.prove_holes_absent((event.id,)) == frozenset()
+
+    async def test_proving_no_holes_proves_nothing(self, event_log):
+        await event_log.append("agent.created")
+        assert await event_log.prove_holes_absent(()) == frozenset()
+
+    async def test_the_memory_store_never_proves_a_hole_absent(self):
+        """An in-memory append has no transaction outcome, so no id can be
+        judged absent from evidence; refusing every hole keeps a cursor
+        below an id a synthetic writer could still be filling."""
+        from maistro.events.durable_log import InMemoryEventLog
+
+        log = InMemoryEventLog()
+        await log.append("agent.created")
+        assert await log.prove_holes_absent((1, 2, 999)) == frozenset()
+
+
+async def test_sqlite_hole_proof_waits_out_a_live_writer(tmp_path):
+    """The SQLite positive half: evidence, not elapsed time (#2509).
+
+    SQLite serialises writers, so the proof procedure is: take the write
+    lock (`BEGIN IMMEDIATE`); success means no writer transaction is live,
+    and a re-read inside that lock answers terminally. While another
+    connection holds a write transaction, the proof must come back empty —
+    that append may still commit — and only after it rolls back (its id
+    permanently absent) does the store prove the hole. A commit instead
+    makes the id visible, which is never 'absent'.
+    """
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+
+    conn = await aiosqlite.connect(str(tmp_path / "holes.db"))
+    try:
+        store = SqliteEventLog(conn)
+        await store.ensure_schema()
+        committed = await store.append("agent.created")
+
+        writer = await aiosqlite.connect(str(tmp_path / "holes.db"))
+        try:
+            # A second writer allocates the next id and holds its
+            # transaction open — the append that may yet commit.
+            await writer.execute("PRAGMA busy_timeout = 2000")
+            await writer.execute("BEGIN IMMEDIATE")
+            cursor = await writer.execute(
+                "INSERT INTO event_log (event_type, entity_type, entity_id, payload, "
+                "source, created_at) VALUES ('agent.created', '', '', '{}', '', 0)"
+            )
+            inflight_id = cursor.lastrowid
+            assert inflight_id == committed.id + 1
+
+            # Live writer: nothing may be proven, not even the committed id.
+            assert await store.prove_holes_absent((committed.id, inflight_id)) == frozenset()
+
+            # The append rolls back; its id can never become visible.
+            await writer.execute("ROLLBACK")
+            assert await store.get(inflight_id) is None
+            assert await store.prove_holes_absent((inflight_id,)) == frozenset({inflight_id})
+        finally:
+            await writer.close()
+    finally:
+        await conn.close()
+
+
+async def test_pg_hole_proof_uses_two_connections_and_durable_evidence():
+    """The PostgreSQL positive half of `prove_holes_absent` (#2509).
+
+    Two independent connections, the exact shape the durable cursor must
+    survive: connection A allocates a `BIGSERIAL` id and holds its
+    transaction open — far longer than any healthy append — while the
+    store's own pool has already committed a higher id. While A can still
+    commit, the proof must come back empty no matter how long the hole has
+    been open (elapsed time is not evidence); once A rolls back, the
+    sequence lock is gone, the id is still invisible, and BIGSERIAL never
+    reuses an id — so the store proves the hole terminally absent. A
+    committed id, by contrast, is never 'absent'.
+    """
+    import asyncpg
+
+    from maistro.events.pg_stores import PgEventLog, ensure_event_schema
+
+    url = _require_postgres()
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        await ensure_event_schema(pool)
+        await pool.execute("TRUNCATE event_log, event_replay_cursors")
+        store = PgEventLog(pool)
+        committed = await store.append("agent.created")
+
+        holder = await asyncpg.connect(url)
+        try:
+            await holder.execute("BEGIN")
+            inflight_id = await holder.fetchval(
+                "INSERT INTO event_log (event_type, created_at) "
+                "VALUES ('agent.created', 0) RETURNING id"
+            )
+            assert inflight_id == committed.id + 1
+
+            # Live append: it may still commit, so nothing is proven —
+            # the committed id stays unproven too, and there is no sleep
+            # or timeout that would ever change this answer.
+            assert await store.prove_holes_absent((committed.id, inflight_id)) == frozenset()
+
+            # The append aborts: lock released, id still invisible, and no
+            # future transaction can allocate that id again.
+            await holder.execute("ROLLBACK")
+            assert await store.get(inflight_id) is None
+            assert await store.prove_holes_absent((inflight_id,)) == frozenset({inflight_id})
+        finally:
+            await holder.close()
+
+        # A committed id is visible and therefore never 'absent'; the next
+        # allocation confirms the rolled-back id is never handed out again.
+        after = await store.append("agent.created")
+        assert after.id == inflight_id + 1
+        assert await store.prove_holes_absent((after.id,)) == frozenset()
+    finally:
+        await pool.close()
+
+
 async def test_pg_replay_cursor_survives_a_pool_restart():
     """The PostgreSQL cursor is durable, not pool-lifetime state.
 

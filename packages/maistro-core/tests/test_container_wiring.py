@@ -576,6 +576,22 @@ class _HidingLog:
         return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]
 
 
+class _ProvingLog:
+    """A durable log whose `prove_holes_absent` answers from a set the test
+    controls -- the durable evidence a PostgreSQL log returns once no live
+    append can still commit a hole. Everything else forwards to `inner`."""
+
+    def __init__(self, inner: Any, proven: set[int]) -> None:
+        self._inner = inner
+        self.proven = proven
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def prove_holes_absent(self, hole_ids: tuple[int, ...]) -> frozenset[int]:
+        return frozenset(self.proven) & frozenset(hole_ids)
+
+
 async def _durable_position(container: Container) -> int:
     from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 
@@ -628,10 +644,15 @@ async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() 
     assert await _durable_position(container) == 3
 
 
-async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
-    """An id that never commits (the append rolled back) must not pin the
-    resume point forever: once the hole has been seen for longer than
-    `durable_event_hole_grace_s`, the position moves past it."""
+async def test_an_unproven_hole_holds_the_cursor_no_matter_how_long_it_lingers() -> None:
+    """#2509 regression: a hole must never be crossed because it has been
+    open a while. Elapsed time is not evidence — a PostgreSQL transaction
+    can hold an allocated id past any timeout and commit it afterwards, and
+    the old 60 s grace crossed exactly that hole — so until the log proves
+    the id terminally absent, every tick keeps the durable position (and
+    the replay acknowledgement) just below it.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
     from maistro.events.invocations import ReplaySafety
     from maistro.events.trigger_store import TriggerDefinition
 
@@ -654,18 +675,16 @@ async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
 
     assert await container.process_durable_events() == 1
     assert await _durable_position(container) == 1
-
-    # Still within grace on the next tick: the position holds, and 3 is
-    # redelivered idempotently (deduped by the invocation store, so no call).
-    assert await container.process_durable_events() == 1
     assert delivered == [1, 3]
 
-    # The grace lapses with the hole still open.
-    container.durable_event_hole_grace_s = 0.0
-    cursor = await container.process_durable_events()
-
-    assert cursor == container.durable_event_cursor == 3
-    assert await _durable_position(container) == 3
+    # No matter how many ticks pass — which is what the old grace timer
+    # treated as an aborted append — the position never crosses the hole,
+    # and 3 keeps being redelivered only as the idempotent dedupe replay
+    # it already is (no new handler call lands).
+    for _ in range(10):
+        assert await container.process_durable_events() == 1
+        assert await _durable_position(container) == 1
+        assert await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
     assert delivered == [1, 3]
 
 
@@ -704,21 +723,62 @@ async def test_the_log_replay_acknowledgement_survives_a_restart(tmp_path: Path)
             await container2.db_pool.close()
 
 
-async def test_each_hole_gets_its_own_grace() -> None:
-    """Two open appends: the first lapsing must not let the position jump
-    past a second hole that was only just noticed."""
+async def test_only_durable_evidence_moves_the_cursor_past_a_hole() -> None:
+    """The position crosses a hole exactly when the log proves it terminally
+    absent, and never past the first hole still lacking proof (#2509)."""
     container = await _container()
-    container.durable_event_hole_grace_s = 10.0
+    log = _ProvingLog(container.durable_event_log, proven=set())
+    container.durable_event_log = log  # type: ignore[assignment]
 
-    # First tick: only hole 2 is visible below the cursor.
-    assert container._gap_safe_position(3, (2,), now=100.0) == 1
-    # Later tick: 2 is still open (past grace) and a fresh hole at 5 appeared.
-    assert container._gap_safe_position(6, (2, 5), now=111.0) == 4
-    # Later still: 5 also lapses; the position moves to the cursor.
-    assert container._gap_safe_position(6, (2, 5), now=122.0) == 6
-    # A hole that fills is forgotten, so a re-opened id restarts its grace.
-    assert container._gap_safe_position(6, (), now=123.0) == 6
-    assert container._gap_safe_position(6, (2,), now=124.0) == 1
+    # No evidence: pinned below the first hole.
+    assert await container._gap_safe_position(6, (2, 5)) == 1
+    # Proof that 2's append rolled back: 2 is crossed, the position stops
+    # below 5, whose append may still commit.
+    log.proven = {2}
+    assert await container._gap_safe_position(6, (2, 5)) == 4
+    # Both proven: the position reaches the cursor.
+    log.proven = {2, 5}
+    assert await container._gap_safe_position(6, (2, 5)) == 6
+    # A contiguous batch needs no proof at all.
+    assert await container._gap_safe_position(6, ()) == 6
+
+
+async def test_durable_evidence_advances_the_cursor_past_a_rolled_back_append() -> None:
+    """An append that will never commit — proven terminally absent by the
+    log's durable evidence, never by a timer — must not pin the resume
+    point forever: the position moves past it exactly when the evidence
+    exists, without redelivering anything the receipts already settled."""
+    from maistro.events.invocations import ReplaySafety
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(
+        TriggerDefinition(
+            trigger_id="t1",
+            event_pattern="agent.*",
+            handler_url="http://handlers.invalid/agent",
+            replay_safety=ReplaySafety.IDEMPOTENT,
+            contract_ref="contract-v1",
+        )
+    )
+    inner = _HidingLog(container.durable_event_log, hidden={2})
+    log = _ProvingLog(inner, proven=set())
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await inner.append("agent.created")
+
+    # Before evidence: pinned below the hole.
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # The log proves id 2's append rolled back: the position moves past it,
+    # 3 settles behind it, and nothing is delivered twice.
+    log.proven = {2}
+    assert await container.process_durable_events() == 3
+    assert delivered == [1, 3]
+    assert await _durable_position(container) == 3
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
