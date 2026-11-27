@@ -289,3 +289,73 @@ Every check below was executed first-hand at this head; no code changed.
   exercise the shipped `WorkspaceTabs` skeleton + a11y with the
   `ElevationProvider` wired via the updated `Dockerfile.playwright`).
   Hosted CI at `2ca17a341bcb` had not reported at recording time.
+
+## Develop sync round 3 + coverage-gate repair (merge `13988fdc70`, 2026-11-27)
+
+Merge of `origin/develop` `618954f05` (M2-A1 Warden/Sentinel #2527, keyboard
+reachability #2530, Sentinel signing #2533) resolved the preserved in-progress
+sync; two textual conflicts, both semantic combinations:
+
+- `DagBuilder.tsx` `handleSaveDag`: develop's serialized+coalesced save loop
+  (#370 save race) is kept, and each PUT inside the loop is wrapped in
+  `authorizedAction("dags.write", ...)` so a 403 still routes through the
+  elevation dialog and retries — the coalescing loop and the elevation gate
+  compose without either semantics being lost.
+- `Settings.tsx` settings value display: develop's non-interactive div is
+  taken (the pointer-only click-to-edit violated the #2530 keyboard gate —
+  `check-keyboard-controls.mjs` rejects click-only generic controls). The
+  permission-gated "edit" button with its cause title ("Config write
+  permission required — elevation or an admin role is required...") remains
+  the only mutation path, satisfying #336's elevate-or-hide-with-cause rule;
+  the dead `canEditSystemSettings` click gate (whose only effect was the
+  removed click handler) and the now-unused `useUser` import are deleted.
+- Ledgers: `vulture-baseline.json` takes develop's removal of the
+  `types/security.py::repair_action` row (develop's own fix removed the dead
+  variable); `frontend-typed-client-baseline.json` and
+  `shipped-surface-truth.json` keep the branch's debt-eliminated versions
+  (typed-client gate re-run: none new).
+
+Named CI failure at `b637299889` (merge-queue evaluation, run 45914333217:
+"Coverage gate (publish-set floor + diff coverage)") diagnosed: the branch
+was based on an older develop, and the merge-queue's auto-merge combined both
+sides' edits to `services/engine.py` (39 lines),
+`services/agent_materialization.py`, and the harness/materialization tests
+into a broken tree — seven `RuntimeError: Event loop is closed` failures in
+the gate job's serial hive-conductor backend producer. Repair = this explicit
+merge (develop's backend restored wholesale, the branch's permission work on
+top), proven by running every gate leg locally at `13988fdc70` with CI's
+exact commands:
+
+- Serial producers (gate job combine step, all pass, zero loop errors):
+  hive-conductor backend **4609 passed, 117 skipped** (5m16s, under
+  coverage); maistro-server 746+18 skipped; maistro-turing 233 + backend 138;
+  maistro-design 724+1 skipped; maistro-registry 366 (with the named root
+  files); maistro-ext-harness 273; maistro-ext-sdk 147; root scripts producer
+  **6512 passed, 140 skipped** (17m).
+- `coverage-postgres` producer against a fresh local `pgvector/pgvector:pg17`
+  (CI env incl. `MAISTRO_REQUIRE_PG_LEGS=1`): tests/migrations 173 passed;
+  `alembic upgrade head` (chain incl. develop's `071_sentinel_decision_integrity`)
+  then the schema-suite list **7693 passed, 98 skipped, 4 xfailed**; backlog
+  115; canvas 666; hive-conductor evolve legs 58; brief_commit 49.
+- `coverage-unit` producer: core **17948 passed, 1303 skipped**, canvas 610,
+  evolve 1211, rsi 1863, bootstrap 274.
+- `coverage-archive` producer not runnable locally (MinIO unbuildable: no Go
+  toolchain, Hub pull denied — the reason CI builds from source); its absence
+  makes the local floor stricter, archive files are not in this diff, and the
+  floor leg already passed at 93% inside CI's own failing run.
+- Gate combine in CI's order: floor `coverage report --fail-under=87` over the
+  publish-set data -> **93%, exit 0**; after appending postgres + serial
+  producer data, `coverage xml` + `check-diff-coverage.py coverage.xml --base
+  618954f05` -> **exit 0**, "4 changed file(s) measured" (`middleware/auth.py`,
+  `routes/setup.py`, `services/permission_policy.py` above 90% lines / 80%
+  branches; the three changed test files exempt as evidence).
+- Deterministic gates at this head: ruff check + format clean; suite
+  inventory **21 suites match (37,751 identities)** incl. develop's two new
+  Playwright specs; permission matrix **51 API / 23 UI**; typed-client none
+  new; vulture with CI's exact arguments **1217 = 1217** (base `618954f05`);
+  frontend eslint 0 errors / 49 warnings (max 96); `tsc` app + node configs
+  clean; `check-keyboard-controls.mjs` pass.
+
+Residuals unchanged from the previous round (per-role live-browser walk,
+synthetic `ui-*` elevation task IDs, `frontend/e2e` CI ownership). Hosted CI
+has not reported at this head; the gate evidence above is local.
