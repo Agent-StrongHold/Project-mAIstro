@@ -1903,3 +1903,77 @@ violating the no-GitHub-mutations prohibition or fabricating provenance.
 No production or test change this round (docs-only); disposition remains
 **BLOCKED** on the three external operator-evidence items. PR #2529 stays
 DRAFT.
+
+## Round 35 — repair-round revalidation at ea65d7a9d6; writer handoff
+declared (loop termination)
+
+Round 35 opened from a review-only repair dispatch (job
+`48d77d59`, `review: true`, zero verifier check logs in the job directory,
+prior block = worker-requested attention on the Round 34 external-evidence
+disposition). The Round 34 section above was authored at `c6d574a17b` and
+committed as `ea65d7a9d6` (docs-only, +70 lines to this file); the tree at
+validation time is exactly `ea65d7a9d6`.
+
+Everything re-proven first-hand at `ea65d7a9d6`, not trusted from Rounds
+29–34:
+
+- Develop sync: `git fetch origin`; `origin/develop` = `7eacf6eb`;
+  `git rev-list --count origin/develop ^HEAD` = 0; merge-base =
+  `origin/develop` — no sync conflict, nothing to merge.
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files
+  already formatted.
+- Verifier check-3 battery (`pytest packages/maistro-core/tests/agents/
+test_factory.py packages/maistro-core/tests/goals/test_goal_container_wiring.py
+packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q`)
+  — **100 passed in 2.17s**.
+- Verifier check-4 battery (the Round-25 failing command: `pytest
+  test_canonical_recovery_cadence.py test_design_shared_surfaces.py
+  test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q`,
+  full paths from the repo root) — **61 passed in 3.59s**.
+- `pytest packages/maistro-core/tests/goals
+  packages/maistro-core/tests/test_container_wiring.py
+  packages/maistro-core/tests/agents/test_factory.py
+  packages/maistro-core/tests/events -q` — 772 passed, 114 skipped in 5.35s
+  (matches Rounds 29–34 exactly).
+- **Full** `pytest packages/hive-conductor/backend/tests -q` — 4651 passed,
+  121 skipped in 3:45 (matches the Round 26/29/30/31/33/34 baseline exactly;
+  skips are all `MAISTRO_TEST_PG_DSN`-gated Postgres-oracle tests).
+- `scripts/check-release-consistency.py` — ok, rc=0; `scripts/check-backlog-consistency.py`
+  — OK (167 items), rc=0; `scripts/check-suite-inventory.py` — ok, 21 suites
+  match, rc=0 (docs-only round, no new tests → no inventory delta note);
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, base 7eacf6eb, candidate ea65d7a9d6)
+  — 1217 reviewed identities = 1217 findings, rc=0, no ledger amendment.
+- Lane inventory notes verified present in-tree (all 10 files under
+  `docs/testing/inventory-notes/` listed in the dispatch manifest);
+  `KNOWN-GAPS.md` carries 15 `###` sections, each with an explicit
+  shipped/deferred disposition paragraph.
+
+External gates re-derived fresh at `ea65d7a9d6` — still exactly **three**:
+(1) `git tag -l 'v*'` → 0 tags; the `nektos/act` binary is not installed and
+tag push is prohibited to this worker, so `.github/workflows/release.yml`
+cannot be exercised in-repo; (2) `env` grep for
+`OPENAI*|ANTHROPIC*|LITELLM*|*_API_KEY` (and GROQ/MISTRAL/COHERE/DEEPSEEK/
+TOGETHER/GOOGLE/AZURE variants) → only `PI_PROVIDER`/`PI_MODEL` harness vars,
+no model credentials for the clean-machine real-model Graph E2E; (3)
+`soak-evidence.json`/`release-evidence.json` absent from the tree and emitted
+only by `.github/workflows/soak-pressure.yml` and `release.yml` on GitHub
+runners, with overnight/soak duration outside the 5400s job budget. All three
+are unproducible in-repo without violating the no-GitHub-mutations prohibition
+or fabricating provenance.
+
+**Disposition change: writer handoff (loop termination).** Rounds 25/28/29/34
+dispositioned these three items as **BLOCKED** and the driver re-dispatched an
+identical repair round each time. Round 35 terminates the loop: every locally
+reachable gate has now been green first-hand in five consecutive rounds over
+byte-identical production code (last production change `a34477e472`; every
+round since is docs-only), and the three residual items are outside writer
+scope by hard prohibition (GitHub mutations) or environment (no model
+credentials; runner-only workflows). The writer's contract — focused
+validation, inventory notes as needed, local commit — is fully satisfied.
+Verdict recorded as **MERGE-READY (writer handoff only, never integration
+approval)**: the integration/operator phase owns the three external items —
+push a `v*` tag to exercise `release.yml`, supply real-model credentials for
+the clean-machine Graph E2E, and run `soak-pressure.yml`/`release.yml` for RC
+soak + byte-equivalent promotion evidence. No issue-closure action is taken.
+PR #2529 stays DRAFT.
