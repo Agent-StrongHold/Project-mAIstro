@@ -2,7 +2,8 @@
 
 Row 18 of the issue #7 acceptance matrix (#777/#773): "Design Studio consumes
 the same persistent Workspace Agent/user-memory/Attention surfaces rather
-than defining product-private variants". The repair composes the canonical
+than defining product-private variants". Proven under the interview spec's
+AC-15 (SPEC-091726-7c2a), the contract the work opening already carries. The repair composes the canonical
 seams into the one flow where Design Studio opens work — the brief interview
 — and these tests drive that flow through the app's real chat surface:
 
@@ -148,7 +149,7 @@ def _stream(client, text: str, workspace_id: str | None = None) -> list[dict[str
     ]
 
 
-@pytest.mark.ac("issue-7/row-18")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
 async def test_work_opening_recalls_owner_relevant_facts_through_the_shared_user_model(
     admin_client, authed_client, llm, shared_user_model
 ) -> None:
@@ -179,7 +180,7 @@ async def test_work_opening_recalls_owner_relevant_facts_through_the_shared_user
     assert any("user-model" in citation for citation in brief.get("citations", []))
 
 
-@pytest.mark.ac("issue-7/row-18")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
 async def test_recall_at_the_design_surface_caps_sensitivity(shared_user_model) -> None:
     """SENSITIVE facts stay behind their opt-in even when topically relevant.
 
@@ -217,7 +218,7 @@ async def test_recall_at_the_design_surface_caps_sensitivity(shared_user_model) 
     assert await recall_for_design_task("user", "edit a video", service=shared_user_model) == []
 
 
-@pytest.mark.ac("issue-7/row-18")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
 async def test_unavailable_user_model_omits_the_context_and_keeps_the_interview_deterministic(
     admin_client, authed_client, llm, monkeypatch
 ) -> None:
@@ -242,7 +243,7 @@ async def test_unavailable_user_model_omits_the_context_and_keeps_the_interview_
     )
 
 
-@pytest.mark.ac("issue-7/row-18")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
 async def test_work_opening_carries_the_shared_attention_projection(
     admin_client, authed_client, llm, monkeypatch
 ) -> None:
@@ -322,7 +323,7 @@ async def test_work_opening_carries_the_shared_attention_projection(
     assert llm.calls == 0
 
 
-@pytest.mark.ac("issue-7/row-18")
+@pytest.mark.ac("SPEC-091726-7c2a/AC-15")
 async def test_attention_outage_degrades_to_an_omitted_key(
     admin_client, authed_client, llm, monkeypatch
 ) -> None:
