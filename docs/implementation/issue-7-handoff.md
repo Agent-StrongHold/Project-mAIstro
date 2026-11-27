@@ -1409,3 +1409,29 @@ restore operations, and overnight live evidence remain unavailable here.
 No production or test edit is justified by these results. This documentation
 checkpoint records the focused repair disposition; no test inventory delta
 applies. Milestone status remains **NEEDS-REPAIR**.
+
+## Round 24 — fresh assigned repair-round validation (head `e97767ee47`)
+
+No `check-*.log` files were supplied in this job directory. The supplied prior
+result's logs were inspected, but all acceptance-relevant deterministic checks
+below were run again at this assigned head:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3723 files).
+- Goal container/reconciliation tests: 23 passed; Conductor recovery/design/
+  Entra JIT/unwired-retirement tests: 61 passed.
+- `uv run python scripts/check-release-consistency.py`: passed (released none,
+  shipping 0.9.0 toward 1.0.0); `git tag -l 'v*'` returned no release tags.
+- Production search for `promote_evidence(` found only the definition in
+  `maistro-core/src/maistro/memory/user_model/promotion.py:154` and tests;
+  there is no production caller. `KNOWN-GAPS.md:360-366` defers the producer.
+
+These deterministic checks do not satisfy the operational milestone. The
+release workflow itself states it has not been exercised (`.github/workflows/
+release.yml:23`); release E2E, clean-machine real-model Graph execution,
+credential-escrow backup/restore, RC soak plus byte-equivalent final promotion,
+and overnight operation remain unverified. ADR-082226-5104 §7 requires memory
+consolidation to execute as a canonical `Run -> NodeRun -> Attempt`; an isolated
+promotion caller would introduce the competing path prohibited by the ADR and
+is not an acceptable substitute. No production or test change is warranted by
+the evidence available in this environment. This validation-only checkpoint
+adds no test inventory delta. Milestone disposition remains **NEEDS-REPAIR**.
