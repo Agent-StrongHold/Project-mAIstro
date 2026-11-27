@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +14
+  packages/maistro-core/tests: +19
 ---
 # 2509-durable-cursor-hole-proof
 
@@ -97,16 +97,51 @@ change, each with a test that fails against the code it repairs:
    sat on its own line above the f-string bandit flags, so `SAST / Bandit`
    failed with one Medium B608 finding; it now annotates the flagged line
    itself (same placement as the other in-file `nosec`), and the gate is
-   back to a strict 0 Medium+ baseline. `aiosqlite` also moved from a
-   function-local import to the module's runtime imports (it is a declared
-   dependency; the TYPE_CHECKING-only import made the local one carry
-   `type: ignore` noise).
+   back to a strict 0 Medium+ baseline. `aiosqlite` is imported at the
+   proof site, not at module scope: a top-level import made `import
+   maistro_server.main` — and with it the wheel-imports, image-smoke and
+   registry gates — require the optional `sqlite` extra in environments
+   that never open a SQLite store, so the function-local runtime import is
+   the final wiring (the constructor's annotation stays a string under
+   `from __future__ import annotations`).
 
 **Demonstrated regression sensitivity.** All three repair-round tests fail
 against the pre-repair head `5202e6b082` (collapsed `holes`, shared-connection
 proof) and pass with the repair; against the pre-fix sources the original
 evidence-gated tests fail while the old grace test passed, i.e. it was green
 precisely on the behaviour the issue calls silent event loss.
+
+**Repair round 4 (Coverage gate / diff coverage).** The quality workflow's
+`Coverage gate (publish-set floor + diff coverage)` failed at `9726d3600a`
+(PR run 46009688857, job 140551723921) with
+`packages/maistro-core/src/maistro/events/durable_log.py: 75.0% of 8 changed
+branch arcs (need 80%); partial at 504, 505` — the two uncovered arcs are
+`_database_path`'s defensive branches: the loop iterating past a non-`main`
+row and the loop exhausting without one. Both are unreachable against a real
+aiosqlite connection, whose `PRAGMA database_list` always lists `main` first
+(verified against the engine: `(0, 'main', <file>)` even with a database
+attached), so no test over a live store could ever take them and the per-file
+branch floor failed. The repair adds five tests to
+`test_durable_store_conformance.py` (+5 collected node IDs, recorded above):
+a real-connection test with a database attached (pins `main`-row-zero and the
+row shape the proof relies on), a stub test proving selection is by row NAME
+not list position (an engine that listed an attached database first would
+otherwise send the isolated proof connection to the wrong file), and three
+parametrized refusals — no `main` row, `main` with an empty file column, and
+`main` at `:memory:` — each asserting `_database_path()` answers None AND
+`prove_holes_absent` proves nothing, the contract that keeps the proof from
+opening an isolated connection to some other, empty database. Sensitivity
+proven by mutation, both reverted byte-identically afterwards: resolving by
+position instead of name fails 2 of the 5 (the no-main-row refusal and the
+name-selection test), and dropping the `:memory:` refusal fails exactly the
+`main-in-memory` case. With the repair, the gate script at CI's exact argv
+(`uv run python scripts/check-diff-coverage.py coverage.xml --base
+c2beba3f81…`) reports `ok: every measured file this change touches is at or
+above 90% lines / 80% branch arcs` over a coverage database that measures
+both the SQLite legs and the PostgreSQL legs (docker `pgvector:pg17`,
+`MAISTRO_REQUIRE_PG_LEGS=1`: 602 passed, 4 skipped — the same combined
+producer data CI's gate reads). The `tests/events`+`test_container_wiring.py`
+battery is 258 passed / 79 skipped.
 
 **Legs.** `packages/maistro-core/tests/events` + `tests/test_container_wiring.py`
 with `MAISTRO_TEST_DATABASE_URL` pointing at a real PostgreSQL (docker

@@ -550,6 +550,93 @@ async def test_the_sqlite_hole_proof_never_rolls_back_a_sibling_stores_write(tmp
         await conn.close()
 
 
+class _DatabaseListCursor:
+    """`fetchall` over rows shaped like `PRAGMA database_list` output."""
+
+    def __init__(self, rows: list[tuple[int, str, str]]) -> None:
+        self._rows = rows
+
+    async def fetchall(self) -> list[tuple[int, str, str]]:
+        return self._rows
+
+
+class _DatabaseListConn:
+    """A connection stub answering only `PRAGMA database_list`, with rows the
+    real engine cannot produce.
+
+    `_database_path` is the proof's one look at the database's identity: it
+    must select the row NAMED ``main`` (engine row shape: index 1 the name,
+    index 2 the file), ignore every other database in the list, and answer
+    None when ``main`` carries no usable file — the answer that makes the
+    proof refuse rather than open a connection to a database it cannot
+    isolate. The real engine always lists ``main`` first and always lists it
+    (see the attached-database test below), so the not-main and no-main
+    branches are defensive: reachable only from a connection that does not
+    behave like the engine's. This stub is how that defensive contract is
+    pinned; it duck-types exactly the two calls `_database_path` makes.
+    """
+
+    def __init__(self, rows: list[tuple[int, str, str]]) -> None:
+        self._rows = rows
+
+    async def execute(self, sql: str, *args: object) -> _DatabaseListCursor:
+        assert sql == "PRAGMA database_list", sql
+        return _DatabaseListCursor(self._rows)
+
+
+async def test_the_hole_proof_resolves_main_past_an_attached_database(tmp_path):
+    """`PRAGMA database_list` real shape: `main` is row zero even with another
+    database attached, and `_database_path` must answer *main's* file — the
+    isolated proof connection opens the database the spine connection is on,
+    never a sibling of it."""
+    import aiosqlite
+
+    from maistro.events.durable_log import SqliteEventLog
+
+    main_path = str(tmp_path / "main.db")
+    conn = await aiosqlite.connect(main_path)
+    try:
+        await conn.execute("ATTACH DATABASE ? AS attached", (str(tmp_path / "side.db"),))
+        store = SqliteEventLog(conn)
+        assert await store._database_path() == main_path
+    finally:
+        await conn.close()
+
+
+async def test_the_hole_proof_selects_main_by_name_not_by_list_position():
+    """A connection that lists an attached database BEFORE `main` (nothing in
+    the PRAGMA contract forbids an engine from reordering) must still resolve
+    to main's file: selection is by the row's name, not by its position."""
+    from maistro.events.durable_log import SqliteEventLog
+
+    store = SqliteEventLog(
+        _DatabaseListConn([(2, "attached", "/data/attached.db"), (0, "main", "/data/main.db")])
+    )
+    assert await store._database_path() == "/data/main.db"
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        ([(2, "attached", "/data/attached.db")], "no main row is listed at all"),
+        ([(0, "main", ""), (2, "attached", "/data/attached.db")], "main resolves to no file"),
+        ([(0, "main", ":memory:")], "main is the transient in-memory database"),
+    ],
+    ids=["no-main-row", "main-without-file", "main-in-memory"],
+)
+async def test_the_hole_proof_refuses_a_database_it_cannot_isolate(rows, reason):
+    """When `_database_path` cannot answer a real file for ``main`` — no main
+    row, an empty file column, or ``:memory:`` — the proof must refuse every
+    hole: an isolated connection would open some OTHER empty database, and a
+    proof on the shared connection could roll a sibling's write back. The
+    answer for every such database is the in-memory store's: prove nothing."""
+    from maistro.events.durable_log import SqliteEventLog
+
+    store = SqliteEventLog(_DatabaseListConn(rows))
+    assert await store._database_path() is None, reason
+    assert await store.prove_holes_absent((1, 2, 999)) == frozenset()
+
+
 async def test_pg_hole_proof_uses_two_connections_and_durable_evidence():
     """The PostgreSQL positive half of `prove_holes_absent` (#2509).
 
