@@ -419,6 +419,19 @@ jobs:
       # new store as untested code while its conformance cases pass in the
       # `postgres` job.
       #
+      # The M4-H working log joins by that same rule (#105): the new
+      # `memory/working/pg_store.py` durable twin and its wiring legs gate on
+      # MAISTRO_TEST_PG_DSN / MAISTRO_TEST_DATABASE_URL, so everywhere else
+      # the PostgreSQL half skips and the diff gate scored the new store at
+      # 38.8% of its 67 changed lines while the same arcs passed against a
+      # real server in ci.yml's `postgres` job — the exact shape #231
+      # documented for scheduling and #102 for backlog. The three files are
+      # named individually rather than as a directory because the rest of
+      # `tests/memory` runs server-free in `coverage (no services)`; the
+      # conformance leg provisions its own schema (idempotent over the
+      # migrated chain applied above) and the schema-agreement suite renders
+      # migration 072 offline, so neither depends on this job ordering.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
       # race, are the only ones under `tasks` that need a server. The atomic
@@ -468,6 +481,9 @@ jobs:
             packages/maistro-core/tests/security/test_elevation_durable.py \
             packages/maistro-core/tests/security/test_delegation_durable.py \
             packages/maistro-core/tests/memory/user_model \
+            packages/maistro-core/tests/memory/test_working_log_pg_schema_agreement.py \
+            packages/maistro-core/tests/memory/test_working_log_store_conformance.py \
+            packages/maistro-core/tests/memory/test_working_memory.py \
             packages/maistro-core/tests/quota -v --tb=short
           # The backlog suite runs as its own invocation, not appended to the
           # list above (#102). Its `test_backlog_stores_import_no_rsi` pins the

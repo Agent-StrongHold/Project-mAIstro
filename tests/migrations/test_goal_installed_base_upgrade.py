@@ -81,10 +81,11 @@ GOAL_REVISION = "063"
 #: convention.
 #: #1064's Evolve domain store renumbers past that landed run as ``070``;
 #: this issue's Sentinel decision-integrity revision (#69) appends past that
-#: as ``071``.
+#: as ``071``, and the per-Workspace working log (#301, M4-H; #105) appends
+#: past that as ``072``.
 #: The Goal revision above stays the installed-base identity this file protects;
 #: the head moves every time a reviewed revision lands after it.
-CHAIN_HEAD = "071"
+CHAIN_HEAD = "072"
 
 GOAL_TABLES = ("canonical_goals", "canonical_goal_revisions", "canonical_goal_transitions")
 USER_MODEL_TABLES = ("user_model_facts", "user_model_statement_keys")
@@ -455,8 +456,9 @@ class TestTheMergedIdentities:
         # past it as `069`, so the head is CHAIN_HEAD while 063 stays
         # parented on 062.
         # #1064's Evolve domain publications renumber past that as `070`,
-        # and #69's Sentinel decision-integrity revision appends past that
-        # as `071`.
+        # #69's Sentinel decision-integrity revision appends past that as
+        # `071`, and the per-Workspace working log (#301, M4-H; #105)
+        # appends past that as `072`.
         assert revisions["064"].down_revision == GOAL_REVISION
         assert revisions["065"].down_revision == "064"
         assert revisions["066"].down_revision == "065"
@@ -464,7 +466,8 @@ class TestTheMergedIdentities:
         assert revisions["068"].down_revision == "067"
         assert revisions["069"].down_revision == "068"
         assert revisions["070"].down_revision == "069"
-        assert revisions[CHAIN_HEAD].down_revision == "070"
+        assert revisions["071"].down_revision == "070"
+        assert revisions[CHAIN_HEAD].down_revision == "071"
         assert script_directory.get_heads() == [CHAIN_HEAD]
         # The filenames carry the merged identities too — a renamed file
         # and a moved id are the same silent reassignment in two clothes.
@@ -483,6 +486,7 @@ class TestTheMergedIdentities:
         assert (VERSIONS / "069_schedule_deletions.py").is_file()
         assert (VERSIONS / "070_evolve_domain_publications.py").is_file()
         assert (VERSIONS / "071_sentinel_decision_integrity.py").is_file()
+        assert (VERSIONS / "072_workspace_working_log.py").is_file()
 
     def test_restored_files_are_byte_identical_to_the_merged_snapshots(self) -> None:
         """The merged revisions' content is what develop shipped, byte for byte.
