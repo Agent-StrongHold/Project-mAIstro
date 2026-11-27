@@ -552,13 +552,15 @@ export default function Backlog() {
 
       <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 10 }}>
         {(["board", "list"] as const).map((t) => (
-          <div
+          <button
             key={t}
+            type="button"
+            aria-pressed={view === t}
             onClick={() => setView(t)}
-            style={{ padding: "7px 16px", ...monoStyle, cursor: "pointer", borderBottom: view === t ? "2px solid var(--accent)" : "2px solid transparent", color: view === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}
+            style={{ padding: "7px 16px", ...monoStyle, cursor: "pointer", border: 0, borderRadius: 0, borderBottom: view === t ? "2px solid var(--accent)" : "2px solid transparent", color: view === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize", background: "transparent", boxShadow: "none" }}
           >
             {t}
-          </div>
+          </button>
         ))}
         <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, ...monoStyle, color: "var(--pencil)", cursor: "pointer" }}>
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
@@ -595,9 +597,9 @@ export default function Backlog() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {byStatus(status).map((it) => (
                     <div key={it.id} className="card" style={{ padding: 8, opacity: it.archived ? 0.55 : 1, borderLeft: it.pinned ? "3px solid var(--accent)" : undefined }}>
-                      <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
+                      <button type="button" style={{ display: "block", width: "100%", textAlign: "left", fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600, cursor: "pointer", border: 0, background: "transparent", boxShadow: "none", padding: 0, color: "var(--ink)" }} onClick={() => void openDetail(it.id)}>
                         {it.title}
-                      </div>
+                      </button>
                       {it.blocked_reason && <div style={{ ...monoStyle, color: "var(--danger)", marginTop: 2 }}>blocked: {it.blocked_reason}</div>}
                       {it.paused && it.paused_reason && <div style={{ ...monoStyle, color: "var(--warn)", marginTop: 2 }}>paused: {it.paused_reason}</div>}
                       {cardMeta(it)}
@@ -630,9 +632,9 @@ export default function Backlog() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                      <span style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => void openDetail(it.id)}>
+                      <button type="button" style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600, cursor: "pointer", border: 0, background: "transparent", boxShadow: "none", padding: 0, color: "var(--ink)" }} onClick={() => void openDetail(it.id)}>
                         {it.title}
-                      </span>
+                      </button>
                       <span style={{ ...monoStyle, color: "var(--pencil)" }}>{it.status}</span>
                       <span style={{ ...monoStyle, color: "var(--pencil)", opacity: 0.7 }}>v{it.version}</span>
                     </div>
@@ -771,10 +773,12 @@ export default function Backlog() {
                         {items
                           .filter((it) => it.id !== detail.item.id && !it.archived)
                           .map((it) => (
-                            <span
+                            <button
+                              type="button"
                               key={it.id}
+                              aria-pressed={form.dependencies.includes(it.id)}
                               className={`hex-badge${form.dependencies.includes(it.id) ? " hex-badge-accent" : ""}`}
-                              style={{ cursor: "pointer" }}
+                              style={{ cursor: "pointer", border: 0 }}
                               onClick={() =>
                                 setForm((f) =>
                                   f
@@ -789,7 +793,7 @@ export default function Backlog() {
                               }
                             >
                               {it.title}
-                            </span>
+                            </button>
                           ))}
                       </div>
                     </div>

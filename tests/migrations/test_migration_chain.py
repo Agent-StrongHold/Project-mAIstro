@@ -117,7 +117,7 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
-        # Deleted Workspaces stay deleted (#37, 071): the tombstone create()
+        # Deleted Workspaces stay deleted (#37, 072): the tombstone create()
         # refuses, and the quarantine that holds historical orphan Projects
         # with their provenance instead of deleting them.
         "canonical_workspace_deletions",

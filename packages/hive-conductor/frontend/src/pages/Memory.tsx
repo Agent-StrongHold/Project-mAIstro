@@ -150,17 +150,17 @@ export default function Memory() {
         )}
 
         <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
-          <span className={`hex-badge${!nsFilter ? " hex-badge-ok" : ""}`} style={{ cursor: "pointer" }} onClick={() => setNsFilter("")}>all ({entries.length})</span>
+          <button type="button" className={`hex-badge${!nsFilter ? " hex-badge-ok" : ""}`} aria-pressed={!nsFilter} style={{ cursor: "pointer", border: 0 }} onClick={() => setNsFilter("")}>all ({entries.length})</button>
           {namespaces.map((ns) => (
-            <span key={ns} className={`hex-badge${nsFilter === ns ? " hex-badge-ok" : ""}`} style={{ cursor: "pointer" }} onClick={() => setNsFilter(ns)}>
+            <button type="button" key={ns} className={`hex-badge${nsFilter === ns ? " hex-badge-ok" : ""}`} aria-pressed={nsFilter === ns} style={{ cursor: "pointer", border: 0 }} onClick={() => setNsFilter(ns)}>
               {ns} ({entries.filter((e) => e.namespace === ns).length})
-            </span>
+            </button>
           ))}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map((e) => (
-            <div key={e.id} className="card" onClick={() => { setSel(e); setEditing(false); }} style={{ cursor: "pointer", borderColor: sel?.id === e.id ? "var(--accent)" : undefined }}>
+            <article key={e.id} className="card" style={{ borderColor: sel?.id === e.id ? "var(--accent)" : undefined }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
                 <div>
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{e.key}</div>
@@ -176,7 +176,10 @@ export default function Memory() {
                   {e.tags.map((t) => <Hex key={t} variant="">{t}</Hex>)}
                 </div>
               )}
-            </div>
+              <button type="button" className="btn" onClick={() => { setSel(e); setEditing(false); }} style={{ marginTop: 8, fontSize: 9, padding: "2px 8px" }} aria-label={`Open memory entry ${e.key}`}>
+                View entry
+              </button>
+            </article>
           ))}
           {filtered.length === 0 && <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>no entries{search || nsFilter ? " match filter" : ""}</div>}
         </div>
@@ -189,7 +192,7 @@ export default function Memory() {
             <div style={{ display: "flex", gap: 4 }}>
               {!editing && <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => startEdit(sel)}>edit</button>}
               <button className="btn" style={{ fontSize: 12, padding: "2px 8px", borderColor: "var(--danger)", color: "var(--danger)" }} onClick={() => setDeleteTarget(sel)}>delete</button>
-              <span className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => { setSel(null); setEditing(false); }}>close</span>
+              <button type="button" className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => { setSel(null); setEditing(false); }}>close</button>
             </div>
           </div>
 

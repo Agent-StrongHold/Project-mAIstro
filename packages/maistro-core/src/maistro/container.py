@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -3032,6 +3033,7 @@ async def create_container(
             audit_log=audit_log,
             tier_policy=tier_policy,
             elevation_store=elevation_store,
+            integrity_signer=_wire_sentinel_signer(),
             delegation_authority=delegation_authority,
         )
         strike_recovery = _wire_strike_recovery(
@@ -3059,6 +3061,13 @@ async def create_container(
             consumer_cursor_store,
         ) = await _wire_durable_events(pg_pool, db_pool)
         handler_caller = HTTPHandlerCaller(handler_invocation_store)
+        sentinel.attach_event_log(durable_event_log)
+        # Publish the decision verification-key references at composition time
+        # (ids only, never key bytes): this startup line is the out-of-band
+        # record operators pin verifiers against (ADR-073 amendment, #69).
+        logger.info(
+            "Sentinel decision verification keyring: %s", sorted(sentinel.verification_keyring)
+        )
 
         event_bus = EventBus()
 
@@ -3476,6 +3485,29 @@ async def _wire_prompt_manager(*, pg_pool: Any, db_pool: Any) -> PromptManager:
     from maistro.prompts.store import InMemoryPromptManager
 
     return InMemoryPromptManager()
+
+
+def _wire_sentinel_signer() -> Any:
+    """Build the Sentinel signer from the deployment's durable-key seam.
+
+    `MAISTRO_SENTINEL_SIGNING_KEY` is a base64url raw 32-byte Ed25519 seed.
+    It is read here, not persisted, and a malformed value fails container
+    construction instead of silently falling back to a process-ephemeral key
+    whose `key_id` a pinned verifier cannot know in advance.
+    """
+    from maistro.security.sentinel.integrity import DecisionSigner
+
+    seed = os.environ.get("MAISTRO_SENTINEL_SIGNING_KEY", "").strip()
+    if not seed:
+        return DecisionSigner()
+    try:
+        signer = DecisionSigner.from_seed_b64(seed)
+    except ValueError as exc:
+        raise ConfigError(
+            "MAISTRO_SENTINEL_SIGNING_KEY must be base64url encoding of a 32-byte Ed25519 seed"
+        ) from exc
+    logger.info("Sentinel signing key: %s", signer.active_key_id)
+    return signer
 
 
 async def _wire_extension_health_store(*, db_pool: Any) -> Any:

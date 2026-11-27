@@ -1,6 +1,6 @@
 """The #37 tombstone/Project-FK revision against an installed-base shape.
 
-`071_workspace_tombstones_and_project_fk` quarantines every orphan Project
+`072_workspace_tombstones_and_project_fk` quarantines every orphan Project
 (a Project whose Workspace id owns no canonical Workspace) and then purges
 the quarantined rows leaf-first, excluding the rows whose history forbids
 deletion. Two foreign keys forbid it, and the purge must honor both:
@@ -50,10 +50,11 @@ pytestmark = pytest.mark.skipif(
     reason="MAISTRO_TEST_DATABASE_URL is unset; these need a real PostgreSQL server",
 )
 
-#: The revision recorded while the chain sits exactly where 071 will find it:
-#: this branch's tip before the #37 fences appended, after which 071 runs as
-#: the one append-only rung an installed base at ``070`` walks.
-PRE_071 = "070"
+#: The revision recorded while the chain sits exactly where the fences find
+#: it: develop's tip before the #37 fences appended. An installed base at
+#: ``070`` walks develop's landed ``071`` (Sentinel decision integrity) and
+#: then ``072`` — the fences — as the append-only rungs to the head.
+PRE_FENCES = "070"
 
 QUARANTINE_REASON = "workspace_missing_at_fk_adoption"
 
@@ -110,9 +111,9 @@ def installed_base_at_070():
     not an empty database."""
     _alembic("downgrade", "base")
     _drop_all_tables()
-    built = _alembic("upgrade", PRE_071)
+    built = _alembic("upgrade", PRE_FENCES)
     assert built.returncode == 0, built.stderr
-    assert _query("select version_num from alembic_version") == [(PRE_071,)]
+    assert _query("select version_num from alembic_version") == [(PRE_FENCES,)]
     _insert_orphan_installed_base()
     yield
     _alembic("downgrade", "base")
