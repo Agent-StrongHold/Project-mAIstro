@@ -1204,3 +1204,31 @@ event producer for those types.
   overnight fire): unchanged — operator evidence, unobtainable in-lane.
 
 Checkpoint: `{checked: 19, done: 1, skipped: 0, errors: 0, next: "operator release/E2E/soak evidence (rows 2/3/4/5/17); Dreaming promotion producer (row 12) on its own lane; canonical goal-event producers to make the wake bridge reachable"}`.
+
+## Round 17 — fresh bounded verification at 1d4ee146d5fa
+
+No `check-*.log` files were supplied in this job directory. I independently reran
+focused checks against the assigned head; this round adds no product implementation
+and does not treat suite success as operator evidence:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed; 3719 files
+  already formatted.
+- `uv run pytest packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x`:
+  23 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q -x`:
+  61 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1217 reviewed identities = 1217 findings; no unbanked identities.
+- `uv run python scripts/check-release-consistency.py`: passed, release state
+  reports none released, shipping 0.9.0, working toward 1.0.0.
+- `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests`:
+  inventory matches 4757 collected node IDs.
+- `git tag -l 'v*'` returned no tags at this head.
+
+Acceptance remains blocked by the same concrete evidence boundary: release
+workflow exercise, clean-machine/real-model E2E, backup/restore escrow drill,
+RC soak and byte-equivalent promotion, and live overnight operation lack
+operator evidence; the production Dreaming promotion caller is still explicitly
+deferred under #1046. These are not established by the passing deterministic
+checks above. ADR-080 and ADR-082226-5104 remain the governing memory model; no
+alternative scheduler, memory authority, or authorization path is introduced.
