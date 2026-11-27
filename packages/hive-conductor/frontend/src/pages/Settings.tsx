@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ElevateBody } from "../api/entities";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
-import { useUser } from "../App";
 import { AuthorizationNotice } from "../components/Authorization";
 import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
@@ -11,8 +10,6 @@ import { PageHeader, SecretField } from "../components/shared";
 type Settings = Record<string, unknown>;
 
 export default function Settings() {
-  const user = useUser();
-  const canEditSystemSettings = user?.role === "admin";
   const [settings, setSettings] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -143,7 +140,7 @@ export default function Settings() {
                   <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: canEditSystemSettings ? "var(--ink)" : "var(--pencil)", cursor: canEditSystemSettings ? "pointer" : "not-allowed" }} onClick={() => { if (canEditSystemSettings) startEdit(key); }} title={canEditSystemSettings ? "click to edit" : "Admin role required to edit system settings"}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>
                   {typeof value === "boolean" ? (
                     <span style={{ color: value ? "var(--ok)" : "var(--pencil)" }}>{value ? "true" : "false"}</span>
                   ) : typeof value === "number" ? (

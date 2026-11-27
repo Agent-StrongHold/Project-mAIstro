@@ -170,7 +170,7 @@ export default function Containers() {
             </div>
             <div style={{ display: "flex", gap: 4 }}>
               <button className="btn" style={{ fontSize: 12, padding: "1px 6px" }} onClick={() => void fetchLogs(logsFor.id, logsFor.name)}>refresh</button>
-              <span className="btn" style={{ fontSize: 12, padding: "1px 6px" }} onClick={() => { setLogsFor(null); setLogs(""); }}>close</span>
+              <button type="button" className="btn" style={{ fontSize: 12, padding: "1px 6px" }} onClick={() => { setLogsFor(null); setLogs(""); }}>close</button>
             </div>
           </div>
           <div style={{ flex: 1, margin: "0 0 0 10px", background: "var(--ink)", color: "var(--paper)", fontFamily: "var(--mono)", fontSize: 12, padding: "10px 12px", borderRadius: 4, overflow: "auto", maxHeight: "calc(100vh - 140px)", whiteSpace: "pre-wrap", wordBreak: "break-all", lineHeight: 1.6 }}>

@@ -16,6 +16,7 @@ import pytest
 from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.security._types import Violation as SentinelViolation
+from maistro.security.sentinel.integrity import DecisionSignature
 from maistro.security.sentinel.signing import SIGNING_KEY_ENV, AuditSigner
 from maistro.types.security import AuditEntry
 
@@ -130,7 +131,8 @@ async def test_entry_with_unpersisted_metadata_verifies_after_roundtrip(
 
     [entry] = await log.get_entries(user_id="u1", org_id="o1")
     assert entry.signature
-    assert entry.action == ""  # not serialized; proof must not depend on it
+    assert entry.action == "promote"  # retained for the stronger decision envelope
+    assert entry.project_id == entry.run_id == entry.workspace_id == ""
     assert log.verify(entry)
 
     forged = replace(entry, verdict="denied")
@@ -293,6 +295,72 @@ async def test_get_entries_invalid_filter_column_raises(
 async def test_get_entries_rejects_unknown_keyword(log: SqliteAuditLog) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
         await log.get_entries(status="denied")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_get_page_preserves_signed_decision_evidence(log: SqliteAuditLog) -> None:
+    """Pagination is a production read path (Hive's audit_bridge): a signed
+    row must come back through ``get_page`` with its verification contract
+    intact, not silently downgraded to an unsigned-looking entry (#69)."""
+    from maistro.security.sentinel.integrity import (
+        DecisionSigner,
+        IntegrityStatus,
+        inspect_decision,
+    )
+
+    signer = DecisionSigner()
+    entry = AuditEntry(
+        boundary="policy.decision",
+        user_id="owner-1",
+        org_id="org-a",
+        action="deploy",
+        verdict="denied",
+        policy_snapshot='{"permission_table":{"deploy":["admin"]}}',
+        payload='{"authorized":false}',
+        inputs_hash="3f7868f23fd7ecf0",
+        violations=(SentinelViolation(boundary="policy.decision", rule="budget"),),
+    )
+    signed = replace(entry, integrity=signer.sign(entry))
+    await log.log(signed)
+
+    page = await log.get_page(org_id="org-a")
+    (row_id, stored) = page.records[0]
+    assert isinstance(row_id, int)
+    assert stored.integrity == signed.integrity
+    assert stored.inputs_hash == "3f7868f23fd7ecf0"
+    assert stored.policy_snapshot == signed.policy_snapshot
+    assert stored.payload == signed.payload
+    assert stored.violations and stored.violations[0].rule == "budget"
+    assert stored.signature and log.verify(stored)
+    assert inspect_decision(stored, trusted_keys=signer.keyring) is IntegrityStatus.VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_get_page_carries_decision_columns_from_durable_rows(
+    log: SqliteAuditLog,
+) -> None:
+    """A row written by the store maps back through the shared page mapper with
+    the same evidence ``get_entries`` reconstructs."""
+    entry = AuditEntry(
+        boundary="policy.decision",
+        user_id="u1",
+        org_id="org-a",
+        action="deploy",
+        inputs_hash="deadbeef",
+        integrity=DecisionSignature(
+            key_id="sentinel-abc",
+            algorithm="Ed25519",
+            signature="sig",
+            public_key="pub",
+        ),
+    )
+    await log.log(entry)
+
+    page = await log.get_page(org_id="org-a")
+    stored = page.records[0][1]
+    assert stored.inputs_hash == "deadbeef"
+    assert stored.integrity is not None
+    assert stored.integrity.key_id == "sentinel-abc"
 
 
 @pytest.mark.asyncio

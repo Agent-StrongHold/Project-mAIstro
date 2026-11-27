@@ -82,8 +82,10 @@ function SortableHeader({ label, field, sortKey, sortDir, onSort }: {
 }) {
   const arrow = sortKey === field ? (sortDir === "asc" ? " \u25B2" : " \u25BC") : "";
   return (
-    <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", borderBottom: "1.3px solid var(--rule)" }} onClick={() => onSort(field)}>
-      {label}{arrow}
+    <th style={{ textAlign: "left", padding: "0", borderBottom: "1.3px solid var(--rule)" }}>
+      <button type="button" onClick={() => onSort(field)} aria-label={`Sort by ${label}`} style={{ display: "block", width: "100%", padding: "8px 10px", textAlign: "left", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap", userSelect: "none", border: 0, background: "transparent", boxShadow: "none", cursor: "pointer" }}>
+        {label}{arrow}
+      </button>
     </th>
   );
 }
