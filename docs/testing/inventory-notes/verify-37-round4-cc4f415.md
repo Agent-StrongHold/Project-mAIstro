@@ -3,11 +3,12 @@ inventory-delta:
   packages/maistro-core/tests: +3
 ---
 
-# Verification round 4 (repair) — #37 at f5ce0ef2bf (develop-sync merge ea73052 + origin/develop 7615ebd709)
+# Verification round 4 (repair) — #37 at cc4f4153aa (two develop-sync merges + coverage-gate diff repair)
 
 Round L37 repair (job 61b3f7ea376942a485582304ceca7fba). Develop sync resolved
-(merge of `origin/develop` 7615ebd709, clean), and the one failing hosted gate —
-**Coverage gate (publish-set floor + diff coverage)** at ea73052, run
+twice — `origin/develop` 7615ebd709 (merge f5ce0ef2bf, clean) and the
+mid-round advance c2beba3f81 (merge cc4f4153aa) — and the one failing hosted
+gate — **Coverage gate (publish-set floor + diff coverage)** at ea73052, run
 45971098862 job 140418819817 — repaired. The other producers
 (coverage (PostgreSQL) 15m34s, coverage (no services), coverage (MinIO)) and
 every `Quality / *` job were green in that run; `combine` and the 87% floor
@@ -77,3 +78,51 @@ FAIL: 2 file(s) below the diff-coverage floor
 
 No production behavior outside `admission.py`'s eviction guard changed; no
 gate definitions, ledgers, or thresholds were edited.
+
+## Second develop sync (c2beba3f81) and the 072 -> 073 renumber
+
+`origin/develop` advanced mid-round to c2beba3f81 (#2532), landing its own
+`072_workspace_working_log` — a revision-id collision with this branch's
+tombstone/Project-FK revision. Left un-merged, the next merge-queue
+evaluation would combine both into a two-head migration chain. Resolution
+follows the branch's own landed convention (a landed trunk migration never
+moves; the newcomer renumbers):
+
+- `072_workspace_tombstones_and_project_fk.py` ->
+  `073_workspace_tombstones_and_project_fk.py`, `revision = "073"`,
+  `down_revision = "072"` (the working log); docstring records both
+  renumbers (069-written -> 072 -> 073).
+- Head-chain assertions updated with both landed identities:
+  `test_capability_invocation_effect_index_migration.py` (heads == ["073"],
+  working-log 072 + tombstone 073 named),
+  `test_goal_installed_base_upgrade.py` (CHAIN_HEAD = "073"),
+  `test_legacy_principal_ownership_live.py` (versions == {"073"}),
+  `test_migration_chain.py` (tombstone comment).
+- `tests/migrations/test_workspace_tombstones_installed_base.py` docstring
+  and the installed-base comment name the shipped revision.
+- `quality/durable-table-retention.json`: the two #37 rows' `owner_module`
+  now points at the 073 filename; the merged ledger keeps the branch's
+  tombstone/quarantine rows **and** develop's working-log rows
+  (129 tables, `check-durable-table-inventory.py` ok) — no rows lost in
+  either merge (`git diff --numstat origin/develop -- quality/` reviewed).
+- Live docs updated for the drift: ADR-092326-97c4 (+ the two #37 notes
+  updated by the round-3 precedent); historical `verify-37-*` round records
+  left as history.
+- `tests/fixtures/ci_quality_obligations.json`: `coverage-postgres` digest
+  recomputed from the merged workflow (both sides edited that job: this
+  branch's 20->40 timeout and develop's working-log producer legs); the
+  other three digests unchanged and verified byte-identical.
+
+Post-merge proof (all at cc4f4153aa): `alembic upgrade head` on a fresh
+pg17 database walks 070 -> 071 -> 072 -> 073 single-head;
+`tests/migrations` 174 passed; `tests/test_ci_quality_split.py` 96 passed;
+container/wiring/tombstone/fence/routing suites 243 passed; the live AC2
+probe re-run on the merged tree (deleted id refused on re-create with the
+tombstone row present, unknown id refused before any write, zero rows);
+full re-run of the coverage pipeline (unit core leg 17986 passed/1342
+skipped, PG producer list 7747 passed/99 skipped, backlog 115 passed, hive
+PG legs 58+49, gate's hive producer 4720 passed/2 skipped) ending in
+`check-diff-coverage.py coverage.xml --base origin/develop` exit 0;
+`check-suite-inventory.py` ok for `packages/maistro-core/tests` on the
+merged tree (develop's note deltas + this note's +3 balance); ruff
+check/format clean; backlog consistency OK.
