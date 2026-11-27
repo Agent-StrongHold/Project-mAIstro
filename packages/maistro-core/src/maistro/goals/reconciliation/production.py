@@ -68,7 +68,7 @@ from maistro.runs.goal_context import (
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import GOAL_RECONCILIATION_SOURCE
 from maistro.runs.store import RunStore
-from maistro.runs.task_kinds import DELEGATE_NODE_KIND
+from maistro.runs.task_kinds import DELEGATE_NODE_KIND, GOAL_RECONCILIATION_AGENT
 
 __all__ = [
     "DISCOVERY_CORRELATION",
@@ -78,13 +78,6 @@ __all__ = [
     "GoalPursuitUnresolvable",
     "GoalRunAdmitter",
 ]
-
-#: Reserved A2A principal a goal-pursuit Run delegates *from*. Mirrors
-#: ``DIRECT_SUBMISSION_AGENT``: registered by the agent factory with the
-#: roster's targets, so a blank ``from_agent`` never makes an admitted
-#: pursuit look like a target refusal rather than an authorized system
-#: submission.
-GOAL_RECONCILIATION_AGENT = "__maistro_goal_reconciliation__"
 
 #: Correlation token for the crash point "after Goal commit, before
 #: notification": a ``ready`` Goal whose row is durable but that no wake fact
