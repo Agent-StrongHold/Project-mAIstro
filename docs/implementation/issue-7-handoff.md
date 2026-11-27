@@ -1360,3 +1360,25 @@ production Dreaming-to-Agent recall. No tests or production behavior changed,
 so no suite inventory delta is applicable. This round records the bounded
 verification and leaves milestone status **NEEDS-REPAIR**; operator evidence
 and the separately scoped producer work remain required.
+
+## Round 22 — independent check at c12dfe8e
+
+The assigned job directory contains no `check-*.log` files. At the assigned
+head, I independently ran:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3721 files).
+- Goal reconciliation/container tests: 23 passed.
+- Workspace recovery/design/Entra/JIT/unwired-retirement tests: 61 passed.
+- `uv run python scripts/check-release-consistency.py`: passed; none released,
+  shipping 0.9.0 toward 1.0.0. `git tag -l 'v*'` returned no tags.
+- CI-exact vulture baseline scan: 1217 reviewed identities = 1217 findings.
+
+These checks establish focused deterministic health only. They do not prove the
+release workflow end-to-end, clean-machine real-model deployment, escrowed
+backup/restore, RC soak/equivalent promotion, overnight live operation, or
+Dreaming-to-Agent recall. Source inspection confirms the last gap is explicitly
+deferred in `KNOWN-GAPS.md:360-366`; ADR-082226-5104 §7 requires Dreaming to
+execute on the canonical Run spine, so a detached producer would not be a valid
+repair. No production or test change was warranted; no inventory delta applies.
+The issue remains **NEEDS-REPAIR** pending the missing product work and external
+operator evidence.
