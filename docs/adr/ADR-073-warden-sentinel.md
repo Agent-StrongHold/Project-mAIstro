@@ -118,6 +118,43 @@ does **not** take effect directly. It is a Repertoire *Compose* and must pass th
 gate, which is the **ADR-074 deconfliction check** (conformance vs ADRs → Specs → prior policy). Pass
 → commit; conflict → held for admin review. This is how online-mutable policy stays honest.
 
+## Amendment (2026-10-20): decision-record integrity mechanism and event emission (#69)
+
+The **Decision audit** clause above names a signed VC (ADR-024) and an ADR-037 `policy.decision`
+event. At the time of #69 the engine has no DID/VC issuance or resolution service and no canonical
+VC type; inventing one inside Sentinel would create a second identity authority beside ADR-021.
+For **Sentinel decision records only**, the accepted equivalent integrity mechanism is therefore a
+detached Ed25519 signature over a canonical JSON decision envelope:
+
+- The signed bytes cover schema version, timestamp, boundary, identity/scope (`user_id`, `org_id`,
+  `principal_id`, `team_id`, `agent_id`), action/tool, verdict, detail, the policy snapshot, the
+  decision payload, the `inputs_hash` of the call, and the violations list. No decision-bearing
+  field is left outside the signature.
+- The durable record stores only public verification material — `key_id`, algorithm, signature and
+  raw public key. Private key material is held by the signing process/key service, is never written
+  to `audit_log`, and retired private keys are dropped at rotation. Historical records written
+  before signing are reported `UNSIGNED`, never presented as signed.
+- Verification has an **embedded** mode (proves a row was not edited in place) and a **pinned** mode
+  keyed by an independently held `key_id → public key` reference. Production verifiers must pin; the
+  embedded mode alone cannot resist a store writer who replaces both the key and the signature.
+- Rotation retains retired public keys for verification history while making one new key active.
+  A deployment may inject a durable base64url 32-byte Ed25519 seed
+  (`MAISTRO_SENTINEL_SIGNING_KEY`) so the key reference survives restart; the seed is read at
+  composition time and is not persisted. A malformed seed fails startup rather than silently
+  falling back to a process-ephemeral key.
+
+`policy.decision` events are appended to the existing ADR-086 durable event log by the Sentinel
+audit path (the same event authority the rest of the engine uses), carrying `policy_id`, `boundary`,
+`decision`, `inputs_hash`, action/principal and the record's public verification material. Sentinel
+does not introduce a second event stream. A failed event append is reported but does not discard the
+already-written signed audit record — the audit remains authoritative.
+
+This amendment does **not** waive ADR-024 for any other consumer, and it does not add a second
+identity or event authority. When a DID/VC service exists, it can replace the record envelope
+without changing the durable schema's public-material fields or the pinned verification contract.
+
+---
+
 ## Acceptance criteria
 
 - [ ] Warden scans every trust boundary; MCP boundary scanned **both** directions.
@@ -127,8 +164,9 @@ gate, which is the **ADR-074 deconfliction check** (conformance vs ADRs → Spec
       Warden risk is a CLASSIFY input.
 - [ ] Policy tunables (thresholds, allow/deny, approver matrix, RLPHD θ) live in the DB, are
       RBAC-gated online-editable, and export to human-readable form; mechanism stays in code.
-- [ ] Every Sentinel decision is a signed VC + `policy.decision` event; a Warden block emits
-      `security.violation`.
+- [x] Every Sentinel decision is a signed decision record (see the 2026-10-20 amendment) and a
+      `policy.decision` event.
+- [ ] A Warden block emits `security.violation` (pre-existing gap, outside #69's integrity scope).
 - [ ] A change to the declarative policy passes through the ADR-074 conformance/Rehearse gate before
       activating; a conflict is held, not applied.
 - [ ] The policy store + decision audit are admin-scoped — an agent principal can neither read the
