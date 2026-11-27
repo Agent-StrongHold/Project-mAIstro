@@ -349,7 +349,18 @@ jobs:
   coverage-postgres:
     name: coverage (PostgreSQL)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 -> 40 on 2026-11-27: capacity, not scope (#37 CI repair). The job's
+    # own producer rule keeps lengthening it — each new PG-gated store adds a
+    # suite here — and the recorded arc grew 2.8 -> 16.9 minutes across its
+    # last green runs before #37's durable-Workspace legs pushed the step
+    # sequence past the budget: run 45948144005 was killed at exactly the 20
+    # minute mark (job cancelled 20m10s after start, mid pytest, exit shows
+    # the cancellation unwind, not a test failure). Every suite in the arc
+    # passes against a real pgvector/pg17 server; the same commands complete
+    # in ~14.5 minutes locally, so this is runner speed against a fixed
+    # ceiling, mirroring the coverage-gate raise below. The gate itself
+    # (publish-set floor + diff coverage) is unchanged.
+    timeout-minutes: 40
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -419,6 +430,19 @@ jobs:
       # new store as untested code while its conformance cases pass in the
       # `postgres` job.
       #
+      # The M4-H working log joins by that same rule (#105): the new
+      # `memory/working/pg_store.py` durable twin and its wiring legs gate on
+      # MAISTRO_TEST_PG_DSN / MAISTRO_TEST_DATABASE_URL, so everywhere else
+      # the PostgreSQL half skips and the diff gate scored the new store at
+      # 38.8% of its 67 changed lines while the same arcs passed against a
+      # real server in ci.yml's `postgres` job — the exact shape #231
+      # documented for scheduling and #102 for backlog. The three files are
+      # named individually rather than as a directory because the rest of
+      # `tests/memory` runs server-free in `coverage (no services)`; the
+      # conformance leg provisions its own schema (idempotent over the
+      # migrated chain applied above) and the schema-agreement suite renders
+      # migration 072 offline, so neither depends on this job ordering.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
       # race, are the only ones under `tasks` that need a server. The atomic
@@ -468,6 +492,9 @@ jobs:
             packages/maistro-core/tests/security/test_elevation_durable.py \
             packages/maistro-core/tests/security/test_delegation_durable.py \
             packages/maistro-core/tests/memory/user_model \
+            packages/maistro-core/tests/memory/test_working_log_pg_schema_agreement.py \
+            packages/maistro-core/tests/memory/test_working_log_store_conformance.py \
+            packages/maistro-core/tests/memory/test_working_memory.py \
             packages/maistro-core/tests/quota -v --tb=short
           # The backlog suite runs as its own invocation, not appended to the
           # list above (#102). Its `test_backlog_stores_import_no_rsi` pins the

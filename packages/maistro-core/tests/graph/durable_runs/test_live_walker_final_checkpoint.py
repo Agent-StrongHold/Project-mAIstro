@@ -176,6 +176,7 @@ async def spine(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator
         from maistro.persistence import _register_json_codecs
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         walker_pool = await asyncpg.create_pool(
             dsn, min_size=1, max_size=2, init=_register_json_codecs
@@ -191,6 +192,11 @@ async def spine(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator
                     "canonical_project_resources, canonical_project_memberships, "
                     "canonical_projects, graph_continuations RESTART IDENTITY CASCADE"
                 )
+            # Provisioned through the canonical authority (#37): the scope
+            # store verifies Workspace existence before minting a Root. The
+            # truncate above never touches canonical_workspaces, so this is
+            # idempotent across re-runs.
+            await provision_workspace(walker_pool, _WORKSPACE)
             pg_root = await pg_projects.create_root(_WORKSPACE)
             pg_project = await pg_projects.create(
                 workspace_id=_WORKSPACE,

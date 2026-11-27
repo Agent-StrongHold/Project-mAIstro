@@ -124,11 +124,15 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         from maistro.events.pg_envelope import PgEventStore
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         projects = PgProjectScopeStore(pg_pool)
         scoped: dict[str, tuple[str, str]] = {}
         for name in ("a", "b"):
             workspace = f"scope-{name}-{request.node.name}"
+            # Provisioned through the canonical authority (#37): the scope
+            # store verifies Workspace existence before minting a Root.
+            await provision_workspace(pg_pool, workspace)
             root = await projects.create_root(workspace)
             project = await projects.create(
                 workspace_id=workspace,

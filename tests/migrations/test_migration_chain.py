@@ -117,6 +117,11 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
+        # Deleted Workspaces stay deleted (#37, 073): the tombstone create()
+        # refuses, and the quarantine that holds historical orphan Projects
+        # with their provenance instead of deleting them.
+        "canonical_workspace_deletions",
+        "canonical_orphan_project_quarantine",
         # The live Persona beside that Workspace (#12, 064): one row per
         # Workspace, removed by the foreign key when the owner row goes.
         "canonical_personas",
@@ -227,6 +232,12 @@ EXPECTED_TABLES = frozenset(
         "user_model_facts",
         "user_model_statement_keys",
         "trigger_definitions",
+        # The per-Workspace working log (#301, M4-H; 072): the lossless
+        # observation log and the content-addressed results behind its
+        # references — the PostgreSQL durable twin of the SQLite tables the
+        # runtime bootstrap has always created.
+        "workspace_working_log",
+        "workspace_working_results",
     }
 )
 

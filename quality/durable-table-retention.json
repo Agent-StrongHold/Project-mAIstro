@@ -1428,6 +1428,7 @@
     {
       "table": "workspace_working_log",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
@@ -1435,11 +1436,12 @@
       "retention": "undecided",
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
-      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
+      "notes": "The lossless per-Workspace observation log (#301, M4-H). Simplification and hard resets APPEND SUMMARY/RESET markers rather than updating or deleting rows, so nothing in production edits an entry; the one driven deletion is purge_workspace when the Workspace itself is deleted -- the same explicit-delete-without-sweep shape as canonical_workspaces. SQLite bootstraps the table; Alembic 072 creates the PostgreSQL twin (PgWorkspaceLogStore, whose purge_workspace deletes the same rows on that backend). Losslessness is the feature, so the open decision is indefinite_by_decision versus a retention horizon for abandoned Workspaces."
     },
     {
       "table": "workspace_working_results",
       "backends": [
+        "postgres",
         "sqlite"
       ],
       "owner_module": "packages/maistro-core/src/maistro/memory/working/sqlite_store.py",
@@ -1447,7 +1449,7 @@
       "retention": "undecided",
       "deletion_path": "maistro.memory.working.sqlite_store:SqliteWorkspaceLogStore.purge_workspace",
       "issue": "#325",
-      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (put_result is INSERT OR IGNORE on the content address). Deleted by the same purge_workspace that removes the log entries referencing them; the lifetime question is the log's."
+      "notes": "Full payloads behind the log's result references (#301), content-addressed per Workspace and idempotently stored (SQLite: INSERT OR IGNORE on the content address; PostgreSQL: ON CONFLICT DO NOTHING). Deleted by the same purge_workspace that removes the log entries referencing them -- the PostgreSQL twin runs its two deletions in one transaction; the lifetime question is the log's."
     },
     {
       "table": "canonical_goals",
@@ -1619,6 +1621,31 @@
       "deletion_path": null,
       "issue": "#98",
       "notes": "One row per Workspace BacklogItem. No delete path yet, and Workspace deletion does not purge them; the PostgreSQL slice of #98 decides retention (likely bounded_by_parent on canonical_workspaces)."
+    },
+    {
+      "table": "canonical_workspace_deletions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/store.py",
+      "data_class": "audit",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#37",
+      "notes": "One row per deleted Workspace id — the tombstone that keeps deletion true after the Workspace row is gone (#37). PgWorkspaceStore.delete writes it in the same transaction that removes the Workspace, and create on either backend refuses a tombstoned id, so a stale Hive mirror, a replayed import journal, or leftover configuration cannot resurrect deleted authority. Deleting a tombstone would be resurrecting the Workspace, so no purge path exists by design; the table grows by one row per Workspace deletion, which is bounded by the number of Workspaces ever deleted. Alembic 072 creates it on PostgreSQL; SqliteWorkspaceStore.ensure_schema creates the same definition on SQLite (guarded DDL)."
+    },
+    {
+      "table": "canonical_orphan_project_quarantine",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/073_workspace_tombstones_and_project_fk.py",
+      "data_class": "audit",
+      "retention": "indefinite_by_decision",
+      "deletion_path": null,
+      "issue": "#37",
+      "notes": "One row per historical Project whose Workspace id nothing canonical owned, copied here with its full payload and the reason it was held out before removal from the live tree (alembic 072, the approved non-destructive orphan disposition of #37). This is provenance evidence, not live scope: nothing references a quarantined Workspace id again, and create_root refuses the id via the tombstone. Rows are never auto-deleted — an operator may quarantine further leftover rows by hand and VALIDATE CONSTRAINT per the migration's runbook; a bounded purge decision has no owner today. SQLite carries no legacy orphan population (its schema is store-created), so the table is PostgreSQL-only."
     }
   ]
 }
