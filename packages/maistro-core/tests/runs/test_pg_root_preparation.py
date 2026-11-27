@@ -81,9 +81,13 @@ def _graph(workspace: str, project_id: str) -> Graph:
 async def _fresh_scope(pool: Any, label: str) -> tuple[Any, str, str]:
     """One fresh Workspace with a non-root Project, isolated per test."""
     from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.testing.postgres import provision_workspace
 
     projects = PgProjectScopeStore(pool)
     workspace = f"issue-1882-{label}-{uuid4().hex}"
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Preparation"

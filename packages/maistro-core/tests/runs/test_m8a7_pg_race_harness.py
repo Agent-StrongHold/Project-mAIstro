@@ -132,8 +132,13 @@ def pg_dsn() -> str:
 
 async def _scoped_workspace(pg_pool: Any, label: str) -> tuple[PgProjectScopeStore, str, str]:
     """A fresh Workspace/Project pair, the house isolation pattern."""
+    from maistro.testing.postgres import provision_workspace
+
     projects = PgProjectScopeStore(pg_pool)
     workspace = f"m8a7-{label}-{uuid4().hex}"
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace, parent_project_id=root.project_id, name="Race"

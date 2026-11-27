@@ -108,6 +108,10 @@ async def _admit(
     overrides: dict[str, Any] | None = None,
 ) -> str:
     workspace = "fidelity-ws"
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     graph = Graph(
         workspace_id=workspace,

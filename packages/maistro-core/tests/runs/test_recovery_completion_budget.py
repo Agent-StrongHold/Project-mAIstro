@@ -244,6 +244,10 @@ async def test_sqlite_reopen_recovers_later_completion(tmp_path: Any) -> None:
     )
     first = await create_container(config)
     try:
+        if await first.workspace_store.get("recovery-restart") is None:
+            await first.workspace_store.create(
+                creator_user_id="test", name="recovery-restart", workspace_id="recovery-restart"
+            )
         project = await first.project_scope_store.create_root("recovery-restart")
         run_id, nodes, attempts = await _completed_pair(
             first, "recovery-restart", project.project_id

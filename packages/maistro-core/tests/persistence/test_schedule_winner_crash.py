@@ -198,9 +198,17 @@ async def _pg_context(pg_pool: Any, policy: OverlapPolicy) -> tuple[Any, ...]:
     from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.pg_store import PgRunStore
     from maistro.scheduling.pg_store import PgScheduleStore
+    from maistro.workspaces.pg_store import PgWorkspaceStore
 
     workspace = f"winner-crash-{uuid4().hex}"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root, the same way the
+    # container provisions its configured Workspace before the first
+    # admission.
+    await PgWorkspaceStore(pg_pool, project_store=projects).create(
+        creator_user_id="test", name=workspace, workspace_id=workspace
+    )
     root = await projects.create_root(workspace)
     schedules = PgScheduleStore(pg_pool)
     templates, template, schedule = await _definitions(

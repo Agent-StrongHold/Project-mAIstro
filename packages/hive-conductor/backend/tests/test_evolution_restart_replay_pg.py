@@ -148,8 +148,24 @@ def cycle_double(monkeypatch: pytest.MonkeyPatch) -> _ReplayCycle:
 async def _start_leg(dsn: str, workspace: str) -> _PgSpine:
     """One fresh-pool process; the workspace root is idempotent across legs."""
     from maistro.projects.scope import ProjectNotFound
+    from maistro.workspaces.pg_store import PgWorkspaceStore
 
     spine = await _PgSpine(dsn, workspace).start()
+    # Migration 071 (#37): the Root fence verifies the Workspace durably
+    # before minting, and the new foreign key backs it for every Project
+    # write. Provision the identity through the shipped atomic create the
+    # first time a leg sees the id (one uuid workspace per test; legs are
+    # strictly sequential).
+    workspaces = PgWorkspaceStore(spine.pool, project_store=spine.project_store)
+    exists = await spine.pool.fetchval(
+        "SELECT 1 FROM canonical_workspaces WHERE workspace_id = $1", workspace
+    )
+    if exists is None:
+        await workspaces.create(
+            creator_user_id=_ACTOR,
+            name="Evolve restart replay pg",
+            workspace_id=workspace,
+        )
     try:
         await spine.project_store.root_for_workspace(workspace)
     except ProjectNotFound:

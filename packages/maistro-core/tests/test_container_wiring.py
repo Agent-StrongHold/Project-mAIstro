@@ -30,6 +30,21 @@ async def _container(**overrides: object) -> Container:
 # --- Exposure ---------------------------------------------------------------
 
 
+async def _provisioned_root(container, workspace_id: str) -> str:
+    """A scratch Workspace provisioned through the canonical authority (#37).
+
+    The container's Project store verifies Workspace existence before minting
+    a Root, so test scaffolding provisions the Workspace the same way the
+    product does — through `workspace_store.create` — instead of asking the
+    scope store to mint scope for an id nothing owns.
+    """
+    if await container.workspace_store.get(workspace_id) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace_id, workspace_id=workspace_id
+        )
+    return (await container.project_scope_store.create_root(workspace_id)).project_id
+
+
 async def test_container_exposes_all_new_subsystems() -> None:
     container = await _container()
     for attr in (
@@ -181,8 +196,8 @@ async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     container = await _container(database_url="sqlite://")
 
     assert container.project_store is container.project_scope_store
-    root = await container.project_scope_store.create_root("context-wiring")
-    assert await container.context_assembly_policy.layer0(root.project_id) == ""
+    root_project_id = await _provisioned_root(container, "context-wiring")
+    assert await container.context_assembly_policy.layer0(root_project_id) == ""
 
 
 async def test_aclose_releases_working_memory_projections_but_never_the_log() -> None:
@@ -1299,7 +1314,7 @@ async def test_the_container_sweeps_abandoned_attempts() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery")).project_id
+    project_id = await _provisioned_root(container, "recovery")
     graph = Graph(
         workspace_id="recovery",
         project_id=project_id,
@@ -1347,7 +1362,7 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-park")).project_id
+    project_id = await _provisioned_root(container, "recovery-park")
     graph = Graph(
         workspace_id="recovery-park",
         project_id=project_id,
@@ -1398,7 +1413,7 @@ async def test_parent_only_recovery_progress_consumes_budget() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-budget")).project_id
+    project_id = await _provisioned_root(container, "recovery-budget")
     graph = Graph(
         workspace_id="recovery-budget",
         project_id=project_id,
@@ -1464,7 +1479,7 @@ async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-skew")).project_id
+    project_id = await _provisioned_root(container, "recovery-skew")
     graph = Graph(
         workspace_id="recovery-skew",
         project_id=project_id,
@@ -1514,7 +1529,7 @@ async def test_the_sweep_heals_a_reclaim_whose_reconciliation_was_interrupted() 
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-heal")).project_id
+    project_id = await _provisioned_root(container, "recovery-heal")
     graph = Graph(
         workspace_id="recovery-heal",
         project_id=project_id,
@@ -1611,7 +1626,7 @@ async def test_the_replay_does_not_park_a_requested_cancellation() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-asked")).project_id
+    project_id = await _provisioned_root(container, "recovery-asked")
     graph = Graph(
         workspace_id="recovery-asked",
         project_id=project_id,
@@ -1675,7 +1690,7 @@ async def test_the_replay_does_not_park_under_a_live_retry() -> None:
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-retry")).project_id
+    project_id = await _provisioned_root(container, "recovery-retry")
     graph = Graph(
         workspace_id="recovery-retry",
         project_id=project_id,
@@ -1723,7 +1738,7 @@ async def test_replay_does_not_park_over_a_retry_committed_after_selection() -> 
 
     container = await _container()
     store = container.run_store
-    project_id = (await container.project_scope_store.create_root("recovery-race")).project_id
+    project_id = await _provisioned_root(container, "recovery-race")
     graph = Graph(
         workspace_id="recovery-race",
         project_id=project_id,
