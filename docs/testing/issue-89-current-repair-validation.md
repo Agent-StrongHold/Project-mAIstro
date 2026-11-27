@@ -1,6 +1,54 @@
 # Issue #89 current repair validation
 
-## Current round: supplied head `a68a3a1b2369`, base `80242f28521b`
+## Current round: develop sync to base `c707949a0a98`, merged head `e30ab607675d`
+
+Job `795e11baa48a440a916c315d6a99fd85`, branch/worktree `auto-89`, started
+clean at `64c2eee8b04ed1e5fe9d70ca6932418936526960`. The lane brief named
+base `c707949a0a98` and reported the front-matter check `queued` (scheduling,
+not a failure); the carried block was the operational soak/promotion BLOCKED.
+Fresh fetch showed `origin/develop` at the assigned base `c707949a0a98` — 4
+commits (`c707949a0a` M3-A3, `80242f2852` M5-B, `8d8f10616f` M3-E5,
+`4f8f40352d` M8-A) past the branch's merge base `69b41dd3af32`, on file sets
+disjoint from this branch's diff.
+
+### Actions and fresh execution (all green)
+
+- `git merge origin/develop` — resolved with zero conflicts. Ledger audit per
+  docs/quality-gates.md: `git diff --numstat origin/develop -- quality/
+  docs/testing/inventory/` prints nothing — ledgers and inventory baseline
+  byte-identical to develop, no rows lost (multiset safety check).
+  `uv sync --locked --extra dev` after the `uv.lock` change. Post-merge
+  merge-base = `c707949a0a98` (exactly the assigned base).
+- Front-matter gate, all 7 steps at `e30ab607675d` — registry unit tests
+  194 passed; `tools/lint_lifecycle.py` clean; `maistro-registry lint
+  . --strict` 447 files / 0 errors; citation ratchet
+  `RATCHET_BASE_REV=origin/develop` 0 exceptions, no candidate expansion
+  (base resolves to `c707949a0a98`); ADR-INDEX consistent; AC-Defined index
+  regenerated with zero diff; body-status language 0 contradictions.
+- Vulture exact-debt gate (CI args) — 1218 reviewed identities -> 1218
+  findings, unclassified 0. Count moved 1219 -> 1218 with develop's own
+  ledger commit; local ledger verified identical to `origin/develop`. No
+  amendment made or warranted.
+- Coverage gate, diff half — 183 release tests pass under
+  `coverage run --branch --source=scripts`; `check-diff-coverage.py --base
+  origin/develop` exit 0 (2 measured files at/above 90% lines / 80% arcs,
+  3 test files exempt by declaration).
+- `ruff check .` / `ruff format --check .` — pass (3699 files formatted).
+  Note: one upstream ruff warning about an invalid `# noqa` directive in
+  develop's `discovery_source_fetch.py:61` — warning only, not this branch's
+  file, exit 0.
+- `check-suite-inventory.py` — 21 suites match the recorded inventory.
+- `check-doc-links.py` 0 broken; workflow inventory clean (33);
+  workflow write-safety ok; backlog consistency OK (167 items).
+
+No source, test, or ledger change was warranted. The only tree changes are
+the sync merge commit, this doc, and inventory note
+`docs/testing/inventory-notes/verify-89-m3a7-develop-sync-c707949a.md`
+(delta +0 tests). Operational acceptance (hosted RC build, #860 multi-replica
+soak, actual final promotion) remains UNVERIFIED by construction — see
+Acceptance and Handoff sections below.
+
+## Previous round: supplied head `a68a3a1b2369`, base `80242f28521b`
 
 Job `2f3dd344705a44c18915548dfb7ced54`, branch/worktree `auto-89`.
 The initial worktree was clean. Preserved all prior implementation, tests,
