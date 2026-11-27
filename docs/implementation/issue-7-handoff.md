@@ -1302,3 +1302,30 @@ changed. ADR-080 and ADR-082226-5104 remain controlling: same-user user-scope
 memory is distinct from cross-principal sharing, and PostgreSQL remains durable
 authority while per-Workspace working memory is disposable. Verdict remains
 **NEEDS-REPAIR**; no new test was added, so no inventory delta is applicable.
+
+## Round 20 — fresh bounded verification at 3682cd638f
+
+The assigned job directory contained no `check-*.log` files; the supplied prior
+verification artifact (`2789293509bd4358b0ee30e62f19a1f8`) had seven logs, all
+read. Their deterministic checks reported success, but I independently reran
+focused checks against the exact assigned head:
+
+- `uv run ruff check .` / `uv run ruff format --check .`: passed; 3721 files
+  formatted.
+- `uv run pytest packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x`:
+  23 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q -x`:
+  61 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1217 reviewed identities equal 1217 findings.
+- `uv run python scripts/check-release-consistency.py`: passed; none released,
+  shipping 0.9.0, working toward 1.0.0. `git tag -l 'v*'` returned no tags.
+
+No production or test change is justified by this validation: deterministic
+checks pass, while outstanding acceptance requires live operator evidence or
+separately designed product seams. The release workflow remains explicitly
+unexercised; clean-machine/live-model E2E, escrow restore, RC soak/promotion,
+overnight operation, and production Dreaming producer/Agent recall remain
+UNVERIFIED or unmet as stated in Round 19. No tests were added, so no inventory
+delta applies. This documentation-only verification update does not promote the
+milestone verdict: **NEEDS-REPAIR**.
