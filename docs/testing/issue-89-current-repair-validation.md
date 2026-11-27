@@ -1,6 +1,89 @@
 # Issue #89 current repair validation
 
-## Current round: assigned head `c6cfc6de9626`, base `73610a225d98`
+## Current round: assigned head `2bc81c02bd`, base `73610a225d98` (already merged)
+
+Job `17ec229326d64a26a76479d8e50b2fda`, branch/worktree `auto-89`, exact
+starting head `2bc81c02bdc3c88507357da7658af6ab8cdcab52`. Frozen scope:
+issue #89 only. The merge-queue items named for this round were the
+`queued` "Validate ADR/spec front-matter" check and the carried
+operational BLOCKED; a `queued` state is scheduling, not a reproduced
+failure, so this round re-proves the named gates at the current head
+before touching anything. `git status` was clean on entry; no salvage
+existed to preserve. No tests added/removed (inventory delta zero), no
+ledger/grant edits (vulture gate clean; ordinary round), no push, tag,
+or other GitHub mutation.
+
+### Fresh execution at `2bc81c02bd`
+
+All logs are under `/home/dev/maistro/jobs/17ec229326d64a26a76479d8e50b2fda`;
+every command exited 0 except the deliberately killed mutant.
+
+- Branch position: `origin/develop` (`73610a225d98`) is an ancestor of
+  this head — the develop sync landed in `bb9b2d2200`; 0 commits behind
+  develop, so no conflict resolution was needed. `uv sync --locked
+  --extra dev` — environment already locked and current.
+- Front-matter gate ("Validate ADR/spec front-matter",
+  `.github/workflows/registry.yml`), all 7 steps at this head — PASS:
+  194 registry unit tests (`check-registry-tests.log`);
+  `tools/lint_lifecycle.py` baseline 0 (`check-lifecycle.log`);
+  `maistro-registry.cli lint . --strict` 447 files / 0 errors / 0
+  warnings (`check-registry-lint.log`); citation ratchet with
+  `RATCHET_BASE_REV=origin/develop` 0 exceptions, no expansion
+  (`check-citation.log`); ADR-INDEX consistent (`check-adr-index.log`);
+  AC-Defined index regenerated with zero diff (`check-spec-index.log`,
+  `check-spec-index-diff.log`); body-status language 0 contradictions
+  (`check-adr-language.log`). The queued state does not reproduce as a
+  validation failure.
+- Coverage gate, diff half at this head: release battery
+  `coverage run --branch --source=scripts` over the promote/guard/
+  soak/publish suites — **703 passed** (`check-release-tests.log`);
+  `coverage xml`, then `check-diff-coverage.py --base origin/develop`
+  — PASS, 2 changed measured production files at/above 90% lines /
+  80% branch arcs, 3 test files exempt by declaration
+  (`check-diff-coverage.log`). The full combined hosted publish-set
+  floor (87%) remains UNVERIFIED locally — it requires the six
+  producers CI assembles (`quality.yml` coverage-gate job).
+- Byte-verification mutation probe re-run at this head — control
+  passes, mutant killed:
+  `tests/test_promote_release.py::test_adopt_wheels_fails_closed_on_tampered_bytes`
+  exits 0 unmutated (`check-byte-control.log`) and exits 1 with
+  `MUTANT ACTIVE` under a process-local plugin stubbing `verify_dist`
+  (`check-byte-mutant.log`, `probe_byte_verification.py`). No tracked
+  source was mutated.
+- Exact vulture gate (CI args) — 1218 reviewed identities -> 1218
+  findings, 0 unclassified (`check-vulture.log`); candidate baseline
+  edits cannot authorize anything and none were made.
+- `ruff check .` / `ruff format --check .` — PASS, 3710 files formatted.
+- `check-suite-inventory.py` — 21 suites match the recorded inventory,
+  no tests added (`check-inventory.log`);
+  `check-release-consistency.py`, `check-workflow-inventory.py`,
+  `check-workflow-write-safety.py`, `check-doc-links.py` — PASS.
+- Ledger safety: `git diff --numstat origin/develop -- quality/
+  docs/testing/inventory/` prints nothing — quality ledgers and the
+  suite-inventory baseline are byte-identical to develop (multiset rule
+  honored).
+
+### Disposition
+
+No source, test, workflow, or ledger defect was demonstrated at this
+head; the only tree change is this note. The carried BLOCKED is not a
+gate failure: it is the documented cross-lane operational contract —
+`scripts/promote_release.py:49-57` requires schema-1 `soak-evidence`
+produced by a real RC soak, and accepted ADRs reserve publication to
+the tag-triggered `release.yml` pipeline with protected approval. That
+evidence must come from the release/soak owners (#860 lane, PR #1672)
+and the protected release environment; it cannot be manufactured
+locally by any number of further repair rounds. All locally reachable
+acceptance (candidate-only RC enforcement, soak-before-promotion
+rejection, new-RC-on-change, byte-equivalence fail-closed with a killed
+bypass mutant, artifact/config binding, and every named gate) is proven
+above at this exact head.
+
+Progress: checked 1 issue, done 1 focused validation/handoff round, skipped 0,
+unexpected errors 0; next: release/soak owner evidence and protected
+operation. Writer handoff only; not integration approval or issue completion.
+
+## Previous round: assigned head `c6cfc6de9626`, base `73610a225d98`
 
 Job `c88e90acbe5f44d7b1cecf2fa6f93a82`, branch/worktree `auto-89`.
 Frozen scope: issue #89, preserved release implementation and adjacent tests,
