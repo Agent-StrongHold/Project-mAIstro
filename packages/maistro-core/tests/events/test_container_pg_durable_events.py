@@ -20,6 +20,7 @@ caller who already held a pool had no way to reach the durable stores at all.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 
@@ -377,3 +378,163 @@ class TestTheOtherTwoBackendsAreUnchanged:
         )
         read = await container.goal_store.get_goal(goal.goal_id)
         assert read is not None and read.current_revision == 1
+
+
+class TestTheDurableCursorNeverSkipsALateCommit:
+    """#2509, end to end on real PostgreSQL.
+
+    `BIGSERIAL` allocates an id inside the appending transaction, so an
+    append that is slow to commit leaves a lower id invisible while a
+    higher one is readable. The durable cursor must never persist past
+    that hole while the appending transaction can still commit — no
+    elapsed-time grace is allowed to decide for it — and after the append
+    commits, the ordinary production tick must deliver the late id exactly
+    once, alongside the id that settled ahead of it.
+    """
+
+    @staticmethod
+    def _ids_caller(sink: list[int]):
+        async def _caller(trigger: object, event: Any) -> None:
+            sink.append(event.id)
+
+        return _caller
+
+    async def test_a_hole_a_live_append_may_still_commit_holds_the_cursor(
+        self, pg_pool, wire
+    ) -> None:
+        import asyncpg
+
+        from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        await pg_pool.execute(
+            # RESTART IDENTITY: the hole math below reads ids 1..3 off a
+            # fresh log, and a plain TRUNCATE leaves the BIGSERIAL sequence
+            # at whatever earlier tests in this file consumed.
+            "TRUNCATE handler_invocations, trigger_definitions, event_log, "
+            "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+        )
+        container = await wire(_config(), pg_pool=pg_pool)
+        replica = await wire(_config(), pg_pool=pg_pool)
+        delivered: list[int] = []
+        replica_delivered: list[int] = []
+        container.handler_caller = self._ids_caller(delivered)
+        replica.handler_caller = self._ids_caller(replica_delivered)
+        # A sendable handler_url (the injected caller never dials it): an
+        # empty target settles as a pre-send refusal, which would advance
+        # the cursor without any dispatch this test is meant to observe.
+        await container.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+
+        await container.durable_event_log.append("agent.created")  # id 1
+        holder = await asyncpg.connect(_require_postgres())
+        try:
+            await holder.execute("BEGIN")
+            inflight_id = await holder.fetchval(
+                "INSERT INTO event_log (event_type, created_at) "
+                "VALUES ('agent.created', 0) RETURNING id"
+            )
+            assert inflight_id == 2
+            await container.durable_event_log.append("agent.created")  # id 3, ahead of 2
+
+            # Two ordinary production ticks while id 2 can still commit:
+            # both settle 3's receipts but the durable cursor — here and on
+            # the log's own replay acknowledgement — never passes id 1.
+            assert await container.process_durable_events() == 1
+            assert await container.process_durable_events() == 1
+            assert delivered == [1, 3]
+            assert (
+                await container.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 1
+            )
+
+            # Lease transfer to the second replica (wired before the slow
+            # append opened: a Container's startup runs schema DDL, which
+            # waits on the appending transaction's relation lock — a
+            # deployment starts replicas, it does not re-wire per tick). It
+            # re-derives the same hold from the durable stores — nothing is
+            # skipped by taking over, and the already-settled 3 is deduped,
+            # not re-called.
+            await pg_pool.execute("UPDATE consumer_cursors SET lease_expires_at = 0")
+            assert await replica.process_durable_events() == 1
+            assert replica_delivered == []
+
+            # The slow append commits. The late id must come back — not be
+            # lost to a cursor that moved past it while the transaction was
+            # merely slow.
+            await holder.execute("COMMIT")
+        finally:
+            await holder.close()
+
+        assert await replica.process_durable_events() == 3
+        assert replica_delivered == [2]
+        assert delivered == [1, 3]
+        assert await replica.durable_event_log.get_replay_cursor(LEGACY_BRIDGE_CONSUMER_ID) == 3
+
+    async def test_a_rolled_back_hole_is_crossed_on_durable_evidence(self, pg_pool, wire) -> None:
+        """The rollback half: bounded forward progress, from durable proof.
+
+        The permanently absent id must not wedge the cursor forever — but
+        the tick that crosses it runs after the append's outcome is
+        terminally absent (no live sequence holder, still invisible), which
+        is database evidence, not a sleep.
+        """
+        import asyncpg
+
+        from maistro.events.invocations import ReplaySafety
+        from maistro.events.trigger_store import TriggerDefinition
+
+        await pg_pool.execute(
+            # RESTART IDENTITY: the hole math below reads ids 1..3 off a
+            # fresh log, and a plain TRUNCATE leaves the BIGSERIAL sequence
+            # at whatever earlier tests in this file consumed.
+            "TRUNCATE handler_invocations, trigger_definitions, event_log, "
+            "event_replay_cursors, consumer_cursors RESTART IDENTITY"
+        )
+        container = await wire(_config(), pg_pool=pg_pool)
+        delivered: list[int] = []
+        container.handler_caller = self._ids_caller(delivered)
+        # A sendable handler_url (the injected caller never dials it): an
+        # empty target settles as a pre-send refusal, which would advance
+        # the cursor without any dispatch this test is meant to observe.
+        await container.trigger_store.add(
+            TriggerDefinition(
+                trigger_id="t1",
+                event_pattern="agent.*",
+                handler_url="http://handlers.invalid/agent",
+                replay_safety=ReplaySafety.IDEMPOTENT,
+                contract_ref="contract-v1",
+            )
+        )
+
+        await container.durable_event_log.append("agent.created")  # id 1
+        holder = await asyncpg.connect(_require_postgres())
+        try:
+            await holder.execute("BEGIN")
+            inflight_id = await holder.fetchval(
+                "INSERT INTO event_log (event_type, created_at) "
+                "VALUES ('agent.created', 0) RETURNING id"
+            )
+            assert inflight_id == 2
+            await container.durable_event_log.append("agent.created")  # id 3
+
+            # The append is live: hold below it.
+            assert await container.process_durable_events() == 1
+
+            # The append aborts; its id is terminally absent.
+            await holder.execute("ROLLBACK")
+        finally:
+            await holder.close()
+
+        # One tick after the outcome, on durable evidence: the position
+        # crosses the hole to the settled cursor and 3 stays retained.
+        assert await container.process_durable_events() == 3
+        assert delivered == [1, 3]
+        assert await pg_pool.fetchval("SELECT count(*) FROM event_log") == 2
