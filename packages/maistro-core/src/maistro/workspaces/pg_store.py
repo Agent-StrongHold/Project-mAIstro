@@ -49,6 +49,7 @@ code carrying a promise it cannot keep.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
@@ -57,9 +58,11 @@ from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
+    WorkspaceDeleted,
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
+    creation_memberships,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -116,8 +119,9 @@ class PgWorkspaceStore:
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
-        """Write the Workspace, its owner membership, and its Root Project.
+        """Write the Workspace, its initial memberships, and its Root Project.
 
         Ordinary callers omit the explicit identity/timestamps. Those values
         exist only for convergence imports so a durable legacy Workspace keeps
@@ -131,19 +135,40 @@ class PgWorkspaceStore:
         if updated_at is not None:
             workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
-        owner = WorkspaceMembership(
-            workspace_id=workspace.workspace_id,
-            user_id=creator_user_id,
-            role=WorkspaceRole.OWNER,
-            added_at=workspace.created_at,
-        )
-        # One transaction for all three rows (#1121). The Root Project is
+        memberships = creation_memberships(workspace, creator_user_id, initial_memberships)
+        # One transaction for identity, the entire roster and Root (#37/#1121).
+        # No member is replayed after commit, when another client can revoke.
+        # The Root Project is
         # written *last* and read back on the same connection, so a failure
         # anywhere rolls the Workspace and membership back with it; there is
         # nothing to compensate.
         async with self._project_store.transaction() as conn:
+            # The tombstone check rides the same transaction as the insert,
+            # not a read before it (#37). There is no row to lock — the
+            # Workspace does not exist yet — so the serialization against a
+            # concurrent delete is the insert itself plus the re-check below:
+            #   * delete commits first → this check refuses before anything
+            #     is written, and the tombstone keeps refusing later;
+            #   * this insert lands first → the delete's row-delete blocks on
+            #     the uncommitted row and waits for this transaction;
+            #   * a delete commits between the two checks → the re-check
+            #     refuses an id the tombstone has already claimed, and the
+            #     rolled-back insert leaves nothing behind.
+            tombstoned = await conn.fetchval(
+                "SELECT 1 FROM canonical_workspace_deletions WHERE workspace_id = $1",
+                workspace.workspace_id,
+            )
+            if tombstoned is not None:
+                raise WorkspaceDeleted(workspace.workspace_id)
             await self._insert_workspace(conn, workspace)
-            await self._insert_membership(conn, owner)
+            tombstoned = await conn.fetchval(
+                "SELECT 1 FROM canonical_workspace_deletions WHERE workspace_id = $1",
+                workspace.workspace_id,
+            )
+            if tombstoned is not None:
+                raise WorkspaceDeleted(workspace.workspace_id)
+            for member in memberships:
+                await self._insert_membership(conn, member)
             await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
@@ -226,6 +251,17 @@ class PgWorkspaceStore:
             if self.persona_store is not None:
                 await self.persona_store.delete_for_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
+            # The tombstone commits with the delete or not at all (#37): a
+            # rolled-back delete leaves the id re-creatable, because the
+            # Workspace it names is still there.
+            await conn.execute(
+                """INSERT INTO canonical_workspace_deletions
+                       (workspace_id, deleted_at)
+                   VALUES ($1, $2)
+                   ON CONFLICT (workspace_id) DO NOTHING""",
+                workspace_id,
+                datetime.now(UTC),
+            )
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""

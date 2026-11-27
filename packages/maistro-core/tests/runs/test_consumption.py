@@ -77,6 +77,10 @@ async def _admit_schedule_run(
     inputs: dict[str, Any] | None = None,
     workspace: str = "consumer-ws",
 ) -> str:
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     graph = Graph(
         workspace_id=workspace,
@@ -104,6 +108,10 @@ async def test_the_schedule_admitter_run_reaches_the_consumer_tick() -> None:
     _TickNode.calls = 0
     container = await _container()
     workspace = "admitter-consumer-ws"
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     now = datetime.now(UTC).replace(second=0, microsecond=0)
     template = GraphTemplate(
@@ -178,6 +186,10 @@ async def test_admitted_schedule_run_executes_on_the_sqlite_container(tmp_path: 
     )
     try:
         workspace = "sqlite-admitter-consumer-ws"
+        if await container.workspace_store.get(workspace) is None:
+            await container.workspace_store.create(
+                creator_user_id="test", name=workspace, workspace_id=workspace
+            )
         root = await container.project_scope_store.create_root(workspace)
         template = GraphTemplate(
             template_id="sqlite-admitter-consumer-template",

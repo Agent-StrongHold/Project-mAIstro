@@ -93,6 +93,11 @@ class _LostTerminalWriteRunStore:
 async def test_terminal_write_failure_leaves_the_run_to_its_live_attempt() -> None:
     container = await create_container(AgentConfig(router_api_key="test-key"))
     run_store = container.run_store
+    # The scope store verifies Workspace existence (#37); provision first.
+    if await container.workspace_store.get(_WORKSPACE) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=_WORKSPACE, workspace_id=_WORKSPACE
+        )
     root = await container.project_scope_store.create_root(_WORKSPACE)
     graph = Graph(
         workspace_id=_WORKSPACE,

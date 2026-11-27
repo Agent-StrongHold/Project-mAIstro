@@ -46,6 +46,7 @@ DATABASE_URL = os.environ.get("MAISTRO_TEST_DATABASE_URL", "")
 SCOPE_TABLES = (
     "canonical_workspaces",
     "canonical_workspace_memberships",
+    "canonical_workspace_deletions",
     "canonical_projects",
     "canonical_project_memberships",
     "canonical_project_resources",
@@ -91,6 +92,18 @@ class TableSpec:
     #: ``on_delete`` spelling normalized to pg_constraint's codes
     #: (``c``ascade, ``r``estrict, ``a`` no action).
     foreign_keys: tuple[tuple[str, str, str, str], ...] = ()
+    #: Foreign keys only the PostgreSQL implementation declares. #37 added
+    #: ``canonical_projects.workspace_id → canonical_workspaces`` (migration
+    #: 069, ``ON DELETE RESTRICT``) as the database-level backstop for the
+    #: admission fence. SQLite's fence is the transactional Workspace check in
+    #: ``create_root_in`` instead, deliberately: SQLite cannot ``ALTER TABLE
+    #: ADD CONSTRAINT`` on databases created before 069's PG twin, and a
+    #: declared FK would refuse the documented bootstrap case where a scope
+    #: store is provisioned before its Workspace authority (the parent table
+    #: does not exist yet, so FK enforcement errors on the first root). The
+    #: semantics agree — both refuse an unowned id before any row is written;
+    #: only the mechanism is dialect-bound.
+    pg_only_foreign_keys: tuple[tuple[str, str, str, str], ...] = ()
     #: Unique indexes as ``(columns, normalized partial predicate)``; the
     #: empty predicate is a whole-table unique index.
     unique_indexes: frozenset[tuple[tuple[str, ...], str]] = frozenset()
@@ -161,6 +174,16 @@ def _spec() -> dict[str, TableSpec]:
                 }
             ),
         ),
+        "canonical_workspace_deletions": TableSpec(
+            # #37's tombstone (069 on PostgreSQL, the stores' own DDL on
+            # SQLite): a row here means the id's delete committed and `create`
+            # must refuse it forever. Deletion as recorded fact, not absence.
+            columns={
+                "workspace_id": ColumnSpec(nullable=False),
+                "deleted_at": ColumnSpec(nullable=False, pg_types=PG_TIMESTAMPTZ),
+            },
+            primary_key=("workspace_id",),
+        ),
         "canonical_projects": TableSpec(
             columns={
                 "project_id": ColumnSpec(nullable=False),
@@ -177,6 +200,10 @@ def _spec() -> dict[str, TableSpec]:
             },
             primary_key=("project_id",),
             foreign_keys=(("parent_project_id", "canonical_projects", "project_id", "r"),),
+            # #37 (069): the database-level backstop for the admission fence —
+            # no Project row for a Workspace id nothing owns, for any writer.
+            # PostgreSQL-only; see TableSpec.pg_only_foreign_keys for why.
+            pg_only_foreign_keys=(("workspace_id", "canonical_workspaces", "workspace_id", "r"),),
             # One Root Project per Workspace, enforced by the database (012):
             # two concurrent create_root calls cannot both win. The predicate
             # is spelled in the canonical bare-column form `_norm_predicate`
@@ -489,9 +516,11 @@ def _compare(
             "(033 moved Project membership uniqueness to (project_id, principal_id); "
             "a drift back to a membership_id key resurrects the duplicate-grant bug)"
         )
-        assert real.foreign_keys == frozenset(table_spec.foreign_keys), (
-            f"{side} {table}: foreign keys {sorted(real.foreign_keys)} "
-            f"!= {sorted(table_spec.foreign_keys)}"
+        expected_fks = frozenset(table_spec.foreign_keys) | (
+            frozenset(table_spec.pg_only_foreign_keys) if is_pg else frozenset()
+        )
+        assert real.foreign_keys == expected_fks, (
+            f"{side} {table}: foreign keys {sorted(real.foreign_keys)} != {sorted(expected_fks)}"
         )
 
         # Indexes, unique and plain, partial predicates normalized.
