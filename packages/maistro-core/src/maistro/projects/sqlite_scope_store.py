@@ -329,10 +329,28 @@ class SqliteProjectScopeStore:
         `INSERT OR IGNORE` against the partial unique index and a read back on
         the same connection, both under the caller's `BEGIN IMMEDIATE`, so the
         existence check cannot race a second writer.
+
+        The Workspace itself is verified on this connection first (#37). Under
+        `BEGIN IMMEDIATE` SQLite has one writer, so the answer is the
+        transaction's own: a Workspace deleted by a committed transaction is
+        already gone when this one begins, and one deleted concurrently waits
+        for this transaction to commit first. A database where the Workspace
+        authority was never provisioned — no `canonical_workspaces` table —
+        keeps the pre-#37 behaviour: there is no authority to ask yet, and the
+        container provisions it before the first admission. Once provisioned,
+        the table exists forever, so the fence covers every deployment that
+        has ever created a Workspace.
         """
 
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        if await self._workspace_row(conn, workspace_id) is False:
+            # False, not None: None means the authority was never provisioned
+            # on this database (keep the pre-#37 behaviour); False means it
+            # was provisioned and the row is genuinely absent — refuse.
+            from maistro.workspaces.model import WorkspaceNotFound
+
+            raise WorkspaceNotFound(workspace_id)
         root = Project(
             workspace_id=workspace_id,
             name="Root",
@@ -346,6 +364,29 @@ class SqliteProjectScopeStore:
             (root.project_id, root.workspace_id, root.model_dump_json()),
         )
         return await self.root_for_workspace(workspace_id)
+
+    @staticmethod
+    async def _workspace_row(conn: aiosqlite.Connection, workspace_id: str) -> bool | None:
+        """Whether the canonical Workspace row exists, or None while unknown.
+
+        None is the not-provisioned answer: the `canonical_workspaces` table
+        itself is absent, so this database has never owned a Workspace and
+        there is no authority to consult. A missing *row* on a provisioned
+        database is a real negative and refuses the write.
+        """
+        import sqlite3
+
+        try:
+            async with conn.execute(
+                "SELECT 1 FROM canonical_workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table: canonical_workspaces" in str(exc):
+                return None
+            raise
+        return row is not None
 
     async def root_for_workspace(
         self, workspace_id: str, *, principal_id: str | None = None

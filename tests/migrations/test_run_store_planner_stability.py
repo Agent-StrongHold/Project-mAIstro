@@ -215,6 +215,12 @@ _STATUS_ARRAY = (
 )
 
 _SEED_SQL = f"""
+-- #37 fences `canonical_projects` behind `canonical_workspaces` (071: NOT
+-- VALID for pre-existing rows, enforced for every new write), so the seed's
+-- scope rows sit under a canonical Workspace exactly as production writes do.
+INSERT INTO canonical_workspaces (workspace_id, name, created_at, updated_at, payload)
+VALUES ('w-seed', 'planner-stability seed', now(), now(), '{{}}');
+
 INSERT INTO canonical_projects (project_id, workspace_id, is_root, payload)
 VALUES ('p-seed', 'w-seed', TRUE, '{{}}');
 

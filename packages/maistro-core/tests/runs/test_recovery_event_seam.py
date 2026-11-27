@@ -117,6 +117,14 @@ async def _expired_running_attempt(
 ) -> tuple[str, str, str, Any]:
     """A RUNNING Run/NodeRun holding one leased Attempt; returns (run, node, attempt ids, after)."""
     store = container.run_store
+    # The admission fence (#37) refuses a Root Project for a Workspace id
+    # nothing canonical owns, so provision the Workspace the way the
+    # container itself does at composition: `create` files the Root Project
+    # that `create_root` then treats as create-or-return.
+    if await container.workspace_store.get(workspace_id) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace_id, workspace_id=workspace_id
+        )
     root = await container.project_scope_store.create_root(workspace_id)
     graph = Graph(
         workspace_id=workspace_id,

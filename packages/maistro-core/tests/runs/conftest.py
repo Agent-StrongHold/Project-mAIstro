@@ -41,11 +41,17 @@ async def spine(
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         # A fresh Workspace per test: the tables are shared and durable, so
         # isolating by scope is cheaper and truer than truncating between tests.
         workspace = f"{WORKSPACE}-{request.node.name}"
         projects = PgProjectScopeStore(pg_pool)
+        # Provisioned through the canonical authority (#37): the scope store
+        # verifies Workspace existence before minting a Root, the same way the
+        # container provisions its configured Workspace before the first
+        # admission.
+        await provision_workspace(pg_pool, workspace)
         root = await projects.create_root(workspace)
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Durable"
@@ -104,9 +110,12 @@ async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any, tmp_path:
         if pg_pool is None:
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         from maistro.projects.pg_scope_store import PgProjectScopeStore
+        from maistro.testing.postgres import provision_workspace
 
         workspace = f"{WORKSPACE}-schedule-{request.node.name}-{uuid4().hex}"
         projects = PgProjectScopeStore(pg_pool)
+        # Provisioned through the canonical authority (#37) — see `spine`.
+        await provision_workspace(pg_pool, workspace)
         root = await projects.create_root(workspace)
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Schedule"
@@ -207,9 +216,12 @@ async def archive_spine(request: pytest.FixtureRequest, pg_pool: Any, tmp_path: 
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         workspace = f"{WORKSPACE}-arch-{request.node.name}"
         projects = PgProjectScopeStore(pg_pool)
+        # Provisioned through the canonical authority (#37) — see `spine`.
+        await provision_workspace(pg_pool, workspace)
         root = await projects.create_root(workspace)
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Cold"

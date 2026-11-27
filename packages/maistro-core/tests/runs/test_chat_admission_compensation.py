@@ -193,8 +193,12 @@ async def test_postgres_independent_transactions_serialize_creation_and_cancella
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.pg_store import PgRunStore
+    from maistro.testing.postgres import provision_workspace
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "chat-pg-race")
     project = await projects.create_root("chat-pg-race")
     setup = PgRunStore(pg_pool, project_store=projects)
     run = await _admit(setup, "chat-pg-race", project.project_id)
@@ -267,8 +271,11 @@ async def test_postgres_failed_conditional_write_rolls_back(pg_pool: Any) -> Non
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.pg_store import PgRunStore
+    from maistro.testing.postgres import provision_workspace
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37) — see chat-pg-race.
+    await provision_workspace(pg_pool, "chat-pg-rollback")
     project = await projects.create_root("chat-pg-rollback")
     store = PgRunStore(pg_pool, project_store=projects)
     run = await _admit(store, "chat-pg-rollback", project.project_id)
