@@ -83,6 +83,10 @@ def _evidence(
     }
     genome.harness_params["objective_version"] = obj
     genome.harness_params["evidence_cycle"] = cycle
+    # #104/SPEC-281 §2: approved promotion candidates carry transfer evidence
+    # for every scored benchmark — the promotion path consults the same gate
+    # as fitness, so the fixture must satisfy it.
+    genome.harness_params["transfer_by_benchmark"] = {"proxy_ifeval": {"transfer": 0.1}}
     return genome
 
 
@@ -357,7 +361,11 @@ async def test_production_cycle_repeats_evaluation_and_folds_ema() -> None:
     )
     for i in range(3):
         store.add(_evidence(_genome(f"filler{i}"), score=0.3, samples=3, cycle=0))
-    store.add(_genome("g"))
+    # A candidate entering evaluation is not yet human-approved (approval
+    # follows evaluation, #854), so the fresh genome must not ride the
+    # approved fixture default: the transfer-evidence duty of SPEC-281 §2
+    # binds promotion candidates, not every genome under evaluation.
+    store.add(_genome("g", approved=False))
     await cycle.run_cycle(store, config=cfg)
 
     genome = store.get("g-g")
