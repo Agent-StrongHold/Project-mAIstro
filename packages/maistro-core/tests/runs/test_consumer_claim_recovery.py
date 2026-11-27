@@ -58,6 +58,10 @@ async def _admit(
     source: str = SCHEDULE_SOURCE,
     nodes: int = 1,
 ) -> str:
+    if await container.workspace_store.get(workspace) is None:
+        await container.workspace_store.create(
+            creator_user_id="test", name=workspace, workspace_id=workspace
+        )
     root = await container.project_scope_store.create_root(workspace)
     graph = Graph(
         workspace_id=workspace,
@@ -355,9 +359,13 @@ async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> Non
 
     from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.consumer_claim import ClaimingPgRunStore
+    from maistro.testing.postgres import provision_workspace
 
     workspace = "postgres-consumer-claim"
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, workspace)
     root = await projects.create_root(workspace)
     project = await projects.create(
         workspace_id=workspace,

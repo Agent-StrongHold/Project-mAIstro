@@ -257,6 +257,72 @@ async def test_legacy_mirror_rows_import_once_and_never_resurrect(
     assert hive.mirror_rows() == seeded
 
 
+@BACKENDS
+@pytest.mark.asyncio
+async def test_first_import_cannot_replay_a_revocation_after_canonical_create(
+    hive: _HiveProcess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pause at the create/roster seam and revoke through an independent connection.
+
+    Before the repair, create committed only the owner, then the adapter replayed
+    every member. A second client removing Bob in that interval was overwritten.
+    Initial membership must instead commit with identity, before create returns.
+    """
+    workspace_id = f"first-import-{uuid.uuid4().hex}"
+    persisted = hive.open_hive_state()
+    persisted.put(
+        "workspaces",
+        workspace_id,
+        _legacy(
+            workspace_id,
+            [
+                WorkspaceMember(user_id="alice", role="owner"),
+                WorkspaceMember(user_id="bob", role="editor"),
+            ],
+        ),
+    )
+    hive.close_hive_state()
+    await hive.boot()
+    original_create = hive.canonical.create
+    observed_roster = []
+
+    async def create_then_revoke(**kwargs: Any) -> Any:
+        created = await original_create(**kwargs)
+        observed_roster.extend(await hive.canonical.list_memberships(workspace_id))
+        if hive._database_url.startswith("sqlite:"):
+            import aiosqlite
+
+            from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+            from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+            async with aiosqlite.connect(hive._database_url.removeprefix("sqlite:///")) as conn:
+                peer = SqliteWorkspaceStore(conn, project_store=SqliteProjectScopeStore(conn))
+                await peer.remove_membership(workspace_id, user_id="bob")
+        else:
+            import asyncpg
+
+            from maistro.projects.pg_scope_store import PgProjectScopeStore
+            from maistro.workspaces.pg_store import PgWorkspaceStore
+
+            pool = await asyncpg.create_pool(hive._database_url, min_size=1, max_size=1)
+            try:
+                peer = PgWorkspaceStore(pool, project_store=PgProjectScopeStore(pool))
+                await peer.remove_membership(workspace_id, user_id="bob")
+            finally:
+                await pool.close()
+        return created
+
+    monkeypatch.setattr(hive.canonical, "create", create_then_revoke)
+    assert not await workspace_authority.is_member("bob", workspace_id)
+    assert {m.user_id for m in observed_roster} == {"alice", "bob"}
+    assert workspace_authority._journal_status(workspace_id) == "complete"
+    for _ in range(2):
+        await hive.stop()
+        await hive.boot()
+        assert not await workspace_authority.is_member("bob", workspace_id)
+        assert await workspace_authority.is_member("alice", workspace_id)
+
+
 @pytest.mark.ac("ADR-092326-97c4/AC-4")
 @pytest.mark.asyncio
 async def test_a_configured_database_without_a_container_refuses_the_mirror_fallback(
@@ -567,3 +633,79 @@ async def test_interrupted_import_before_create_is_quarantined_without_blocking_
     assert workspace_authority.quarantine_store().get(blocked_id) is not None
     assert blocked_id in hive.mirror_rows()
     await hive.canonical.delete(fresh_id)
+
+
+@pytest.mark.parametrize(
+    ("journal_damage", "label"),
+    [
+        pytest.param("lost", "missing", id="lost-journal"),
+        pytest.param("corrupt", "corrupt", id="corrupt-journal"),
+    ],
+)
+@BACKENDS
+@pytest.mark.asyncio
+async def test_a_completed_import_that_loses_its_journal_still_cannot_resurrect_a_deleted_workspace(
+    hive: _HiveProcess, journal_damage: str, label: str
+) -> None:
+    """The journal is Hive-local evidence; the tombstone is the canonical one.
+
+    A completed import leaves a ``complete`` journal entry that suppresses
+    reimport. But that entry lives in Hive's own state file: it can be lost,
+    truncated, or rewritten by anything that owns the file. If deletion were
+    fenced only by the journal, deleting the entry would let the mirror row
+    mint the Workspace again on the next boot — deleted authority coming back
+    through legacy recovery, the exact outcome #37 forbids. The canonical
+    store's tombstone (written in the delete's transaction, #37) is what
+    holds: with the journal gone or unreadable, the import attempt refuses at
+    `create`, and the source is quarantined for the recovery owner instead of
+    resurrecting authority.
+    """
+    workspace_id = f"lostjournal-{label}-{uuid.uuid4().hex}"
+    legacy = _legacy(
+        workspace_id,
+        [
+            WorkspaceMember(user_id="alice", role="owner"),
+            WorkspaceMember(user_id="bob", role="editor"),
+        ],
+    )
+    persisted = hive.open_hive_state()
+    persisted.put("workspaces", workspace_id, legacy)
+    hive.close_hive_state()
+
+    await hive.boot()
+    # The mirror row imported once, canonically, with its roster.
+    assert await workspace_authority.is_member("bob", workspace_id)
+    assert workspace_authority._journal_status(workspace_id) == "complete"
+
+    # Another client deletes the canonical Workspace outright.
+    await hive.canonical.delete(workspace_id)
+    assert await hive.canonical.get(workspace_id) is None
+
+    # The Hive-local journal then becomes unusable: lost, or corrupt enough
+    # that no status can be read from it. Both leave `_migrate_one` unable to
+    # tell "never imported" from "imported, then deleted, journal lost".
+    workspace_authority.quarantine_store()  # Bind the journal to durable Hive state.
+    if journal_damage == "lost":
+        workspace_authority._migration_journal.pop(workspace_id, None)
+    else:
+        workspace_authority._migration_journal[workspace_id] = "not-a-journal-dict"
+
+    # Restart, twice: a resurrection must not depend on a warm process, and
+    # the first boot's refusal must be stable across the next one. The first
+    # boot names the tombstone refusal; the second sees the importing journal
+    # the first wrote before refusing, and names that — both are truthful
+    # quarantine evidence, and neither imports anything.
+    for attempt in range(2):
+        await hive.stop()
+        await hive.boot()
+        assert await hive.canonical.get(workspace_id) is None
+        assert not await workspace_authority.is_member("bob", workspace_id)
+        quarantine = workspace_authority.quarantine_store().get(workspace_id)
+        assert quarantine is not None, "the unusable-journal source must be held out, auditable"
+        if attempt == 0:
+            assert "deleted Workspace id" in quarantine["reason"]
+        else:
+            assert quarantine["reason"], "a quarantine entry without a reason is not evidence"
+        # The mirror row is preserved as migration input — never edited into
+        # authority, never silently dropped.
+        assert hive.mirror_rows()[workspace_id] == legacy

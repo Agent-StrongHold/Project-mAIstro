@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
@@ -7,9 +8,11 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScope
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
+    WorkspaceDeleted,
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceRole,
+    creation_memberships,
 )
 
 if TYPE_CHECKING:
@@ -48,8 +51,14 @@ class WorkspaceStore(Protocol):
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
-        """Create a Workspace, preserving identity/timestamps only for convergence imports."""
+        """Atomically create identity, initial roster and Root.
+
+        Explicit identity/timestamps and an initial roster support convergence
+        imports. The creator must remain an owner. No roster write may follow
+        create's commit: a concurrent canonical revocation must win.
+        """
         ...
 
     async def get(
@@ -125,6 +134,15 @@ class InMemoryWorkspaceStore:
     ) -> None:
         self._workspaces: dict[str, Workspace] = {}
         self._memberships: dict[tuple[str, str], WorkspaceMembership] = {}
+        # Ids whose delete committed. A deleted Workspace's id is dead: no
+        # later `create` — a convergence import replaying a stale mirror, a
+        # provisioning helper that kept the id in configuration — may mint a
+        # new authority under it (#37). The durable stores carry the same rule
+        # in a `canonical_workspace_deletions` row written in the delete's
+        # transaction, so the reference must keep it too or the conformance
+        # suite would hold the durable stores to a contract the reference
+        # itself breaks.
+        self._deleted_workspace_ids: set[str] = set()
         self.project_store: ProjectScopeStore = project_store or InMemoryProjectScopeStore()
         # Pairing is the composition point: the Project store resolves scope
         # through this Workspace store, so binding here means a caller cannot
@@ -141,6 +159,7 @@ class InMemoryWorkspaceStore:
         workspace_id: str | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        initial_memberships: Mapping[str, WorkspaceRole] | None = None,
     ) -> Workspace:
         """Create canonical identity, optionally retaining convergence metadata.
 
@@ -157,21 +176,20 @@ class InMemoryWorkspaceStore:
         if updated_at is not None:
             workspace_kwargs["updated_at"] = updated_at
         workspace = Workspace(**workspace_kwargs)
+        if workspace.workspace_id in self._deleted_workspace_ids:
+            raise WorkspaceDeleted(workspace.workspace_id)
         if workspace.workspace_id in self._workspaces:
             raise ValueError(f"Workspace {workspace.workspace_id!r} already exists")
-        owner = WorkspaceMembership(
-            workspace_id=workspace.workspace_id,
-            user_id=creator_user_id,
-            role=WorkspaceRole.OWNER,
-            added_at=workspace.created_at,
-        )
+        memberships = creation_memberships(workspace, creator_user_id, initial_memberships)
         self._workspaces[workspace.workspace_id] = workspace
-        self._memberships[(workspace.workspace_id, creator_user_id)] = owner
+        for member in memberships:
+            self._memberships[(workspace.workspace_id, member.user_id)] = member
         try:
             await self.project_store.create_root(workspace.workspace_id)
         except BaseException:
             del self._workspaces[workspace.workspace_id]
-            del self._memberships[(workspace.workspace_id, creator_user_id)]
+            for member in memberships:
+                del self._memberships[(workspace.workspace_id, member.user_id)]
             # A failing scope backend may have persisted the Root before
             # reporting the failure; remove it so the operation is atomic in
             # the reference store as well as in the durable transactions.
@@ -248,6 +266,10 @@ class InMemoryWorkspaceStore:
             if persona is not None and self.persona_store is not None:
                 await self.persona_store.create(persona)
             raise
+        # Only a delete that fully committed tombstones the id. The
+        # compensation path above restores everything on a failed half, so
+        # recording there would bar an id whose Workspace still exists.
+        self._deleted_workspace_ids.add(workspace_id)
 
     async def _delete_workspace_row(
         self, workspace_id: str

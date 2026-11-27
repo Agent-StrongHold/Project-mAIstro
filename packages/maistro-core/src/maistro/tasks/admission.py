@@ -529,13 +529,33 @@ class WorkspaceRoutingAdmitter:
         # One coordinator per process, shared by every bound admitter: it owns
         # the pool and the SQL, not any Workspace (#1845).
         self._coordinator = coordinator
-        self._by_workspace: dict[str, TaskRunAdmitter] = {}
+        # Workspace id -> (Root Project id the admitter was built for, admitter).
+        # The pair, not the admitter alone, because a cached admitter is only as
+        # valid as the Root it was resolved against: if the Root under the same
+        # Workspace id ever changes, the cached admitter must be rebuilt, not
+        # reused (#37).
+        self._by_workspace: dict[str, tuple[str, TaskRunAdmitter]] = {}
         # Two concurrent first submissions for one Workspace would otherwise
         # both create a Root Project. `create_root` is idempotent, so the
         # damage would be a wasted round-trip rather than two roots — but they
         # would also build two admitters, and the loser's cached project_id
         # would be thrown away mid-flight.
         self._lock = asyncio.Lock()
+        # One admitter bound straight to the shared Run store, for the
+        # Workspace-independent existing-run operations only (#37 review).
+        # Those never resolve a Workspace — the Run exists and names its own
+        # Project — so they must not route through `admitter_for(None)`, whose
+        # canonical-existence fence refuses a default Workspace deleted after
+        # startup (the deletion APIs allow that when it owns no Runs) and
+        # would strand transitions and lookups for Runs living elsewhere. No
+        # admission path reaches this admitter, so its never-resolved Project
+        # binding is inert; it exists to keep one implementation of the
+        # refusal semantics rather than a second copy per call site.
+        self._existing_runs = TaskRunAdmitter(
+            run_store,
+            workspace_id=self._default_workspace_id.strip(),
+            project_store=project_store,
+        )
 
     @property
     def default_workspace_id(self) -> str:
@@ -543,7 +563,18 @@ class WorkspaceRoutingAdmitter:
         return self._default_workspace_id
 
     async def admitter_for(self, workspace_id: str | None = None) -> TaskRunAdmitter:
-        """The bound admitter for one Workspace, building it on first use."""
+        """The bound admitter for one Workspace, building it on first use.
+
+        Every call — cache hit included — re-resolves the Workspace's Root
+        Project through ``create_root`` first (#37). ``create_root`` is
+        create-or-return, so for a live Workspace this is the read that keeps
+        the cache honest; for an unknown, deleted or otherwise unowned
+        Workspace id it refuses before anything is written, so a submission
+        that names a Workspace which does not exist canonically — including
+        one deleted after this process cached its admitter — fails BEFORE any
+        Project or Run row is minted, and the stale cached admitter is
+        dropped rather than served.
+        """
         # `is None`, not falsiness. An empty string is a *named* Workspace that
         # happens to be blank, and the API documents only None as meaning the
         # default — folding the two together let `?workspace_id=` file into the
@@ -557,12 +588,25 @@ class WorkspaceRoutingAdmitter:
             raise ValueError("workspace_id must be a non-empty string")
         cached = self._by_workspace.get(resolved)
         if cached is not None:
-            return cached
+            root = await self._projects.create_root(resolved)
+            if root.project_id == cached[0]:
+                return cached[1]
+            # The Root under this id changed while the admitter sat cached: a
+            # Workspace that was torn down and re-provisioned, or a scope store
+            # that lost its tree. The cached admitter points at a Root nothing
+            # else considers canonical — drop it and rebuild below. The pop is
+            # guarded: only the stale entry this call decided against may be
+            # dropped, or racing re-resolutions would evict each other's
+            # already-rebuilt entries and stack one admitter per caller.
+            async with self._lock:
+                if self._by_workspace.get(resolved) is cached:
+                    self._by_workspace.pop(resolved, None)
+        else:
+            root = await self._projects.create_root(resolved)
         async with self._lock:
             cached = self._by_workspace.get(resolved)
-            if cached is not None:
-                return cached
-            root = await self._projects.create_root(resolved)
+            if cached is not None and cached[0] == root.project_id:
+                return cached[1]
             admitter = TaskRunAdmitter(
                 self._runs,
                 workspace_id=resolved,
@@ -570,7 +614,7 @@ class WorkspaceRoutingAdmitter:
                 intents=self._intents,
                 coordinator=self._coordinator,
             )
-            self._by_workspace[resolved] = admitter
+            self._by_workspace[resolved] = (root.project_id, admitter)
             return admitter
 
     async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
@@ -624,11 +668,12 @@ class WorkspaceRoutingAdmitter:
         Workspace-independent on purpose: by the time a task transitions, its
         Run exists and already knows which Project it is filed in. Looking the
         Workspace up again to reach the same run store would only invite the
-        two answers to disagree. Delegating through the default admitter keeps
-        one implementation of the refusal semantics rather than a second copy.
+        two answers to disagree — and, fenced as `admitter_for` now is, would
+        also refuse outright once the default Workspace is deleted. So this
+        delegates to the store-bound admitter built in ``__init__``, one
+        implementation of the refusal semantics rather than a second copy.
         """
-        admitter = await self.admitter_for(None)
-        return await admitter.record_transition(
+        return await self._existing_runs.record_transition(
             run_id,
             status,
             result=result,
@@ -641,33 +686,31 @@ class WorkspaceRoutingAdmitter:
 
         Same reasoning as ``record_transition``: by admission time the Run
         exists and knows which Project it is filed in, and task ids are minted
-        globally, so routing the lookup through the default admitter reaches
-        the one implementation of the provenance search rather than a second
-        copy per Workspace.
+        globally, so routing the lookup through the store-bound admitter —
+        not through a Workspace resolution a deleted default would fail —
+        reaches the one implementation of the provenance search.
         """
-        admitter = await self.admitter_for(None)
-        return await admitter.run_for_task_receipt(task_id)
+        return await self._existing_runs.run_for_task_receipt(task_id)
 
     async def lookup_run(self, run_id: str) -> Run | None:
         """Read the Run through the default admitter's store.
 
         Workspace-independent for the same reason `record_transition` is: by
         the time a receipt names a run_id, the Run exists and knows its own
-        Project, so delegating keeps one read path rather than a second store
-        handle here.
+        Project, so delegating to the store-bound admitter keeps one read
+        path that no Workspace deletion can fence off.
         """
-        admitter = await self.admitter_for(None)
-        return await admitter.lookup_run(run_id)
+        return await self._existing_runs.lookup_run(run_id)
 
     async def find_task_run(self, task_id: str) -> Run | None:
         """Resolve a task receipt id the same Workspace-independent way.
 
         A task's Run knows its own Project the moment it exists (#1690), so
-        the read routes through the default binding rather than re-deriving a
-        Workspace the request no longer carries.
+        the read routes through the store-bound admitter rather than
+        re-deriving a Workspace the request no longer carries — and whose
+        default binding a deletion could invalidate.
         """
-        admitter = await self.admitter_for(None)
-        return await admitter.find_task_run(task_id)
+        return await self._existing_runs.find_task_run(task_id)
 
 
 __all__ = [
