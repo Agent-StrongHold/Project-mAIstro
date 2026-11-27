@@ -2880,6 +2880,13 @@ async def create_container(
             # `quality/wiring-reads-baseline.json` recorded as "Retirement or a
             # reader is its own issue". This is the reader.
             archive_store=archive_store,
+            # Not primed here: the Root Project is minted only after the
+            # canonical Workspace authority exists (#37). Priming used to run
+            # inside this call, before `wire_workspace_store` had provisioned
+            # the configured Workspace — exactly the "admitter mints a Root
+            # for a Workspace no canonical row owns" hole the admission fence
+            # now refuses. The priming call moved below the provisioning.
+            prime=False,
         )
         # The same `project_scope_store` object the spine just selected, not a
         # second resolution of the same question: a Workspace whose Root Project is
@@ -2897,7 +2904,16 @@ async def create_container(
         )
         # The configured Workspace is provisioned at composition, not left to
         # the first operator action (#1152 review) — why is on the helper.
+        # This now runs BEFORE the spine is primed (#37): provisioning is what
+        # gives the admission fence a Workspace row to verify against, so the
+        # eager Root below proves the authority rather than bypassing it.
         await _provision_configured_workspace(workspace_store, config.workspace_id)
+        # The eager-Root guarantee, kept: the default Workspace's Root exists
+        # before the first request, so a misconfigured scope store fails at
+        # startup rather than on somebody's first task. Resolving it through
+        # the admitter is itself verified — an id the canonical store does not
+        # own refuses here, loudly, instead of minting an orphan Root.
+        await task_admitter.admitter_for(config.workspace_id)
         backlog_store = await wire_backlog_store(
             db_pool,
             project_store=project_scope_store,

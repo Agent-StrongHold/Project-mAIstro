@@ -32,6 +32,7 @@ from maistro.tasks.admission import (
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 from maistro.tasks.queue import TaskQueue, configure_task_queue, get_task_queue
 from maistro.testing import DEFAULT_TEST_ACTOR_PRINCIPAL_ID
+from maistro.testing.postgres import provision_workspace
 
 
 @pytest.fixture
@@ -781,6 +782,9 @@ async def test_postgres_queued_task_rehydrates_after_queue_restart(pg_pool) -> N
     from maistro.runs.consumer_claim import ClaimingPgRunStore
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-recovery")
     root = await projects.create_root("pg-recovery")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(runs, workspace_id="pg-recovery", project_id=root.project_id)
@@ -827,6 +831,9 @@ async def test_postgres_death_after_run_admission_executes_original_identity(
             return await self._delegate.record_transition(run_id, status, **kwargs)
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-crash-admission")
     root = await projects.create_root("pg-crash-admission")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     delegate = TaskRunAdmitter(runs, workspace_id="pg-crash-admission", project_id=root.project_id)
@@ -872,6 +879,9 @@ async def test_postgres_malformed_admission_gets_a_terminal_disposition(pg_pool)
     from maistro.runs.consumer_claim import ClaimingPgRunStore
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-crash-malformed")
     root = await projects.create_root("pg-crash-malformed")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(runs, workspace_id="pg-crash-malformed", project_id=root.project_id)
@@ -918,6 +928,9 @@ async def test_postgres_death_after_receipt_before_notification_executes_origina
             raise _ProcessDeath
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-crash-notification")
     root = await projects.create_root("pg-crash-notification")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(
@@ -967,6 +980,9 @@ async def test_postgres_death_between_dispatch_phase_and_claim_executes_original
     from maistro.tasks.runner import TaskRunner
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-crash-phase")
     root = await projects.create_root("pg-crash-phase")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(runs, workspace_id="pg-crash-phase", project_id=root.project_id)
@@ -1009,6 +1025,9 @@ async def test_postgres_stranded_running_claim_gets_a_terminal_disposition(pg_po
     from maistro.runs.consumer_claim import ClaimingPgRunStore
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-stranded-claim")
     root = await projects.create_root("pg-stranded-claim")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(runs, workspace_id="pg-stranded-claim", project_id=root.project_id)
@@ -1035,6 +1054,9 @@ async def test_postgres_lone_node_run_is_not_stranded_claim_evidence(pg_pool) ->
     from maistro.runs.consumer_claim import ClaimingPgRunStore
 
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope
+    # store verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, "pg-stranded-lone-node-run")
     root = await projects.create_root("pg-stranded-lone-node-run")
     runs = ClaimingPgRunStore(pg_pool, project_store=projects)
     admitter = TaskRunAdmitter(

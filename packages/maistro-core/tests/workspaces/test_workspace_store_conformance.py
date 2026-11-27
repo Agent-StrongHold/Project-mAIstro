@@ -548,6 +548,76 @@ class TestAnAbsentWorkspaceIsRefusedTheSameWayEverywhere:
         await store.remove_membership(workspace.workspace_id, user_id="never-a-member")
 
 
+class TestInitialRosterIsPartOfCreation:
+    async def test_create_commits_the_entire_roster_with_the_root(self, backend) -> None:
+        store = await backend.store()
+        creator, member, coowner = _user(), _user(), _user()
+        workspace = await store.create(
+            creator_user_id=creator,
+            name="Imported roster",
+            initial_memberships={
+                creator: WorkspaceRole.OWNER,
+                member: WorkspaceRole.CONTRIBUTOR,
+                coowner: WorkspaceRole.OWNER,
+            },
+        )
+        fresh = await backend.store()
+        roster = await fresh.list_memberships(workspace.workspace_id)
+        assert {m.user_id: m.role for m in roster} == {
+            creator: WorkspaceRole.OWNER,
+            member: WorkspaceRole.CONTRIBUTOR,
+            coowner: WorkspaceRole.OWNER,
+        }
+        assert all(m.added_at == workspace.created_at for m in roster)
+        root = await fresh.project_store.root_for_workspace(workspace.workspace_id)
+        assert root.workspace_id == workspace.workspace_id
+
+    @pytest.mark.parametrize("invalid", ["blank_user", "creator_demotion", "invalid_role"])
+    async def test_invalid_roster_writes_nothing(self, backend, invalid) -> None:
+        store = await backend.store()
+        creator, workspace_id = _user(), f"ws-{uuid4().hex}"
+        roles = {
+            "blank_user": {" ": WorkspaceRole.MEMBER},
+            "creator_demotion": {creator: WorkspaceRole.MEMBER},
+            "invalid_role": {_user(): "not-a-role"},
+        }[invalid]
+        with pytest.raises(ValueError):
+            await store.create(
+                creator_user_id=creator,
+                name="Invalid import",
+                workspace_id=workspace_id,
+                initial_memberships=roles,
+            )
+        fresh = await backend.store()
+        assert await fresh.get(workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await fresh.project_store.root_for_workspace(workspace_id)
+        with pytest.raises(WorkspaceNotFound):
+            await fresh.list_memberships(workspace_id)
+
+    async def test_root_failure_rolls_back_every_initial_member(self, backend) -> None:
+        store = await backend.store()
+        creator, member, workspace_id = _user(), _user(), f"ws-{uuid4().hex}"
+        with (
+            _refusing(store.project_store, backend.root_insert_seam, "root failed") as calls,
+            pytest.raises(RuntimeError, match="root failed"),
+        ):
+            await store.create(
+                creator_user_id=creator,
+                name="Atomic import",
+                workspace_id=workspace_id,
+                initial_memberships={member: WorkspaceRole.MEMBER},
+            )
+        assert calls
+        fresh = await backend.store()
+        assert await fresh.get(workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await fresh.project_store.root_for_workspace(workspace_id)
+        # Reusing this never-committed id proves no hidden memberships survived.
+        await fresh.create(creator_user_id=creator, name="Retry", workspace_id=workspace_id)
+        assert await fresh.get_membership(workspace_id, user_id=member) is None
+
+
 class TestARootProjectFailureLeavesNoWorkspaceBehind:
     async def test_create_rolls_back_when_the_root_project_cannot_be_made(self, backend) -> None:
         """A Workspace without a Root Project is a Workspace whose Runs can
