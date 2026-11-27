@@ -257,3 +257,104 @@ mutation performed.
 
 Progress: checked 1 issue, done 1 focused validation round, skipped 0,
 unexpected errors 0.
+
+## Follow-up job `a7aef59ab17b40aab42d01bd613ae42c`
+
+Frozen snapshot: issue #89 only; assigned starting HEAD
+`ed67665d246226fb1ae610c94afd22cceaf89429`, base
+`618954f0528090144683c308a18e19c6068d63f1`; existing release scripts,
+release/registry/quality workflows and adjacent tests. This existing note is
+this round's planned tracked edit unless a gate reproduces an actual defect.
+Initial index/worktree clean. No driver `check-*.log` files were supplied in
+the job directory. Prior result and history inspected: repeated rounds lack
+operational release evidence, not an unimplemented source change. Writer role
+assumed; no GitHub mutations, tags, fabricated evidence or speculative ledger
+edits. Local validations below will be freshly executed, not inherited.
+
+Initial fresh validation: registry workflow seven steps passed (194 tests;
+447 files, zero lint errors/warnings), vulture 1217/1217 with no unclassified
+identity, 183 focused release tests plus diff coverage passed; ruff,
+format, release/workflow/suite inventory checks passed. Logs are in this job
+directory. The saved PR #2536 review alleges that `dist` expires after
+seven days while evidence lasts 90. Direct inspection disproved that allegation
+at the assigned HEAD: `release.yml:395-402` already retains `dist` for **90**
+days. The proposed repair was therefore explicitly skipped before making any
+workflow/test change. `_artifact_id` still correctly rejects expired artifacts.
+No ledger amendment is warranted by the clean exact-debt scan.
+
+### Executed evidence and limits
+
+Logs below are fresh worker runs in
+`/home/dev/maistro/jobs/a7aef59ab17b40aab42d01bd613ae42c/`:
+
+- `check-sync-local.log`: `uv sync --locked --extra dev`, exit 0.
+- `check-registry-local.log`: all seven `registry.yml` validation steps,
+  exit 0. Tests 194 passed; strict lint 447 documents, zero errors/warnings
+  (199 existing test-evidence debts); lifecycle baseline zero; citation
+  provenance uses immutable assigned base, zero exceptions; ADR index,
+  regenerated spec index diff, and body status checks pass. Dispatched
+  **queued** is not a reproduced failure.
+- `check-vulture-local.log`: CI-exact `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`, exit 0, 1217 findings/1217 reviewed identities,
+  zero unclassified. `git diff --numstat <assigned-base> -- quality/
+  docs/testing/inventory/` empty. No grant/ledger/baseline changes.
+- `check-release-coverage-local.log`: `uv run coverage run --branch
+  --source=scripts -m pytest tests/test_promote_release.py
+  tests/test_release_guard.py tests/test_check_license_inventory.py -x -q
+  --timeout=120`, **183 passed**; XML generated in job directory; CI gate
+  `check-diff-coverage.py <xml> --base
+  618954f0528090144683c308a18e19c6068d63f1`, exit 0. Two production files
+  measured above 90% lines/80% branch arcs, three test files exempt by existing
+  policy. This does **not** prove the aggregate publish-set floor: its full
+  CI producer population was not executed. That half remains UNVERIFIED.
+- `check-static-local.log`: `uv run ruff check .`, `uv run ruff format
+  --check .` (3717 files), `check-release-consistency.py`,
+  `check-workflow-inventory.py` (33), `check-suite-inventory.py` (21 suites,
+  37818 unique identities), all exit 0. Prior coverage repair `87ce1ab3de`
+  and assigned base verified ancestors of HEAD; saved PR #2536 head remains
+  `5f6bff7d458f`, not this checked local HEAD. No claim that its old hosted
+  coverage failure proves or disproves the unexecuted aggregate floor.
+- `check-byte-mutation-local.log` / `check-byte-mutant-output.log`: existing
+  tampered-wheel CLI regression passes normally; process-local `verify_dist`
+  bypass makes it fail with `assert 0 == 1` (exit 1, expected), proving the
+  regression reaches byte verification. Initial probe incorrectly used a
+  `trylast` hook, after the test; it returned 0 and the probe driver correctly
+  failed. Corrected to a wrapper applying the mutation before the test; the
+  mutant was then killed. Plugin lives outside the tree; no tracked code
+  mutated. No test added/removed, inventory delta zero.
+
+Read Accepted ADR-073126-c4e1 and ADR-095: sole publisher remains tag-triggered
+`release.yml`, protected branch promotion and human release approval. Exact
+full-tree equality is stricter than the issue's allowed metadata exception,
+consistent with those ADRs; no authority bypass or competing runtime added.
+An initially guessed release-ADR filename was not found and skipped; the
+actual path was resolved from the directory listing before reading it.
+
+### Every issue acceptance criterion
+
+| Criterion | Reachable behavior / executed evidence | Operational result |
+|---|---|---|
+| RC artifacts only from candidate commit | `release.yml:273-310` candidate-only build and identity recording; real temporary Git repository identity test passed in the 183-test battery. | Hosted candidate build UNVERIFIED. |
+| Clean install, real-model, security hot path, backup/restore | `promote_release.py:150-156,286-303` requires checks with passing status and nonempty citations; missing/failing/citation rejection tests passed. | Actual soak checks UNVERIFIED. |
+| #860 exact-RC sustained multi-replica workload, crash/restart, admission/fencing, resource pressure, duplicates | Pinned `multi_replica_soak` requirement plus stale wheel/image binding tests passed; validator is not a workload runner. | Sustained workload and each subscenario UNVERIFIED. |
+| Invariant-invalidating findings filed/reclassified before promotion | `promote_release.py:306-330` rejects absent routing, CLI rejection test passed. | Real finding triage/routing UNVERIFIED. |
+| Runtime-affecting changes require new RC/applicable soak | `release_guard.py:190-253` compares complete Git trees; latest-RC/tree/configuration tests passed. | Deployed configuration and replacement RC/soak evidence UNVERIFIED. |
+| Byte-equivalent final tree/artifacts | `verify_dist` hash verification, tree guard, no-final-build workflow tests passed; byte bypass mutant killed fresh. | Actual RC/final tree, wheels and image pair UNVERIFIED. |
+| External package/image/signature/install verification | `release.yml:372-391,823-857` wires clean-venv import and digest signature/verification; workflow tests passed. | External consumer executions UNVERIFIED. |
+| Machine-readable soak evidence tied to promoted artifact/configuration | `promote_release.py:259-284,333-348,567-589` binds wheel/image hashes and configuration reference/digest before promotion; CLI binding tests passed; workflow preserves evidence. | Real candidate/soak/promoted evidence chain UNVERIFIED. |
+
+**BLOCKED on operational acceptance.** No current local source/gate defect
+reproduced. Missing inputs: an authorized exact candidate tag/run/artifact,
+actual check/workload evidence in the schema-1 `soak-evidence` artifact on
+that RC run, external verification, and protected final promotion evidence.
+The documented #860 native boolean-schema record alone cannot satisfy this
+binding contract (`promote_release.py:49-59`); do not weaken the gate or
+manufacture a passing record. Release owners/#860 must produce that evidence
+through the canonical pipeline. Local unit tests and schema checks are not
+substitutes. No push, tag, release, GitHub mutation, or integration approval.
+
+Changed tracked file this round: this validation note only. Progress:
+checked 1, done 1 focused validation/handoff, skipped issues 0, reproduced
+gate errors 0; operational acceptance completed 0. Next: release-owner
+execution and hosted aggregate coverage proof, not another speculative edit.
