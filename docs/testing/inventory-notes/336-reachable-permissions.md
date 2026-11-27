@@ -225,3 +225,67 @@ bootable state (the app hard-imports maistro_design; `uv sync --locked
 - Browser, permissions config (intercepted): **6/6** (restore elevation success/cancel/wrong-password-retry, membership denial surfacing, Attention optimizer+HITL doors).
 - Browser, live clean setup: `setup.spec.ts` **8/8** against a throwaway backend on :8102 (fresh `CONDUCTOR_DATA_DIR`, `.venv` uvicorn, fresh `vite build`, no LLM gateway).
 - Residual (unchanged, recorded, not regressed): the literal per-role live-browser walk of every advertised mutation (and the chat step, which needs a model gateway this environment lacks) remains covered at the API/policy layer by the 155+4544-test evidence; UI elevation task IDs are synthetic `ui-*` retired by TTL only.
+
+## Independent verification round at the develop-merge head (`2ca17a341bcb`, 2026-11-27)
+
+Starting head `2ca17a341bcb8f443f5c1ca4909d08261af9e9ad` (= `2245fe8222` +
+merge of develop `73610a225d98`), working tree clean on arrival; nothing was
+ salvaged because the prior round's diff-coverage repair was already committed.
+Every check below was executed first-hand at this head; no code changed.
+
+- Coverage gate diff leg, reproduced with CI's own arithmetic: full backend
+  suite under `coverage run --branch --source=packages/hive-conductor/backend`
+  (**4600 passed, 117 skipped** = the 4717 collected identities the inventory
+  records) appended with the scripts producer over
+  `tests/test_conductor...` (the new gate test, 4 passed), then
+  `uv run python scripts/check-diff-coverage.py coverage.xml --base
+  73610a225d98c602fc014dfbcfe3e399bbe79d9b` -> **exit 0** with the same scope
+  line CI prints ("4 changed file(s) measured", 3 exempt test files; floors
+  90% lines / 80% branch arcs met). This was the exact step that failed the
+  merge-queue run at `b637299`. The 87% publish-set floor is untouched by
+  this branch (the diff adds no code under the five publish-set roots), and
+  the floor step itself passed at 93% in that same failing CI run.
+- `scripts/check-conductor-permission-matrix.py` -> OK (**51 API entries,
+  23 UI mutations**, exit 0); in-process proof `tests/test_check_conductor_permission_matrix.py`
+  -> 4 passed; obligation digest registered in
+  `tests/fixtures/ci_quality_obligations.json` and `tests/test_ci_quality_split.py`
+  + `test_shipped_surface_truth.py` + `test_check_diff_coverage.py` ->
+  159 passed.
+- Focused policy tests (`test_permission_policy.py` + `test_setup_guard.py`)
+  -> 28 passed; `ruff check .` + `ruff format --check .` -> clean;
+  `scripts/check-suite-inventory.py` (full) -> 21 suites match, 37 652
+  unique identities, 0 duplicate evidence;
+  `RATCHET_BASE_REV=origin/develop scripts/check-frontend-typed-client.py`
+  -> exit 0 ("16 raw fetch and 71 hand-typed tolerated, none new");
+  `scripts/check-shipped-surface-truth.py` -> "matrix is complete".
+- Full root suite `uv run pytest tests/ -q` -> **6490 passed, 140 skipped**
+  (the merge added develop's tests; no regressions).
+- Browser, permissions config (intercepted): **6/6** re-run first-hand at
+  this head (restore elevation success/cancel/wrong-password retry,
+  membership-denial surfacing, Attention optimizer door elevation+cancel).
+- Acceptance spot-checks against the shipped tree: all 23 `UI_MUTATIONS`
+  rows have a wired control through `useAuthorizedAction` (grep-verified per
+  component); `POST /v1/workspaces` creation stays elevation-exempt while
+  `POST /v1/workspaces/default` keeps the `workspaces.write` gate per
+  ADR-092326-7ed7 AC-6 (covered by the full backend run, which includes
+  `test_default_workspace.py` and the elevation expiry/revocation tests in
+  `test_auth_routes.py`); `AccountBanner` names the admin-gated surfaces
+  with cause; `/agents` `/skills` `/mcp` deep links redirect to
+  `/capabilities` without reviving controls; no closure keywords in any lane
+  commit and the PR body says only "Refs #336".
+- `frontend/e2e/setup.spec.ts`, `Setup.tsx`, and `SetupChecklist.tsx` are
+  byte-unchanged since `ba3907e34f`, where the live clean-setup run recorded
+  8/8; that browser evidence carries to this head for the frontend, and the
+  backend half of the same path (setup -> daily login -> whoami ->
+  `permissions == DAILY_USER_PERMISSIONS` -> workspace create -> 403 ->
+  elevate -> archive/restore -> member matrix -> admin chat block) is
+  re-proven first-hand at this head inside the 4600-test backend run.
+- Residuals (unchanged, recorded, not regressed): the per-role live-browser
+  walk of every advertised mutation and an in-browser chat step remain
+  covered at the API/policy layer instead (this issue's E2E criterion is
+  therefore only partially proven in-browser); UI elevation task IDs are
+  synthetic `ui-*` retired by TTL only; `frontend/e2e/` suites still have no
+  CI owner (standalone configs; compose e2e runs `tests/e2e/`, which does
+  exercise the shipped `WorkspaceTabs` skeleton + a11y with the
+  `ElevationProvider` wired via the updated `Dockerfile.playwright`).
+  Hosted CI at `2ca17a341bcb` had not reported at recording time.
