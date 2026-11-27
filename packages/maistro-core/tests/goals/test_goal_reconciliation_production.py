@@ -10,7 +10,8 @@ same operator cadence ticks every other admitted Run uses.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -374,12 +375,12 @@ async def test_the_goal_reconciliation_source_is_consumable() -> None:
 # --- the composed Container, end to end ---------------------------------------
 
 
-async def _container() -> tuple[Container, str]:
+async def _container(database_url: str = "sqlite://") -> tuple[Container, str]:
     """A composed Container plus the id of its Workspace's Root Project."""
     container = await create_container(
         AgentConfig(
             router_api_key="test-key",
-            database_url="sqlite://",
+            database_url=database_url,
             workspace_id=WORKSPACE,
         )
     )
@@ -477,6 +478,51 @@ async def test_crash_after_run_insert_replays_one_canonical_run() -> None:
         assert await container.goal_reconciliation_store.pending_admissions(goal.goal_id) == []
     finally:
         await container.aclose()
+
+
+async def test_reopened_container_sweep_repairs_the_lapsed_physical_admission(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'restart.db'}"
+    start = datetime.now(UTC)
+    ttl = timedelta(seconds=30)
+    first, project_id = await _container(database_url)
+    try:
+        goal = await first.goal_store.create_goal(
+            workspace_id=WORKSPACE, project_id=project_id, agent_id=AGENT, draft=DRAFT
+        )
+        control = first.goal_reconciliation_store
+        await control.create_goal(
+            Goal(goal_id=goal.goal_id, workspace_id=WORKSPACE, project_id=project_id)
+        )
+        claim = await control.claim(goal.goal_id, holder="lost-worker", ttl=ttl, now=start)
+        assert claim is not None
+        admission, created = await control.admit(
+            goal.goal_id,
+            fencing_token=claim.fencing_token,
+            decision_key=f"{goal.goal_id}:{DISCOVERY_CORRELATION}",
+            now=start,
+        )
+        assert created and first.goal_reconciliation_admitter is not None
+        run_id = await first.goal_reconciliation_admitter.admit(admission)
+        # Stop at the durable boundary: no complete_admission or release_claim.
+    finally:
+        await first.aclose()
+
+    restarted, _ = await _container(database_url)
+    try:
+        store = restarted.goal_reconciliation_store
+        assert await restarted.reconcile_goals(now=start) == 0
+        pending = await store.pending_admissions(goal.goal_id)
+        assert [row.admission_id for row in pending] == [admission.admission_id]
+        assert await restarted.reconcile_goals(now=start + ttl) == 1
+        assert await store.pending_admissions(goal.goal_id) == []
+        runs = await restarted.run_store.list_recent_runs(WORKSPACE)
+        assert [(r.run_id, r.status) for r in runs if r.goal_id == goal.goal_id] == [
+            (run_id, RunStatus.QUEUED)
+        ]
+    finally:
+        await restarted.aclose()
 
 
 async def test_the_consumer_drives_the_admitted_pursuit_through_the_lineage() -> None:
