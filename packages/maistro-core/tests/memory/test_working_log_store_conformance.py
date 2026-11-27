@@ -1,10 +1,10 @@
 """One suite over every workspace working-log store (#301, M4-H).
 
-``InMemoryWorkspaceLogStore`` is the reference; the SQLite durable twin must
-agree with it on every rule, because the whole feature rests on the log being
-the lossless system of record: a twin that drops ``seq`` on readback or
-silently duplicates a content-addressed result breaks the working-set
-derivation in ways the in-process leg would never show.
+``InMemoryWorkspaceLogStore`` is the reference; the durable twins (SQLite and
+PostgreSQL) must agree with it on every rule, because the whole feature rests
+on the log being the lossless system of record: a twin that drops ``seq`` on
+readback or silently duplicates a content-addressed result breaks the
+working-set derivation in ways the in-process leg would never show.
 
 Two regressions this suite pins, both found by running the SQLite leg before
 it had ever been executed:
@@ -23,6 +23,7 @@ re-derives the same working set — the property "log-as-context" is bought for.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import aiosqlite
@@ -74,10 +75,93 @@ class _SqliteLeg:
         return await self.store()
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+_WS_TABLES = ("workspace_working_log", "workspace_working_results")
+
+
+class _PostgresLeg:
+    """Owns the pool lifecycle for the PostgreSQL durable leg (#105).
+
+    Every ``store()`` truncates its two tables with ``RESTART IDENTITY`` so a
+    test starts from the same empty log regardless of what a previous run
+    left behind, and the identity column restarts at 1 — the conformance
+    assertions pin absolute log positions, which is the property a restart
+    has to preserve per Workspace.
+    """
+
+    durable = True
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._pool: Any = None
+        self._cleaned = False
+
+    @property
+    def pool(self) -> Any:
+        """The pool the current store answers through (tests assert against
+        the real server through it; ``None`` once stopped)."""
+        return self._pool
+
+    async def store(self) -> WorkspaceLogStore:
+        asyncpg = pytest.importorskip("asyncpg")
+        from maistro.memory.working.pg_store import (
+            PgWorkspaceLogStore,
+            ensure_working_log_schema,
+        )
+
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
+        # Same contract as the Goal conformance leg: the leg provisions its
+        # own schema (idempotent over a migrated database), so the suite
+        # exercises the runtime DDL on any server it is pointed at — the
+        # migration vs runtime agreement is the agreement test's job.
+        await ensure_working_log_schema(self._pool)
+        if not self._cleaned:
+            # Test-start cleanup only. A restart must re-read what the first
+            # writes left behind, so this must never run again on the leg.
+            self._cleaned = True
+            await self._pool.execute("TRUNCATE {} RESTART IDENTITY".format(", ".join(_WS_TABLES)))
+        return PgWorkspaceLogStore(self._pool)
+
+    async def stop(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+
+    async def restart(self) -> WorkspaceLogStore:
+        """Close the pool the writes went through; open a fresh one.
+
+        A restart in production is a new process dialing the database again —
+        new connections, no cached state — so the leg re-opens the pool rather
+        than handing the same connections back."""
+        await self.stop()
+        return await self.store()
+
+
+async def _postgres_leg() -> _PostgresLeg:
+    from maistro.testing.postgres import postgres_dsn
+
+    dsn = postgres_dsn()
+    if not dsn:
+        if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+            msg = (
+                "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty: "
+                "the PostgreSQL working-log leg cannot run and must not be "
+                "silently skipped"
+            )
+            raise RuntimeError(msg)
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
+    return _PostgresLeg(dsn)
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def store(request: pytest.FixtureRequest, tmp_path: Any) -> Any:
     if request.param == "memory":
         yield InMemoryWorkspaceLogStore()
+        return
+    if request.param == "postgres":
+        leg = await _postgres_leg()
+        yield await leg.store()
+        await leg.stop()
         return
     leg = _SqliteLeg(tmp_path)
     yield await leg.store()
@@ -269,4 +353,43 @@ class TestSqliteRestart:
 
         assert isinstance(reopened, SqliteWorkspaceLogStore)
         await reopened.ensure_schema()
+        assert len(await reopened.list_entries(WS)) == 4
+
+
+class TestPostgresRestart:
+    async def test_log_and_results_survive_a_fresh_pool(self) -> None:
+        """The #105 leg's reason to exist: a PostgreSQL deployment's retained
+        observations and full results outlive the pool that wrote them — the
+        exact property the pre-#105 wiring could not deliver, because it
+        answered a ``postgresql://`` deployment with the in-process log.
+
+        Restart is a new pool (new connections, no prepared state), the
+        closest a test process comes to the fresh process the epic requires;
+        the re-read must reproduce the working set the reset left behind and
+        the schema bootstrap must be idempotent over migrated tables.
+        """
+        leg = await _postgres_leg()
+        store = await leg.store()
+        appended = await _append_three(store)
+        result = WorkingResult(workspace_id=WS, result_id="res-keep", source="a", content="keep me")
+        await store.put_result(result)
+        await store.append(
+            reset_entry(workspace_id=WS, cycle=3, survival_ids=[appended[2].entry_id])
+        )
+        await leg.stop()
+
+        reopened = await leg.restart()
+        assert len(await reopened.list_entries(WS)) == 4
+        latest = await reopened.latest_entry(WS, kinds=(ObservationKind.RESET,))
+        assert latest is not None
+        assert latest.meta["survival"] == [appended[2].entry_id]
+        got = await reopened.get_result(WS, "res-keep")
+        assert got is not None and got.content == "keep me"
+        # And the schema bootstrap is idempotent over an existing database.
+        from maistro.memory.working.pg_store import PgWorkspaceLogStore
+
+        assert isinstance(reopened, PgWorkspaceLogStore)
+        from maistro.memory.working.pg_store import ensure_working_log_schema
+
+        await ensure_working_log_schema(leg.pool)
         assert len(await reopened.list_entries(WS)) == 4

@@ -1046,12 +1046,29 @@ def _run_release_step(step, tmp_path):
     outputs = {
         "${{ steps.engine.outputs.digest }}": "sha256:engine",
         "${{ steps.conductor.outputs.digest }}": "sha256:conductor",
+        "${{ steps.rc_evidence.outputs.engine_digest }}": "sha256:engine",
+        "${{ steps.rc_evidence.outputs.conductor_digest }}": "sha256:conductor",
         "${{ steps.tags.outputs.maistro_engine }}": "registry.example/maistro/maistro-engine:v1.0.0",
         "${{ steps.tags.outputs.hive_conductor }}": "registry.example/maistro/hive-conductor:v1.0.0",
         "${{ secrets.GITHUB_TOKEN }}": "test-token",
         "${{ needs.guard.outputs.prerelease }}": "false",
     }
-    env = os.environ | {key: outputs[value] for key, value in step.get("env", {}).items()}
+
+    def resolve(val: str) -> str:
+        if val in outputs:
+            return outputs[val]
+        # Handle the fallback syntax: ${{ A || B }}
+        if val.startswith(
+            "${{ steps.engine.outputs.digest || steps.rc_evidence.outputs.engine_digest }}"
+        ):
+            return outputs["${{ steps.engine.outputs.digest }}"]
+        if val.startswith(
+            "${{ steps.conductor.outputs.digest || steps.rc_evidence.outputs.conductor_digest }}"
+        ):
+            return outputs["${{ steps.conductor.outputs.digest }}"]
+        raise KeyError(val)
+
+    env = os.environ | {key: resolve(value) for key, value in step.get("env", {}).items()}
     assert "${{" not in step["run"]
     return subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
@@ -1128,6 +1145,8 @@ def _stage_inputs(tmp_path):
         ("compliance", "release-compliance.json"),
         ("license-inventory", "license-inventory-release.json"),
         ("license-inventory", "license-inventory-release.tar.gz"),
+        ("evidence", "release-evidence.json"),
+        ("soak-evidence", "soak-evidence.json"),
     ):
         (tmp_path / folder).mkdir(exist_ok=True)
         (tmp_path / folder / name).write_text(name)
