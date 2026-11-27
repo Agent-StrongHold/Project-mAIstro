@@ -338,7 +338,12 @@ async def test_a_migrated_pool_gets_the_postgres_schedule_store(pg_pool: Any) ->
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
     from maistro.runs.wiring import wire_execution_spine
     from maistro.scheduling.pg_store import PgScheduleStore
+    from maistro.testing.postgres import provision_workspace
 
+    # Priming the spine goes through the admission fence (#37), so the
+    # default Workspace is provisioned first — by the caller, exactly like
+    # the container provisions its configured Workspace before wiring.
+    await provision_workspace(pg_pool, "w1")
     _scope, _runs, _admitter, _templates, schedules, _continuations = await wire_execution_spine(
         None, workspace_id="w1", pg_pool=pg_pool
     )

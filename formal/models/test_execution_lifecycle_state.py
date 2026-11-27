@@ -159,9 +159,15 @@ class ExecutionLifecycleMachine(RuleBasedStateMachine):
 
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.runs.pg_store import PgRunStore
+        from maistro.testing.postgres import provision_workspace
 
         workspace = f"formal-lifecycle-{uuid.uuid4().hex}"
         projects = PgProjectScopeStore(server.pool)
+        # The admission fence (#37) refuses a Root Project for a Workspace id
+        # nothing canonical owns; provision the scratch id through
+        # `PgWorkspaceStore.create` (the composition path) so the model
+        # exercises the lifecycle store, not the fence.
+        server.run(provision_workspace(server.pool, workspace))
         root = server.run(projects.create_root(workspace))
         project = server.run(
             projects.create(
@@ -445,10 +451,14 @@ def _spine(prefix: str) -> tuple[Any, Any, Any, Any]:
     """One fresh workspace scope with an open Run and one open NodeRun."""
     from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.pg_store import PgRunStore
+    from maistro.testing.postgres import provision_workspace
 
     server = _server()
     workspace = f"{prefix}-{uuid.uuid4().hex}"
     projects = PgProjectScopeStore(server.pool)
+    # Same fence-aware provisioning as the machine's `__init__` above: the
+    # #37 admission fence refuses a Root Project for an unowned Workspace id.
+    server.run(provision_workspace(server.pool, workspace))
     root = server.run(projects.create_root(workspace))
     project = server.run(projects.create(workspace_id=workspace, parent_project_id=root.project_id, name="Formal"))
     store = PgRunStore(server.pool, project_store=projects)

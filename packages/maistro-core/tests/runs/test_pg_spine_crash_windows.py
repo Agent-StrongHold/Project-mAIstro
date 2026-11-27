@@ -173,7 +173,12 @@ def _replica(pool: Any) -> _Replica:
 async def spine(pg_pool: Any) -> AsyncIterator[_Spine]:
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.testing.postgres import provision_workspace
+
     projects = PgProjectScopeStore(pg_pool)
+    # Provisioned through the canonical authority (#37): the scope store
+    # verifies Workspace existence before minting a Root.
+    await provision_workspace(pg_pool, _WORKSPACE)
     root = await projects.create_root(_WORKSPACE)
     project = await projects.create(
         workspace_id=_WORKSPACE, parent_project_id=root.project_id, name="Spine crash windows"
