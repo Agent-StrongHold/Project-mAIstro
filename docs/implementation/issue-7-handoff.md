@@ -1267,3 +1267,38 @@ release workflow exercise; clean-machine deployment and real-model Graph E2E;
 backup/restore including credential/decryption escrow; RC soak and byte-equivalent
 promotion; overnight live operation; Dreaming durable user-fact producer and
 Agent-runtime recall. This check does not establish remote PR checks or approval.
+
+## Round 19 — fresh acceptance revalidation at 1ab47ffabe
+
+The assigned job directory supplied no `check-*.log` files. I reran focused
+checks against the exact assigned head rather than treating prior round reports
+as current evidence:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed; 3721 files
+  already formatted.
+- `uv run pytest packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x`:
+  23 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/test_canonical_recovery_cadence.py packages/hive-conductor/backend/tests/test_design_shared_surfaces.py packages/hive-conductor/backend/tests/test_entra_jit_provisioning.py packages/hive-conductor/backend/tests/test_hive_unwired_retire_2309.py -q -x`:
+  61 passed.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'`:
+  1217 reviewed identities = 1217 findings; no unbanked identities.
+- `uv run python scripts/check-release-consistency.py`: passed; none released,
+  shipping 0.9.0, working toward 1.0.0.
+- `uv run python scripts/check-suite-inventory.py --suite packages/hive-conductor/backend/tests`:
+  passed for 4766 collected/unique node IDs.
+
+Acceptance decision is not upgraded by those deterministic gates. Release workflow
+exercise is explicitly unverified (`.github/workflows/release.yml:23` says
+"NOT YET EXERCISED"); no operator clean-machine/live-model, restore/escrow,
+RC soak/byte-equivalent promotion, or overnight live-fire evidence is supplied.
+The source search for `promote_evidence` found the production definition and
+re-export but no production caller; KNOWN-GAPS.md:360-366 explicitly defers the
+Dreaming producer until its approved seam. The issue's #7 criteria for production
+Dreaming-to-Agent recall and those operator exercises therefore remain unmet or
+unverified, notwithstanding their deterministic unit coverage. The prior handoff
+accounting for other criteria stands; this round did not re-audit every shipped
+subsystem or remote PR status. No source, tests, ledgers, or authority wiring were
+changed. ADR-080 and ADR-082226-5104 remain controlling: same-user user-scope
+memory is distinct from cross-principal sharing, and PostgreSQL remains durable
+authority while per-Workspace working memory is disposable. Verdict remains
+**NEEDS-REPAIR**; no new test was added, so no inventory delta is applicable.
