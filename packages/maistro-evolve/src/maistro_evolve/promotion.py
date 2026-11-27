@@ -252,10 +252,9 @@ def selection_eligibility(
             reasons=["not evaluated: no fitness/scores recorded"],
         )
 
-    from .fitness import _check_hard_gate
+    from .fitness import _gate_failures
 
-    gate_ok, gate_failures = _check_hard_gate(genome)
-    gate_reasons = [f"hard gate: {f}" for f in gate_failures] if not gate_ok else []
+    gate_reasons = [f"hard gate: {f}" for f in _gate_failures(genome)]
 
     reasons = [
         *_sample_shortfalls(genome, policy),
