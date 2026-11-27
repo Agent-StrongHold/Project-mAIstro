@@ -1697,3 +1697,45 @@ operation) remain unproducible in-repo.
 No production or test change this round: the merge keeps every locally
 reachable gate green and the milestone disposition is unchanged —
 **BLOCKED** on external operator evidence. PR #2529 stays DRAFT.
+
+## Round 31 — repair-round revalidation at bfc4db70fb (verifier finding closed)
+
+Round 31 reopened from the L7 verifier finding
+`Validation failed: jobs/36a00a3b.../check-4.log` (head 4134217158,
+pre-repair) plus a failed worker run (ce6e29bd, `worker_error`, zero
+checks). The check-4 failure itself was the pre-a34477e472
+`WorkspaceNotFound: 'hive-canonical-recovery'` in
+`test_cadence_reclaims_a_lapsed_goal_claim`, already repaired by the
+Round-28-era test-helper fix; this round re-proved it first-hand at the
+merged head bfc4db70fb instead of trusting Rounds 29–30:
+
+- Verifier's exact check-4 command (`pytest test_canonical_recovery_cadence.py
+  test_design_shared_surfaces.py test_entra_jit_provisioning.py
+  test_hive_unwired_retire_2309.py -q -x`) — **61 passed in 3.57s, process
+  exits in ~5s**. The prior run's recorded 1800s timeout (returncode 124) was
+  the pre-repair failure path at 4134217158, not a persistent hang: the same
+  command at the current head completes and terminates cleanly.
+- `ruff check .` — All checks passed; `ruff format --check .` — 3732 files clean.
+- `pytest packages/maistro-core/tests/goals test_container_wiring.py
+  agents/test_factory.py` — 327 passed, 24 skipped (182+145 as recorded).
+- Full `pytest packages/hive-conductor/backend/tests` — 4651 passed,
+  121 skipped, identical to the recorded inventory
+  (`check-suite-inventory.py`: ok, 21 suites, byte-identical redundant files 0).
+- `pytest packages/maistro-core/tests/events` — 445 passed, 90 skipped
+  (includes the #2544 hole-proof oracle tests merged from develop).
+- `scripts/check-release-consistency.py` — ok (released none, shipping 0.9.0
+  toward 1.0.0); `scripts/check-backlog-consistency.py` — OK (167 items);
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (CI-exact, quality.yml) — 1217 reviewed
+  identities = 1217 findings vs base 7eacf6eb, rc=0, no ledger amendment.
+- External-evidence spot-checks re-derived fresh: `git tag -l 'v*'` → 0 tags;
+  `soak-evidence.json`/`release-evidence.json` absent from the tree; 0
+  `OPENAI*`/`ANTHROPIC`/`LITELLM*`/`*_API_KEY` environment variables.
+
+No production or test change this round: the verifier's recorded validation
+failure does not reproduce at the current head, every locally reachable gate
+is green first-hand, and the four externally gated exit conditions (release
+workflow exercise via `v*` tag push, clean-machine real-model Graph E2E, RC
+soak + byte-equivalent promotion evidence, overnight operation) remain
+unproducible inside this repository. Disposition remains **BLOCKED** on
+external operator evidence. PR #2529 stays DRAFT.
