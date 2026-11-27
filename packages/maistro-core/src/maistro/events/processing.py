@@ -542,10 +542,13 @@ class ProcessedBatch:
     reached a settled-for-cursor status — the same value `process_events`
     returns.
 
-    `holes` lists, in ascending order, the first id of every run of ids in
-    ``(after_id, cursor]`` that the log did not return this tick; it is empty
-    when the ids the log returned were contiguous from ``after_id + 1``. The
-    field exists for the PostgreSQL backend:
+    `holes` lists, in ascending order, **every** id in ``(after_id, cursor]``
+    that the log did not return this tick; it is empty when the ids the log
+    returned were contiguous from ``after_id + 1``. Every missing id, not just
+    the first of each gap, is reported — the durable consumer below may cross
+    an id only once the log has proven *that id* terminally absent (#2509), so
+    a report that collapsed a run to its first id would let the cursor cross
+    the rest of the run unproven. The field exists for the PostgreSQL backend:
     `BIGSERIAL` allocates ids at insert time, before commit, so an appender
     that is slow to commit (or that rolls back) leaves a lower id invisible
     while a higher one is already readable. Advancing a *durable* cursor past
@@ -571,10 +574,10 @@ async def process_events_batch(
     """`process_events`, also reporting the ids the log skipped over.
 
     Delivery semantics are unchanged (see `process_events`). The addition is
-    the contiguity check: as events are settled in id order, each one whose
-    id is not ``previous + 1`` marks a hole, and the first missing id of each
-    is reported alongside the cursor so a durable consumer can refuse to
-    persist past it.
+    the contiguity check: as events are settled in id order, every id the log
+    skipped — the whole missing run, not just its first id — is reported
+    alongside the cursor so a durable consumer can refuse to persist past any
+    of them unproven (#2509).
     """
     events = await event_log.query(after_id=after_id, limit=limit)
     cursor = after_id
@@ -589,7 +592,7 @@ async def process_events_batch(
             # Hold the cursor: this event must be replayed next tick.
             break
         if event.id != cursor + 1:
-            holes.append(cursor + 1)
+            holes.extend(range(cursor + 1, event.id))
         cursor = event.id
     return ProcessedBatch(cursor=cursor, holes=tuple(holes))
 
