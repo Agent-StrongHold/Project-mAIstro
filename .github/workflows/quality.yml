@@ -89,7 +89,17 @@ jobs:
   coverage-unit:
     name: coverage (no services)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 -> 30 (#104 repair, 2026-11-26): the five legs are all-green but take
+    # ~19 minutes of pure pytest on current runners — develop's own passing run
+    # (f3681088, job 140133082644) needed 18:19 of the 20-minute cap, and one
+    # runner-variance minute on the core leg (13:46 there, 15:16 on the #104
+    # branch — identical 17824 tests, no core code changed) cancelled the job
+    # mid-bootstrap-leg with no test failing. The cap is a runner-capacity
+    # parameter, not a floor: every leg still runs and the coverage gate still
+    # judges the same data. The aiosqlite "Event loop is closed"
+    # teardown warnings in this job's log are the same pre-existing noise
+    # develop's passing runs print; they are not failures.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
