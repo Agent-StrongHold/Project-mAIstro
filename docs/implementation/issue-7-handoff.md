@@ -1977,3 +1977,64 @@ push a `v*` tag to exercise `release.yml`, supply real-model credentials for
 the clean-machine Graph E2E, and run `soak-pressure.yml`/`release.yml` for RC
 soak + byte-equivalent promotion evidence. No issue-closure action is taken.
 PR #2529 stays DRAFT.
+
+## Round 36 — independent verifier revalidation at f4b1811d86a4 (driver checks + first-hand battery)
+
+Round 36 is the assigned verifier lane (`L7`, job
+`4b6b27a854e74694a118ac2a0856bd19`): the worktree was confirmed clean at the
+assigned head `f4b1811d86a4b2e5bafecb63619668d18673072c`, the PR snapshot
+(DRAFT #2529) and all 56 commit messages (`7eacf6eb..HEAD`) were scanned for
+premature GitHub closure keywords (`fixes/closes/resolves #N`) — **none**;
+the `fix(#7):` subjects are conventional-commit scopes, not auto-close
+syntax. Prior-loop diagnosis: job `36a00a3b`'s check-4 failure
+(`WorkspaceNotFound: 'hive-canonical-recovery'`) was fixed by `a34477e472`
+(test-only Workspace provisioning, re-verified green below); job
+`c533fc38`'s run "failed" on a provider 404 after recording returncode 0 for
+all seven checks — an infrastructure abort, not a validation regression.
+Every driver log in this job's directory (`check-0`…`check-6`) is green, and
+every command below was re-executed first-hand at this head, not trusted:
+
+| Command (exact) | Result |
+| --- | --- |
+| `uv sync --locked --extra dev` | exit 0, 466 packages |
+| `uv run ruff check .` | All checks passed |
+| `uv run ruff format --check .` | 3732 files already formatted |
+| `uv run pytest packages/maistro-core/tests/agents/test_factory.py packages/maistro-core/tests/goals/test_goal_container_wiring.py packages/maistro-core/tests/goals/test_goal_reconciliation_production.py -q -x` | **100 passed** |
+| conductor verifier battery (`test_canonical_recovery_cadence.py test_design_shared_surfaces.py test_entra_jit_provisioning.py test_hive_unwired_retire_2309.py -q`) | **61 passed** (incl. the Round-25 `test_cadence_reclaims_a_lapsed_goal_claim`) |
+| `uv run pytest packages/hive-conductor/backend/tests -q` | **4651 passed, 121 skipped in 3:45**; `-rs` shows every skip is `MAISTRO_TEST_PG_DSN`-gated |
+| wider core battery (goals + container_wiring + factory + events) | **772 passed, 114 skipped** (matches Rounds 29–35) |
+| `uv run pytest packages/maistro-rsi/tests -q` | **1863 passed, 4 skipped** |
+| `uv run pytest packages/hive-conductor/backend/tests/test_backup_restore_drill.py -q` | **14 passed** — #88 escrow/decrypt proofs first-hand |
+| `scripts/check-release-consistency.py` | ok (released none / shipping 0.9.0 / target 1.0.0) |
+| `scripts/check-reachability.py` | 1531 modules, **81 unreachable**, rc 0 |
+| `scripts/check-reachability-dispositions.py` | 27 groups cover all 81 (38 CONNECT / 20 LIBRARY / 23 RETIRE) |
+| `scripts/check-reachability-provenance.py` | 82 → 81, no candidate-approved expansion |
+| `scripts/check-reachability-dispositions-provenance.py` | OK |
+| `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude '*/third_party/*'` (CI-exact, base 7eacf6eb) | 1217 identities = 1217 findings |
+| `scripts/check-radon-baseline.py` | 124 = 124 |
+| `scripts/check-promotion-surface.py` | ok |
+| `scripts/check-backlog-consistency.py` | OK, 167 items |
+| `scripts/check-doc-links.py` | 0 broken relative links |
+| `scripts/check-suite-inventory.py` (all suites) | **21 suites match**, 37992 unique identities, 0 duplicates |
+
+Acceptance spot-audits (test substance, not just green): the reconciliation
+production suite exercises the canonical `Goal -> Graph -> Run -> NodeRun ->
+Attempt` lineage end-to-end through the composed container, crash-after-insert
+replay, reopen repair, and revision-bump replan keys; the policy never settles
+a Goal (`complete` unreachable by construction, terminal decisions are
+sleep/gate). The JIT suite pins config-time ceilings (permission ceiling
+refusal, user-role-only mapping, group-UUID keys) and login-path safety
+(pagination bound to the authenticated Graph subject, unlinked-identity
+refusal when disabled, taken-username fail-closed). The Design shared-surfaces
+suite proves work-opening recall through the one shared user model with
+sensitivity capping and outage degradation. KNOWN-GAPS.md carries 15 `###`
+sections, each with an explicit shipped/deferred disposition.
+
+External gates re-derived first-hand at `f4b1811d86a4` — still exactly
+**three**, unchanged from Round 35: `git tag -l 'v*'` → 0 tags (release.yml
+exercise needs an operator tag push); no model credentials in the environment
+(clean-machine real-model Graph E2E); `soak-evidence.json` /
+`release-evidence.json` absent (RC soak + byte-equivalent promotion are
+runner-only workflows). Writer handoff disposition stands: verdict **MERGE-READY
+(writer handoff only, never integration approval)**; the three external items
+belong to the operator phase. No issue-closure action; PR #2529 stays DRAFT.
