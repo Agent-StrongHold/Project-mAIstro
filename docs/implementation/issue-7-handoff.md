@@ -1382,3 +1382,30 @@ execute on the canonical Run spine, so a detached producer would not be a valid
 repair. No production or test change was warranted; no inventory delta applies.
 The issue remains **NEEDS-REPAIR** pending the missing product work and external
 operator evidence.
+
+## Round 23 — fresh assigned repair-round validation (head `9ec9085f5e`)
+
+The assigned job directory has no `check-*.log` files, so no driver check was
+credited. I ran the following independently at the assigned head:
+
+- `uv run ruff check .` and `uv run ruff format --check .`: passed (3721 files).
+- Goal container/reconciliation production tests: 23 passed.
+- Workspace recovery/design/Entra JIT/unwired-retirement tests: 61 passed.
+- `uv run python scripts/check-release-consistency.py`: passed; shipping 0.9.0
+toward 1.0.0. `git tag -l 'v*'` returned no tags.
+- `uv run python scripts/check-backlog-consistency.py`: passed (167 items).
+- CI-exact `check-vulture-baseline.py` scan: 1217 reviewed identities = 1217
+findings; no unbanked identities were reported.
+
+The fresh evidence does not change acceptance. `.github/workflows/release.yml:23`
+still says the workflow has not been exercised, with no release tags present.
+The production-tree search finds `promote_evidence` only at its definition and
+re-export (other calls are tests); `KNOWN-GAPS.md:360-366` defers its Dreaming
+producer. ADR-082226-5104 §7 requires Dreaming to run through the canonical
+`Run -> NodeRun -> Attempt` spine, so adding an isolated promotion call would
+not satisfy the gap and would create a competing execution path. External
+release execution, clean-machine/live-model E2E, RC soak/promotion, backup /
+restore operations, and overnight live evidence remain unavailable here.
+No production or test edit is justified by these results. This documentation
+checkpoint records the focused repair disposition; no test inventory delta
+applies. Milestone status remains **NEEDS-REPAIR**.
