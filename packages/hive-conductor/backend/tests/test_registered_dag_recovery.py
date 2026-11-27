@@ -194,6 +194,7 @@ async def container(monkeypatch: pytest.MonkeyPatch) -> Any:
         provider_registry=providers,
         llm_router=CostAwareRouter(providers),
         project_id=root.project_id,
+        discovery_context=None,
     )
     port = SimpleNamespace(container=built)
     monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace(_agent_port=port))

@@ -884,6 +884,36 @@
       "effect_owner": "stores.home_layouts"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/discovery.py",
+      "method": "PUT",
+      "route": "/{workspace_id}/discovery/config",
+      "handler": "put_discovery_config",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "persists the Workspace discovery config (enable/disable, budgets, topics, Binding ids) after a writer-membership check",
+      "effect_owner": "services.discovery store (proactive_discovery JsonStore) + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/discovery.py",
+      "method": "POST",
+      "route": "/{workspace_id}/discovery/run",
+      "handler": "trigger_discovery",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "triggers one bounded discovery cycle as a canonical Run of the registered proactive-discovery seed through run_registered_dag; refused cleanly when disabled or budget-exhausted",
+      "effect_owner": "services.discovery.run_discovery_cycle -> canonical Run store + ledger charge"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/discovery.py",
+      "method": "POST",
+      "route": "/{workspace_id}/discovery/items/{fingerprint}/feedback",
+      "handler": "post_discovery_feedback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records keep/dismiss feedback: item status + per-category preference evidence + Attention dismissal preference; viewer members are refused",
+      "effect_owner": "services.discovery store + attention dismissal store + audit log"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/install.py",
       "method": "POST",
       "route": "/session",

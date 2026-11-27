@@ -43,6 +43,9 @@ _CONTAINER_ATTRIBUTE = {
     # Container-owned instances the resolver hands the delegate node.
     "warden": "warden",
     "audit_log": "audit_log",
+    # Per-cycle bounded-discovery context (#1051): a Container-owned provider
+    # the host wires at creation; the composition root passes it through.
+    "discovery_context": "discovery_context",
 }
 
 

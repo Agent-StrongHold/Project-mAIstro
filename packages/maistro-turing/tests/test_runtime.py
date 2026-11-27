@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -602,6 +603,152 @@ class TestTuringChatSession:
             {"role": "user", "content": "successful turn"},
             {"role": "assistant", "content": "ok"},
         ]
+
+    async def test_provider_failure_rolls_back_the_turn(self) -> None:
+        """A provider crash is a failed turn: the user entry is rolled back.
+
+        The rollback must cover every exit path inside the turn, not only the
+        classifier/prompt stage and the Warden-blocked result: a provider that
+        raises left the unpaired user entry behind, so repeated provider
+        outages grew the session's stored state without limit.
+        """
+        memory = FakeMemoryBridge()
+
+        class CrashingProvider(FakeChatProvider):
+            async def acomplete(
+                self, prompt: str, *, max_tokens: int | None = None, pool: str = ""
+            ) -> str:
+                raise RuntimeError("provider unavailable")
+
+        session = TuringChatSession(
+            memory=memory,  # type: ignore[arg-type]
+            provider=CrashingProvider(),  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await session.handle_message("doomed turn")
+
+        # The error propagates and nothing was retained or persisted: no
+        # half-written turn, no episodic capture of an answer that never
+        # happened.
+        assert session._history == []
+        assert memory.calls == []
+
+    async def test_repeated_provider_failures_do_not_grow_stored_history(self) -> None:
+        """The stored-state bound holds across repeated provider failures,
+
+        and a recovered session does not model the failed turns as answered
+        context."""
+        from maistro_turing.runtime import MAX_HISTORY_TURNS
+
+        class FlakyProvider(FakeChatProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail = True
+
+            async def acomplete(
+                self, prompt: str, *, max_tokens: int | None = None, pool: str = ""
+            ) -> str:
+                if self.fail:
+                    raise RuntimeError("provider unavailable")
+                return await super().acomplete(prompt, max_tokens=max_tokens, pool=pool)
+
+        provider = FlakyProvider()
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=provider,  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        for turn in range(MAX_HISTORY_TURNS + 8):
+            with pytest.raises(RuntimeError, match="provider unavailable"):
+                await session.handle_message(f"failed turn {turn}")
+
+        # Nothing was retained across the whole failure streak.
+        assert session._history == []
+
+        provider.fail = False
+        await session.handle_message("recovered turn")
+
+        # The failed turns are not model context for the recovered turn.
+        recovered_prompt = provider.prompts[-1]
+        assert "failed turn" not in recovered_prompt
+        assert "Previous context:" not in recovered_prompt
+        assert session._history == [
+            {"role": "user", "content": "recovered turn"},
+            {"role": "assistant", "content": "a reply"},
+        ]
+
+    @pytest.mark.parametrize("stage", ["classifier", "provider", "result_scan"])
+    @pytest.mark.parametrize("failure", ["exception", "cancellation"])
+    async def test_failed_turn_preserves_full_completed_history(
+        self, monkeypatch: pytest.MonkeyPatch, stage: str, failure: str
+    ) -> None:
+        """Failure at any awaited turn stage must not evict a completed turn."""
+        from maistro_turing.runtime import MAX_HISTORY_TURNS
+
+        memory = FakeMemoryBridge()
+        provider = FakeChatProvider(reply="ok")
+        classifier = FakeClassifierBridge()
+        security = FakeSecurityBridge()
+        session = TuringChatSession(
+            memory=memory,  # type: ignore[arg-type]
+            provider=provider,  # type: ignore[arg-type]
+            classifier=classifier,  # type: ignore[arg-type]
+            security=security,  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+        for turn in range(MAX_HISTORY_TURNS // 2):
+            await session.handle_message(f"completed turn {turn}")
+        before = [turn.copy() for turn in session._history]
+        captures_before = len(memory.calls)
+        assert len(before) == MAX_HISTORY_TURNS
+
+        target, method = {
+            "classifier": (classifier, "classify_message"),
+            "provider": (provider, "acomplete"),
+            "result_scan": (security, "scan_tool_result"),
+        }[stage]
+        original = getattr(target, method)
+        started = asyncio.Event()
+
+        async def fail(*args: Any, **kwargs: Any) -> Any:
+            started.set()
+            if failure == "exception":
+                raise RuntimeError("turn unavailable")
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled turn must not resume")
+
+        monkeypatch.setattr(target, method, fail)
+        if failure == "exception":
+            with pytest.raises(RuntimeError, match="turn unavailable"):
+                await session.handle_message("failed turn")
+        else:
+            task = asyncio.create_task(session.handle_message("failed turn"))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=5)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        assert session._history == before
+        assert len(memory.calls) == captures_before
+
+        monkeypatch.setattr(target, method, original)
+        await session.handle_message("recovered turn")
+        assert "failed turn" not in provider.prompts[-1]
+        assert session._history == [
+            *before[2:],
+            {"role": "user", "content": "recovered turn"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        assert len(memory.calls) == captures_before + 1
 
     async def test_handle_message_includes_previous_context_on_second_turn(self) -> None:
         provider = FakeChatProvider(reply="ok")
