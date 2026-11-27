@@ -9,7 +9,7 @@ SQLite pool — the retained-observation requirement of ADR-082226-5104/#105
 (read: a log that outlives the process) was unreachable on the backend the
 container's own PostgreSQL branch selects.
 
-For a managed deployment the tables come from Alembic migration ``071``;
+For a managed deployment the tables come from Alembic migration ``072``;
 ``ensure_working_log_schema`` mirrors that DDL for tests and single-command dev
 runs the way ``ensure_goal_schema`` mirrors migration 063 — a database that
 never ran the chain still gets the real durable tables, never a substitute
@@ -57,7 +57,7 @@ WORKING_LOG_PG_TABLES: Final = (
 )
 
 #: The working-log tables' DDL, mirroring
-#: ``alembic/versions/071_workspace_working_log.py`` statement for statement.
+#: ``alembic/versions/072_workspace_working_log.py`` statement for statement.
 #: Written out rather than imported on purpose — a migration must keep creating
 #: what it created on the day it ran, so it cannot import live application code
 #: — which is exactly why the agreement test compares the two against a real

@@ -695,7 +695,7 @@ class TestWiring:
 
     async def test_postgres_pool_wires_the_durable_twin_over_sqlite(self) -> None:
         """Backend selection without a live server: a PostgreSQL pool wins
-        even when a SQLite pool is also at hand, creates the migration-071
+        even when a SQLite pool is also at hand, creates the migration-072
         tables under the advisory lock, and never initializes a SQLite
         fallback store — the split this wiring shipped before the PG twin
         existed, answering a ``postgresql://`` deployment with the

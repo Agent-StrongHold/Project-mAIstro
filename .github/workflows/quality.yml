@@ -430,7 +430,7 @@ jobs:
       # `tests/memory` runs server-free in `coverage (no services)`; the
       # conformance leg provisions its own schema (idempotent over the
       # migrated chain applied above) and the schema-agreement suite renders
-      # migration 071 offline, so neither depends on this job ordering.
+      # migration 072 offline, so neither depends on this job ordering.
       #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim

@@ -10,7 +10,7 @@ split this wiring shipped before the PG twin existed: the container passed
 only the SQLite pool here, so a ``postgresql://`` deployment answered with
 the process-memory log and #105's retained-observation requirement was
 unreachable on its own selected backend. When the pool's database has not run
-`alembic upgrade head` yet, the missing migration-071 tables are created here
+`alembic upgrade head` yet, the missing migration-072 tables are created here
 (``ensure_working_log_schema``, the same "wiring creates the schema it needs"
 contract the Goal and event stores ship) rather than refusing Container
 startup over tables one idempotent statement away. SQLite selects its twin
@@ -44,7 +44,7 @@ async def wire_working_memory(db_pool: Any, *, pg_pool: Any = None) -> WorkingMe
     """Wire working memory over the deployment's selected database backend.
 
     A supplied ``pg_pool`` always selects PostgreSQL — the durable twin whose
-    tables migration 071 owns for managed deployments and
+    tables migration 072 owns for managed deployments and
     ``ensure_working_log_schema`` creates here otherwise — so a
     ``postgresql://`` deployment's observation log and its addressable
     results live beside the Workspaces they belong to and outlive the

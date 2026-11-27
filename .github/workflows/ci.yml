@@ -430,8 +430,8 @@ jobs:
         run: uv run pytest packages/maistro-core/tests/goals -v --tb=short
       # The per-Workspace working log (#301, M4-H/#105). Same contract as the
       # Goal step above: the conformance suite's PostgreSQL leg and the
-      # migration-071 schema agreement must not silently skip in the one job
-      # that owns a real server — before 071 a `postgresql://` deployment's
+      # migration-072 schema agreement must not silently skip in the one job
+      # that owns a real server — before 072 a `postgresql://` deployment's
       # observation log was the in-process store, so a skip here is exactly
       # how that would come back.
       - name: Working-memory log conforms across memory, SQLite and PostgreSQL
